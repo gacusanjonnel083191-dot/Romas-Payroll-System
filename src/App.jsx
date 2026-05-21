@@ -350,7 +350,7 @@ export default function App() {
   async function addAnnouncement() {
     if (!newAnnouncementTitle || !newAnnouncementContent) { alert('Please enter title and content.'); return }
     await supabase.from('announcements').insert({ title: newAnnouncementTitle, content: newAnnouncementContent, is_active: true })
-    alert('Announcement posted!')
+    showToast('✅ Announcement posted!')
     setNewAnnouncementTitle(''); setNewAnnouncementContent(''); loadAnnouncements()
   }
   async function toggleAnnouncement(id, current) {
@@ -633,7 +633,7 @@ export default function App() {
   async function updateLeaveStatus(id, status, reason) {
     await supabase.from('leave_requests').update({ status, admin_reason: reason||null }).eq('id', id)
     await logAudit(`LEAVE ${status.toUpperCase()}`, 'Admin', '', `Leave ID ${id}${reason ? ' — Reason: '+reason : ''}`)
-    showToast(`✅ Leave ${status} successfully`); loadLeaveRequests()
+    showToast(`✅ Leave ${status} successfully!`); loadLeaveRequests()
   }
 
   async function loadHolidays() {
@@ -643,7 +643,7 @@ export default function App() {
   async function addHoliday() {
     if (!newHolidayDate || !newHolidayName) { alert('Please enter date and name.'); return }
     await supabase.from('holidays').insert({ holiday_date: newHolidayDate, holiday_name: newHolidayName, holiday_type: newHolidayType })
-    alert('Holiday added!'); setNewHolidayName(''); loadHolidays()
+    showToast('✅ Holiday added!'); setNewHolidayName(''); loadHolidays()
   }
   async function deleteHoliday(id) { await supabase.from('holidays').delete().eq('id', id); loadHolidays() }
 
@@ -661,7 +661,7 @@ export default function App() {
       await supabase.from('attendance_logs').update({ undertime_minutes: req.minutes, status: 'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
     }
     await logAudit(`${req.request_type.toUpperCase()} APPROVED`, 'Admin', req.employee_name, `${req.minutes} min on ${req.attendance_date}`)
-    showToast('✅ Approved!'); loadTimeAdjRequests()
+    showToast('✅ OT/UT Approved successfully!'); loadTimeAdjRequests()
   }
   async function rejectTimeAdj(req) {
     const reason = adjAdminReason[req.id]
@@ -673,7 +673,7 @@ export default function App() {
       await supabase.from('attendance_logs').update({ undertime_minutes: 0, status: 'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
     }
     await logAudit(`${req.request_type.toUpperCase()} REJECTED`, 'Admin', req.employee_name, `Reason: ${reason}`)
-    showToast('✅ Rejected successfully.', 'red'); loadTimeAdjRequests()
+    showToast('❌ OT/UT Rejected.', 'red'); loadTimeAdjRequests()
   }
 
   async function saveEmployeeChanges() {
@@ -744,7 +744,7 @@ export default function App() {
       if (!reason) { alert('Please enter a reason for disapproval.'); return }
       await supabase.from('cash_advance_requests').update({ status: 'disapproved', admin_reason: reason }).eq('id', id)
       await logAudit('CA DISAPPROVED', 'Admin', req.employee_name, `Reason: ${reason}`)
-      alert('Disapproved.'); loadCashAdvanceRequests(); return
+      showToast('✅ Disapproved.', 'red'); loadCashAdvanceRequests(); return
     }
     await supabase.from('cash_advance_requests').update({ status: 'approved' }).eq('id', id)
     const totalAmount = Number(req.amount), installments = Math.max(1, Number(installmentCounts[id]||1))
@@ -756,7 +756,7 @@ export default function App() {
       notes: req.reason, status: 'Unpaid'
     })
     await logAudit('CA APPROVED', 'Admin', req.employee_name, `${php(totalAmount)} in ${installments} installments`)
-    alert(`Approved! ${php(perPayroll)} × ${installments} payroll(s).`); loadCashAdvanceRequests()
+    showToast(`✅ Approved! ${php(perPayroll)} × ${installments} payroll(s).`); loadCashAdvanceRequests()
   }
 
   async function loadPayslipDisputes() {
@@ -772,7 +772,7 @@ export default function App() {
     if (!reason) { alert('Please enter admin response/reason before resolving.'); return }
     await supabase.from('payslip_disputes').update({ status: 'resolved', admin_reason: reason }).eq('id', id)
     await logAudit('DISPUTE RESOLVED', 'Admin', '', `Dispute ID ${id} — ${reason}`)
-    alert('Dispute resolved.'); loadPayslipDisputes()
+    showToast('✅ Dispute resolved successfully!'); loadPayslipDisputes()
   }
 
   async function saveAdjustment() {
@@ -783,12 +783,12 @@ export default function App() {
       adjustment_date: adjustmentDate, adjustment_type: adjustmentType, category: adjustmentCategory, amount: Number(adjustmentAmount), notes: adjustmentNotes
     })
     await logAudit('ADJUSTMENT ADDED', 'Admin', emp?.full_name||'', `${adjustmentType}: ${php(adjustmentAmount)} — ${adjustmentCategory}`)
-    alert('Adjustment saved'); setAdjustmentEmployeeId(''); setAdjustmentCategory(''); setAdjustmentAmount(''); setAdjustmentNotes('')
+    showToast('✅ Adjustment saved successfully!'); setAdjustmentEmployeeId(''); setAdjustmentCategory(''); setAdjustmentAmount(''); setAdjustmentNotes('')
   }
   async function saveSchedule() {
     if (!selectedEmployeeId || !scheduleDate || !shiftStart || !shiftEnd) { alert('Complete all fields.'); return }
     await supabase.from('daily_schedules').upsert({ employee_id: selectedEmployeeId, schedule_date: scheduleDate, shift_start: shiftStart, shift_end: shiftEnd }, { onConflict: 'employee_id,schedule_date' })
-    alert('Schedule saved'); setSelectedEmployeeId(''); setShiftStart(''); setShiftEnd('')
+    showToast('✅ Schedule saved!'); setSelectedEmployeeId(''); setShiftStart(''); setShiftEnd('')
   }
   function applyPayrollCutoff() {
     const [y, m] = payrollMonth.split('-').map(Number)
@@ -951,7 +951,7 @@ export default function App() {
   function printAllPayslips() {
     const printWindow = window.open('', '_blank', 'width=800,height=600')
     const payslipHTML = payrollResults.map((pay, idx) => `
-      <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;page-break-after:always;margin:0 auto;background:white;">
+      <div class="payslip-wrap"><div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
         <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:8px;">
           <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
           <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
@@ -993,16 +993,17 @@ export default function App() {
           <div style="text-align:center;"><div style="border-top:1px solid #000;width:120px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
         </div>
         <div style="text-align:center;font-size:9px;color:#999;margin-top:10px;">${genSerial(payrollStart,idx)}</div>
-      </div>
+      </div></div>
     `).join('')
     printWindow.document.write(`<!DOCTYPE html><html><head><title>Payslips</title>
       <style>
         *{margin:0;padding:0;box-sizing:border-box;}
-        body{background:#fff;display:flex;flex-direction:column;align-items:center;}
+        body{background:#f0f0f0;display:flex;flex-direction:column;align-items:center;padding:10px 0;}
+        .payslip-wrap{background:white;width:145mm;margin:10px auto;box-shadow:0 2px 8px rgba(0,0,0,0.15);}
         @media print{
           @page{size:145mm 210mm;margin:0;}
-          body{display:block;}
-          div[style*="page-break-after"]{page-break-after:always !important;}
+          body{background:white;display:block;padding:0;}
+          .payslip-wrap{box-shadow:none;margin:0;page-break-after:always;}
         }
       </style></head><body>${payslipHTML}</body></html>`)
     printWindow.document.close()
@@ -1014,7 +1015,7 @@ export default function App() {
     printWindow.document.write(`<!DOCTYPE html><html><head><title>Payslip</title>
       <style>
         *{margin:0;padding:0;box-sizing:border-box;}
-        body{background:#fff;display:flex;justify-content:center;align-items:flex-start;}
+        body{background:#f0f0f0;display:flex;justify-content:center;padding:10px;}
         @media print{@page{size:145mm 210mm;margin:0;}body{display:block;}}
       </style></head><body>
       <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;margin:0 auto;background:white;">
@@ -1055,7 +1056,7 @@ export default function App() {
           <div style="text-align:center;"><div style="border-top:1px solid #000;width:120px;padding-top:4px;font-size:9px;">Employee Signature</div></div>
           <div style="text-align:center;"><div style="border-top:1px solid #000;width:120px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
         </div>
-      </div></body></html>`)
+      </div></div></div></body></html>`)
     printWindow.document.close()
     setTimeout(()=>{printWindow.focus();printWindow.print()},800)
   }
@@ -1166,7 +1167,7 @@ export default function App() {
                     </div>
                   ))}
                 </div>
-                <button style={{ ...btnGreen, width:'auto', padding:'10px 20px' }} onClick={loadDashboard}>🔄 REFRESH</button>
+                <button style={{ ...btnGreen, width:'auto', padding:'10px 20px' }} onClick={async()=>{await loadDashboard();showToast('✅ Dashboard refreshed!')}}>🔄 REFRESH</button>
               </div>
             )}
 
@@ -1464,7 +1465,7 @@ export default function App() {
             {activeTab==='overtime' && (
               <div>
                 <h2 style={h2s}>Overtime / Undertime Requests</h2>
-                <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={loadTimeAdjRequests}>REFRESH</button>
+                <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{await loadTimeAdjRequests();showToast('✅ OT/UT requests refreshed!')}}>REFRESH</button>
                 {timeAdjRequests.length===0 && <p style={{ color:'#888' }}>No pending requests.</p>}
                 {timeAdjRequests.map(req=>(
                   <div key={req.id} style={{ ...cardS, border:`2px solid ${req.request_type==='overtime'?'#2d8a4e':'#f5a623'}`, background:req.request_type==='overtime'?'#f0fff0':'#fffbf0' }}>
@@ -1748,7 +1749,7 @@ export default function App() {
             {activeTab==='leaveRequests' && (
               <div>
                 <h2 style={h2s}>Leave Requests</h2>
-                <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={loadLeaveRequests}>REFRESH</button>
+                <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{await loadLeaveRequests();showToast('✅ Leave requests refreshed!')}}>REFRESH</button>
                 {leaveRequests.length===0 && <p style={{ color:'#888' }}>No pending leave requests.</p>}
                 {leaveRequests.map(req=>(
                   <div key={req.id} style={{ ...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
@@ -1787,7 +1788,7 @@ export default function App() {
             {activeTab==='cashRequests' && (
               <div>
                 <h2 style={h2s}>Cash Advance Requests</h2>
-                <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={loadCashAdvanceRequests}>REFRESH</button>
+                <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{await loadCashAdvanceRequests();showToast('✅ Cash advance requests refreshed!')}}>REFRESH</button>
                 {cashAdvanceRequests.length===0 && <p style={{ color:'#888' }}>No pending requests.</p>}
                 {cashAdvanceRequests.map(req=>(
                   <div key={req.id} style={{ ...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
@@ -1828,7 +1829,7 @@ export default function App() {
             {activeTab==='disputes' && (
               <div>
                 <h2 style={h2s}>Payslip Disputes</h2>
-                <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={loadPayslipDisputes}>REFRESH</button>
+                <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{await loadPayslipDisputes();showToast('✅ Disputes refreshed!')}}>REFRESH</button>
                 {payslipDisputes.length===0 && <p style={{ color:'#888' }}>No pending disputes.</p>}
                 {payslipDisputes.map(d=>(
                   <div key={d.id} style={{ ...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
