@@ -1939,8 +1939,11 @@ export default function App() {
             <button style={{ ...btnBlack, margin:0, opacity:(!todayLog||todayLog?.time_out)?0.5:1, fontSize:'13px', textAlign:'center' }} onClick={initiateTimeOut} disabled={loading||!todayLog||!!todayLog?.time_out}>⏰ TIME OUT</button>
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'4px' }}>
-            <button style={{ background:onBreak?'#f5a623':'#4a90d9', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||todayLog?.time_out)?0.5:1 }} onClick={onBreak?initiateBreakIn:initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out}>
-              {onBreak?'☕ BREAK IN — End Break':'☕ BREAK OUT — Start Break'}
+            <button style={{ background:'#4a90d9', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||todayLog?.time_out||onBreak)?0.5:1 }} onClick={initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out||onBreak}>
+              ☕ BREAK OUT
+            </button>
+            <button style={{ background:'#f5a623', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!onBreak)?0.5:1 }} onClick={initiateBreakIn} disabled={!onBreak}>
+              ☕ BREAK IN
             </button>
             <button style={{ background:'#8b5cf6', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||!todayLog?.time_out)?0.5:1 }} onClick={()=>{ closeAllPanels(); setShowOTRequest(!showOTRequest) }} disabled={!todayLog||!todayLog?.time_out}>
               📝 FILE OT/UT
