@@ -1969,8 +1969,8 @@ export default function App() {
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
-const pageStyle = { minHeight:'100vh', width:'100vw', background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'auto' }
-const cardStyle = { background:'white', padding:'22px', borderRadius:'20px', boxShadow:'0 10px 30px rgba(0,0,0,0.2)', width:'100%' }
+const pageStyle = { minHeight:'100vh', width:'100%', background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowX:'hidden' }
+const cardStyle = { background:'white', padding:'22px', borderRadius:'20px', boxShadow:'0 10px 30px rgba(0,0,0,0.2)', width:'100%', maxWidth:'420px', margin:'0 auto' }
 const logoStyle = { width:'80px', height:'80px', objectFit:'contain', display:'block', margin:'0 auto 8px' }
 const inputStyle = { width:'100%', padding:'12px', marginBottom:'12px', borderRadius:'10px', border:'1px solid #ddd', boxSizing:'border-box', fontSize:'14px' }
 const cardS = { border:'1px solid #eee', padding:'12px', borderRadius:'12px', marginBottom:'10px', background:'#fafafa' }
