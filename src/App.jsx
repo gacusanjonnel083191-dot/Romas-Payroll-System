@@ -672,12 +672,18 @@ export default function App() {
       pin: editFields.pin, daily_rate: Number(editFields.rate||0), has_sss: editFields.hasSss,
       has_pagibig: editFields.hasPagibig, has_philhealth: editFields.hasPhilhealth,
       hire_date: editFields.hireDate, sick_leave_balance: Number(editFields.sick||5),
-      vacation_leave_balance: Number(editFields.vacation||5), pay_type: editFields.payType||'daily',
-      hourly_rate: Number(editFields.hourlyRate||0), grace_period_minutes: Number(editFields.gracePeriod||10)
+      vacation_leave_balance: Number(editFields.vacation||5), sil_balance: Number(editFields.sil||5),
+      pay_type: editFields.payType||'daily', hourly_rate: Number(editFields.hourlyRate||0),
+      grace_period_minutes: Number(editFields.gracePeriod||10),
+      date_of_birth: editFields.dob||null, gender: editFields.gender||'',
+      civil_status: editFields.civil_status||'', home_address: editFields.address||'',
+      contact_number: editFields.contact||'', emergency_contact_name: editFields.emergency_name||'',
+      emergency_contact_number: editFields.emergency_contact||'',
+      employment_type: editFields.employment_type||'regular', department: editFields.department||''
     }).eq('id', editingEmployeeId)
     if (error) { alert(error.message); return }
     await logAudit('EMPLOYEE UPDATED', 'Admin', editFields.name, 'Employee details updated')
-    setEditingEmployeeId(''); loadEmployees(); alert('Employee updated!')
+    setEditingEmployeeId(''); loadEmployees(); alert('Employee updated successfully!')
   }
   async function addEmployee() {
     const f = newEmpFields
@@ -1757,7 +1763,21 @@ export default function App() {
           <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'12px', marginBottom:'12px' }}>
             <p style={{ margin:'3px 0', fontSize:'13px' }}>📅 Shift: {todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Assigned Shift'}</p>
             <p style={{ margin:'3px 0', fontSize:'13px' }}>🟢 In: <strong>{todayLog?.time_in||'Not yet'}</strong> &nbsp; 🔴 Out: <strong>{todayLog?.time_out||'Not yet'}</strong></p>
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>☕ Break: {totalBreakMins} min used {onBreak?'(currently on break)':''}</p>
+            <p style={{ margin:'3px 0', fontSize:'13px' }}>
+              ☕ Break: <strong>{totalBreakMins} min used</strong>
+              {onBreak && <span style={{ color:'#f5a623', fontWeight:'bold', marginLeft:'6px' }}>● Currently on break</span>}
+              {!onBreak && totalBreakMins > 0 && totalBreakMins <= 60 && <span style={{ color:'#2d8a4e', marginLeft:'6px' }}>✅ Within limit</span>}
+              {totalBreakMins > 60 && <span style={{ color:'#ca1b1b', fontWeight:'bold', marginLeft:'6px' }}>⚠️ Exceeded 60 min limit</span>}
+            </p>
+            {todayBreaks.length > 0 && (
+              <div style={{ marginTop:'4px' }}>
+                {todayBreaks.map((b, i) => (
+                  <p key={b.id} style={{ margin:'2px 0', fontSize:'12px', color:'#888' }}>
+                    Break {i+1}: {b.break_out} {b.break_in ? `→ ${b.break_in} (${b.break_minutes} min)` : '→ ongoing'}
+                  </p>
+                ))}
+              </div>
+            )}
             <p style={{ margin:'3px 0', fontSize:'13px' }}>📌 Status: <strong>{todayLog?.status||'No record yet'}</strong></p>
             {(todayLog?.selfie_in_url||todayLog?.selfie_out_url) && (
               <div style={{ display:'flex', gap:'8px', marginTop:'8px' }}>
@@ -1778,7 +1798,7 @@ export default function App() {
           </div>
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'4px' }}>
             <button style={{ background:onBreak?'#f5a623':'#4a90d9', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||todayLog?.time_out)?0.5:1 }} onClick={onBreak?initiateBreakIn:initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out}>
-              {onBreak?'☕ BREAK IN':'☕ BREAK OUT'}
+              {onBreak?'☕ BREAK IN — End Break':'☕ BREAK OUT — Start Break'}
             </button>
             <button style={{ background:'#8b5cf6', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||!todayLog?.time_out)?0.5:1 }} onClick={()=>{ closeAllPanels(); setShowOTRequest(!showOTRequest) }} disabled={!todayLog||!todayLog?.time_out}>
               📝 FILE OT/UT
