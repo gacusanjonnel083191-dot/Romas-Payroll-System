@@ -1047,13 +1047,19 @@ export default function App() {
     const filteredResults = payrollResults.filter(p => p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase()) || p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
 
     return (
-      <div style={{ minHeight:'100vh', width:'100vw', background:'#f0f0f0', padding:'0', boxSizing:'border-box' }}>
-        {showPayrollReminder && (
-          <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:9999, background:'#ca1b1b', color:'white', padding:'10px 20px', textAlign:'center', fontWeight:'bold', fontSize:'14px' }}>
-            🔔 PAYROLL REMINDER: Salary release is on the {currentDay===11?'15th':'30th'}. Please compute and release payroll on time!
-          </div>
-        )}
-        <div style={{ background:'white', borderRadius:'0', width:'100%', margin:'0', minHeight:'100vh', boxShadow:'none', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden', marginTop:showPayrollReminder?'44px':'0' }}>
+      <div
+  style={{
+    minHeight: '100vh',
+    width: '100%',
+    background: '#f0f0f0',
+    padding: '0',
+    boxSizing: 'border-box',
+    display: 'flex',
+    justifyContent: 'center',
+    overflowX: 'hidden'
+  }}
+>
+        <div style={{ background:'white', borderRadius:'0', width:isMobile ? '100%' : '1400px', margin:'0', minHeight:'100vh', boxShadow:'none', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden', marginTop:showPayrollReminder?'44px':'0' }}>
 
           {isMobile && (
             <div style={{ background:'#ca1b1b', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top: showPayrollReminder?44:0, zIndex:100 }}>
@@ -1969,8 +1975,40 @@ export default function App() {
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
-const pageStyle = { minHeight:'100vh', width:'100%', background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowX:'hidden' }
-const cardStyle = { background:'white', padding:'22px', borderRadius:'20px', boxShadow:'0 10px 30px rgba(0,0,0,0.2)', width:'100%', maxWidth:'420px', margin:'0 auto' }
+const pageStyle = {
+  minHeight: '100vh',
+  width: '100vw',
+  background: 'linear-gradient(135deg,#ca1b1b,#fdd412)',
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'center',
+  padding: '20px',
+  boxSizing: 'border-box',
+  overflowX: 'hidden'
+}
+const cardStyle = {
+  background:'white',
+  padding:'22px',
+  borderRadius:'20px',
+  boxShadow:'0 10px 30px rgba(0,0,0,0.2)',
+  width:'100%',
+  maxWidth:'420px',
+  margin:'0 auto'
+}
+const adminCardStyle = {
+  background: 'white',
+  padding: '20px',
+  borderRadius: '20px',
+  width: '100%',
+  maxWidth: '1200px',
+  minHeight: '700px',
+  boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
+  display: 'flex',
+  flexDirection: isMobile ? 'column' : 'row',
+  gap: '20px',
+  boxSizing: 'border-box',
+  margin: '0 auto'
+}
 const logoStyle = { width:'80px', height:'80px', objectFit:'contain', display:'block', margin:'0 auto 8px' }
 const inputStyle = { width:'100%', padding:'12px', marginBottom:'12px', borderRadius:'10px', border:'1px solid #ddd', boxSizing:'border-box', fontSize:'14px' }
 const cardS = { border:'1px solid #eee', padding:'12px', borderRadius:'12px', marginBottom:'10px', background:'#fafafa' }
