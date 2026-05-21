@@ -688,8 +688,11 @@ export default function App() {
     if (error) { alert('❌ Failed to save: ' + error.message); return }
     await logAudit('EMPLOYEE UPDATED', 'Admin', editFields.name, 'Employee details updated')
     setSaveSuccess(editingEmployeeId)
-    setTimeout(() => setSaveSuccess(null), 3000)
-    loadEmployees()
+    await loadEmployees()
+    setTimeout(() => {
+      setSaveSuccess(null)
+      setEditingEmployeeId('')
+    }, 2500)
   }
   async function addEmployee() {
     const f = newEmpFields
@@ -1044,13 +1047,13 @@ export default function App() {
     const filteredResults = payrollResults.filter(p => p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase()) || p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
 
     return (
-      <div style={{ minHeight:'100vh', width:'100vw', background:'linear-gradient(135deg,#ca1b1b,#fdd412)', padding:isMobile?'0':'20px', boxSizing:'border-box' }}>
+      <div style={{ minHeight:'100vh', width:'100vw', background:'#f0f0f0', padding:'0', boxSizing:'border-box' }}>
         {showPayrollReminder && (
           <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:9999, background:'#ca1b1b', color:'white', padding:'10px 20px', textAlign:'center', fontWeight:'bold', fontSize:'14px' }}>
             🔔 PAYROLL REMINDER: Salary release is on the {currentDay===11?'15th':'30th'}. Please compute and release payroll on time!
           </div>
         )}
-        <div style={{ background:'white', borderRadius:isMobile?'0':'20px', width:'100%', margin:'0 auto', minHeight:'100vh', boxShadow:'0 10px 30px rgba(0,0,0,0.2)', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden', marginTop:showPayrollReminder?'44px':'0' }}>
+        background:'white', borderRadius:'0', width:'100%', margin:'0', minHeight:'100vh', boxShadow:'none', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden'
 
           {isMobile && (
             <div style={{ background:'#ca1b1b', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top: showPayrollReminder?44:0, zIndex:100 }}>
@@ -1063,7 +1066,7 @@ export default function App() {
           )}
 
           {(!isMobile||sidebarOpen) && (
-            <div style={{ width:isMobile?'100%':'220px', background:'#fff8f8', borderRight:isMobile?'none':'2px solid #eee', padding:'16px 10px', display:'flex', flexDirection:'column', gap:'4px', flexShrink:0, overflowY:'auto', maxHeight:isMobile?'none':'95vh' }}>
+            <div style={{ width:isMobile?'100%':'260px', minWidth:isMobile?'auto':'260px', background:'#fff8f8', borderRight:isMobile?'none':'2px solid #eee', padding:'16px 10px', display:'flex', flexDirection:'column', gap:'4px', flexShrink:0, overflowY:'auto', height:'100vh', position:isMobile?'relative':'sticky', top:0 }}>
               {!isMobile && (<>
                 <img src="/logo.png" alt="Logo" style={{ width:'70px', height:'70px', objectFit:'contain', margin:'0 auto 4px' }} />
                 <h2 style={{ color:'#ca1b1b', textAlign:'center', margin:'0 0 8px', fontSize:'13px' }}>Admin Dashboard</h2>
@@ -1084,7 +1087,7 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ flex:1, padding:isMobile?'14px':'24px', overflowY:'auto', maxHeight:isMobile?'none':'95vh' }}>
+          <div style={{ flex:1, padding:isMobile?'14px':'32px', overflowY:'auto', height:'100vh', background:'#fafafa' }}>
 
             {activeTab==='dashboard' && dashboardData && (
               <div>
