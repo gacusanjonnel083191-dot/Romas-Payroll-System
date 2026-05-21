@@ -1049,13 +1049,13 @@ export default function App() {
     const filteredResults = payrollResults.filter(p => p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase()) || p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
 
     return (
-      <div style={{ minHeight:'100vh', background:'#f0f0f0', padding:'0', boxSizing:'border-box' }}>
+      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f0f0f0', padding:'0', boxSizing:'border-box', overflow:'hidden' }}>
         {showPayrollReminder && (
           <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:9999, background:'#ca1b1b', color:'white', padding:'10px 20px', textAlign:'center', fontWeight:'bold', fontSize:'14px' }}>
             🔔 PAYROLL REMINDER: Salary release is on the {currentDay===11?'15th':'30th'}. Please compute and release payroll on time!
           </div>
         )}
-        <div style={{ background:'white', borderRadius:'0', width:'100%', minHeight:'100vh', boxShadow:'none', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden', marginTop:showPayrollReminder?'44px':'0' }}>
+        <div style={{ background:'white', borderRadius:'0', width:'100%', height:'100%', boxShadow:'none', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden', marginTop:showPayrollReminder?'44px':'0' }}>
 
           {isMobile && (
             <div style={{ background:'#ca1b1b', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top: showPayrollReminder?44:0, zIndex:100 }}>
@@ -1068,7 +1068,7 @@ export default function App() {
           )}
 
           {(!isMobile||sidebarOpen) && (
-            <div style={{ width:isMobile?'100%':'240px', minWidth:'240px', background:'#fff8f8', borderRight:'2px solid #eee', padding:'16px 10px', display:'flex', flexDirection:'column', gap:'4px', flexShrink:0, overflowY:'auto', minHeight:'100vh' }}>
+            <div style={{ width:isMobile?'100%':'240px', minWidth:isMobile?'auto':'240px', background:'#fff8f8', borderRight:isMobile?'none':'2px solid #eee', padding:'16px 10px', display:'flex', flexDirection:'column', gap:'4px', flexShrink:0, overflowY:'auto', height:'100%' }}>
               {!isMobile && (<>
                 <img src="/logo.png" alt="Logo" style={{ width:'70px', height:'70px', objectFit:'contain', margin:'0 auto 4px' }} />
                 <h2 style={{ color:'#ca1b1b', textAlign:'center', margin:'0 0 8px', fontSize:'13px' }}>Admin Dashboard</h2>
@@ -1089,7 +1089,7 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ flex:1, minWidth:0, padding:isMobile?'16px':'30px', overflowY:'auto', minHeight:'100vh', background:'#fafafa' }}>
+          <div style={{ flex:1, minWidth:0, padding:isMobile?'16px':'30px', overflowY:'auto', height:'100%', background:'#fafafa' }}>
 
             {activeTab==='dashboard' && dashboardData && (
               <div>
@@ -1971,7 +1971,7 @@ export default function App() {
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
-const pageStyle = { minHeight:'100vh', background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box' }
+const pageStyle = { position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'auto' }
 const cardStyle = { background:'white', padding:'24px', borderRadius:'20px', boxShadow:'0 10px 30px rgba(0,0,0,0.2)', width:'100%', boxSizing:'border-box' }
 const logoStyle = { width:'80px', height:'80px', objectFit:'contain', display:'block', margin:'0 auto 8px' }
 const inputStyle = { width:'100%', padding:'12px', marginBottom:'12px', borderRadius:'10px', border:'1px solid #ddd', boxSizing:'border-box', fontSize:'14px' }
