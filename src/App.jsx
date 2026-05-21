@@ -1762,7 +1762,7 @@ export default function App() {
           </div>
         )}
 
-        <div style={{ ...cardStyle, width:isMobile?'100%':'420px', maxWidth:'100%', margin:isMobile?'0':'auto', borderRadius:isMobile?'0':'20px', minHeight:isMobile?'100vh':'auto', textAlign:'left' }}>
+        <div style={{ ...cardStyle, width:isMobile?'100%':'440px', maxWidth:'100%', margin:'auto', borderRadius:isMobile?'0':'20px', minHeight:isMobile?'100vh':'auto', textAlign:'left' }}>
           <div style={{ textAlign:'center', marginBottom:'12px' }}>
             <div style={{ position:'relative', display:'inline-block' }}>
               {profilePhotoUrl ?
@@ -1969,7 +1969,7 @@ export default function App() {
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
-const pageStyle = { minHeight:'100vh', width:'100vw', background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', justifyContent:'center', alignItems:'flex-start', padding:'20px', boxSizing:'border-box' }
+const pageStyle = { minHeight:'100vh', width:'100vw', background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'auto' }
 const cardStyle = { background:'white', padding:'22px', borderRadius:'20px', boxShadow:'0 10px 30px rgba(0,0,0,0.2)', width:'100%' }
 const logoStyle = { width:'80px', height:'80px', objectFit:'contain', display:'block', margin:'0 auto 8px' }
 const inputStyle = { width:'100%', padding:'12px', marginBottom:'12px', borderRadius:'10px', border:'1px solid #ddd', boxSizing:'border-box', fontSize:'14px' }
