@@ -158,6 +158,8 @@ export default function App() {
   const [employeeSearch, setEmployeeSearch] = useState('')
   const [payrollSearch, setPayrollSearch] = useState('')
   const [editingEmployeeId, setEditingEmployeeId] = useState('')
+  const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
+  const [saveSuccess, setSaveSuccess] = useState(null)
   const [editFields, setEditFields] = useState({})
   const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date: today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'' })
 
@@ -667,6 +669,7 @@ export default function App() {
   }
 
   async function saveEmployeeChanges() {
+    setSaveEmployeeLoading(true)
     const { error } = await supabase.from('employees').update({
       employee_code: editFields.code, full_name: editFields.name, position: editFields.position,
       pin: editFields.pin, daily_rate: Number(editFields.rate||0), has_sss: editFields.hasSss,
@@ -681,9 +684,12 @@ export default function App() {
       emergency_contact_number: editFields.emergency_contact||'',
       employment_type: editFields.employment_type||'regular', department: editFields.department||''
     }).eq('id', editingEmployeeId)
-    if (error) { alert(error.message); return }
+    setSaveEmployeeLoading(false)
+    if (error) { alert('❌ Failed to save: ' + error.message); return }
     await logAudit('EMPLOYEE UPDATED', 'Admin', editFields.name, 'Employee details updated')
-    setEditingEmployeeId(''); loadEmployees(); alert('Employee updated successfully!')
+    setSaveSuccess(editingEmployeeId)
+    setTimeout(() => setSaveSuccess(null), 3000)
+    loadEmployees()
   }
   async function addEmployee() {
     const f = newEmpFields
@@ -1312,9 +1318,20 @@ export default function App() {
                             <label style={lblS}><input type="checkbox" checked={editFields.hasPagibig||false} onChange={e=>setEditFields(p=>({...p,hasPagibig:e.target.checked}))} style={{ marginRight:'8px' }} />Pag-IBIG</label>
                             <label style={lblS}><input type="checkbox" checked={editFields.hasPhilhealth||false} onChange={e=>setEditFields(p=>({...p,hasPhilhealth:e.target.checked}))} style={{ marginRight:'8px' }} />PhilHealth</label>
                           </div>
+                          {saveSuccess === editingEmployeeId && (
+                            <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'10px', padding:'12px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'10px' }}>
+                              <span style={{ fontSize:'20px' }}>✅</span>
+                              <div>
+                                <p style={{ color:'#2d8a4e', fontWeight:'bold', margin:0, fontSize:'14px' }}>Employee Updated Successfully!</p>
+                                <p style={{ color:'#555', margin:0, fontSize:'12px' }}>All changes have been saved.</p>
+                              </div>
+                            </div>
+                          )}
                           <div style={{ display:'flex', gap:'8px' }}>
-                            <button onClick={saveEmployeeChanges} style={{ ...btnRed, width:'auto', padding:'10px 18px', marginTop:0 }}>SAVE</button>
-                            <button onClick={()=>setEditingEmployeeId('')} style={{ ...btnGray, width:'auto', padding:'10px 18px', marginTop:0 }}>CANCEL</button>
+                            <button onClick={saveEmployeeChanges} disabled={saveEmployeeLoading} style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginTop:0, opacity:saveEmployeeLoading?0.7:1 }}>
+                              {saveEmployeeLoading ? '⏳ SAVING...' : '💾 SAVE CHANGES'}
+                            </button>
+                            <button onClick={()=>{ setEditingEmployeeId(''); setSaveSuccess(null) }} style={{ ...btnGray, width:'auto', padding:'10px 18px', marginTop:0 }}>CANCEL</button>
                           </div>
                         </div>
                       )}
