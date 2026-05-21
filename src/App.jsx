@@ -1782,10 +1782,20 @@ export default function App() {
 
           {geoStatus && <p style={{ color:'#f5a623', textAlign:'center', fontWeight:'bold', fontSize:'13px', margin:'0 0 8px' }}>{geoStatus}</p>}
 
-          <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'12px', marginBottom:'12px' }}>
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>📅 Shift: {todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Assigned Shift'}</p>
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>🟢 In: <strong>{todayLog?.time_in||'Not yet'}</strong> &nbsp; 🔴 Out: <strong>{todayLog?.time_out||'Not yet'}</strong></p>
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>
+          <div
+  style={{
+    background: "linear-gradient(135deg, #fff7e6, #ffffff)",
+    border: "2px solid #ca1b1b",
+    borderLeft: "8px solid #fdd412",
+    borderRadius: "16px",
+    padding: "16px",
+    marginBottom: "16px",
+    boxShadow: "0 6px 18px rgba(202,27,27,0.15)"
+  }}
+>
+            <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>📅 Shift: {todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Assigned Shift'}</p>
+            <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>🟢 In: <strong>{todayLog?.time_in||'Not yet'}</strong> &nbsp; 🔴 Out: <strong>{todayLog?.time_out||'Not yet'}</strong></p>
+            <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>
               ☕ Break: <strong>{totalBreakMins} min used</strong>
               {onBreak && <span style={{ color:'#f5a623', fontWeight:'bold', marginLeft:'6px' }}>● Currently on break</span>}
               {!onBreak && totalBreakMins > 0 && totalBreakMins <= 60 && <span style={{ color:'#2d8a4e', marginLeft:'6px' }}>✅ Within limit</span>}
@@ -1800,7 +1810,7 @@ export default function App() {
                 ))}
               </div>
             )}
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>📌 Status: <strong>{todayLog?.status||'No record yet'}</strong></p>
+            <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>📌 Status: <strong>{todayLog?.status||'No record yet'}</strong></p>
             {(todayLog?.selfie_in_url||todayLog?.selfie_out_url) && (
               <div style={{ display:'flex', gap:'8px', marginTop:'8px' }}>
                 {todayLog?.selfie_in_url && <img src={todayLog.selfie_in_url} alt="IN" style={{ width:'50px', height:'50px', objectFit:'cover', borderRadius:'8px', border:'2px solid #2d8a4e' }} />}
