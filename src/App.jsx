@@ -1053,7 +1053,7 @@ export default function App() {
             🔔 PAYROLL REMINDER: Salary release is on the {currentDay===11?'15th':'30th'}. Please compute and release payroll on time!
           </div>
         )}
-        background:'white', borderRadius:'0', width:'100%', margin:'0', minHeight:'100vh', boxShadow:'none', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden'
+        <div style={{ background:'white', borderRadius:'0', width:'100%', margin:'0', minHeight:'100vh', boxShadow:'none', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden', marginTop:showPayrollReminder?'44px':'0' }}>
 
           {isMobile && (
             <div style={{ background:'#ca1b1b', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top: showPayrollReminder?44:0, zIndex:100 }}>
@@ -1066,7 +1066,7 @@ export default function App() {
           )}
 
           {(!isMobile||sidebarOpen) && (
-            <div style={{ width:isMobile?'100%':'260px', minWidth:isMobile?'auto':'260px', background:'#fff8f8', borderRight:isMobile?'none':'2px solid #eee', padding:'16px 10px', display:'flex', flexDirection:'column', gap:'4px', flexShrink:0, overflowY:'auto', height:'100vh', position:isMobile?'relative':'sticky', top:0 }}>
+            <div style={{ width:isMobile?'100%':'260px', minWidth:isMobile?'auto':'260px', background:'#fff8f8', borderRight:isMobile?'none':'2px solid #eee', padding:'16px 10px', display:'flex', flexDirection:'column', gap:'4px', flexShrink:0, overflowY:'auto', height:isMobile?'auto':'100vh', position:isMobile?'relative':'sticky', top:0 }}>
               {!isMobile && (<>
                 <img src="/logo.png" alt="Logo" style={{ width:'70px', height:'70px', objectFit:'contain', margin:'0 auto 4px' }} />
                 <h2 style={{ color:'#ca1b1b', textAlign:'center', margin:'0 0 8px', fontSize:'13px' }}>Admin Dashboard</h2>
