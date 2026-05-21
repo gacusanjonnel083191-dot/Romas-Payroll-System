@@ -162,6 +162,7 @@ export default function App() {
   const [editingEmployeeId, setEditingEmployeeId] = useState('')
   const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(null)
+  const [toast, setToast] = useState(null)
   const [editFields, setEditFields] = useState({})
   const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date: today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'' })
 
@@ -569,6 +570,11 @@ export default function App() {
   }
 
   // ── Admin Functions ────────────────────────────────────────────────────
+  function showToast(msg, color='green') {
+    setToast({ msg, color })
+    setTimeout(() => setToast(null), 3000)
+  }
+
   async function logAudit(action, by, target, details) {
     await supabase.from('audit_logs').insert({ action, performed_by: by, target_employee: target, details }).catch(() => {})
   }
@@ -613,7 +619,7 @@ export default function App() {
     if (existing) { alert('This employee already has an attendance record for this date.'); return }
     await supabase.from('attendance_logs').insert({ employee_id: absentEmployeeId, employee_code: emp?.employee_code||'', employee_name: emp?.full_name||'', attendance_date: absentDate, status: 'Absent' })
     await logAudit('MARK ABSENT', 'Admin', emp?.full_name||'', `Marked absent on ${absentDate}`)
-    alert(`${emp?.full_name} marked Absent on ${absentDate}`); loadAdminLogs()
+    showToast(`✅ ${emp?.full_name} marked Absent on ${absentDate}`); loadAdminLogs()
   }
 
   async function loadLeaveRequests() {
@@ -627,7 +633,7 @@ export default function App() {
   async function updateLeaveStatus(id, status, reason) {
     await supabase.from('leave_requests').update({ status, admin_reason: reason||null }).eq('id', id)
     await logAudit(`LEAVE ${status.toUpperCase()}`, 'Admin', '', `Leave ID ${id}${reason ? ' — Reason: '+reason : ''}`)
-    alert(`Leave ${status}`); loadLeaveRequests()
+    showToast(`✅ Leave ${status} successfully`); loadLeaveRequests()
   }
 
   async function loadHolidays() {
@@ -655,7 +661,7 @@ export default function App() {
       await supabase.from('attendance_logs').update({ undertime_minutes: req.minutes, status: 'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
     }
     await logAudit(`${req.request_type.toUpperCase()} APPROVED`, 'Admin', req.employee_name, `${req.minutes} min on ${req.attendance_date}`)
-    alert('Approved!'); loadTimeAdjRequests()
+    showToast('✅ Approved!'); loadTimeAdjRequests()
   }
   async function rejectTimeAdj(req) {
     const reason = adjAdminReason[req.id]
@@ -667,7 +673,7 @@ export default function App() {
       await supabase.from('attendance_logs').update({ undertime_minutes: 0, status: 'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
     }
     await logAudit(`${req.request_type.toUpperCase()} REJECTED`, 'Admin', req.employee_name, `Reason: ${reason}`)
-    alert('Rejected.'); loadTimeAdjRequests()
+    showToast('✅ Rejected successfully.', 'red'); loadTimeAdjRequests()
   }
 
   async function saveEmployeeChanges() {
@@ -943,75 +949,118 @@ export default function App() {
 
   // ── Print All Payslips ──────────────────────────────────────────────────
   function printAllPayslips() {
-    const printWindow = window.open('', '_blank')
+    const printWindow = window.open('', '_blank', 'width=800,height=600')
     const payslipHTML = payrollResults.map((pay, idx) => `
-      <div style="background:white;width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:12px;color:#000;page-break-after:always;">
-        <div style="text-align:center;margin-bottom:10px;border-bottom:2px solid #ca1b1b;padding-bottom:10px;">
-          <h2 style="margin:4px 0;color:#ca1b1b;font-size:18px;">Roma's Donuts</h2>
-          <strong style="font-size:14px;">EMPLOYEE PAYSLIP</strong>
-          <p style="margin:4px 0;font-size:11px;">Serial No: ${genSerial(payrollStart, idx)}</p>
-          <p style="margin:2px 0;font-size:11px;color:#666;">Period: ${payrollStart} to ${payrollEnd}</p>
+      <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;page-break-after:always;margin:0 auto;background:white;">
+        <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:8px;">
+          <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
+          <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
+          <div style="font-size:13px;font-weight:bold;margin-top:4px;">EMPLOYEE PAYSLIP</div>
+          <div style="font-size:10px;margin-top:2px;">Serial No: ${genSerial(payrollStart, idx)}</div>
+          <div style="font-size:10px;color:#666;">Period: ${payrollStart} to ${payrollEnd}</div>
         </div>
-        <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:8px;padding:10px;margin-bottom:12px;">
-          <p style="margin:2px 0;font-size:16px;font-weight:bold;color:#ca1b1b;">${pay.employeeName}</p>
-          <p style="margin:2px 0;font-size:13px;font-weight:bold;color:#555;">${pay.position || ''}</p>
-          <p style="margin:2px 0;font-size:11px;">Code: ${pay.employeeCode}</p>
+        <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:10px;">
+          <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${pay.employeeName}</div>
+          <div style="font-size:12px;font-weight:bold;color:#555;">${pay.position||''}</div>
+          <div style="font-size:10px;color:#888;">Code: ${pay.employeeCode} | Worked: ${pay.workedDays} day(s) | Absent: ${pay.absentDays} day(s)</div>
         </div>
-        <table style="width:100%;border-collapse:collapse;margin-bottom:10px;">
-          <thead><tr style="background:#ca1b1b;color:white;">
-            <th style="padding:6px 8px;text-align:left;font-size:11px;">Description</th>
-            <th style="padding:6px 8px;text-align:right;font-size:11px;">Amount</th>
-          </tr></thead>
-          <tbody>
-            <tr style="background:#f0fff0"><td colspan="2" style="padding:5px 8px;font-weight:bold;color:#2d8a4e;font-size:11px;">EARNINGS</td></tr>
-            <tr><td style="padding:4px 8px;font-size:11px;">Basic Pay</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.basicPay)}</td></tr>
-            ${pay.overtimePay > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Overtime Pay</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.overtimePay)}</td></tr>` : ''}
-            ${pay.nightDiffPay > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Night Differential</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.nightDiffPay)}</td></tr>` : ''}
-            ${pay.holidayPay > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Holiday Pay</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.holidayPay)}</td></tr>` : ''}
-            ${pay.adjustmentEarnings > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Bonus / Other Earnings</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.adjustmentEarnings)}</td></tr>` : ''}
-            <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:5px 8px;font-size:11px;">Total Earnings</td><td style="padding:5px 8px;text-align:right;font-size:11px;">${php(pay.totalEarnings)}</td></tr>
-            <tr style="background:#fff0f0"><td colspan="2" style="padding:5px 8px;font-weight:bold;color:#ca1b1b;font-size:11px;">DEDUCTIONS</td></tr>
-            ${pay.lateDeduction > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Late (${pay.lateMinutes} min)</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.lateDeduction)}</td></tr>` : ''}
-            ${pay.undertimeDeduction > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Undertime (${pay.undertimeMinutes} min)</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.undertimeDeduction)}</td></tr>` : ''}
-            ${(pay.excessBreakDeduction||0) > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Excess Break</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.excessBreakDeduction)}</td></tr>` : ''}
-            ${pay.cashAdvanceDeduction > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Cash Advance</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.cashAdvanceDeduction)}</td></tr>` : ''}
-            ${pay.sssDeduction > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">SSS</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.sssDeduction)}</td></tr>` : ''}
-            ${pay.pagibigDeduction > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Pag-IBIG</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.pagibigDeduction)}</td></tr>` : ''}
-            ${pay.philhealthDeduction > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">PhilHealth</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.philhealthDeduction)}</td></tr>` : ''}
-            ${pay.adjustmentDeductions > 0 ? `<tr><td style="padding:4px 8px;font-size:11px;">Other Deductions</td><td style="padding:4px 8px;text-align:right;font-size:11px;">${php(pay.adjustmentDeductions)}</td></tr>` : ''}
-            <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:5px 8px;font-size:11px;">Total Deductions</td><td style="padding:5px 8px;text-align:right;font-size:11px;">${php(pay.totalDeductions)}</td></tr>
-          </tbody>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+          <tr style="background:#ca1b1b;color:white;"><th style="padding:5px 8px;text-align:left;font-size:10px;">Description</th><th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th></tr>
+          <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
+          <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.basicPay)}</td></tr>
+          ${pay.overtimePay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.overtimePay)}</td></tr>`:''}
+          ${pay.nightDiffPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.nightDiffPay)}</td></tr>`:''}
+          ${pay.holidayPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.holidayPay)}</td></tr>`:''}
+          ${pay.adjustmentEarnings>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Bonus / Other Earnings</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.adjustmentEarnings)}</td></tr>`:''}
+          <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Earnings</td><td style="padding:4px 8px;text-align:right;font-size:10px;">${php(pay.totalEarnings)}</td></tr>
+          <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
+          ${pay.lateDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Late (${pay.lateMinutes} min)</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.lateDeduction)}</td></tr>`:''}
+          ${pay.undertimeDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime (${pay.undertimeMinutes} min)</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.undertimeDeduction)}</td></tr>`:''}
+          ${(pay.excessBreakDeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Excess Break</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.excessBreakDeduction)}</td></tr>`:''}
+          ${pay.cashAdvanceDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.cashAdvanceDeduction)}</td></tr>`:''}
+          ${pay.sssDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.sssDeduction)}</td></tr>`:''}
+          ${pay.pagibigDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.pagibigDeduction)}</td></tr>`:''}
+          ${pay.philhealthDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.philhealthDeduction)}</td></tr>`:''}
+          ${pay.adjustmentDeductions>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Deductions</td><td style="padding:3px 8px;text-align:right;font-size:10px;border-bottom:1px solid #eee;">${php(pay.adjustmentDeductions)}</td></tr>`:''}
+          <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Deductions</td><td style="padding:4px 8px;text-align:right;font-size:10px;">${php(pay.totalDeductions)}</td></tr>
         </table>
-        <div style="background:#ca1b1b;color:white;padding:10px 12px;border-radius:8px;display:flex;justify-content:space-between;">
-          <span style="font-weight:bold;font-size:14px;">NET PAY</span>
-          <span style="font-weight:bold;font-size:18px;">${php(pay.netPay)}</span>
+        <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-weight:bold;font-size:13px;">NET PAY</span>
+          <span style="font-weight:bold;font-size:17px;">${php(pay.netPay)}</span>
         </div>
-        <div style="margin-top:30px;display:flex;justify-content:space-between;">
-          <div style="text-align:center;"><div style="border-top:1px solid #000;width:150px;padding-top:4px;font-size:10px;">Employee Signature</div></div>
-          <div style="text-align:center;"><div style="border-top:1px solid #000;width:150px;padding-top:4px;font-size:10px;">Authorized Signature</div></div>
+        <div style="margin-top:25px;display:flex;justify-content:space-between;">
+          <div style="text-align:center;"><div style="border-top:1px solid #000;width:120px;padding-top:4px;font-size:9px;">Employee Signature</div></div>
+          <div style="text-align:center;"><div style="border-top:1px solid #000;width:120px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
         </div>
-        <p style="text-align:center;font-size:9px;color:#999;margin-top:15px;">System-generated payslip. ${genSerial(payrollStart, idx)}</p>
+        <div style="text-align:center;font-size:9px;color:#999;margin-top:10px;">${genSerial(payrollStart,idx)}</div>
       </div>
     `).join('')
-
-    printWindow.document.write(`
-      <!DOCTYPE html><html><head>
-      <title>Payslips ${payrollStart} to ${payrollEnd}</title>
+    printWindow.document.write(`<!DOCTYPE html><html><head><title>Payslips</title>
       <style>
-        body { margin: 0; padding: 0; }
-        @media print {
-          @page { size: A4; margin: 0; }
-          body { margin: 0; }
-          div[style*="page-break-after"] { page-break-after: always !important; }
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{background:#fff;display:flex;flex-direction:column;align-items:center;}
+        @media print{
+          @page{size:145mm 210mm;margin:0;}
+          body{display:block;}
+          div[style*="page-break-after"]{page-break-after:always !important;}
         }
-      </style>
-      </head><body>${payslipHTML}</body></html>
-    `)
+      </style></head><body>${payslipHTML}</body></html>`)
     printWindow.document.close()
-    setTimeout(() => { printWindow.focus(); printWindow.print() }, 500)
+    setTimeout(()=>{printWindow.focus();printWindow.print()},800)
   }
 
-  // ── Camera Screen ───────────────────────────────────────────────────────
+  function printSinglePayslip(pay, idx) {
+    const printWindow = window.open('', '_blank', 'width=800,height=600')
+    printWindow.document.write(`<!DOCTYPE html><html><head><title>Payslip</title>
+      <style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{background:#fff;display:flex;justify-content:center;align-items:flex-start;}
+        @media print{@page{size:145mm 210mm;margin:0;}body{display:block;}}
+      </style></head><body>
+      <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;margin:0 auto;background:white;">
+        <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:8px;">
+          <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
+          <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
+          <div style="font-size:13px;font-weight:bold;margin-top:4px;">EMPLOYEE PAYSLIP</div>
+          <div style="font-size:10px;margin-top:2px;">Serial No: ${genSerial(payrollStart,idx)}</div>
+          <div style="font-size:10px;color:#666;">Period: ${payrollStart} to ${payrollEnd}</div>
+        </div>
+        <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:10px;">
+          <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${pay.employeeName}</div>
+          <div style="font-size:12px;font-weight:bold;color:#555;">${pay.position||''}</div>
+          <div style="font-size:10px;color:#888;">Code: ${pay.employeeCode} | Worked: ${pay.workedDays}d | Absent: ${pay.absentDays}d</div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+          <tr style="background:#ca1b1b;color:white;"><th style="padding:5px 8px;text-align:left;font-size:10px;">Description</th><th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th></tr>
+          <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
+          <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(pay.basicPay)}</td></tr>
+          ${pay.overtimePay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay</td><td style="padding:3px 8px;text-align:right;">${php(pay.overtimePay)}</td></tr>`:''}
+          ${pay.nightDiffPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential</td><td style="padding:3px 8px;text-align:right;">${php(pay.nightDiffPay)}</td></tr>`:''}
+          ${pay.holidayPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;">${php(pay.holidayPay)}</td></tr>`:''}
+          <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Earnings</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalEarnings)}</td></tr>
+          <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
+          ${pay.lateDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Late</td><td style="padding:3px 8px;text-align:right;">${php(pay.lateDeduction)}</td></tr>`:''}
+          ${pay.undertimeDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime</td><td style="padding:3px 8px;text-align:right;">${php(pay.undertimeDeduction)}</td></tr>`:''}
+          ${pay.cashAdvanceDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;">${php(pay.cashAdvanceDeduction)}</td></tr>`:''}
+          ${pay.sssDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS</td><td style="padding:3px 8px;text-align:right;">${php(pay.sssDeduction)}</td></tr>`:''}
+          ${pay.pagibigDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG</td><td style="padding:3px 8px;text-align:right;">${php(pay.pagibigDeduction)}</td></tr>`:''}
+          ${pay.philhealthDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth</td><td style="padding:3px 8px;text-align:right;">${php(pay.philhealthDeduction)}</td></tr>`:''}
+          <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Deductions</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalDeductions)}</td></tr>
+        </table>
+        <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;">
+          <span style="font-weight:bold;font-size:13px;">NET PAY</span>
+          <span style="font-weight:bold;font-size:17px;">${php(pay.netPay)}</span>
+        </div>
+        <div style="margin-top:25px;display:flex;justify-content:space-between;">
+          <div style="text-align:center;"><div style="border-top:1px solid #000;width:120px;padding-top:4px;font-size:9px;">Employee Signature</div></div>
+          <div style="text-align:center;"><div style="border-top:1px solid #000;width:120px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
+        </div>
+      </div></body></html>`)
+    printWindow.document.close()
+    setTimeout(()=>{printWindow.focus();printWindow.print()},800)
+  }
+
+    // ── Camera Screen ───────────────────────────────────────────────────────
   if (cameraMode) {
     return (
       <div style={{ minHeight:'100vh', background:'#000', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'20px' }}>
@@ -1057,6 +1106,11 @@ export default function App() {
         )}
         <div style={{ background:'white', borderRadius:'0', width:'100%', height:'100%', boxShadow:'none', display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden', marginTop:showPayrollReminder?'44px':'0' }}>
 
+          {toast && (
+            <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 24px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap' }}>
+              {toast.msg}
+            </div>
+          )}
           {isMobile && (
             <div style={{ background:'#ca1b1b', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top: showPayrollReminder?44:0, zIndex:100 }}>
               <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
@@ -1096,18 +1150,19 @@ export default function App() {
                 <h2 style={h2s}>🏠 Dashboard — {today}</h2>
                 <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'24px' }}>
                   {[
-                    ['👥 Total Employees', dashboardData.totalEmployees, 'blue'],
-                    ['🟢 Timed In', dashboardData.timedIn, 'green'],
-                    ['✅ Timed Out', dashboardData.timedOut, 'gray'],
-                    ['🔴 Absent', dashboardData.absent, 'red'],
-                    ['🏖️ Pending Leave', dashboardData.pendingLeave, dashboardData.pendingLeave>0?'orange':'gray'],
-                    ['💵 Pending CA', dashboardData.pendingCA, dashboardData.pendingCA>0?'orange':'gray'],
-                    ['⏰ Pending OT/UT', dashboardData.pendingOT, dashboardData.pendingOT>0?'orange':'gray'],
-                    ['⚠️ Disputes', dashboardData.pendingDisputes, dashboardData.pendingDisputes>0?'red':'gray'],
-                  ].map(([label,value,color])=>(
-                    <div key={label} style={{ background:'white', border:`2px solid ${color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#ddd'}`, borderRadius:'12px', padding:'14px', textAlign:'center' }}>
+                    ['👥 Total Employees', dashboardData.totalEmployees, 'blue', 'employees'],
+                    ['🟢 Timed In', dashboardData.timedIn, 'green', 'attendance'],
+                    ['✅ Timed Out', dashboardData.timedOut, 'gray', 'attendance'],
+                    ['🔴 Absent', dashboardData.absent, 'red', 'attendance'],
+                    ['🏖️ Pending Leave', dashboardData.pendingLeave, dashboardData.pendingLeave>0?'orange':'gray', 'leaveRequests'],
+                    ['💵 Pending CA', dashboardData.pendingCA, dashboardData.pendingCA>0?'orange':'gray', 'cashRequests'],
+                    ['⏰ Pending OT/UT', dashboardData.pendingOT, dashboardData.pendingOT>0?'orange':'gray', 'overtime'],
+                    ['⚠️ Disputes', dashboardData.pendingDisputes, dashboardData.pendingDisputes>0?'red':'gray', 'disputes'],
+                  ].map(([label,value,color,tab])=>(
+                    <div key={label} onClick={()=>{ setActiveTab(tab); if(tab==='leaveRequests')loadLeaveRequests(); if(tab==='cashRequests')loadCashAdvanceRequests(); if(tab==='overtime')loadTimeAdjRequests(); if(tab==='disputes')loadPayslipDisputes(); }} style={{ background:'white', border:`2px solid ${color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#ddd'}`, borderRadius:'12px', padding:'14px', textAlign:'center', cursor:'pointer', transition:'transform 0.1s', userSelect:'none' }} onMouseEnter={e=>e.currentTarget.style.transform='scale(1.03)'} onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}>
                       <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>{label}</p>
                       <p style={{ fontWeight:'bold', fontSize:'22px', margin:0, color:color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#555' }}>{value}</p>
+                      <p style={{ color:'#aaa', fontSize:'10px', margin:'4px 0 0' }}>click to view →</p>
                     </div>
                   ))}
                 </div>
@@ -1135,15 +1190,36 @@ export default function App() {
                 {adminLogs.map(log => (
                   <div key={log.id} style={cardS}>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px' }}>
-                      <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{log.employee_name}</strong>
+                      <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+                        {employees.find(e=>e.employee_code===log.employee_code)?.profile_photo_url ?
+                          <img src={employees.find(e=>e.employee_code===log.employee_code).profile_photo_url} alt="" style={{ width:'38px', height:'38px', borderRadius:'50%', objectFit:'cover', border:'2px solid #ca1b1b', flexShrink:0 }} /> :
+                          <div style={{ width:'38px', height:'38px', borderRadius:'50%', background:'#f0f0f0', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'16px', flexShrink:0 }}>👤</div>
+                        }
+                        <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{log.employee_name}</strong>
+                      </div>
                       <Badge label={log.status||'—'} color={log.status==='Absent'?'red':log.status==='Late'?'orange':log.status?.includes('Overtime')?'green':log.status==='On Time'?'blue':'gray'} />
                     </div>
                     <p style={cps}>Schedule: {log.shift_start||'None'} – {log.shift_end||'None'}</p>
                     <p style={cps}>Time In: <strong>{log.time_in||'—'}</strong> | Time Out: <strong>{log.time_out||'—'}</strong></p>
                     <p style={cps}>Late: {log.late_minutes||0}m | Undertime: {log.undertime_minutes||0}m | OT: {log.overtime_minutes||0}m | Break: {log.total_break_minutes||0}m</p>
-                    <div style={{ display:'flex', gap:'8px', marginTop:'8px', flexWrap:'wrap' }}>
-                      {log.selfie_in_url && <div><p style={{ ...cps, marginBottom:'3px' }}>Time In:</p><img src={log.selfie_in_url} alt="IN" style={{ width:'70px', height:'70px', objectFit:'cover', borderRadius:'8px', border:'2px solid #2d8a4e', cursor:'pointer' }} onClick={()=>window.open(log.selfie_in_url,'_blank')} /></div>}
-                      {log.selfie_out_url && <div><p style={{ ...cps, marginBottom:'3px' }}>Time Out:</p><img src={log.selfie_out_url} alt="OUT" style={{ width:'70px', height:'70px', objectFit:'cover', borderRadius:'8px', border:'2px solid #ca1b1b', cursor:'pointer' }} onClick={()=>window.open(log.selfie_out_url,'_blank')} /></div>}
+                    <div style={{ display:'flex', gap:'10px', marginTop:'8px', flexWrap:'wrap' }}>
+                      {log.selfie_in_url && (
+                        <div style={{ textAlign:'center' }}>
+                          <p style={{ ...cps, marginBottom:'4px', fontWeight:'bold' }}>📸 Time In Selfie</p>
+                          <img src={log.selfie_in_url} alt="Time In" style={{ width:'90px', height:'90px', objectFit:'cover', borderRadius:'10px', border:'3px solid #2d8a4e', cursor:'pointer', display:'block' }} onClick={()=>window.open(log.selfie_in_url,'_blank')} title="Click to view full size" />
+                          <p style={{ fontSize:'10px', color:'#aaa', marginTop:'2px' }}>click to enlarge</p>
+                        </div>
+                      )}
+                      {log.selfie_out_url && (
+                        <div style={{ textAlign:'center' }}>
+                          <p style={{ ...cps, marginBottom:'4px', fontWeight:'bold' }}>📸 Time Out Selfie</p>
+                          <img src={log.selfie_out_url} alt="Time Out" style={{ width:'90px', height:'90px', objectFit:'cover', borderRadius:'10px', border:'3px solid #ca1b1b', cursor:'pointer', display:'block' }} onClick={()=>window.open(log.selfie_out_url,'_blank')} title="Click to view full size" />
+                          <p style={{ fontSize:'10px', color:'#aaa', marginTop:'2px' }}>click to enlarge</p>
+                        </div>
+                      )}
+                      {!log.selfie_in_url && !log.selfie_out_url && log.status!=='Absent' && (
+                        <p style={{ ...cps, color:'#aaa', fontStyle:'italic' }}>No selfies recorded</p>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1501,6 +1577,7 @@ export default function App() {
                       <p><strong>Total Deductions: {php(pay.totalDeductions)}</strong></p>
                       <hr />
                       <h3 style={{ color:'#ca1b1b' }}>NET PAY: {php(pay.netPay)}</h3>
+                      <button style={{ ...btnBlack, width:'auto', padding:'8px 16px', marginTop:'10px', fontSize:'12px' }} onClick={()=>printSinglePayslip(pay, payrollResults.indexOf(pay))}>🖨 PRINT THIS PAYSLIP</button>
                     </div>
                   </div>
                 ))}
@@ -1577,7 +1654,49 @@ export default function App() {
                     <h2 style={{ color:'#ca1b1b' }}>TOTAL FINAL PAY: {php(finalPayResult.totalFinalPay)}</h2>
                     <div style={{ display:'flex', gap:'10px', marginTop:'15px', flexWrap:'wrap' }}>
                       <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={processFinalPay}>✅ PROCESS & DEACTIVATE</button>
-                      <button style={{ ...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>window.print()}>🖨 PRINT</button>
+                      <button style={{ ...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>{
+                        const pw = window.open('','_blank','width=800,height=600')
+                        pw.document.write(`<!DOCTYPE html><html><head><title>Final Pay</title>
+                          <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:20mm;font-size:12px;}
+                          @media print{@page{size:A4;margin:20mm;}}</style></head><body>
+                          <div style="text-align:center;margin-bottom:16px;border-bottom:2px solid #ca1b1b;padding-bottom:10px;">
+                            <div style="font-size:22px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
+                            <div style="font-size:16px;font-weight:bold;margin-top:4px;">FINAL PAY SLIP</div>
+                          </div>
+                          <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:10px;margin-bottom:14px;">
+                            <div style="font-size:18px;font-weight:bold;color:#ca1b1b;">${finalPayResult.employeeName}</div>
+                            <div style="font-size:14px;font-weight:bold;color:#555;">${finalPayResult.position||''}</div>
+                            <div style="font-size:11px;color:#888;">Code: ${finalPayResult.employeeCode}</div>
+                          </div>
+                          <table style="width:100%;border-collapse:collapse;margin-bottom:12px;">
+                            <tr style="background:#f5f5f5;"><td style="padding:6px 10px;font-weight:bold;">Hire Date</td><td style="padding:6px 10px;text-align:right;">${finalPayResult.hireDate}</td></tr>
+                            <tr><td style="padding:6px 10px;font-weight:bold;">Last Working Date</td><td style="padding:6px 10px;text-align:right;">${finalPayResult.lastDate}</td></tr>
+                            <tr style="background:#f5f5f5;"><td style="padding:6px 10px;font-weight:bold;">Years of Service</td><td style="padding:6px 10px;text-align:right;">${finalPayResult.yearsOfService} year(s)</td></tr>
+                            <tr><td style="padding:6px 10px;font-weight:bold;">Reason</td><td style="padding:6px 10px;text-align:right;">${finalPayResult.reason}</td></tr>
+                            <tr style="background:#f5f5f5;"><td style="padding:6px 10px;font-weight:bold;">Daily Rate</td><td style="padding:6px 10px;text-align:right;">${php(finalPayResult.dailyRate)}</td></tr>
+                          </table>
+                          <div style="background:#f0fff0;padding:8px 10px;font-weight:bold;color:#2d8a4e;margin-bottom:4px;">FINAL PAY COMPONENTS</div>
+                          <table style="width:100%;border-collapse:collapse;margin-bottom:12px;">
+                            <tr><td style="padding:5px 10px;border-bottom:1px solid #eee;">Last Salary (${finalPayResult.unpaidDays} day(s))</td><td style="padding:5px 10px;text-align:right;border-bottom:1px solid #eee;">${php(finalPayResult.lastSalary)}</td></tr>
+                            <tr style="background:#f9f9f9;"><td style="padding:5px 10px;border-bottom:1px solid #eee;">Pro-rated 13th Month</td><td style="padding:5px 10px;text-align:right;border-bottom:1px solid #eee;">${php(finalPayResult.proRated13th)}</td></tr>
+                            <tr><td style="padding:5px 10px;border-bottom:1px solid #eee;">Unused SIL (${finalPayResult.unusedSIL} day(s))</td><td style="padding:5px 10px;text-align:right;border-bottom:1px solid #eee;">${php(finalPayResult.silPay)}</td></tr>
+                            <tr style="background:#f9f9f9;"><td style="padding:5px 10px;border-bottom:1px solid #eee;">Separation Pay</td><td style="padding:5px 10px;text-align:right;border-bottom:1px solid #eee;">${php(finalPayResult.separationPay)}</td></tr>
+                          </table>
+                          <div style="background:#fff0f0;padding:8px 10px;font-weight:bold;color:#ca1b1b;margin-bottom:4px;">DEDUCTIONS</div>
+                          <table style="width:100%;border-collapse:collapse;margin-bottom:14px;">
+                            <tr><td style="padding:5px 10px;">Outstanding Cash Advance</td><td style="padding:5px 10px;text-align:right;">${php(finalPayResult.totalCA)}</td></tr>
+                          </table>
+                          <div style="background:#ca1b1b;color:white;padding:12px 16px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
+                            <span style="font-weight:bold;font-size:14px;">TOTAL FINAL PAY</span>
+                            <span style="font-weight:bold;font-size:20px;">${php(finalPayResult.totalFinalPay)}</span>
+                          </div>
+                          <div style="margin-top:40px;display:flex;justify-content:space-between;">
+                            <div style="text-align:center;"><div style="border-top:1px solid #000;width:150px;padding-top:4px;font-size:10px;">Employee Signature</div></div>
+                            <div style="text-align:center;"><div style="border-top:1px solid #000;width:150px;padding-top:4px;font-size:10px;">Authorized Signature</div></div>
+                          </div>
+                        </body></html>`)
+                        pw.document.close(); setTimeout(()=>{pw.focus();pw.print()},800)
+                      }}>🖨 PRINT</button>
                       <button style={{ ...btnGray, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setFinalPayResult(null)}>CANCEL</button>
                     </div>
                   </div>
@@ -1782,21 +1901,10 @@ export default function App() {
 
           {geoStatus && <p style={{ color:'#f5a623', textAlign:'center', fontWeight:'bold', fontSize:'13px', margin:'0 0 8px' }}>{geoStatus}</p>}
 
-          <div
-  style={{
-    background: "linear-gradient(135deg, #fff7e6, #ffffff)",
-    border: "2px solid #ca1b1b",
-    borderLeft: "8px solid #fdd412",
-    borderRadius: "16px",
-    padding: "16px",
-    marginBottom: "16px",
-    boxShadow: "0 6px 18px rgba(202,27,27,0.15)",
-    overflow: "hidden",
-  }}
->
-            <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>📅 Shift: {todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Assigned Shift'}</p>
-            <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>🟢 In: <strong>{todayLog?.time_in||'Not yet'}</strong> &nbsp; 🔴 Out: <strong>{todayLog?.time_out||'Not yet'}</strong></p>
-            <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>
+          <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'12px', marginBottom:'12px' }}>
+            <p style={{ margin:'3px 0', fontSize:'13px' }}>📅 Shift: {todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Assigned Shift'}</p>
+            <p style={{ margin:'3px 0', fontSize:'13px' }}>🟢 In: <strong>{todayLog?.time_in||'Not yet'}</strong> &nbsp; 🔴 Out: <strong>{todayLog?.time_out||'Not yet'}</strong></p>
+            <p style={{ margin:'3px 0', fontSize:'13px' }}>
               ☕ Break: <strong>{totalBreakMins} min used</strong>
               {onBreak && <span style={{ color:'#f5a623', fontWeight:'bold', marginLeft:'6px' }}>● Currently on break</span>}
               {!onBreak && totalBreakMins > 0 && totalBreakMins <= 60 && <span style={{ color:'#2d8a4e', marginLeft:'6px' }}>✅ Within limit</span>}
@@ -1811,7 +1919,7 @@ export default function App() {
                 ))}
               </div>
             )}
-            <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>📌 Status: <strong>{todayLog?.status||'No record yet'}</strong></p>
+            <p style={{ margin:'3px 0', fontSize:'13px' }}>📌 Status: <strong>{todayLog?.status||'No record yet'}</strong></p>
             {(todayLog?.selfie_in_url||todayLog?.selfie_out_url) && (
               <div style={{ display:'flex', gap:'8px', marginTop:'8px' }}>
                 {todayLog?.selfie_in_url && <img src={todayLog.selfie_in_url} alt="IN" style={{ width:'50px', height:'50px', objectFit:'cover', borderRadius:'8px', border:'2px solid #2d8a4e' }} />}
@@ -1828,46 +1936,11 @@ export default function App() {
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'4px' }}>
             <button style={{ ...btnGreen, margin:0, opacity:todayLog?0.5:1, fontSize:'13px', textAlign:'center' }} onClick={initiateTimeIn} disabled={loading||!!todayLog}>⏰ TIME IN</button>
             <button style={{ ...btnBlack, margin:0, opacity:(!todayLog||todayLog?.time_out)?0.5:1, fontSize:'13px', textAlign:'center' }} onClick={initiateTimeOut} disabled={loading||!todayLog||!!todayLog?.time_out}>⏰ TIME OUT</button>
-          </div>borderLeft: "4px solid #fdd412", style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'4px' }}>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-
-<button
-style={{
-background:'#4a90d9',
-color:'white',
-padding:'11px',
-border:'none',
-borderRadius:'10px',
-cursor:'pointer',
-fontWeight:'bold',
-fontSize:'13px',
-opacity:onBreak ? 0.5 : 1
-}}
-onClick={startBreak}
-disabled={onBreak}
->
-☕ BREAK OUT
-</button>
-
-<button
-style={{
-background:'#5fa623',
-color:'white',
-padding:'11px',
-border:'none',
-borderRadius:'10px',
-cursor:'pointer',
-fontWeight:'bold',
-fontSize:'13px',
-opacity:!onBreak ? 0.5 : 1
-}}
-onClick={endBreak}
-disabled={!onBreak}
->
-✅ BREAK IN
-</button>
-
-</div>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'4px' }}>
+            <button style={{ background:onBreak?'#f5a623':'#4a90d9', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||todayLog?.time_out)?0.5:1 }} onClick={onBreak?initiateBreakIn:initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out}>
+              {onBreak?'☕ BREAK IN — End Break':'☕ BREAK OUT — Start Break'}
+            </button>
             <button style={{ background:'#8b5cf6', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||!todayLog?.time_out)?0.5:1 }} onClick={()=>{ closeAllPanels(); setShowOTRequest(!showOTRequest) }} disabled={!todayLog||!todayLog?.time_out}>
               📝 FILE OT/UT
             </button>
