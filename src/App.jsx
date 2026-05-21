@@ -159,7 +159,7 @@ export default function App() {
   const [payrollSearch, setPayrollSearch] = useState('')
   const [editingEmployeeId, setEditingEmployeeId] = useState('')
   const [editFields, setEditFields] = useState({})
-  const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date: today, sick:5, vacation:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10 })
+  const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date: today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'' })
 
   // Final pay
   const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
@@ -686,12 +686,17 @@ export default function App() {
       employee_code: f.code.toUpperCase(), full_name: f.name, position: f.position, pin: f.pin,
       daily_rate: Number(f.rate||0), is_active: true, has_sss: f.hasSss, has_pagibig: f.hasPagibig,
       has_philhealth: f.hasPhilhealth, hire_date: f.hire_date, sick_leave_balance: Number(f.sick||5),
-      vacation_leave_balance: Number(f.vacation||5), pay_type: f.payType||'daily',
-      hourly_rate: Number(f.hourlyRate||0), grace_period_minutes: Number(f.gracePeriod||10)
+      vacation_leave_balance: Number(f.vacation||5), sil_balance: Number(f.sil||5),
+      pay_type: f.payType||'daily', hourly_rate: Number(f.hourlyRate||0),
+      grace_period_minutes: Number(f.gracePeriod||10),
+      date_of_birth: f.dob||null, gender: f.gender||'', civil_status: f.civil_status||'',
+      home_address: f.address||'', contact_number: f.contact||'',
+      emergency_contact_name: f.emergency_name||'', emergency_contact_number: f.emergency_contact||'',
+      employment_type: f.employment_type||'regular', department: f.department||''
     })
     if (error) { alert('Failed: ' + error.message); return }
     await logAudit('EMPLOYEE ADDED', 'Admin', f.name, 'New employee added')
-    alert('Employee added!'); setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:5, vacation:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10 }); loadEmployees()
+    alert('Employee added!'); setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'' }); loadEmployees()
   }
   async function deactivateEmployee(empId, empName) {
     if (!window.confirm(`Deactivate ${empName}?`)) return
@@ -1138,7 +1143,11 @@ export default function App() {
                       {emp.profile_photo_url && <img src={emp.profile_photo_url} alt="" style={{ width:'50px', height:'50px', borderRadius:'50%', objectFit:'cover', border:'2px solid #ca1b1b' }} />}
                       <div>
                         <strong style={{ color:'#ca1b1b' }}>{emp.full_name}</strong>
-                        <p style={cps}>{emp.employee_code} | {emp.position} | {php(emp.daily_rate)}/day ({emp.pay_type||'daily'})</p>
+                        <p style={cps}>{emp.employee_code} | {emp.position} | {emp.department||'—'} | <Badge label={emp.employment_type||'regular'} color="blue" /></p>
+                        <p style={cps}>{php(emp.daily_rate)}/day | {emp.gender||'—'} | {emp.civil_status||'—'} | DOB: {emp.date_of_birth||'—'}</p>
+                        <p style={cps}>📞 {emp.contact_number||'—'} | 🏠 {emp.home_address||'—'}</p>
+                        <p style={cps}>🚨 {emp.emergency_contact_name||'—'} — {emp.emergency_contact_number||'—'}</p>
+                        <p style={cps}>SL: {emp.sick_leave_balance||5}d | VL: {emp.vacation_leave_balance||5}d | SIL: {emp.sil_balance||5}d</p>
                         <p style={cps}>{emp.has_sss?'✅':'❌'} SSS &nbsp;{emp.has_pagibig?'✅':'❌'} Pag-IBIG &nbsp;{emp.has_philhealth?'✅':'❌'} PhilHealth</p>
                       </div>
                     </div>
@@ -1146,22 +1155,64 @@ export default function App() {
                 ))}
 
                 <h3 style={{ color:'#ca1b1b', marginTop:'16px', marginBottom:'10px' }}>Add New Employee</h3>
-                {[['Employee Code','code'],['Full Name','name'],['Position','position'],['PIN','pin'],['Daily Rate (PHP)','rate','number'],['Hourly Rate (PHP, if applicable)','hourlyRate','number']].map(([placeholder,field,type])=>(
-                  <input key={field} placeholder={placeholder} type={type||'text'} value={newEmpFields[field]||''} onChange={e=>setNewEmpFields(p=>({...p,[field]:e.target.value}))} style={inputStyle} />
-                ))}
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px' }}>📋 Basic Information</p>
+                <input placeholder="Employee Code *" value={newEmpFields.code||''} onChange={e=>setNewEmpFields(p=>({...p,code:e.target.value}))} style={inputStyle} />
+                <input placeholder="Full Name *" value={newEmpFields.name||''} onChange={e=>setNewEmpFields(p=>({...p,name:e.target.value}))} style={inputStyle} />
+                <input placeholder="Position / Job Title *" value={newEmpFields.position||''} onChange={e=>setNewEmpFields(p=>({...p,position:e.target.value}))} style={inputStyle} />
+                <input placeholder="PIN *" value={newEmpFields.pin||''} onChange={e=>setNewEmpFields(p=>({...p,pin:e.target.value}))} style={inputStyle} />
+                <input placeholder="Department (e.g. Kitchen, Cashier)" value={newEmpFields.department||''} onChange={e=>setNewEmpFields(p=>({...p,department:e.target.value}))} style={inputStyle} />
+                <label style={lblS}>Employment Type:</label>
+                <select value={newEmpFields.employment_type||'regular'} onChange={e=>setNewEmpFields(p=>({...p,employment_type:e.target.value}))} style={inputStyle}>
+                  <option value="regular">Regular</option>
+                  <option value="probationary">Probationary</option>
+                  <option value="part-time">Part-Time</option>
+                  <option value="contractual">Contractual</option>
+                </select>
+
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px', marginTop:'8px' }}>👤 Personal Information</p>
+                <label style={lblS}>Date of Birth:</label>
+                <input type="date" value={newEmpFields.dob||''} onChange={e=>setNewEmpFields(p=>({...p,dob:e.target.value}))} style={inputStyle} />
+                <label style={lblS}>Gender:</label>
+                <select value={newEmpFields.gender||''} onChange={e=>setNewEmpFields(p=>({...p,gender:e.target.value}))} style={inputStyle}>
+                  <option value="">Select Gender</option>
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                </select>
+                <label style={lblS}>Civil Status:</label>
+                <select value={newEmpFields.civil_status||''} onChange={e=>setNewEmpFields(p=>({...p,civil_status:e.target.value}))} style={inputStyle}>
+                  <option value="">Select Civil Status</option>
+                  <option value="Single">Single</option>
+                  <option value="Married">Married</option>
+                  <option value="Widowed">Widowed</option>
+                  <option value="Separated">Separated</option>
+                </select>
+                <input placeholder="Home Address" value={newEmpFields.address||''} onChange={e=>setNewEmpFields(p=>({...p,address:e.target.value}))} style={inputStyle} />
+                <input placeholder="Contact Number" value={newEmpFields.contact||''} onChange={e=>setNewEmpFields(p=>({...p,contact:e.target.value}))} style={inputStyle} />
+
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px', marginTop:'8px' }}>🚨 Emergency Contact</p>
+                <input placeholder="Emergency Contact Name" value={newEmpFields.emergency_name||''} onChange={e=>setNewEmpFields(p=>({...p,emergency_name:e.target.value}))} style={inputStyle} />
+                <input placeholder="Emergency Contact Number" value={newEmpFields.emergency_contact||''} onChange={e=>setNewEmpFields(p=>({...p,emergency_contact:e.target.value}))} style={inputStyle} />
+
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px', marginTop:'8px' }}>💰 Compensation</p>
+                <input placeholder="Daily Rate (PHP)" type="number" value={newEmpFields.rate||''} onChange={e=>setNewEmpFields(p=>({...p,rate:e.target.value}))} style={inputStyle} />
+                <input placeholder="Hourly Rate (PHP, if applicable)" type="number" value={newEmpFields.hourlyRate||''} onChange={e=>setNewEmpFields(p=>({...p,hourlyRate:e.target.value}))} style={inputStyle} />
                 <label style={lblS}>Pay Type:</label>
-                <select value={newEmpFields.payType} onChange={e=>setNewEmpFields(p=>({...p,payType:e.target.value}))} style={inputStyle}>
+                <select value={newEmpFields.payType||'daily'} onChange={e=>setNewEmpFields(p=>({...p,payType:e.target.value}))} style={inputStyle}>
                   <option value="daily">Daily Rate</option>
                   <option value="hourly">Hourly Rate</option>
                 </select>
                 <label style={lblS}>Hire Date:</label>
-                <input type="date" value={newEmpFields.hire_date} onChange={e=>setNewEmpFields(p=>({...p,hire_date:e.target.value}))} style={inputStyle} />
-                <div style={{ display:'flex', gap:'10px' }}>
-                  <div style={{ flex:1 }}><label style={lblS}>Sick Leave Days/Year:</label><input type="number" value={newEmpFields.sick} onChange={e=>setNewEmpFields(p=>({...p,sick:e.target.value}))} style={inputStyle} /></div>
-                  <div style={{ flex:1 }}><label style={lblS}>Vacation Leave Days/Year:</label><input type="number" value={newEmpFields.vacation} onChange={e=>setNewEmpFields(p=>({...p,vacation:e.target.value}))} style={inputStyle} /></div>
-                </div>
+                <input type="date" value={newEmpFields.hire_date||''} onChange={e=>setNewEmpFields(p=>({...p,hire_date:e.target.value}))} style={inputStyle} />
                 <label style={lblS}>Late Grace Period (minutes):</label>
-                <input type="number" value={newEmpFields.gracePeriod} onChange={e=>setNewEmpFields(p=>({...p,gracePeriod:e.target.value}))} style={inputStyle} />
+                <input type="number" value={newEmpFields.gracePeriod||10} onChange={e=>setNewEmpFields(p=>({...p,gracePeriod:e.target.value}))} style={inputStyle} />
+
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px', marginTop:'8px' }}>📅 Leave & Benefits</p>
+                <div style={{ display:'flex', gap:'10px' }}>
+                  <div style={{ flex:1 }}><label style={lblS}>Sick Leave (days/year):</label><input type="number" value={newEmpFields.sick||5} onChange={e=>setNewEmpFields(p=>({...p,sick:e.target.value}))} style={inputStyle} /></div>
+                  <div style={{ flex:1 }}><label style={lblS}>Vacation Leave (days/year):</label><input type="number" value={newEmpFields.vacation||5} onChange={e=>setNewEmpFields(p=>({...p,vacation:e.target.value}))} style={inputStyle} /></div>
+                </div>
+                <label style={lblS}>Service Incentive Leave (days/year):</label>
+                <input type="number" value={newEmpFields.sil||5} onChange={e=>setNewEmpFields(p=>({...p,sil:e.target.value}))} style={inputStyle} />
                 <div style={{ background:'#f9f9f9', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
                   <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px' }}>Government Contributions:</p>
                   <label style={lblS}><input type="checkbox" checked={newEmpFields.hasSss} onChange={e=>setNewEmpFields(p=>({...p,hasSss:e.target.checked}))} style={{ marginRight:'8px' }} />SSS — PHP 375 (11–25 cutoff)</label>
@@ -1179,34 +1230,76 @@ export default function App() {
                           {emp.profile_photo_url ? <img src={emp.profile_photo_url} alt="" style={{ width:'40px', height:'40px', borderRadius:'50%', objectFit:'cover' }} /> : <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:'#ddd', display:'flex', alignItems:'center', justifyContent:'center', color:'#888', fontSize:'16px' }}>👤</div>}
                           <div>
                             <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>{emp.full_name}</strong>
-                            <p style={cps}>{emp.employee_code} | {emp.position} | {php(emp.daily_rate)}/day | Grace: {emp.grace_period_minutes||10}min</p>
-                            <p style={cps}>SL: {emp.sick_leave_balance||5}d | VL: {emp.vacation_leave_balance||5}d | Hired: {emp.hire_date||'N/A'}</p>
+                            <p style={cps}>{emp.employee_code} | {emp.position} | {emp.department||'—'} | <Badge label={emp.employment_type||'regular'} color="blue" /></p>
+                            <p style={cps}>{php(emp.daily_rate)}/day | Grace: {emp.grace_period_minutes||10}min | Hired: {emp.hire_date||'N/A'}</p>
+                            <p style={cps}>👤 {emp.gender||'—'} | {emp.civil_status||'—'} | DOB: {emp.date_of_birth||'—'}</p>
+                            <p style={cps}>📞 {emp.contact_number||'—'} | 🏠 {emp.home_address||'—'}</p>
+                            <p style={cps}>🚨 Emergency: {emp.emergency_contact_name||'—'} — {emp.emergency_contact_number||'—'}</p>
+                            <p style={cps}>SL: {emp.sick_leave_balance||5}d | VL: {emp.vacation_leave_balance||5}d | SIL: {emp.sil_balance||5}d</p>
                             <p style={cps}>{emp.has_sss?'✅':'❌'} SSS &nbsp;{emp.has_pagibig?'✅':'❌'} Pag-IBIG &nbsp;{emp.has_philhealth?'✅':'❌'} PhilHealth</p>
                           </div>
                         </div>
                         <div style={{ display:'flex', gap:'5px', flexWrap:'wrap' }}>
-                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10 }) }}>✏ EDIT</button>
+                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, sil:emp.sil_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'' }) }}>✏ EDIT</button>
                           <button style={{ ...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}>🚫</button>
                         </div>
                       </div>
                       {editingEmployeeId===emp.id && (
                         <div style={{ marginTop:'12px', background:'white', padding:'14px', borderRadius:'10px', border:'1px solid #ddd' }}>
-                          {[['Employee Code','code'],['Full Name','name'],['Position','position'],['PIN','pin'],['Daily Rate (PHP)','rate','number'],['Hourly Rate (PHP)','hourlyRate','number']].map(([placeholder,field,type])=>(
-                            <input key={field} placeholder={placeholder} type={type||'text'} value={editFields[field]||''} onChange={e=>setEditFields(p=>({...p,[field]:e.target.value}))} style={inputStyle} />
-                          ))}
+                            <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px' }}>📋 Basic Information</p>
+                          <input placeholder="Employee Code" value={editFields.code||''} onChange={e=>setEditFields(p=>({...p,code:e.target.value}))} style={inputStyle} />
+                          <input placeholder="Full Name" value={editFields.name||''} onChange={e=>setEditFields(p=>({...p,name:e.target.value}))} style={inputStyle} />
+                          <input placeholder="Position" value={editFields.position||''} onChange={e=>setEditFields(p=>({...p,position:e.target.value}))} style={inputStyle} />
+                          <input placeholder="PIN" value={editFields.pin||''} onChange={e=>setEditFields(p=>({...p,pin:e.target.value}))} style={inputStyle} />
+                          <input placeholder="Department" value={editFields.department||''} onChange={e=>setEditFields(p=>({...p,department:e.target.value}))} style={inputStyle} />
+                          <label style={lblS}>Employment Type:</label>
+                          <select value={editFields.employment_type||'regular'} onChange={e=>setEditFields(p=>({...p,employment_type:e.target.value}))} style={inputStyle}>
+                            <option value="regular">Regular</option>
+                            <option value="probationary">Probationary</option>
+                            <option value="part-time">Part-Time</option>
+                            <option value="contractual">Contractual</option>
+                          </select>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px', marginTop:'8px' }}>👤 Personal Information</p>
+                          <label style={lblS}>Date of Birth:</label>
+                          <input type="date" value={editFields.dob||''} onChange={e=>setEditFields(p=>({...p,dob:e.target.value}))} style={inputStyle} />
+                          <label style={lblS}>Gender:</label>
+                          <select value={editFields.gender||''} onChange={e=>setEditFields(p=>({...p,gender:e.target.value}))} style={inputStyle}>
+                            <option value="">Select Gender</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                          </select>
+                          <label style={lblS}>Civil Status:</label>
+                          <select value={editFields.civil_status||''} onChange={e=>setEditFields(p=>({...p,civil_status:e.target.value}))} style={inputStyle}>
+                            <option value="">Select Civil Status</option>
+                            <option value="Single">Single</option>
+                            <option value="Married">Married</option>
+                            <option value="Widowed">Widowed</option>
+                            <option value="Separated">Separated</option>
+                          </select>
+                          <input placeholder="Home Address" value={editFields.address||''} onChange={e=>setEditFields(p=>({...p,address:e.target.value}))} style={inputStyle} />
+                          <input placeholder="Contact Number" value={editFields.contact||''} onChange={e=>setEditFields(p=>({...p,contact:e.target.value}))} style={inputStyle} />
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px', marginTop:'8px' }}>🚨 Emergency Contact</p>
+                          <input placeholder="Emergency Contact Name" value={editFields.emergency_name||''} onChange={e=>setEditFields(p=>({...p,emergency_name:e.target.value}))} style={inputStyle} />
+                          <input placeholder="Emergency Contact Number" value={editFields.emergency_contact||''} onChange={e=>setEditFields(p=>({...p,emergency_contact:e.target.value}))} style={inputStyle} />
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px', marginTop:'8px' }}>💰 Compensation</p>
+                          <input placeholder="Daily Rate (PHP)" type="number" value={editFields.rate||''} onChange={e=>setEditFields(p=>({...p,rate:e.target.value}))} style={inputStyle} />
+                          <input placeholder="Hourly Rate (PHP)" type="number" value={editFields.hourlyRate||''} onChange={e=>setEditFields(p=>({...p,hourlyRate:e.target.value}))} style={inputStyle} />
                           <label style={lblS}>Pay Type:</label>
                           <select value={editFields.payType||'daily'} onChange={e=>setEditFields(p=>({...p,payType:e.target.value}))} style={inputStyle}>
                             <option value="daily">Daily Rate</option>
                             <option value="hourly">Hourly Rate</option>
                           </select>
                           <label style={lblS}>Hire Date:</label>
-                          <input type="date" value={editFields.hireDate} onChange={e=>setEditFields(p=>({...p,hireDate:e.target.value}))} style={inputStyle} />
-                          <div style={{ display:'flex', gap:'10px' }}>
-                            <div style={{ flex:1 }}><label style={lblS}>Sick Leave:</label><input type="number" value={editFields.sick} onChange={e=>setEditFields(p=>({...p,sick:e.target.value}))} style={inputStyle} /></div>
-                            <div style={{ flex:1 }}><label style={lblS}>Vacation Leave:</label><input type="number" value={editFields.vacation} onChange={e=>setEditFields(p=>({...p,vacation:e.target.value}))} style={inputStyle} /></div>
-                          </div>
+                          <input type="date" value={editFields.hireDate||''} onChange={e=>setEditFields(p=>({...p,hireDate:e.target.value}))} style={inputStyle} />
                           <label style={lblS}>Grace Period (minutes):</label>
                           <input type="number" value={editFields.gracePeriod||10} onChange={e=>setEditFields(p=>({...p,gracePeriod:e.target.value}))} style={inputStyle} />
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px', marginTop:'8px' }}>📅 Leave & Benefits</p>
+                          <div style={{ display:'flex', gap:'10px' }}>
+                            <div style={{ flex:1 }}><label style={lblS}>Sick Leave (days/year):</label><input type="number" value={editFields.sick||5} onChange={e=>setEditFields(p=>({...p,sick:e.target.value}))} style={inputStyle} /></div>
+                            <div style={{ flex:1 }}><label style={lblS}>Vacation Leave (days/year):</label><input type="number" value={editFields.vacation||5} onChange={e=>setEditFields(p=>({...p,vacation:e.target.value}))} style={inputStyle} /></div>
+                          </div>
+                          <label style={lblS}>Service Incentive Leave (days/year):</label>
+                          <input type="number" value={editFields.sil||5} onChange={e=>setEditFields(p=>({...p,sil:e.target.value}))} style={inputStyle} />
                           <div style={{ background:'#f9f9f9', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
                             <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px' }}>Government Contributions:</p>
                             <label style={lblS}><input type="checkbox" checked={editFields.hasSss||false} onChange={e=>setEditFields(p=>({...p,hasSss:e.target.checked}))} style={{ marginRight:'8px' }} />SSS</label>
