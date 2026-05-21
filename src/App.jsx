@@ -1790,7 +1790,8 @@ export default function App() {
     borderRadius: "16px",
     padding: "16px",
     marginBottom: "16px",
-    boxShadow: "0 6px 18px rgba(202,27,27,0.15)"
+    boxShadow: "0 6px 18px rgba(202,27,27,0.15)",
+    overflow: "hidden",
   }}
 >
             <p style={{ margin:'3px 0', fontSize:'15px', color:'#222' }}>📅 Shift: {todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Assigned Shift'}</p>
@@ -1827,11 +1828,46 @@ export default function App() {
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'4px' }}>
             <button style={{ ...btnGreen, margin:0, opacity:todayLog?0.5:1, fontSize:'13px', textAlign:'center' }} onClick={initiateTimeIn} disabled={loading||!!todayLog}>⏰ TIME IN</button>
             <button style={{ ...btnBlack, margin:0, opacity:(!todayLog||todayLog?.time_out)?0.5:1, fontSize:'13px', textAlign:'center' }} onClick={initiateTimeOut} disabled={loading||!todayLog||!!todayLog?.time_out}>⏰ TIME OUT</button>
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'4px' }}>
-            <button style={{ background:onBreak?'#f5a623':'#4a90d9', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||todayLog?.time_out)?0.5:1 }} onClick={onBreak?initiateBreakIn:initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out}>
-              {onBreak?'☕ BREAK IN — End Break':'☕ BREAK OUT — Start Break'}
-            </button>
+          </div>borderLeft: "4px solid #fdd412", style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'4px' }}>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+
+<button
+style={{
+background:'#4a90d9',
+color:'white',
+padding:'11px',
+border:'none',
+borderRadius:'10px',
+cursor:'pointer',
+fontWeight:'bold',
+fontSize:'13px',
+opacity:onBreak ? 0.5 : 1
+}}
+onClick={startBreak}
+disabled={onBreak}
+>
+☕ BREAK OUT
+</button>
+
+<button
+style={{
+background:'#5fa623',
+color:'white',
+padding:'11px',
+border:'none',
+borderRadius:'10px',
+cursor:'pointer',
+fontWeight:'bold',
+fontSize:'13px',
+opacity:!onBreak ? 0.5 : 1
+}}
+onClick={endBreak}
+disabled={!onBreak}
+>
+✅ BREAK IN
+</button>
+
+</div>
             <button style={{ background:'#8b5cf6', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||!todayLog?.time_out)?0.5:1 }} onClick={()=>{ closeAllPanels(); setShowOTRequest(!showOTRequest) }} disabled={!todayLog||!todayLog?.time_out}>
               📝 FILE OT/UT
             </button>
