@@ -5,6 +5,17 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>romas-attendance-app</title>
+  <style>
+      @media print {
+        @page { size: 145mm 210mm; margin: 0; }
+        body > * { display: none !important; }
+        .payslip-page { display: block !important; }
+      }
+    </style>
+    <style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow-x: hidden; }
+</style>
   </head>
   <body>
     <div id="root"></div>
