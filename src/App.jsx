@@ -99,6 +99,7 @@ function PayslipPrint({ pay, payrollStart, payrollEnd, idx }) {
 }
 
 export default function App() {
+  const isMobile = window.innerWidth <= 768
   const today = getTodayDate()
   const isMobile = typeof window !== 'undefined' && window.innerWidth <= 768
   const videoRef = useRef(null)
