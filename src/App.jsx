@@ -131,6 +131,9 @@ export default function App() {
   const [pin, setPin] = useState('')
   const [employee, setEmployee] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [isOnline, setIsOnline] = useState(navigator.onLine)
+  const [offlineQueue, setOfflineQueue] = useState([])
+  const [syncingOffline, setSyncingOffline] = useState(false)
   const [cameraMode, setCameraMode] = useState(null)
   const [capturedPhoto, setCapturedPhoto] = useState(null)
   const [cameraStream, setCameraStream] = useState(null)
@@ -143,8 +146,14 @@ export default function App() {
   const [myPayslips, setMyPayslips] = useState([])
   const [myAttendance, setMyAttendance] = useState([])
   const [myCashAdvances, setMyCashAdvances] = useState([])
+  const [myActiveCAs, setMyActiveCAs] = useState([])
+  const [myCAHistory, setMyCAHistory] = useState([])
+  const [showCAHistory, setShowCAHistory] = useState(false)
   const [myLeaveBalance, setMyLeaveBalance] = useState({ sick:5, vacation:5 })
   const [showLeaveRequest, setShowLeaveRequest] = useState(false)
+  const [showMyLeaves, setShowMyLeaves] = useState(false)
+  const [myLeaves, setMyLeaves] = useState([])
+  const [myLeavesLoading, setMyLeavesLoading] = useState(false)
   const [showPayslips, setShowPayslips] = useState(false)
   const [showCashAdvances, setShowCashAdvances] = useState(false)
   const [showCashAdvanceRequest, setShowCashAdvanceRequest] = useState(false)
@@ -164,17 +173,52 @@ export default function App() {
   const [otRequestReason, setOtRequestReason] = useState('')
   const [otRequestMinutes, setOtRequestMinutes] = useState('')
   const [adminMode, setAdminMode] = useState(false)
+  const [adminRole, setAdminRole] = useState(null) // 'owner'|'hr'|'payroll'|'supervisor'
+  const [adminCredentials] = useState({
+    owner:    { code:'ADMIN001', pin:'admin2024', role:'owner',    name:'Owner' },
+    hr:       { code:'ADMIN002', pin:'hr2024',    role:'hr',       name:'HR Admin' },
+    payroll:  { code:'ADMIN003', pin:'pay2024',   role:'payroll',  name:'Payroll Officer' },
+    supervisor:{ code:'ADMIN004', pin:'sup2024',  role:'supervisor',name:'Supervisor' },
+  })
   const [activeTab, setActiveTab] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [employees, setEmployees] = useState([])
   const [employeeSearch, setEmployeeSearch] = useState('')
+  const [showDeactivated, setShowDeactivated] = useState(false)
+  const [deactivatedEmployees, setDeactivatedEmployees] = useState([])
   const [payrollSearch, setPayrollSearch] = useState('')
   const [editingEmployeeId, setEditingEmployeeId] = useState('')
   const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState(null)
   const [toast, setToast] = useState(null)
+  // Audit trail
+  const [auditLogs, setAuditLogs] = useState([])
+  const [auditSearch, setAuditSearch] = useState('')
+  const [auditLoading, setAuditLoading] = useState(false)
+  // Payroll approval
+  const [payrollApprovalStatus, setPayrollApprovalStatus] = useState(null)
+  const [payrollApproved, setPayrollApproved] = useState(false)
+  // Employee self-view
+  const [showMyProfile, setShowMyProfile] = useState(false)
+  // Dashboard charts
+  const [attendanceStats, setAttendanceStats] = useState([])
+  const [payrollCostStats, setPayrollCostStats] = useState([])
+  // LWOP tracking
+  const [lwopDays, setLwopDays] = useState(0)
+  // Department locations
+  const [departmentLocations, setDepartmentLocations] = useState({})
+  const [showDeptLocations, setShowDeptLocations] = useState(false)
+  // 13th month details
+  const [thirteenthDetails, setThirteenthDetails] = useState([])
+  // Day off settings
+  const [dayOffSettings, setDayOffSettings] = useState({})
+  const [showDayOffSettings, setShowDayOffSettings] = useState(false)
+  // Break limits
+  const [breakUsedToday, setBreakUsedToday] = useState(false)
+  const [breakTimerSeconds, setBreakTimerSeconds] = useState(0)
+  const [breakTimerInterval, setBreakTimerInterval] = useState(null)
   const [editFields, setEditFields] = useState({})
-  const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'' })
+  const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'' })
   const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
   const [finalPayReason, setFinalPayReason] = useState('resigned')
   const [finalPayLastDate, setFinalPayLastDate] = useState(today)
@@ -187,6 +231,10 @@ export default function App() {
   const [scheduleDate, setScheduleDate] = useState(today)
   const [shiftStart, setShiftStart] = useState('')
   const [shiftEnd, setShiftEnd] = useState('')
+  const [scheduleDuration, setScheduleDuration] = useState('1week')
+  const [scheduleRepeat, setScheduleRepeat] = useState('all')
+  const [bulkScheduleLoading, setBulkScheduleLoading] = useState(false)
+  const [existingSchedules, setExistingSchedules] = useState([])
   const [leaveRequests, setLeaveRequests] = useState([])
   const [showResolvedLeaves, setShowResolvedLeaves] = useState(false)
   const [resolvedLeaves, setResolvedLeaves] = useState([])
@@ -221,6 +269,18 @@ export default function App() {
   const [payrollResults, setPayrollResults] = useState([])
   const [payrollSummary, setPayrollSummary] = useState(null)
   const [payrollComputing, setPayrollComputing] = useState(false)
+  const [payrollHistory, setPayrollHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [selectedHistoryPeriod, setSelectedHistoryPeriod] = useState(null)
+  const [historyRecords, setHistoryRecords] = useState([])
+  const [historySearch, setHistorySearch] = useState('')
+  const [historyYear, setHistoryYear] = useState(new Date().getFullYear().toString())
+  const [remittancePeriod, setRemittancePeriod] = useState('')
+  const [remittanceData, setRemittanceData] = useState(null)
+  const [dtrEmployeeId, setDtrEmployeeId] = useState('')
+  const [dtrMonth, setDtrMonth] = useState(today.slice(0,7))
+  const [dtrRecords, setDtrRecords] = useState([])
+  const [dtrStats, setDtrStats] = useState(null)
   const [announcements, setAnnouncements] = useState([])
   const [newAnnouncementTitle, setNewAnnouncementTitle] = useState('')
   const [newAnnouncementContent, setNewAnnouncementContent] = useState('')
@@ -246,6 +306,80 @@ export default function App() {
     if (cameraMode && videoRef.current) startCamera()
     return () => stopCamera()
   }, [cameraMode])
+
+  // Online/offline detection
+  useEffect(() => {
+    const goOnline = () => {
+      setIsOnline(true)
+      showToast('✅ Back online! Syncing offline records...')
+      syncOfflineQueue()
+    }
+    const goOffline = () => {
+      setIsOnline(false)
+      showToast('⚠️ You are offline. Time in/out will be queued.', 'red')
+    }
+    window.addEventListener('online', goOnline)
+    window.addEventListener('offline', goOffline)
+    return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline) }
+  }, [])
+
+  // Break timer - tick every second when on break
+  useEffect(() => {
+    if (todayBreaks.length > 0) {
+      const openBreak = todayBreaks.find(b => !b.break_in)
+      if (openBreak) {
+        // Calculate seconds already elapsed
+        const breakStartMins = minutesFromTime(openBreak.break_out)
+        const nowMins = minutesFromTime(nowTime())
+        const elapsed = Math.max(0, (nowMins - breakStartMins) * 60)
+        setBreakTimerSeconds(elapsed)
+        // Start ticking
+        const interval = setInterval(() => {
+          setBreakTimerSeconds(s => s + 1)
+        }, 1000)
+        setBreakTimerInterval(interval)
+        return () => clearInterval(interval)
+      } else {
+        setBreakTimerSeconds(0)
+        if (breakTimerInterval) { clearInterval(breakTimerInterval); setBreakTimerInterval(null) }
+      }
+    } else {
+      setBreakTimerSeconds(0)
+    }
+  }, [todayBreaks])
+
+  // ── Offline Queue ─────────────────────────────────────────────────────────
+  async function syncOfflineQueue() {
+    const queue = JSON.parse(localStorage.getItem('offline_queue')||'[]')
+    if (!queue.length) return
+    setSyncingOffline(true)
+    let synced = 0
+    for (const item of queue) {
+      try {
+        if (item.type === 'timein') {
+          const { data:existing } = await supabase.from('attendance_logs').select('id').eq('employee_id', item.employee_id).eq('attendance_date', item.attendance_date).maybeSingle()
+          if (!existing) {
+            await supabase.from('attendance_logs').insert(item.data)
+            synced++
+          }
+        } else if (item.type === 'timeout') {
+          await supabase.from('attendance_logs').update(item.data).eq('id', item.log_id)
+          synced++
+        }
+      } catch(e) { console.error('Sync error:', e) }
+    }
+    localStorage.setItem('offline_queue', '[]')
+    setOfflineQueue([])
+    setSyncingOffline(false)
+    if (synced > 0) showToast(`✅ Synced ${synced} offline record(s)!`)
+  }
+
+  function queueOfflineAction(type, data) {
+    const queue = JSON.parse(localStorage.getItem('offline_queue')||'[]')
+    queue.push({ type, ...data, queued_at: new Date().toISOString() })
+    localStorage.setItem('offline_queue', JSON.stringify(queue))
+    setOfflineQueue(queue)
+  }
 
   // ── Toast ─────────────────────────────────────────────────────────────────
   function showToast(msg, color='green') {
@@ -289,14 +423,24 @@ export default function App() {
 
   // ── Geofencing ────────────────────────────────────────────────────────────
   async function checkLocation() {
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       if (!navigator.geolocation) { resolve({ ok:true }); return }
       setGeoStatus('Checking your location...')
+      const dept = employee?.department
+      const deptLoc = dept && departmentLocations[dept]
+      const useLat = employee?.location_lat ? Number(employee.location_lat) : (deptLoc?.lat ? Number(deptLoc.lat) : storeLocation.lat)
+      const useLng = employee?.location_lng ? Number(employee.location_lng) : (deptLoc?.lng ? Number(deptLoc.lng) : storeLocation.lng)
+      const useRadius = employee?.location_radius ? Number(employee.location_radius) : (deptLoc?.radius ? Number(deptLoc.radius) : storeLocation.radius)
+      const locationName = employee?.work_location || deptLoc?.name || 'store'
       navigator.geolocation.getCurrentPosition(
-        pos => {
-          const dist = getDistanceMeters(pos.coords.latitude, pos.coords.longitude, storeLocation.lat, storeLocation.lng)
+        (pos) => {
+          const dist = getDistanceMeters(pos.coords.latitude, pos.coords.longitude, useLat, useLng)
           setGeoStatus('')
-          resolve(dist <= storeLocation.radius ? { ok:true } : { ok:false, message:`You are ${Math.round(dist)}m away. Must be within ${storeLocation.radius}m of the store.` })
+          if (dist <= useRadius) {
+            resolve({ ok:true })
+          } else {
+            resolve({ ok:false, message:'You are ' + Math.round(dist) + 'm away from ' + locationName + '. Must be within ' + useRadius + 'm.' })
+          }
         },
         () => { setGeoStatus(''); resolve({ ok:true }) },
         { timeout:8000, enableHighAccuracy:true }
@@ -321,6 +465,7 @@ export default function App() {
   function closeAllPanels() {
     setShowLeaveRequest(false); setShowPayslips(false)
     setShowCashAdvances(false); setShowCashAdvanceRequest(false); setShowMyAttendance(false); setShowOTRequest(false)
+    setShowMyLeaves(false)
   }
 
   // ── Announcements ─────────────────────────────────────────────────────────
@@ -381,8 +526,15 @@ export default function App() {
     setMyPayslips(data || [])
   }
   async function loadMyCashAdvances(emp) {
-    const { data } = await supabase.from('cash_advance_requests').select('*').eq('employee_id', emp.id).order('created_at', { ascending:false })
-    setMyCashAdvances(data || [])
+    // Load requests (pending/approved/disapproved)
+    const { data: requests } = await supabase.from('cash_advance_requests').select('*').eq('employee_id', emp.id).order('created_at', { ascending:false })
+    setMyCashAdvances(requests || [])
+    // Load active unpaid balances
+    const { data: active } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).eq('status', 'Unpaid').order('advance_date', { ascending:false })
+    setMyActiveCAs(active || [])
+    // Load paid history
+    const { data: history } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).eq('status', 'Paid').order('advance_date', { ascending:false })
+    setMyCAHistory(history || [])
   }
   async function loadMyAttendanceHistory(emp) {
     const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
@@ -394,6 +546,12 @@ export default function App() {
     const usedS = data?.filter(l=>l.leave_type==='Sick Leave').reduce((s,l)=>s+Number(l.duration_days||1),0)||0
     const usedV = data?.filter(l=>l.leave_type==='Vacation Leave').reduce((s,l)=>s+Number(l.duration_days||1),0)||0
     setMyLeaveBalance({ sick:Math.max(0,(emp.sick_leave_balance??5)-usedS), vacation:Math.max(0,(emp.vacation_leave_balance??5)-usedV) })
+  }
+  async function loadMyLeaves() {
+    setMyLeavesLoading(true)
+    const { data } = await supabase.from('leave_requests').select('*').eq('employee_id', employee.id).order('created_at', { ascending:false })
+    setMyLeavesLoading(false)
+    setMyLeaves(data || [])
   }
   async function handleProfilePhotoUpload(e) {
     const file = e.target.files[0]; if (!file) return
@@ -419,6 +577,8 @@ export default function App() {
   }
   async function initiateBreakOut() {
     if (!todayLog || todayLog.time_out) { alert('You must be timed in to take a break.'); return }
+    // Only 1 break per day
+    if (todayBreaks.length > 0) { showToast('❌ You have already taken your break today. Only 1 break is allowed per day.','red'); return }
     const openBreak = todayBreaks.find(b=>!b.break_in)
     if (openBreak) { alert('You are already on break. Please Break In first.'); return }
     const { error } = await supabase.from('break_logs').insert({ attendance_log_id:todayLog.id, employee_id:employee.id, employee_name:employee.full_name, attendance_date:today, break_out:nowTime() })
@@ -436,6 +596,22 @@ export default function App() {
   async function confirmTimeIn() {
     if (!capturedPhoto) { alert('Please take a selfie first.'); return }
     setLoading(true)
+    // Offline handling
+    if (!isOnline) {
+      const gracePeriod = employee.grace_period_minutes ?? 10
+      let lateMinutes = 0, status = 'No Assigned Shift'
+      if (todaySchedule?.shift_start) {
+        const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
+        const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod ? raw : 0
+        status = lateMinutes > 0 ? 'Late' : 'On Time'
+      }
+      const offlineLog = { employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:null }
+      queueOfflineAction('timein', { employee_id:employee.id, attendance_date:today, data:offlineLog })
+      setTodayLog({ ...offlineLog, id:'offline_'+Date.now() })
+      setLoading(false); setCameraMode(null); setCapturedPhoto(null)
+      showToast('📴 Offline — Time In saved locally. Will sync when online.')
+      return
+    }
     const { data:existing } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', today).maybeSingle()
     if (existing) { setLoading(false); setTodayLog(existing); alert('Already timed in today.'); setCameraMode(null); return }
     let selfieUrl = null
@@ -521,8 +697,101 @@ export default function App() {
   }
 
   // ── Admin Functions ───────────────────────────────────────────────────────
+  function canAccess(tab) {
+    if (adminRole === 'owner') return true
+    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail'].includes(tab)
+    if (adminRole === 'payroll') return ['dashboard','payroll','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr'].includes(tab)
+    if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule'].includes(tab)
+    return false
+  }
+
   async function logAudit(action, by, target, details) {
     await supabase.from('audit_logs').insert({ action, performed_by:by, target_employee:target, details }).catch(()=>{})
+  }
+
+  // ── Audit Trail Viewer ────────────────────────────────────────────────────
+  async function loadAuditTrail() {
+    setAuditLoading(true)
+    const { data } = await supabase.from('audit_logs').select('*').order('created_at', { ascending:false }).limit(500)
+    setAuditLogs(data || [])
+    setAuditLoading(false)
+  }
+
+  // ── Dashboard Analytics ───────────────────────────────────────────────────
+  async function loadDashboardCharts() {
+    const year = today.slice(0,4)
+    // Monthly attendance for last 6 months
+    const months = Array.from({length:6}, (_,i) => {
+      const d = new Date(); d.setMonth(d.getMonth()-i)
+      return d.toISOString().slice(0,7)
+    }).reverse()
+    const stats = []
+    for (const m of months) {
+      const { data } = await supabase.from('attendance_logs').select('status').gte('attendance_date', m+'-01').lte('attendance_date', m+'-31')
+      stats.push({
+        month: m,
+        present: data?.filter(l=>l.status!=='Absent'&&l.status).length||0,
+        absent: data?.filter(l=>l.status==='Absent').length||0,
+        late: data?.filter(l=>l.status==='Late').length||0,
+      })
+    }
+    setAttendanceStats(stats)
+    // Payroll cost last 6 months
+    const { data: payData } = await supabase.from('payroll_records').select('payroll_start,net_pay').gte('payroll_start', year+'-01-01').order('payroll_start')
+    const byPeriod = {}
+    for (const p of payData||[]) {
+      const k = p.payroll_start?.slice(0,7)||''
+      byPeriod[k] = (byPeriod[k]||0) + Number(p.net_pay||0)
+    }
+    setPayrollCostStats(Object.entries(byPeriod).map(([m,v])=>({month:m, total:v})))
+  }
+
+  // ── Philippine Regular Holidays (auto-set) ────────────────────────────────
+  async function addPhilippineHolidays(year) {
+    const regularHolidays = [
+      { date:`${year}-01-01`, name:"New Year's Day", type:'regular' },
+      { date:`${year}-04-09`, name:"Araw ng Kagitingan (Day of Valor)", type:'regular' },
+      { date:`${year}-05-01`, name:"Labor Day", type:'regular' },
+      { date:`${year}-06-12`, name:"Independence Day", type:'regular' },
+      { date:`${year}-08-25`, name:"National Heroes Day", type:'regular' },
+      { date:`${year}-11-30`, name:"Bonifacio Day", type:'regular' },
+      { date:`${year}-12-25`, name:"Christmas Day", type:'regular' },
+      { date:`${year}-12-30`, name:"Rizal Day", type:'regular' },
+    ]
+    let added = 0
+    for (const h of regularHolidays) {
+      const { data: existing } = await supabase.from('holidays').select('id').eq('holiday_date', h.date).maybeSingle()
+      if (!existing) {
+        await supabase.from('holidays').insert({ holiday_date:h.date, holiday_name:h.name, holiday_type:h.type })
+        added++
+      }
+    }
+    await loadHolidays()
+    showToast(`✅ Added ${added} Philippine regular holidays for ${year}!`)
+  }
+
+  // ── Department Location Management ────────────────────────────────────────
+  function saveDepartmentLocations(locs) {
+    setDepartmentLocations(locs)
+    localStorage.setItem('dept_locations', JSON.stringify(locs))
+    showToast('✅ Department locations saved!')
+  }
+  function loadDepartmentLocations() {
+    try {
+      const saved = localStorage.getItem('dept_locations')
+      if (saved) setDepartmentLocations(JSON.parse(saved))
+    } catch(e) {}
+  }
+
+  // ── Payroll Approval Workflow ─────────────────────────────────────────────
+  async function approvePayroll(start, end) {
+    const { error } = await supabase.from('payroll_records')
+      .update({ payroll_approved: true, approved_by: 'Admin', approved_at: new Date().toISOString() })
+      .eq('payroll_start', start).eq('payroll_end', end)
+    if (error) { showToast('Failed: '+error.message,'red'); return }
+    setPayrollApproved(true)
+    await logAudit('PAYROLL APPROVED','Admin','ALL',`Period: ${start} to ${end}`)
+    showToast('✅ Payroll approved and released!')
   }
   async function detectStoreLocation() {
     setLocationStatus('Detecting location...')
@@ -536,23 +805,61 @@ export default function App() {
       { timeout: 10000, enableHighAccuracy: true }
     )
   }
-  function openAdmin() {
-    setAdminMode(true); setEmployeeSearch(''); setSidebarOpen(false); setActiveTab('dashboard')
+  function openAdmin(role) {
+    setAdminMode(true); setAdminRole(role||'owner'); setEmployeeSearch(''); setSidebarOpen(false)
+    // Set default tab based on role
+    const defaultTab = role==='payroll'?'payroll':role==='supervisor'?'attendance':role==='hr'?'employees':'dashboard'
+    setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
+    loadDepartmentLocations(); loadDashboardCharts(); autoAcknowledgeExpired().catch(()=>{})
   }
   async function loadDashboard() {
-    const { data:emps } = await supabase.from('employees').select('id').eq('is_active', true)
+    const { data:emps } = await supabase.from('employees').select('*').eq('is_active', true)
     const { data:todayLogs } = await supabase.from('attendance_logs').select('*').eq('attendance_date', today)
     const { data:pendingLeave } = await supabase.from('leave_requests').select('id').eq('status', 'pending')
     const { data:pendingCA } = await supabase.from('cash_advance_requests').select('id').eq('status', 'pending')
     const { data:pendingOT } = await supabase.from('time_adjustment_requests').select('id').eq('status', 'pending')
     const { data:pendingDisp } = await supabase.from('payslip_disputes').select('id').eq('status', 'pending')
-    setDashboardData({ totalEmployees:emps?.length||0, timedIn:todayLogs?.filter(l=>l.time_in&&!l.time_out).length||0, timedOut:todayLogs?.filter(l=>l.time_out).length||0, absent:todayLogs?.filter(l=>l.status==='Absent').length||0, pendingLeave:pendingLeave?.length||0, pendingCA:pendingCA?.length||0, pendingOT:pendingOT?.length||0, pendingDisputes:pendingDisp?.length||0 })
+    // Probationary employees due for regularization (hired 5-6 months ago, still probationary)
+    const probDue = (emps||[]).filter(e => {
+      if (e.employment_type !== 'probationary' || !e.hire_date) return false
+      const hireDate = new Date(e.hire_date)
+      const monthsEmployed = (new Date() - hireDate) / (1000*60*60*24*30)
+      return monthsEmployed >= 5 && monthsEmployed <= 7
+    })
+    // Employees with birthdays this week
+    const thisWeek = Array.from({length:7},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()+i); return `${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` })
+    const birthdays = (emps||[]).filter(e => e.date_of_birth && thisWeek.includes(e.date_of_birth.slice(5)))
+    // Work anniversaries this week
+    const anniversaries = (emps||[]).filter(e => e.hire_date && thisWeek.includes(e.hire_date.slice(5)) && e.hire_date.slice(0,4) !== today.slice(0,4))
+    setDashboardData({
+      totalEmployees: emps?.length||0,
+      timedIn: todayLogs?.filter(l=>l.time_in&&!l.time_out).length||0,
+      timedOut: todayLogs?.filter(l=>l.time_out).length||0,
+      absent: todayLogs?.filter(l=>l.status==='Absent').length||0,
+      pendingLeave: pendingLeave?.length||0,
+      pendingCA: pendingCA?.length||0,
+      pendingOT: pendingOT?.length||0,
+      pendingDisputes: pendingDisp?.length||0,
+      probDue, birthdays, anniversaries
+    })
   }
   async function loadEmployees() {
     const { data } = await supabase.from('employees').select('*').eq('is_active', true).order('full_name')
     setEmployees(data || [])
+  }
+  async function loadDeactivatedEmployees() {
+    const { data } = await supabase.from('employees').select('*').eq('is_active', false).order('full_name')
+    setDeactivatedEmployees(data || [])
+  }
+  async function reactivateEmployee(empId, empName) {
+    if (!window.confirm(`Reactivate ${empName}?`)) return
+    const { error } = await supabase.from('employees').update({ is_active: true }).eq('id', empId)
+    if (error) { showToast('Failed: '+error.message,'red'); return }
+    await logAudit('EMPLOYEE REACTIVATED','Admin',empName,'Employee reactivated')
+    showToast(`✅ ${empName} reactivated!`)
+    loadDeactivatedEmployees(); loadEmployees()
   }
   async function loadAdminLogs() {
     const { data } = await supabase.from('attendance_logs').select('*').eq('attendance_date', adminDate).order('employee_name')
@@ -646,7 +953,7 @@ export default function App() {
     if (error) { showToast('Failed: '+error.message,'red'); return }
     await logAudit('EMPLOYEE ADDED','Admin',f.name,'New employee added')
     showToast('✅ Employee added successfully!')
-    setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'' })
+    setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'' })
     loadEmployees()
   }
   async function deactivateEmployee(empId, empName) {
@@ -706,22 +1013,24 @@ export default function App() {
   }
   async function saveAdjustment() {
     if (!adjustmentEmployeeId) { showToast('❌ Please select an employee.','red'); return }
-    if (!adjustmentCategory) { showToast('❌ Please enter a category.','red'); return }
-    if (!adjustmentAmount || Number(adjustmentAmount) <= 0) { showToast('❌ Please enter a valid amount.','red'); return }
+    if (!adjustmentCategory.trim()) { showToast('❌ Please enter a category.','red'); return }
+    if (!adjustmentAmount || isNaN(Number(adjustmentAmount)) || Number(adjustmentAmount) <= 0) { showToast('❌ Please enter a valid amount greater than 0.','red'); return }
     const emp = employees.find(e=>e.id===adjustmentEmployeeId)
-    const { error } = await supabase.from('payroll_adjustments').insert({
+    if (!emp) { showToast('❌ Employee not found.','red'); return }
+    const payload = {
       employee_id: adjustmentEmployeeId,
-      employee_code: emp?.employee_code||'',
-      employee_name: emp?.full_name||'',
-      adjustment_date: adjustmentDate,
+      employee_code: emp.employee_code||'',
+      employee_name: emp.full_name||'',
+      adjustment_date: adjustmentDate||today,
       adjustment_type: adjustmentType,
-      category: adjustmentCategory,
+      category: adjustmentCategory.trim(),
       amount: Number(adjustmentAmount),
-      notes: adjustmentNotes
-    })
-    if (error) { showToast('❌ Failed: '+error.message,'red'); console.error(error); return }
-    await logAudit('ADJUSTMENT ADDED','Admin',emp?.full_name||'',`${adjustmentType}: ${php(adjustmentAmount)} — ${adjustmentCategory}`)
-    showToast('✅ Adjustment saved for '+emp?.full_name+'!')
+      notes: adjustmentNotes||''
+    }
+    const { data, error } = await supabase.from('payroll_adjustments').insert(payload).select()
+    if (error) { showToast('❌ Failed to save: '+error.message,'red'); console.error('Adjustment error:', error); return }
+    await logAudit('ADJUSTMENT ADDED','Admin',emp.full_name,`${adjustmentType}: ${php(adjustmentAmount)} — ${adjustmentCategory}`)
+    showToast(`✅ ${adjustmentType==='addition'?'Bonus':'Deduction'} of ${php(adjustmentAmount)} saved for ${emp.full_name}!`)
     setAdjustmentEmployeeId(''); setAdjustmentCategory(''); setAdjustmentAmount(''); setAdjustmentNotes('')
   }
   async function saveSchedule() {
@@ -729,6 +1038,44 @@ export default function App() {
     const { error } = await supabase.from('daily_schedules').upsert({ employee_id:selectedEmployeeId, schedule_date:scheduleDate, shift_start:shiftStart, shift_end:shiftEnd }, { onConflict:'employee_id,schedule_date' })
     if (error) { showToast('Failed: '+error.message,'red'); return }
     showToast('✅ Schedule saved!'); setSelectedEmployeeId(''); setShiftStart(''); setShiftEnd('')
+  }
+  async function saveBulkSchedule() {
+    if (!shiftStart||!shiftEnd) { showToast('Please set shift start and end time.','red'); return }
+    const targetEmployees = scheduleRepeat==='all' ? employees : employees.filter(e=>e.id===selectedEmployeeId)
+    if (targetEmployees.length===0) { showToast('Please select an employee or choose All Employees.','red'); return }
+    setBulkScheduleLoading(true)
+    const startDate = new Date(scheduleDate)
+    let days = 7
+    if (scheduleDuration==='2weeks') days = 14
+    else if (scheduleDuration==='1month') days = 30
+    const records = []
+    for (let d = 0; d < days; d++) {
+      const date = new Date(startDate)
+      date.setDate(startDate.getDate() + d)
+      const dateStr = date.toISOString().slice(0,10)
+      for (const emp of targetEmployees) {
+        records.push({ employee_id: emp.id, schedule_date: dateStr, shift_start: shiftStart, shift_end: shiftEnd })
+      }
+    }
+    // Upsert in batches of 50
+    for (let i = 0; i < records.length; i += 50) {
+      const batch = records.slice(i, i+50)
+      await supabase.from('daily_schedules').upsert(batch, { onConflict:'employee_id,schedule_date' })
+    }
+    setBulkScheduleLoading(false)
+    await loadExistingSchedules()
+    showToast(`✅ Schedule set for ${targetEmployees.length} employee(s) across ${days} days!`)
+  }
+  async function loadExistingSchedules() {
+    const start = scheduleDate
+    const end = new Date(new Date(scheduleDate).getTime() + 30*24*60*60*1000).toISOString().slice(0,10)
+    const { data } = await supabase.from('daily_schedules').select('*,employees(full_name,employee_code)').gte('schedule_date', start).lte('schedule_date', end).order('schedule_date').order('employee_id')
+    setExistingSchedules(data||[])
+  }
+  async function deleteSchedule(id) {
+    await supabase.from('daily_schedules').delete().eq('id', id)
+    setExistingSchedules(prev=>prev.filter(s=>s.id!==id))
+    showToast('✅ Schedule removed')
   }
   function applyPayrollCutoff() {
     const [y,m] = payrollMonth.split('-').map(Number)
@@ -771,10 +1118,280 @@ export default function App() {
     showToast(`✅ Final pay processed. ${finalPayResult.employeeName} deactivated.`)
     setFinalPayResult(null); setFinalPayEmployeeId(''); loadEmployees()
   }
+  async function loadPayrollHistory() {
+    setHistoryLoading(true)
+    // Get distinct payroll periods
+    const { data } = await supabase
+      .from('payroll_records')
+      .select('payroll_start, payroll_end, employee_acknowledgement')
+      .order('payroll_start', { ascending: false })
+    setHistoryLoading(false)
+    if (!data) return
+    // Group by period
+    const periods = {}
+    for (const rec of data) {
+      const key = `${rec.payroll_start}|${rec.payroll_end}`
+      if (!periods[key]) {
+        periods[key] = { payroll_start: rec.payroll_start, payroll_end: rec.payroll_end, total: 0, agreed: 0, disputed: 0, pending: 0 }
+      }
+      periods[key].total++
+      if (rec.employee_acknowledgement === 'agreed') periods[key].agreed++
+      else if (rec.employee_acknowledgement === 'disputed') periods[key].disputed++
+      else periods[key].pending++
+    }
+    setPayrollHistory(Object.values(periods).sort((a,b) => b.payroll_start.localeCompare(a.payroll_start)))
+  }
+
+  async function loadHistoryRecords(start, end) {
+    setSelectedHistoryPeriod({ start, end })
+    setHistorySearch('')
+    const { data } = await supabase
+      .from('payroll_records')
+      .select('*')
+      .eq('payroll_start', start)
+      .eq('payroll_end', end)
+      .order('employee_name')
+    setHistoryRecords(data || [])
+  }
+
+  async function printDTR(empId, empName, empCode, month) {
+    // month format: YYYY-MM
+    const startDate = `${month}-01`
+    const endDate = new Date(Number(month.split('-')[0]), Number(month.split('-')[1]), 0).toISOString().slice(0,10)
+    const { data: logs } = await supabase.from('attendance_logs').select('*')
+      .eq('employee_id', empId).gte('attendance_date', startDate).lte('attendance_date', endDate)
+      .order('attendance_date')
+    const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
+    const daysInMonth = new Date(Number(month.split('-')[0]), Number(month.split('-')[1]), 0).getDate()
+    const monthName = new Date(month+'-01').toLocaleString('default', { month:'long', year:'numeric' })
+    const totalDaysWorked = logs?.filter(l=>l.time_in).length || 0
+    const totalAbsent = logs?.filter(l=>l.status==='Absent').length || 0
+    const totalLate = logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0) || 0
+    const totalOT = logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0) || 0
+
+    const rows = Array.from({length: daysInMonth}, (_,i) => {
+      const dateStr = `${month}-${String(i+1).padStart(2,'0')}`
+      const log = logs?.find(l=>l.attendance_date===dateStr)
+      const dayName = new Date(dateStr).toLocaleDateString('en-US', {weekday:'short'})
+      return `<tr style="border-bottom:1px solid #eee;">
+        <td style="padding:5px 8px;font-size:10px;color:#888;">${dayName}</td>
+        <td style="padding:5px 8px;font-size:10px;text-align:center;">${i+1}</td>
+        <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_in?'#000':'#ccc'}">${log?.time_in||'—'}</td>
+        <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_out?'#000':'#ccc'}">${log?.time_out||'—'}</td>
+        <td style="padding:5px 8px;font-size:10px;text-align:center;">${log?.total_break_minutes||0}</td>
+        <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.late_minutes>0?'#ca1b1b':'#000'}">${log?.late_minutes||0}</td>
+        <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.overtime_minutes>0?'#2d8a4e':'#000'}">${log?.overtime_approved?log.overtime_minutes:0}</td>
+        <td style="padding:5px 8px;font-size:10px;text-align:center;">
+          ${!log?'':log.status==='Absent'?'<span style="color:#ca1b1b;font-weight:bold;">ABS</span>':
+          log.status==='Late'?'<span style="color:#f5a623;">LATE</span>':
+          log.time_in?'<span style="color:#2d8a4e;">✓</span>':''}
+        </td>
+      </tr>`
+    }).join('')
+
+    const pw = window.open('','_blank','width=900,height=700')
+    pw.document.write(`<!DOCTYPE html><html><head><title>DTR - ${empName} - ${monthName}</title>
+      <style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:Arial,sans-serif;padding:15mm;font-size:12px;color:#000;}
+        table{width:100%;border-collapse:collapse;}
+        th{background:#ca1b1b;color:white;padding:6px 8px;font-size:10px;}
+        @media print{@page{size:A4 portrait;margin:10mm;}body{padding:5mm;}}
+      </style></head><body>
+      <div style="text-align:center;margin-bottom:16px;border-bottom:2px solid #ca1b1b;padding-bottom:10px;">
+        <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
+        <div style="font-size:11px;color:#666;">Payroll &amp; Attendance System</div>
+        <div style="font-size:15px;font-weight:bold;margin-top:6px;">DAILY TIME RECORD (DTR)</div>
+        <div style="font-size:12px;margin-top:2px;">${monthName}</div>
+      </div>
+      <div style="background:#fff8dc;border:1px solid #ca1b1b;border-radius:6px;padding:10px;margin-bottom:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <div>
+          <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${empName}</div>
+          <div style="font-size:11px;color:#555;">Employee Code: ${empCode}</div>
+          <div style="font-size:11px;color:#555;">Position: ${emp?.position||'—'} | Department: ${emp?.department||'—'}</div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px;">Days Worked: <strong>${totalDaysWorked}</strong></div>
+          <div style="font-size:11px;">Absences: <strong style="color:#ca1b1b;">${totalAbsent}</strong></div>
+          <div style="font-size:11px;">Total Late: <strong style="color:#f5a623;">${totalLate} min</strong></div>
+          <div style="font-size:11px;">Total OT: <strong style="color:#2d8a4e;">${totalOT} min</strong></div>
+        </div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>Day</th><th>Date</th><th>Time In</th><th>Time Out</th>
+          <th>Break (min)</th><th>Late (min)</th><th>OT (min)</th><th>Status</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr style="background:#f5f5f5;font-weight:bold;">
+            <td colspan="2" style="padding:6px 8px;font-size:10px;">TOTALS</td>
+            <td></td><td></td>
+            <td style="padding:6px 8px;font-size:10px;text-align:center;">${logs?.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0}</td>
+            <td style="padding:6px 8px;font-size:10px;text-align:center;color:#ca1b1b;">${totalLate}</td>
+            <td style="padding:6px 8px;font-size:10px;text-align:center;color:#2d8a4e;">${totalOT}</td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+      <div style="margin-top:30px;display:flex;justify-content:space-between;">
+        <div style="text-align:center;"><div style="border-top:1px solid #000;width:150px;padding-top:4px;font-size:10px;">Employee Signature</div></div>
+        <div style="text-align:center;"><div style="border-top:1px solid #000;width:150px;padding-top:4px;font-size:10px;">Verified by</div></div>
+      </div>
+      <p style="text-align:center;font-size:9px;color:#aaa;margin-top:15px;">Generated by Roma's Donuts Payroll System</p>
+    </body></html>`)
+    pw.document.close()
+    setTimeout(()=>{ pw.focus(); pw.print() },800)
+  }
+
+  function printHistoryPayslips(records, start, end) {
+    if (!records.length) { showToast('No records to print.', 'red'); return }
+    const pw = window.open('', '_blank', 'width=900,height=700')
+    const html = records.map((pay, idx) => `
+      <div class="payslip-wrap">
+        <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
+          <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:8px;">
+            <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
+            <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
+            <div style="font-size:13px;font-weight:bold;margin-top:4px;">EMPLOYEE PAYSLIP</div>
+            <div style="font-size:10px;margin-top:2px;">Serial: ${pay.payslip_serial||'—'}</div>
+            <div style="font-size:10px;color:#666;">Period: ${start} to ${end}</div>
+          </div>
+          <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:10px;">
+            <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${pay.employee_name}</div>
+            <div style="font-size:12px;font-weight:bold;color:#555;">${pay.position||''}</div>
+            <div style="font-size:10px;color:#888;">Code: ${pay.employee_code}</div>
+          </div>
+          <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+            <tr style="background:#ca1b1b;color:white;">
+              <th style="padding:5px 8px;text-align:left;font-size:10px;">Description</th>
+              <th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th>
+            </tr>
+            <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
+            <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${pay.worked_days||0} day(s) worked)</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${'PHP '+Number(pay.basic_pay||0).toFixed(2)}</td></tr>
+            ${Number(pay.overtime_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.overtime_pay).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.night_diff_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.night_diff_pay).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.holiday_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.holiday_pay).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.other_earnings||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Earnings / Bonus</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.other_earnings).toFixed(2)}</td></tr>`:''}
+            <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:5px 8px;font-size:10px;">TOTAL EARNINGS</td><td style="padding:5px 8px;text-align:right;color:#2d8a4e;">${'PHP '+Number(pay.total_earnings||0).toFixed(2)}</td></tr>
+            <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
+            ${Number(pay.late_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Late Deduction</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.late_deduction).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.undertime_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime Deduction</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.undertime_deduction).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.cash_advance_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.cash_advance_deduction).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.sss_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.sss_deduction).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.pagibig_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.pagibig_deduction).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.philhealth_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.philhealth_deduction).toFixed(2)}</td></tr>`:''}
+            ${Number(pay.other_deductions||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Deductions</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.other_deductions).toFixed(2)}</td></tr>`:''}
+            <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:5px 8px;font-size:10px;">TOTAL DEDUCTIONS</td><td style="padding:5px 8px;text-align:right;color:#ca1b1b;">${'PHP '+Number(pay.total_deductions||0).toFixed(2)}</td></tr>
+          </table>
+          <table style="width:100%;border-collapse:collapse;margin-bottom:8px;background:#f9f9f9;border:1px solid #eee;border-radius:4px;">
+            <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Days Worked</td><td style="padding:4px 8px;text-align:right;font-size:10px;font-weight:bold;">${pay.worked_days||0}</td></tr>
+            <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Absences</td><td style="padding:4px 8px;text-align:right;font-size:10px;font-weight:bold;color:#ca1b1b;">${pay.absent_days||0}</td></tr>
+            <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Period</td><td style="padding:4px 8px;text-align:right;font-size:10px;">${start} to ${end}</td></tr>
+          </table>
+          <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:bold;font-size:13px;">NET PAY</span>
+            <span style="font-weight:bold;font-size:17px;">${'PHP '+Number(pay.net_pay||0).toFixed(2)}</span>
+          </div>
+          <div style="margin-top:20px;display:flex;justify-content:space-between;">
+            <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Employee Signature</div></div>
+            <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
+          </div>
+          <div style="text-align:center;font-size:9px;color:#999;margin-top:8px;">${pay.payslip_serial||''}</div>
+        </div>
+      </div>`).join('')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Payslips ${start} to ${end}</title>
+      <style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{background:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:16px 0;}
+        .payslip-wrap{background:white;width:145mm;margin:10px auto;box-shadow:0 2px 8px rgba(0,0,0,0.2);}
+        @media print{
+          @page{size:145mm 210mm;margin:0;}
+          body{background:white;display:block;padding:0;}
+          .payslip-wrap{box-shadow:none;margin:0;page-break-after:always;}
+        }
+      </style></head><body>${html}</body></html>`)
+    pw.document.close()
+    setTimeout(() => { pw.focus(); pw.print() }, 800)
+  }
+
+  function exportPayrollToCSV(records, start, end) {
+    if (!records.length) { showToast('No records to export.', 'red'); return }
+    const headers = [
+      'Employee Code','Employee Name','Period Start','Period End','Worked Days',
+      'Basic Pay','Overtime Pay','Night Differential','Holiday Pay','Other Earnings','Total Earnings',
+      'Late Deduction','Undertime Deduction','Excess Break','Cash Advance','SSS','Pag-IBIG','PhilHealth',
+      'Other Deductions','Total Deductions','Net Pay','Status','Serial No'
+    ]
+    const rows = records.map(r => [
+      r.employee_code, r.employee_name, r.payroll_start||start, r.payroll_end||end, r.worked_days||0,
+      Number(r.basic_pay||r.basicPay||0).toFixed(2),
+      Number(r.overtime_pay||r.overtimePay||0).toFixed(2),
+      Number(r.night_diff_pay||r.nightDiffPay||0).toFixed(2),
+      Number(r.holiday_pay||r.holidayPay||0).toFixed(2),
+      Number(r.other_earnings||r.adjustmentEarnings||0).toFixed(2),
+      Number(r.total_earnings||r.totalEarnings||0).toFixed(2),
+      Number(r.late_deduction||r.lateDeduction||0).toFixed(2),
+      Number(r.undertime_deduction||r.undertimeDeduction||0).toFixed(2),
+      Number(r.other_deductions||r.excessBreakDeduction||0).toFixed(2),
+      Number(r.cash_advance_deduction||r.cashAdvanceDeduction||0).toFixed(2),
+      Number(r.sss_deduction||r.sssDeduction||0).toFixed(2),
+      Number(r.pagibig_deduction||r.pagibigDeduction||0).toFixed(2),
+      Number(r.philhealth_deduction||r.philhealthDeduction||0).toFixed(2),
+      Number(r.other_deductions||r.adjustmentDeductions||0).toFixed(2),
+      Number(r.total_deductions||r.totalDeductions||0).toFixed(2),
+      Number(r.net_pay||r.netPay||0).toFixed(2),
+      r.employee_acknowledgement||'pending',
+      r.payslip_serial||r.payslipSerial||''
+    ])
+    // Add totals row
+    rows.push([])
+    rows.push([
+      '','TOTALS','','','',
+      records.reduce((s,r)=>s+Number(r.basic_pay||r.basicPay||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.overtime_pay||r.overtimePay||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.night_diff_pay||r.nightDiffPay||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.holiday_pay||r.holidayPay||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.other_earnings||r.adjustmentEarnings||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.total_earnings||r.totalEarnings||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.late_deduction||r.lateDeduction||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.undertime_deduction||r.undertimeDeduction||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.other_deductions||r.excessBreakDeduction||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.cash_advance_deduction||r.cashAdvanceDeduction||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.sss_deduction||r.sssDeduction||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.pagibig_deduction||r.pagibigDeduction||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.philhealth_deduction||r.philhealthDeduction||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.other_deductions||r.adjustmentDeductions||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.total_deductions||r.totalDeductions||0),0).toFixed(2),
+      records.reduce((s,r)=>s+Number(r.net_pay||r.netPay||0),0).toFixed(2),
+      '','',''
+    ])
+    const csvContent = [headers, ...rows].map(row => row.map(cell => '"' + String(cell).replace(/"/g, '""') + '"').join(',')).join('\n')
+    const blob = new Blob(['﻿'+csvContent], { type:'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Payroll_${start}_to_${end}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    showToast('✅ Payroll exported to CSV!')
+  }
+
   async function computePayroll() {
-    const { data:existing } = await supabase.from('payroll_records').select('id').eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd).limit(1)
+    const { data:existing } = await supabase.from('payroll_records').select('id,employee_acknowledgement').eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd)
     if (existing&&existing.length>0) {
-      if (!window.confirm('Payroll for this period already exists. Overwrite?')) return
+      // Check if locked (all agreed or any agreed)
+      const hasAgreed = existing.some(r=>r.employee_acknowledgement==='agreed')
+      const allDone = existing.every(r=>r.employee_acknowledgement==='agreed'||r.employee_acknowledgement==='disputed')
+      if (allDone) {
+        showToast('🔒 This payroll period is locked — all employees have acknowledged.','red')
+        return
+      }
+      if (hasAgreed) {
+        if (!window.confirm('⚠️ WARNING: Some employees have already acknowledged this payroll. Overwriting will reset their acknowledgements. Are you sure?')) return
+      } else {
+        if (!window.confirm('Payroll for this period already exists. Overwrite?')) return
+      }
       await supabase.from('payroll_records').delete().eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd)
     }
     setPayrollComputing(true)
@@ -846,6 +1463,25 @@ export default function App() {
     setPayrollResults(results); setPayrollSummary(s); setPayrollComputing(false)
     await logAudit('PAYROLL COMPUTED','Admin','ALL',`${payrollStart} to ${payrollEnd} — ${results.length} employees`)
     showToast('✅ Payroll computed successfully!')
+    // Schedule auto-acknowledge after 5 days (stored in DB as a flag)
+    const deadline = new Date(); deadline.setDate(deadline.getDate()+5)
+    await supabase.from('payroll_periods').upsert({
+      payroll_start: payrollStart, payroll_end: payrollEnd,
+      acknowledge_deadline: deadline.toISOString().slice(0,10),
+      computed_at: new Date().toISOString()
+    }, { onConflict:'payroll_start,payroll_end' }).then(()=>{}).catch(()=>{})
+  }
+
+  // Auto-acknowledge expired payslips (called on admin dashboard load)
+  async function autoAcknowledgeExpired() {
+    const { data: periods } = await supabase.from('payroll_periods').select('*').lte('acknowledge_deadline', today)
+    for (const period of periods||[]) {
+      await supabase.from('payroll_records')
+        .update({ employee_acknowledgement: 'auto-acknowledged' })
+        .eq('payroll_start', period.payroll_start)
+        .eq('payroll_end', period.payroll_end)
+        .eq('employee_acknowledgement', 'pending')
+    }
   }
   function printAllPayslips() {
     if (payrollResults.length===0) { showToast('No payroll results to print.','red'); return }
@@ -933,10 +1569,10 @@ export default function App() {
   // ── Admin Render ──────────────────────────────────────────────────────────
   if (adminMode) {
     const tabs = [
-      ['dashboard','🏠 Dashboard'],['attendance','📋 Attendance'],['employees','👥 Employees'],
+      ['dashboard','🏠 Dashboard'],['attendance','📋 Attendance'],['employees','👥 Employees'],['auditTrail','📜 Audit Trail'],
       ['schedule','📅 Schedule'],['holidays','🗓️ Holidays'],['overtime','⏰ OT / UT Requests'],
       ['adjustment','⚙️ Adjustment'],['payroll','💰 Payroll'],['thirteenth','🎁 13th Month'],
-      ['finalpay','📄 Final Pay'],['announcements','📢 Announcements'],
+      ['finalpay','📄 Final Pay'],['payrollHistory','📂 Payroll History'],['remittance','🏛️ Remittance Report'],['dtr','📋 DTR Print'],['announcements','📢 Announcements'],
       ['leaveRequests','🏖️ Leave Requests 🔔'],['cashRequests','💵 CA Requests 🔔'],['disputes','⚠️ Disputes 🔔'],
     ]
     const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
@@ -972,7 +1608,11 @@ export default function App() {
                   <h2 style={{ color:'#ca1b1b', textAlign:'center', margin:'0 0 8px', fontSize:'13px' }}>Admin Dashboard</h2>
                 </>
               )}
-              {tabs.map(([key,label])=>(
+              {/* Role badge */}
+              <div style={{ background:'#ca1b1b', color:'white', borderRadius:'8px', padding:'6px 10px', marginBottom:'6px', textAlign:'center', fontSize:'11px', fontWeight:'bold' }}>
+                {adminRole==='owner'?'👑 Owner':adminRole==='hr'?'👤 HR Admin':adminRole==='payroll'?'💰 Payroll Officer':'👁 Supervisor'}
+              </div>
+              {tabs.filter(([key])=>canAccess(key)).map(([key,label])=>(
                 <button key={key} onClick={()=>{
                   setActiveTab(key); setSidebarOpen(false)
                   if(key==='leaveRequests') loadLeaveRequests()
@@ -981,7 +1621,11 @@ export default function App() {
                   if(key==='overtime') loadTimeAdjRequests()
                   if(key==='holidays') loadHolidays()
                   if(key==='announcements') loadAnnouncements()
-                  if(key==='dashboard') loadDashboard()
+                  if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }
+                  if(key==='auditTrail') loadAuditTrail()
+                  if(key==='payrollHistory') loadPayrollHistory()
+                  if(key==='remittance') loadPayrollHistory()
+                  if(key==='dtr') loadEmployees()
                 }} style={{ padding:'9px 10px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:activeTab===key?'#ca1b1b':'#f0f0f0', color:activeTab===key?'white':'#333' }}>{label}</button>
               ))}
               <button style={{ padding:'9px 10px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:'#222', color:'white', marginTop:'8px' }} onClick={()=>setAdminMode(false)}>← Back to Login</button>
@@ -1016,7 +1660,110 @@ export default function App() {
                   </div>
                 )}
                 <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
-                  <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginTop:'4px' }}>
+                  <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
+                </div>
+
+                {/* Probationary Alerts */}
+                {dashboardData?.probDue?.length > 0 && (
+                  <div style={{ background:'#fff8dc', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+                    <p style={{ fontWeight:'bold', color:'#f5a623', fontSize:'13px', margin:'0 0 8px' }}>⚠️ Probationary Employees Due for Review ({dashboardData.probDue.length})</p>
+                    {dashboardData.probDue.map(e=>{
+                      const months = Math.floor((new Date()-new Date(e.hire_date))/(1000*60*60*24*30))
+                      return (
+                        <div key={e.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:'1px solid #eee', flexWrap:'wrap', gap:'6px' }}>
+                          <div>
+                            <span style={{ fontWeight:'bold', fontSize:'13px' }}>{e.full_name}</span>
+                            <span style={{ color:'#888', fontSize:'11px', marginLeft:'8px' }}>{e.employee_code} | {e.position}</span>
+                          </div>
+                          <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                            <Badge label={`${months} months in`} color="orange" />
+                            <button style={{ ...btnGreen, width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={async()=>{
+                              await supabase.from('employees').update({ employment_type:'regular' }).eq('id', e.id)
+                              await logAudit('REGULARIZED','Admin',e.full_name,`Regularized after ${months} months`)
+                              showToast(`✅ ${e.full_name} regularized!`)
+                              loadDashboard()
+                            }}>✅ REGULARIZE</button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Birthdays & Anniversaries */}
+                {(dashboardData?.birthdays?.length > 0 || dashboardData?.anniversaries?.length > 0) && (
+                  <div style={{ background:'#f0fff0', border:'1px solid #c8e6c9', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+                    {dashboardData.birthdays?.length > 0 && (
+                      <div style={{ marginBottom:dashboardData.anniversaries?.length>0?'10px':0 }}>
+                        <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 6px' }}>🎂 Birthdays This Week</p>
+                        {dashboardData.birthdays.map(e=>(
+                          <p key={e.id} style={cps}>🎉 <strong>{e.full_name}</strong> — {e.date_of_birth?.slice(5)}</p>
+                        ))}
+                      </div>
+                    )}
+                    {dashboardData.anniversaries?.length > 0 && (
+                      <div>
+                        <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 6px' }}>🏆 Work Anniversaries This Week</p>
+                        {dashboardData.anniversaries.map(e=>{
+                          const years = new Date().getFullYear() - new Date(e.hire_date).getFullYear()
+                          return <p key={e.id} style={cps}>🎊 <strong>{e.full_name}</strong> — {years} year(s)</p>
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Attendance Chart */}
+                {attendanceStats.length > 0 && (
+                  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginTop:'20px' }}>
+                    <h3 style={{ color:'#ca1b1b', margin:'0 0 16px', fontSize:'14px' }}>📊 Monthly Attendance (Last 6 Months)</h3>
+                    <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', height:'120px', borderBottom:'2px solid #eee', paddingBottom:'8px' }}>
+                      {attendanceStats.map(s=>{
+                        const max = Math.max(...attendanceStats.map(x=>x.present+x.absent+x.late), 1)
+                        const total = s.present+s.absent+s.late
+                        return (
+                          <div key={s.month} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:'2px', height:'100%', justifyContent:'flex-end' }}>
+                            <span style={{ fontSize:'10px', color:'#888', marginBottom:'2px' }}>{total}</span>
+                            <div style={{ width:'100%', display:'flex', flexDirection:'column', borderRadius:'4px 4px 0 0', overflow:'hidden' }}>
+                              <div style={{ background:'#2d8a4e', height:`${(s.present/Math.max(total,1))*80}px`, width:'100%', minHeight:s.present>0?2:0 }} title={`Present: ${s.present}`} />
+                              <div style={{ background:'#f5a623', height:`${(s.late/Math.max(total,1))*80}px`, width:'100%', minHeight:s.late>0?2:0 }} title={`Late: ${s.late}`} />
+                              <div style={{ background:'#ca1b1b', height:`${(s.absent/Math.max(total,1))*80}px`, width:'100%', minHeight:s.absent>0?2:0 }} title={`Absent: ${s.absent}`} />
+                            </div>
+                            <span style={{ fontSize:'9px', color:'#888', marginTop:'4px', textAlign:'center' }}>{s.month.slice(5)}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div style={{ display:'flex', gap:'16px', marginTop:'10px', flexWrap:'wrap' }}>
+                      {[['#2d8a4e','Present'],['#f5a623','Late'],['#ca1b1b','Absent']].map(([c,l])=>(
+                        <div key={l} style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                          <div style={{ width:'12px', height:'12px', background:c, borderRadius:'2px' }} />
+                          <span style={{ fontSize:'11px', color:'#555' }}>{l}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Payroll Cost Chart */}
+                {payrollCostStats.length > 0 && (
+                  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginTop:'12px' }}>
+                    <h3 style={{ color:'#ca1b1b', margin:'0 0 16px', fontSize:'14px' }}>💰 Payroll Cost This Year</h3>
+                    <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', height:'100px', borderBottom:'2px solid #eee', paddingBottom:'8px' }}>
+                      {payrollCostStats.map(s=>{
+                        const max = Math.max(...payrollCostStats.map(x=>x.total), 1)
+                        return (
+                          <div key={s.month} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:'2px', height:'100%', justifyContent:'flex-end' }}>
+                            <span style={{ fontSize:'9px', color:'#888' }}>₱{(s.total/1000).toFixed(0)}k</span>
+                            <div style={{ background:'#ca1b1b', width:'100%', height:`${(s.total/max)*80}px`, borderRadius:'4px 4px 0 0', minHeight:s.total>0?4:0 }} />
+                            <span style={{ fontSize:'9px', color:'#888', marginTop:'4px' }}>{s.month.slice(5)}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
                   <button style={{ ...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setShowLocationSetting(!showLocationSetting)}>📍 SET STORE LOCATION</button>
                 </div>
                 {showLocationSetting && (
@@ -1050,6 +1797,46 @@ export default function App() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* AUDIT TRAIL */}
+            {activeTab==='auditTrail' && (
+              <div>
+                <h2 style={h2s}>📜 Audit Trail</h2>
+                <p style={{ color:'#888', fontSize:'13px', marginBottom:'14px' }}>Complete log of all admin actions. Last 500 records.</p>
+                <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'14px', alignItems:'flex-end' }}>
+                  <div style={{ flex:1 }}>
+                    <input placeholder="🔍 Search by action, employee, or admin..." value={auditSearch} onChange={e=>setAuditSearch(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} />
+                  </div>
+                  <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{ await loadAuditTrail(); showToast('✅ Audit trail refreshed!') }}>🔄 REFRESH</button>
+                </div>
+                {auditLoading && <p style={{ color:'#888', textAlign:'center', padding:'20px' }}>⏳ Loading audit trail...</p>}
+                {!auditLoading && auditLogs.length===0 && <p style={{ color:'#888' }}>No audit logs found.</p>}
+                <div style={{ border:'1px solid #eee', borderRadius:'10px', overflow:'hidden' }}>
+                  {auditLogs
+                    .filter(l=>`${l.action} ${l.performed_by} ${l.target_employee} ${l.details}`.toLowerCase().includes(auditSearch.toLowerCase()))
+                    .map((log,i)=>(
+                      <div key={log.id} style={{ padding:'10px 14px', background:i%2===0?'white':'#fafafa', borderBottom:'1px solid #eee', display:'flex', gap:'12px', alignItems:'flex-start', flexWrap:'wrap' }}>
+                        <div style={{ minWidth:'140px', flexShrink:0 }}>
+                          <span style={{ fontSize:'11px', color:'#aaa', fontFamily:'monospace' }}>{new Date(log.created_at).toLocaleString()}</span>
+                        </div>
+                        <div style={{ flex:1, minWidth:0 }}>
+                          <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap', marginBottom:'2px' }}>
+                            <Badge label={log.action} color={
+                              log.action?.includes('APPROVED')||log.action?.includes('ADDED')||log.action?.includes('TIME IN')?'green':
+                              log.action?.includes('REJECTED')||log.action?.includes('DEACTIVATED')||log.action?.includes('ABSENT')?'red':
+                              log.action?.includes('UPDATED')||log.action?.includes('RESOLVED')?'blue':'gray'
+                            } />
+                            <span style={{ fontSize:'12px', color:'#555' }}>by <strong>{log.performed_by}</strong></span>
+                            {log.target_employee && <span style={{ fontSize:'12px', color:'#888' }}>→ {log.target_employee}</span>}
+                          </div>
+                          {log.details && <p style={{ fontSize:'12px', color:'#888', margin:0 }}>{log.details}</p>}
+                        </div>
+                      </div>
+                    ))
+                  }
+                </div>
               </div>
             )}
 
@@ -1171,10 +1958,23 @@ export default function App() {
                   <label style={lblS}>Service Incentive Leave (days/yr):</label>
                   <input type="number" value={newEmpFields.sil} onChange={e=>setNewEmpFields(p=>({...p,sil:e.target.value}))} style={inputStyle} />
                   <div style={{ background:'white', borderRadius:'10px', padding:'12px', border:'1px solid #eee' }}>
-                    <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>🏛️ Government Contributions</p>
+                    <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>🏛️ Government Contributions & IDs</p>
                     <label style={lblS}><input type="checkbox" checked={newEmpFields.hasSss} onChange={e=>setNewEmpFields(p=>({...p,hasSss:e.target.checked}))} style={{ marginRight:'8px' }} />SSS — PHP 375 (11–25 cutoff)</label>
+                    {newEmpFields.hasSss && <input placeholder="SSS ID Number" value={newEmpFields.sss_no||''} onChange={e=>setNewEmpFields(p=>({...p,sss_no:e.target.value}))} style={{ ...inputStyle, marginBottom:'8px' }} />}
                     <label style={lblS}><input type="checkbox" checked={newEmpFields.hasPagibig} onChange={e=>setNewEmpFields(p=>({...p,hasPagibig:e.target.checked}))} style={{ marginRight:'8px' }} />Pag-IBIG — PHP 200 (26–10 cutoff)</label>
+                    {newEmpFields.hasPagibig && <input placeholder="Pag-IBIG ID Number" value={newEmpFields.pagibig_no||''} onChange={e=>setNewEmpFields(p=>({...p,pagibig_no:e.target.value}))} style={{ ...inputStyle, marginBottom:'8px' }} />}
                     <label style={lblS}><input type="checkbox" checked={newEmpFields.hasPhilhealth} onChange={e=>setNewEmpFields(p=>({...p,hasPhilhealth:e.target.checked}))} style={{ marginRight:'8px' }} />PhilHealth — PHP 250 (26–10 cutoff)</label>
+                    {newEmpFields.hasPhilhealth && <input placeholder="PhilHealth ID Number" value={newEmpFields.philhealth_no||''} onChange={e=>setNewEmpFields(p=>({...p,philhealth_no:e.target.value}))} style={{ ...inputStyle, marginBottom:'8px' }} />}
+                    <label style={lblS}>TIN Number (BIR):</label>
+                    <input placeholder="Tax Identification Number" value={newEmpFields.tin_no||''} onChange={e=>setNewEmpFields(p=>({...p,tin_no:e.target.value}))} style={inputStyle} />
+                  </div>
+                  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 8px', borderBottom:'1px solid #eee', paddingBottom:'6px' }}>📍 Work Location (for Time In/Out geofencing)</p>
+                  <p style={{ color:'#888', fontSize:'12px', marginBottom:'8px' }}>Leave blank to use the store's default location set in Dashboard. Fill this for employees who work at a different location (e.g. production, delivery hub, satellite office).</p>
+                  <input placeholder="Location Name (e.g. Production Area, Warehouse)" value={newEmpFields.work_location||''} onChange={e=>setNewEmpFields(p=>({...p,work_location:e.target.value}))} style={inputStyle} />
+                  <div style={{ display:'flex', gap:'10px' }}>
+                    <div style={{ flex:1 }}><label style={lblS}>Latitude:</label><input type="number" step="0.000001" placeholder="e.g. 15.4755" value={newEmpFields.location_lat||''} onChange={e=>setNewEmpFields(p=>({...p,location_lat:e.target.value}))} style={inputStyle} /></div>
+                    <div style={{ flex:1 }}><label style={lblS}>Longitude:</label><input type="number" step="0.000001" placeholder="e.g. 120.5963" value={newEmpFields.location_lng||''} onChange={e=>setNewEmpFields(p=>({...p,location_lng:e.target.value}))} style={inputStyle} /></div>
+                    <div style={{ flex:1 }}><label style={lblS}>Radius (m):</label><input type="number" placeholder="e.g. 200" value={newEmpFields.location_radius||''} onChange={e=>setNewEmpFields(p=>({...p,location_radius:e.target.value}))} style={inputStyle} /></div>
                   </div>
                 </div>
                 <button style={btnGreen} onClick={addEmployee}>➕ ADD EMPLOYEE</button>
@@ -1198,7 +1998,7 @@ export default function App() {
                           </div>
                         </div>
                         <div style={{ display:'flex', gap:'5px', flexShrink:0 }}>
-                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, sil:emp.sil_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'' }) }}>✏ EDIT</button>
+                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, sil:emp.sil_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'' }) }}>✏ EDIT</button>
                           <button style={{ ...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}>🚫</button>
                         </div>
                       </div>
@@ -1254,10 +2054,23 @@ export default function App() {
                           <label style={lblS}>SIL (days/yr):</label>
                           <input type="number" value={editFields.sil||5} onChange={e=>setEditFields(p=>({...p,sil:e.target.value}))} style={inputStyle} />
                           <div style={{ background:'white', borderRadius:'10px', padding:'12px', border:'1px solid #eee', marginBottom:'12px' }}>
-                            <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>🏛️ Government Contributions</p>
+                            <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>🏛️ Government Contributions & IDs</p>
                             <label style={lblS}><input type="checkbox" checked={editFields.hasSss||false} onChange={e=>setEditFields(p=>({...p,hasSss:e.target.checked}))} style={{ marginRight:'8px' }} />SSS</label>
+                            {editFields.hasSss && <input placeholder="SSS ID Number" value={editFields.sss_no||''} onChange={e=>setEditFields(p=>({...p,sss_no:e.target.value}))} style={{ ...inputStyle, marginBottom:'8px' }} />}
                             <label style={lblS}><input type="checkbox" checked={editFields.hasPagibig||false} onChange={e=>setEditFields(p=>({...p,hasPagibig:e.target.checked}))} style={{ marginRight:'8px' }} />Pag-IBIG</label>
+                            {editFields.hasPagibig && <input placeholder="Pag-IBIG ID Number" value={editFields.pagibig_no||''} onChange={e=>setEditFields(p=>({...p,pagibig_no:e.target.value}))} style={{ ...inputStyle, marginBottom:'8px' }} />}
                             <label style={lblS}><input type="checkbox" checked={editFields.hasPhilhealth||false} onChange={e=>setEditFields(p=>({...p,hasPhilhealth:e.target.checked}))} style={{ marginRight:'8px' }} />PhilHealth</label>
+                            {editFields.hasPhilhealth && <input placeholder="PhilHealth ID Number" value={editFields.philhealth_no||''} onChange={e=>setEditFields(p=>({...p,philhealth_no:e.target.value}))} style={{ ...inputStyle, marginBottom:'8px' }} />}
+                            <label style={lblS}>TIN Number (BIR):</label>
+                            <input placeholder="Tax Identification Number" value={editFields.tin_no||''} onChange={e=>setEditFields(p=>({...p,tin_no:e.target.value}))} style={inputStyle} />
+                          </div>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 6px' }}>📍 Work Location (Geofencing)</p>
+                          <p style={{ color:'#888', fontSize:'12px', marginBottom:'8px' }}>Leave blank to use default store location. Set for employees at different sites.</p>
+                          <input placeholder="Location Name (e.g. Production Area)" value={editFields.work_location||''} onChange={e=>setEditFields(p=>({...p,work_location:e.target.value}))} style={inputStyle} />
+                          <div style={{ display:'flex', gap:'8px' }}>
+                            <div style={{ flex:1 }}><label style={lblS}>Latitude:</label><input type="number" step="0.000001" value={editFields.location_lat||''} onChange={e=>setEditFields(p=>({...p,location_lat:e.target.value}))} style={inputStyle} /></div>
+                            <div style={{ flex:1 }}><label style={lblS}>Longitude:</label><input type="number" step="0.000001" value={editFields.location_lng||''} onChange={e=>setEditFields(p=>({...p,location_lng:e.target.value}))} style={inputStyle} /></div>
+                            <div style={{ flex:1 }}><label style={lblS}>Radius (m):</label><input type="number" value={editFields.location_radius||''} onChange={e=>setEditFields(p=>({...p,location_radius:e.target.value}))} style={inputStyle} /></div>
                           </div>
                           {saveSuccess===editingEmployeeId && (
                             <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'10px', padding:'12px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'10px' }}>
@@ -1280,15 +2093,162 @@ export default function App() {
             {/* SCHEDULE */}
             {activeTab==='schedule' && (
               <div>
-                <h2 style={h2s}>Assign Daily Schedule</h2>
-                <EmployeeSelect value={selectedEmployeeId} onChange={setSelectedEmployeeId} employees={employees} />
-                <label style={lblS}>Date:</label>
-                <input type="date" value={scheduleDate} onChange={e=>setScheduleDate(e.target.value)} style={inputStyle} />
-                <label style={lblS}>Shift Start:</label>
-                <input type="time" value={shiftStart} onChange={e=>setShiftStart(e.target.value)} style={inputStyle} />
-                <label style={lblS}>Shift End:</label>
-                <input type="time" value={shiftEnd} onChange={e=>setShiftEnd(e.target.value)} style={inputStyle} />
-                <button style={btnGreen} onClick={saveSchedule}>💾 SAVE SCHEDULE</button>
+                <h2 style={h2s}>📅 Schedule Management</h2>
+
+                {/* Day Off Settings */}
+                <div style={{ background:'#f0f4ff', border:'2px solid #4a90d9', borderRadius:'14px', padding:'16px', marginBottom:'20px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+                    <h3 style={{ color:'#4a90d9', margin:0, fontSize:'14px' }}>🏖️ Weekly Day Off Settings</h3>
+                    <button style={{ ...btnBlack, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'12px', background:'#4a90d9' }} onClick={()=>setShowDayOffSettings(!showDayOffSettings)}>
+                      {showDayOffSettings?'▲ HIDE':'▼ CONFIGURE'}
+                    </button>
+                  </div>
+                  <p style={{ color:'#888', fontSize:'12px', margin:0 }}>All employees are entitled to 1 day off per week. Set the default day off per department or per employee.</p>
+                  {showDayOffSettings && (
+                    <div style={{ marginTop:'14px' }}>
+                      <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', marginBottom:'8px' }}>Default Day Off by Department:</p>
+                      {['Kitchen','Cashier','Service Crew','Delivery','Production','Supervisor','Manager','Admin','Security','Maintenance'].map(dept=>(
+                        <div key={dept} style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'8px', background:'white', padding:'8px 12px', borderRadius:'8px', border:'1px solid #eee' }}>
+                          <span style={{ fontSize:'13px', fontWeight:'bold', color:'#333', minWidth:'120px' }}>{dept}</span>
+                          <select value={dayOffSettings[dept]||'Sunday'} onChange={e=>setDayOffSettings(p=>({...p,[dept]:e.target.value}))} style={{ ...inputStyle, marginBottom:0, flex:1 }}>
+                            {['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(d=><option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </div>
+                      ))}
+                      <button style={{ ...btnGreen, width:'auto', padding:'8px 18px', marginTop:'8px' }} onClick={()=>{
+                        localStorage.setItem('day_off_settings', JSON.stringify(dayOffSettings))
+                        showToast('✅ Day off settings saved!')
+                        setShowDayOffSettings(false)
+                      }}>💾 SAVE DAY OFF SETTINGS</button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Department Locations for Geofencing */}
+                <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'16px', marginBottom:'20px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+                    <h3 style={{ color:'#f5a623', margin:0, fontSize:'14px' }}>📍 Department Locations (Geofencing)</h3>
+                    <button style={{ ...btnBlack, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'12px', background:'#f5a623' }} onClick={()=>setShowDeptLocations(!showDeptLocations)}>
+                      {showDeptLocations?'▲ HIDE':'▼ CONFIGURE'}
+                    </button>
+                  </div>
+                  <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Set a GPS location per department. Employees in that department must be within the radius when timing in/out. Individual employee location (set in employee profile) takes priority over department location.</p>
+                  {showDeptLocations && (
+                    <div style={{ marginTop:'14px' }}>
+                      {['Kitchen','Cashier','Service Crew','Delivery','Production','Supervisor','Manager','Admin','Security','Maintenance'].map(dept=>(
+                        <div key={dept} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:'1px solid #eee' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 8px' }}>📌 {dept}</p>
+                          <input placeholder="Location Name (e.g. Main Kitchen, Warehouse)" value={departmentLocations[dept]?.name||''} onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],name:e.target.value}}))} style={{ ...inputStyle, marginBottom:'6px' }} />
+                          <div style={{ display:'flex', gap:'8px' }}>
+                            <div style={{ flex:1 }}><label style={lblS}>Latitude:</label><input type="number" step="0.000001" value={departmentLocations[dept]?.lat||''} onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lat:e.target.value}}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                            <div style={{ flex:1 }}><label style={lblS}>Longitude:</label><input type="number" step="0.000001" value={departmentLocations[dept]?.lng||''} onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lng:e.target.value}}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                            <div style={{ flex:1 }}><label style={lblS}>Radius (m):</label><input type="number" value={departmentLocations[dept]?.radius||200} onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],radius:e.target.value}}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                          </div>
+                        </div>
+                      ))}
+                      <button style={{ ...btnGreen, width:'auto', padding:'8px 18px', marginTop:'4px' }} onClick={()=>saveDepartmentLocations(departmentLocations)}>💾 SAVE ALL LOCATIONS</button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Bulk Schedule Creator */}
+                <div style={{ background:'#f9f9f9', borderRadius:'14px', padding:'18px', marginBottom:'20px', border:'2px solid #ca1b1b' }}>
+                  <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'15px' }}>⚡ Bulk Schedule Creator</h3>
+
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+                    <div style={{ flex:1, minWidth:'160px' }}>
+                      <label style={lblS}>Apply To:</label>
+                      <select value={scheduleRepeat} onChange={e=>setScheduleRepeat(e.target.value)} style={inputStyle}>
+                        <option value="all">👥 All Active Employees</option>
+                        <option value="one">👤 One Employee</option>
+                      </select>
+                    </div>
+                    {scheduleRepeat==='one' && (
+                      <div style={{ flex:2, minWidth:'200px' }}>
+                        <label style={lblS}>Select Employee:</label>
+                        <EmployeeSelect value={selectedEmployeeId} onChange={setSelectedEmployeeId} employees={employees} />
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+                    <div style={{ flex:1, minWidth:'140px' }}>
+                      <label style={lblS}>Start Date:</label>
+                      <input type="date" value={scheduleDate} onChange={e=>setScheduleDate(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} />
+                    </div>
+                    <div style={{ flex:1, minWidth:'140px' }}>
+                      <label style={lblS}>Duration:</label>
+                      <select value={scheduleDuration} onChange={e=>setScheduleDuration(e.target.value)} style={{ ...inputStyle, marginBottom:0 }}>
+                        <option value="1day">📅 Single Day</option>
+                        <option value="1week">📅 1 Week (7 days)</option>
+                        <option value="2weeks">📅 2 Weeks (14 days)</option>
+                        <option value="1month">📅 1 Month (30 days)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                    <div style={{ flex:1 }}>
+                      <label style={lblS}>Shift Start:</label>
+                      <input type="time" value={shiftStart} onChange={e=>setShiftStart(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} />
+                    </div>
+                    <div style={{ flex:1 }}>
+                      <label style={lblS}>Shift End:</label>
+                      <input type="time" value={shiftEnd} onChange={e=>setShiftEnd(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} />
+                    </div>
+                  </div>
+
+                  {shiftStart && shiftEnd && (
+                    <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'10px', marginBottom:'12px', fontSize:'13px', color:'#555' }}>
+                      ⏰ Shift: <strong>{shiftStart} – {shiftEnd}</strong> &nbsp;|&nbsp;
+                      📅 Duration: <strong>{scheduleDuration==='1day'?'1 Day':scheduleDuration==='1week'?'7 Days':scheduleDuration==='2weeks'?'14 Days':'30 Days'}</strong> &nbsp;|&nbsp;
+                      👥 Apply to: <strong>{scheduleRepeat==='all'?`All ${employees.length} employees`:employees.find(e=>e.id===selectedEmployeeId)?.full_name||'—'}</strong>
+                    </div>
+                  )}
+
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap' }}>
+                    <button style={{ ...btnGreen, width:'auto', padding:'11px 20px', marginTop:0 }}
+                      onClick={scheduleDuration==='1day'?saveSchedule:saveBulkSchedule}
+                      disabled={bulkScheduleLoading}>
+                      {bulkScheduleLoading ? '⏳ SAVING...' : '💾 APPLY SCHEDULE'}
+                    </button>
+                    <button style={{ ...btnBlack, width:'auto', padding:'11px 20px', marginTop:0 }}
+                      onClick={loadExistingSchedules}>
+                      👁 VIEW EXISTING
+                    </button>
+                  </div>
+                </div>
+
+                {/* Existing Schedules */}
+                {existingSchedules.length > 0 && (
+                  <div>
+                    <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}>📋 Upcoming Schedules (next 30 days from start date)</h3>
+                    <div style={{ overflowX:'auto', borderRadius:'10px', border:'1px solid #eee' }}>
+                      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+                        <thead>
+                          <tr style={{ background:'#ca1b1b', color:'white' }}>
+                            <th style={{ padding:'8px 10px', textAlign:'left' }}>Date</th>
+                            <th style={{ padding:'8px 10px', textAlign:'left' }}>Employee</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center' }}>Shift</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center' }}>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {existingSchedules.map((s,i)=>(
+                            <tr key={s.id} style={{ background:i%2===0?'white':'#fafafa', borderBottom:'1px solid #eee' }}>
+                              <td style={{ padding:'7px 10px' }}>{s.schedule_date} <span style={{ color:'#aaa', fontSize:'11px' }}>({new Date(s.schedule_date).toLocaleDateString('en-US',{weekday:'short'})})</span></td>
+                              <td style={{ padding:'7px 10px' }}>{s.employees?.full_name||'—'} <span style={{ color:'#aaa' }}>({s.employees?.employee_code||''})</span></td>
+                              <td style={{ padding:'7px 10px', textAlign:'center', fontWeight:'bold', color:'#ca1b1b' }}>{s.shift_start} – {s.shift_end}</td>
+                              <td style={{ padding:'7px 10px', textAlign:'center' }}>
+                                <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'4px 10px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>deleteSchedule(s.id)}>🗑 REMOVE</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1296,23 +2256,53 @@ export default function App() {
             {activeTab==='holidays' && (
               <div>
                 <h2 style={h2s}>Holiday Calendar</h2>
-                <p style={{ color:'#888', fontSize:'13px', marginBottom:'15px' }}>Regular Holidays = 200% if worked | Special Non-Working = 130% if worked</p>
+                <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'13px', color:'#555' }}>
+                  <strong style={{ color:'#ca1b1b' }}>Holiday Pay Rules (DOLE):</strong><br/>
+                  🔴 Regular Holiday — Worked: <strong>200%</strong> | Not Worked: <strong>100%</strong> (paid even if absent)<br/>
+                  🟡 Special Non-Working — Worked: <strong>130%</strong> | Not Worked: <strong>No Pay (NWNP)</strong>
+                </div>
+
+                {/* Auto-add Philippine Holidays */}
+                <div style={{ background:'#f0fff0', border:'1px solid #c8e6c9', borderRadius:'10px', padding:'14px', marginBottom:'16px' }}>
+                  <h3 style={{ color:'#2d8a4e', margin:'0 0 8px', fontSize:'14px' }}>🇵🇭 Philippine Regular Holidays</h3>
+                  <p style={{ color:'#888', fontSize:'12px', margin:'0 0 10px' }}>Auto-add all official Philippine regular holidays. Skips any already added.</p>
+                  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                    {[today.slice(0,4), String(Number(today.slice(0,4))+1)].map(yr=>(
+                      <button key={yr} style={{ ...btnGreen, width:'auto', padding:'8px 16px', marginTop:0 }} onClick={()=>addPhilippineHolidays(yr)}>
+                        🇵🇭 ADD {yr} HOLIDAYS
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Manual add — Special Non-Working only */}
                 <div style={{ background:'#f9f9f9', borderRadius:'10px', padding:'14px', marginBottom:'18px' }}>
+                  <h3 style={{ color:'#ca1b1b', margin:'0 0 10px', fontSize:'14px' }}>➕ Add Special Non-Working Holiday</h3>
+                  <p style={{ color:'#888', fontSize:'12px', margin:'0 0 10px' }}>Special non-working holidays (proclamation days, local holidays) must be added manually by admin.</p>
                   <label style={lblS}>Date:</label>
                   <input type="date" value={newHolidayDate} onChange={e=>setNewHolidayDate(e.target.value)} style={inputStyle} />
                   <label style={lblS}>Holiday Name:</label>
-                  <input placeholder="e.g. Christmas Day" value={newHolidayName} onChange={e=>setNewHolidayName(e.target.value)} style={inputStyle} />
+                  <input placeholder="e.g. EDSA Anniversary, Local Fiesta" value={newHolidayName} onChange={e=>setNewHolidayName(e.target.value)} style={inputStyle} />
                   <label style={lblS}>Type:</label>
-                  <select value={newHolidayType} onChange={e=>setNewHolidayType(e.target.value)} style={inputStyle}><option value="regular">Regular Holiday (200%)</option><option value="special">Special Non-Working (130%)</option></select>
+                  <select value={newHolidayType} onChange={e=>setNewHolidayType(e.target.value)} style={inputStyle}>
+                    <option value="regular">Regular Holiday (200% worked / 100% not worked)</option>
+                    <option value="special">Special Non-Working (130% worked / No Pay if absent)</option>
+                  </select>
                   <button style={btnGreen} onClick={addHoliday}>➕ ADD HOLIDAY</button>
                 </div>
+
                 {holidays.length===0 && <p style={{ color:'#888' }}>No holidays added yet.</p>}
-                {holidays.map(h=>(
-                  <div key={h.id} style={{ ...cardS, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                    <div><strong style={{ color:'#ca1b1b' }}>{h.holiday_name}</strong><p style={cps}>{h.holiday_date} — {h.holiday_type==='regular'?'Regular (200%)':'Special (130%)'}</p></div>
-                    <button style={{ ...btnRed, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'13px' }} onClick={()=>deleteHoliday(h.id)}>🗑 DELETE</button>
-                  </div>
-                ))}
+                <div style={{ border:'1px solid #eee', borderRadius:'10px', overflow:'hidden' }}>
+                  {holidays.map((h,i)=>(
+                    <div key={h.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'10px 14px', background:i%2===0?'white':'#fafafa', borderBottom:i<holidays.length-1?'1px solid #eee':'none' }}>
+                      <div>
+                        <strong style={{ color:h.holiday_type==='regular'?'#ca1b1b':'#f5a623', fontSize:'13px' }}>{h.holiday_name}</strong>
+                        <p style={cps}>{h.holiday_date} — <Badge label={h.holiday_type==='regular'?'Regular 200%':'Special 130%'} color={h.holiday_type==='regular'?'red':'orange'} /></p>
+                      </div>
+                      <button style={{ ...btnRed, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'12px' }} onClick={()=>deleteHoliday(h.id)}>🗑</button>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -1375,6 +2365,7 @@ export default function App() {
                 <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'20px' }}>
                   <button style={{ ...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?'⏳ COMPUTING...':'🧮 COMPUTE PAYROLL'}</button>
                   <button style={{ ...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}>🖨 PRINT ALL</button>
+                  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}>📊 EXPORT CSV</button>
                 </div>
                 {payrollSummary && (
                   <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'22px' }}>
@@ -1432,31 +2423,271 @@ export default function App() {
               </div>
             )}
 
+            {/* PAYROLL HISTORY */}
+            {activeTab==='payrollHistory' && (
+              <div>
+                <h2 style={h2s}>📂 Payroll History</h2>
+
+                {/* Period List */}
+                {!selectedHistoryPeriod && (
+                  <div>
+                    <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end', marginBottom:'16px' }}>
+                      <div>
+                        <label style={lblS}>Filter by Year:</label>
+                        <select value={historyYear} onChange={e=>setHistoryYear(e.target.value)} style={{ ...inputStyle, width:'auto', marginBottom:0 }}>
+                          {[2024,2025,2026,2027].map(y=><option key={y} value={y}>{y}</option>)}
+                        </select>
+                      </div>
+                      <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{ await loadPayrollHistory(); showToast('✅ Payroll history refreshed!') }}>🔄 REFRESH</button>
+                    </div>
+                    {historyLoading && <p style={{ color:'#888' }}>⏳ Loading payroll history...</p>}
+                    {!historyLoading && payrollHistory.length===0 && <p style={{ color:'#888' }}>No payroll records found.</p>}
+                    {payrollHistory
+                      .filter(p=>p.payroll_start.startsWith(historyYear))
+                      .map(period=>(
+                        <div key={period.payroll_start+period.payroll_end} style={{ ...cardS, border:'2px solid #ca1b1b', background:'white', cursor:'pointer' }} onClick={()=>loadHistoryRecords(period.payroll_start, period.payroll_end)}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px' }}>
+                            <div>
+                              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', margin:'0 0 4px' }}>
+                                📅 {period.payroll_start} → {period.payroll_end}
+                              </p>
+                              <p style={cps}>Total Employees: <strong>{period.total}</strong></p>
+                              <div style={{ display:'flex', gap:'8px', marginTop:'6px', flexWrap:'wrap' }}>
+                                <Badge label={`✅ Agreed: ${period.agreed}`} color="green" />
+                                {period.disputed>0 && <Badge label={`⚠️ Disputed: ${period.disputed}`} color="red" />}
+                                {period.pending>0 && <Badge label={`🔔 Pending: ${period.pending}`} color="orange" />}
+                              </div>
+                            </div>
+                            <button style={{ ...btnBlack, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }}>VIEW →</button>
+                          </div>
+                        </div>
+                      ))
+                    }
+                  </div>
+                )}
+
+                {/* Period Detail View */}
+                {selectedHistoryPeriod && (
+                  <div>
+                    <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'16px' }}>
+                      <button style={{ ...btnGray, width:'auto', padding:'8px 16px', marginTop:0 }} onClick={()=>{ setSelectedHistoryPeriod(null); setHistoryRecords([]) }}>← BACK TO LIST</button>
+                      <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>
+                        {selectedHistoryPeriod.start} to {selectedHistoryPeriod.end}
+                      </h3>
+                    </div>
+
+                    {/* Summary Banner */}
+                    {historyRecords.length>0 && (
+                      <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
+                        <h3 style={{ color:'#ca1b1b', margin:'0 0 10px', fontSize:'14px' }}>📊 Period Summary</h3>
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
+                          {[
+                            ['Employees', historyRecords.length],
+                            ['Total Earnings', 'PHP '+historyRecords.reduce((s,r)=>s+Number(r.total_earnings||0),0).toFixed(2)],
+                            ['Total Deductions', 'PHP '+historyRecords.reduce((s,r)=>s+Number(r.total_deductions||0),0).toFixed(2)],
+                            ['Total Net Pay', 'PHP '+historyRecords.reduce((s,r)=>s+Number(r.net_pay||0),0).toFixed(2)],
+                          ].map(([l,v])=>(
+                            <div key={l} style={{ background:'white', borderRadius:'8px', padding:'10px', border:'1px solid #eee' }}>
+                              <p style={{ color:'#888', fontSize:'11px', margin:'0 0 3px' }}>{l}</p>
+                              <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{v}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Action Buttons */}
+                    <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'16px' }}>
+                      <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }}
+                        onClick={()=>printHistoryPayslips(historyRecords, selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
+                        🖨 PRINT ALL PAYSLIPS
+                      </button>
+                      <button style={{ ...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }}
+                        onClick={()=>exportPayrollToCSV(historyRecords, selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
+                        📊 EXPORT TO CSV
+                      </button>
+                      <button style={{ background:'#8b5cf6', color:'white', padding:'10px 18px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }}
+                        onClick={async()=>{
+                          const empId = prompt('Enter Employee ID or code for DTR:')
+                          if(!empId) return
+                          const emp = employees.find(e=>e.employee_code===empId.toUpperCase()||e.id===empId)
+                          if(!emp){ showToast('Employee not found.','red'); return }
+                          await printDTR(emp.id, emp.full_name, emp.employee_code, selectedHistoryPeriod.start.slice(0,7))
+                        }}>
+                        📋 PRINT DTR
+                      </button>
+                    </div>
+
+                    {/* Search */}
+                    <input placeholder="🔍 Search employee..." value={historySearch} onChange={e=>setHistorySearch(e.target.value)} style={{ ...inputStyle, marginBottom:'14px' }} />
+
+                    {/* Records */}
+                    {historyRecords
+                      .filter(r=>r.employee_name.toLowerCase().includes(historySearch.toLowerCase())||r.employee_code.toLowerCase().includes(historySearch.toLowerCase()))
+                      .map((pay,idx)=>(
+                        <div key={pay.id} style={{ ...cardS, marginBottom:'14px', border:'1px solid #ddd' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                            <div>
+                              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', margin:0 }}>{pay.employee_name}</p>
+                              <p style={cps}>{pay.employee_code} | Worked: {pay.worked_days}d</p>
+                              {pay.payslip_serial && <p style={{ fontSize:'11px', color:'#aaa', fontFamily:'monospace', margin:'2px 0' }}>{pay.payslip_serial}</p>}
+                            </div>
+                            <div style={{ display:'flex', gap:'6px', alignItems:'center', flexWrap:'wrap' }}>
+                              {pay.employee_acknowledgement==='agreed' && <Badge label="✅ Agreed" color="green" />}
+                              {pay.employee_acknowledgement==='disputed' && <Badge label="⚠️ Disputed" color="red" />}
+                              {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement) && <Badge label="🔔 Pending" color="orange" />}
+                              <button style={{ ...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'12px' }}
+                                onClick={()=>printHistoryPayslips([pay], selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
+                                🖨 PRINT
+                              </button>
+                            </div>
+                          </div>
+                          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px', fontSize:'12px' }}>
+                            <div style={{ background:'#f0fff0', borderRadius:'6px', padding:'8px' }}>
+                              <p style={{ color:'#2d8a4e', fontWeight:'bold', margin:'0 0 4px', fontSize:'11px' }}>EARNINGS</p>
+                              <p style={{ margin:'2px 0', color:'#555' }}>Basic: PHP {Number(pay.basic_pay||0).toFixed(2)}</p>
+                              {Number(pay.overtime_pay||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>OT: PHP {Number(pay.overtime_pay).toFixed(2)}</p>}
+                              {Number(pay.holiday_pay||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Holiday: PHP {Number(pay.holiday_pay).toFixed(2)}</p>}
+                              {Number(pay.night_diff_pay||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Night Diff: PHP {Number(pay.night_diff_pay).toFixed(2)}</p>}
+                              <p style={{ margin:'4px 0 0', fontWeight:'bold', color:'#2d8a4e' }}>Total: PHP {Number(pay.total_earnings||0).toFixed(2)}</p>
+                            </div>
+                            <div style={{ background:'#fff0f0', borderRadius:'6px', padding:'8px' }}>
+                              <p style={{ color:'#ca1b1b', fontWeight:'bold', margin:'0 0 4px', fontSize:'11px' }}>DEDUCTIONS</p>
+                              {Number(pay.late_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Late: PHP {Number(pay.late_deduction).toFixed(2)}</p>}
+                              {Number(pay.undertime_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>UT: PHP {Number(pay.undertime_deduction).toFixed(2)}</p>}
+                              {Number(pay.sss_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>SSS: PHP {Number(pay.sss_deduction).toFixed(2)}</p>}
+                              {Number(pay.pagibig_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Pag-IBIG: PHP {Number(pay.pagibig_deduction).toFixed(2)}</p>}
+                              {Number(pay.philhealth_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>PhilHealth: PHP {Number(pay.philhealth_deduction).toFixed(2)}</p>}
+                              {Number(pay.cash_advance_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>CA: PHP {Number(pay.cash_advance_deduction).toFixed(2)}</p>}
+                              <p style={{ margin:'4px 0 0', fontWeight:'bold', color:'#ca1b1b' }}>Total: PHP {Number(pay.total_deductions||0).toFixed(2)}</p>
+                            </div>
+                          </div>
+                          <div style={{ background:'#ca1b1b', color:'white', padding:'8px 12px', borderRadius:'6px', marginTop:'8px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                            <span style={{ fontWeight:'bold', fontSize:'13px' }}>NET PAY</span>
+                            <span style={{ fontWeight:'bold', fontSize:'16px' }}>PHP {Number(pay.net_pay||0).toFixed(2)}</span>
+                          </div>
+                        </div>
+                      ))
+                    }
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* 13TH MONTH */}
             {activeTab==='thirteenth' && (
               <div>
-                <h2 style={h2s}>13th Month Pay</h2>
-                <p style={{ color:'#888', fontSize:'13px', marginBottom:'15px' }}>Set the full year range then compute.</p>
-                <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'15px' }}>
+                <h2 style={h2s}>🎁 13th Month Pay</h2>
+                <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'13px', color:'#555' }}>
+                  <strong style={{ color:'#ca1b1b' }}>Formula:</strong> Total Basic Pay for the year ÷ 12 = 13th Month Pay (DOLE mandated, tax-exempt up to ₱90,000)
+                </div>
+                <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'15px', alignItems:'flex-end' }}>
                   <div><label style={lblS}>From:</label><input type="date" value={payrollStart} onChange={e=>setPayrollStart(e.target.value)} style={{ ...inputStyle, width:'auto', marginBottom:0 }} /></div>
                   <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{ ...inputStyle, width:'auto', marginBottom:0 }} /></div>
                 </div>
-                <button style={btnGreen} onClick={async()=>{
+                <button style={{ ...btnGreen, marginBottom:'8px' }} onClick={async()=>{
                   const { data:empList } = await supabase.from('employees').select('*').eq('is_active', true)
                   const r=[]
                   for (const emp of empList||[]) {
-                    const { data:records } = await supabase.from('payroll_records').select('basic_pay').eq('employee_id', emp.id).gte('payroll_start', payrollStart).lte('payroll_end', payrollEnd)
+                    const { data:records } = await supabase.from('payroll_records').select('basic_pay,payroll_start,payroll_end').eq('employee_id', emp.id).gte('payroll_start', payrollStart).lte('payroll_end', payrollEnd).order('payroll_start')
                     const totalBasic=records?.reduce((s,rec)=>s+Number(rec.basic_pay||0),0)||0
-                    r.push({ employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', totalBasic, thirteenthMonth:totalBasic/12 })
+                    const periods = records?.length||0
+                    r.push({ employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', department:emp.department||'', hireDate:emp.hire_date||'—', totalBasic, thirteenthMonth:totalBasic/12, periods, dailyRate:Number(emp.daily_rate||0) })
                   }
-                  setPayrollResults(r); showToast('✅ 13th Month computed!')
+                  setThirteenthDetails(r); setPayrollResults(r); showToast('✅ 13th Month computed!')
                 }}>🧮 COMPUTE 13TH MONTH</button>
-                {payrollResults.map(pay=>(
-                  <div key={pay.employeeCode} style={cardS}>
-                    <strong style={{ color:'#ca1b1b' }}>{pay.employeeName}</strong>
-                    <p style={cps}>{pay.employeeCode} | {pay.position}</p>
-                    <p style={cps}>Total Basic Pay (Year): {php(pay.totalBasic)}</p>
-                    <h3 style={{ color:'#ca1b1b', margin:'6px 0 0' }}>13th Month Pay: {php(pay.thirteenthMonth)}</h3>
+
+                {thirteenthDetails.length>0 && (
+                  <div style={{ display:'flex', gap:'10px', marginBottom:'16px', flexWrap:'wrap' }}>
+                    <button style={{ ...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{
+                      const pw = window.open('','_blank','width=900,height=700')
+                      const html = thirteenthDetails.map((pay,idx)=>`
+                        <div class="payslip-wrap">
+                          <div style="width:145mm;min-height:105mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
+                            <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:6px;">
+                              <div style="font-size:18px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
+                              <div style="font-size:12px;font-weight:bold;margin-top:2px;">13TH MONTH PAY SLIP</div>
+                              <div style="font-size:10px;color:#666;">Period: ${payrollStart} to ${payrollEnd}</div>
+                            </div>
+                            <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:8px;">
+                              <div style="font-size:14px;font-weight:bold;color:#ca1b1b;">${pay.employeeName}</div>
+                              <div style="font-size:11px;color:#555;">${pay.position} | ${pay.department}</div>
+                              <div style="font-size:10px;color:#888;">Code: ${pay.employeeCode} | Hire Date: ${pay.hireDate}</div>
+                            </div>
+                            <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+                              <tr style="background:#f5f5f5;"><td style="padding:4px 8px;font-size:10px;">Payroll Cutoffs Included</td><td style="padding:4px 8px;text-align:right;font-size:10px;">${pay.periods}</td></tr>
+                              <tr><td style="padding:4px 8px;font-size:10px;">Total Basic Pay (Year)</td><td style="padding:4px 8px;text-align:right;font-size:10px;">PHP ${pay.totalBasic.toFixed(2)}</td></tr>
+                              <tr style="background:#f5f5f5;"><td style="padding:4px 8px;font-size:10px;">Formula</td><td style="padding:4px 8px;text-align:right;font-size:10px;">PHP ${pay.totalBasic.toFixed(2)} ÷ 12</td></tr>
+                            </table>
+                            <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
+                              <span style="font-weight:bold;font-size:12px;">13TH MONTH PAY</span>
+                              <span style="font-weight:bold;font-size:16px;">PHP ${pay.thirteenthMonth.toFixed(2)}</span>
+                            </div>
+                            <div style="margin-top:16px;display:flex;justify-content:space-between;">
+                              <div style="text-align:center;"><div style="border-top:1px solid #000;width:100px;padding-top:3px;font-size:9px;">Employee Signature</div></div>
+                              <div style="text-align:center;"><div style="border-top:1px solid #000;width:100px;padding-top:3px;font-size:9px;">Authorized By</div></div>
+                            </div>
+                          </div>
+                        </div>`).join('')
+                      pw.document.write(`<!DOCTYPE html><html><head><title>13th Month Pay</title>
+                        <style>*{margin:0;padding:0;box-sizing:border-box;}body{background:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:16px 0;}
+                        .payslip-wrap{background:white;width:145mm;margin:10px auto;box-shadow:0 2px 8px rgba(0,0,0,0.2);}
+                        @media print{@page{size:145mm 210mm;margin:0;}body{background:white;display:block;padding:0;}.payslip-wrap{box-shadow:none;margin:0;page-break-after:always;}}</style>
+                        </head><body>${html}</body></html>`)
+                      pw.document.close(); setTimeout(()=>{pw.focus();pw.print()},800)
+                    }}>🖨 PRINT ALL</button>
+                    <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px 16px', border:'1px solid #c8e6c9' }}>
+                      <span style={{ fontSize:'12px', color:'#555' }}>Total Payout: </span>
+                      <span style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'14px' }}>{php(thirteenthDetails.reduce((s,r)=>s+r.thirteenthMonth,0))}</span>
+                    </div>
+                  </div>
+                )}
+
+                {thirteenthDetails.map((pay,idx)=>(
+                  <div key={pay.employeeCode} style={{ ...cardS, border:'1px solid #ddd' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px' }}>
+                      <div>
+                        <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>{pay.employeeName}</strong>
+                        <p style={cps}>{pay.employeeCode} | {pay.position} | {pay.department}</p>
+                        <p style={cps}>Hire Date: {pay.hireDate} | Cutoffs: {pay.periods}</p>
+                        <p style={cps}>Total Basic (Year): {php(pay.totalBasic)} ÷ 12</p>
+                        <h3 style={{ color:'#ca1b1b', margin:'6px 0 0', fontSize:'15px' }}>13th Month: {php(pay.thirteenthMonth)}</h3>
+                      </div>
+                      <button style={{ ...btnBlack, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{
+                        const pw = window.open('','_blank','width=700,height=500')
+                        pw.document.write(`<!DOCTYPE html><html><head><title>13th Month - ${pay.employeeName}</title>
+                          <style>*{margin:0;padding:0;box-sizing:border-box;}body{background:#e0e0e0;display:flex;justify-content:center;padding:10px;}
+                          .wrap{background:white;box-shadow:0 2px 8px rgba(0,0,0,0.2);}
+                          @media print{@page{size:145mm 210mm;margin:0;}body{background:white;padding:0;}.wrap{box-shadow:none;}}</style>
+                          </head><body><div class="wrap">
+                          <div style="width:145mm;min-height:105mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;">
+                            <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:6px;">
+                              <div style="font-size:18px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
+                              <div style="font-size:12px;font-weight:bold;">13TH MONTH PAY SLIP</div>
+                              <div style="font-size:10px;color:#666;">Period: ${payrollStart} to ${payrollEnd}</div>
+                            </div>
+                            <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:8px;">
+                              <div style="font-size:14px;font-weight:bold;color:#ca1b1b;">${pay.employeeName}</div>
+                              <div style="font-size:11px;color:#555;">${pay.position} | ${pay.department}</div>
+                              <div style="font-size:10px;color:#888;">Code: ${pay.employeeCode} | Hire Date: ${pay.hireDate}</div>
+                            </div>
+                            <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
+                              <tr style="background:#f5f5f5;"><td style="padding:4px 8px;font-size:10px;">Cutoff Periods Included</td><td style="padding:4px 8px;text-align:right;font-size:10px;">${pay.periods}</td></tr>
+                              <tr><td style="padding:4px 8px;font-size:10px;">Total Basic Pay (Year)</td><td style="padding:4px 8px;text-align:right;font-size:10px;">PHP ${pay.totalBasic.toFixed(2)}</td></tr>
+                              <tr style="background:#f5f5f5;"><td style="padding:4px 8px;font-size:10px;">Computation</td><td style="padding:4px 8px;text-align:right;font-size:10px;">PHP ${pay.totalBasic.toFixed(2)} ÷ 12 months</td></tr>
+                            </table>
+                            <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;">
+                              <span style="font-weight:bold;font-size:12px;">13TH MONTH PAY</span>
+                              <span style="font-weight:bold;font-size:16px;">PHP ${pay.thirteenthMonth.toFixed(2)}</span>
+                            </div>
+                            <div style="margin-top:16px;display:flex;justify-content:space-between;">
+                              <div style="text-align:center;"><div style="border-top:1px solid #000;width:100px;padding-top:3px;font-size:9px;">Employee Signature</div></div>
+                              <div style="text-align:center;"><div style="border-top:1px solid #000;width:100px;padding-top:3px;font-size:9px;">Authorized By</div></div>
+                            </div>
+                          </div></div></body></html>`)
+                        pw.document.close(); setTimeout(()=>{pw.focus();pw.print()},800)
+                      }}>🖨 PRINT</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1507,6 +2738,264 @@ export default function App() {
                       <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={processFinalPay}>✅ PROCESS & DEACTIVATE</button>
                       <button style={{ ...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>printFinalPay(finalPayResult)}>🖨 PRINT</button>
                       <button style={{ ...btnGray, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setFinalPayResult(null)}>CANCEL</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* REMITTANCE REPORT */}
+            {activeTab==='remittance' && (
+              <div>
+                <h2 style={h2s}>🏛️ Government Remittance Report</h2>
+                <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>Generate SSS, Pag-IBIG, and PhilHealth contribution summaries per payroll period for government filing.</p>
+                <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', marginBottom:'20px' }}>
+                  <label style={lblS}>Select Payroll Period:</label>
+                  <select value={remittancePeriod} onChange={e=>setRemittancePeriod(e.target.value)} style={inputStyle}>
+                    <option value="">Select a period...</option>
+                    {payrollHistory.map(p=>(
+                      <option key={p.payroll_start+p.payroll_end} value={`${p.payroll_start}|${p.payroll_end}`}>
+                        {p.payroll_start} to {p.payroll_end}
+                      </option>
+                    ))}
+                  </select>
+                  <button style={btnGreen} onClick={async()=>{
+                    if(!remittancePeriod){ showToast('Please select a period.','red'); return }
+                    const [start,end] = remittancePeriod.split('|')
+                    const { data } = await supabase.from('payroll_records').select('*').eq('payroll_start', start).eq('payroll_end', end).order('employee_name')
+                    if(!data||!data.length){ showToast('No records found for this period.','red'); return }
+                    const sss = data.filter(r=>Number(r.sss_deduction||0)>0)
+                    const pagibig = data.filter(r=>Number(r.pagibig_deduction||0)>0)
+                    const philhealth = data.filter(r=>Number(r.philhealth_deduction||0)>0)
+                    setRemittanceData({
+                      start, end, records: data,
+                      sss: { list: sss, totalEmployee: sss.reduce((s,r)=>s+Number(r.sss_deduction||0),0), totalEmployer: sss.length * 900 },
+                      pagibig: { list: pagibig, totalEmployee: pagibig.reduce((s,r)=>s+Number(r.pagibig_deduction||0),0), totalEmployer: pagibig.length * 200 },
+                      philhealth: { list: philhealth, totalEmployee: philhealth.reduce((s,r)=>s+Number(r.philhealth_deduction||0),0), totalEmployer: philhealth.length * 250 },
+                    })
+                    showToast('✅ Remittance report generated!')
+                  }}>🧮 GENERATE REPORT</button>
+                </div>
+
+                {remittanceData && (
+                  <div>
+                    <div style={{ display:'flex', gap:'10px', marginBottom:'16px', flexWrap:'wrap' }}>
+                      <button style={{ ...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{
+                        const pw = window.open('','_blank','width=900,height=700')
+                        const tableRows = (list, field) => list.map(r=>`
+                          <tr>
+                            <td style="padding:5px 8px;border:1px solid #eee;">${r.employee_code}</td>
+                            <td style="padding:5px 8px;border:1px solid #eee;">${r.employee_name}</td>
+                            <td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${Number(r[field]||0).toFixed(2)}</td>
+                            <td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${(field==='sss_deduction'?900:field==='pagibig_deduction'?200:250).toFixed(2)}</td>
+                            <td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${(Number(r[field]||0)+(field==='sss_deduction'?900:field==='pagibig_deduction'?200:250)).toFixed(2)}</td>
+                          </tr>`).join('')
+                        pw.document.write(`<!DOCTYPE html><html><head><title>Remittance Report</title>
+                          <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
+                          @media print{@page{size:A4;margin:10mm;}}</style></head><body>
+                          <div style="text-align:center;margin-bottom:14px;border-bottom:2px solid #ca1b1b;padding-bottom:8px;">
+                            <div style="font-size:18px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
+                            <div style="font-size:13px;font-weight:bold;margin-top:4px;">GOVERNMENT REMITTANCE REPORT</div>
+                            <div style="font-size:11px;color:#666;">Period: ${remittanceData.start} to ${remittanceData.end}</div>
+                          </div>
+                          <div style="margin-bottom:16px;">
+                            <div style="font-weight:bold;color:#ca1b1b;margin-bottom:6px;font-size:12px;">📋 SSS CONTRIBUTIONS</div>
+                            <table style="width:100%;border-collapse:collapse;">
+                              <tr style="background:#ca1b1b;color:white;"><th style="padding:5px 8px;">Code</th><th style="padding:5px 8px;">Name</th><th style="padding:5px 8px;text-align:right;">Employee Share</th><th style="padding:5px 8px;text-align:right;">Employer Share</th><th style="padding:5px 8px;text-align:right;">Total</th></tr>
+                              ${tableRows(remittanceData.sss.list,'sss_deduction')}
+                              <tr style="background:#f5f5f5;font-weight:bold;"><td colspan="2" style="padding:5px 8px;border:1px solid #eee;">TOTAL</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${remittanceData.sss.totalEmployee.toFixed(2)}</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${remittanceData.sss.totalEmployer.toFixed(2)}</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${(remittanceData.sss.totalEmployee+remittanceData.sss.totalEmployer).toFixed(2)}</td></tr>
+                            </table>
+                          </div>
+                          <div style="margin-bottom:16px;">
+                            <div style="font-weight:bold;color:#ca1b1b;margin-bottom:6px;font-size:12px;">📋 PAG-IBIG CONTRIBUTIONS</div>
+                            <table style="width:100%;border-collapse:collapse;">
+                              <tr style="background:#ca1b1b;color:white;"><th style="padding:5px 8px;">Code</th><th style="padding:5px 8px;">Name</th><th style="padding:5px 8px;text-align:right;">Employee Share</th><th style="padding:5px 8px;text-align:right;">Employer Share</th><th style="padding:5px 8px;text-align:right;">Total</th></tr>
+                              ${tableRows(remittanceData.pagibig.list,'pagibig_deduction')}
+                              <tr style="background:#f5f5f5;font-weight:bold;"><td colspan="2" style="padding:5px 8px;border:1px solid #eee;">TOTAL</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${remittanceData.pagibig.totalEmployee.toFixed(2)}</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${remittanceData.pagibig.totalEmployer.toFixed(2)}</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${(remittanceData.pagibig.totalEmployee+remittanceData.pagibig.totalEmployer).toFixed(2)}</td></tr>
+                            </table>
+                          </div>
+                          <div style="margin-bottom:16px;">
+                            <div style="font-weight:bold;color:#ca1b1b;margin-bottom:6px;font-size:12px;">📋 PHILHEALTH CONTRIBUTIONS</div>
+                            <table style="width:100%;border-collapse:collapse;">
+                              <tr style="background:#ca1b1b;color:white;"><th style="padding:5px 8px;">Code</th><th style="padding:5px 8px;">Name</th><th style="padding:5px 8px;text-align:right;">Employee Share</th><th style="padding:5px 8px;text-align:right;">Employer Share</th><th style="padding:5px 8px;text-align:right;">Total</th></tr>
+                              ${tableRows(remittanceData.philhealth.list,'philhealth_deduction')}
+                              <tr style="background:#f5f5f5;font-weight:bold;"><td colspan="2" style="padding:5px 8px;border:1px solid #eee;">TOTAL</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${remittanceData.philhealth.totalEmployee.toFixed(2)}</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${remittanceData.philhealth.totalEmployer.toFixed(2)}</td><td style="padding:5px 8px;border:1px solid #eee;text-align:right;">PHP ${(remittanceData.philhealth.totalEmployee+remittanceData.philhealth.totalEmployer).toFixed(2)}</td></tr>
+                            </table>
+                          </div>
+                          <div style="background:#ca1b1b;color:white;padding:10px 14px;border-radius:6px;display:flex;justify-content:space-between;">
+                            <span style="font-weight:bold;">GRAND TOTAL REMITTANCE</span>
+                            <span style="font-weight:bold;">PHP ${(remittanceData.sss.totalEmployee+remittanceData.sss.totalEmployer+remittanceData.pagibig.totalEmployee+remittanceData.pagibig.totalEmployer+remittanceData.philhealth.totalEmployee+remittanceData.philhealth.totalEmployer).toFixed(2)}</span>
+                          </div>
+                        </body></html>`)
+                        pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },800)
+                      }}>🖨 PRINT REMITTANCE REPORT</button>
+                    </div>
+
+                    {/* Summary Cards */}
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'20px' }}>
+                      {[
+                        { name:'SSS', emp: remittanceData.sss.totalEmployee, employer: remittanceData.sss.totalEmployer, count: remittanceData.sss.list.length },
+                        { name:'Pag-IBIG', emp: remittanceData.pagibig.totalEmployee, employer: remittanceData.pagibig.totalEmployer, count: remittanceData.pagibig.list.length },
+                        { name:'PhilHealth', emp: remittanceData.philhealth.totalEmployee, employer: remittanceData.philhealth.totalEmployer, count: remittanceData.philhealth.list.length },
+                      ].map(r=>(
+                        <div key={r.name} style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'16px' }}>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 10px' }}>🏛️ {r.name}</p>
+                          <p style={cps}>Employees: <strong>{r.count}</strong></p>
+                          <p style={cps}>Employee Share: <strong>{php(r.emp)}</strong></p>
+                          <p style={cps}>Employer Share: <strong>{php(r.employer)}</strong></p>
+                          <div style={{ background:'#ca1b1b', color:'white', borderRadius:'6px', padding:'6px 10px', marginTop:'8px', display:'flex', justifyContent:'space-between' }}>
+                            <span style={{ fontSize:'12px', fontWeight:'bold' }}>Total</span>
+                            <span style={{ fontSize:'13px', fontWeight:'bold' }}>{php(r.emp+r.employer)}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* DTR PRINT */}
+            {activeTab==='dtr' && (
+              <div>
+                <h2 style={h2s}>📋 DTR — Daily Time Record</h2>
+                <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>View and print the official Daily Time Record for any employee filtered by month.</p>
+
+                <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', marginBottom:'20px' }}>
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end' }}>
+                    <div style={{ flex:1, minWidth:'180px' }}>
+                      <label style={lblS}>Select Employee:</label>
+                      <EmployeeSelect value={dtrEmployeeId} onChange={v=>{ setDtrEmployeeId(v); setDtrRecords([]); setDtrStats(null) }} employees={employees} />
+                    </div>
+                    <div>
+                      <label style={lblS}>Month:</label>
+                      <input type="month" value={dtrMonth} onChange={e=>{ setDtrMonth(e.target.value); setDtrRecords([]); setDtrStats(null) }} style={{ ...inputStyle, width:'auto', marginBottom:0 }} />
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', gap:'10px', marginTop:'12px', flexWrap:'wrap' }}>
+                    <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
+                      if(!dtrEmployeeId){ showToast('Please select an employee.','red'); return }
+                      const emp = employees.find(e=>e.id===dtrEmployeeId)
+                      if(!emp) return
+                      const startDate = `${dtrMonth}-01`
+                      const endDate = new Date(Number(dtrMonth.split('-')[0]), Number(dtrMonth.split('-')[1]), 0).toISOString().slice(0,10)
+                      const { data: logs } = await supabase.from('attendance_logs').select('*')
+                        .eq('employee_id', dtrEmployeeId)
+                        .gte('attendance_date', startDate)
+                        .lte('attendance_date', endDate)
+                        .order('attendance_date')
+                      const daysInMonth = new Date(Number(dtrMonth.split('-')[0]), Number(dtrMonth.split('-')[1]), 0).getDate()
+                      const allDays = Array.from({length: daysInMonth}, (_,i)=>{
+                        const dateStr = `${dtrMonth}-${String(i+1).padStart(2,'0')}`
+                        const log = logs?.find(l=>l.attendance_date===dateStr)
+                        const dayName = new Date(dateStr).toLocaleDateString('en-US',{weekday:'short'})
+                        return { dateStr, day: i+1, dayName, log }
+                      })
+                      setDtrRecords(allDays)
+                      setDtrStats({
+                        emp,
+                        totalWorked: logs?.filter(l=>l.time_in).length||0,
+                        totalAbsent: logs?.filter(l=>l.status==='Absent').length||0,
+                        totalLate: logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0,
+                        totalOT: logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0,
+                        totalBreak: logs?.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0,
+                      })
+                    }}>🔍 VIEW DTR</button>
+                    <button style={{ ...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
+                      if(!dtrEmployeeId){ showToast('Please select an employee.','red'); return }
+                      const emp = employees.find(e=>e.id===dtrEmployeeId)
+                      if(!emp){ showToast('Employee not found.','red'); return }
+                      await printDTR(emp.id, emp.full_name, emp.employee_code, dtrMonth)
+                    }}>🖨 PRINT DTR</button>
+                  </div>
+                </div>
+
+                {/* DTR On-Screen View */}
+                {dtrStats && dtrRecords.length > 0 && (
+                  <div>
+                    {/* Employee Header */}
+                    <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'10px' }}>
+                        <div style={{ display:'flex', gap:'12px', alignItems:'center' }}>
+                          {dtrStats.emp.profile_photo_url ?
+                            <img src={dtrStats.emp.profile_photo_url} alt="" style={{ width:'50px', height:'50px', borderRadius:'50%', objectFit:'cover', border:'2px solid #ca1b1b' }} /> :
+                            <div style={{ width:'50px', height:'50px', borderRadius:'50%', background:'#f0f0f0', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'20px' }}>👤</div>
+                          }
+                          <div>
+                            <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:0 }}>{dtrStats.emp.full_name}</p>
+                            <p style={cps}>{dtrStats.emp.employee_code} | {dtrStats.emp.position}</p>
+                            <p style={cps}>{dtrStats.emp.department||'—'} | {new Date(dtrMonth+'-01').toLocaleString('default',{month:'long',year:'numeric'})}</p>
+                          </div>
+                        </div>
+                        {/* Monthly Summary */}
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px' }}>
+                          {[
+                            ['Days Worked', dtrStats.totalWorked, '#2d8a4e'],
+                            ['Absences', dtrStats.totalAbsent, '#ca1b1b'],
+                            ['Late (min)', dtrStats.totalLate, '#f5a623'],
+                            ['OT (min)', dtrStats.totalOT, '#4a90d9'],
+                            ['Break (min)', dtrStats.totalBreak, '#888'],
+                          ].map(([label, value, color])=>(
+                            <div key={label} style={{ background:'white', borderRadius:'8px', padding:'8px', textAlign:'center', minWidth:'80px' }}>
+                              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 2px' }}>{label}</p>
+                              <p style={{ fontWeight:'bold', color, fontSize:'16px', margin:0 }}>{value}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* DTR Table */}
+                    <div style={{ overflowX:'auto', borderRadius:'10px', border:'1px solid #eee' }}>
+                      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'13px' }}>
+                        <thead>
+                          <tr style={{ background:'#ca1b1b', color:'white' }}>
+                            <th style={{ padding:'8px 10px', textAlign:'left', fontSize:'12px', whiteSpace:'nowrap' }}>Day</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Date</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Time In</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Time Out</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Break</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Late</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>OT</th>
+                            <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Status</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dtrRecords.map(({ dateStr, day, dayName, log }, i)=>{
+                            const isWeekend = new Date(dateStr).getDay()===0||new Date(dateStr).getDay()===6
+                            const rowBg = isWeekend?'#f5f5f5':log?.status==='Absent'?'#fff5f5':i%2===0?'white':'#fafafa'
+                            return (
+                              <tr key={dateStr} style={{ background:rowBg, borderBottom:'1px solid #eee' }}>
+                                <td style={{ padding:'7px 10px', fontWeight:'bold', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{dayName}</td>
+                                <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{day}</td>
+                                <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_in?'#2d8a4e':'#ccc', fontSize:'12px', fontWeight:log?.time_in?'bold':'normal' }}>{log?.time_in||'—'}</td>
+                                <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_out?'#333':'#ccc', fontSize:'12px' }}>{log?.time_out||'—'}</td>
+                                <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:'#888' }}>{log?.total_break_minutes||0}</td>
+                                <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:Number(log?.late_minutes||0)>0?'#ca1b1b':'#888', fontWeight:Number(log?.late_minutes||0)>0?'bold':'normal' }}>{log?.late_minutes||0}</td>
+                                <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:log?.overtime_approved?'#2d8a4e':'#888', fontWeight:log?.overtime_approved?'bold':'normal' }}>{log?.overtime_approved?log.overtime_minutes:0}</td>
+                                <td style={{ padding:'7px 10px', textAlign:'center' }}>
+                                  {!log && isWeekend ? <span style={{ fontSize:'11px', color:'#aaa' }}>REST</span> :
+                                   !log ? <span style={{ fontSize:'11px', color:'#ccc' }}>—</span> :
+                                   log.status==='Absent' ? <Badge label="ABS" color="red" /> :
+                                   log.status==='Late' ? <Badge label="LATE" color="orange" /> :
+                                   log.time_in ? <Badge label="✓" color="green" /> : <span style={{ color:'#ccc' }}>—</span>}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                        <tfoot>
+                          <tr style={{ background:'#222', color:'white', fontWeight:'bold' }}>
+                            <td colSpan={2} style={{ padding:'8px 10px', fontSize:'12px' }}>TOTALS</td>
+                            <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>{dtrStats.totalWorked} days</td>
+                            <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}></td>
+                            <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>{dtrStats.totalBreak} min</td>
+                            <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#f5a623' }}>{dtrStats.totalLate} min</td>
+                            <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#4ade80' }}>{dtrStats.totalOT} min</td>
+                            <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#ca1b1b' }}>{dtrStats.totalAbsent} ABS</td>
+                          </tr>
+                        </tfoot>
+                      </table>
                     </div>
                   </div>
                 )}
@@ -1705,15 +3194,44 @@ export default function App() {
             <p style={{ color:'#888', margin:'0', fontSize:'13px' }}>{employee.position} — {employee.employee_code}</p>
           </div>
 
+          {!isOnline && (
+            <div style={{ background:'#ca1b1b', color:'white', borderRadius:'10px', padding:'10px 14px', marginBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <div>
+                <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>📴 Offline Mode</p>
+                <p style={{ fontSize:'11px', margin:0, opacity:0.8 }}>Time in/out will sync when internet returns</p>
+              </div>
+              <span style={{ fontSize:'20px' }}>🔴</span>
+            </div>
+          )}
+          {syncingOffline && (
+            <div style={{ background:'#2d8a4e', color:'white', borderRadius:'10px', padding:'10px 14px', marginBottom:'10px', textAlign:'center' }}>
+              <p style={{ fontWeight:'bold', fontSize:'13px', margin:0 }}>⏳ Syncing offline records...</p>
+            </div>
+          )}
           {geoStatus && <p style={{ color:'#f5a623', textAlign:'center', fontWeight:'bold', fontSize:'13px', margin:'0 0 8px' }}>{geoStatus}</p>}
 
           <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'12px', marginBottom:'10px' }}>
             <p style={{ margin:'3px 0', fontSize:'13px' }}>📅 Shift: <strong>{todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Assigned Shift'}</strong></p>
             <p style={{ margin:'3px 0', fontSize:'13px' }}>🟢 In: <strong>{todayLog?.time_in||'Not yet'}</strong> &nbsp; 🔴 Out: <strong>{todayLog?.time_out||'Not yet'}</strong></p>
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>☕ Break: <strong>{totalBreakMins} min</strong>
-              {onBreak&&<span style={{ color:'#f5a623', fontWeight:'bold', marginLeft:'6px' }}>● On break</span>}
-              {totalBreakMins>60&&<span style={{ color:'#ca1b1b', fontWeight:'bold', marginLeft:'6px' }}>⚠️ Exceeded 60min!</span>}
+            <p style={{ margin:'3px 0', fontSize:'13px' }}>☕ Break: <strong>{totalBreakMins} min used</strong>
+              {totalBreakMins>60&&!onBreak&&<span style={{ color:'#ca1b1b', fontWeight:'bold', marginLeft:'6px' }}>⚠️ Exceeded 60min limit</span>}
             </p>
+            {onBreak && (
+              <div style={{ background: breakTimerSeconds >= 3600 ? '#ca1b1b' : breakTimerSeconds >= 3000 ? '#f5a623' : '#2d8a4e', borderRadius:'10px', padding:'10px 14px', margin:'6px 0', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div>
+                  <p style={{ color:'white', fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>☕ Currently on Break</p>
+                  <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', margin:0 }}>
+                    {breakTimerSeconds >= 3600 ? '🚨 OVERTIME! Please Break In now!' : breakTimerSeconds >= 3000 ? '⚠️ Almost at 60min limit!' : '✅ Within allowed break time'}
+                  </p>
+                </div>
+                <div style={{ textAlign:'right' }}>
+                  <p style={{ color:'white', fontWeight:'bold', fontSize:'22px', margin:0, fontFamily:'monospace' }}>
+                    {String(Math.floor(breakTimerSeconds/60)).padStart(2,'0')}:{String(breakTimerSeconds%60).padStart(2,'0')}
+                  </p>
+                  <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:0 }}>/ 60:00 allowed</p>
+                </div>
+              </div>
+            )}
             {todayBreaks.length>0&&todayBreaks.map((b,i)=>(
               <p key={b.id} style={{ margin:'2px 0', fontSize:'11px', color:'#888' }}>Break {i+1}: {b.break_out} {b.break_in?`→ ${b.break_in} (${b.break_minutes}min)`:'→ ongoing'}</p>
             ))}
@@ -1765,6 +3283,106 @@ export default function App() {
             </div>
           )}
 
+          <button style={{ background:'#e8505b', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowMyLeaves(!showMyLeaves); if(!showMyLeaves) loadMyLeaves() }}>{showMyLeaves?'🔼 HIDE':'🔽 VIEW'} MY LEAVE HISTORY</button>
+          {showMyLeaves && (
+            <div style={{ marginTop:'10px' }}>
+              {myLeavesLoading && <p style={{ color:'#888', fontSize:'13px', textAlign:'center', padding:'12px' }}>⏳ Loading leave history...</p>}
+
+              {!myLeavesLoading && myLeaves.length===0 && (
+                <div style={{ textAlign:'center', padding:'20px', color:'#888' }}>
+                  <p style={{ fontSize:'24px', margin:'0 0 8px' }}>📭</p>
+                  <p style={{ fontSize:'14px' }}>No leave requests filed yet.</p>
+                </div>
+              )}
+
+              {!myLeavesLoading && myLeaves.length > 0 && (
+                <div>
+                  {/* Leave Balance Summary */}
+                  <div style={{ background:'#e8f5e9', borderRadius:'12px', padding:'14px', marginBottom:'12px', border:'1px solid #c8e6c9' }}>
+                    <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 10px' }}>📊 This Year's Leave Balance</p>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                      <div style={{ background:'white', borderRadius:'8px', padding:'10px', textAlign:'center' }}>
+                        <p style={{ fontSize:'11px', color:'#888', margin:'0 0 4px' }}>Sick Leave Used</p>
+                        <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'18px', margin:'0 0 2px' }}>
+                          {myLeaves.filter(l=>l.leave_type==='Sick Leave'&&l.status==='approved').reduce((s,l)=>s+Number(l.duration_days||1),0)}d
+                        </p>
+                        <p style={{ fontSize:'11px', color:'#888', margin:0 }}>{myLeaveBalance.sick}d remaining</p>
+                      </div>
+                      <div style={{ background:'white', borderRadius:'8px', padding:'10px', textAlign:'center' }}>
+                        <p style={{ fontSize:'11px', color:'#888', margin:'0 0 4px' }}>Vacation Leave Used</p>
+                        <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'18px', margin:'0 0 2px' }}>
+                          {myLeaves.filter(l=>l.leave_type==='Vacation Leave'&&l.status==='approved').reduce((s,l)=>s+Number(l.duration_days||1),0)}d
+                        </p>
+                        <p style={{ fontSize:'11px', color:'#888', margin:0 }}>{myLeaveBalance.vacation}d remaining</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Pending Leaves */}
+                  {myLeaves.filter(l=>l.status==='pending').length > 0 && (
+                    <div style={{ marginBottom:'12px' }}>
+                      <p style={{ fontWeight:'bold', color:'#f5a623', fontSize:'13px', margin:'0 0 8px' }}>⏳ Pending Approval</p>
+                      {myLeaves.filter(l=>l.status==='pending').map(leave=>(
+                        <div key={leave.id} style={{ ...cardS, border:'1px solid #f5a623', background:'#fffbf0' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'6px' }}>
+                            <div>
+                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{leave.leave_type}</p>
+                              <p style={cps}>{leave.leave_start} to {leave.leave_end} ({leave.duration_days} day(s))</p>
+                              <p style={cps}>Reason: {leave.reason}</p>
+                              <p style={{ ...cps, color:'#aaa' }}>Filed: {new Date(leave.created_at).toLocaleDateString()}</p>
+                            </div>
+                            <Badge label="⏳ Pending" color="orange" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Approved Leaves */}
+                  {myLeaves.filter(l=>l.status==='approved').length > 0 && (
+                    <div style={{ marginBottom:'12px' }}>
+                      <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>✅ Approved Leaves</p>
+                      {myLeaves.filter(l=>l.status==='approved').map(leave=>(
+                        <div key={leave.id} style={{ ...cardS, border:'1px solid #c8e6c9', background:'#f0fff0' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'6px' }}>
+                            <div>
+                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{leave.leave_type}</p>
+                              <p style={cps}>{leave.leave_start} to {leave.leave_end} ({leave.duration_days} day(s))</p>
+                              <p style={cps}>Reason: {leave.reason}</p>
+                              <p style={{ ...cps, color:'#aaa' }}>Filed: {new Date(leave.created_at).toLocaleDateString()}</p>
+                            </div>
+                            <Badge label="✅ Approved" color="green" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Disapproved Leaves */}
+                  {myLeaves.filter(l=>l.status==='disapproved').length > 0 && (
+                    <div style={{ marginBottom:'12px' }}>
+                      <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>❌ Disapproved Leaves</p>
+                      {myLeaves.filter(l=>l.status==='disapproved').map(leave=>(
+                        <div key={leave.id} style={{ ...cardS, border:'1px solid #ffcdd2', background:'#fff5f5' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'6px' }}>
+                            <div>
+                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{leave.leave_type}</p>
+                              <p style={cps}>{leave.leave_start} to {leave.leave_end} ({leave.duration_days} day(s))</p>
+                              <p style={cps}>Reason: {leave.reason}</p>
+                              {leave.admin_reason && <p style={{ ...cps, color:'#ca1b1b' }}>Admin Reason: <em>"{leave.admin_reason}"</em></p>}
+                              <p style={{ ...cps, color:'#aaa' }}>Filed: {new Date(leave.created_at).toLocaleDateString()}</p>
+                            </div>
+                            <Badge label="❌ Disapproved" color="red" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           <button style={{ background:'#f5a623', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }}>💵 REQUEST CASH ADVANCE</button>
           {showCashAdvanceRequest && (
             <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginTop:'8px' }}>
@@ -1775,18 +3393,124 @@ export default function App() {
             </div>
           )}
 
-          <button style={{ background:'#f5a623', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvances(!showCashAdvances) }}>{showCashAdvances?'🔼 HIDE':'🔽 VIEW'} MY CASH ADVANCES</button>
+          <button style={{ background:'#f5a623', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvances(!showCashAdvances); if(!showCashAdvances) loadMyCashAdvances(employee) }}>{showCashAdvances?'🔼 HIDE':'🔽 VIEW'} MY CASH ADVANCES</button>
           {showCashAdvances && (
             <div style={{ marginTop:'10px' }}>
-              {myCashAdvances.length===0&&<p style={{ color:'#888', fontSize:'13px' }}>No cash advance requests found.</p>}
-              {myCashAdvances.map(ca=>(
-                <div key={ca.id} style={cardS}>
-                  <p style={cps}><strong>Amount:</strong> {php(ca.amount)}</p>
-                  <p style={cps}><strong>Reason:</strong> {ca.reason}</p>
-                  {ca.admin_reason&&<p style={{ ...cps, color:'#ca1b1b' }}><strong>Admin Reason:</strong> {ca.admin_reason}</p>}
-                  <Badge label={ca.status} color={ca.status==='approved'?'green':ca.status==='pending'?'orange':'red'} />
+
+              {/* Active Balance Summary */}
+              {myActiveCAs.length > 0 && (
+                <div style={{ background:'#fff8dc', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginBottom:'12px' }}>
+                  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 10px' }}>💳 Outstanding Cash Advance Balance</p>
+                  {myActiveCAs.map(ca => (
+                    <div key={ca.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'8px', border:'1px solid #eee' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'6px' }}>
+                        <div>
+                          <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>
+                            Original: {php(ca.amount)}
+                          </p>
+                          <p style={cps}>Date: {ca.advance_date} | Reason: {ca.notes||'—'}</p>
+                        </div>
+                        <div style={{ textAlign:'right' }}>
+                          <p style={{ margin:0, fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{php(ca.balance)}</p>
+                          <p style={{ margin:0, fontSize:'11px', color:'#888' }}>remaining</p>
+                        </div>
+                      </div>
+                      {/* Progress bar */}
+                      <div style={{ marginTop:'10px' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
+                          <span style={{ fontSize:'11px', color:'#888' }}>Paid: {php(ca.amount_paid||0)}</span>
+                          <span style={{ fontSize:'11px', color:'#888' }}>Remaining: {php(ca.balance)}</span>
+                        </div>
+                        <div style={{ background:'#eee', borderRadius:'999px', height:'8px', overflow:'hidden' }}>
+                          <div style={{ background:'#2d8a4e', height:'100%', borderRadius:'999px', width:`${Math.min(100, ((Number(ca.amount_paid)||0)/Number(ca.amount||1))*100).toFixed(0)}%`, transition:'width 0.3s' }} />
+                        </div>
+                        <p style={{ fontSize:'11px', color:'#888', margin:'4px 0 0', textAlign:'center' }}>
+                          {Math.min(100,((Number(ca.amount_paid)||0)/Number(ca.amount||1))*100).toFixed(0)}% paid •
+                          {ca.installments_remaining} installment(s) left •
+                          {php(ca.per_payroll_deduction)} per cutoff
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                  {/* Total outstanding */}
+                  <div style={{ background:'#ca1b1b', color:'white', borderRadius:'8px', padding:'10px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'8px' }}>
+                    <span style={{ fontWeight:'bold', fontSize:'13px' }}>TOTAL OUTSTANDING</span>
+                    <span style={{ fontWeight:'bold', fontSize:'16px' }}>{php(myActiveCAs.reduce((s,c)=>s+Number(c.balance||0),0))}</span>
+                  </div>
                 </div>
-              ))}
+              )}
+
+              {myActiveCAs.length === 0 && myCAHistory.length === 0 && myCashAdvances.filter(c=>c.status==='pending').length === 0 && (
+                <div style={{ textAlign:'center', padding:'20px', color:'#888' }}>
+                  <p style={{ fontSize:'24px', margin:'0 0 8px' }}>✅</p>
+                  <p style={{ fontSize:'14px', fontWeight:'bold', color:'#2d8a4e' }}>No outstanding cash advances</p>
+                  <p style={{ fontSize:'13px' }}>You have no unpaid balance.</p>
+                </div>
+              )}
+
+              {/* Pending Requests */}
+              {myCashAdvances.filter(c=>c.status==='pending').length > 0 && (
+                <div style={{ marginBottom:'12px' }}>
+                  <p style={{ fontWeight:'bold', color:'#f5a623', fontSize:'13px', margin:'0 0 8px' }}>⏳ Pending Requests</p>
+                  {myCashAdvances.filter(c=>c.status==='pending').map(ca=>(
+                    <div key={ca.id} style={{ ...cardS, border:'1px solid #f5a623', background:'#fffbf0' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                        <div>
+                          <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333' }}>{php(ca.amount)}</p>
+                          <p style={cps}>{ca.reason}</p>
+                          <p style={{ ...cps, color:'#aaa' }}>{new Date(ca.created_at).toLocaleDateString()}</p>
+                        </div>
+                        <Badge label="⏳ Pending" color="orange" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Disapproved Requests */}
+              {myCashAdvances.filter(c=>c.status==='disapproved').length > 0 && (
+                <div style={{ marginBottom:'12px' }}>
+                  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>❌ Disapproved Requests</p>
+                  {myCashAdvances.filter(c=>c.status==='disapproved').map(ca=>(
+                    <div key={ca.id} style={{ ...cardS, border:'1px solid #ddd', background:'#fff5f5' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+                        <div>
+                          <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333' }}>{php(ca.amount)}</p>
+                          <p style={cps}>Reason: {ca.reason}</p>
+                          {ca.admin_reason && <p style={{ ...cps, color:'#ca1b1b' }}>Admin: {ca.admin_reason}</p>}
+                        </div>
+                        <Badge label="❌ Disapproved" color="red" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Paid History Toggle */}
+              {myCAHistory.length > 0 && (
+                <div>
+                  <button style={{ ...btnGray, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setShowCAHistory(!showCAHistory)}>
+                    {showCAHistory?'🔼 HIDE':'🔽 VIEW'} PAID HISTORY ({myCAHistory.length})
+                  </button>
+                  {showCAHistory && (
+                    <div style={{ marginTop:'10px' }}>
+                      <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>✅ Fully Paid Cash Advances</p>
+                      {myCAHistory.map(ca=>(
+                        <div key={ca.id} style={{ ...cardS, border:'1px solid #ddd', background:'#f0fff0' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                            <div>
+                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333' }}>{php(ca.amount)}</p>
+                              <p style={cps}>{ca.advance_date} | {ca.notes||'—'}</p>
+                            </div>
+                            <Badge label="✅ Fully Paid" color="green" />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
             </div>
           )}
 
@@ -1808,7 +3532,9 @@ export default function App() {
             </div>
           )}
 
-          {employee?.is_admin&&<button style={{ ...btnBlack, background:'#444', marginTop:'8px' }} onClick={openAdmin}>🔧 ADMIN PANEL</button>}
+          {employee?.is_admin&&(
+            <button style={{ ...btnBlack, background:'#444', marginTop:'8px' }} onClick={()=>openAdmin('owner')}>🔧 ADMIN PANEL</button>
+          )}
 
           <button style={{ ...btnBlack, background:'#222', marginTop:'8px' }} onClick={()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }}>{showPayslips?'🔼 HIDE':'🔽 VIEW'} MY PAYSLIPS</button>
           {showPayslips && (
@@ -1824,6 +3550,12 @@ export default function App() {
                     {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement)&&<Badge label="🔔 Pending" color="orange" />}
                   </div>
                   <p style={cps}>Period: {pay.payroll_start} to {pay.payroll_end}</p>
+                  {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement) && (
+                    <p style={{ fontSize:'11px', color:'#ca1b1b', margin:'2px 0', fontWeight:'bold' }}>⏰ Please acknowledge within 5 days of release</p>
+                  )}
+                  {pay.employee_acknowledgement==='auto-acknowledged' && (
+                    <p style={{ fontSize:'11px', color:'#888', margin:'2px 0' }}>🤖 Auto-acknowledged after 5-day deadline</p>
+                  )}
                   <p style={cps}>Basic: {php(pay.basic_pay)} | Earnings: {php(pay.total_earnings)} | Deductions: {php(pay.total_deductions)}</p>
                   <h3 style={{ color:'#ca1b1b', margin:'6px 0' }}>Net Pay: {php(pay.net_pay)}</h3>
                   {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement)&&(
@@ -1846,7 +3578,48 @@ export default function App() {
             </div>
           )}
 
-          <button style={{ ...btnGray, marginTop:'20px' }} onClick={logout}>🚪 LOGOUT</button>
+          <button style={{ background:'#4a90d9', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>setShowMyProfile(!showMyProfile)}>
+            {showMyProfile?'🔼 HIDE':'👤 VIEW'} MY PROFILE
+          </button>
+          {showMyProfile && (
+            <div style={{ background:'#f9f9f9', borderRadius:'14px', padding:'16px', marginTop:'10px', border:'1px solid #eee' }}>
+              <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}>👤 My Profile</h3>
+              {[
+                ['Full Name', employee.full_name],
+                ['Employee Code', employee.employee_code],
+                ['Position', employee.position||'—'],
+                ['Department', employee.department||'—'],
+                ['Employment Type', employee.employment_type||'—'],
+                ['Hire Date', employee.hire_date||'—'],
+                ['Daily Rate', php(employee.daily_rate||0)],
+                ['Pay Type', employee.pay_type||'daily'],
+                ['Date of Birth', employee.date_of_birth||'—'],
+                ['Gender', employee.gender||'—'],
+                ['Civil Status', employee.civil_status||'—'],
+                ['Contact Number', employee.contact_number||'—'],
+                ['Home Address', employee.home_address||'—'],
+                ['Emergency Contact', `${employee.emergency_contact_name||'—'} — ${employee.emergency_contact_number||'—'}`],
+              ].map(([label, value])=>(
+                <div key={label} style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid #eee', flexWrap:'wrap', gap:'4px' }}>
+                  <span style={{ fontSize:'12px', color:'#888', fontWeight:'bold' }}>{label}</span>
+                  <span style={{ fontSize:'12px', color:'#333', textAlign:'right' }}>{value}</span>
+                </div>
+              ))}
+              <div style={{ marginTop:'12px', background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}>
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'12px', margin:'0 0 6px' }}>🏛️ Government Contributions</p>
+                {employee.has_sss && <p style={cps}>✅ SSS {employee.sss_no?`— ${employee.sss_no}`:''}</p>}
+                {employee.has_pagibig && <p style={cps}>✅ Pag-IBIG {employee.pagibig_no?`— ${employee.pagibig_no}`:''}</p>}
+                {employee.has_philhealth && <p style={cps}>✅ PhilHealth {employee.philhealth_no?`— ${employee.philhealth_no}`:''}</p>}
+                {employee.tin_no && <p style={cps}>📋 TIN: {employee.tin_no}</p>}
+              </div>
+              <div style={{ marginTop:'8px', background:'#e8f5e9', borderRadius:'10px', padding:'10px', border:'1px solid #c8e6c9' }}>
+                <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'12px', margin:'0 0 6px' }}>📅 Leave Balances</p>
+                <p style={cps}>Sick Leave: {myLeaveBalance.sick} day(s) remaining</p>
+                <p style={cps}>Vacation Leave: {myLeaveBalance.vacation} day(s) remaining</p>
+              </div>
+            </div>
+          )}
+          <button style={{ ...btnGray, marginTop:'8px' }} onClick={logout}>🚪 LOGOUT</button>
         </div>
       </div>
     )
@@ -1855,13 +3628,36 @@ export default function App() {
   // ── Login ─────────────────────────────────────────────────────────────────
   return (
     <div style={pageStyle}>
-      <div style={{ ...cardStyle, width:'100%', maxWidth:'400px', margin:'0 auto' }}>
+      <div style={{ ...cardStyle, width:'100%', maxWidth:'420px', margin:'0 auto' }}>
         <img src="/logo.png" alt="Logo" style={logoStyle} />
         <h1 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:isMobile?'22px':'26px', textAlign:'center' }}>Roma's Donuts</h1>
         <p style={{ color:'#888', margin:'0 0 20px', fontSize:'13px', textAlign:'center' }}>Payroll & Attendance System</p>
-        <input placeholder="Employee ID" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={inputStyle} />
-        <input placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>e.key==='Enter'&&login()} style={inputStyle} />
-        <button style={btnRed} onClick={login} disabled={loading}>{loading?'PLEASE WAIT...':'LOGIN'}</button>
+        <input placeholder="Employee ID / Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={inputStyle} />
+        <input placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{
+          if(e.key==='Enter') {
+            // Check admin credentials first
+            const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
+            if(adminMatch) openAdmin(adminMatch.role)
+            else login()
+          }
+        }} style={inputStyle} />
+        <button style={btnRed} onClick={()=>{
+          const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
+          if(adminMatch) openAdmin(adminMatch.role)
+          else login()
+        }} disabled={loading}>{loading?'PLEASE WAIT...':'LOGIN'}</button>
+        <div style={{ marginTop:'16px', background:'#f9f9f9', borderRadius:'10px', padding:'12px', border:'1px solid #eee' }}>
+          <p style={{ color:'#888', fontSize:'11px', margin:'0 0 8px', fontWeight:'bold', textAlign:'center' }}>ADMIN ACCESS</p>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px' }}>
+            {Object.values(adminCredentials).map(a=>(
+              <button key={a.role} style={{ background:'#222', color:'white', border:'none', borderRadius:'8px', padding:'8px', cursor:'pointer', fontSize:'11px', fontWeight:'bold', textAlign:'left' }}
+                onClick={()=>{ setEmployeeCode(a.code); setPin(a.pin) }}>
+                {a.role==='owner'?'👑':a.role==='hr'?'👤':a.role==='payroll'?'💰':'👁'} {a.name}
+              </button>
+            ))}
+          </div>
+          <p style={{ color:'#bbb', fontSize:'10px', margin:'8px 0 0', textAlign:'center' }}>Click role to fill credentials, then LOGIN</p>
+        </div>
       </div>
     </div>
   )
