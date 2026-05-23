@@ -172,8 +172,12 @@ export default function App() {
   const [otRequestType, setOtRequestType] = useState('overtime')
   const [otRequestReason, setOtRequestReason] = useState('')
   const [otRequestMinutes, setOtRequestMinutes] = useState('')
+  const [otRequestDate, setOtRequestDate] = useState('')
   const [adminMode, setAdminMode] = useState(false)
   const [adminRole, setAdminRole] = useState(null) // 'owner'|'hr'|'payroll'|'supervisor'
+  const [adminEmployee, setAdminEmployee] = useState(null) // employee record of the logged-in admin
+  const [showAdminAttendance, setShowAdminAttendance] = useState(false) // modal toggle
+  const [cameFromAdmin, setCameFromAdmin] = useState(false) // tracks if employee portal was opened from admin
   const [adminCredentials] = useState({
     owner:    { code:'ADMIN001', pin:'admin2024', role:'owner',    name:'Owner' },
     hr:       { code:'ADMIN002', pin:'hr2024',    role:'hr',       name:'HR Admin' },
@@ -218,7 +222,7 @@ export default function App() {
   const [breakTimerSeconds, setBreakTimerSeconds] = useState(0)
   const [breakTimerInterval, setBreakTimerInterval] = useState(null)
   const [editFields, setEditFields] = useState({})
-  const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'' })
+  const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'' })
   const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
   const [finalPayReason, setFinalPayReason] = useState('resigned')
   const [finalPayLastDate, setFinalPayLastDate] = useState(today)
@@ -256,6 +260,7 @@ export default function App() {
   const [showResolvedDisputes, setShowResolvedDisputes] = useState(false)
   const [resolvedDisputes, setResolvedDisputes] = useState([])
   const [disputeAdminReason, setDisputeAdminReason] = useState({})
+  const [processingItems, setProcessingItems] = useState({})
   const [adjustmentEmployeeId, setAdjustmentEmployeeId] = useState('')
   const [adjustmentDate, setAdjustmentDate] = useState(today)
   const [adjustmentType, setAdjustmentType] = useState('deduction')
@@ -454,6 +459,26 @@ export default function App() {
     const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
     setLoading(false)
     if (error || !data) { alert('Invalid Employee ID or PIN'); return }
+    setEmployee(data)
+    if (data.profile_photo_url) setProfilePhotoUrl(data.profile_photo_url)
+  }
+
+  // ── Smart Login: checks master creds first, then employee DB role ─────────
+  async function handleLogin() {
+    setLoading(true)
+    // 1. Check master hardcoded credentials (owner only emergency access)
+    const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
+    if (adminMatch) { setLoading(false); openAdmin(adminMatch.role); return }
+    // 2. Check employee database — look up by code + PIN
+    const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
+    setLoading(false)
+    if (error || !data) { alert('Invalid Employee ID or PIN. Please try again.'); return }
+    // 3. If employee has an admin_role assigned, open admin panel with that role
+    if (data.admin_role && ['owner','hr','payroll','supervisor'].includes(data.admin_role)) {
+      openAdmin(data.admin_role, data)
+      return
+    }
+    // 4. Regular employee — load portal
     setEmployee(data)
     if (data.profile_photo_url) setProfilePhotoUrl(data.profile_photo_url)
   }
@@ -656,8 +681,8 @@ export default function App() {
     alert(msg)
   }
   async function submitTimeAdjRequest() {
-    if (!otRequestReason || !otRequestMinutes) { alert('Please enter minutes and reason.'); return }
-    const { error } = await supabase.from('time_adjustment_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, request_type:otRequestType, minutes:Number(otRequestMinutes), employee_reason:otRequestReason, status:'pending' })
+    if (!otRequestReason || !otRequestMinutes || !otRequestDate) { alert('Please enter date, minutes and reason.'); return }
+    const { error } = await supabase.from('time_adjustment_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:otRequestDate, request_type:otRequestType, minutes:Number(otRequestMinutes), employee_reason:otRequestReason, status:'pending' })
     if (error) { alert('Failed: '+error.message); return }
     alert(`${otRequestType==='overtime'?'Overtime':'Undertime'} request filed! Waiting for admin approval.`)
     setOtRequestReason(''); setOtRequestMinutes(''); setShowOTRequest(false)
@@ -700,13 +725,35 @@ export default function App() {
   function canAccess(tab) {
     if (adminRole === 'owner') return true
     if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail'].includes(tab)
-    if (adminRole === 'payroll') return ['dashboard','payroll','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr'].includes(tab)
+    if (adminRole === 'payroll') return ['dashboard','payroll','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
     if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule'].includes(tab)
     return false
   }
 
   async function logAudit(action, by, target, details) {
     await supabase.from('audit_logs').insert({ action, performed_by:by, target_employee:target, details }).catch(()=>{})
+  }
+
+  // ── SIL Automation ────────────────────────────────────────────────────────
+  async function autoApplySIL() {
+    const { data:emps } = await supabase.from('employees').select('*').eq('is_active', true)
+    let entitled=0, zeroed=0
+    for (const emp of emps||[]) {
+      if (!emp.hire_date) continue
+      const yearsOfService=(new Date()-new Date(emp.hire_date))/(1000*60*60*24*365)
+      if (yearsOfService>=1) {
+        // Entitled to 5 SIL days — only set if not already manually adjusted above 0
+        await supabase.from('employees').update({ sil_balance:5 }).eq('id', emp.id)
+        entitled++
+      } else {
+        // Not yet entitled — zero out
+        await supabase.from('employees').update({ sil_balance:0 }).eq('id', emp.id)
+        zeroed++
+      }
+    }
+    await logAudit('SIL AUTO-APPLIED','Admin','ALL',`Entitled: ${entitled} | Zeroed: ${zeroed}`)
+    showToast(`✅ SIL updated — ${entitled} entitled, ${zeroed} not yet entitled`)
+    loadEmployees()
   }
 
   // ── Audit Trail Viewer ────────────────────────────────────────────────────
@@ -805,8 +852,13 @@ export default function App() {
       { timeout: 10000, enableHighAccuracy: true }
     )
   }
-  function openAdmin(role) {
+  function openAdmin(role, empData) {
     setAdminMode(true); setAdminRole(role||'owner'); setEmployeeSearch(''); setSidebarOpen(false)
+    if (empData) {
+      setAdminEmployee(empData)
+      // Pre-load their today log and schedule for the attendance modal
+      loadTodayLog(empData); loadTodaySchedule(empData); loadTodayBreaks(null)
+    }
     // Set default tab based on role
     const defaultTab = role==='payroll'?'payroll':role==='supervisor'?'attendance':role==='hr'?'employees':'dashboard'
     setActiveTab(defaultTab)
@@ -938,7 +990,7 @@ export default function App() {
   }
   async function saveEmployeeChanges() {
     setSaveEmployeeLoading(true)
-    const { error } = await supabase.from('employees').update({ employee_code:editFields.code, full_name:editFields.name, position:editFields.position, pin:editFields.pin, daily_rate:Number(editFields.rate||0), has_sss:editFields.hasSss, has_pagibig:editFields.hasPagibig, has_philhealth:editFields.hasPhilhealth, hire_date:editFields.hireDate, sick_leave_balance:Number(editFields.sick||5), vacation_leave_balance:Number(editFields.vacation||5), sil_balance:Number(editFields.sil||5), pay_type:editFields.payType||'daily', hourly_rate:Number(editFields.hourlyRate||0), grace_period_minutes:Number(editFields.gracePeriod||10), date_of_birth:editFields.dob||null, gender:editFields.gender||'', civil_status:editFields.civil_status||'', home_address:editFields.address||'', contact_number:editFields.contact||'', emergency_contact_name:editFields.emergency_name||'', emergency_contact_number:editFields.emergency_contact||'', employment_type:editFields.employment_type||'regular', department:editFields.department||'' }).eq('id', editingEmployeeId)
+    const { error } = await supabase.from('employees').update({ employee_code:editFields.code, full_name:editFields.name, position:editFields.position, pin:editFields.pin, daily_rate:Number(editFields.rate||0), has_sss:editFields.hasSss, has_pagibig:editFields.hasPagibig, has_philhealth:editFields.hasPhilhealth, hire_date:editFields.hireDate, sick_leave_balance:Number(editFields.sick||5), vacation_leave_balance:Number(editFields.vacation||5), sil_balance:Number(editFields.sil||5), pay_type:editFields.payType||'daily', hourly_rate:Number(editFields.hourlyRate||0), grace_period_minutes:Number(editFields.gracePeriod||10), date_of_birth:editFields.dob||null, gender:editFields.gender||'', civil_status:editFields.civil_status||'', home_address:editFields.address||'', contact_number:editFields.contact||'', emergency_contact_name:editFields.emergency_name||'', emergency_contact_number:editFields.emergency_contact||'', employment_type:editFields.employment_type||'regular', department:editFields.department||'', admin_role:editFields.admin_role||null }).eq('id', editingEmployeeId)
     setSaveEmployeeLoading(false)
     if (error) { showToast('❌ Failed to save: '+error.message,'red'); return }
     await logAudit('EMPLOYEE UPDATED','Admin',editFields.name,'Employee details updated')
@@ -953,7 +1005,7 @@ export default function App() {
     if (error) { showToast('Failed: '+error.message,'red'); return }
     await logAudit('EMPLOYEE ADDED','Admin',f.name,'New employee added')
     showToast('✅ Employee added successfully!')
-    setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:5, vacation:5, sil:5, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'' })
+    setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'' })
     loadEmployees()
   }
   async function deactivateEmployee(empId, empName) {
@@ -1408,48 +1460,83 @@ export default function App() {
       const workedDays=logs?.filter(l=>l.time_in).length||0
       const absentDays=logs?.filter(l=>l.status==='Absent').length||0
       const paidLeaveDays=leaves?.filter(l=>l.is_paid).length||0
-      const lateMinutes=roundPenaltyMinutes(logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0)
-      const undertimeMinutes=roundPenaltyMinutes(logs?.reduce((s,l)=>s+Number(l.undertime_minutes||0),0)||0)
-      const overtimeMinutes=logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0
-      const totalExcessBreak=logs?.reduce((s,l)=>s+Number(l.excess_break_minutes||0),0)||0
       const dailyRate=Number(emp.daily_rate||0)
-      const isHourly=emp.pay_type==='hourly'
-      const hourlyRate=isHourly?Number(emp.hourly_rate||0):dailyRate/8
+      const hourlyRate=dailyRate/8
       const minuteRate=hourlyRate/60
-      let basicPay=0
-      if (isHourly) {
-        const totalMins=logs?.filter(l=>l.time_in&&l.time_out).reduce((s,l)=>{const inM=minutesFromTime(l.time_in),outM=minutesFromTime(l.time_out);return s+Math.max(0,(outM>inM?outM:outM+24*60)-inM-Number(l.total_break_minutes||0))},0)||0
-        basicPay=(totalMins/60)*hourlyRate+paidLeaveDays*dailyRate
-      } else { basicPay=(workedDays+paidLeaveDays)*dailyRate }
-      const lateDeduction=lateMinutes*minuteRate
-      const undertimeDeduction=undertimeMinutes*minuteRate
-      const excessBreakDeduction=totalExcessBreak*minuteRate
+
+      // ── Hourly-based Basic Pay (computed from actual clock-in/out) ──────────
+      const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
+      let basicPay=0, totalWorkedMinutes=0
+      for (const log of workedLogs) {
+        const inM=minutesFromTime(log.time_in)
+        const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
+        const breakMins=Number(log.total_break_minutes||0)
+        const actualMins=Math.max(0,outM-inM-breakMins)
+        totalWorkedMinutes+=actualMins
+        basicPay+=actualMins*minuteRate
+      }
+      // Add paid leave days at full daily rate
+      basicPay+=paidLeaveDays*dailyRate
+
+      // ── Birthday Pay ────────────────────────────────────────────────────────
+      let birthdayPay=0
+      if (emp.date_of_birth) {
+        const bdMMDD=emp.date_of_birth.slice(5) // MM-DD
+        // Check dates in both the payroll year and next year (for Jan cutoffs)
+        const years=[payrollStart.slice(0,4), String(Number(payrollStart.slice(0,4))+1)]
+        for (const yr of years) {
+          const bdFull=`${yr}-${bdMMDD}`
+          if (bdFull>=payrollStart&&bdFull<=payrollEnd) {
+            const workedLog=workedLogs.find(l=>l.attendance_date===bdFull)
+            if (workedLog) {
+              // Worked on birthday → 200% = base already counted above, add extra 100%
+              const inM=minutesFromTime(workedLog.time_in)
+              const outM=minutesFromTime(workedLog.time_out)+(minutesFromTime(workedLog.time_out)<minutesFromTime(workedLog.time_in)?24*60:0)
+              const brkMins=Number(workedLog.total_break_minutes||0)
+              const actualMins=Math.max(0,outM-inM-brkMins)
+              birthdayPay+=actualMins*minuteRate // extra 100% on top → total 200%
+            } else {
+              // Didn't work but birthday falls in period → give full day pay
+              birthdayPay+=dailyRate
+            }
+          }
+        }
+      }
+
+      // ── Overtime ─────────────────────────────────────────────────────────────
+      const overtimeMinutes=logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0
       const overtimePay=overtimeMinutes*minuteRate*1.25
+
+      // ── Night Differential (10%) ──────────────────────────────────────────────
+      let nightDiffPay=0
+      for (const log of workedLogs) {
+        const inM=minutesFromTime(log.time_in),outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
+        const os=Math.max(inM,22*60),oe=Math.min(outM,30*60)
+        if (oe>os) nightDiffPay+=(oe-os)*minuteRate*0.10
+      }
+
+      // ── Holiday Pay ────────────────────────────────────────────────────────────
       let holidayPay=0
       for (const h of holidayList||[]) {
-        const worked=logs?.find(l=>l.attendance_date===h.holiday_date&&l.time_in)
-        if (h.holiday_type==='regular') holidayPay+=worked?dailyRate*2:0
-        else if (h.holiday_type==='special') holidayPay+=worked?dailyRate*1.3:0
+        const worked=workedLogs.find(l=>l.attendance_date===h.holiday_date)
+        if (h.holiday_type==='regular') holidayPay+=worked?dailyRate:0   // extra 100% on top of hourly pay → 200% total
+        else if (h.holiday_type==='special') holidayPay+=worked?dailyRate*0.3:0  // 30% premium
       }
+
+      // ── Cash Advance, Adjustments, Government Contributions ───────────────────
       let caDeduction=0
       for (const ca of cas||[]) caDeduction+=ca.per_payroll_deduction?Number(ca.per_payroll_deduction):Number(ca.balance||0)
       let adjEarnings=0,adjDeductions=0
       for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
-      let nightDiffPay=0
-      for (const log of logs||[]) {
-        if (log.time_in&&log.time_out) {
-          const inM=minutesFromTime(log.time_in),outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
-          const os=Math.max(inM,22*60),oe=Math.min(outM,30*60)
-          if (oe>os) nightDiffPay+=(oe-os)*minuteRate*0.10
-        }
-      }
       const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
       const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
       const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
-      const totalEarnings=basicPay+overtimePay+nightDiffPay+holidayPay+adjEarnings
-      const totalDeductions=lateDeduction+undertimeDeduction+excessBreakDeduction+caDeduction+sssDeduction+pagibigDeduction+philhealthDeduction+adjDeductions
-      results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, lateMinutes, undertimeMinutes, overtimeMinutes, basicPay, overtimePay, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, lateDeduction, undertimeDeduction, excessBreakDeduction, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:totalEarnings-totalDeductions })
-    }
+      const totalEarnings=basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings
+      const totalDeductions=caDeduction+sssDeduction+pagibigDeduction+philhealthDeduction+adjDeductions
+      const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
+      const undertimeMinutesInfo=logs?.reduce((s,l)=>s+Number(l.undertime_minutes||0),0)||0
+      results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:totalEarnings-totalDeductions, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', mobileNumber:emp.contact_number||'' })
+    } // end for emp
     for (const pay of results) {
       const { data:empCAs } = await supabase.from('cash_advances').select('*').eq('employee_id', pay.employeeId).eq('status', 'Unpaid')
       for (const ca of empCAs||[]) {
@@ -1457,9 +1544,9 @@ export default function App() {
         const newBal=Math.max(0,Number(ca.balance||0)-ded), newRem=Math.max(0,Number(ca.installments_remaining||1)-1)
         await supabase.from('cash_advances').update({ amount_paid:Number(ca.amount_paid||0)+ded, balance:newBal, installments_remaining:newRem, status:newBal<=0||newRem<=0?'Paid':'Unpaid' }).eq('id', ca.id)
       }
-      await supabase.from('payroll_records').insert([{ employee_id:pay.employeeId, employee_code:pay.employeeCode, employee_name:pay.employeeName, payroll_start:payrollStart, payroll_end:payrollEnd, worked_days:pay.workedDays, basic_pay:pay.basicPay, overtime_pay:pay.overtimePay, night_diff_pay:pay.nightDiffPay, holiday_pay:pay.holidayPay, other_earnings:pay.adjustmentEarnings, total_earnings:pay.totalEarnings, late_deduction:pay.lateDeduction, undertime_deduction:pay.undertimeDeduction, cash_advance_deduction:pay.cashAdvanceDeduction, sss_deduction:pay.sssDeduction, pagibig_deduction:pay.pagibigDeduction, philhealth_deduction:pay.philhealthDeduction, other_deductions:pay.adjustmentDeductions, total_deductions:pay.totalDeductions, net_pay:pay.netPay, employee_acknowledgement:'pending', payslip_serial:genSerial(payrollStart,results.indexOf(pay)) }])
+      await supabase.from('payroll_records').insert([{ employee_id:pay.employeeId, employee_code:pay.employeeCode, employee_name:pay.employeeName, payroll_start:payrollStart, payroll_end:payrollEnd, worked_days:pay.workedDays, basic_pay:pay.basicPay, birthday_pay:pay.birthdayPay||0, overtime_pay:pay.overtimePay, night_diff_pay:pay.nightDiffPay, holiday_pay:pay.holidayPay, other_earnings:pay.adjustmentEarnings, total_earnings:pay.totalEarnings, late_minutes:pay.lateMinutes||0, undertime_minutes:pay.undertimeMinutes||0, cash_advance_deduction:pay.cashAdvanceDeduction, sss_deduction:pay.sssDeduction, pagibig_deduction:pay.pagibigDeduction, philhealth_deduction:pay.philhealthDeduction, other_deductions:pay.adjustmentDeductions, total_deductions:pay.totalDeductions, net_pay:pay.netPay, employee_acknowledgement:'pending', payslip_serial:genSerial(payrollStart,results.indexOf(pay)) }])
     }
-    const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
+    const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
     setPayrollResults(results); setPayrollSummary(s); setPayrollComputing(false)
     await logAudit('PAYROLL COMPUTED','Admin','ALL',`${payrollStart} to ${payrollEnd} — ${results.length} employees`)
     showToast('✅ Payroll computed successfully!')
@@ -1572,10 +1659,26 @@ export default function App() {
       ['dashboard','🏠 Dashboard'],['attendance','📋 Attendance'],['employees','👥 Employees'],['auditTrail','📜 Audit Trail'],
       ['schedule','📅 Schedule'],['holidays','🗓️ Holidays'],['overtime','⏰ OT / UT Requests'],
       ['adjustment','⚙️ Adjustment'],['payroll','💰 Payroll'],['thirteenth','🎁 13th Month'],
-      ['finalpay','📄 Final Pay'],['payrollHistory','📂 Payroll History'],['remittance','🏛️ Remittance Report'],['dtr','📋 DTR Print'],['announcements','📢 Announcements'],
+      ['finalpay','📄 Final Pay'],['payrollHistory','📂 Payroll History'],['remittance','🏛️ Remittance Report'],['dtr','📋 DTR Print'],['bankDisbursement','🏦 Bank Disbursement'],['announcements','📢 Announcements'],
       ['leaveRequests','🏖️ Leave Requests 🔔'],['cashRequests','💵 CA Requests 🔔'],['disputes','⚠️ Disputes 🔔'],
-    ]
+    ].filter(([key]) => canAccess(key))
     const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
+
+    // ── Open full employee portal from admin panel ─────────────────────────
+    const openAdminEmployeePortal = () => {
+      if (!adminEmployee) { showToast('No employee record linked to your admin account. Ask owner to assign your employee profile.', 'red'); return }
+      setEmployee(adminEmployee)
+      setProfilePhotoUrl(adminEmployee.profile_photo_url || null)
+      loadTodayLog(adminEmployee)
+      loadTodaySchedule(adminEmployee)
+      loadMyPayslips(adminEmployee)
+      loadMyCashAdvances(adminEmployee)
+      loadMyAttendanceHistory(adminEmployee)
+      loadMyLeaveBalance(adminEmployee)
+      checkAnnouncements(adminEmployee)
+      setCameFromAdmin(true)
+      setAdminMode(false)
+    }
 
     return (
       <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f0f0f0', overflow:'hidden', display:'flex', flexDirection:'column' }}>
@@ -1596,7 +1699,12 @@ export default function App() {
                 <img src="/logo.png" alt="Logo" style={{ width:'30px', height:'30px', objectFit:'contain' }} />
                 <span style={{ color:'white', fontWeight:'bold', fontSize:'15px' }}>Admin Dashboard</span>
               </div>
-              <button onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.2)', border:'1px solid rgba(255,255,255,0.5)', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold' }}>{sidebarOpen?'✕':'☰'}</button>
+              <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                {adminEmployee && (
+                  <button onClick={openAdminEmployeePortal} style={{ background:'#2d8a4e', border:'none', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}>⏰ MY TIME</button>
+                )}
+                <button onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.2)', border:'1px solid rgba(255,255,255,0.5)', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold' }}>{sidebarOpen?'✕':'☰'}</button>
+              </div>
             </div>
           )}
 
@@ -1628,7 +1736,10 @@ export default function App() {
                   if(key==='dtr') loadEmployees()
                 }} style={{ padding:'9px 10px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:activeTab===key?'#ca1b1b':'#f0f0f0', color:activeTab===key?'white':'#333' }}>{label}</button>
               ))}
-              <button style={{ padding:'9px 10px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:'#222', color:'white', marginTop:'8px' }} onClick={()=>setAdminMode(false)}>← Back to Login</button>
+              {adminEmployee && (
+                <button style={{ padding:'9px 10px', borderRadius:'8px', border:'2px solid #2d8a4e', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:'#e8f5e9', color:'#2d8a4e', marginTop:'8px' }} onClick={openAdminEmployeePortal}>⏰ MY ATTENDANCE</button>
+              )}
+              <button style={{ padding:'9px 10px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:'#222', color:'white', marginTop:'4px' }} onClick={()=>{ setAdminMode(false); setAdminEmployee(null) }}>← Back to Login</button>
             </div>
           )}
 
@@ -1659,10 +1770,13 @@ export default function App() {
                     ))}
                   </div>
                 )}
-                <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
-                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginTop:'4px' }}>
-                  <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
-                </div>
+                <div>
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'12px' }}>
+                    <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
+                    {(adminRole==='owner'||adminRole==='hr') && (
+                      <button style={{ ...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={autoApplySIL}>🌿 AUTO-APPLY SIL</button>
+                    )}
+                  </div>
 
                 {/* Probationary Alerts */}
                 {dashboardData?.probDue?.length > 0 && (
@@ -1928,6 +2042,16 @@ export default function App() {
                   <select value={newEmpFields.employment_type} onChange={e=>setNewEmpFields(p=>({...p,employment_type:e.target.value}))} style={inputStyle}>
                     <option value="regular">Regular</option><option value="probationary">Probationary</option><option value="part-time">Part-Time</option><option value="contractual">Contractual</option>
                   </select>
+                  {adminRole==='owner' && (<>
+                  <label style={lblS}>🔐 Admin Role (Owner only — grants system access):</label>
+                  <select value={newEmpFields.admin_role||''} onChange={e=>setNewEmpFields(p=>({...p,admin_role:e.target.value||null}))} style={{ ...inputStyle, borderColor:newEmpFields.admin_role?'#ca1b1b':'#ddd', fontWeight:newEmpFields.admin_role?'bold':'normal' }}>
+                    <option value="">— None (Regular Employee) —</option>
+                    <option value="owner">👑 Owner — Full Access</option>
+                    <option value="hr">👤 HR Admin — People & Attendance</option>
+                    <option value="payroll">💰 Payroll Officer — Payroll & Finance</option>
+                    <option value="supervisor">👁 Supervisor — Attendance & Schedules</option>
+                  </select>
+                  </>)}
                   <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 8px', borderBottom:'1px solid #eee', paddingBottom:'6px' }}>👤 Personal Information</p>
                   <label style={lblS}>Date of Birth:</label>
                   <input type="date" value={newEmpFields.dob||''} onChange={e=>setNewEmpFields(p=>({...p,dob:e.target.value}))} style={inputStyle} />
@@ -1988,7 +2112,7 @@ export default function App() {
                           {emp.profile_photo_url?<img src={emp.profile_photo_url} alt="" style={{ width:'38px', height:'38px', borderRadius:'50%', objectFit:'cover', flexShrink:0 }} />:<div style={{ width:'38px', height:'38px', borderRadius:'50%', background:'#f0f0f0', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'14px', flexShrink:0 }}>👤</div>}
                           <div style={{ minWidth:0 }}>
                             <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>{emp.full_name}</strong>
-                            <p style={cps}>{emp.employee_code} | {emp.position} | {emp.department||'—'} | <Badge label={emp.employment_type||'regular'} color="blue" /></p>
+                            <p style={cps}>{emp.employee_code} | {emp.position} | {emp.department||'—'} | <Badge label={emp.employment_type||'regular'} color="blue" />{emp.admin_role&&<> | <Badge label={emp.admin_role==='owner'?'👑 Owner':emp.admin_role==='hr'?'👤 HR':emp.admin_role==='payroll'?'💰 Payroll':'👁 Supervisor'} color={emp.admin_role==='owner'?'red':'green'} /></>}</p>
                             <p style={cps}>{php(emp.daily_rate)}/day | Hire: {emp.hire_date||'N/A'} | Grace: {emp.grace_period_minutes||10}min</p>
                             <p style={cps}>👤 {emp.gender||'—'} | {emp.civil_status||'—'} | DOB: {emp.date_of_birth||'—'}</p>
                             <p style={cps}>📞 {emp.contact_number||'—'} | 🏠 {emp.home_address||'—'}</p>
@@ -1998,7 +2122,7 @@ export default function App() {
                           </div>
                         </div>
                         <div style={{ display:'flex', gap:'5px', flexShrink:0 }}>
-                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, sil:emp.sil_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'' }) }}>✏ EDIT</button>
+                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, sil:emp.sil_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'' }) }}>✏ EDIT</button>
                           <button style={{ ...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}>🚫</button>
                         </div>
                       </div>
@@ -2024,6 +2148,16 @@ export default function App() {
                           </select>
                           <label style={lblS}>Employment Type:</label>
                           <select value={editFields.employment_type||'regular'} onChange={e=>setEditFields(p=>({...p,employment_type:e.target.value}))} style={inputStyle}><option value="regular">Regular</option><option value="probationary">Probationary</option><option value="part-time">Part-Time</option><option value="contractual">Contractual</option></select>
+                          {adminRole==='owner' && (<>
+                          <label style={lblS}>🔐 Admin Role (Owner only — grants system access):</label>
+                          <select value={editFields.admin_role||''} onChange={e=>setEditFields(p=>({...p,admin_role:e.target.value||null}))} style={{ ...inputStyle, borderColor:editFields.admin_role?'#ca1b1b':'#ddd', fontWeight:editFields.admin_role?'bold':'normal' }}>
+                            <option value="">— None (Regular Employee) —</option>
+                            <option value="owner">👑 Owner — Full Access</option>
+                            <option value="hr">👤 HR Admin — People & Attendance</option>
+                            <option value="payroll">💰 Payroll Officer — Payroll & Finance</option>
+                            <option value="supervisor">👁 Supervisor — Attendance & Schedules</option>
+                          </select>
+                          </>)}
                           <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 8px' }}>👤 Personal Information</p>
                           <label style={lblS}>Date of Birth:</label>
                           <input type="date" value={editFields.dob||''} onChange={e=>setEditFields(p=>({...p,dob:e.target.value}))} style={inputStyle} />
@@ -2323,8 +2457,8 @@ export default function App() {
                     <label style={lblS}>Admin Response / Reason (required for rejection):</label>
                     <textarea placeholder="Enter your response..." value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{ ...inputStyle, minHeight:'60px', resize:'none' }} />
                     <div style={{ display:'flex', gap:'8px', marginTop:'4px' }}>
-                      <button style={{ ...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>approveTimeAdj(req)}>✅ APPROVE</button>
-                      <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>rejectTimeAdj(req)}>❌ REJECT</button>
+                      <button style={{ ...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await approveTimeAdj(req); btn.disabled=false; btn.textContent='✅ APPROVE' }}>✅ APPROVE</button>
+                      <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent='❌ REJECT' }}>❌ REJECT</button>
                     </div>
                   </div>
                 ))}
@@ -2371,7 +2505,7 @@ export default function App() {
                   <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'22px' }}>
                     <h3 style={{ color:'#ca1b1b', margin:'0 0 12px' }}>📊 Summary — {payrollStart} to {payrollEnd}</h3>
                     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'8px' }}>
-                      {[['Employees',payrollSummary.totalEmployees],['Basic Pay',php(payrollSummary.totalBasicPay)],['Overtime',php(payrollSummary.totalOvertimePay)],['Night Diff',php(payrollSummary.totalNightDiff)],['Holiday Pay',php(payrollSummary.totalHolidayPay)],['Total Earnings',php(payrollSummary.totalEarnings)],['SSS',php(payrollSummary.totalSSS)],['Pag-IBIG',php(payrollSummary.totalPagibig)],['PhilHealth',php(payrollSummary.totalPhilhealth)],['Cash Advance',php(payrollSummary.totalCA)],['Total Deductions',php(payrollSummary.totalDeductions)],['TOTAL NET PAY',php(payrollSummary.totalNetPay)]].map(([l,v])=>(
+                      {[['Employees',payrollSummary.totalEmployees],['Basic Pay',php(payrollSummary.totalBasicPay)],['🎂 Birthday Pay',php(payrollSummary.totalBirthdayPay||0)],['Overtime',php(payrollSummary.totalOvertimePay)],['Night Diff',php(payrollSummary.totalNightDiff)],['Holiday Pay',php(payrollSummary.totalHolidayPay)],['Total Earnings',php(payrollSummary.totalEarnings)],['SSS',php(payrollSummary.totalSSS)],['Pag-IBIG',php(payrollSummary.totalPagibig)],['PhilHealth',php(payrollSummary.totalPhilhealth)],['Cash Advance',php(payrollSummary.totalCA)],['Total Deductions',php(payrollSummary.totalDeductions)],['TOTAL NET PAY',php(payrollSummary.totalNetPay)]].map(([l,v])=>(
                         <div key={l} style={{ background:'white', borderRadius:'8px', padding:'10px', border:'1px solid #eee' }}>
                           <p style={{ color:'#888', fontSize:'11px', margin:'0 0 3px' }}>{l}</p>
                           <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{v}</p>
@@ -2396,16 +2530,19 @@ export default function App() {
                         <div style={{ fontSize:'11px', color:'#888' }}>Code: {pay.employeeCode} | Worked: {pay.workedDays}d | Absent: {pay.absentDays}d</div>
                       </div>
                       <div style={{ color:'#2d8a4e', fontWeight:'bold', marginBottom:'4px' }}>EARNINGS</div>
+                      <div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#888', marginBottom:'6px' }}>
+                        <span>Hourly Rate: {php(pay.hourlyRate)}/hr | Hours Worked: {Math.floor((pay.totalWorkedMinutes||0)/60)}h {(pay.totalWorkedMinutes||0)%60}m</span>
+                      </div>
                       <div style={{ display:'flex', justifyContent:'space-between' }}><span>Basic Pay</span><span>{php(pay.basicPay)}</span></div>
-                      {pay.overtimePay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Overtime Pay</span><span>{php(pay.overtimePay)}</span></div>}
+                      {(pay.birthdayPay||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', color:'#e91e63' }}><span>🎂 Birthday Pay (200%)</span><span>{php(pay.birthdayPay)}</span></div>}
+                      {pay.overtimePay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Overtime Pay ({pay.overtimeMinutes}min)</span><span>{php(pay.overtimePay)}</span></div>}
                       {pay.nightDiffPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Night Differential</span><span>{php(pay.nightDiffPay)}</span></div>}
                       {pay.holidayPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Holiday Pay</span><span>{php(pay.holidayPay)}</span></div>}
                       {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Other Earnings</span><span>{php(pay.adjustmentEarnings)}</span></div>}
+                      {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>ℹ️ Late: {pay.lateMinutes}min (embedded in hours)</span><span>—</span></div>}
+                      {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>ℹ️ Undertime: {pay.undertimeMinutes}min (embedded in hours)</span><span>—</span></div>}
                       <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Earnings</span><span style={{ color:'#2d8a4e' }}>{php(pay.totalEarnings)}</span></div>
                       <div style={{ color:'#ca1b1b', fontWeight:'bold', margin:'8px 0 4px' }}>DEDUCTIONS</div>
-                      {pay.lateDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Late ({pay.lateMinutes}min)</span><span>{php(pay.lateDeduction)}</span></div>}
-                      {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Undertime ({pay.undertimeMinutes}min)</span><span>{php(pay.undertimeDeduction)}</span></div>}
-                      {(pay.excessBreakDeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Excess Break</span><span>{php(pay.excessBreakDeduction)}</span></div>}
                       {pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
                       {pay.sssDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>SSS</span><span>{php(pay.sssDeduction)}</span></div>}
                       {pay.pagibigDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Pag-IBIG</span><span>{php(pay.pagibigDeduction)}</span></div>}
@@ -3057,13 +3194,13 @@ export default function App() {
                     <p style={cps}>Leave: {req.leave_start} to {req.leave_end} ({req.duration_days} day(s))</p>
                     <p style={cps}>Type: {req.leave_type} | Reason: <em>"{req.reason}"</em></p>
                     <div style={{ display:'flex', gap:'8px', marginTop:'10px', flexWrap:'wrap' }}>
-                      <button style={{ ...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>updateLeaveStatus(req.id,'approved','')}>✅ APPROVE</button>
-                      <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>setShowLeaveDisapproveBox(p=>({...p,[req.id]:!p[req.id]}))}>❌ DISAPPROVE</button>
+                      <button style={{ ...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await updateLeaveStatus(req.id,'approved',''); btn.disabled=false; btn.textContent='✅ APPROVE' }}>✅ APPROVE</button>
+                      <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={(e)=>{ e.stopPropagation(); setShowLeaveDisapproveBox(p=>({...p,[req.id]:!p[req.id]})) }}>❌ DISAPPROVE</button>
                     </div>
                     {showLeaveDisapproveBox[req.id] && (
                       <div style={{ marginTop:'10px' }}>
                         <textarea placeholder="Reason for disapproval (required)..." value={leaveDisapproveReason[req.id]||''} onChange={e=>setLeaveDisapproveReason(p=>({...p,[req.id]:e.target.value}))} style={{ ...inputStyle, minHeight:'60px', resize:'none' }} />
-                        <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>{ const r=leaveDisapproveReason[req.id]; if(!r?.trim()){showToast('Please enter a reason.','red');return;} updateLeaveStatus(req.id,'disapproved',r); setShowLeaveDisapproveBox(p=>({...p,[req.id]:false})) }}>CONFIRM DISAPPROVE</button>
+                        <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; const r=leaveDisapproveReason[req.id]; if(!r?.trim()){showToast('Please enter a reason.','red');return;} btn.disabled=true; btn.textContent='Processing...'; await updateLeaveStatus(req.id,'disapproved',r); setShowLeaveDisapproveBox(p=>({...p,[req.id]:false})); btn.disabled=false }}>CONFIRM DISAPPROVE</button>
                       </div>
                     )}
                   </div>
@@ -3095,13 +3232,13 @@ export default function App() {
                     <input type="number" min="1" max="24" value={installmentCounts[req.id]||1} onChange={e=>{ const v=parseInt(e.target.value)||1; setInstallmentCounts(p=>({...p,[req.id]:Math.max(1,v)})) }} style={{ ...inputStyle, marginBottom:'4px' }} />
                     <p style={{ color:'#888', fontSize:'12px', marginBottom:'10px' }}>{php(Number(req.amount)/Math.max(1,installmentCounts[req.id]||1))} per payroll cutoff</p>
                     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-                      <button style={{ ...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>updateCashAdvanceStatus(req.id,'approved')}>✅ APPROVE</button>
-                      <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>setShowCADisapproveBox(p=>({...p,[req.id]:!p[req.id]}))}>❌ DISAPPROVE</button>
+                      <button style={{ ...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:processingItems[req.id]?0.6:1 }} disabled={processingItems[req.id]} onClick={async()=>{ setProcessingItems(p=>({...p,[req.id]:true})); await updateCashAdvanceStatus(req.id,'approved'); setProcessingItems(p=>({...p,[req.id]:false})) }}>{processingItems[req.id]?'⏳ Processing...':'✅ APPROVE'}</button>
+                      <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={(e)=>{ e.stopPropagation(); setShowCADisapproveBox(p=>({...p,[req.id]:!p[req.id]})) }}>❌ DISAPPROVE</button>
                     </div>
                     {showCADisapproveBox[req.id] && (
                       <div style={{ marginTop:'10px' }}>
                         <textarea placeholder="Reason for disapproval (required)..." value={caDisapproveReason[req.id]||''} onChange={e=>setCaDisapproveReason(p=>({...p,[req.id]:e.target.value}))} style={{ ...inputStyle, minHeight:'60px', resize:'none' }} />
-                        <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>updateCashAdvanceStatus(req.id,'disapproved')}>CONFIRM DISAPPROVE</button>
+                        <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0, opacity:processingItems['dis_'+req.id]?0.6:1 }} disabled={processingItems['dis_'+req.id]} onClick={async()=>{ setProcessingItems(p=>({...p,['dis_'+req.id]:true})); await updateCashAdvanceStatus(req.id,'disapproved'); setShowCADisapproveBox(p=>({...p,[req.id]:false})); setProcessingItems(p=>({...p,['dis_'+req.id]:false})) }}>{processingItems['dis_'+req.id]?'⏳ Processing...':'CONFIRM DISAPPROVE'}</button>
                       </div>
                     )}
                   </div>
@@ -3115,6 +3252,100 @@ export default function App() {
                     <p style={{ fontWeight:'bold', color:req.status==='approved'?'#2d8a4e':'#ca1b1b', margin:'4px 0' }}>Status: {req.status}</p>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* BANK DISBURSEMENT */}
+            {activeTab==='bankDisbursement' && (
+              <div>
+                <h2 style={h2s}>🏦 Bank Disbursement</h2>
+                <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>Generate a payroll disbursement file to upload to your bank's online payroll portal (BDO, BPI, UnionBank, Landbank, GCash Business).</p>
+                <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'14px', marginBottom:'20px', fontSize:'13px' }}>
+                  <strong style={{ color:'#ca1b1b' }}>📌 How it works:</strong>
+                  <ol style={{ margin:'8px 0 0 16px', color:'#555', lineHeight:'1.8' }}>
+                    <li>Select the payroll period you want to disburse</li>
+                    <li>Choose your bank format</li>
+                    <li>Click Generate — a CSV file will download</li>
+                    <li>Upload the CSV to your bank's online payroll system</li>
+                    <li>Bank will process and credit employees' accounts</li>
+                  </ol>
+                  <p style={{ color:'#888', fontSize:'12px', marginTop:'10px' }}>⚠️ Make sure each employee has a bank account number saved in their profile.</p>
+                </div>
+                {/* Period Selector */}
+                <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'18px', marginBottom:'16px' }}>
+                  <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>📅 Select Payroll Period</h3>
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end', marginBottom:'12px' }}>
+                    <div><label style={lblS}>From:</label><input type="date" value={payrollStart} onChange={e=>setPayrollStart(e.target.value)} style={{ ...inputStyle, width:'auto', marginBottom:0 }} /></div>
+                    <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{ ...inputStyle, width:'auto', marginBottom:0 }} /></div>
+                    <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
+                      const { data } = await supabase.from('payroll_records').select('*').eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd)
+                      if (!data?.length) { showToast('No payroll records found for this period. Please compute payroll first.','red'); return }
+                      setPayrollResults(data.map(r=>({ employeeId:r.employee_id, employeeName:r.employee_name, employeeCode:r.employee_code, position:r.position, workedDays:r.worked_days, netPay:Number(r.net_pay||0), basicPay:Number(r.basic_pay||0), birthdayPay:Number(r.birthday_pay||0), overtimePay:Number(r.overtime_pay||0), totalEarnings:Number(r.total_earnings||0), totalDeductions:Number(r.total_deductions||0) })))
+                      showToast(`✅ Loaded ${data.length} employee records`)
+                    }}>📂 LOAD PERIOD</button>
+                  </div>
+                  {payrollResults.length>0 && (
+                    <div style={{ background:'#f0fff0', borderRadius:'8px', padding:'12px', border:'1px solid #c8e6c9' }}>
+                      <p style={{ fontWeight:'bold', color:'#2d8a4e', margin:'0 0 6px' }}>✅ {payrollResults.length} employees loaded</p>
+                      <p style={cps}>Total Net Pay: <strong>{php(payrollResults.reduce((s,p)=>s+Number(p.netPay||0),0))}</strong></p>
+                    </div>
+                  )}
+                </div>
+                {/* Bank Format Selector */}
+                {payrollResults.length>0 && (
+                  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'18px', marginBottom:'16px' }}>
+                    <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>🏦 Choose Bank Format & Generate</h3>
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                      {[
+                        { bank:'BDO', color:'#003087', desc:'BDO PayRoll CSV format', fields:'Account No,Name,Amount,Currency,Remarks' },
+                        { bank:'BPI', color:'#cc0000', desc:'BPI Direct Payroll format', fields:'Account Number,Name,Amount,Remarks' },
+                        { bank:'UnionBank', color:'#e65100', desc:'UnionBank Online Payroll', fields:'AccountNo,BeneficiaryName,Amount,Particulars' },
+                        { bank:'Landbank', color:'#1a5276', desc:'Landbank iAccess Payroll', fields:'Account,Name,Amount,Description' },
+                        { bank:'GCash', color:'#0072bc', desc:'GCash Business Disbursement', fields:'Mobile Number,Name,Amount,Reference' },
+                        { bank:'Generic', color:'#555', desc:'Generic / Other Banks', fields:'Employee Code,Name,Bank,Account No,Amount,Net Pay' },
+                      ].map(({bank,color,desc,fields})=>(
+                        <div key={bank} style={{ border:`2px solid ${color}`, borderRadius:'10px', padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
+                          <p style={{ fontWeight:'bold', color, fontSize:'14px', margin:0 }}>🏦 {bank}</p>
+                          <p style={{ fontSize:'12px', color:'#888', margin:0 }}>{desc}</p>
+                          <p style={{ fontSize:'11px', color:'#aaa', margin:0, fontFamily:'monospace' }}>{fields}</p>
+                          <button style={{ ...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px' }} onClick={()=>{
+                            const rows = []
+                            if (bank==='BDO') {
+                              rows.push(['AccountNo','BeneficiaryName','Amount','Currency','Remarks'])
+                              payrollResults.forEach(p=>rows.push([p.bankAccount||'','`'+p.employeeName,p.netPay.toFixed(2),'PHP',`Payroll ${payrollStart} to ${payrollEnd}`]))
+                            } else if (bank==='BPI') {
+                              rows.push(['Account Number','Name','Amount','Remarks'])
+                              payrollResults.forEach(p=>rows.push([p.bankAccount||'',p.employeeName,p.netPay.toFixed(2),`Payroll ${payrollStart} to ${payrollEnd}`]))
+                            } else if (bank==='UnionBank') {
+                              rows.push(['AccountNo','BeneficiaryName','Amount','Particulars'])
+                              payrollResults.forEach(p=>rows.push([p.bankAccount||'',p.employeeName,p.netPay.toFixed(2),`Salary ${payrollEnd}`]))
+                            } else if (bank==='Landbank') {
+                              rows.push(['Account','Name','Amount','Description'])
+                              payrollResults.forEach(p=>rows.push([p.bankAccount||'',p.employeeName,p.netPay.toFixed(2),`Payroll ${payrollStart}-${payrollEnd}`]))
+                            } else if (bank==='GCash') {
+                              rows.push(['Mobile Number','Name','Amount','Reference'])
+                              payrollResults.forEach(p=>rows.push([p.mobileNumber||p.bankAccount||'',p.employeeName,p.netPay.toFixed(2),`${p.employeeCode}-${payrollEnd}`]))
+                            } else {
+                              rows.push(['Employee Code','Name','Bank','Account No','Net Pay'])
+                              payrollResults.forEach(p=>rows.push([p.employeeCode,p.employeeName,p.bankName||'',p.bankAccount||'',p.netPay.toFixed(2)]))
+                            }
+                            const csv = rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n')
+                            const blob = new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'})
+                            const url = URL.createObjectURL(blob)
+                            const a = document.createElement('a')
+                            a.href=url; a.download=`${bank}_Payroll_${payrollStart}_to_${payrollEnd}.csv`; a.click()
+                            URL.revokeObjectURL(url)
+                            showToast(`✅ ${bank} disbursement file downloaded!`)
+                          }}>⬇️ DOWNLOAD {bank} FILE</button>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', marginTop:'16px', border:'1px solid #f5c518' }}>
+                      <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 6px' }}>📌 Next Steps After Download</p>
+                      <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.8' }}>1. Log in to your bank's online payroll portal<br/>2. Go to "Payroll Disbursement" or "Batch Transfer"<br/>3. Upload the downloaded CSV file<br/>4. Review the entries and total amount<br/>5. Submit for processing (may need 2FA approval)<br/>6. Bank processes within 1–3 banking days</p>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -3132,7 +3363,7 @@ export default function App() {
                     <p style={cps}>Filed: {new Date(d.created_at).toLocaleDateString()}</p>
                     <label style={lblS}>Admin Response (required to resolve):</label>
                     <textarea placeholder="Enter your response or resolution..." value={disputeAdminReason[d.id]||''} onChange={e=>setDisputeAdminReason(p=>({...p,[d.id]:e.target.value}))} style={{ ...inputStyle, minHeight:'60px', resize:'none' }} />
-                    <button style={{ ...btnGreen, width:'auto', padding:'8px 16px', marginTop:'8px' }} onClick={()=>resolveDispute(d.id)}>✅ MARK AS RESOLVED</button>
+                    <button style={{ ...btnGreen, width:'auto', padding:'8px 16px', marginTop:'8px', opacity:processingItems['res_'+d.id]?0.6:1 }} disabled={processingItems['res_'+d.id]} onClick={async()=>{ setProcessingItems(p=>({...p,['res_'+d.id]:true})); await resolveDispute(d.id); setProcessingItems(p=>({...p,['res_'+d.id]:false})) }}>{processingItems['res_'+d.id]?'⏳ Resolving...':'✅ MARK AS RESOLVED'}</button>
                   </div>
                 ))}
                 <button style={{ ...btnBlack, marginTop:'20px' }} onClick={async()=>{ await loadResolvedDisputes(); setShowResolvedDisputes(!showResolvedDisputes) }}>{showResolvedDisputes?'🔼 HIDE':'🔽 VIEW'} RESOLVED DISPUTES</button>
@@ -3160,7 +3391,37 @@ export default function App() {
     const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
 
     return (
-      <div style={pageStyle}>
+      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+        {/* Sticky Header */}
+        <div style={{ background:'rgba(0,0,0,0.25)', backdropFilter:'blur(8px)', padding:'10px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, zIndex:100 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+            <div style={{ position:'relative' }}>
+              {profilePhotoUrl ?
+                <img src={profilePhotoUrl} alt="Profile" style={{ width:'40px', height:'40px', borderRadius:'50%', objectFit:'cover', border:'2px solid white' }} /> :
+                <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:'rgba(255,255,255,0.3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', border:'2px solid white' }}>👤</div>
+              }
+              <label style={{ position:'absolute', bottom:'-2px', right:'-2px', background:'#ca1b1b', color:'white', borderRadius:'50%', width:'18px', height:'18px', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:'9px', border:'1px solid white' }}>
+                📷<input type="file" accept="image/*" onChange={handleProfilePhotoUpload} style={{ display:'none' }} />
+              </label>
+            </div>
+            <div>
+              <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0 }}>{employee.full_name}</p>
+              <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', margin:0 }}>{employee.position} — {employee.employee_code}</p>
+            </div>
+          </div>
+          <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+            {cameFromAdmin && (
+              <button style={{ background:'white', color:'#ca1b1b', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}>← ADMIN</button>
+            )}
+            {!cameFromAdmin && (
+              <button style={{ background:'rgba(255,255,255,0.2)', color:'white', border:'1px solid rgba(255,255,255,0.5)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={logout}>🚪 LOGOUT</button>
+            )}
+            {cameFromAdmin && (
+              <button style={{ background:'rgba(255,255,255,0.2)', color:'white', border:'1px solid rgba(255,255,255,0.5)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }}>🚪 LOGOUT</button>
+            )}
+          </div>
+        </div>
+
         {showAnnouncementPopup && pendingAnnouncement && (
           <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.75)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
             <div style={{ background:'white', borderRadius:'16px', padding:'24px', maxWidth:'420px', width:'100%', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }}>
@@ -3178,19 +3439,16 @@ export default function App() {
           <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
         )}
 
-        <div style={{ ...cardStyle, width:'100%', maxWidth:'460px', margin:'0 auto', borderRadius:isMobile?'0':'20px', minHeight:isMobile?'100vh':'auto', textAlign:'left' }}>
-          <div style={{ textAlign:'center', marginBottom:'12px' }}>
-            <div style={{ position:'relative', display:'inline-block' }}>
-              {profilePhotoUrl ?
-                <img src={profilePhotoUrl} alt="Profile" style={{ width:'80px', height:'80px', borderRadius:'50%', objectFit:'cover', border:'3px solid #ca1b1b', display:'block' }} /> :
-                <div style={{ width:'80px', height:'80px', borderRadius:'50%', background:'#f0f0f0', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'30px', border:'3px solid #ca1b1b', margin:'0 auto' }}>👤</div>
-              }
-              <label style={{ position:'absolute', bottom:0, right:0, background:'#ca1b1b', color:'white', borderRadius:'50%', width:'26px', height:'26px', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:'12px', boxShadow:'0 2px 6px rgba(0,0,0,0.3)' }}>
-                📷<input type="file" accept="image/*" onChange={handleProfilePhotoUpload} style={{ display:'none' }} />
-              </label>
+        {/* Scrollable Content Area */}
+        <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'24px', display:'flex', justifyContent:'center' }}>
+        <div style={{ background:'white', borderRadius:isMobile?'16px':'20px', padding:isMobile?'16px':'24px', width:'100%', maxWidth:'600px', boxShadow:'0 10px 40px rgba(0,0,0,0.2)', marginBottom:'16px' }}>
+        {uploadingPhoto && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 8px', textAlign:'center' }}>⏳ Uploading photo...</p>}
+        {cameFromAdmin && (
+            <div style={{ background:'#ca1b1b', borderRadius:'10px', padding:'8px 14px', marginBottom:'14px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span style={{ color:'white', fontWeight:'bold', fontSize:'12px' }}>👑 Admin View — {adminRole?.toUpperCase()}</span>
             </div>
-            {uploadingPhoto && <p style={{ color:'#888', fontSize:'12px', margin:'4px 0' }}>⏳ Uploading...</p>}
-            <h2 style={{ fontSize:isMobile?'20px':'24px', fontWeight:'bold', color:'#ca1b1b', margin:'8px 0 2px' }}>{employee.full_name}</h2>
+          )}
+          <div style={{ textAlign:'center', marginBottom:'12px' }}>
             <p style={{ color:'#888', margin:'0', fontSize:'13px' }}>{employee.position} — {employee.employee_code}</p>
           </div>
 
@@ -3260,7 +3518,10 @@ export default function App() {
 
           {showOTRequest && (
             <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginBottom:'8px' }}>
+              <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}>← BACK</button>
               <h3 style={{ color:'#8b5cf6', margin:'0 0 10px', fontSize:'14px' }}>📝 File OT / Undertime Request</h3>
+              <label style={lblS}>Date of OT / Undertime:</label>
+              <input type="date" value={otRequestDate} max={today} onChange={e=>setOtRequestDate(e.target.value)} style={inputStyle} />
               <label style={lblS}>Request Type:</label>
               <select value={otRequestType} onChange={e=>setOtRequestType(e.target.value)} style={inputStyle}><option value="overtime">Overtime</option><option value="undertime">Undertime</option></select>
               <label style={lblS}>Minutes:</label>
@@ -3274,6 +3535,7 @@ export default function App() {
           <button style={{ ...btnRed, background:'#ca1b1b' }} onClick={()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }}>🏖️ FILE LEAVE REQUEST</button>
           {showLeaveRequest && (
             <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginTop:'8px' }}>
+              <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowLeaveRequest(false)}>← BACK</button>
               <input type="date" value={leaveStartDate} min={new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
               <input type="date" value={leaveEndDate} onChange={e=>setLeaveEndDate(e.target.value)} style={inputStyle} />
               {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {Math.ceil((new Date(leaveEndDate)-new Date(leaveStartDate))/(1000*60*60*24))+1} day(s)</p>}
@@ -3286,6 +3548,7 @@ export default function App() {
           <button style={{ background:'#e8505b', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowMyLeaves(!showMyLeaves); if(!showMyLeaves) loadMyLeaves() }}>{showMyLeaves?'🔼 HIDE':'🔽 VIEW'} MY LEAVE HISTORY</button>
           {showMyLeaves && (
             <div style={{ marginTop:'10px' }}>
+              <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowMyLeaves(false)}>← BACK</button>
               {myLeavesLoading && <p style={{ color:'#888', fontSize:'13px', textAlign:'center', padding:'12px' }}>⏳ Loading leave history...</p>}
 
               {!myLeavesLoading && myLeaves.length===0 && (
@@ -3386,6 +3649,7 @@ export default function App() {
           <button style={{ background:'#f5a623', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }}>💵 REQUEST CASH ADVANCE</button>
           {showCashAdvanceRequest && (
             <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginTop:'8px' }}>
+              <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowCashAdvanceRequest(false)}>← BACK</button>
               <p style={{ color:'#888', fontSize:'13px', margin:'0 0 10px' }}>Once approved, deducted from next payroll cutoff.</p>
               <input type="number" placeholder="Amount (PHP)" value={requestCashAmount} onChange={e=>setRequestCashAmount(e.target.value)} style={inputStyle} />
               <textarea placeholder="Reason for cash advance..." value={requestCashReason} onChange={e=>setRequestCashReason(e.target.value)} style={{ ...inputStyle, minHeight:'70px', resize:'none' }} />
@@ -3396,6 +3660,7 @@ export default function App() {
           <button style={{ background:'#f5a623', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvances(!showCashAdvances); if(!showCashAdvances) loadMyCashAdvances(employee) }}>{showCashAdvances?'🔼 HIDE':'🔽 VIEW'} MY CASH ADVANCES</button>
           {showCashAdvances && (
             <div style={{ marginTop:'10px' }}>
+              <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowCashAdvances(false)}>← BACK</button>
 
               {/* Active Balance Summary */}
               {myActiveCAs.length > 0 && (
@@ -3517,6 +3782,7 @@ export default function App() {
           <button style={{ background:'#4a90d9', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowMyAttendance(!showMyAttendance) }}>{showMyAttendance?'🔼 HIDE':'🔽 VIEW'} MY ATTENDANCE HISTORY</button>
           {showMyAttendance && (
             <div style={{ marginTop:'10px' }}>
+              <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowMyAttendance(false)}>← BACK</button>
               {myAttendance.length===0&&<p style={{ color:'#888', fontSize:'13px' }}>No attendance records found.</p>}
               {myAttendance.map(log=>(
                 <div key={log.id} style={{ ...cardS, borderLeft:`4px solid ${log.status==='Absent'?'#ca1b1b':log.status==='Late'?'#f5a623':'#2d8a4e'}` }}>
@@ -3539,6 +3805,7 @@ export default function App() {
           <button style={{ ...btnBlack, background:'#222', marginTop:'8px' }} onClick={()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }}>{showPayslips?'🔼 HIDE':'🔽 VIEW'} MY PAYSLIPS</button>
           {showPayslips && (
             <div style={{ marginTop:'10px' }}>
+              <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowPayslips(false)}>← BACK</button>
               {myPayslips.length===0&&<p style={{ color:'#888', fontSize:'13px' }}>No payslips found.</p>}
               {myPayslips.map(pay=>(
                 <div key={pay.id} style={cardS}>
@@ -3583,7 +3850,10 @@ export default function App() {
           </button>
           {showMyProfile && (
             <div style={{ background:'#f9f9f9', borderRadius:'14px', padding:'16px', marginTop:'10px', border:'1px solid #eee' }}>
-              <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}>👤 My Profile</h3>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px' }}>
+                <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>👤 My Profile</h3>
+                <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555' }} onClick={()=>setShowMyProfile(false)}>← BACK</button>
+              </div>
               {[
                 ['Full Name', employee.full_name],
                 ['Employee Code', employee.employee_code],
@@ -3619,7 +3889,19 @@ export default function App() {
               </div>
             </div>
           )}
-          <button style={{ ...btnGray, marginTop:'8px' }} onClick={logout}>🚪 LOGOUT</button>
+          {cameFromAdmin ? (
+            <div style={{ display:'flex', gap:'8px', marginTop:'8px' }}>
+              <button style={{ ...btnRed, background:'#ca1b1b', flex:1, marginTop:0 }} onClick={()=>{
+                setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false)
+                setAdminMode(true); setSidebarOpen(false)
+                loadEmployees(); loadDashboard(); loadDashboardCharts()
+              }}>← ADMIN PANEL</button>
+              <button style={{ ...btnGray, flex:1, marginTop:0 }} onClick={()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }}>🚪 LOGOUT</button>
+            </div>
+          ) : (
+            <button style={{ ...btnGray, marginTop:'8px' }} onClick={logout}>🚪 LOGOUT</button>
+          )}
+        </div>
         </div>
       </div>
     )
@@ -3627,37 +3909,23 @@ export default function App() {
 
   // ── Login ─────────────────────────────────────────────────────────────────
   return (
-    <div style={pageStyle}>
-      <div style={{ ...cardStyle, width:'100%', maxWidth:'420px', margin:'0 auto' }}>
-        <img src="/logo.png" alt="Logo" style={logoStyle} />
-        <h1 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:isMobile?'22px':'26px', textAlign:'center' }}>Roma's Donuts</h1>
-        <p style={{ color:'#888', margin:'0 0 20px', fontSize:'13px', textAlign:'center' }}>Payroll & Attendance System</p>
-        <input placeholder="Employee ID / Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={inputStyle} />
-        <input placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{
-          if(e.key==='Enter') {
-            // Check admin credentials first
-            const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
-            if(adminMatch) openAdmin(adminMatch.role)
-            else login()
-          }
-        }} style={inputStyle} />
-        <button style={btnRed} onClick={()=>{
-          const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
-          if(adminMatch) openAdmin(adminMatch.role)
-          else login()
-        }} disabled={loading}>{loading?'PLEASE WAIT...':'LOGIN'}</button>
-        <div style={{ marginTop:'16px', background:'#f9f9f9', borderRadius:'10px', padding:'12px', border:'1px solid #eee' }}>
-          <p style={{ color:'#888', fontSize:'11px', margin:'0 0 8px', fontWeight:'bold', textAlign:'center' }}>ADMIN ACCESS</p>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px' }}>
-            {Object.values(adminCredentials).map(a=>(
-              <button key={a.role} style={{ background:'#222', color:'white', border:'none', borderRadius:'8px', padding:'8px', cursor:'pointer', fontSize:'11px', fontWeight:'bold', textAlign:'left' }}
-                onClick={()=>{ setEmployeeCode(a.code); setPin(a.pin) }}>
-                {a.role==='owner'?'👑':a.role==='hr'?'👤':a.role==='payroll'?'💰':'👁'} {a.name}
-              </button>
-            ))}
-          </div>
-          <p style={{ color:'#bbb', fontSize:'10px', margin:'8px 0 0', textAlign:'center' }}>Click role to fill credentials, then LOGIN</p>
+    <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', alignItems:'center', justifyContent:'center', padding:'20px', boxSizing:'border-box', overflow:'auto' }}>
+      {toast && (
+        <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
+      )}
+      <div style={{ background:'white', borderRadius:'24px', boxShadow:'0 20px 60px rgba(0,0,0,0.25)', width:'100%', maxWidth:'440px', padding:'36px 32px', boxSizing:'border-box' }}>
+        <div style={{ textAlign:'center', marginBottom:'24px' }}>
+          <img src="/logo.png" alt="Logo" style={{ width:'90px', height:'90px', objectFit:'contain', display:'block', margin:'0 auto 10px' }} />
+          <h1 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'26px', fontWeight:'900', letterSpacing:'-0.5px' }}>Roma's Donuts</h1>
+          <p style={{ color:'#aaa', margin:0, fontSize:'13px' }}>Payroll & Attendance System</p>
         </div>
+        <input placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+        <input placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+        <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
+        {employeeCode.toUpperCase()==='ADMIN001' && (
+          <p style={{ color:'#bbb', fontSize:'10px', marginTop:'10px', textAlign:'center' }}>👑 Master Owner Access</p>
+        )}
+        <p style={{ color:'#ccc', fontSize:'11px', textAlign:'center', marginTop:'20px' }}>Roma's Donuts © {new Date().getFullYear()}</p>
       </div>
     </div>
   )
