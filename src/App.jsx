@@ -378,11 +378,17 @@ export default function App() {
   const [invoiceDate, setInvoiceDate] = useState(today)
   const [invoiceItems, setInvoiceItems] = useState([])
   const [invoiceNotes, setInvoiceNotes] = useState('')
+  const [invoicePreparedBy, setInvoicePreparedBy] = useState('')
+  const [invoiceDispatchedBy, setInvoiceDispatchedBy] = useState('')
+  const [invoiceCrates, setInvoiceCrates] = useState('')
   const [savingInvoice, setSavingInvoice] = useState(false)
   const [showPaymentForm, setShowPaymentForm] = useState({})
   const [paymentAmount, setPaymentAmount] = useState({})
   const [paymentDate, setPaymentDate] = useState({})
   const [paymentNote, setPaymentNote] = useState({})
+  const [paymentMethod, setPaymentMethod] = useState({})
+  const [viewingInvoice, setViewingInvoice] = useState(null)
+  const PAYMENT_METHODS = ['Cash','GCash','Bank Transfer']
   const [arFilter, setArFilter] = useState('all')
   const [dailySales, setDailySales] = useState([])
   const [dailySalesLoading, setDailySalesLoading] = useState(false)
@@ -1755,7 +1761,7 @@ export default function App() {
     if (!invoiceResellerId) { showToast('❌ Please select a reseller.','red'); return }
     if (!invoiceDate) { showToast('❌ Please select a delivery date.','red'); return }
     const validItems = invoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
-    if (validItems.length === 0) { showToast('❌ Please add at least one item.','red'); return }
+    if (validItems.length === 0) { showToast('❌ Please add at least one item with quantity.','red'); return }
     setSavingInvoice(true)
     try {
       const reseller = resellers.find(r => r.id === invoiceResellerId)
@@ -1772,7 +1778,9 @@ export default function App() {
       const { data:inv, error:invErr } = await supabase.from('delivery_invoices').insert({
         invoice_number:invoiceNum, reseller_id:invoiceResellerId, reseller_name:reseller?.name||'',
         delivery_date:invoiceDate, due_date:dueDateStr, subtotal, discount_pct:20,
-        total_amount:subtotal, status:'unpaid', notes:invoiceNotes||null, created_by:adminRole
+        total_amount:subtotal, status:'unpaid', notes:invoiceNotes||null, created_by:adminRole,
+        prepared_by:invoicePreparedBy||null, dispatched_by:invoiceDispatchedBy||null,
+        crates_used:Number(invoiceCrates||0)
       }).select().single()
       if (invErr) throw invErr
       const itemRows = lineItems.map(i => ({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:i.retail_price, reseller_price:i.reseller_price, quantity:Number(i.quantity), total_price:i.total_price }))
@@ -1780,7 +1788,8 @@ export default function App() {
       if (itemErr) throw itemErr
       await logAudit('INVOICE CREATED', adminRole, reseller?.name||'', `${invoiceNum} — ${php(subtotal)}`)
       showToast(`✅ Invoice ${invoiceNum} created!`)
-      setShowCreateInvoice(false); setInvoiceResellerId(''); setInvoiceItems([]); setInvoiceNotes('')
+      setShowCreateInvoice(false); setInvoiceResellerId(''); setInvoiceItems([])
+      setInvoiceNotes(''); setInvoicePreparedBy(''); setInvoiceDispatchedBy(''); setInvoiceCrates('')
       loadDeliveryInvoices()
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingInvoice(false)
@@ -1865,83 +1874,129 @@ export default function App() {
   async function recordPayment(invoice) {
     const amt = Number(paymentAmount[invoice.id] || 0)
     const pdate = paymentDate[invoice.id] || today
+    const pmethod = paymentMethod[invoice.id] || 'Cash'
     if (!amt || amt <= 0) { showToast('❌ Please enter payment amount.','red'); return }
     if (amt > Number(invoice.total_amount - (invoice.paid_amount||0))) { showToast('❌ Amount exceeds outstanding balance.','red'); return }
     const newPaid = Number(invoice.paid_amount||0) + amt
     const newStatus = newPaid >= Number(invoice.total_amount) ? 'paid' : 'partial'
     const { error } = await supabase.from('delivery_invoices').update({ paid_amount:newPaid, paid_date:newStatus==='paid'?pdate:null, status:newStatus }).eq('id', invoice.id)
     if (error) { showToast('❌ Failed: '+error.message,'red'); return }
-    await supabase.from('reseller_payments').insert({ reseller_id:invoice.reseller_id, reseller_name:invoice.reseller_name, invoice_id:invoice.id, amount:amt, payment_date:pdate, notes:paymentNote[invoice.id]||null, recorded_by:adminRole })
-    await logAudit('PAYMENT RECORDED', adminRole, invoice.reseller_name, `${php(amt)} for ${invoice.invoice_number}`)
-    showToast(`✅ Payment of ${php(amt)} recorded!`)
+    await supabase.from('reseller_payments').insert({ reseller_id:invoice.reseller_id, reseller_name:invoice.reseller_name, invoice_id:invoice.id, amount:amt, payment_date:pdate, payment_method:pmethod, notes:paymentNote[invoice.id]||null, recorded_by:adminRole })
+    await logAudit('PAYMENT RECORDED', adminRole, invoice.reseller_name, `${php(amt)} via ${pmethod} for ${invoice.invoice_number}`)
+    showToast(`✅ ${php(amt)} via ${pmethod} recorded!`)
     setShowPaymentForm(p=>({...p,[invoice.id]:false}))
     setPaymentAmount(p=>({...p,[invoice.id]:''}))
+    setPaymentMethod(p=>({...p,[invoice.id]:'Cash'}))
     loadDeliveryInvoices()
   }
   function printDeliveryInvoice(invoice) {
     const items = invoice.delivery_invoice_items || []
     const reseller = resellers.find(r => r.id === invoice.reseller_id)
-    const pw = window.open('','_blank','width=900,height=700')
+    const totalPieces = items.reduce((s,i)=>s+Number(i.quantity||0),0)
+    const pw = window.open('','_blank','width=500,height=750')
     pw.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoice_number}</title>
-      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
-      @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
-      h1{font-size:20px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin-top:12px;}
-      th{background:#ca1b1b;color:white;padding:6px 8px;text-align:left;font-size:10px;}
-      td{padding:5px 8px;border-bottom:1px solid #eee;font-size:10px;}
-      .total{font-weight:bold;background:#f9f9f9;}</style></head><body>
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:16px;">
-        <div><h1>Roma's Donuts</h1><div style="font-size:10px;color:#888;">Every bite is a little piece of heaven</div><div style="font-size:10px;color:#888;margin-top:4px;">Malued District, Dagupan City | 09706438113</div></div>
+      <style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:Arial,sans-serif;font-size:8px;width:4in;background:white;}
+        @media print{
+          @page{size:4in 6in;margin:0;}
+          html,body{width:4in;height:6in;}
+          .no-print{display:none!important;}
+        }
+        .wrap{padding:4mm 5mm;}
+        h1{font-size:13px;color:#ca1b1b;margin:0;}
+        .tagline{font-size:7px;color:#888;}
+        table{width:100%;border-collapse:collapse;margin:4px 0;}
+        th{background:#ca1b1b;color:white;padding:3px 4px;font-size:7px;text-align:left;}
+        td{padding:2px 4px;border-bottom:1px solid #f0f0f0;font-size:7px;}
+        .total-row{background:#fff9e6;font-weight:bold;}
+        .divider{border-top:1.5px solid #ca1b1b;margin:4px 0;}
+        .label{font-size:6px;color:#ca1b1b;font-weight:bold;letter-spacing:0.5px;text-transform:uppercase;}
+        .sig{border-top:1px solid #333;width:80px;text-align:center;font-size:6px;padding-top:2px;margin-top:14px;}
+      </style></head>
+    <body><div class="wrap">
+      <!-- Header -->
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+        <div>
+          <h1>Roma's Donuts</h1>
+          <div class="tagline">Every bite is a little piece of heaven</div>
+          <div class="tagline">Malued District, Dagupan City | 09706438113</div>
+        </div>
         <div style="text-align:right;">
-          <div style="font-size:18px;font-weight:bold;color:#ca1b1b;">DELIVERY INVOICE</div>
-          <div style="font-size:13px;font-weight:bold;">${invoice.invoice_number}</div>
-          <div style="font-size:10px;color:#888;">Date: ${invoice.delivery_date}</div>
-          <div style="font-size:10px;color:#888;">Due: ${invoice.due_date}</div>
-          <div style="font-size:10px;font-weight:bold;color:${invoice.status==='paid'?'#2d8a4e':'#ca1b1b'};">Status: ${invoice.status?.toUpperCase()}</div>
+          <div style="font-size:9px;font-weight:bold;color:#ca1b1b;">DELIVERY INVOICE</div>
+          <div style="font-size:8px;font-weight:bold;">${invoice.invoice_number}</div>
+          <div style="font-size:7px;color:#666;">Date: ${invoice.delivery_date}</div>
+          <div style="font-size:7px;color:#666;">Due: ${invoice.due_date}</div>
+          <div style="font-size:7px;font-weight:bold;color:${invoice.status==='paid'?'#2d8a4e':'#ca1b1b'};">${invoice.status?.toUpperCase()}</div>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:16px;">
+      <div class="divider"></div>
+      <!-- Reseller Info -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:4px 0;">
         <div>
-          <div style="font-weight:bold;font-size:11px;color:#ca1b1b;margin-bottom:6px;">DELIVER TO</div>
-          <div style="font-size:11px;line-height:1.8;">
-            <strong>${invoice.reseller_name}</strong><br/>
-            ${reseller?.contact_person?`Contact: ${reseller.contact_person}<br/>`:''}
-            ${reseller?.phone?`Phone: ${reseller.phone}<br/>`:''}
-            ${reseller?.area?`Area: ${reseller.area}<br/>`:''}
-            ${reseller?.address||''}
-          </div>
+          <div class="label">Deliver To</div>
+          <div style="font-weight:bold;font-size:8px;">${invoice.reseller_name}</div>
+          ${reseller?.contact_person?`<div style="font-size:7px;">${reseller.contact_person}</div>`:''}
+          ${reseller?.phone?`<div style="font-size:7px;">${reseller.phone}</div>`:''}
+          ${reseller?.area?`<div style="font-size:7px;">${reseller.area}</div>`:''}
         </div>
         <div>
-          <div style="font-weight:bold;font-size:11px;color:#ca1b1b;margin-bottom:6px;">PAYMENT TERMS</div>
-          <div style="font-size:11px;line-height:1.8;">
-            Reseller Discount: <strong>20% off retail</strong><br/>
-            Payment Due: <strong>${invoice.due_date}</strong><br/>
-            ${invoice.notes?`Note: ${invoice.notes}`:''}
-          </div>
+          <div class="label">Details</div>
+          <div style="font-size:7px;">Discount: <strong>20% off retail</strong></div>
+          <div style="font-size:7px;">Due: <strong>${invoice.due_date}</strong></div>
+          <div style="font-size:7px;">Crates: <strong>${invoice.crates_used||0}</strong></div>
+          ${invoice.notes?`<div style="font-size:7px;">Note: ${invoice.notes}</div>`:''}
         </div>
       </div>
+      <div class="divider"></div>
+      <!-- Items Table -->
       <table>
-        <tr><th>#</th><th>Variant</th><th style="text-align:right;">Retail</th><th style="text-align:right;">Reseller (-20%)</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Unsold</th></tr>
-        ${items.map((i,idx)=>`<tr>
-          <td>${idx+1}</td><td>${i.variant_name}</td>
+        <tr><th>Variant</th><th style="text-align:right;">Retail</th><th style="text-align:right;">Price</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Unsold</th></tr>
+        ${items.map(i=>`<tr>
+          <td>${i.variant_name}</td>
           <td style="text-align:right;">${php(i.retail_price)}</td>
           <td style="text-align:right;">${php(i.reseller_price)}</td>
           <td style="text-align:right;font-weight:bold;">${Number(i.quantity).toLocaleString()}</td>
           <td style="text-align:right;font-weight:bold;">${php(i.total_price)}</td>
-          <td style="text-align:center; border:1px solid #ddd; min-width:60px;">&nbsp;</td>
+          <td style="text-align:center;border:1px solid #ddd;min-width:28px;">&nbsp;</td>
         </tr>`).join('')}
-        <tr class="total"><td colspan="5" style="text-align:right;padding:8px;">TOTAL AMOUNT DUE:</td><td style="text-align:right;font-size:14px;color:#ca1b1b;padding:8px;">${php(invoice.total_amount)}</td><td></td></tr>
-        ${invoice.paid_amount>0?`<tr><td colspan="5" style="text-align:right;padding:4px 8px;">Amount Paid:</td><td style="text-align:right;color:#2d8a4e;padding:4px 8px;">${php(invoice.paid_amount)}</td><td></td></tr>
-        <tr><td colspan="5" style="text-align:right;padding:4px 8px;font-weight:bold;">Balance:</td><td style="text-align:right;font-weight:bold;color:#ca1b1b;padding:4px 8px;">${php(invoice.total_amount-(invoice.paid_amount||0))}</td><td></td></tr>`:''}
+        <tr class="total-row">
+          <td colspan="3" style="text-align:right;">Total (${totalPieces.toLocaleString()} pcs):</td>
+          <td></td>
+          <td style="text-align:right;color:#ca1b1b;font-size:9px;">${php(invoice.total_amount)}</td>
+          <td></td>
+        </tr>
+        ${invoice.paid_amount>0?`
+        <tr><td colspan="4" style="text-align:right;">Paid:</td><td style="text-align:right;color:#2d8a4e;">${php(invoice.paid_amount)}</td><td></td></tr>
+        <tr class="total-row"><td colspan="4" style="text-align:right;">Balance:</td><td style="text-align:right;color:#ca1b1b;">${php(Number(invoice.total_amount)-(Number(invoice.paid_amount)||0))}</td><td></td></tr>`:''}
       </table>
-      <div style="display:flex;justify-content:space-between;margin-top:40px;">
-        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Prepared by / Date</div></div>
-        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Received by / Date</div></div>
-        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Checked by / Date</div></div>
+      <div class="divider" style="margin-top:6px;"></div>
+      <!-- Signatures -->
+      <div style="display:flex;justify-content:space-between;margin-top:6px;">
+        <div style="text-align:center;">
+          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:10px;">Prepared by</div>
+          <div style="font-size:7px;margin-bottom:2px;">${invoice.prepared_by||'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;'}</div>
+          <div class="sig" style="margin:0 auto;"></div>
+          <div style="font-size:6px;color:#888;">Signature / Date</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:10px;">Dispatched by</div>
+          <div style="font-size:7px;margin-bottom:2px;">${invoice.dispatched_by||'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;'}</div>
+          <div class="sig" style="margin:0 auto;"></div>
+          <div style="font-size:6px;color:#888;">Signature / Date</div>
+        </div>
+        <div style="text-align:center;">
+          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:10px;">Received by</div>
+          <div style="font-size:7px;margin-bottom:2px;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
+          <div class="sig" style="margin:0 auto;"></div>
+          <div style="font-size:6px;color:#888;">Signature / Date</div>
+        </div>
       </div>
-      <div class="no-print" style="text-align:center;margin-top:20px;">
-        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT INVOICE</button>
+      <div class="no-print" style="text-align:center;margin-top:12px;">
+        <button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;font-weight:bold;cursor:pointer;">🖨️ PRINT (4×6)</button>
+        <p style="font-size:10px;color:#888;margin-top:4px;">Set page size to 4×6 in print dialog. Uncheck "Headers and footers".</p>
       </div>
-    </body></html>`)
+    </div></body></html>`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
   }
   // ── Daily Sales Functions ─────────────────────────────────────────────────
@@ -6591,10 +6646,58 @@ export default function App() {
                         )}
                       </div>
                     )}
+                    {/* Cash Reconciliation */}
+                    {financialData && (()=>{
+                      const paidInvoices = deliveryInvoices.filter(i=>i.status==='paid'&&i.paid_date?.startsWith(financialMonth))
+                      const totalCollected = paidInvoices.reduce((s,i)=>s+Number(i.paid_amount||0),0)
+                      const approvedExpenses = dailyExpenses.filter(e=>e.status==='approved'&&e.expense_date?.startsWith(financialMonth))
+                      const totalExpenses = approvedExpenses.reduce((s,e)=>s+Number(e.amount||0),0)
+                      const netCash = totalCollected - totalExpenses
+                      const byMethod = PAYMENT_METHODS.map(m=>({
+                        method:m,
+                        total:paidInvoices.filter(i=>true).reduce((s,i)=>s+Number(i.paid_amount||0),0) // simplified - will refine with payment records
+                      }))
+                      return (
+                        <div style={{ background:'white', border:'2px solid #1a1a2e', borderRadius:'14px', padding:'16px', marginBottom:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#1a1a2e', fontSize:'13px', margin:'0 0 12px' }}>💳 Cash Reconciliation — {financialMonth}</p>
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px', marginBottom:'12px' }}>
+                            <div style={{ background:'#f0fff4', borderRadius:'10px', padding:'12px', border:'1px solid #c8e6c9' }}>
+                              <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Total Collected</p>
+                              <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'20px', margin:'0 0 2px' }}>{php(totalCollected)}</p>
+                              <p style={{ color:'#888', fontSize:'10px', margin:0 }}>{paidInvoices.length} paid invoices</p>
+                            </div>
+                            <div style={{ background:'#fff5f5', borderRadius:'10px', padding:'12px', border:'1px solid #ffcdd2' }}>
+                              <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Total Expenses</p>
+                              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'20px', margin:'0 0 2px' }}>{php(totalExpenses)}</p>
+                              <p style={{ color:'#888', fontSize:'10px', margin:0 }}>{approvedExpenses.length} approved expenses</p>
+                            </div>
+                            <div style={{ background:netCash>=0?'#f0fff4':'#fff5f5', borderRadius:'10px', padding:'12px', border:`1px solid ${netCash>=0?'#2d8a4e':'#ca1b1b'}` }}>
+                              <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Net Cash Position</p>
+                              <p style={{ fontWeight:'bold', color:netCash>=0?'#2d8a4e':'#ca1b1b', fontSize:'20px', margin:'0 0 2px' }}>{php(netCash)}</p>
+                              <p style={{ color:'#888', fontSize:'10px', margin:0 }}>Collected minus expenses</p>
+                            </div>
+                          </div>
+                          {/* Expense breakdown by category */}
+                          {approvedExpenses.length > 0 && (
+                            <div>
+                              <p style={{ fontWeight:'bold', color:'#555', fontSize:'12px', margin:'0 0 8px' }}>Expense Breakdown:</p>
+                              {EXPENSE_CATEGORIES.map(cat=>{
+                                const catTotal = approvedExpenses.filter(e=>e.category===cat).reduce((s,e)=>s+Number(e.amount||0),0)
+                                if (!catTotal) return null
+                                return (
+                                  <div key={cat} style={{ display:'flex', justifyContent:'space-between', padding:'5px 0', borderBottom:'1px solid #f0f0f0' }}>
+                                    <span style={{ fontSize:'12px', color:'#555' }}>{cat}</span>
+                                    <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'12px' }}>{php(catTotal)}</span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                 )}
-
-                {/* ── DELIVERIES VIEW ── */}
                 {salesView==='deliveries' && (
                   <div>
                     {/* PRODUCTION FORECAST */}
@@ -6727,9 +6830,27 @@ export default function App() {
                             <label style={lblS}>Delivery Date:</label>
                             <input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={inputStyle} />
                           </div>
+                          <div>
+                            <label style={lblS}>Prepared by:</label>
+                            <input value={invoicePreparedBy} onChange={e=>setInvoicePreparedBy(e.target.value)} placeholder="Name of person who prepared" style={inputStyle} />
+                          </div>
+                          <div>
+                            <label style={lblS}>Dispatched by:</label>
+                            <input value={invoiceDispatchedBy} onChange={e=>setInvoiceDispatchedBy(e.target.value)} placeholder="Name of delivery person" style={inputStyle} />
+                          </div>
+                          <div>
+                            <label style={lblS}>Crates Used:</label>
+                            <input type="number" value={invoiceCrates} onChange={e=>setInvoiceCrates(e.target.value)} placeholder="0" min="0" style={inputStyle} />
+                          </div>
                         </div>
                         {/* Invoice items */}
-                        <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>Items:</p>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
+                          <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:0 }}>Items:</p>
+                          <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{
+                            const allItems = donutVariants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 }))
+                            setInvoiceItems(allItems)
+                          }}>📋 LOAD ALL VARIANTS</button>
+                        </div>
                         {/* Header */}
                         <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
                           {['Variant','Qty','Retail','Reseller (-20%)',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
@@ -6747,7 +6868,7 @@ export default function App() {
                                   : donutVariants.map(v=><option key={v.id} value={v.id}>{v.name} — ₱{v.selling_price}</option>)
                                 }
                               </select>
-                              <input type="number" value={item.quantity} onChange={e=>{ const upd=[...invoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'right' }} min="1" placeholder="0" />
+                              <input type="number" value={item.quantity} onChange={e=>{ const upd=[...invoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'right' }} min="0" placeholder="0" />
                               <span style={{ textAlign:'right', fontSize:'11px', color:'#888' }}>{php(retailPrice)}</span>
                               <span style={{ textAlign:'right', fontSize:'11px', fontWeight:'bold', color:'#2d8a4e' }}>{php(resellerPrice)}</span>
                               <button onClick={()=>setInvoiceItems(invoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}>✕</button>
@@ -6765,7 +6886,7 @@ export default function App() {
                             </div>
                           )
                         })()}
-                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setInvoiceItems([...invoiceItems, { variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])}>+ ADD ITEM</button>
+                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setInvoiceItems([...invoiceItems, { variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])}>+ ADD ROW</button>
                         <label style={lblS}>Notes (optional):</label>
                         <input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
                         <button style={{ ...btnGreen, opacity:savingInvoice?0.6:1 }} disabled={savingInvoice} onClick={createDeliveryInvoice}>{savingInvoice?'⏳ Creating...':'✅ CREATE & SAVE INVOICE'}</button>
@@ -6810,6 +6931,7 @@ export default function App() {
                           )}
                           <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'8px' }}>
                             <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}>🖨️ PRINT</button>
+                            <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setViewingInvoice(inv)}>👁️ VIEW</button>
                             {inv.status!=='paid' && (
                               <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowPaymentForm(p=>({...p,[inv.id]:!p[inv.id]}))}>💵 RECORD PAYMENT</button>
                             )}
@@ -6823,10 +6945,14 @@ export default function App() {
                               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
                                 <div><label style={lblS}>Amount (₱):</label><input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="1" max={balance} placeholder={`Max: ${php(balance)}`} /></div>
                                 <div><label style={lblS}>Payment Date:</label><input type="date" value={paymentDate[inv.id]||today} onChange={e=>setPaymentDate(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                                <div><label style={lblS}>Payment Method:</label>
+                                  <select value={paymentMethod[inv.id]||'Cash'} onChange={e=>setPaymentMethod(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
+                                    {PAYMENT_METHODS.map(m=><option key={m} value={m}>{m}</option>)}
+                                  </select>
+                                </div>
+                                <div><label style={lblS}>Notes:</label><input type="text" value={paymentNote[inv.id]||''} onChange={e=>setPaymentNote(p=>({...p,[inv.id]:e.target.value}))} placeholder="Reference number, etc." style={{ ...inputStyle, marginBottom:0 }} /></div>
                               </div>
-                              <label style={lblS}>Notes:</label>
-                              <input type="text" value={paymentNote[inv.id]||''} onChange={e=>setPaymentNote(p=>({...p,[inv.id]:e.target.value}))} placeholder="e.g. Cash, GCash, bank transfer" style={inputStyle} />
-                              <button style={{ ...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>recordPayment(inv)}>✅ CONFIRM PAYMENT</button>
+                              <button style={{ ...btnGreen, width:'auto', padding:'8px 16px', marginTop:'8px', fontSize:'12px' }} onClick={()=>recordPayment(inv)}>✅ CONFIRM PAYMENT</button>
                             </div>
                           )}
                         </div>
@@ -6836,6 +6962,72 @@ export default function App() {
                 )}
 
                 {/* ── RECEIVABLES VIEW ── */}
+                {/* VIEW INVOICE MODAL */}
+                {viewingInvoice && (
+                  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setViewingInvoice(null)}>
+                    <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'580px', width:'100%', maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:'0 0 2px' }}>{viewingInvoice.invoice_number}</p>
+                          <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{viewingInvoice.reseller_name} · {viewingInvoice.delivery_date}</p>
+                        </div>
+                        <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                          <Badge label={viewingInvoice.status?.toUpperCase()} color={viewingInvoice.status==='paid'?'green':viewingInvoice.status==='partial'?'yellow':'red'} />
+                          <button onClick={()=>setViewingInvoice(null)} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Close</button>
+                        </div>
+                      </div>
+                      {/* Invoice details */}
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'12px' }}>
+                        {[
+                          ['Delivery Date', viewingInvoice.delivery_date],
+                          ['Due Date', viewingInvoice.due_date],
+                          ['Prepared by', viewingInvoice.prepared_by||'—'],
+                          ['Dispatched by', viewingInvoice.dispatched_by||'—'],
+                          ['Crates Used', viewingInvoice.crates_used||0],
+                          ['Created by', viewingInvoice.created_by||'—'],
+                        ].map(([l,v])=>(
+                          <div key={l} style={{ background:'#f8f9fa', borderRadius:'8px', padding:'8px 10px' }}>
+                            <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase', letterSpacing:'0.5px' }}>{l}</p>
+                            <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:0 }}>{v}</p>
+                          </div>
+                        ))}
+                      </div>
+                      {/* Items */}
+                      <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', marginBottom:'12px' }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#ca1b1b', padding:'6px 10px' }}>
+                          {['Variant','Qty','Reseller Price','Amount'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', textAlign:'right' }}>{h==='Variant'?h:h}</span>)}
+                        </div>
+                        {(viewingInvoice.delivery_invoice_items||[]).map((item,i)=>(
+                          <div key={item.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+                            <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>
+                            <span style={{ textAlign:'right', fontSize:'12px' }}>{Number(item.quantity).toLocaleString()}</span>
+                            <span style={{ textAlign:'right', fontSize:'12px', color:'#2d8a4e' }}>{php(item.reseller_price)}</span>
+                            <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(item.total_price)}</span>
+                          </div>
+                        ))}
+                        <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'10px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
+                          <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</span>
+                          <span style={{ textAlign:'right', fontWeight:'bold', fontSize:'12px' }}>{(viewingInvoice.delivery_invoice_items||[]).reduce((s,i)=>s+Number(i.quantity||0),0).toLocaleString()} pcs</span>
+                          <span></span>
+                          <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>{php(viewingInvoice.total_amount)}</span>
+                        </div>
+                      </div>
+                      {/* Payment status */}
+                      {viewingInvoice.paid_amount > 0 && (
+                        <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', marginBottom:'12px', display:'flex', justifyContent:'space-between' }}>
+                          <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>Paid: {php(viewingInvoice.paid_amount)}</span>
+                          <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>Balance: {php(Number(viewingInvoice.total_amount)-Number(viewingInvoice.paid_amount))}</span>
+                        </div>
+                      )}
+                      {viewingInvoice.notes && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}>📝 {viewingInvoice.notes}</p>}
+                      <div style={{ display:'flex', gap:'8px' }}>
+                        <button style={{ ...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}>🖨️ PRINT INVOICE</button>
+                        <button style={{ ...btnGray, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>setViewingInvoice(null)}>Close</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {salesView==='receivables' && (
                   <div>
                     <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>💵 Accounts Receivable</h3>
@@ -7171,9 +7363,9 @@ export default function App() {
             )}
 
           </div>
-          </div>
         </div>
       </div>
+    </div>
     )
   }
 
