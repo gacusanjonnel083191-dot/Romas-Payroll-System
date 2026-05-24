@@ -166,6 +166,10 @@ export default function App() {
   const [leaveReason, setLeaveReason] = useState('')
   const [disputeReasons, setDisputeReasons] = useState({})
   const [showDisputeBox, setShowDisputeBox] = useState({})
+  // Reason dropdown presets
+  const [requestCashReasonPreset, setRequestCashReasonPreset] = useState('')
+  const [otRequestReasonPreset, setOtRequestReasonPreset] = useState('')
+  const [disputeReasonPresets, setDisputeReasonPresets] = useState({})
   const [profilePhotoUrl, setProfilePhotoUrl] = useState(null)
   const [uploadingPhoto, setUploadingPhoto] = useState(false)
   const [showOTRequest, setShowOTRequest] = useState(false)
@@ -267,6 +271,19 @@ export default function App() {
   const [adjustmentCategory, setAdjustmentCategory] = useState('')
   const [adjustmentAmount, setAdjustmentAmount] = useState('')
   const [adjustmentNotes, setAdjustmentNotes] = useState('')
+  // Contracts module
+  const [contracts, setContracts] = useState([])
+  const [contractsLoading, setContractsLoading] = useState(false)
+  const [contractEmployeeId, setContractEmployeeId] = useState('')
+  const [contractType, setContractType] = useState('regular')
+  const [contractStart, setContractStart] = useState(today)
+  const [contractEnd, setContractEnd] = useState('')
+  const [contractFile, setContractFile] = useState(null)
+  const [contractUploading, setContractUploading] = useState(false)
+  const [contractSearch, setContractSearch] = useState('')
+  const [viewingContract, setViewingContract] = useState(null)
+  const [contractStorageType, setContractStorageType] = useState('digital')
+  const [contractPhysicalLocation, setContractPhysicalLocation] = useState('')
   const [payrollStart, setPayrollStart] = useState(today)
   const [payrollEnd, setPayrollEnd] = useState(today)
   const [payrollMonth, setPayrollMonth] = useState(today.slice(0,7))
@@ -525,6 +542,150 @@ export default function App() {
     await supabase.from('announcements').delete().eq('id', id)
     showToast('✅ Announcement deleted'); loadAnnouncements()
   }
+
+  // ── Employee Contracts ────────────────────────────────────────────────────
+  async function loadContracts() {
+    setContractsLoading(true)
+    const { data } = await supabase.from('employee_contracts').select('*').order('created_at', { ascending:false })
+    setContracts(data || [])
+    setContractsLoading(false)
+  }
+  async function uploadContract() {
+    if (!contractEmployeeId || !contractType || !contractStart) {
+      showToast('Please complete all required fields.', 'red'); return
+    }
+    if (contractStorageType === 'digital' && !contractFile) {
+      showToast('Please select a PDF file to upload.', 'red'); return
+    }
+    if (contractStorageType === 'physical' && !contractPhysicalLocation.trim()) {
+      showToast('Please enter where the physical contract is stored.', 'red'); return
+    }
+    const emp = employees.find(e => e.id === contractEmployeeId)
+    if (!emp) { showToast('Employee not found.', 'red'); return }
+    setContractUploading(true)
+    try {
+      let fileUrl = null, fileName = null
+      if (contractStorageType === 'digital' && contractFile) {
+        const safeCode = emp.employee_code.replace(/[^a-zA-Z0-9]/g, '_')
+        fileName = `${safeCode}_${contractType}_${contractStart}_${Date.now()}.pdf`
+        const { error: uploadError } = await supabase.storage.from('contracts').upload(fileName, contractFile, { upsert: false })
+        if (uploadError) throw uploadError
+        const { data: urlData } = supabase.storage.from('contracts').getPublicUrl(fileName)
+        fileUrl = urlData.publicUrl
+      }
+      const isExpired = contractEnd && contractEnd < today
+      const status = isExpired ? 'expired' : 'active'
+      const { error } = await supabase.from('employee_contracts').insert({
+        employee_id: contractEmployeeId,
+        employee_code: emp.employee_code,
+        employee_name: emp.full_name,
+        contract_type: contractType,
+        start_date: contractStart,
+        end_date: contractEnd || null,
+        status,
+        file_url: fileUrl,
+        file_name: fileName,
+        storage_type: contractStorageType,
+        physical_location: contractStorageType === 'physical' ? contractPhysicalLocation.trim() : null
+      })
+      if (error) throw error
+      await logAudit('CONTRACT LOGGED', 'Admin', emp.full_name, `${contractType} contract — ${contractStorageType === 'physical' ? 'Physical copy' : 'Digital PDF uploaded'}`)
+      showToast(`✅ Contract logged for ${emp.full_name}!`)
+      setContractEmployeeId(''); setContractType('regular'); setContractStart(today)
+      setContractEnd(''); setContractFile(null); setContractPhysicalLocation('')
+      setContractStorageType('digital')
+      loadContracts()
+    } catch(err) {
+      showToast('Failed: ' + err.message, 'red')
+    }
+    setContractUploading(false)
+  }
+  async function deleteContract(contract) {
+    if (!window.confirm(`Delete contract for ${contract.employee_name}? This cannot be undone.`)) return
+    try {
+      await supabase.storage.from('contracts').remove([contract.file_name])
+    } catch(e) {}
+    const { error } = await supabase.from('employee_contracts').delete().eq('id', contract.id)
+    if (error) { showToast('Failed: ' + error.message, 'red'); return }
+    await logAudit('CONTRACT DELETED', 'Admin', contract.employee_name, `${contract.contract_type} contract deleted`)
+    showToast('✅ Contract deleted'); loadContracts()
+  }
+  async function updateContractStatus(id, status) {
+    const { error } = await supabase.from('employee_contracts').update({ status }).eq('id', id)
+    if (error) { showToast('Failed: ' + error.message, 'red'); return }
+    showToast(`✅ Contract marked as ${status}`); loadContracts()
+  }
+  function printContractSummary(c) {
+    const pw = window.open('', '_blank', 'width=800,height=600')
+    const statusLabel = c.status === 'active' ? 'ACTIVE' : c.status === 'expired' ? 'EXPIRED' : 'TERMINATED'
+    const statusColor = c.status === 'active' ? '#2d8a4e' : '#ca1b1b'
+    const storageLabel = c.storage_type === 'physical'
+      ? `Physical Copy on File — ${c.physical_location || 'Location not specified'}`
+      : 'Digital PDF (uploaded to system)'
+    pw.document.write(`<!DOCTYPE html><html><head><title>Contract Summary</title>
+      <style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:Arial,sans-serif;padding:20mm;font-size:12px;color:#000;}
+        @media print{@page{size:A4;margin:20mm;} .no-print{display:none;}}
+        h1{font-size:22px;color:#ca1b1b;margin-bottom:4px;}
+        .subtitle{color:#888;font-size:11px;margin-bottom:20px;}
+        .header{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:14px;margin-bottom:20px;}
+        .badge{display:inline-block;padding:4px 14px;border-radius:20px;font-weight:bold;font-size:12px;color:white;background:${statusColor};}
+        table{width:100%;border-collapse:collapse;margin-top:16px;}
+        td{padding:10px 12px;border-bottom:1px solid #eee;vertical-align:top;}
+        td:first-child{width:40%;font-weight:bold;color:#555;background:#f9f9f9;}
+        .section-title{background:#ca1b1b;color:white;padding:8px 12px;font-weight:bold;font-size:12px;margin-top:20px;}
+        .footer{margin-top:50px;display:flex;justify-content:space-between;}
+        .sig{text-align:center;}
+        .sig-line{border-top:1px solid #000;width:180px;padding-top:6px;font-size:10px;color:#555;margin:0 auto;}
+        .watermark{color:#888;font-size:11px;text-align:center;margin-top:30px;}
+        .storage-box{background:${c.storage_type==='physical'?'#fff8dc':'#e8f5e9'};border:2px solid ${c.storage_type==='physical'?'#f5a623':'#2d8a4e'};border-radius:8px;padding:12px;margin-top:16px;}
+      </style>
+    </head><body>
+      <div class="header">
+        <h1>Roma's Donuts</h1>
+        <div class="subtitle">Payroll &amp; Attendance System — Employee Contract Record</div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div>
+          <div style="font-size:20px;font-weight:bold;color:#333;">${c.employee_name}</div>
+          <div style="color:#888;font-size:12px;">${c.employee_code}</div>
+        </div>
+        <div class="badge">${statusLabel}</div>
+      </div>
+
+      <div class="section-title">CONTRACT DETAILS</div>
+      <table>
+        <tr><td>Contract Type</td><td style="text-transform:capitalize;font-weight:bold;">${(c.contract_type||'').replace(/-/g,' ')}</td></tr>
+        <tr><td>Start Date</td><td>${c.start_date || '—'}</td></tr>
+        <tr><td>End Date</td><td>${c.end_date || 'Open-ended / No fixed end date'}</td></tr>
+        <tr><td>Status</td><td style="color:${statusColor};font-weight:bold;">${statusLabel}</td></tr>
+        <tr><td>Date Logged</td><td>${c.created_at ? new Date(c.created_at).toLocaleDateString('en-PH', {year:'numeric',month:'long',day:'numeric'}) : '—'}</td></tr>
+      </table>
+
+      <div class="section-title">DOCUMENT STORAGE</div>
+      <div class="storage-box">
+        <strong>${c.storage_type === 'physical' ? '📁 Physical Copy on File' : '💻 Digital Copy in System'}</strong><br/>
+        <span style="color:#555;font-size:12px;margin-top:4px;display:block;">${storageLabel}</span>
+        ${c.storage_type === 'digital' && c.file_url ? `<span style="color:#888;font-size:11px;">File available in the system. Print a copy from the payroll portal.</span>` : ''}
+      </div>
+
+      <div class="footer">
+        <div class="sig"><div class="sig-line">Employee Signature over Printed Name</div></div>
+        <div class="sig"><div class="sig-line">HR / Authorized Signatory</div></div>
+        <div class="sig"><div class="sig-line">Date</div></div>
+      </div>
+
+      <div class="watermark">This is an official contract record of Roma's Donuts. Generated on ${new Date().toLocaleDateString('en-PH', {year:'numeric',month:'long',day:'numeric'})}.</div>
+
+      <div class="no-print" style="text-align:center;margin-top:20px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT</button>
+      </div>
+    </body></html>`)
+    pw.document.close()
+    setTimeout(() => { pw.focus(); pw.print() }, 600)
+  }
   async function loadAnnouncementViews(annId) {
     const { data:all } = await supabase.from('employees').select('id,full_name,employee_code').eq('is_active', true)
     const { data:views } = await supabase.from('announcement_views').select('employee_id').eq('announcement_id', annId)
@@ -685,7 +846,7 @@ export default function App() {
     const { error } = await supabase.from('time_adjustment_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:otRequestDate, request_type:otRequestType, minutes:Number(otRequestMinutes), employee_reason:otRequestReason, status:'pending' })
     if (error) { alert('Failed: '+error.message); return }
     alert(`${otRequestType==='overtime'?'Overtime':'Undertime'} request filed! Waiting for admin approval.`)
-    setOtRequestReason(''); setOtRequestMinutes(''); setShowOTRequest(false)
+    setOtRequestReason(''); setOtRequestReasonPreset(''); setOtRequestMinutes(''); setShowOTRequest(false)
   }
   async function submitLeaveRequest() {
     if (!leaveStartDate||!leaveEndDate||!leaveType||!leaveReason) { alert('Please complete all fields'); return }
@@ -705,7 +866,7 @@ export default function App() {
     const { error } = await supabase.from('cash_advance_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, amount, reason:requestCashReason, status:'pending' })
     if (error) { alert('Failed: '+error.message); return }
     alert('Request submitted! Waiting for admin approval.')
-    setRequestCashAmount(''); setRequestCashReason(''); setShowCashAdvanceRequest(false); loadMyCashAdvances(employee)
+    setRequestCashAmount(''); setRequestCashReason(''); setRequestCashReasonPreset(''); setShowCashAdvanceRequest(false); loadMyCashAdvances(employee)
   }
   async function agreePayslip(payId) {
     const { error } = await supabase.from('payroll_records').update({ employee_acknowledgement:'agreed' }).eq('id', payId)
@@ -718,13 +879,13 @@ export default function App() {
     const { error } = await supabase.from('payslip_disputes').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, payroll_record_id:String(pay.id), payroll_start:pay.payroll_start, payroll_end:pay.payroll_end, reason, status:'pending' })
     if (error) { alert('Failed: '+error.message); return }
     await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', pay.id)
-    alert('Dispute submitted.'); setShowDisputeBox(p=>({...p,[pay.id]:false})); setDisputeReasons(p=>({...p,[pay.id]:''})); loadMyPayslips(employee)
+    alert('Dispute submitted.'); setShowDisputeBox(p=>({...p,[pay.id]:false})); setDisputeReasons(p=>({...p,[pay.id]:''})); setDisputeReasonPresets(p=>({...p,[pay.id]:''})); loadMyPayslips(employee)
   }
 
   // ── Admin Functions ───────────────────────────────────────────────────────
   function canAccess(tab) {
     if (adminRole === 'owner') return true
-    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail'].includes(tab)
+    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts'].includes(tab)
     if (adminRole === 'payroll') return ['dashboard','payroll','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
     if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule'].includes(tab)
     return false
@@ -1660,7 +1821,7 @@ export default function App() {
       ['schedule','📅 Schedule'],['holidays','🗓️ Holidays'],['overtime','⏰ OT / UT Requests'],
       ['adjustment','⚙️ Adjustment'],['payroll','💰 Payroll'],['thirteenth','🎁 13th Month'],
       ['finalpay','📄 Final Pay'],['payrollHistory','📂 Payroll History'],['remittance','🏛️ Remittance Report'],['dtr','📋 DTR Print'],['bankDisbursement','🏦 Bank Disbursement'],['announcements','📢 Announcements'],
-      ['leaveRequests','🏖️ Leave Requests 🔔'],['cashRequests','💵 CA Requests 🔔'],['disputes','⚠️ Disputes 🔔'],
+      ['leaveRequests','🏖️ Leave Requests 🔔'],['cashRequests','💵 CA Requests 🔔'],['disputes','⚠️ Disputes 🔔'],['contracts','📄 Contracts'],
     ].filter(([key]) => canAccess(key))
     const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
 
@@ -1734,6 +1895,7 @@ export default function App() {
                   if(key==='payrollHistory') loadPayrollHistory()
                   if(key==='remittance') loadPayrollHistory()
                   if(key==='dtr') loadEmployees()
+                  if(key==='contracts') { loadContracts(); loadEmployees() }
                 }} style={{ padding:'9px 10px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:activeTab===key?'#ca1b1b':'#f0f0f0', color:activeTab===key?'white':'#333' }}>{label}</button>
               ))}
               {adminEmployee && (
@@ -3379,6 +3541,179 @@ export default function App() {
               </div>
             )}
 
+            {/* CONTRACTS */}
+            {activeTab==='contracts' && (
+              <div>
+                <h2 style={h2s}>📄 Employee Contracts</h2>
+                <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>Upload, store, and track PDF employment contracts per employee. Supports contract type, start/end dates, and status tracking.</p>
+
+                {/* Required Supabase setup note */}
+                <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'14px', marginBottom:'20px', fontSize:'13px' }}>
+                  <strong style={{ color:'#ca1b1b' }}>⚙️ Required Supabase Setup (one-time):</strong>
+                  <p style={{ color:'#555', margin:'8px 0 4px' }}>1. Create a table <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'4px' }}>employee_contracts</code> with columns: id (uuid PK), employee_id (uuid), employee_code (text), employee_name (text), contract_type (text), start_date (date), end_date (date, nullable), status (text), file_url (text, nullable), file_name (text, nullable), storage_type (text), physical_location (text, nullable), created_at (timestamptz default now())</p>
+                  <p style={{ color:'#555', margin:'4px 0' }}>2. For digital uploads: Create a Supabase Storage bucket named <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'4px' }}>contracts</code> with public access enabled.</p>
+                </div>
+
+                {/* Upload Form */}
+                <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'20px', marginBottom:'20px' }}>
+                  <h3 style={{ color:'#ca1b1b', margin:'0 0 16px', fontSize:'14px' }}>📋 Log New Contract</h3>
+
+                  <label style={lblS}>Employee:</label>
+                  <EmployeeSelect value={contractEmployeeId} onChange={setContractEmployeeId} employees={employees} />
+
+                  <label style={lblS}>Contract Type:</label>
+                  <select value={contractType} onChange={e=>setContractType(e.target.value)} style={inputStyle}>
+                    <option value="regular">Regular Employment</option>
+                    <option value="probationary">Probationary Employment</option>
+                    <option value="project-based">Project-Based</option>
+                    <option value="seasonal">Seasonal</option>
+                    <option value="fixed-term">Fixed-Term</option>
+                    <option value="part-time">Part-Time</option>
+                    <option value="apprenticeship">Apprenticeship / OJT</option>
+                  </select>
+
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                    <div>
+                      <label style={lblS}>Start Date:</label>
+                      <input type="date" value={contractStart} onChange={e=>setContractStart(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} />
+                    </div>
+                    <div>
+                      <label style={lblS}>End Date <span style={{ color:'#aaa', fontWeight:'normal' }}>(optional)</span>:</label>
+                      <input type="date" value={contractEnd} onChange={e=>setContractEnd(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} />
+                    </div>
+                  </div>
+
+                  {/* Storage Type Toggle */}
+                  <div style={{ marginTop:'14px' }}>
+                    <label style={lblS}>Where is this contract stored?</label>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                      <button
+                        onClick={()=>setContractStorageType('physical')}
+                        style={{ padding:'12px', borderRadius:'10px', border:`2px solid ${contractStorageType==='physical'?'#f5a623':'#ddd'}`, background:contractStorageType==='physical'?'#fff8dc':'white', cursor:'pointer', fontWeight:'bold', fontSize:'13px', color:contractStorageType==='physical'?'#ca1b1b':'#888', transition:'all 0.2s' }}
+                      >
+                        📁 Physical Copy<br/><span style={{ fontWeight:'normal', fontSize:'11px', color:'#888' }}>Signed paper on file</span>
+                      </button>
+                      <button
+                        onClick={()=>setContractStorageType('digital')}
+                        style={{ padding:'12px', borderRadius:'10px', border:`2px solid ${contractStorageType==='digital'?'#4a90d9':'#ddd'}`, background:contractStorageType==='digital'?'#e8f0fe':'white', cursor:'pointer', fontWeight:'bold', fontSize:'13px', color:contractStorageType==='digital'?'#4a90d9':'#888', transition:'all 0.2s' }}
+                      >
+                        💻 Digital PDF<br/><span style={{ fontWeight:'normal', fontSize:'11px', color:'#888' }}>Upload scanned file</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Physical location field */}
+                  {contractStorageType === 'physical' && (
+                    <div style={{ marginTop:'12px', background:'#fff8dc', borderRadius:'10px', padding:'12px', border:'1px solid #f5a623' }}>
+                      <label style={{ ...lblS, color:'#ca1b1b' }}>📍 Where is the physical contract stored?</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Filing cabinet, Drawer 2 — HR Office"
+                        value={contractPhysicalLocation}
+                        onChange={e=>setContractPhysicalLocation(e.target.value)}
+                        style={inputStyle}
+                      />
+                      <p style={{ color:'#888', fontSize:'12px', margin:'-6px 0 0' }}>Be specific so you can find it easily later.</p>
+                    </div>
+                  )}
+
+                  {/* Digital file upload */}
+                  {contractStorageType === 'digital' && (
+                    <div style={{ marginTop:'12px', background:'#e8f0fe', borderRadius:'10px', padding:'12px', border:'1px solid #4a90d9' }}>
+                      <label style={{ ...lblS, color:'#4a90d9' }}>📎 Upload PDF Contract:</label>
+                      <input type="file" accept=".pdf,application/pdf" onChange={e=>setContractFile(e.target.files[0]||null)} style={{ ...inputStyle, padding:'8px', cursor:'pointer', marginBottom:0 }} />
+                      {contractFile && (
+                        <p style={{ fontSize:'12px', color:'#2d8a4e', margin:'6px 0 0', fontWeight:'bold' }}>✅ {contractFile.name} ({(contractFile.size/1024).toFixed(1)} KB)</p>
+                      )}
+                      <p style={{ color:'#888', fontSize:'11px', marginTop:'6px' }}>Use Adobe Scan or Microsoft Lens to scan physical contracts into PDF.</p>
+                    </div>
+                  )}
+
+                  <button
+                    style={{ ...btnGreen, marginTop:'16px', opacity:contractUploading?0.6:1 }}
+                    disabled={contractUploading}
+                    onClick={uploadContract}
+                  >
+                    {contractUploading ? '⏳ Saving...' : contractStorageType==='physical' ? '📁 LOG PHYSICAL CONTRACT' : '📤 UPLOAD DIGITAL CONTRACT'}
+                  </button>
+                </div>
+
+                {/* Search & List */}
+                <div style={{ display:'flex', gap:'10px', marginBottom:'14px', flexWrap:'wrap', alignItems:'center' }}>
+                  <input
+                    placeholder="Search by employee name or code..."
+                    value={contractSearch}
+                    onChange={e=>setContractSearch(e.target.value)}
+                    style={{ ...inputStyle, marginBottom:0, flex:1, minWidth:'180px' }}
+                  />
+                  <button style={{ ...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{ loadContracts(); showToast('✅ Contracts refreshed!') }}>🔄 REFRESH</button>
+                </div>
+
+                {contractsLoading && <p style={{ color:'#888', textAlign:'center', padding:'20px' }}>⏳ Loading contracts...</p>}
+
+                {!contractsLoading && contracts.length === 0 && (
+                  <div style={{ textAlign:'center', padding:'30px', color:'#888' }}>
+                    <p style={{ fontSize:'32px', margin:'0 0 10px' }}>📂</p>
+                    <p style={{ fontWeight:'bold', fontSize:'14px' }}>No contracts uploaded yet.</p>
+                    <p style={{ fontSize:'13px' }}>Upload the first contract using the form above.</p>
+                  </div>
+                )}
+
+                {!contractsLoading && contracts
+                  .filter(c => {
+                    if (!contractSearch) return true
+                    const q = contractSearch.toLowerCase()
+                    return c.employee_name?.toLowerCase().includes(q) || c.employee_code?.toLowerCase().includes(q)
+                  })
+                  .map(c => {
+                    const statusColor = c.status==='active'?'green':c.status==='expired'?'red':'gray'
+                    const statusLabel = c.status==='active'?'✅ Active':c.status==='expired'?'⛔ Expired':'🔴 Terminated'
+                    const isExpiringSoon = c.end_date && c.status==='active' && (new Date(c.end_date)-new Date())/(1000*60*60*24) <= 30
+                    return (
+                      <div key={c.id} style={{ ...cardS, border:`2px solid ${c.status==='active'?'#c8e6c9':c.status==='expired'?'#ffcdd2':'#eee'}`, background:c.status==='active'?'#f0fff4':c.status==='expired'?'#fff5f5':'#fafafa', marginBottom:'12px' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                          <div>
+                            <p style={{ fontWeight:'bold', color:'#333', fontSize:'14px', margin:'0 0 2px' }}>{c.employee_name}</p>
+                            <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{c.employee_code}</p>
+                          </div>
+                          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}>
+                            <Badge label={c.storage_type==='physical'?'📁 Physical':'💻 Digital'} color={c.storage_type==='physical'?'yellow':'blue'} />
+                            <Badge label={statusLabel} color={statusColor} />
+                          </div>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'4px', marginBottom:'6px' }}>
+                          <p style={cps}>📋 Type: <strong style={{ color:'#333', textTransform:'capitalize' }}>{c.contract_type?.replace(/-/g,' ')}</strong></p>
+                          <p style={cps}>📅 Start: <strong style={{ color:'#333' }}>{c.start_date}</strong></p>
+                          <p style={cps}>🗓️ End: <strong style={{ color:isExpiringSoon?'#f5a623':'#333' }}>{c.end_date || 'Open-ended'}{isExpiringSoon?' ⚠️ Expiring soon!':''}</strong></p>
+                          <p style={cps}>🕐 Logged: {new Date(c.created_at).toLocaleDateString()}</p>
+                        </div>
+                        {c.storage_type==='physical' && c.physical_location && (
+                          <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'8px 10px', marginBottom:'10px', border:'1px solid #f5a623' }}>
+                            <p style={{ margin:0, fontSize:'12px', color:'#555' }}>📍 <strong>Stored at:</strong> {c.physical_location}</p>
+                          </div>
+                        )}
+                        <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                          <button style={{ ...btnBlack, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printContractSummary(c)}>🖨️ PRINT SUMMARY</button>
+                          {c.storage_type==='digital' && c.file_url && (
+                            <a href={c.file_url} target="_blank" rel="noopener noreferrer" style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px', textDecoration:'none', display:'inline-block', textAlign:'center' }}>
+                              📄 VIEW PDF
+                            </a>
+                          )}
+                          {c.status==='active' && (
+                            <button style={{ ...btnGray, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>updateContractStatus(c.id,'terminated')}>🔴 TERMINATE</button>
+                          )}
+                          {c.status!=='active' && (
+                            <button style={{ ...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>updateContractStatus(c.id,'active')}>✅ REACTIVATE</button>
+                          )}
+                          <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>deleteContract(c)}>🗑️ DELETE</button>
+                        </div>
+                      </div>
+                    )
+                  })
+                }
+              </div>
+            )}
+
           </div>
         </div>
       </div>
@@ -3527,7 +3862,44 @@ export default function App() {
               <label style={lblS}>Minutes:</label>
               <input type="number" placeholder="Number of minutes" value={otRequestMinutes} onChange={e=>setOtRequestMinutes(e.target.value)} style={inputStyle} />
               <label style={lblS}>Reason:</label>
-              <textarea placeholder="Explain why you had overtime/undertime..." value={otRequestReason} onChange={e=>setOtRequestReason(e.target.value)} style={{ ...inputStyle, minHeight:'70px', resize:'none' }} />
+              <select
+                value={otRequestReasonPreset}
+                onChange={e => {
+                  const val = e.target.value
+                  setOtRequestReasonPreset(val)
+                  if (val !== 'Others') setOtRequestReason(val)
+                  else setOtRequestReason('')
+                }}
+                style={inputStyle}
+              >
+                <option value="">— Select a reason —</option>
+                {otRequestType === 'overtime' ? (
+                  <>
+                    <option value="Operational requirements / volume of work">Operational requirements / volume of work</option>
+                    <option value="Rush order / client deadline">Rush order / client deadline</option>
+                    <option value="Staff shortage / manpower gap">Staff shortage / manpower gap</option>
+                    <option value="Management request">Management request</option>
+                    <option value="Inventory or restocking task">Inventory or restocking task</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="Medical / health appointment">Medical / health appointment</option>
+                    <option value="Family emergency">Family emergency</option>
+                    <option value="Personal matter (pre-approved)">Personal matter (pre-approved)</option>
+                    <option value="Early release approved by supervisor">Early release approved by supervisor</option>
+                    <option value="School / educational obligation">School / educational obligation</option>
+                  </>
+                )}
+                <option value="Others">Others (please specify)</option>
+              </select>
+              {otRequestReasonPreset === 'Others' && (
+                <textarea
+                  placeholder="Please describe your reason..."
+                  value={otRequestReason}
+                  onChange={e => setOtRequestReason(e.target.value)}
+                  style={{ ...inputStyle, minHeight:'70px', resize:'none' }}
+                />
+              )}
               <button style={{ background:'#8b5cf6', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'14px' }} onClick={submitTimeAdjRequest}>SUBMIT REQUEST</button>
             </div>
           )}
@@ -3652,7 +4024,34 @@ export default function App() {
               <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowCashAdvanceRequest(false)}>← BACK</button>
               <p style={{ color:'#888', fontSize:'13px', margin:'0 0 10px' }}>Once approved, deducted from next payroll cutoff.</p>
               <input type="number" placeholder="Amount (PHP)" value={requestCashAmount} onChange={e=>setRequestCashAmount(e.target.value)} style={inputStyle} />
-              <textarea placeholder="Reason for cash advance..." value={requestCashReason} onChange={e=>setRequestCashReason(e.target.value)} style={{ ...inputStyle, minHeight:'70px', resize:'none' }} />
+              <label style={lblS}>Reason for Cash Advance:</label>
+              <select
+                value={requestCashReasonPreset}
+                onChange={e => {
+                  const val = e.target.value
+                  setRequestCashReasonPreset(val)
+                  if (val !== 'Others') setRequestCashReason(val)
+                  else setRequestCashReason('')
+                }}
+                style={inputStyle}
+              >
+                <option value="">— Select a reason —</option>
+                <option value="Personal emergency">Personal emergency</option>
+                <option value="Medical / health expense">Medical / health expense</option>
+                <option value="Educational expense (tuition, school supplies)">Educational expense (tuition, school supplies)</option>
+                <option value="Family needs / household expense">Family needs / household expense</option>
+                <option value="Home repair or renovation">Home repair or renovation</option>
+                <option value="Burial / bereavement expense">Burial / bereavement expense</option>
+                <option value="Others">Others (please specify)</option>
+              </select>
+              {requestCashReasonPreset === 'Others' && (
+                <textarea
+                  placeholder="Please describe your reason..."
+                  value={requestCashReason}
+                  onChange={e => setRequestCashReason(e.target.value)}
+                  style={{ ...inputStyle, minHeight:'70px', resize:'none' }}
+                />
+              )}
               <button style={btnGreen} onClick={submitCashAdvanceRequest}>SUBMIT REQUEST</button>
             </div>
           )}
@@ -3834,7 +4233,34 @@ export default function App() {
                       </div>
                       {showDisputeBox[pay.id]&&(
                         <div style={{ marginTop:'10px' }}>
-                          <textarea placeholder="Explain why you disagree..." value={disputeReasons[pay.id]||''} onChange={e=>setDisputeReasons(p=>({...p,[pay.id]:e.target.value}))} style={{ ...inputStyle, minHeight:'70px', resize:'none' }} />
+                          <label style={lblS}>Reason for Dispute:</label>
+                          <select
+                            value={disputeReasonPresets[pay.id]||''}
+                            onChange={e => {
+                              const val = e.target.value
+                              setDisputeReasonPresets(p=>({...p,[pay.id]:val}))
+                              if (val !== 'Others') setDisputeReasons(p=>({...p,[pay.id]:val}))
+                              else setDisputeReasons(p=>({...p,[pay.id]:''}))
+                            }}
+                            style={inputStyle}
+                          >
+                            <option value="">— Select a reason —</option>
+                            <option value="Wrong computation / incorrect net pay">Wrong computation / incorrect net pay</option>
+                            <option value="Missing overtime or undertime credit">Missing overtime or undertime credit</option>
+                            <option value="Incorrect deduction applied">Incorrect deduction applied</option>
+                            <option value="Unauthorized or excessive deduction">Unauthorized or excessive deduction</option>
+                            <option value="Missing allowance or bonus">Missing allowance or bonus</option>
+                            <option value="Incorrect attendance or leave count">Incorrect attendance or leave count</option>
+                            <option value="Others">Others (please specify)</option>
+                          </select>
+                          {(disputeReasonPresets[pay.id]==='Others') && (
+                            <textarea
+                              placeholder="Explain why you disagree..."
+                              value={disputeReasons[pay.id]||''}
+                              onChange={e=>setDisputeReasons(p=>({...p,[pay.id]:e.target.value}))}
+                              style={{ ...inputStyle, minHeight:'70px', resize:'none' }}
+                            />
+                          )}
                           <button style={btnRed} onClick={()=>submitPayslipDispute(pay)}>SUBMIT DISPUTE</button>
                         </div>
                       )}
