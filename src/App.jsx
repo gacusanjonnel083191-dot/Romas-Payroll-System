@@ -284,6 +284,165 @@ export default function App() {
   const [viewingContract, setViewingContract] = useState(null)
   const [contractStorageType, setContractStorageType] = useState('digital')
   const [contractPhysicalLocation, setContractPhysicalLocation] = useState('')
+  // ── Wastage / Spoilage ────────────────────────────────────────────────────
+  const [showWastageForm, setShowWastageForm] = useState(false)
+  const [wastageItemId, setWastageItemId] = useState('')
+  const [wastageQty, setWastageQty] = useState('')
+  const [wastageReason, setWastageReason] = useState('')
+  const [wastageReasonOther, setWastageReasonOther] = useState('')
+  const [wastageNotes, setWastageNotes] = useState('')
+  const [wastageDate, setWastageDate] = useState(today)
+  const [wastageChargeEmployee, setWastageChargeEmployee] = useState(false)
+  const [wastageEmployeeId, setWastageEmployeeId] = useState('')
+  const [wastageSaving, setWastageSaving] = useState(false)
+  const [wastageLogs, setWastageLogs] = useState([])
+  const [wastageLoading, setWastageLoading] = useState(false)
+  const [showWastageHistory, setShowWastageHistory] = useState(false)
+  const WASTAGE_REASONS = ['Expired / Spoiled','Damaged packaging','Spilled / Contaminated','Overproduction / Excess','Quality rejection','SOP Violation / Employee Error','Others']
+  // ── Employee Charges ──────────────────────────────────────────────────────
+  const [employeeCharges, setEmployeeCharges] = useState([])
+  const [showChargesSection, setShowChargesSection] = useState(false)
+  const [chargesLoading, setChargesLoading] = useState(false)
+  // ── Expiry Tracking ───────────────────────────────────────────────────────
+  const [showExpirySection, setShowExpirySection] = useState(false)
+  const [expiryItems, setExpiryItems] = useState([])
+  const [expiryLoading, setExpiryLoading] = useState(false)
+  const [editingExpiryId, setEditingExpiryId] = useState(null)
+  const [expiryDate, setExpiryDate] = useState('')
+  // ── Employee Portal Charges ───────────────────────────────────────────────
+  const [myCharges, setMyCharges] = useState([])
+  const [showMyCharges, setShowMyCharges] = useState(false)
+  // ── Inventory ─────────────────────────────────────────────────────────────
+  const [inventoryItems, setInventoryItems] = useState([])
+  const [inventoryLoading, setInventoryLoading] = useState(false)
+  const [addItemLoading, setAddItemLoading] = useState(false)
+  // ── Phase 2: Costing System ───────────────────────────────────────────────
+  const [costingView, setCostingView] = useState('dashboard')
+  const [costSettings, setCostSettings] = useState({
+    daily_labor_cost: 8000, waste_percentage: 10,
+    monthly_rent: 8000, monthly_electricity: 20000, monthly_other_fixed: 73000,
+    fryer_cost: 55000, fryer_lifespan_years: 6,
+    mixer_cost: 100000, mixer_lifespan_years: 6,
+    sheeter_cost: 200000, sheeter_lifespan_years: 5,
+    production_days_per_month: 26, target_margin_percentage: 30, total_daily_pieces: 4740,
+  })
+  const [savingCostSettings, setSavingCostSettings] = useState(false)
+  const [donutVariants, setDonutVariants] = useState([])
+  const [variantsLoading, setVariantsLoading] = useState(false)
+  const [baseDoughIngredients, setBaseDoughIngredients] = useState([])
+  const [variantRecipes, setVariantRecipes] = useState({})
+  const [selectedRecipeVariantId, setSelectedRecipeVariantId] = useState(null)
+  const [editingBaseDough, setEditingBaseDough] = useState([])
+  const [editingVariantRecipe, setEditingVariantRecipe] = useState([])
+  const [savingRecipe, setSavingRecipe] = useState(false)
+  const [productionLogs, setProductionLogs] = useState([])
+  const [productionLoading, setProductionLoading] = useState(false)
+  const [showProductionForm, setShowProductionForm] = useState(false)
+  const [prodDate, setProdDate] = useState(today)
+  const [prodEntries, setProdEntries] = useState([{ variant_id:'', pieces:'' }])
+  const [prodNotes, setProdNotes] = useState('')
+  const [savingProduction, setSavingProduction] = useState(false)
+  const [editingVariantId, setEditingVariantId] = useState(null)
+  const [editVariantFields, setEditVariantFields] = useState({})
+  const DONUT_VARIANTS_DEFAULT = [
+    { name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
+    { name:'Bavarian Bites', category:'Bites', selling_price:7, pieces_per_batch:30 },
+    { name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+    { name:'Choco Lollisticks', category:'Bites', selling_price:7, pieces_per_batch:30 },
+    { name:'Glazed Circlets', category:'Glaze Circlet', selling_price:13, pieces_per_batch:20 },
+    { name:'Cinnamon Rolls', category:'Premium', selling_price:18, pieces_per_batch:8 },
+    { name:'Rings', category:'Regular', selling_price:25, pieces_per_batch:12 },
+    { name:'Shells', category:'Filled', selling_price:26, pieces_per_batch:12 },
+    { name:'Bavarian Midnight', category:'Premium', selling_price:28, pieces_per_batch:10 },
+    { name:'Biscoreo', category:'Premium', selling_price:28, pieces_per_batch:10 },
+    { name:'Fanfans', category:'Premium', selling_price:33, pieces_per_batch:10 },
+    { name:'Oreo Dream', category:'Premium', selling_price:33, pieces_per_batch:10 },
+    { name:'Almond Glitz', category:'Premium', selling_price:35, pieces_per_batch:10 },
+    { name:'Lotus Cloud', category:'Premium', selling_price:35, pieces_per_batch:10 },
+  ]
+  const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium'])
+  // ── Phase 3: Sales & Resellers ────────────────────────────────────────────
+  const [salesView, setSalesView] = useState('dashboard')
+  const [resellers, setResellers] = useState([])
+  const [resellersLoading, setResellersLoading] = useState(false)
+  const [showResellerForm, setShowResellerForm] = useState(false)
+  const [editingResellerId, setEditingResellerId] = useState(null)
+  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' })
+  const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
+  const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
+  const [defaultOrderItems, setDefaultOrderItems] = useState([])
+  const [deliveryInvoices, setDeliveryInvoices] = useState([])
+  const [invoicesLoading, setInvoicesLoading] = useState(false)
+  const [showCreateInvoice, setShowCreateInvoice] = useState(false)
+  const [invoiceResellerId, setInvoiceResellerId] = useState('')
+  const [invoiceDate, setInvoiceDate] = useState(today)
+  const [invoiceItems, setInvoiceItems] = useState([])
+  const [invoiceNotes, setInvoiceNotes] = useState('')
+  const [savingInvoice, setSavingInvoice] = useState(false)
+  const [showPaymentForm, setShowPaymentForm] = useState({})
+  const [paymentAmount, setPaymentAmount] = useState({})
+  const [paymentDate, setPaymentDate] = useState({})
+  const [paymentNote, setPaymentNote] = useState({})
+  const [arFilter, setArFilter] = useState('all')
+  const [dailySales, setDailySales] = useState([])
+  const [dailySalesLoading, setDailySalesLoading] = useState(false)
+  const [showSalesForm, setShowSalesForm] = useState(false)
+  const [salesDate, setSalesDate] = useState(today)
+  const [salesEntries, setSalesEntries] = useState([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])
+  const [salesNotes, setSalesNotes] = useState('')
+  const [savingSales, setSavingSales] = useState(false)
+  const [dailyExpenses, setDailyExpenses] = useState([])
+  const [expensesLoading, setExpensesLoading] = useState(false)
+  const [expenseForm, setExpenseForm] = useState({ date:today, category:'Transportation/Fuel', amount:'', description:'' })
+  const [savingExpense, setSavingExpense] = useState(false)
+  const [rejectingExpenseId, setRejectingExpenseId] = useState(null)
+  const [rejectExpenseReason, setRejectExpenseReason] = useState('')
+  const EXPENSE_APPROVAL_THRESHOLD = 500
+  const [financialMonth, setFinancialMonth] = useState(today.slice(0,7))
+  const [financialData, setFinancialData] = useState(null)
+  const [financialLoading, setFinancialLoading] = useState(false)
+  const EXPENSE_CATEGORIES = ['Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Miscellaneous']
+  const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+  const SALES_CHANNELS = [{ value:'walkin', label:'🏪 Walk-in' }, { value:'messenger', label:'💬 Messenger' }]
+  const [inventorySearch, setInventorySearch] = useState('')
+  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState('all')
+  const [showAddItem, setShowAddItem] = useState(false)
+  const [newItemName, setNewItemName] = useState('')
+  const [newItemCategory, setNewItemCategory] = useState('Raw Ingredients')
+  const [newItemUnit, setNewItemUnit] = useState('kg')
+  const [newItemMinStock, setNewItemMinStock] = useState('')
+  const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
+  const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
+  const [newItemSupplierId, setNewItemSupplierId] = useState('')
+  const [inventoryTransactions, setInventoryTransactions] = useState([])
+  const [inventoryTxLoading, setInventoryTxLoading] = useState(false)
+  const [showInventoryHistory, setShowInventoryHistory] = useState(false)
+  const [showStockForm, setShowStockForm] = useState(false)
+  const [stockTxType, setStockTxType] = useState('in')
+  const [stockTxItemId, setStockTxItemId] = useState('')
+  const [stockTxQty, setStockTxQty] = useState('')
+  const [stockTxReference, setStockTxReference] = useState('')
+  const [stockTxNotes, setStockTxNotes] = useState('')
+  const [stockTxLoading, setStockTxLoading] = useState(false)
+  const [editingItemId, setEditingItemId] = useState(null)
+  const [editItemFields, setEditItemFields] = useState({})
+  // Suppliers
+  const [suppliers, setSuppliers] = useState([])
+  const [suppliersLoading, setSuppliersLoading] = useState(false)
+  const [showSuppliersSection, setShowSuppliersSection] = useState(false)
+  const [showAddSupplier, setShowAddSupplier] = useState(false)
+  const [editingSupplierId, setEditingSupplierId] = useState(null)
+  const [supplierForm, setSupplierForm] = useState({ name:'', contact_person:'', phone:'', email:'', address:'', payment_terms:'COD (Cash on Delivery)', notes:'' })
+  // Purchase Orders
+  const [purchaseOrders, setPurchaseOrders] = useState([])
+  const [showPOSection, setShowPOSection] = useState(false)
+  const [showPOBuilder, setShowPOBuilder] = useState(false)
+  const [poSupplierId, setPOSupplierId] = useState('')
+  const [poItems, setPOItems] = useState([])
+  const [poNotes, setPONotes] = useState('')
+  const [savingPO, setSavingPO] = useState(false)
+  const PAYMENT_TERMS = ['COD (Cash on Delivery)','Net 7 Days','Net 15 Days','Net 30 Days','Net 60 Days','50% Down, 50% on Delivery','Down Payment + Balance','Others']
+  const INVENTORY_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Equipment & Supplies']
   const [payrollStart, setPayrollStart] = useState(today)
   const [payrollEnd, setPayrollEnd] = useState(today)
   const [payrollMonth, setPayrollMonth] = useState(today.slice(0,7))
@@ -320,7 +479,7 @@ export default function App() {
       loadTodayLog(employee); loadTodaySchedule(employee)
       loadMyPayslips(employee); loadMyCashAdvances(employee)
       loadMyAttendanceHistory(employee); loadMyLeaveBalance(employee)
-      checkAnnouncements(employee)
+      checkAnnouncements(employee); loadMyCharges(employee)
     }
   }, [employee])
 
@@ -686,11 +845,1250 @@ export default function App() {
     pw.document.close()
     setTimeout(() => { pw.focus(); pw.print() }, 600)
   }
+
+  // ── Inventory Functions ───────────────────────────────────────────────────
+  async function loadInventoryItems() {
+    setInventoryLoading(true)
+    const { data } = await supabase.from('inventory_items').select('*').eq('is_active', true).order('category').order('name')
+    setInventoryItems(data || [])
+    setInventoryLoading(false)
+  }
+  async function loadInventoryTransactions() {
+    setInventoryTxLoading(true)
+    const { data } = await supabase.from('inventory_transactions').select('*').order('created_at', { ascending:false }).limit(200)
+    setInventoryTransactions(data || [])
+    setInventoryTxLoading(false)
+  }
+  async function addInventoryItem() {
+    if (!newItemName.trim()) { showToast('❌ Please enter item name.','red'); return }
+    if (!newItemCategory) { showToast('❌ Please select a category.','red'); return }
+    setAddItemLoading(true)
+    try {
+      const { error } = await supabase.from('inventory_items').insert({
+        name: newItemName.trim(),
+        category: newItemCategory,
+        unit: newItemUnit.trim()||'kg',
+        current_stock: 0,
+        min_stock: Number(newItemMinStock||0),
+        cost_per_unit: Number(newItemCostPerUnit||0),
+        selling_price: Number(newItemSellingPrice||0),
+        supplier_id: newItemSupplierId||null,
+        is_active: true
+      })
+      if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+      const addedName = newItemName.trim()
+      const addedCategory = newItemCategory
+      // 1. Fetch updated list FIRST so item is ready before form closes
+      const { data } = await supabase.from('inventory_items').select('*').eq('is_active', true).order('category').order('name')
+      setInventoryItems(data || [])
+      // 2. Clear all form fields
+      setNewItemName('')
+      setNewItemMinStock('')
+      setNewItemCostPerUnit('')
+      setNewItemSellingPrice('')
+      setNewItemSupplierId('')
+      setNewItemCategory('Raw Ingredients')
+      setNewItemUnit('kg')
+      // 3. Close form — item is already in the list below
+      setShowAddItem(false)
+      // 4. Show success — make sure category filter shows the new item
+      setInventoryCategoryFilter('all')
+      setInventorySearch('')
+      await logAudit('INVENTORY ITEM ADDED','Admin',addedName,`Category: ${addedCategory}`)
+      showToast(`✅ ${addedName} added to inventory!`)
+    } finally {
+      setAddItemLoading(false)
+    }
+  }
+  async function deleteInventoryItem(item) {
+    if (!window.confirm(`Deactivate "${item.name}" from inventory?`)) return
+    const { error } = await supabase.from('inventory_items').update({ is_active:false }).eq('id', item.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    await logAudit('INVENTORY ITEM REMOVED','Admin',item.name,'Item deactivated')
+    showToast(`✅ ${item.name} removed.`); loadInventoryItems()
+  }
+  async function saveInventoryItemEdit(item) {
+    const f = editItemFields
+    const { error } = await supabase.from('inventory_items').update({
+      name: f.name||item.name,
+      unit: f.unit||item.unit,
+      min_stock: Number(f.min_stock??item.min_stock),
+      cost_per_unit: Number(f.cost_per_unit??item.cost_per_unit),
+      selling_price: Number(f.selling_price??item.selling_price??0),
+      supplier_id: f.supplier_id!==undefined ? (f.supplier_id||null) : (item.supplier_id||null)
+    }).eq('id', item.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    showToast('✅ Item updated!'); setEditingItemId(null); setEditItemFields({}); loadInventoryItems()
+  }
+  async function recordStockTransaction() {
+    if (!stockTxItemId) { showToast('❌ Please select an item.','red'); return }
+    if (!stockTxQty || Number(stockTxQty) <= 0) { showToast('❌ Please enter a valid quantity.','red'); return }
+    const item = inventoryItems.find(i=>i.id===stockTxItemId)
+    if (!item) { showToast('❌ Item not found.','red'); return }
+    const qty = Number(stockTxQty)
+    const stockBefore = Number(item.current_stock||0)
+    const stockAfter = stockTxType==='in' ? stockBefore+qty : stockBefore-qty
+    if (stockTxType==='out' && stockAfter < 0) { showToast(`❌ Insufficient stock. Only ${stockBefore} ${item.unit} available.`,'red'); return }
+    setStockTxLoading(true)
+    try {
+      const { error: txError } = await supabase.from('inventory_transactions').insert({
+        item_id: stockTxItemId,
+        item_name: item.name,
+        category: item.category,
+        transaction_type: stockTxType,
+        quantity: qty,
+        unit: item.unit,
+        stock_before: stockBefore,
+        stock_after: stockAfter,
+        reference: stockTxReference.trim()||null,
+        notes: stockTxNotes.trim()||null,
+        performed_by: `Admin (${adminRole})`
+      })
+      if (txError) throw txError
+      const { error: updateError } = await supabase.from('inventory_items').update({ current_stock: stockAfter }).eq('id', stockTxItemId)
+      if (updateError) throw updateError
+      await logAudit(`STOCK ${stockTxType.toUpperCase()}`,'Admin',item.name,`${stockTxType==='in'?'+':'-'}${qty} ${item.unit} | Stock: ${stockBefore} → ${stockAfter}`)
+      showToast(`✅ Stock ${stockTxType==='in'?'added':'deducted'} — ${item.name}: ${stockBefore} → ${stockAfter} ${item.unit}`)
+      setStockTxItemId(''); setStockTxQty(''); setStockTxReference(''); setStockTxNotes('')
+      setShowStockForm(false); loadInventoryItems()
+    } catch(err) {
+      showToast('❌ Failed: '+err.message,'red')
+    }
+    setStockTxLoading(false)
+  }
+  function printInventoryReport() {
+    const lowStock = inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0)
+    const totalValue = inventoryItems.reduce((s,i)=>s+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0)
+    const byCategory = INVENTORY_CATEGORIES.map(cat=>({ cat, items: inventoryItems.filter(i=>i.category===cat) })).filter(g=>g.items.length>0)
+    const pw = window.open('','_blank','width=900,height=700')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Inventory Report</title>
+      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;color:#000;}
+      @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
+      h1{font-size:20px;color:#ca1b1b;}
+      table{width:100%;border-collapse:collapse;margin-bottom:16px;}
+      th{background:#ca1b1b;color:white;padding:6px 8px;text-align:left;font-size:10px;}
+      td{padding:5px 8px;border-bottom:1px solid #eee;font-size:10px;}
+      .low{color:#ca1b1b;font-weight:bold;}
+      .cat-title{background:#f5f5f5;font-weight:bold;padding:8px;margin:12px 0 4px;border-left:4px solid #ca1b1b;font-size:11px;}
+      </style></head><body>
+      <div style="text-align:center;border-bottom:2px solid #ca1b1b;padding-bottom:10px;margin-bottom:16px;">
+        <h1>Roma's Donuts</h1>
+        <div style="font-size:13px;font-weight:bold;margin-top:4px;">INVENTORY REPORT</div>
+        <div style="font-size:10px;color:#666;">Generated: ${new Date().toLocaleDateString('en-PH',{year:'numeric',month:'long',day:'numeric'})}</div>
+      </div>
+      <div style="display:flex;gap:20px;margin-bottom:16px;flex-wrap:wrap;">
+        <div style="background:#e8f5e9;padding:10px 16px;border-radius:6px;border:1px solid #c8e6c9;">
+          <div style="font-size:10px;color:#888;">Total Items</div>
+          <div style="font-size:20px;font-weight:bold;color:#2d8a4e;">${inventoryItems.length}</div>
+        </div>
+        <div style="background:${lowStock.length>0?'#fff5f5':'#e8f5e9'};padding:10px 16px;border-radius:6px;border:1px solid ${lowStock.length>0?'#ffcdd2':'#c8e6c9'};">
+          <div style="font-size:10px;color:#888;">Low Stock Items</div>
+          <div style="font-size:20px;font-weight:bold;color:${lowStock.length>0?'#ca1b1b':'#2d8a4e'};">${lowStock.length}</div>
+        </div>
+        <div style="background:#e8f0fe;padding:10px 16px;border-radius:6px;border:1px solid #c5cae9;">
+          <div style="font-size:10px;color:#888;">Total Stock Value</div>
+          <div style="font-size:20px;font-weight:bold;color:#4a90d9;">${php(totalValue)}</div>
+        </div>
+      </div>
+      ${byCategory.map(g=>`
+        <div class="cat-title">📦 ${g.cat}</div>
+        <table>
+          <tr><th>Item Name</th><th>Unit</th><th>Current Stock</th><th>Min Stock</th><th>Cost/Unit</th><th>Total Value</th><th>Status</th></tr>
+          ${g.items.map(i=>{
+            const isLow = Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0
+            return `<tr>
+              <td>${i.name}</td>
+              <td>${i.unit}</td>
+              <td class="${isLow?'low':''}">${Number(i.current_stock||0).toFixed(2)}</td>
+              <td>${Number(i.min_stock||0).toFixed(2)}</td>
+              <td>${php(i.cost_per_unit||0)}</td>
+              <td>${php(Number(i.current_stock||0)*Number(i.cost_per_unit||0))}</td>
+              <td class="${isLow?'low':''}">${isLow?'⚠️ LOW STOCK':'✅ OK'}</td>
+            </tr>`
+          }).join('')}
+        </table>`).join('')}
+      ${lowStock.length>0?`
+        <div class="cat-title" style="border-color:#ca1b1b;color:#ca1b1b;">🔴 LOW STOCK ALERTS</div>
+        <table>
+          <tr><th>Item</th><th>Category</th><th>Current</th><th>Minimum</th><th>Unit</th></tr>
+          ${lowStock.map(i=>`<tr><td class="low">${i.name}</td><td>${i.category}</td><td class="low">${Number(i.current_stock||0).toFixed(2)}</td><td>${Number(i.min_stock||0).toFixed(2)}</td><td>${i.unit}</td></tr>`).join('')}
+        </table>`:''}
+      <div class="no-print" style="text-align:center;margin-top:20px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT</button>
+      </div>
+    </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+  }
+
+  // ── Wastage / Spoilage Functions ──────────────────────────────────────────
+  async function loadWastageLogs() {
+    setWastageLoading(true)
+    const { data } = await supabase.from('wastage_logs').select('*').order('created_at', { ascending:false }).limit(100)
+    setWastageLogs(data || [])
+    setWastageLoading(false)
+  }
+  async function logWastage() {
+    if (!wastageItemId) { showToast('❌ Please select an item.','red'); return }
+    if (!wastageQty || Number(wastageQty)<=0) { showToast('❌ Please enter a valid quantity.','red'); return }
+    if (!wastageReason) { showToast('❌ Please select a reason.','red'); return }
+    if (wastageReason==='Others' && !wastageReasonOther.trim()) { showToast('❌ Please describe the reason.','red'); return }
+    if (wastageChargeEmployee && !wastageEmployeeId) { showToast('❌ Please select the responsible employee.','red'); return }
+    const item = inventoryItems.find(i=>i.id===wastageItemId)
+    if (!item) { showToast('❌ Item not found.','red'); return }
+    const qty = Number(wastageQty)
+    const stockBefore = Number(item.current_stock||0)
+    if (qty > stockBefore) { showToast(`❌ Cannot waste more than current stock (${stockBefore} ${item.unit}).`,'red'); return }
+    const stockAfter = stockBefore - qty
+    const totalCost = qty * Number(item.cost_per_unit||0)
+    const finalReason = wastageReason==='Others' ? wastageReasonOther.trim() : wastageReason
+    const emp = wastageChargeEmployee ? employees.find(e=>e.id===wastageEmployeeId) : null
+    setWastageSaving(true)
+    try {
+      const { data:wlog, error:wErr } = await supabase.from('wastage_logs').insert({
+        item_id: wastageItemId,
+        item_name: item.name,
+        category: item.category,
+        quantity: qty,
+        unit: item.unit,
+        cost_per_unit: Number(item.cost_per_unit||0),
+        total_cost: totalCost,
+        reason: finalReason,
+        notes: wastageNotes.trim()||null,
+        wastage_date: wastageDate||today,
+        logged_by: `${adminRole==='supervisor'?'Supervisor':'Admin'} (${adminRole})`,
+        employee_id: emp?.id||null,
+        employee_name: emp?.full_name||null,
+        status: wastageChargeEmployee ? 'pending_approval' : 'approved'
+      }).select().single()
+      if (wErr) throw wErr
+      // Update stock
+      const { error:sErr } = await supabase.from('inventory_items').update({ current_stock: stockAfter }).eq('id', wastageItemId)
+      if (sErr) throw sErr
+      // Log transaction
+      await supabase.from('inventory_transactions').insert({
+        item_id: wastageItemId, item_name: item.name, category: item.category,
+        transaction_type: 'out', quantity: qty, unit: item.unit,
+        stock_before: stockBefore, stock_after: stockAfter,
+        reference: `WASTAGE-${wlog.id?.slice(0,8).toUpperCase()}`,
+        notes: `Wastage: ${finalReason}${emp?` | Charged to: ${emp.full_name}`:''}`,
+        performed_by: `${adminRole} (Wastage Log)`
+      })
+      // Create employee charge if applicable
+      if (wastageChargeEmployee && emp) {
+        await supabase.from('employee_charges').insert({
+          wastage_log_id: wlog.id,
+          employee_id: emp.id,
+          employee_name: emp.full_name,
+          item_name: item.name,
+          quantity: qty,
+          unit: item.unit,
+          total_cost: totalCost,
+          reason: finalReason,
+          notes: wastageNotes.trim()||null,
+          status: 'pending_owner'
+        })
+      }
+      await logAudit('WASTAGE LOGGED', adminRole, item.name, `${qty} ${item.unit} | ${finalReason}${emp?` | Charged to: ${emp.full_name}`:''}`)
+      showToast(`✅ Wastage logged — ${qty} ${item.unit} of ${item.name} deducted.${wastageChargeEmployee?` Charge sent to owner for approval.`:''}`)
+      setShowWastageForm(false); setWastageItemId(''); setWastageQty(''); setWastageReason('')
+      setWastageReasonOther(''); setWastageNotes(''); setWastageChargeEmployee(false); setWastageEmployeeId('')
+      loadInventoryItems(); loadWastageLogs()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setWastageSaving(false)
+  }
+  async function loadEmployeeCharges() {
+    setChargesLoading(true)
+    const { data } = await supabase.from('employee_charges').select('*').order('created_at', { ascending:false })
+    setEmployeeCharges(data || [])
+    setChargesLoading(false)
+  }
+  async function approveCharge(charge) {
+    const { error } = await supabase.from('employee_charges').update({ status:'pending_employee', owner_approved_at: new Date().toISOString() }).eq('id', charge.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    await supabase.from('wastage_logs').update({ status:'approved' }).eq('id', charge.wastage_log_id)
+    await logAudit('CHARGE APPROVED','Owner',charge.employee_name,`${php(charge.total_cost)} for ${charge.item_name}`)
+    showToast(`✅ Charge approved — sent to ${charge.employee_name} for acknowledgment.`); loadEmployeeCharges()
+  }
+  async function dismissCharge(charge) {
+    if (!window.confirm(`Dismiss charge against ${charge.employee_name}?`)) return
+    const { error } = await supabase.from('employee_charges').update({ status:'dismissed' }).eq('id', charge.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    await supabase.from('wastage_logs').update({ status:'dismissed' }).eq('id', charge.wastage_log_id)
+    await logAudit('CHARGE DISMISSED','Owner',charge.employee_name,`${php(charge.total_cost)} for ${charge.item_name}`)
+    showToast('✅ Charge dismissed.'); loadEmployeeCharges()
+  }
+  async function ownerFinalDecision(charge, decision) {
+    const status = decision==='force_approve' ? 'agreed' : 'dismissed'
+    const { error } = await supabase.from('employee_charges').update({ status, owner_final_decision: decision, owner_final_at: new Date().toISOString() }).eq('id', charge.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    await logAudit(`DISPUTE ${decision==='force_approve'?'OVERRIDDEN':'DISMISSED'}`, 'Owner', charge.employee_name, `${php(charge.total_cost)} for ${charge.item_name}`)
+    showToast(decision==='force_approve'?`✅ Charge enforced despite dispute.`:`✅ Dispute upheld — charge dismissed.`)
+    loadEmployeeCharges()
+  }
+  function printChargeForm(charge) {
+    const pw = window.open('','_blank','width=800,height=600')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Charge Acknowledgment</title>
+      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:20mm;font-size:12px;}
+      @media print{@page{size:A4;margin:20mm;}.no-print{display:none;}}
+      h1{font-size:20px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin:14px 0;}
+      td{padding:8px 10px;border:1px solid #ddd;}td:first-child{font-weight:bold;background:#f9f9f9;width:40%;}
+      .sig{text-align:center;margin-top:50px;}
+      .sig-line{border-top:1px solid #000;width:200px;padding-top:6px;font-size:10px;color:#555;margin:0 auto;}
+      </style></head><body>
+      <div style="text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:20px;">
+        <h1>Roma's Donuts</h1>
+        <div style="font-size:14px;font-weight:bold;margin-top:4px;">EMPLOYEE CHARGE ACKNOWLEDGMENT FORM</div>
+      </div>
+      <table>
+        <tr><td>Employee Name</td><td style="font-size:14px;font-weight:bold;">${charge.employee_name}</td></tr>
+        <tr><td>Item / Material</td><td>${charge.item_name}</td></tr>
+        <tr><td>Quantity Wasted</td><td>${Number(charge.quantity||0).toFixed(2)} ${charge.unit}</td></tr>
+        <tr><td>Reason</td><td>${charge.reason}</td></tr>
+        <tr><td>Notes</td><td>${charge.notes||'—'}</td></tr>
+        <tr><td>Date Logged</td><td>${new Date(charge.created_at).toLocaleDateString('en-PH',{year:'numeric',month:'long',day:'numeric'})}</td></tr>
+        <tr><td>Amount to be Charged</td><td style="font-size:16px;font-weight:bold;color:#ca1b1b;">${php(charge.total_cost)}</td></tr>
+        <tr><td>Status</td><td style="font-weight:bold;">${charge.status==='agreed'?'✅ Employee Agreed':charge.status==='disputed'?'❌ Disputed':charge.status==='dismissed'?'Dismissed':'Pending'}</td></tr>
+        ${charge.acknowledged_at?`<tr><td>Acknowledged On</td><td>${new Date(charge.acknowledged_at).toLocaleString()}</td></tr>`:''}
+      </table>
+      <p style="font-size:11px;color:#555;margin-bottom:30px;">By signing below, the employee acknowledges that they have read and understood the charge stated above, and agrees to the deduction of <strong>${php(charge.total_cost)}</strong> from their salary in the next payroll period.</p>
+      <div style="display:flex;justify-content:space-between;margin-top:40px;">
+        <div class="sig"><div class="sig-line">Employee Signature / Date</div></div>
+        <div class="sig"><div class="sig-line">Supervisor Signature / Date</div></div>
+        <div class="sig"><div class="sig-line">Owner / HR Approval</div></div>
+      </div>
+      <div class="no-print" style="text-align:center;margin-top:24px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT</button>
+      </div>
+    </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+  }
+
+  // ── Expiry Tracking Functions ─────────────────────────────────────────────
+  async function loadExpiryItems() {
+    setExpiryLoading(true)
+    const { data } = await supabase.from('inventory_items').select('id,name,category,unit,current_stock,expiry_date').eq('is_active',true).not('expiry_date','is',null).order('expiry_date')
+    setExpiryItems(data || [])
+    setExpiryLoading(false)
+  }
+  async function saveExpiryDate(itemId) {
+    if (!expiryDate) { showToast('❌ Please select an expiry date.','red'); return }
+    const { error } = await supabase.from('inventory_items').update({ expiry_date: expiryDate }).eq('id', itemId)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    showToast('✅ Expiry date saved!'); setEditingExpiryId(null); setExpiryDate(''); loadExpiryItems(); loadInventoryItems()
+  }
+  async function clearExpiryDate(itemId) {
+    if (!window.confirm('Clear expiry date for this item?')) return
+    await supabase.from('inventory_items').update({ expiry_date: null }).eq('id', itemId)
+    showToast('✅ Expiry date cleared.'); loadExpiryItems(); loadInventoryItems()
+  }
+
+  // ── Employee Portal — My Charges ──────────────────────────────────────────
+  async function loadMyCharges(emp) {
+    const { data } = await supabase.from('employee_charges').select('*').eq('employee_id', emp.id).in('status',['pending_employee','agreed','disputed']).order('created_at',{ascending:false})
+    setMyCharges(data || [])
+  }
+  async function respondToCharge(charge, response) {
+    const status = response==='agree' ? 'agreed' : 'disputed'
+    const { error } = await supabase.from('employee_charges').update({ status, acknowledged_at: new Date().toISOString() }).eq('id', charge.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    await logAudit(`CHARGE ${status.toUpperCase()}`, charge.employee_name, charge.item_name, `${php(charge.total_cost)}`)
+    showToast(response==='agree'?'✅ You have agreed to the charge. It will be deducted from your next payroll.':'⚠️ Dispute submitted. Owner will review.')
+    loadMyCharges(employee)
+  }
+
+  // ── Physical Count Sheet Print ────────────────────────────────────────────
+  function printPhysicalCountSheet() {
+    const byCategory = INVENTORY_CATEGORIES.map(cat=>({ cat, items: inventoryItems.filter(i=>i.category===cat) })).filter(g=>g.items.length>0)
+    const pw = window.open('','_blank','width=900,height=700')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Physical Count Sheet</title>
+      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:12mm;font-size:10px;}
+      @media print{@page{size:A4;margin:12mm;}.no-print{display:none;}}
+      h1{font-size:18px;color:#ca1b1b;}
+      table{width:100%;border-collapse:collapse;margin-bottom:14px;}
+      th{background:#ca1b1b;color:white;padding:6px 6px;text-align:left;font-size:9px;}
+      td{padding:6px 6px;border:1px solid #ddd;font-size:9px;}
+      .cat{background:#f5f5f5;font-weight:bold;padding:6px 8px;margin:10px 0 4px;border-left:4px solid #ca1b1b;font-size:10px;}
+      .blank{height:20px;}
+      </style></head><body>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px;">
+        <div><h1>Roma's Donuts</h1><div style="font-size:11px;font-weight:bold;">PHYSICAL INVENTORY COUNT SHEET</div></div>
+        <div style="text-align:right;font-size:10px;color:#555;">
+          Date: ________________________<br/>
+          Counted by: ________________________<br/>
+          Verified by: ________________________
+        </div>
+      </div>
+      ${byCategory.map(g=>`
+        <div class="cat">📦 ${g.cat}</div>
+        <table>
+          <tr><th>#</th><th>Item Name</th><th>Unit</th><th>System Stock</th><th>Actual Count</th><th>Variance</th><th>Notes</th></tr>
+          ${g.items.map((i,idx)=>`<tr>
+            <td>${idx+1}</td>
+            <td>${i.name}</td>
+            <td>${i.unit}</td>
+            <td style="font-weight:bold;">${Number(i.current_stock||0).toFixed(2)}</td>
+            <td class="blank"></td>
+            <td class="blank"></td>
+            <td class="blank" style="width:120px;"></td>
+          </tr>`).join('')}
+        </table>`).join('')}
+      <div style="margin-top:20px;font-size:9px;color:#888;font-style:italic;">
+        Instructions: Fill in the "Actual Count" column. Variance = Actual Count − System Stock. Report any discrepancies to your supervisor immediately.
+      </div>
+      <div class="no-print" style="text-align:center;margin-top:20px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT</button>
+      </div>
+    </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+  }
+
+  // ── Supplier Functions ────────────────────────────────────────────────────
+  async function loadSuppliers() {
+    setSuppliersLoading(true)
+    const { data } = await supabase.from('inventory_suppliers').select('*').order('name')
+    setSuppliers(data || [])
+    setSuppliersLoading(false)
+  }
+  async function saveSupplier() {
+    if (!supplierForm.name.trim()) { showToast('❌ Supplier name is required.','red'); return }
+    if (suppliers.length >= 10 && !editingSupplierId) { showToast('❌ Maximum 10 suppliers allowed.','red'); return }
+    const payload = {
+      name: supplierForm.name.trim(),
+      contact_person: supplierForm.contact_person.trim(),
+      phone: supplierForm.phone.trim(),
+      email: supplierForm.email.trim(),
+      address: supplierForm.address.trim(),
+      payment_terms: supplierForm.payment_terms,
+      notes: supplierForm.notes.trim()
+    }
+    if (editingSupplierId) {
+      const { error } = await supabase.from('inventory_suppliers').update(payload).eq('id', editingSupplierId)
+      if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+      showToast('✅ Supplier updated!')
+    } else {
+      const { error } = await supabase.from('inventory_suppliers').insert(payload)
+      if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+      showToast('✅ Supplier added!')
+    }
+    setEditingSupplierId(null); setShowAddSupplier(false)
+    setSupplierForm({ name:'', contact_person:'', phone:'', email:'', address:'', payment_terms:'COD (Cash on Delivery)', notes:'' })
+    loadSuppliers()
+  }
+  async function deleteSupplier(s) {
+    if (!window.confirm(`Delete supplier "${s.name}"?`)) return
+    const { error } = await supabase.from('inventory_suppliers').delete().eq('id', s.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    showToast('✅ Supplier deleted.'); loadSuppliers()
+  }
+  function startEditSupplier(s) {
+    setEditingSupplierId(s.id)
+    setSupplierForm({ name:s.name||'', contact_person:s.contact_person||'', phone:s.phone||'', email:s.email||'', address:s.address||'', payment_terms:s.payment_terms||'COD (Cash on Delivery)', notes:s.notes||'' })
+    setShowAddSupplier(true)
+  }
+
+  // ── Purchase Order Functions ──────────────────────────────────────────────
+  async function loadPurchaseOrders() {
+    const { data } = await supabase.from('purchase_orders').select('*, purchase_order_items(*)').order('created_at', { ascending:false })
+    setPurchaseOrders(data || [])
+  }
+  function buildPO(supplierId) {
+    const supplier = suppliers.find(s=>s.id===supplierId)
+    if (!supplier) { showToast('❌ Please select a supplier.','red'); return }
+    const lowItems = inventoryItems.filter(i=>i.supplier_id===supplierId && Number(i.current_stock||0)<=Number(i.min_stock||0) && Number(i.min_stock||0)>0)
+    if (lowItems.length===0) { showToast('ℹ️ No low stock items for this supplier.','red'); return }
+    const items = lowItems.map(i=>({
+      item_id: i.id,
+      item_name: i.name,
+      unit: i.unit,
+      current_stock: Number(i.current_stock||0),
+      min_stock: Number(i.min_stock||0),
+      order_qty: Math.max(0, (Number(i.min_stock||0)*2) - Number(i.current_stock||0)),
+      unit_price: Number(i.cost_per_unit||0)
+    }))
+    setPOItems(items); setShowPOBuilder(true)
+  }
+  async function savePO() {
+    if (!poSupplierId) { showToast('❌ Please select a supplier.','red'); return }
+    if (poItems.length===0) { showToast('❌ No items in this PO.','red'); return }
+    const invalidQty = poItems.some(i=>!i.order_qty||Number(i.order_qty)<=0)
+    if (invalidQty) { showToast('❌ All items must have a quantity greater than 0.','red'); return }
+    setSavingPO(true)
+    const supplier = suppliers.find(s=>s.id===poSupplierId)
+    const poNumber = `PO-${new Date().getFullYear()}${String(new Date().getMonth()+1).padStart(2,'0')}-${Math.floor(1000+Math.random()*9000)}`
+    const total = poItems.reduce((s,i)=>s+Number(i.order_qty||0)*Number(i.unit_price||0),0)
+    try {
+      const { data:poData, error:poError } = await supabase.from('purchase_orders').insert({
+        po_number: poNumber,
+        supplier_id: poSupplierId,
+        supplier_name: supplier?.name||'',
+        payment_terms: supplier?.payment_terms||'',
+        status: 'draft',
+        notes: poNotes.trim()||null,
+        total_amount: total
+      }).select().single()
+      if (poError) throw poError
+      const itemRows = poItems.map(i=>({ po_id:poData.id, item_id:i.item_id, item_name:i.item_name, unit:i.unit, current_stock:i.current_stock, order_qty:Number(i.order_qty), unit_price:Number(i.unit_price||0), total_price:Number(i.order_qty)*Number(i.unit_price||0) }))
+      const { error:itemsError } = await supabase.from('purchase_order_items').insert(itemRows)
+      if (itemsError) throw itemsError
+      await logAudit('PO CREATED','Admin',supplier?.name||'',`${poNumber} — ${poItems.length} item(s) — ${php(total)}`)
+      showToast(`✅ PO ${poNumber} saved!`)
+      setShowPOBuilder(false); setPOSupplierId(''); setPOItems([]); setPONotes('')
+      loadPurchaseOrders(); setShowPOSection(true)
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingPO(false)
+  }
+  async function deletePO(po) {
+    if (!window.confirm(`Delete PO ${po.po_number}?`)) return
+    await supabase.from('purchase_order_items').delete().eq('po_id', po.id)
+    const { error } = await supabase.from('purchase_orders').delete().eq('id', po.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    showToast('✅ PO deleted.'); loadPurchaseOrders()
+  }
+  async function updatePOStatus(id, status) {
+    await supabase.from('purchase_orders').update({ status }).eq('id', id)
+    showToast(`✅ PO marked as ${status}`); loadPurchaseOrders()
+  }
+  function printPO(po) {
+    const items = po.purchase_order_items || []
+    const supplier = suppliers.find(s=>s.id===po.supplier_id)
+    const total = items.reduce((s,i)=>s+Number(i.total_price||0),0)
+    const pw = window.open('','_blank','width=900,height=700')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Purchase Order ${po.po_number}</title>
+      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
+      @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
+      h1{font-size:20px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin-top:12px;}
+      th{background:#ca1b1b;color:white;padding:7px 8px;text-align:left;font-size:10px;}
+      td{padding:6px 8px;border-bottom:1px solid #eee;font-size:10px;}
+      .total{font-weight:bold;font-size:12px;text-align:right;padding:10px 8px;background:#f9f9f9;}
+      .section{margin-top:14px;}
+      </style></head><body>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:16px;">
+        <div><h1>Roma's Donuts</h1><div style="font-size:10px;color:#888;margin-top:2px;">Payroll & Inventory System</div></div>
+        <div style="text-align:right;">
+          <div style="font-size:16px;font-weight:bold;color:#ca1b1b;">PURCHASE ORDER</div>
+          <div style="font-size:13px;font-weight:bold;">${po.po_number}</div>
+          <div style="font-size:10px;color:#888;">Date: ${new Date(po.created_at).toLocaleDateString('en-PH',{year:'numeric',month:'long',day:'numeric'})}</div>
+          <div style="font-size:10px;color:#888;">Status: ${(po.status||'draft').toUpperCase()}</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:16px;">
+        <div>
+          <div style="font-weight:bold;font-size:11px;color:#ca1b1b;margin-bottom:6px;">SUPPLIER DETAILS</div>
+          <div style="font-size:11px;line-height:1.8;">
+            <strong>${supplier?.name||po.supplier_name||'—'}</strong><br/>
+            ${supplier?.contact_person?`Contact: ${supplier.contact_person}<br/>`:''}
+            ${supplier?.phone?`Phone: ${supplier.phone}<br/>`:''}
+            ${supplier?.email?`Email: ${supplier.email}<br/>`:''}
+            ${supplier?.address?`Address: ${supplier.address}<br/>`:''}
+            ${supplier?.payment_terms?`<strong>Payment Terms: ${supplier.payment_terms}</strong>`:''}
+          </div>
+        </div>
+        <div>
+          <div style="font-weight:bold;font-size:11px;color:#ca1b1b;margin-bottom:6px;">DELIVERY TO</div>
+          <div style="font-size:11px;line-height:1.8;">
+            <strong>Roma's Donuts</strong><br/>
+            Tarlac City, Philippines<br/>
+            <br/>
+            ${po.notes?`<em>Note: ${po.notes}</em>`:''}
+          </div>
+        </div>
+      </div>
+      <table>
+        <tr><th>#</th><th>Item Name</th><th>Unit</th><th>Current Stock</th><th>Order Qty</th><th>Unit Price</th><th>Total</th></tr>
+        ${items.map((i,idx)=>`<tr>
+          <td>${idx+1}</td>
+          <td>${i.item_name}</td>
+          <td>${i.unit}</td>
+          <td>${Number(i.current_stock||0).toFixed(2)}</td>
+          <td style="font-weight:bold;">${Number(i.order_qty||0).toFixed(2)}</td>
+          <td>${php(i.unit_price||0)}</td>
+          <td style="font-weight:bold;">${php(i.total_price||0)}</td>
+        </tr>`).join('')}
+        <tr><td colspan="6" class="total">TOTAL AMOUNT:</td><td class="total">${php(total)}</td></tr>
+      </table>
+      <div style="display:flex;justify-content:space-between;margin-top:50px;">
+        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:6px;font-size:10px;color:#555;">Prepared by</div></div>
+        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:6px;font-size:10px;color:#555;">Approved by</div></div>
+        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:6px;font-size:10px;color:#555;">Received by / Date</div></div>
+      </div>
+      <div class="no-print" style="text-align:center;margin-top:24px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT PO</button>
+      </div>
+    </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+  }
+
+  // ── Phase 2: Costing Functions ────────────────────────────────────────────
+  async function loadCostSettings() {
+    const { data } = await supabase.from('cost_settings').select('*').maybeSingle()
+    if (data) setCostSettings(p=>({ ...p, ...data }))
+  }
+  async function saveCostSettings() {
+    setSavingCostSettings(true)
+    const { data: existing } = await supabase.from('cost_settings').select('id').maybeSingle()
+    if (existing) {
+      await supabase.from('cost_settings').update({ ...costSettings, updated_at: new Date().toISOString() }).eq('id', existing.id)
+    } else {
+      await supabase.from('cost_settings').insert({ ...costSettings })
+    }
+    await logAudit('COST SETTINGS UPDATED','Owner','System','Cost settings saved')
+    showToast('✅ Cost settings saved! All computations updated.')
+    setSavingCostSettings(false)
+  }
+  async function loadDonutVariants() {
+    setVariantsLoading(true)
+    const { data } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
+    setDonutVariants(data || [])
+    setVariantsLoading(false)
+  }
+  async function seedVariants() {
+    if (!window.confirm(`This will add all ${DONUT_VARIANTS_DEFAULT.length} Roma's Donuts variants. Continue?`)) return
+    let added = 0
+    for (const v of DONUT_VARIANTS_DEFAULT) {
+      const { data: existing } = await supabase.from('donut_variants').select('id').eq('name', v.name).maybeSingle()
+      if (!existing) { await supabase.from('donut_variants').insert({ ...v, is_active: true }); added++ }
+    }
+    showToast(`✅ Added ${added} variants!`); loadDonutVariants()
+  }
+  async function updateVariant(id, fields) {
+    const { error } = await supabase.from('donut_variants').update(fields).eq('id', id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    showToast('✅ Variant updated!'); setEditingVariantId(null); loadDonutVariants()
+  }
+  async function loadRecipes() {
+    const { data: base } = await supabase.from('base_dough_recipe').select('*').order('created_at')
+    setBaseDoughIngredients(base || [])
+    const { data: variant } = await supabase.from('variant_recipes').select('*').order('variant_id')
+    const grouped = {}
+    for (const r of variant || []) {
+      if (!grouped[r.variant_id]) grouped[r.variant_id] = []
+      grouped[r.variant_id].push(r)
+    }
+    setVariantRecipes(grouped)
+  }
+  async function saveBaseDough() {
+    setSavingRecipe(true)
+    try {
+      // Delete existing and re-insert
+      await supabase.from('base_dough_recipe').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+      const validRows = editingBaseDough.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
+      if (validRows.length > 0) {
+        const { error } = await supabase.from('base_dough_recipe').insert(validRows.map(r => ({
+          inventory_item_id: r.inventory_item_id || null,
+          item_name: r.item_name.trim(),
+          quantity_per_batch: Number(r.quantity_per_batch),
+          unit: r.unit || 'g',
+          notes: r.notes || null
+        })))
+        if (error) throw error
+      }
+      showToast('✅ Base dough recipe saved!'); loadRecipes()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingRecipe(false)
+  }
+  async function saveVariantRecipe(variantId) {
+    setSavingRecipe(true)
+    try {
+      await supabase.from('variant_recipes').delete().eq('variant_id', variantId)
+      const validRows = editingVariantRecipe.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
+      if (validRows.length > 0) {
+        const { error } = await supabase.from('variant_recipes').insert(validRows.map(r => ({
+          variant_id: variantId,
+          inventory_item_id: r.inventory_item_id || null,
+          item_name: r.item_name.trim(),
+          quantity_per_batch: Number(r.quantity_per_batch),
+          unit: r.unit || 'g',
+          ingredient_type: r.ingredient_type || 'topping',
+          notes: r.notes || null
+        })))
+        if (error) throw error
+      }
+      showToast('✅ Variant recipe saved!'); setSelectedRecipeVariantId(null); loadRecipes()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingRecipe(false)
+  }
+  function computeVariantCost(variantId, piecesPerBatch) {
+    if (!piecesPerBatch || piecesPerBatch <= 0) return null
+    // Base dough cost per piece (from inventory item cost_per_unit)
+    const baseCostPerPiece = baseDoughIngredients.reduce((sum, ing) => {
+      const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
+      const costPerUnit = invItem?.cost_per_unit || 0
+      return sum + (Number(ing.quantity_per_batch || 0) / piecesPerBatch) * costPerUnit
+    }, 0)
+    // Variant topping/filling cost per piece
+    const variantIngs = variantRecipes[variantId] || []
+    const variantCostPerPiece = variantIngs.reduce((sum, ing) => {
+      const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
+      const costPerUnit = invItem?.cost_per_unit || 0
+      return sum + (Number(ing.quantity_per_batch || 0) / piecesPerBatch) * costPerUnit
+    }, 0)
+    const ingredientCost = baseCostPerPiece + variantCostPerPiece
+    // Labor per piece
+    const laborPerPiece = costSettings.daily_labor_cost / Math.max(1, Number(costSettings.total_daily_pieces))
+    // Fixed cost per piece
+    const monthlyDepreciation =
+      (Number(costSettings.fryer_cost) / (Number(costSettings.fryer_lifespan_years) * 12)) +
+      (Number(costSettings.mixer_cost) / (Number(costSettings.mixer_lifespan_years) * 12)) +
+      (Number(costSettings.sheeter_cost) / (Number(costSettings.sheeter_lifespan_years) * 12))
+    const monthlyFixed = Number(costSettings.monthly_rent) + Number(costSettings.monthly_electricity) +
+      Number(costSettings.monthly_other_fixed) + monthlyDepreciation
+    const dailyFixed = monthlyFixed / Math.max(1, Number(costSettings.production_days_per_month))
+    const fixedPerPiece = dailyFixed / Math.max(1, Number(costSettings.total_daily_pieces))
+    // Waste factor
+    const wasteFactor = 1 + (Number(costSettings.waste_percentage) / 100)
+    const totalCost = (ingredientCost + laborPerPiece + fixedPerPiece) * wasteFactor
+    return { ingredientCost, laborPerPiece, fixedPerPiece, totalCost, wasteFactor }
+  }
+  function computeFinancials() {
+    const monthlyDepreciation =
+      (Number(costSettings.fryer_cost) / (Number(costSettings.fryer_lifespan_years) * 12)) +
+      (Number(costSettings.mixer_cost) / (Number(costSettings.mixer_lifespan_years) * 12)) +
+      (Number(costSettings.sheeter_cost) / (Number(costSettings.sheeter_lifespan_years) * 12))
+    const monthlyFixed = Number(costSettings.monthly_rent) + Number(costSettings.monthly_electricity) +
+      Number(costSettings.monthly_other_fixed) + monthlyDepreciation
+    const dailyFixed = monthlyFixed / Math.max(1, Number(costSettings.production_days_per_month))
+    const dailyLabor = Number(costSettings.daily_labor_cost)
+    const totalDailyPieces = Math.max(1, Number(costSettings.total_daily_pieces))
+    const fixedPerPiece = dailyFixed / totalDailyPieces
+    const laborPerPiece = dailyLabor / totalDailyPieces
+    const wasteFactor = 1 + (Number(costSettings.waste_percentage) / 100)
+    // Per-variant profitability
+    const variantData = donutVariants.map(v => {
+      const cost = computeVariantCost(v.id, v.pieces_per_batch)
+      if (!cost) return { ...v, totalCost: laborPerPiece + fixedPerPiece, grossMargin: v.selling_price - (laborPerPiece + fixedPerPiece), grossMarginPct: 0, isEstimate: true }
+      const grossMargin = v.selling_price - cost.totalCost
+      const grossMarginPct = v.selling_price > 0 ? (grossMargin / v.selling_price) * 100 : 0
+      const belowTarget = grossMarginPct < Number(costSettings.target_margin_percentage)
+      return { ...v, ...cost, grossMargin, grossMarginPct, belowTarget, isEstimate: cost.ingredientCost === 0 }
+    })
+    // BEP
+    const avgGrossMargin = variantData.length > 0 ? variantData.reduce((s,v) => s + v.grossMargin, 0) / variantData.length : fixedPerPiece
+    const dailyBEP = avgGrossMargin > 0 ? Math.ceil(dailyFixed / avgGrossMargin) : 0
+    const monthlyBEP = dailyBEP * Number(costSettings.production_days_per_month)
+    return { variantData, monthlyFixed, dailyFixed, dailyLabor, fixedPerPiece, laborPerPiece, wasteFactor, dailyBEP, monthlyBEP, monthlyDepreciation }
+  }
+  async function loadProductionLogs() {
+    setProductionLoading(true)
+    const { data } = await supabase.from('production_logs').select('*, production_log_items(*)').order('production_date', { ascending:false }).limit(30)
+    setProductionLogs(data || [])
+    setProductionLoading(false)
+  }
+  async function logProduction() {
+    if (!prodDate) { showToast('❌ Please select a date.','red'); return }
+    const validEntries = prodEntries.filter(e => e.variant_id && Number(e.pieces) > 0)
+    if (validEntries.length === 0) { showToast('❌ Please add at least one production entry.','red'); return }
+    setSavingProduction(true)
+    try {
+      const totalPieces = validEntries.reduce((s,e) => s + Number(e.pieces), 0)
+      const monthlyDepreciation =
+        (Number(costSettings.fryer_cost) / (Number(costSettings.fryer_lifespan_years) * 12)) +
+        (Number(costSettings.mixer_cost) / (Number(costSettings.mixer_lifespan_years) * 12)) +
+        (Number(costSettings.sheeter_cost) / (Number(costSettings.sheeter_lifespan_years) * 12))
+      const monthlyFixed = Number(costSettings.monthly_rent) + Number(costSettings.monthly_electricity) +
+        Number(costSettings.monthly_other_fixed) + monthlyDepreciation
+      const overheadCost = monthlyFixed / Math.max(1, Number(costSettings.production_days_per_month))
+      const laborCost = Number(costSettings.daily_labor_cost)
+      let totalIngredientCost = 0
+      // Compute ingredient costs per entry
+      const entryDetails = validEntries.map(e => {
+        const variant = donutVariants.find(v => v.id === e.variant_id)
+        const piecesPerBatch = Number(variant?.pieces_per_batch || 12)
+        const pieces = Number(e.pieces)
+        const cost = computeVariantCost(e.variant_id, piecesPerBatch)
+        const ingCost = cost ? cost.ingredientCost * pieces : 0
+        totalIngredientCost += ingCost
+        return { variant, pieces, piecesPerBatch, ingCost }
+      })
+      const totalCost = totalIngredientCost + laborCost + overheadCost
+      // Insert log
+      const { data: logData, error: logErr } = await supabase.from('production_logs').insert({
+        production_date: prodDate, total_pieces: totalPieces,
+        ingredient_cost: totalIngredientCost, labor_cost: laborCost,
+        overhead_cost: overheadCost, total_cost: totalCost,
+        notes: prodNotes || null, logged_by: `${adminRole}`
+      }).select().single()
+      if (logErr) throw logErr
+      // Insert line items
+      for (let i = 0; i < validEntries.length; i++) {
+        const e = validEntries[i]; const d = entryDetails[i]
+        await supabase.from('production_log_items').insert({
+          log_id: logData.id, variant_id: e.variant_id,
+          variant_name: d.variant?.name || '', pieces_produced: d.pieces, ingredient_cost: d.ingCost
+        })
+        // Deduct stock for base dough
+        const batchEquiv = d.pieces / d.piecesPerBatch
+        for (const ing of baseDoughIngredients) {
+          if (!ing.inventory_item_id) continue
+          const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
+          if (deductQty <= 0) continue
+          const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
+          if (inv) await supabase.from('inventory_items').update({ current_stock: Math.max(0, Number(inv.current_stock) - deductQty) }).eq('id', ing.inventory_item_id)
+        }
+        // Deduct variant-specific ingredients
+        for (const ing of (variantRecipes[e.variant_id] || [])) {
+          if (!ing.inventory_item_id) continue
+          const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
+          if (deductQty <= 0) continue
+          const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
+          if (inv) await supabase.from('inventory_items').update({ current_stock: Math.max(0, Number(inv.current_stock) - deductQty) }).eq('id', ing.inventory_item_id)
+        }
+      }
+      await logAudit('PRODUCTION LOGGED', adminRole, 'Production', `${totalPieces} pcs on ${prodDate} — Cost: ${php(totalCost)}`)
+      showToast(`✅ Production logged — ${totalPieces} pieces | Cost: ${php(totalCost)}`)
+      setShowProductionForm(false); setProdEntries([{ variant_id:'', pieces:'' }]); setProdNotes('')
+      loadProductionLogs(); loadInventoryItems()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingProduction(false)
+  }
+  function printCostingReport() {
+    const fin = computeFinancials()
+    const pw = window.open('','_blank','width=900,height=700')
+    const catColors = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }
+    pw.document.write(`<!DOCTYPE html><html><head><title>Costing Report</title>
+      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:10px;}
+      @media print{@page{size:A4;margin:12mm;}.no-print{display:none;}}
+      h1{font-size:18px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin-bottom:12px;}
+      th{background:#ca1b1b;color:white;padding:5px 6px;font-size:9px;}
+      td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+      .ok{color:#2d8a4e;font-weight:bold;}.warn{color:#ca1b1b;font-weight:bold;}
+      </style></head><body>
+      <div style="text-align:center;border-bottom:2px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px;">
+        <h1>Roma's Donuts</h1><div style="font-size:12px;font-weight:bold;">PRODUCTION COSTING REPORT</div>
+        <div style="font-size:10px;color:#666;">Generated: ${new Date().toLocaleDateString('en-PH',{year:'numeric',month:'long',day:'numeric'})} | Target Margin: ${costSettings.target_margin_percentage}%</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;">
+        ${[['Daily Labor',php(fin.dailyLabor)],['Daily Fixed',php(fin.dailyFixed)],['Daily BEP',`${fin.dailyBEP} pcs`],['Waste Buffer',`${costSettings.waste_percentage}%`]].map(([l,v])=>`
+        <div style="background:#f9f9f9;padding:8px;border-radius:4px;border:1px solid #eee;">
+          <div style="color:#888;font-size:9px;">${l}</div><div style="font-weight:bold;color:#ca1b1b;font-size:13px;">${v}</div>
+        </div>`).join('')}
+      </div>
+      <table>
+        <tr><th>Variant</th><th>Category</th><th>Sell Price</th><th>Ingredient/pc</th><th>Labor/pc</th><th>Fixed/pc</th><th>Total Cost/pc</th><th>Margin ₱</th><th>Margin %</th><th>Status</th></tr>
+        ${fin.variantData.map(v=>`<tr>
+          <td>${v.name}</td><td>${v.category}</td>
+          <td style="text-align:right;">${php(v.selling_price)}</td>
+          <td style="text-align:right;">${v.isEstimate?'—':php(v.ingredientCost||0)}</td>
+          <td style="text-align:right;">${php(v.laborPerPiece||fin.laborPerPiece)}</td>
+          <td style="text-align:right;">${php(v.fixedPerPiece||fin.fixedPerPiece)}</td>
+          <td style="text-align:right;font-weight:bold;">${php(v.totalCost||0)}</td>
+          <td style="text-align:right;" class="${v.grossMargin>=0?'ok':'warn'}">${php(v.grossMargin||0)}</td>
+          <td style="text-align:right;" class="${v.grossMarginPct>=(costSettings.target_margin_percentage||30)?'ok':'warn'}">${(v.grossMarginPct||0).toFixed(1)}%</td>
+          <td class="${v.belowTarget?'warn':'ok'}">${v.belowTarget?'⚠️ LOW':'✅ OK'}${v.isEstimate?' *':''}</td>
+        </tr>`).join('')}
+      </table>
+      <p style="font-size:9px;color:#888;margin-top:8px;">* No recipe set — ingredient cost not included. Set up recipes for accurate costing.</p>
+      <div class="no-print" style="text-align:center;margin-top:20px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT</button>
+      </div>
+    </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+  }
   async function loadAnnouncementViews(annId) {
     const { data:all } = await supabase.from('employees').select('id,full_name,employee_code').eq('is_active', true)
     const { data:views } = await supabase.from('announcement_views').select('employee_id').eq('announcement_id', annId)
     const viewedIds = new Set(views?.map(v => v.employee_id) || [])
     setAnnouncementViews((all || []).map(e => ({ ...e, viewed:viewedIds.has(e.id) })))
+  }
+
+  // ── Phase 3: Reseller Functions ───────────────────────────────────────────
+  async function loadResellers() {
+    setResellersLoading(true)
+    const { data } = await supabase.from('resellers').select('*').eq('is_active', true).order('name')
+    setResellers(data || [])
+    setResellersLoading(false)
+  }
+  async function saveReseller() {
+    if (!resellerForm.name.trim()) { showToast('❌ Reseller name is required.','red'); return }
+    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day }
+    if (editingResellerId) {
+      const { error } = await supabase.from('resellers').update(payload).eq('id', editingResellerId)
+      if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+      showToast('✅ Reseller updated!')
+    } else {
+      const { error } = await supabase.from('resellers').insert({ ...payload, is_active:true })
+      if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+      showToast('✅ Reseller added!')
+    }
+    setEditingResellerId(null); setShowResellerForm(false)
+    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' })
+    loadResellers()
+  }
+  async function deleteReseller(r) {
+    if (!window.confirm(`Deactivate reseller "${r.name}"?`)) return
+    await supabase.from('resellers').update({ is_active:false }).eq('id', r.id)
+    showToast('✅ Reseller removed.'); loadResellers()
+  }
+  async function loadResellerDefaultOrders() {
+    const { data } = await supabase.from('reseller_default_orders').select('*')
+    const grouped = {}
+    for (const item of data || []) {
+      if (!grouped[item.reseller_id]) grouped[item.reseller_id] = []
+      grouped[item.reseller_id].push(item)
+    }
+    setResellerDefaultOrders(grouped)
+  }
+  async function saveDefaultOrder(resellerId) {
+    await supabase.from('reseller_default_orders').delete().eq('reseller_id', resellerId)
+    const valid = defaultOrderItems.filter(i => i.variant_id && Number(i.default_quantity) > 0)
+    if (valid.length > 0) {
+      const rows = valid.map(i => ({ reseller_id:resellerId, variant_id:i.variant_id, variant_name:i.variant_name, default_quantity:Number(i.default_quantity) }))
+      await supabase.from('reseller_default_orders').insert(rows)
+    }
+    showToast('✅ Default order saved!'); setEditingDefaultOrder(null); loadResellerDefaultOrders()
+  }
+  // ── Invoice Functions ─────────────────────────────────────────────────────
+  function buildInvoiceFromReseller(resellerId) {
+    const defaults = resellerDefaultOrders[resellerId] || []
+    if (defaults.length > 0) {
+      setInvoiceItems(defaults.map(d => ({ variant_id:d.variant_id, variant_name:d.variant_name, quantity:d.default_quantity, retail_price:0, reseller_price:0 })))
+    } else {
+      setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])
+    }
+  }
+  async function loadDeliveryInvoices() {
+    setInvoicesLoading(true)
+    const { data } = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(100)
+    setDeliveryInvoices(data || [])
+    setInvoicesLoading(false)
+  }
+  async function createDeliveryInvoice() {
+    if (!invoiceResellerId) { showToast('❌ Please select a reseller.','red'); return }
+    if (!invoiceDate) { showToast('❌ Please select a delivery date.','red'); return }
+    const validItems = invoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
+    if (validItems.length === 0) { showToast('❌ Please add at least one item.','red'); return }
+    setSavingInvoice(true)
+    try {
+      const reseller = resellers.find(r => r.id === invoiceResellerId)
+      const invoiceNum = `INV-${invoiceDate.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
+      const dueDate = new Date(invoiceDate); dueDate.setDate(dueDate.getDate() + 7)
+      const dueDateStr = dueDate.toISOString().slice(0,10)
+      const lineItems = validItems.map(i => {
+        const variant = donutVariants.find(v => v.id === i.variant_id)
+        const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
+        const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
+        return { ...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
+      })
+      const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
+      const { data:inv, error:invErr } = await supabase.from('delivery_invoices').insert({
+        invoice_number:invoiceNum, reseller_id:invoiceResellerId, reseller_name:reseller?.name||'',
+        delivery_date:invoiceDate, due_date:dueDateStr, subtotal, discount_pct:20,
+        total_amount:subtotal, status:'unpaid', notes:invoiceNotes||null, created_by:adminRole
+      }).select().single()
+      if (invErr) throw invErr
+      const itemRows = lineItems.map(i => ({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:i.retail_price, reseller_price:i.reseller_price, quantity:Number(i.quantity), total_price:i.total_price }))
+      const { error:itemErr } = await supabase.from('delivery_invoice_items').insert(itemRows)
+      if (itemErr) throw itemErr
+      await logAudit('INVOICE CREATED', adminRole, reseller?.name||'', `${invoiceNum} — ${php(subtotal)}`)
+      showToast(`✅ Invoice ${invoiceNum} created!`)
+      setShowCreateInvoice(false); setInvoiceResellerId(''); setInvoiceItems([]); setInvoiceNotes('')
+      loadDeliveryInvoices()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingInvoice(false)
+  }
+  async function deleteInvoice(invoice) {
+    if (!window.confirm(`Delete invoice ${invoice.invoice_number} for ${invoice.reseller_name}?\nThis cannot be undone.`)) return
+    await supabase.from('delivery_invoice_items').delete().eq('invoice_id', invoice.id)
+    await supabase.from('reseller_payments').delete().eq('invoice_id', invoice.id)
+    await supabase.from('delivery_invoices').delete().eq('id', invoice.id)
+    await logAudit('INVOICE DELETED', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${php(invoice.total_amount)}`)
+    showToast(`✅ Invoice ${invoice.invoice_number} deleted.`)
+    loadDeliveryInvoices()
+  }
+  function printAllDailyInvoices(date) {
+    const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
+    if (dayInvoices.length === 0) { showToast('❌ No invoices for this date.','red'); return }
+    const pw = window.open('','_blank','width=900,height=700')
+    const grandTotal = dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
+    pw.document.write(`<!DOCTYPE html><html><head><title>All Invoices — ${date}</title>
+      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:10mm;font-size:10px;}
+      @media print{@page{size:A4;margin:10mm;}.no-print{display:none;}.page-break{page-break-after:always;}}
+      h1{font-size:16px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin:8px 0;}
+      th{background:#ca1b1b;color:white;padding:5px 6px;font-size:9px;text-align:left;}
+      td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+      .total{font-weight:bold;background:#fff9e6;}
+      .invoice-header{border-bottom:2px solid #ca1b1b;padding-bottom:8px;margin-bottom:10px;display:flex;justify-content:space-between;}
+      </style></head><body>
+      <div class="no-print" style="text-align:center;margin-bottom:16px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT ALL</button>
+        <p style="font-size:11px;color:#888;margin-top:6px;">${dayInvoices.length} invoice(s) — Total: ${php(grandTotal)}</p>
+      </div>
+      ${dayInvoices.map((inv,idx)=>{
+        const items = inv.delivery_invoice_items || []
+        const reseller = resellers.find(r=>r.id===inv.reseller_id)
+        return `
+        <div class="${idx < dayInvoices.length-1 ? 'page-break' : ''}">
+          <div class="invoice-header">
+            <div><h1>Roma's Donuts</h1><div style="font-size:9px;color:#888;">Every bite is a little piece of heaven</div></div>
+            <div style="text-align:right;">
+              <div style="font-size:14px;font-weight:bold;color:#ca1b1b;">DELIVERY INVOICE</div>
+              <div style="font-size:11px;font-weight:bold;">${inv.invoice_number}</div>
+              <div style="font-size:9px;color:#888;">Date: ${inv.delivery_date} | Due: ${inv.due_date}</div>
+              <div style="font-size:9px;font-weight:bold;color:${inv.status==='paid'?'#2d8a4e':'#ca1b1b'};">${inv.status?.toUpperCase()}</div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:10px;">
+            <div>
+              <div style="font-weight:bold;font-size:9px;color:#ca1b1b;margin-bottom:4px;">DELIVER TO</div>
+              <div><strong>${inv.reseller_name}</strong></div>
+              ${reseller?.contact_person?`<div>${reseller.contact_person}</div>`:''}
+              ${reseller?.phone?`<div>${reseller.phone}</div>`:''}
+              ${reseller?.area?`<div>${reseller.area}</div>`:''}
+            </div>
+            <div>
+              <div style="font-weight:bold;font-size:9px;color:#ca1b1b;margin-bottom:4px;">PAYMENT TERMS</div>
+              <div>Reseller Discount: <strong>20% off retail</strong></div>
+              <div>Payment Due: <strong>${inv.due_date}</strong></div>
+            </div>
+          </div>
+          <table>
+            <tr><th>#</th><th>Variant</th><th style="text-align:right;">Retail</th><th style="text-align:right;">Reseller</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Unsold</th></tr>
+            ${items.map((it,n)=>`<tr>
+              <td>${n+1}</td><td>${it.variant_name}</td>
+              <td style="text-align:right;">${php(it.retail_price)}</td>
+              <td style="text-align:right;">${php(it.reseller_price)}</td>
+              <td style="text-align:right;font-weight:bold;">${Number(it.quantity).toLocaleString()}</td>
+              <td style="text-align:right;font-weight:bold;">${php(it.total_price)}</td>
+              <td style="text-align:center;border:1px solid #ddd;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>
+            </tr>`).join('')}
+            <tr class="total"><td colspan="5" style="text-align:right;">TOTAL DUE:</td><td style="text-align:right;color:#ca1b1b;font-size:11px;">${php(inv.total_amount)}</td><td></td></tr>
+          </table>
+          <div style="display:flex;justify-content:space-between;margin-top:20px;">
+            <div style="text-align:center;"><div style="border-top:1px solid #000;width:130px;padding-top:3px;font-size:9px;">Prepared by / Date</div></div>
+            <div style="text-align:center;"><div style="border-top:1px solid #000;width:130px;padding-top:3px;font-size:9px;">Received by / Date</div></div>
+            <div style="text-align:center;"><div style="border-top:1px solid #000;width:130px;padding-top:3px;font-size:9px;">Checked by / Date</div></div>
+          </div>
+        </div>`
+      }).join('')}
+    </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+  }
+  async function recordPayment(invoice) {
+    const amt = Number(paymentAmount[invoice.id] || 0)
+    const pdate = paymentDate[invoice.id] || today
+    if (!amt || amt <= 0) { showToast('❌ Please enter payment amount.','red'); return }
+    if (amt > Number(invoice.total_amount - (invoice.paid_amount||0))) { showToast('❌ Amount exceeds outstanding balance.','red'); return }
+    const newPaid = Number(invoice.paid_amount||0) + amt
+    const newStatus = newPaid >= Number(invoice.total_amount) ? 'paid' : 'partial'
+    const { error } = await supabase.from('delivery_invoices').update({ paid_amount:newPaid, paid_date:newStatus==='paid'?pdate:null, status:newStatus }).eq('id', invoice.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    await supabase.from('reseller_payments').insert({ reseller_id:invoice.reseller_id, reseller_name:invoice.reseller_name, invoice_id:invoice.id, amount:amt, payment_date:pdate, notes:paymentNote[invoice.id]||null, recorded_by:adminRole })
+    await logAudit('PAYMENT RECORDED', adminRole, invoice.reseller_name, `${php(amt)} for ${invoice.invoice_number}`)
+    showToast(`✅ Payment of ${php(amt)} recorded!`)
+    setShowPaymentForm(p=>({...p,[invoice.id]:false}))
+    setPaymentAmount(p=>({...p,[invoice.id]:''}))
+    loadDeliveryInvoices()
+  }
+  function printDeliveryInvoice(invoice) {
+    const items = invoice.delivery_invoice_items || []
+    const reseller = resellers.find(r => r.id === invoice.reseller_id)
+    const pw = window.open('','_blank','width=900,height=700')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoice_number}</title>
+      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
+      @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
+      h1{font-size:20px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin-top:12px;}
+      th{background:#ca1b1b;color:white;padding:6px 8px;text-align:left;font-size:10px;}
+      td{padding:5px 8px;border-bottom:1px solid #eee;font-size:10px;}
+      .total{font-weight:bold;background:#f9f9f9;}</style></head><body>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:16px;">
+        <div><h1>Roma's Donuts</h1><div style="font-size:10px;color:#888;">Every bite is a little piece of heaven</div><div style="font-size:10px;color:#888;margin-top:4px;">Malued District, Dagupan City | 09706438113</div></div>
+        <div style="text-align:right;">
+          <div style="font-size:18px;font-weight:bold;color:#ca1b1b;">DELIVERY INVOICE</div>
+          <div style="font-size:13px;font-weight:bold;">${invoice.invoice_number}</div>
+          <div style="font-size:10px;color:#888;">Date: ${invoice.delivery_date}</div>
+          <div style="font-size:10px;color:#888;">Due: ${invoice.due_date}</div>
+          <div style="font-size:10px;font-weight:bold;color:${invoice.status==='paid'?'#2d8a4e':'#ca1b1b'};">Status: ${invoice.status?.toUpperCase()}</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:16px;">
+        <div>
+          <div style="font-weight:bold;font-size:11px;color:#ca1b1b;margin-bottom:6px;">DELIVER TO</div>
+          <div style="font-size:11px;line-height:1.8;">
+            <strong>${invoice.reseller_name}</strong><br/>
+            ${reseller?.contact_person?`Contact: ${reseller.contact_person}<br/>`:''}
+            ${reseller?.phone?`Phone: ${reseller.phone}<br/>`:''}
+            ${reseller?.area?`Area: ${reseller.area}<br/>`:''}
+            ${reseller?.address||''}
+          </div>
+        </div>
+        <div>
+          <div style="font-weight:bold;font-size:11px;color:#ca1b1b;margin-bottom:6px;">PAYMENT TERMS</div>
+          <div style="font-size:11px;line-height:1.8;">
+            Reseller Discount: <strong>20% off retail</strong><br/>
+            Payment Due: <strong>${invoice.due_date}</strong><br/>
+            ${invoice.notes?`Note: ${invoice.notes}`:''}
+          </div>
+        </div>
+      </div>
+      <table>
+        <tr><th>#</th><th>Variant</th><th style="text-align:right;">Retail</th><th style="text-align:right;">Reseller (-20%)</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Unsold</th></tr>
+        ${items.map((i,idx)=>`<tr>
+          <td>${idx+1}</td><td>${i.variant_name}</td>
+          <td style="text-align:right;">${php(i.retail_price)}</td>
+          <td style="text-align:right;">${php(i.reseller_price)}</td>
+          <td style="text-align:right;font-weight:bold;">${Number(i.quantity).toLocaleString()}</td>
+          <td style="text-align:right;font-weight:bold;">${php(i.total_price)}</td>
+          <td style="text-align:center; border:1px solid #ddd; min-width:60px;">&nbsp;</td>
+        </tr>`).join('')}
+        <tr class="total"><td colspan="5" style="text-align:right;padding:8px;">TOTAL AMOUNT DUE:</td><td style="text-align:right;font-size:14px;color:#ca1b1b;padding:8px;">${php(invoice.total_amount)}</td><td></td></tr>
+        ${invoice.paid_amount>0?`<tr><td colspan="5" style="text-align:right;padding:4px 8px;">Amount Paid:</td><td style="text-align:right;color:#2d8a4e;padding:4px 8px;">${php(invoice.paid_amount)}</td><td></td></tr>
+        <tr><td colspan="5" style="text-align:right;padding:4px 8px;font-weight:bold;">Balance:</td><td style="text-align:right;font-weight:bold;color:#ca1b1b;padding:4px 8px;">${php(invoice.total_amount-(invoice.paid_amount||0))}</td><td></td></tr>`:''}
+      </table>
+      <div style="display:flex;justify-content:space-between;margin-top:40px;">
+        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Prepared by / Date</div></div>
+        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Received by / Date</div></div>
+        <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Checked by / Date</div></div>
+      </div>
+      <div class="no-print" style="text-align:center;margin-top:20px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT INVOICE</button>
+      </div>
+    </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+  }
+  // ── Daily Sales Functions ─────────────────────────────────────────────────
+  async function loadDailySales() {
+    setDailySalesLoading(true)
+    const { data } = await supabase.from('daily_sales').select('*, daily_sales_items(*)').order('sale_date', { ascending:false }).limit(30)
+    setDailySales(data || [])
+    setDailySalesLoading(false)
+  }
+  async function saveDailySales() {
+    if (!salesDate) { showToast('❌ Please select a date.','red'); return }
+    const valid = salesEntries.filter(e => e.variant_id && Number(e.quantity) > 0)
+    if (valid.length === 0) { showToast('❌ Please add at least one sale entry.','red'); return }
+    setSavingSales(true)
+    try {
+      const walkinTotal = valid.filter(e=>e.channel==='walkin').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
+      const messengerTotal = valid.filter(e=>e.channel==='messenger').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
+      const resellerInvoicesDay = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
+      const totalRevenue = walkinTotal + messengerTotal + resellerInvoicesDay
+      const { data:saleData, error:sErr } = await supabase.from('daily_sales').insert({
+        sale_date:salesDate, total_walkin:walkinTotal, total_messenger:messengerTotal,
+        total_reseller:resellerInvoicesDay, total_revenue:totalRevenue,
+        notes:salesNotes||null, encoded_by:adminRole
+      }).select().single()
+      if (sErr) throw sErr
+      const itemRows = valid.map(e => {
+        const variant = donutVariants.find(v=>v.id===e.variant_id)
+        const unitPrice = variant?.selling_price || Number(e.unit_price||0)
+        return { sale_id:saleData.id, variant_id:e.variant_id, variant_name:e.variant_name||variant?.name||'', channel:e.channel, quantity:Number(e.quantity), unit_price:unitPrice, total_price:Number(e.quantity)*unitPrice }
+      })
+      await supabase.from('daily_sales_items').insert(itemRows)
+      await logAudit('DAILY SALES ENCODED', adminRole, 'Sales', `${salesDate} — ${php(totalRevenue)}`)
+      showToast(`✅ Sales for ${salesDate} saved! Total: ${php(totalRevenue)}`)
+      setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setSalesNotes('')
+      loadDailySales()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingSales(false)
+  }
+  // ── Expenses Functions ────────────────────────────────────────────────────
+  async function loadDailyExpenses() {
+    setExpensesLoading(true)
+    const { data } = await supabase.from('daily_expenses').select('*').order('expense_date', { ascending:false }).limit(100)
+    setDailyExpenses(data || [])
+    setExpensesLoading(false)
+  }
+  async function saveExpense() {
+    if (!expenseForm.amount || Number(expenseForm.amount) <= 0) { showToast('❌ Please enter a valid amount.','red'); return }
+    setSavingExpense(true)
+    const amt = Number(expenseForm.amount)
+    const status = amt >= EXPENSE_APPROVAL_THRESHOLD ? 'pending' : 'approved'
+    const { error } = await supabase.from('daily_expenses').insert({ ...expenseForm, amount:amt, status, encoded_by:adminRole })
+    if (error) { showToast('❌ Failed: '+error.message,'red'); setSavingExpense(false); return }
+    showToast(status==='pending'?`✅ Expense submitted — awaiting Owner approval (₱${amt} ≥ ₱500)`:`✅ Expense of ${php(amt)} recorded!`)
+    setExpenseForm({ date:today, category:'Transportation/Fuel', amount:'', description:'' })
+    loadDailyExpenses(); setSavingExpense(false)
+  }
+  async function approveExpense(id) {
+    await supabase.from('daily_expenses').update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString() }).eq('id', id)
+    showToast('✅ Expense approved!'); loadDailyExpenses()
+  }
+  async function rejectExpense(id) {
+    if (!rejectExpenseReason.trim()) { showToast('❌ Please enter a rejection reason.','red'); return }
+    await supabase.from('daily_expenses').update({ status:'rejected', approved_by:adminRole, approved_at:new Date().toISOString(), rejection_reason:rejectExpenseReason }).eq('id', id)
+    showToast('✅ Expense rejected.'); setRejectingExpenseId(null); setRejectExpenseReason(''); loadDailyExpenses()
+  }
+  async function deleteExpense(id) {
+    if (!window.confirm('Delete this expense?')) return
+    await supabase.from('daily_expenses').delete().eq('id', id)
+    showToast('✅ Expense deleted.'); loadDailyExpenses()
+  }
+  // ── Financial Dashboard ───────────────────────────────────────────────────
+  async function loadFinancialData() {
+    setFinancialLoading(true)
+    const monthStart = financialMonth + '-01'
+    const monthEnd = new Date(Number(financialMonth.split('-')[0]), Number(financialMonth.split('-')[1]), 0).toISOString().slice(0,10)
+    const [{ data:sales }, { data:prodLogs }, { data:expenses }, { data:invoices }] = await Promise.all([
+      supabase.from('daily_sales').select('*').gte('sale_date', monthStart).lte('sale_date', monthEnd),
+      supabase.from('production_logs').select('*').gte('production_date', monthStart).lte('production_date', monthEnd),
+      supabase.from('daily_expenses').select('*').gte('expense_date', monthStart).lte('expense_date', monthEnd),
+      supabase.from('delivery_invoices').select('*').gte('delivery_date', monthStart).lte('delivery_date', monthEnd),
+    ])
+    const totalRevenue = (sales||[]).reduce((s,d)=>s+Number(d.total_revenue||0),0)
+    const walkinRevenue = (sales||[]).reduce((s,d)=>s+Number(d.total_walkin||0),0)
+    const messengerRevenue = (sales||[]).reduce((s,d)=>s+Number(d.total_messenger||0),0)
+    const resellerRevenue = (invoices||[]).reduce((s,i)=>s+Number(i.total_amount||0),0)
+    const totalCOGS = (prodLogs||[]).reduce((s,l)=>s+Number(l.total_cost||0),0)
+    const totalExpenses = (expenses||[]).reduce((s,e)=>s+Number(e.amount||0),0)
+    const grossProfit = totalRevenue - totalCOGS
+    const netProfit = grossProfit - totalExpenses
+    const grossMarginPct = totalRevenue > 0 ? (grossProfit/totalRevenue)*100 : 0
+    const netMarginPct = totalRevenue > 0 ? (netProfit/totalRevenue)*100 : 0
+    // AR outstanding (all time unpaid)
+    const { data:allUnpaid } = await supabase.from('delivery_invoices').select('*').in('status',['unpaid','partial'])
+    const totalAR = (allUnpaid||[]).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+    const overdueAR = (allUnpaid||[]).filter(i=>i.due_date<today).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+    const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:(expenses||[]).filter(e=>e.category===cat).reduce((s,e)=>s+Number(e.amount||0),0) })).filter(c=>c.total>0)
+    const salesByDay = (sales||[]).map(d=>({ date:d.sale_date, revenue:Number(d.total_revenue||0) })).sort((a,b)=>a.date.localeCompare(b.date))
+    setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:(sales||[]).length, productionDays:(prodLogs||[]).length })
+    setFinancialLoading(false)
+  }
+  function printPLReport() {
+    if (!financialData) return
+    const pw = window.open('','_blank','width=900,height=700')
+    pw.document.write(`<!DOCTYPE html><html><head><title>P&L Report ${financialMonth}</title>
+      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
+      @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
+      h1{font-size:20px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin-bottom:12px;}
+      td{padding:6px 10px;border-bottom:1px solid #eee;}
+      .label{color:#555;}.val{text-align:right;font-weight:bold;}
+      .section{background:#ca1b1b;color:white;padding:6px 10px;font-weight:bold;font-size:11px;margin-top:10px;}
+      .total{background:#f9f9f9;font-weight:bold;font-size:12px;}
+      .profit{background:#e8f5e9;color:#2d8a4e;font-weight:bold;font-size:13px;}
+      .loss{background:#fff5f5;color:#ca1b1b;font-weight:bold;font-size:13px;}
+      </style></head><body>
+      <div style="text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:16px;">
+        <h1>Roma's Donuts</h1>
+        <div style="font-size:14px;font-weight:bold;">PROFIT & LOSS STATEMENT</div>
+        <div style="font-size:11px;color:#666;">Period: ${financialMonth} | Generated: ${new Date().toLocaleDateString('en-PH',{year:'numeric',month:'long',day:'numeric'})}</div>
+      </div>
+      <table>
+        <tr><td colspan="2" class="section">REVENUE</td></tr>
+        <tr><td class="label">Walk-in Sales</td><td class="val">${php(financialData.walkinRevenue)}</td></tr>
+        <tr><td class="label">Messenger/Online Sales</td><td class="val">${php(financialData.messengerRevenue)}</td></tr>
+        <tr><td class="label">Reseller Deliveries</td><td class="val">${php(financialData.resellerRevenue)}</td></tr>
+        <tr class="total"><td>TOTAL REVENUE</td><td class="val">${php(financialData.totalRevenue)}</td></tr>
+        <tr><td colspan="2" class="section">COST OF GOODS SOLD (COGS)</td></tr>
+        <tr><td class="label">Ingredient Costs</td><td class="val">Included in production</td></tr>
+        <tr><td class="label">Labor Costs</td><td class="val">Included in production</td></tr>
+        <tr><td class="label">Overhead (Rent, Electricity, Loans, Depreciation)</td><td class="val">Included in production</td></tr>
+        <tr class="total"><td>TOTAL COGS (from production logs)</td><td class="val">${php(financialData.totalCOGS)}</td></tr>
+        <tr class="${financialData.grossProfit>=0?'profit':'loss'}"><td>GROSS PROFIT (${financialData.grossMarginPct.toFixed(1)}%)</td><td class="val">${php(financialData.grossProfit)}</td></tr>
+        <tr><td colspan="2" class="section">ADDITIONAL EXPENSES</td></tr>
+        ${financialData.expenseByCategory.map(c=>`<tr><td class="label">${c.cat}</td><td class="val">${php(c.total)}</td></tr>`).join('')}
+        <tr class="total"><td>TOTAL ADDITIONAL EXPENSES</td><td class="val">${php(financialData.totalExpenses)}</td></tr>
+        <tr class="${financialData.netProfit>=0?'profit':'loss'}" style="font-size:15px;"><td>NET PROFIT (${financialData.netMarginPct.toFixed(1)}%)</td><td class="val">${php(financialData.netProfit)}</td></tr>
+      </table>
+      <div style="margin-top:20px;background:#fff8dc;border:1px solid #f5c518;border-radius:6px;padding:12px;">
+        <p style="font-weight:bold;color:#ca1b1b;margin:0 0 6px;">📋 Notes</p>
+        <p style="font-size:10px;color:#555;margin:0;">• COGS pulled from production logs. Accurate only if production is logged daily.</p>
+        <p style="font-size:10px;color:#555;margin:0;">• Reseller revenue = total invoiced. Collected amount may differ — check AR report.</p>
+        <p style="font-size:10px;color:#555;">• Outstanding AR: <strong>${php(financialData.totalAR)}</strong> | Overdue: <strong>${php(financialData.overdueAR)}</strong></p>
+      </div>
+      <div class="no-print" style="text-align:center;margin-top:20px;">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT P&L</button>
+      </div>
+    </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
   }
 
   // ── Employee Portal ───────────────────────────────────────────────────────
@@ -885,14 +2283,14 @@ export default function App() {
   // ── Admin Functions ───────────────────────────────────────────────────────
   function canAccess(tab) {
     if (adminRole === 'owner') return true
-    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts'].includes(tab)
+    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory'].includes(tab)
     if (adminRole === 'payroll') return ['dashboard','payroll','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
-    if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule'].includes(tab)
+    if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
     return false
   }
 
   async function logAudit(action, by, target, details) {
-    await supabase.from('audit_logs').insert({ action, performed_by:by, target_employee:target, details }).catch(()=>{})
+    try { await supabase.from('audit_logs').insert({ action, performed_by:by, target_employee:target, details }) } catch(e) {}
   }
 
   // ── SIL Automation ────────────────────────────────────────────────────────
@@ -1326,7 +2724,7 @@ export default function App() {
     if (!finalPayResult) return
     if (!window.confirm(`Process final pay for ${finalPayResult.employeeName} and deactivate?`)) return
     await supabase.from('employees').update({ is_active:false }).eq('id', finalPayEmployeeId)
-    await supabase.from('final_pay_records').insert({ employee_id:finalPayEmployeeId, employee_name:finalPayResult.employeeName, employee_code:finalPayResult.employeeCode, separation_reason:finalPayReason, last_working_date:finalPayLastDate, last_salary:finalPayResult.lastSalary, pro_rated_13th:finalPayResult.proRated13th, sil_pay:finalPayResult.silPay, separation_pay:finalPayResult.separationPay, cash_advance_deduction:finalPayResult.totalCA, total_final_pay:finalPayResult.totalFinalPay }).catch(()=>{})
+    try { await supabase.from('final_pay_records').insert({ employee_id:finalPayEmployeeId, employee_name:finalPayResult.employeeName, employee_code:finalPayResult.employeeCode, separation_reason:finalPayReason, last_working_date:finalPayLastDate, last_salary:finalPayResult.lastSalary, pro_rated_13th:finalPayResult.proRated13th, sil_pay:finalPayResult.silPay, separation_pay:finalPayResult.separationPay, cash_advance_deduction:finalPayResult.totalCA, total_final_pay:finalPayResult.totalFinalPay }) } catch(e) {}
     await logAudit('FINAL PAY PROCESSED','Admin',finalPayResult.employeeName,`Total: ${php(finalPayResult.totalFinalPay)}`)
     showToast(`✅ Final pay processed. ${finalPayResult.employeeName} deactivated.`)
     setFinalPayResult(null); setFinalPayEmployeeId(''); loadEmployees()
@@ -1713,11 +3111,11 @@ export default function App() {
     showToast('✅ Payroll computed successfully!')
     // Schedule auto-acknowledge after 5 days (stored in DB as a flag)
     const deadline = new Date(); deadline.setDate(deadline.getDate()+5)
-    await supabase.from('payroll_periods').upsert({
+    try { await supabase.from('payroll_periods').upsert({
       payroll_start: payrollStart, payroll_end: payrollEnd,
       acknowledge_deadline: deadline.toISOString().slice(0,10),
       computed_at: new Date().toISOString()
-    }, { onConflict:'payroll_start,payroll_end' }).then(()=>{}).catch(()=>{})
+    }, { onConflict:'payroll_start,payroll_end' }) } catch(e) {}
   }
 
   // Auto-acknowledge expired payslips (called on admin dashboard load)
@@ -1816,14 +3214,50 @@ export default function App() {
 
   // ── Admin Render ──────────────────────────────────────────────────────────
   if (adminMode) {
-    const tabs = [
-      ['dashboard','🏠 Dashboard'],['attendance','📋 Attendance'],['employees','👥 Employees'],['auditTrail','📜 Audit Trail'],
-      ['schedule','📅 Schedule'],['holidays','🗓️ Holidays'],['overtime','⏰ OT / UT Requests'],
-      ['adjustment','⚙️ Adjustment'],['payroll','💰 Payroll'],['thirteenth','🎁 13th Month'],
-      ['finalpay','📄 Final Pay'],['payrollHistory','📂 Payroll History'],['remittance','🏛️ Remittance Report'],['dtr','📋 DTR Print'],['bankDisbursement','🏦 Bank Disbursement'],['announcements','📢 Announcements'],
-      ['leaveRequests','🏖️ Leave Requests 🔔'],['cashRequests','💵 CA Requests 🔔'],['disputes','⚠️ Disputes 🔔'],['contracts','📄 Contracts'],
-    ].filter(([key]) => canAccess(key))
+    const SECTIONS = [
+      { key:'dashboard', icon:'🏠', label:'Dashboard',
+        tabs:[{key:'dashboard',label:'Overview'}],
+        roles:['owner','hr','payroll','supervisor'] },
+      { key:'hr', icon:'👥', label:'HR & Attendance',
+        tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
+        roles:['owner','hr','supervisor'] },
+      { key:'payroll', icon:'💰', label:'Payroll',
+        tabs:[{key:'payroll',label:'Payroll'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'announcements',label:'Announcements'},{key:'leaveRequests',label:'Leave 🔔'},{key:'cashRequests',label:'Cash Adv 🔔'},{key:'disputes',label:'Disputes 🔔'},{key:'contracts',label:'Contracts'}],
+        roles:['owner','hr','payroll'] },
+      { key:'inventory', icon:'📦', label:'Inventory',
+        tabs:[{key:'inventory',label:'Inventory'}],
+        roles:['owner','hr','supervisor'] },
+      { key:'costing', icon:'🍩', label:'Costing',
+        tabs:[{key:'costing',label:'Costing'}],
+        roles:['owner'] },
+      { key:'sales', icon:'📈', label:'Sales & Expenses',
+        tabs:[{key:'sales',label:'Sales & Expenses'}],
+        roles:['owner','hr'] },
+    ]
+    const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
+    const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
+    const visibleSubTabs = currentSection.tabs.filter(t => canAccess(t.key))
+    const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
     const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
+
+    const handleTabClick = (key) => {
+      setActiveTab(key); setSidebarOpen(false)
+      if(key==='leaveRequests') loadLeaveRequests()
+      if(key==='cashRequests') loadCashAdvanceRequests()
+      if(key==='disputes') loadPayslipDisputes()
+      if(key==='overtime') loadTimeAdjRequests()
+      if(key==='holidays') loadHolidays()
+      if(key==='announcements') loadAnnouncements()
+      if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }
+      if(key==='auditTrail') loadAuditTrail()
+      if(key==='payrollHistory') loadPayrollHistory()
+      if(key==='remittance') loadPayrollHistory()
+      if(key==='dtr') loadEmployees()
+      if(key==='contracts') { loadContracts(); loadEmployees() }
+      if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders() }
+      if(key==='costing') { loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
+      if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData() }
+    }
 
     // ── Open full employee portal from admin panel ─────────────────────────
     const openAdminEmployeePortal = () => {
@@ -1842,7 +3276,7 @@ export default function App() {
     }
 
     return (
-      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f0f0f0', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f0f2f5', overflow:'hidden', display:'flex', flexDirection:'column' }}>
         {showPayrollReminder && (
           <div style={{ background:'#ca1b1b', color:'white', padding:'10px 20px', textAlign:'center', fontWeight:'bold', fontSize:'13px', flexShrink:0, zIndex:100 }}>
             🔔 PAYROLL REMINDER: Salary release is on the {currentDay===11?'15th':'30th'}. Please compute and release payroll on time!
@@ -1854,58 +3288,88 @@ export default function App() {
           </div>
         )}
         <div style={{ flex:1, display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden' }}>
+
+          {/* ── Mobile Top Bar ── */}
           {isMobile && (
-            <div style={{ background:'#ca1b1b', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
+            <div style={{ background:'#1a1a2e', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
               <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
-                <img src="/logo.png" alt="Logo" style={{ width:'30px', height:'30px', objectFit:'contain' }} />
-                <span style={{ color:'white', fontWeight:'bold', fontSize:'15px' }}>Admin Dashboard</span>
+                <img src="/logo.png" alt="Logo" style={{ width:'28px', height:'28px', objectFit:'contain' }} />
+                <span style={{ color:'white', fontWeight:'bold', fontSize:'14px' }}>Roma's Donuts</span>
               </div>
               <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
-                {adminEmployee && (
-                  <button onClick={openAdminEmployeePortal} style={{ background:'#2d8a4e', border:'none', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}>⏰ MY TIME</button>
-                )}
-                <button onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.2)', border:'1px solid rgba(255,255,255,0.5)', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold' }}>{sidebarOpen?'✕':'☰'}</button>
+                {adminEmployee && <button onClick={openAdminEmployeePortal} style={{ background:'#ca1b1b', border:'none', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}>⏰ MY TIME</button>}
+                <button onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.2)', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold' }}>{sidebarOpen?'✕':'☰'}</button>
               </div>
             </div>
           )}
 
+          {/* ── Sidebar ── */}
           {(!isMobile||sidebarOpen) && (
-            <div style={{ width:isMobile?'100%':'240px', minWidth:isMobile?'auto':'240px', background:'#fff8f8', borderRight:isMobile?'none':'2px solid #eee', padding:'14px 10px', display:'flex', flexDirection:'column', gap:'4px', flexShrink:0, overflowY:'auto', height:isMobile?'auto':'100%' }}>
+            <div style={{ width:isMobile?'100%':'200px', minWidth:isMobile?'auto':'200px', background:'#1a1a2e', padding:'0', display:'flex', flexDirection:'column', flexShrink:0, overflowY:'auto', height:isMobile?'auto':'100%' }}>
+              {/* Logo */}
               {!isMobile && (
-                <>
-                  <img src="/logo.png" alt="Logo" style={{ width:'65px', height:'65px', objectFit:'contain', margin:'0 auto 4px' }} />
-                  <h2 style={{ color:'#ca1b1b', textAlign:'center', margin:'0 0 8px', fontSize:'13px' }}>Admin Dashboard</h2>
-                </>
+                <div style={{ padding:'20px 16px 16px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+                    <img src="/logo.png" alt="Logo" style={{ width:'36px', height:'36px', objectFit:'contain' }} />
+                    <div>
+                      <p style={{ color:'white', fontWeight:'bold', fontSize:'13px', margin:0, lineHeight:1.2 }}>Roma's Donuts</p>
+                      <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'10px', margin:0 }}>Management System</p>
+                    </div>
+                  </div>
+                </div>
               )}
-              {/* Role badge */}
-              <div style={{ background:'#ca1b1b', color:'white', borderRadius:'8px', padding:'6px 10px', marginBottom:'6px', textAlign:'center', fontSize:'11px', fontWeight:'bold' }}>
-                {adminRole==='owner'?'👑 Owner':adminRole==='hr'?'👤 HR Admin':adminRole==='payroll'?'💰 Payroll Officer':'👁 Supervisor'}
+              {/* Role Badge */}
+              <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+                <div style={{ background:'#ca1b1b', borderRadius:'6px', padding:'5px 10px', textAlign:'center' }}>
+                  <p style={{ color:'white', fontSize:'11px', fontWeight:'bold', margin:0 }}>
+                    {adminRole==='owner'?'👑 Owner':adminRole==='hr'?'👤 HR Admin':adminRole==='payroll'?'💰 Payroll':'👁 Supervisor'}
+                  </p>
+                </div>
               </div>
-              {tabs.filter(([key])=>canAccess(key)).map(([key,label])=>(
-                <button key={key} onClick={()=>{
-                  setActiveTab(key); setSidebarOpen(false)
-                  if(key==='leaveRequests') loadLeaveRequests()
-                  if(key==='cashRequests') loadCashAdvanceRequests()
-                  if(key==='disputes') loadPayslipDisputes()
-                  if(key==='overtime') loadTimeAdjRequests()
-                  if(key==='holidays') loadHolidays()
-                  if(key==='announcements') loadAnnouncements()
-                  if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }
-                  if(key==='auditTrail') loadAuditTrail()
-                  if(key==='payrollHistory') loadPayrollHistory()
-                  if(key==='remittance') loadPayrollHistory()
-                  if(key==='dtr') loadEmployees()
-                  if(key==='contracts') { loadContracts(); loadEmployees() }
-                }} style={{ padding:'9px 10px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:activeTab===key?'#ca1b1b':'#f0f0f0', color:activeTab===key?'white':'#333' }}>{label}</button>
-              ))}
-              {adminEmployee && (
-                <button style={{ padding:'9px 10px', borderRadius:'8px', border:'2px solid #2d8a4e', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:'#e8f5e9', color:'#2d8a4e', marginTop:'8px' }} onClick={openAdminEmployeePortal}>⏰ MY ATTENDANCE</button>
-              )}
-              <button style={{ padding:'9px 10px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', textAlign:'left', width:'100%', background:'#222', color:'white', marginTop:'4px' }} onClick={()=>{ setAdminMode(false); setAdminEmployee(null) }}>← Back to Login</button>
+              {/* Main Navigation */}
+              <div style={{ flex:1, padding:'8px 10px', display:'flex', flexDirection:'column', gap:'2px' }}>
+                {visibleSections.map(section => {
+                  const isActive = currentSection.key === section.key
+                  const hasBadge = (section.key==='payroll' && (leaveRequests.filter(r=>r.status==='pending').length>0||cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
+                                   (section.key==='sales' && pendingExpenses>0 && adminRole==='owner')
+                  return (
+                    <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:isActive?'#ca1b1b':'transparent', color:isActive?'white':'rgba(255,255,255,0.65)', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
+                      <span style={{ fontSize:'16px', flexShrink:0 }}>{section.icon}</span>
+                      <span style={{ fontSize:'12px', fontWeight:isActive?'bold':'500', flex:1 }}>{section.label}</span>
+                      {hasBadge && <span style={{ background:'#fdd412', color:'#1a1a2e', borderRadius:'10px', padding:'1px 6px', fontSize:'9px', fontWeight:'bold' }}>!</span>}
+                    </button>
+                  )
+                })}
+              </div>
+              {/* Bottom Actions */}
+              <div style={{ padding:'10px 10px 14px', borderTop:'1px solid rgba(255,255,255,0.08)', display:'flex', flexDirection:'column', gap:'4px' }}>
+                {adminEmployee && (
+                  <button style={{ padding:'9px 12px', borderRadius:'8px', border:'1px solid rgba(255,255,255,0.15)', cursor:'pointer', fontWeight:'bold', fontSize:'11px', textAlign:'left', width:'100%', background:'transparent', color:'rgba(255,255,255,0.7)', display:'flex', alignItems:'center', gap:'8px' }} onClick={openAdminEmployeePortal}>
+                    <span>⏰</span><span>My Attendance</span>
+                  </button>
+                )}
+                <button style={{ padding:'9px 12px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'11px', textAlign:'left', width:'100%', background:'rgba(255,255,255,0.07)', color:'rgba(255,255,255,0.5)', display:'flex', alignItems:'center', gap:'8px' }} onClick={()=>{ setAdminMode(false); setAdminEmployee(null) }}>
+                  <span>←</span><span>Back to Login</span>
+                </button>
+              </div>
             </div>
           )}
 
-          <div style={{ flex:1, minWidth:0, padding:isMobile?'14px':'28px', overflowY:'auto', height:'100%', background:'#fafafa' }}>
+          {/* ── Main Content ── */}
+          <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden', background:'#f0f2f5' }}>
+            {/* Sub-tab Navigation Bar */}
+            {visibleSubTabs.length > 1 && (
+              <div style={{ background:'#fff9e6', borderBottom:'2px solid #ca1b1b', padding:'0 20px', display:'flex', gap:'2px', overflowX:'auto', flexShrink:0, boxShadow:'0 2px 6px rgba(202,27,27,0.1)' }}>
+                {visibleSubTabs.map(tab => (
+                  <button key={tab.key} onClick={()=>handleTabClick(tab.key)} style={{ padding:'11px 16px', border:'none', borderBottom:`3px solid ${activeTab===tab.key?'#ca1b1b':'transparent'}`, background:activeTab===tab.key?'white':'transparent', color:activeTab===tab.key?'#ca1b1b':'#555', cursor:'pointer', fontWeight:activeTab===tab.key?'bold':'500', fontSize:'12px', whiteSpace:'nowrap', transition:'all 0.15s', letterSpacing:'0.2px', borderRadius:activeTab===tab.key?'6px 6px 0 0':'0', marginBottom:activeTab===tab.key?'-2px':'0' }}>
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Content Area */}
+            <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'24px', background:'#f0f2f5' }}>
 
             {/* DASHBOARD */}
             {activeTab==='dashboard' && (
@@ -3714,6 +5178,1999 @@ export default function App() {
               </div>
             )}
 
+            {/* INVENTORY */}
+            {activeTab==='inventory' && (
+              <div>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'6px' }}>
+                  <h2 style={h2s}>📦 Inventory Management</h2>
+                  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                    <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); showToast('✅ Refreshed!') }}>🔄 REFRESH</button>
+                    <button style={{ ...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printInventoryReport}>🖨️ PRINT REPORT</button>
+                  </div>
+                </div>
+
+                {/* Supabase setup note */}
+                <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'12px' }}>
+                  <strong style={{ color:'#ca1b1b' }}>⚙️ Required Supabase Tables (one-time):</strong>
+                  <p style={{ color:'#555', margin:'6px 0 2px' }}>1. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>inventory_items</code> — id (uuid PK), name, category, unit, current_stock (numeric default 0), min_stock (numeric default 0), cost_per_unit (numeric default 0), selling_price (numeric default 0), supplier_id (uuid nullable), is_active (bool default true), created_at</p>
+                  <p style={{ color:'#555', margin:'2px 0' }}>2. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>inventory_transactions</code> — id, item_id, item_name, category, transaction_type, quantity, unit, stock_before, stock_after, reference, notes, performed_by, created_at</p>
+                  <p style={{ color:'#555', margin:'2px 0' }}>3. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>inventory_suppliers</code> — id (uuid PK), name, contact_person, phone, email, address, payment_terms, notes, created_at</p>
+                  <p style={{ color:'#555', margin:'2px 0' }}>4. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>purchase_orders</code> — id (uuid PK), po_number, supplier_id, supplier_name, payment_terms, status, notes, total_amount, created_at</p>
+                  <p style={{ color:'#555', margin:'2px 0' }}>5. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>purchase_order_items</code> — id (uuid PK), po_id, item_id, item_name, unit, current_stock, order_qty, unit_price, total_price</p>
+                </div>
+
+                {/* ── INVENTORY DASHBOARD ────────────────────────────────── */}
+                {!inventoryLoading && inventoryItems.length > 0 && (() => {
+                  const lowStock = inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0)
+                  const totalValue = inventoryItems.reduce((s,i)=>s+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0)
+                  const expiringThisWeek = inventoryItems.filter(i=>{ if(!i.expiry_date) return false; const d=Math.ceil((new Date(i.expiry_date)-new Date())/(1000*60*60*24)); return d>=0&&d<=7 })
+                  const expiredItems = inventoryItems.filter(i=>i.expiry_date&&new Date(i.expiry_date)<new Date())
+                  const now = new Date(); const monthStart = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`
+                  const monthlyWastage = wastageLogs.filter(w=>w.wastage_date>=monthStart).reduce((s,w)=>s+Number(w.total_cost||0),0)
+
+                  // Category breakdown
+                  const catData = INVENTORY_CATEGORIES.map(cat=>{
+                    const items = inventoryItems.filter(i=>i.category===cat)
+                    const value = items.reduce((s,i)=>s+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0)
+                    const count = items.length
+                    const lowCount = items.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0).length
+                    return { cat, value, count, lowCount }
+                  }).filter(c=>c.count>0)
+                  const maxCatValue = Math.max(...catData.map(c=>c.value),1)
+
+                  // Supplier breakdown
+                  const supplierData = suppliers.map(s=>{
+                    const items = inventoryItems.filter(i=>i.supplier_id===s.id)
+                    const value = items.reduce((s2,i)=>s2+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0)
+                    return { name:s.name, count:items.length, value }
+                  }).filter(s=>s.count>0).sort((a,b)=>b.value-a.value)
+                  const maxSupValue = Math.max(...supplierData.map(s=>s.value),1)
+
+                  // Stock health score
+                  const healthScore = inventoryItems.length>0 ? Math.round(((inventoryItems.length-lowStock.length)/inventoryItems.length)*100) : 100
+                  const healthColor = healthScore>=80?'#2d8a4e':healthScore>=50?'#f57c00':'#ca1b1b'
+                  const healthLabel = healthScore>=80?'Healthy':healthScore>=50?'Needs Attention':'Critical'
+
+                  const catColors = ['#ca1b1b','#4a90d9','#2d8a4e','#f57c00']
+
+                  return (
+                    <div style={{ marginBottom:'20px' }}>
+                      <div style={{ background:'linear-gradient(135deg,#ca1b1b,#8b0000)', borderRadius:'16px', padding:'16px', marginBottom:'14px' }}>
+                        <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', margin:'0 0 2px', fontWeight:'bold', letterSpacing:'1px' }}>INVENTORY DASHBOARD</p>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                          <div>
+                            <p style={{ color:'white', fontSize:'28px', fontWeight:'bold', margin:'0 0 2px' }}>{php(totalValue)}</p>
+                            <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'12px', margin:0 }}>Total Inventory Value</p>
+                          </div>
+                          <div style={{ textAlign:'right' }}>
+                            <p style={{ color:'white', fontSize:'22px', fontWeight:'bold', margin:'0 0 2px' }}>{healthScore}%</p>
+                            <p style={{ color:healthScore>=80?'#a8e6a3':healthScore>=50?'#ffd080':'#ff9999', fontSize:'12px', fontWeight:'bold', margin:0 }}>● {healthLabel}</p>
+                          </div>
+                        </div>
+                        {/* Health bar */}
+                        <div style={{ background:'rgba(255,255,255,0.2)', borderRadius:'20px', height:'8px', marginTop:'10px', overflow:'hidden' }}>
+                          <div style={{ background:healthScore>=80?'#a8e6a3':healthScore>=50?'#ffd080':'#ff9999', width:`${healthScore}%`, height:'100%', borderRadius:'20px', transition:'width 1s ease' }} />
+                        </div>
+                      </div>
+
+                      {/* Stat Cards Row */}
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+                        {[
+                          { label:'📦 Total Items', value:inventoryItems.length, sub:`${INVENTORY_CATEGORIES.filter(c=>inventoryItems.some(i=>i.category===c)).length} categories`, color:'#4a90d9', bg:'#e8f0fe' },
+                          { label:'🔴 Low Stock', value:lowStock.length, sub:lowStock.length>0?'Need reorder':'All good!', color:lowStock.length>0?'#ca1b1b':'#2d8a4e', bg:lowStock.length>0?'#fff5f5':'#f0fff4' },
+                          { label:'⏰ Expiring Soon', value:expiringThisWeek.length+expiredItems.length, sub:expiredItems.length>0?`${expiredItems.length} already expired`:'Within 7 days', color:expiredItems.length>0?'#ca1b1b':expiringThisWeek.length>0?'#f57c00':'#2d8a4e', bg:expiredItems.length>0?'#fff5f5':'#fff8e1' },
+                          { label:'🗑️ Monthly Wastage', value:php(monthlyWastage), sub:'This month', color:monthlyWastage>0?'#f57c00':'#2d8a4e', bg:'#fff8f0' },
+                        ].map(c=>(
+                          <div key={c.label} style={{ background:c.bg, border:`2px solid ${c.color}22`, borderRadius:'12px', padding:'12px' }}>
+                            <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>{c.label}</p>
+                            <p style={{ fontWeight:'bold', fontSize:'20px', margin:'0 0 2px', color:c.color }}>{c.value}</p>
+                            <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{c.sub}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Charts Row */}
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+
+                        {/* Stock Value by Category - Bar Chart */}
+                        <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px' }}>
+                          <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 14px' }}>📊 Stock Value by Category</p>
+                          {catData.map((c,idx)=>(
+                            <div key={c.cat} style={{ marginBottom:'10px' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
+                                <span style={{ fontSize:'11px', color:'#555', fontWeight:'bold' }}>{c.cat.replace(' Materials','').replace(' Products','').replace(' & Supplies','')}</span>
+                                <span style={{ fontSize:'11px', color:'#333', fontWeight:'bold' }}>{php(c.value)}</span>
+                              </div>
+                              <div style={{ background:'#f5f5f5', borderRadius:'20px', height:'10px', overflow:'hidden' }}>
+                                <div style={{ background:catColors[idx%4], width:`${totalValue>0?(c.value/totalValue)*100:0}%`, height:'100%', borderRadius:'20px', transition:'width 1s ease', minWidth:c.value>0?'4px':'0' }} />
+                              </div>
+                              <div style={{ display:'flex', justifyContent:'space-between', marginTop:'2px' }}>
+                                <span style={{ fontSize:'10px', color:'#aaa' }}>{c.count} item(s)</span>
+                                {c.lowCount>0 && <span style={{ fontSize:'10px', color:'#ca1b1b', fontWeight:'bold' }}>⚠️ {c.lowCount} low</span>}
+                                <span style={{ fontSize:'10px', color:'#aaa' }}>{totalValue>0?((c.value/totalValue)*100).toFixed(1):0}%</span>
+                              </div>
+                            </div>
+                          ))}
+                          {catData.length===0 && <p style={{ color:'#888', fontSize:'12px', textAlign:'center', padding:'10px' }}>No data yet</p>}
+                        </div>
+
+                        {/* Stock Health by Category - Visual */}
+                        <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px' }}>
+                          <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 14px' }}>🩺 Stock Health by Category</p>
+                          {catData.map((c,idx)=>{
+                            const items = inventoryItems.filter(i=>i.category===c.cat)
+                            const okItems = items.filter(i=>Number(i.current_stock||0)>Number(i.min_stock||0)||Number(i.min_stock||0)===0)
+                            const pct = items.length>0?Math.round((okItems.length/items.length)*100):100
+                            const hColor = pct>=80?'#2d8a4e':pct>=50?'#f57c00':'#ca1b1b'
+                            return (
+                              <div key={c.cat} style={{ marginBottom:'12px' }}>
+                                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
+                                  <span style={{ fontSize:'11px', color:'#555', fontWeight:'bold' }}>{c.cat.replace(' Materials','').replace(' Products','').replace(' & Supplies','')}</span>
+                                  <span style={{ fontSize:'11px', fontWeight:'bold', color:hColor }}>{pct}% OK</span>
+                                </div>
+                                <div style={{ background:'#f5f5f5', borderRadius:'20px', height:'10px', overflow:'hidden' }}>
+                                  <div style={{ background:hColor, width:`${pct}%`, height:'100%', borderRadius:'20px', transition:'width 1s ease' }} />
+                                </div>
+                                <span style={{ fontSize:'10px', color:'#aaa' }}>{okItems.length}/{items.length} items adequate</span>
+                              </div>
+                            )
+                          })}
+                          {catData.length===0 && <p style={{ color:'#888', fontSize:'12px', textAlign:'center', padding:'10px' }}>No data yet</p>}
+                        </div>
+                      </div>
+
+                      {/* Supplier Spending + Wastage Row */}
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'4px' }}>
+
+                        {/* Supplier Stock Value */}
+                        <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px' }}>
+                          <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 14px' }}>🏭 Stock Value by Supplier</p>
+                          {supplierData.length===0 && <p style={{ color:'#888', fontSize:'12px', textAlign:'center', padding:'10px' }}>No supplier assigned to items yet</p>}
+                          {supplierData.map((s,idx)=>(
+                            <div key={s.name} style={{ marginBottom:'10px' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
+                                <span style={{ fontSize:'11px', color:'#7b4f9e', fontWeight:'bold' }}>{s.name.length>20?s.name.slice(0,18)+'...':s.name}</span>
+                                <span style={{ fontSize:'11px', color:'#333', fontWeight:'bold' }}>{php(s.value)}</span>
+                              </div>
+                              <div style={{ background:'#f5f5f5', borderRadius:'20px', height:'10px', overflow:'hidden' }}>
+                                <div style={{ background:'#7b4f9e', width:`${(s.value/maxSupValue)*100}%`, height:'100%', borderRadius:'20px', minWidth:s.value>0?'4px':'0' }} />
+                              </div>
+                              <span style={{ fontSize:'10px', color:'#aaa' }}>{s.count} item(s)</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Recent Wastage */}
+                        <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px' }}>
+                          <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 4px' }}>🗑️ Recent Wastage</p>
+                          <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'18px', margin:'0 0 10px' }}>{php(monthlyWastage)} <span style={{ fontSize:'11px', color:'#888', fontWeight:'normal' }}>this month</span></p>
+                          {wastageLogs.length===0 && <p style={{ color:'#2d8a4e', fontSize:'12px' }}>✅ No wastage recorded yet.</p>}
+                          {wastageLogs.slice(0,4).map(w=>(
+                            <div key={w.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid #f5f5f5' }}>
+                              <div>
+                                <p style={{ fontSize:'11px', fontWeight:'bold', color:'#333', margin:0 }}>{w.item_name}</p>
+                                <p style={{ fontSize:'10px', color:'#888', margin:0 }}>{w.reason?.slice(0,25)}{w.reason?.length>25?'...':''}</p>
+                              </div>
+                              <p style={{ fontSize:'11px', fontWeight:'bold', color:'#e65100', margin:0 }}>{php(w.total_cost||0)}</p>
+                            </div>
+                          ))}
+                          {wastageLogs.length>4 && <p style={{ fontSize:'10px', color:'#aaa', margin:'8px 0 0', textAlign:'center' }}>+{wastageLogs.length-4} more entries</p>}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Empty state when no items yet */}
+                {!inventoryLoading && inventoryItems.length===0 && (
+                  <div style={{ background:'white', border:'2px dashed #ddd', borderRadius:'14px', padding:'30px', textAlign:'center', marginBottom:'16px' }}>
+                    <p style={{ fontSize:'32px', margin:'0 0 10px' }}>📦</p>
+                    <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333' }}>No inventory items yet</p>
+                    <p style={{ fontSize:'12px', color:'#888' }}>Add items below or import from Excel to see your dashboard.</p>
+                  </div>
+                )}
+
+                {/* Low Stock Alert Banner */}
+                {inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0).length > 0 && (
+                  <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'16px' }}>
+                    <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>🔴 Low Stock Alerts</p>
+                    {inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0).map(i=>(
+                      <div key={i.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid #fee', flexWrap:'wrap', gap:'6px' }}>
+                        <span style={{ fontWeight:'bold', fontSize:'13px', color:'#333' }}>{i.name}</span>
+                        <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>
+                          {Number(i.current_stock||0).toFixed(2)} / {Number(i.min_stock||0).toFixed(2)} {i.unit} min
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Stock In / Out / Wastage / Count Buttons */}
+                <div style={{ background:'white', borderRadius:'12px', padding:'14px', marginBottom:'16px', border:'1px solid #eee', boxShadow:'0 1px 4px rgba(0,0,0,0.05)' }}>
+                  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Stock Actions</p>
+                  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
+                    <button style={{ background:'#f0fff4', color:'#2d8a4e', border:'1.5px solid #2d8a4e', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={()=>{ setStockTxType('in'); setShowStockForm(true); setShowWastageForm(false) }}>📥 Stock In</button>
+                    <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1.5px solid #ca1b1b', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={()=>{ setStockTxType('out'); setShowStockForm(true); setShowWastageForm(false) }}>📤 Stock Out</button>
+                    <button style={{ background:'#fff8f0', color:'#e65100', border:'1.5px solid #e65100', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={()=>{ setShowWastageForm(!showWastageForm); setShowStockForm(false) }}>🗑️ Log Wastage</button>
+                    <button style={{ background:'#f5f5f5', color:'#555', border:'1.5px solid #ddd', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={printPhysicalCountSheet}>📋 Count Sheet</button>
+                  </div>
+                </div>
+
+                {/* WASTAGE FORM */}
+                {showWastageForm && (
+                  <div style={{ background:'#fff8f0', border:'2px solid #e65100', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                      <h3 style={{ color:'#e65100', margin:0, fontSize:'15px' }}>🗑️ Log Wastage / Spoilage</h3>
+                      <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555' }} onClick={()=>setShowWastageForm(false)}>✕ CLOSE</button>
+                    </div>
+                    <label style={lblS}>Item:</label>
+                    <select value={wastageItemId} onChange={e=>setWastageItemId(e.target.value)} style={inputStyle}>
+                      <option value="">— Select item —</option>
+                      {INVENTORY_CATEGORIES.map(cat=>{
+                        const catItems = inventoryItems.filter(i=>i.category===cat)
+                        if (!catItems.length) return null
+                        return <optgroup key={cat} label={cat}>{catItems.map(i=><option key={i.id} value={i.id}>{i.name} — {Number(i.current_stock||0).toFixed(2)} {i.unit} on hand</option>)}</optgroup>
+                      })}
+                    </select>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                      <div>
+                        <label style={lblS}>Quantity ({wastageItemId?(inventoryItems.find(i=>i.id===wastageItemId)?.unit||'units'):'units'}):</label>
+                        <input type="number" placeholder="0" value={wastageQty} onChange={e=>setWastageQty(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0.01" step="0.01" />
+                      </div>
+                      <div>
+                        <label style={lblS}>Date:</label>
+                        <input type="date" value={wastageDate} onChange={e=>setWastageDate(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} />
+                      </div>
+                    </div>
+                    {wastageItemId && wastageQty && (
+                      <div style={{ background:'#fff3e0', border:'1px solid #e65100', borderRadius:'8px', padding:'8px 12px', margin:'8px 0' }}>
+                        <p style={{ margin:0, fontSize:'13px', color:'#e65100', fontWeight:'bold' }}>
+                          Estimated Cost: {php(Number(wastageQty||0) * Number(inventoryItems.find(i=>i.id===wastageItemId)?.cost_per_unit||0))}
+                        </p>
+                      </div>
+                    )}
+                    <label style={lblS}>Reason:</label>
+                    <select value={wastageReason} onChange={e=>setWastageReason(e.target.value)} style={inputStyle}>
+                      <option value="">— Select reason —</option>
+                      {WASTAGE_REASONS.map(r=><option key={r} value={r}>{r}</option>)}
+                    </select>
+                    {wastageReason==='Others' && (
+                      <textarea placeholder="Describe the reason..." value={wastageReasonOther} onChange={e=>setWastageReasonOther(e.target.value)} style={{ ...inputStyle, minHeight:'60px', resize:'none' }} />
+                    )}
+                    <label style={lblS}>Notes (optional):</label>
+                    <input type="text" placeholder="Additional details..." value={wastageNotes} onChange={e=>setWastageNotes(e.target.value)} style={inputStyle} />
+
+                    {/* Charge to Employee Toggle */}
+                    <div style={{ background: wastageChargeEmployee?'#fff5f5':'#f9f9f9', border:`2px solid ${wastageChargeEmployee?'#ca1b1b':'#ddd'}`, borderRadius:'12px', padding:'14px', marginBottom:'10px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', fontSize:'13px', color:wastageChargeEmployee?'#ca1b1b':'#555', margin:'0 0 2px' }}>⚠️ Charge to Employee</p>
+                          <p style={{ fontSize:'11px', color:'#888', margin:0 }}>Toggle if an employee is responsible for this wastage</p>
+                        </div>
+                        <button
+                          onClick={()=>setWastageChargeEmployee(!wastageChargeEmployee)}
+                          style={{ padding:'8px 16px', borderRadius:'20px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'12px', background:wastageChargeEmployee?'#ca1b1b':'#ddd', color:wastageChargeEmployee?'white':'#555', transition:'all 0.2s' }}
+                        >{wastageChargeEmployee?'ON':'OFF'}</button>
+                      </div>
+                      {wastageChargeEmployee && (
+                        <div style={{ marginTop:'12px' }}>
+                          <label style={lblS}>Responsible Employee:</label>
+                          <EmployeeSelect value={wastageEmployeeId} onChange={setWastageEmployeeId} employees={employees} />
+                          <p style={{ fontSize:'11px', color:'#ca1b1b', margin:'-6px 0 0', fontWeight:'bold' }}>⚠️ This charge will be sent to the Owner for approval before any deduction.</p>
+                        </div>
+                      )}
+                    </div>
+
+                    <button style={{ ...btnBlack, background:'#e65100', opacity:wastageSaving?0.6:1 }} disabled={wastageSaving} onClick={logWastage}>
+                      {wastageSaving?'⏳ Saving...':'🗑️ CONFIRM WASTAGE LOG'}
+                    </button>
+                  </div>
+                )}
+
+                {/* EMPLOYEE CHARGES (Owner only) */}
+                {adminRole==='owner' && (
+                  <>
+                    <button style={{ background:'white', color:'#b71c1c', border:'1.5px solid #b71c1c', borderRadius:'8px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>{ if(!showChargesSection) loadEmployeeCharges(); setShowChargesSection(!showChargesSection) }}>
+                      {showChargesSection?'🔼 HIDE':'🔽 VIEW'} EMPLOYEE CHARGES {employeeCharges.filter(c=>c.status==='pending_owner'||c.status==='disputed').length>0?`🔔 ${employeeCharges.filter(c=>c.status==='pending_owner'||c.status==='disputed').length}`:''}
+                    </button>
+                    {showChargesSection && (
+                      <div style={{ background:'white', border:'2px solid #b71c1c', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                        <h3 style={{ color:'#b71c1c', margin:'0 0 14px', fontSize:'14px' }}>⚠️ Employee Charges</h3>
+                        {chargesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading...</p>}
+                        {!chargesLoading && employeeCharges.length===0 && <p style={{ color:'#888', fontSize:'13px', textAlign:'center', padding:'12px' }}>No charges recorded.</p>}
+                        {employeeCharges.map(c=>{
+                          const statusColor = c.status==='agreed'?'green':c.status==='dismissed'?'gray':c.status==='disputed'?'red':'yellow'
+                          const statusLabel = c.status==='pending_owner'?'⏳ Pending Approval':c.status==='pending_employee'?'📱 Waiting Employee':c.status==='agreed'?'✅ Agreed':c.status==='disputed'?'❌ Disputed':'✅ Dismissed'
+                          return (
+                            <div key={c.id} style={{ border:`2px solid ${c.status==='pending_owner'||c.status==='disputed'?'#ca1b1b':'#eee'}`, borderRadius:'10px', padding:'12px', marginBottom:'10px', background:c.status==='pending_owner'?'#fff5f5':c.status==='disputed'?'#fff0f0':'#fafafa' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                                <div>
+                                  <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 2px' }}>{c.employee_name}</p>
+                                  <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{c.item_name} — {Number(c.quantity||0).toFixed(2)} {c.unit}</p>
+                                </div>
+                                <div style={{ textAlign:'right' }}>
+                                  <p style={{ fontWeight:'bold', fontSize:'16px', color:'#ca1b1b', margin:'0 0 2px' }}>{php(c.total_cost)}</p>
+                                  <Badge label={statusLabel} color={statusColor} />
+                                </div>
+                              </div>
+                              <p style={cps}>Reason: {c.reason}</p>
+                              {c.notes && <p style={cps}>Notes: {c.notes}</p>}
+                              <p style={{ ...cps, color:'#aaa' }}>Logged: {new Date(c.created_at).toLocaleDateString()}</p>
+                              {c.acknowledged_at && <p style={cps}>Acknowledged: {new Date(c.acknowledged_at).toLocaleString()}</p>}
+                              <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
+                                <button style={{ ...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printChargeForm(c)}>🖨️ PRINT FORM</button>
+                                {c.status==='pending_owner' && (
+                                  <>
+                                    <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>approveCharge(c)}>✅ APPROVE</button>
+                                    <button style={{ ...btnGray, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>dismissCharge(c)}>✕ DISMISS</button>
+                                  </>
+                                )}
+                                {c.status==='disputed' && (
+                                  <>
+                                    <p style={{ fontSize:'11px', color:'#ca1b1b', fontWeight:'bold', margin:'4px 0 0', width:'100%' }}>❌ Employee disputed this charge. Final decision:</p>
+                                    <button style={{ ...btnRed, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>ownerFinalDecision(c,'force_approve')}>⚡ ENFORCE CHARGE</button>
+                                    <button style={{ ...btnGray, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>ownerFinalDecision(c,'dismiss')}>✕ DISMISS</button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* EXPIRY TRACKING */}
+                <button style={{ background:'white', color:'#f57c00', border:'1.5px solid #f57c00', borderRadius:'8px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>{ if(!showExpirySection) loadExpiryItems(); setShowExpirySection(!showExpirySection) }}>
+                  {showExpirySection?'🔼 HIDE':'🔽 VIEW'} EXPIRY MONITOR
+                </button>
+                {showExpirySection && (
+                  <div style={{ background:'white', border:'2px solid #f57c00', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                    <h3 style={{ color:'#f57c00', margin:'0 0 6px', fontSize:'14px' }}>⏰ Expiry Date Monitor</h3>
+                    <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Set expiry dates per item. Items are flagged automatically when expiring soon or already expired.</p>
+                    {expiryLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading...</p>}
+
+                    {/* All items — set expiry */}
+                    <div style={{ marginBottom:'16px' }}>
+                      <p style={{ fontWeight:'bold', fontSize:'13px', color:'#f57c00', margin:'0 0 8px' }}>📦 Set / Update Expiry Dates:</p>
+                      {inventoryItems.filter(i=>['Raw Ingredients','Packaging Materials'].includes(i.category)).map(item=>{
+                        const isEditing = editingExpiryId===item.id
+                        const daysLeft = item.expiry_date ? Math.ceil((new Date(item.expiry_date)-new Date())/(1000*60*60*24)) : null
+                        const expiryColor = daysLeft===null?'#888':daysLeft<=0?'#ca1b1b':daysLeft<=7?'#f57c00':'#2d8a4e'
+                        return (
+                          <div key={item.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', borderBottom:'1px solid #eee', flexWrap:'wrap', gap:'8px' }}>
+                            <div style={{ flex:1 }}>
+                              <span style={{ fontWeight:'bold', fontSize:'13px', color:'#333' }}>{item.name}</span>
+                              <span style={{ fontSize:'11px', color:'#888', marginLeft:'8px' }}>{item.category}</span>
+                              {item.expiry_date && (
+                                <span style={{ fontSize:'11px', fontWeight:'bold', color:expiryColor, marginLeft:'8px' }}>
+                                  {daysLeft<=0?'🔴 EXPIRED':daysLeft<=7?`🟡 Expires in ${daysLeft} day(s)`:` ✅ Expires ${item.expiry_date}`}
+                                </span>
+                              )}
+                            </div>
+                            {isEditing ? (
+                              <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                                <input type="date" value={expiryDate} onChange={e=>setExpiryDate(e.target.value)} style={{ ...inputStyle, marginBottom:0, width:'150px' }} />
+                                <button style={{ ...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>saveExpiryDate(item.id)}>✅ SAVE</button>
+                                <button style={{ ...btnGray, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>setEditingExpiryId(null)}>✕</button>
+                              </div>
+                            ) : (
+                              <div style={{ display:'flex', gap:'6px' }}>
+                                <button style={{ ...btnBlack, background:'#f57c00', width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingExpiryId(item.id); setExpiryDate(item.expiry_date||'') }}>{item.expiry_date?'✏️ EDIT':'+ SET DATE'}</button>
+                                {item.expiry_date && <button style={{ ...btnGray, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>clearExpiryDate(item.id)}>✕</button>}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+
+                    {/* Expiry alerts */}
+                    {(() => {
+                      const expired = inventoryItems.filter(i=>i.expiry_date && new Date(i.expiry_date)<new Date())
+                      const expiringSoon = inventoryItems.filter(i=>i.expiry_date && new Date(i.expiry_date)>=new Date() && Math.ceil((new Date(i.expiry_date)-new Date())/(1000*60*60*24))<=7)
+                      return (expired.length>0||expiringSoon.length>0) ? (
+                        <div>
+                          {expired.length>0 && (
+                            <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'10px', padding:'12px', marginBottom:'10px' }}>
+                              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>🔴 EXPIRED — Log Wastage Immediately</p>
+                              {expired.map(i=><p key={i.id} style={{ ...cps, color:'#ca1b1b', fontWeight:'bold' }}>{i.name} — expired {i.expiry_date}</p>)}
+                            </div>
+                          )}
+                          {expiringSoon.length>0 && (
+                            <div style={{ background:'#fff8e1', border:'2px solid #f57c00', borderRadius:'10px', padding:'12px' }}>
+                              <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:'0 0 8px' }}>🟡 EXPIRING WITHIN 7 DAYS — Use Soon</p>
+                              {expiringSoon.map(i=>{
+                                const days = Math.ceil((new Date(i.expiry_date)-new Date())/(1000*60*60*24))
+                                return <p key={i.id} style={cps}>{i.name} — expires in <strong style={{ color:'#f57c00' }}>{days} day(s)</strong> ({i.expiry_date})</p>
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : <p style={{ color:'#2d8a4e', fontSize:'13px', fontWeight:'bold' }}>✅ No expiry alerts.</p>
+                    })()}
+                  </div>
+                )}
+
+                {/* WASTAGE HISTORY */}
+                <button style={{ background:'white', color:'#e65100', border:'1.5px solid #e65100', borderRadius:'8px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>{ if(!showWastageHistory) loadWastageLogs(); setShowWastageHistory(!showWastageHistory) }}>
+                  {showWastageHistory?'🔼 HIDE':'🔽 VIEW'} WASTAGE HISTORY
+                </button>
+                {showWastageHistory && (
+                  <div style={{ marginBottom:'16px' }}>
+                    {wastageLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading...</p>}
+                    {!wastageLoading && wastageLogs.length===0 && <p style={{ color:'#888', fontSize:'13px' }}>No wastage logs yet.</p>}
+                    {wastageLogs.map(w=>(
+                      <div key={w.id} style={{ ...cardS, borderLeft:`4px solid #e65100`, background:'#fff8f0' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:'6px' }}>
+                          <div>
+                            <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{w.item_name}</p>
+                            <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{w.category}</p>
+                          </div>
+                          <div style={{ textAlign:'right' }}>
+                            <p style={{ fontWeight:'bold', color:'#e65100', fontSize:'14px', margin:'0 0 2px' }}>-{Number(w.quantity||0).toFixed(2)} {w.unit}</p>
+                            <p style={{ color:'#ca1b1b', fontSize:'12px', fontWeight:'bold', margin:0 }}>{php(w.total_cost)}</p>
+                          </div>
+                        </div>
+                        <p style={cps}>Reason: {w.reason}</p>
+                        {w.employee_name && <p style={{ ...cps, color:'#ca1b1b', fontWeight:'bold' }}>⚠️ Charged to: {w.employee_name}</p>}
+                        {w.notes && <p style={cps}>Notes: {w.notes}</p>}
+                        <p style={{ ...cps, color:'#aaa' }}>{w.wastage_date} — {w.logged_by}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* SUPPLIERS SECTION */}
+                <button style={{ background:'white', color:'#7b4f9e', border:'1.5px solid #7b4f9e', borderRadius:'8px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>{ if(!showSuppliersSection) loadSuppliers(); setShowSuppliersSection(!showSuppliersSection) }}>
+                  {showSuppliersSection?'🔼 HIDE':'🔽 MANAGE'} SUPPLIERS ({suppliers.length}/10)
+                </button>
+                {showSuppliersSection && (
+                  <div style={{ background:'white', border:'2px solid #7b4f9e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                      <h3 style={{ color:'#7b4f9e', margin:0, fontSize:'14px' }}>🏭 Suppliers ({suppliers.length}/10)</h3>
+                      {suppliers.length < 10 && (
+                        <button style={{ ...btnBlack, background:'#7b4f9e', width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setEditingSupplierId(null); setSupplierForm({ name:'', contact_person:'', phone:'', email:'', address:'', payment_terms:'COD (Cash on Delivery)', notes:'' }); setShowAddSupplier(!showAddSupplier) }}>
+                          {showAddSupplier&&!editingSupplierId?'✕ CANCEL':'➕ ADD SUPPLIER'}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Supplier Form */}
+                    {showAddSupplier && (
+                      <div style={{ background:'#f8f0ff', border:'1px solid #7b4f9e', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
+                        <h4 style={{ color:'#7b4f9e', margin:'0 0 12px', fontSize:'13px' }}>{editingSupplierId?'✏️ Edit Supplier':'➕ New Supplier'}</h4>
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                          <div><label style={lblS}>Supplier Name: *</label><input type="text" placeholder="e.g. Juan's Food Supply" value={supplierForm.name} onChange={e=>setSupplierForm(p=>({...p,name:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                          <div><label style={lblS}>Contact Person:</label><input type="text" placeholder="e.g. Juan dela Cruz" value={supplierForm.contact_person} onChange={e=>setSupplierForm(p=>({...p,contact_person:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                          <div><label style={lblS}>Phone / Mobile:</label><input type="text" placeholder="09XX-XXX-XXXX" value={supplierForm.phone} onChange={e=>setSupplierForm(p=>({...p,phone:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                          <div><label style={lblS}>Email:</label><input type="email" placeholder="supplier@email.com" value={supplierForm.email} onChange={e=>setSupplierForm(p=>({...p,email:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                        </div>
+                        <label style={{ ...lblS, marginTop:'10px' }}>Address:</label>
+                        <input type="text" placeholder="Complete address" value={supplierForm.address} onChange={e=>setSupplierForm(p=>({...p,address:e.target.value}))} style={inputStyle} />
+                        <label style={lblS}>Payment Terms:</label>
+                        <select value={supplierForm.payment_terms} onChange={e=>setSupplierForm(p=>({...p,payment_terms:e.target.value}))} style={inputStyle}>
+                          {PAYMENT_TERMS.map(t=><option key={t} value={t}>{t}</option>)}
+                        </select>
+                        <label style={lblS}>Notes:</label>
+                        <input type="text" placeholder="Any additional notes" value={supplierForm.notes} onChange={e=>setSupplierForm(p=>({...p,notes:e.target.value}))} style={inputStyle} />
+                        <button style={{ ...btnBlack, background:'#7b4f9e' }} onClick={saveSupplier}>{editingSupplierId?'✅ UPDATE SUPPLIER':'➕ SAVE SUPPLIER'}</button>
+                      </div>
+                    )}
+
+                    {/* Suppliers List */}
+                    {suppliersLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading...</p>}
+                    {!suppliersLoading && suppliers.length===0 && <p style={{ color:'#888', fontSize:'13px', textAlign:'center', padding:'12px' }}>No suppliers yet. Add up to 10 suppliers.</p>}
+                    {suppliers.map(s=>(
+                      <div key={s.id} style={{ border:'1px solid #e8d5f5', borderRadius:'10px', padding:'12px', marginBottom:'10px', background:'#faf5ff' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px' }}>
+                          <div style={{ flex:1 }}>
+                            <p style={{ fontWeight:'bold', fontSize:'14px', color:'#7b4f9e', margin:'0 0 4px' }}>{s.name}</p>
+                            <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'2px' }}>
+                              {s.contact_person && <p style={cps}>👤 {s.contact_person}</p>}
+                              {s.phone && <p style={cps}>📞 {s.phone}</p>}
+                              {s.email && <p style={cps}>✉️ {s.email}</p>}
+                              {s.address && <p style={cps}>📍 {s.address}</p>}
+                              <p style={cps}>💳 {s.payment_terms}</p>
+                            </div>
+                            {s.notes && <p style={{ ...cps, color:'#888', fontStyle:'italic' }}>📝 {s.notes}</p>}
+                          </div>
+                          <div style={{ display:'flex', gap:'6px' }}>
+                            <button style={{ ...btnBlack, background:'#7b4f9e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>startEditSupplier(s)}>✏️ EDIT</button>
+                            <button style={{ ...btnRed, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>deleteSupplier(s)}>🗑️</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* PURCHASE ORDERS SECTION */}
+                <button style={{ background:'white', color:'#2d6a4f', border:'1.5px solid #2d6a4f', borderRadius:'8px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>{ if(!showPOSection) loadPurchaseOrders(); setShowPOSection(!showPOSection) }}>
+                  {showPOSection?'🔼 HIDE':'🔽 VIEW'} PURCHASE ORDERS ({purchaseOrders.length})
+                </button>
+                {showPOSection && (
+                  <div style={{ background:'white', border:'2px solid #2d6a4f', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+                      <h3 style={{ color:'#2d6a4f', margin:0, fontSize:'14px' }}>📋 Purchase Orders</h3>
+                      <button style={{ ...btnGreen, background:'#2d6a4f', width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>setShowPOBuilder(!showPOBuilder)}>
+                        {showPOBuilder?'✕ CANCEL':'📋 CREATE NEW PO'}
+                      </button>
+                    </div>
+
+                    {/* PO Builder */}
+                    {showPOBuilder && (
+                      <div style={{ background:'#f0fff8', border:'1px solid #2d6a4f', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
+                        <h4 style={{ color:'#2d6a4f', margin:'0 0 12px', fontSize:'13px' }}>📋 New Purchase Order</h4>
+                        <label style={lblS}>Select Supplier:</label>
+                        <select value={poSupplierId} onChange={e=>{ setPOSupplierId(e.target.value); if(e.target.value) buildPO(e.target.value) }} style={inputStyle}>
+                          <option value="">— Select supplier —</option>
+                          {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                        {poItems.length>0 && (
+                          <div>
+                            <p style={{ fontSize:'12px', color:'#2d6a4f', fontWeight:'bold', margin:'10px 0 8px' }}>📦 Low Stock Items (edit quantities and prices before saving):</p>
+                            {poItems.map((item,idx)=>(
+                              <div key={item.item_id} style={{ background:'white', border:'1px solid #c8e6c9', borderRadius:'8px', padding:'10px', marginBottom:'8px' }}>
+                                <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 8px', color:'#333' }}>{item.item_name} <span style={{ color:'#888', fontWeight:'normal', fontSize:'11px' }}>(Current: {item.current_stock.toFixed(2)} {item.unit})</span></p>
+                                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                                  <div>
+                                    <label style={lblS}>Order Qty ({item.unit}):</label>
+                                    <input type="number" value={item.order_qty} onChange={e=>{ const v=[...poItems]; v[idx]={...v[idx],order_qty:e.target.value,total_price:Number(e.target.value)*Number(v[idx].unit_price)}; setPOItems(v) }} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+                                  </div>
+                                  <div>
+                                    <label style={lblS}>Unit Price (PHP):</label>
+                                    <input type="number" value={item.unit_price} onChange={e=>{ const v=[...poItems]; v[idx]={...v[idx],unit_price:e.target.value,total_price:Number(item.order_qty)*Number(e.target.value)}; setPOItems(v) }} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+                                  </div>
+                                </div>
+                                <p style={{ fontSize:'12px', color:'#2d6a4f', margin:'6px 0 0', fontWeight:'bold' }}>Subtotal: {php(Number(item.order_qty||0)*Number(item.unit_price||0))}</p>
+                              </div>
+                            ))}
+                            <div style={{ background:'#e8f5e9', border:'1px solid #2d6a4f', borderRadius:'8px', padding:'10px', marginBottom:'10px', textAlign:'right' }}>
+                              <p style={{ fontWeight:'bold', fontSize:'14px', color:'#2d6a4f', margin:0 }}>Total: {php(poItems.reduce((s,i)=>s+Number(i.order_qty||0)*Number(i.unit_price||0),0))}</p>
+                            </div>
+                            <label style={lblS}>Notes (optional):</label>
+                            <input type="text" placeholder="e.g. Urgent, please deliver by Friday" value={poNotes} onChange={e=>setPONotes(e.target.value)} style={inputStyle} />
+                            <button style={{ ...btnGreen, background:'#2d6a4f', opacity:savingPO?0.6:1 }} disabled={savingPO} onClick={savePO}>{savingPO?'⏳ Saving...':'💾 SAVE PURCHASE ORDER'}</button>
+                          </div>
+                        )}
+                        {poSupplierId && poItems.length===0 && (
+                          <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', border:'1px solid #f5a623' }}>
+                            <p style={{ color:'#888', fontSize:'13px', margin:0 }}>ℹ️ No low stock items found for this supplier. Make sure items are assigned to this supplier and have a minimum stock level set.</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* PO List */}
+                    {purchaseOrders.length===0 && <p style={{ color:'#888', fontSize:'13px', textAlign:'center', padding:'12px' }}>No purchase orders yet.</p>}
+                    {purchaseOrders.map(po=>{
+                      const total = (po.purchase_order_items||[]).reduce((s,i)=>s+Number(i.total_price||0),0)
+                      const statusColor = po.status==='received'?'green':po.status==='sent'?'blue':'gray'
+                      return (
+                        <div key={po.id} style={{ border:'1px solid #b7e4c7', borderRadius:'10px', padding:'12px', marginBottom:'10px', background:'#f0fff8' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                            <div>
+                              <p style={{ fontWeight:'bold', fontSize:'14px', color:'#2d6a4f', margin:'0 0 2px' }}>{po.po_number}</p>
+                              <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{po.supplier_name} • {new Date(po.created_at).toLocaleDateString()}</p>
+                            </div>
+                            <Badge label={po.status?.toUpperCase()||'DRAFT'} color={statusColor} />
+                          </div>
+                          <p style={cps}>Items: {(po.purchase_order_items||[]).length} | Total: <strong>{php(total)}</strong> | Terms: {po.payment_terms||'—'}</p>
+                          {po.notes && <p style={{ ...cps, fontStyle:'italic' }}>📝 {po.notes}</p>}
+                          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
+                            <button style={{ ...btnBlack, background:'#2d6a4f', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printPO(po)}>🖨️ PRINT PO</button>
+                            {po.status==='draft' && <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>updatePOStatus(po.id,'sent')}>📤 MARK SENT</button>}
+                            {po.status==='sent' && <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>updatePOStatus(po.id,'received')}>✅ MARK RECEIVED</button>}
+                            {po.status==='received' && <button style={{ ...btnGray, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>updatePOStatus(po.id,'draft')}>↩️ REOPEN</button>}
+                            <button style={{ ...btnRed, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>deletePO(po)}>🗑️ DELETE</button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Stock Transaction Form */}
+                {showStockForm && (
+                  <div style={{ background:stockTxType==='in'?'#f0fff4':'#fff5f5', border:`2px solid ${stockTxType==='in'?'#2d8a4e':'#ca1b1b'}`, borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                      <h3 style={{ color:stockTxType==='in'?'#2d8a4e':'#ca1b1b', margin:0, fontSize:'15px' }}>{stockTxType==='in'?'📥 Stock In — Record Delivery / Purchase':'📤 Stock Out — Record Usage / Wastage'}</h3>
+                      <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555' }} onClick={()=>setShowStockForm(false)}>✕ CLOSE</button>
+                    </div>
+                    <label style={lblS}>Item:</label>
+                    <select value={stockTxItemId} onChange={e=>setStockTxItemId(e.target.value)} style={inputStyle}>
+                      <option value="">— Select item —</option>
+                      {INVENTORY_CATEGORIES.map(cat=>{
+                        const catItems = inventoryItems.filter(i=>i.category===cat)
+                        if (!catItems.length) return null
+                        return <optgroup key={cat} label={cat}>{catItems.map(i=><option key={i.id} value={i.id}>{i.name} — {Number(i.current_stock||0).toFixed(2)} {i.unit} on hand</option>)}</optgroup>
+                      })}
+                    </select>
+                    <label style={lblS}>Quantity ({stockTxItemId ? (inventoryItems.find(i=>i.id===stockTxItemId)?.unit||'units') : 'units'}):</label>
+                    <input type="number" placeholder="Enter quantity" value={stockTxQty} onChange={e=>setStockTxQty(e.target.value)} style={inputStyle} min="0.01" step="0.01" />
+                    <label style={lblS}>Reference <span style={{ color:'#aaa', fontWeight:'normal' }}>(e.g. DR#, PO#, batch no.)</span>:</label>
+                    <input type="text" placeholder="Optional reference number" value={stockTxReference} onChange={e=>setStockTxReference(e.target.value)} style={inputStyle} />
+                    <label style={lblS}>Notes <span style={{ color:'#aaa', fontWeight:'normal' }}>(optional)</span>:</label>
+                    <input type="text" placeholder="e.g. Morning production, Spoilage" value={stockTxNotes} onChange={e=>setStockTxNotes(e.target.value)} style={inputStyle} />
+                    <button
+                      style={{ ...stockTxType==='in'?btnGreen:btnRed, opacity:stockTxLoading?0.6:1 }}
+                      disabled={stockTxLoading}
+                      onClick={recordStockTransaction}
+                    >
+                      {stockTxLoading?'⏳ Saving...':(stockTxType==='in'?'📥 CONFIRM STOCK IN':'📤 CONFIRM STOCK OUT')}
+                    </button>
+                  </div>
+                )}
+
+                {/* Search & Filter */}
+                <div style={{ display:'flex', gap:'10px', marginBottom:'14px', flexWrap:'wrap' }}>
+                  <input placeholder="Search items..." value={inventorySearch} onChange={e=>setInventorySearch(e.target.value)} style={{ ...inputStyle, marginBottom:0, flex:1, minWidth:'150px' }} />
+                  <select value={inventoryCategoryFilter} onChange={e=>setInventoryCategoryFilter(e.target.value)} style={{ ...inputStyle, marginBottom:0, width:'auto' }}>
+                    <option value="all">All Categories</option>
+                    {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+
+                {/* Add Item Button */}
+                <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'10px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginBottom:'14px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>setShowAddItem(!showAddItem)}>
+                  {showAddItem?'✕ CANCEL':'➕ ADD NEW ITEM'}
+                </button>
+
+                {/* Add Item Form */}
+                {showAddItem && (
+                  <div style={{ background:'#e8f0fe', border:'2px solid #4a90d9', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                    <h3 style={{ color:'#4a90d9', margin:'0 0 14px', fontSize:'14px' }}>➕ Add New Inventory Item</h3>
+                    <label style={lblS}>Item Name:</label>
+                    <input type="text" placeholder="e.g. All-purpose flour" value={newItemName} onChange={e=>setNewItemName(e.target.value)} style={inputStyle} />
+                    <label style={lblS}>Category:</label>
+                    <select value={newItemCategory} onChange={e=>setNewItemCategory(e.target.value)} style={inputStyle}>
+                      {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+                    </select>
+                    <label style={lblS}>Supplier:</label>
+                    <select value={newItemSupplierId} onChange={e=>setNewItemSupplierId(e.target.value)} style={inputStyle}>
+                      <option value="">— No supplier assigned —</option>
+                      {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                      <div>
+                        <label style={lblS}>Unit of Measure:</label>
+                        <select value={newItemUnit} onChange={e=>setNewItemUnit(e.target.value)} style={{ ...inputStyle, marginBottom:0 }}>
+                          {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={lblS}>Cost per Unit (PHP):</label>
+                        <input type="number" placeholder="0.00" value={newItemCostPerUnit} onChange={e=>setNewItemCostPerUnit(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+                      </div>
+                      {newItemCategory==='Finished Products' && (
+                        <div>
+                          <label style={lblS}>Selling Price (PHP):</label>
+                          <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+                        </div>
+                      )}
+                      <div>
+                        <label style={lblS}>Min Stock Level:</label>
+                        <input type="number" placeholder="e.g. 5" value={newItemMinStock} onChange={e=>setNewItemMinStock(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+                      </div>
+                    </div>
+                    <button style={{ ...btnBlack, background:'#4a90d9', marginTop:'14px', opacity:addItemLoading?0.6:1 }} disabled={addItemLoading} onClick={addInventoryItem}>{addItemLoading?'⏳ Adding...':'➕ ADD ITEM'}</button>
+                  </div>
+                )}
+
+                {/* Items List by Category */}
+                {inventoryLoading && <p style={{ color:'#888', textAlign:'center', padding:'20px' }}>⏳ Loading inventory...</p>}
+                {!inventoryLoading && (() => {
+                  const filtered = inventoryItems.filter(i=>{
+                    const matchSearch = !inventorySearch || i.name.toLowerCase().includes(inventorySearch.toLowerCase())
+                    const matchCat = inventoryCategoryFilter==='all' || i.category===inventoryCategoryFilter
+                    return matchSearch && matchCat
+                  })
+                  if (filtered.length===0) return <div style={{ textAlign:'center', padding:'30px', color:'#888' }}><p style={{ fontSize:'28px', margin:'0 0 10px' }}>📭</p><p style={{ fontSize:'14px' }}>No items found.</p></div>
+                  const grouped = INVENTORY_CATEGORIES.map(cat=>({ cat, items: filtered.filter(i=>i.category===cat) })).filter(g=>g.items.length>0)
+                  return grouped.map(g=>(
+                    <div key={g.cat} style={{ marginBottom:'20px' }}>
+                      <div style={{ background:'#ca1b1b', color:'white', padding:'8px 14px', borderRadius:'10px 10px 0 0', fontWeight:'bold', fontSize:'13px' }}>
+                        📦 {g.cat} <span style={{ opacity:0.8, fontWeight:'normal' }}>({g.items.length} item{g.items.length>1?'s':''})</span>
+                      </div>
+                      {g.items.map(item=>{
+                        const isLow = Number(item.current_stock||0)<=Number(item.min_stock||0)&&Number(item.min_stock||0)>0
+                        const isEditing = editingItemId===item.id
+                        return (
+                          <div key={item.id} style={{ border:`1px solid ${isLow?'#ca1b1b':'#eee'}`, borderTop:'none', background:isLow?'#fff8f8':'white', padding:'12px 14px' }}>
+                            {isEditing ? (
+                              <div>
+                                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
+                                  <div><label style={lblS}>Name:</label><input value={editItemFields.name??item.name} onChange={e=>setEditItemFields(p=>({...p,name:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                                  <div><label style={lblS}>Unit:</label>
+                                    <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
+                                      {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+                                    </select>
+                                  </div>
+                                  <div><label style={lblS}>Min Stock:</label><input type="number" value={editItemFields.min_stock??item.min_stock} onChange={e=>setEditItemFields(p=>({...p,min_stock:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
+                                  <div><label style={lblS}>Cost/Unit (PHP):</label><input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
+                                  {(editItemFields.category??item.category)==='Finished Products' && <div><label style={lblS}>Selling Price (PHP):</label><input type="number" value={editItemFields.selling_price??item.selling_price??0} onChange={e=>setEditItemFields(p=>({...p,selling_price:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>}
+                                  <div><label style={lblS}>Supplier:</label>
+                                    <select value={editItemFields.supplier_id??item.supplier_id??''} onChange={e=>setEditItemFields(p=>({...p,supplier_id:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
+                                      <option value="">— No supplier —</option>
+                                      {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+                                    </select>
+                                  </div>
+                                </div>
+                                <div style={{ display:'flex', gap:'8px' }}>
+                                  <button style={{ ...btnGreen, width:'auto', padding:'7px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>saveInventoryItemEdit(item)}>✅ SAVE</button>
+                                  <button style={{ ...btnGray, width:'auto', padding:'7px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setEditingItemId(null); setEditItemFields({}) }}>✕ CANCEL</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                                <div style={{ flex:1 }}>
+                                  <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                                    <span style={{ fontWeight:'bold', fontSize:'14px', color:'#333' }}>{item.name}</span>
+                                    {isLow && <Badge label="🔴 LOW STOCK" color="red" />}
+                                  </div>
+                                  <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', marginTop:'4px' }}>
+                                    <span style={{ fontSize:'12px', color:'#888' }}>Cost: {php(item.cost_per_unit||0)}/{item.unit}</span>
+                                    {Number(item.selling_price||0)>0 && <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>Sell: {php(item.selling_price)}/{item.unit}</span>}
+                                    <span style={{ fontSize:'12px', color:'#888' }}>Min: {Number(item.min_stock||0).toFixed(2)} {item.unit}</span>
+                                    <span style={{ fontSize:'12px', color:'#888' }}>Value: {php(Number(item.current_stock||0)*Number(item.cost_per_unit||0))}</span>
+                                    {item.supplier_id && <span style={{ fontSize:'12px', color:'#7b4f9e', fontWeight:'bold' }}>🏭 {suppliers.find(s=>s.id===item.supplier_id)?.name||'Unknown'}</span>}
+                                  </div>
+                                </div>
+                                <div style={{ textAlign:'right', minWidth:'120px' }}>
+                                  <p style={{ fontWeight:'bold', fontSize:'20px', margin:'0', color:isLow?'#ca1b1b':'#2d8a4e' }}>{Number(item.current_stock||0).toFixed(2)}</p>
+                                  <p style={{ fontSize:'11px', color:'#888', margin:'0 0 6px' }}>{item.unit} on hand</p>
+                                  <div style={{ display:'flex', gap:'6px', justifyContent:'flex-end', flexWrap:'wrap' }}>
+                                    {isLow && item.supplier_id && (
+                                      <button style={{ ...btnGreen, background:'#2d6a4f', width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setPOSupplierId(item.supplier_id); buildPO(item.supplier_id); setShowPOSection(true); setShowPOBuilder(true) }}>📋 GEN PO</button>
+                                    )}
+                                    <button style={{ ...btnYellow, padding:'5px 10px', fontSize:'11px' }} onClick={()=>{ setEditingItemId(item.id); setEditItemFields({}) }}>✏️ EDIT</button>
+                                    <button style={{ ...btnRed, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>deleteInventoryItem(item)}>🗑️</button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))
+                })()}
+
+                {/* Transaction History */}
+                <button style={{ background:'white', color:'#555', border:'1.5px solid #ddd', borderRadius:'8px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginTop:'10px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>{ if(!showInventoryHistory) loadInventoryTransactions(); setShowInventoryHistory(!showInventoryHistory) }}>
+                  {showInventoryHistory?'🔼 HIDE':'🔽 VIEW'} TRANSACTION HISTORY
+                </button>
+                {showInventoryHistory && (
+                  <div style={{ marginTop:'12px' }}>
+                    {inventoryTxLoading && <p style={{ color:'#888', textAlign:'center', padding:'12px' }}>⏳ Loading...</p>}
+                    {!inventoryTxLoading && inventoryTransactions.length===0 && <p style={{ color:'#888', fontSize:'13px' }}>No transactions yet.</p>}
+                    {!inventoryTxLoading && inventoryTransactions.map(tx=>(
+                      <div key={tx.id} style={{ ...cardS, borderLeft:`4px solid ${tx.transaction_type==='in'?'#2d8a4e':'#ca1b1b'}`, background:tx.transaction_type==='in'?'#f0fff4':'#fff8f8' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'6px' }}>
+                          <div>
+                            <span style={{ fontWeight:'bold', fontSize:'13px', color:'#333' }}>{tx.item_name}</span>
+                            <span style={{ marginLeft:'8px', fontSize:'12px', color:'#888' }}>{tx.category}</span>
+                          </div>
+                          <Badge label={tx.transaction_type==='in'?'📥 IN':'📤 OUT'} color={tx.transaction_type==='in'?'green':'red'} />
+                        </div>
+                        <p style={cps}>
+                          <strong style={{ color:tx.transaction_type==='in'?'#2d8a4e':'#ca1b1b' }}>{tx.transaction_type==='in'?'+':'-'}{Number(tx.quantity||0).toFixed(2)} {tx.unit}</strong>
+                          &nbsp;| Stock: {Number(tx.stock_before||0).toFixed(2)} → {Number(tx.stock_after||0).toFixed(2)}
+                        </p>
+                        {tx.reference && <p style={cps}>Ref: {tx.reference}</p>}
+                        {tx.notes && <p style={cps}>Note: {tx.notes}</p>}
+                        <p style={{ ...cps, color:'#aaa' }}>{new Date(tx.created_at).toLocaleString()} — {tx.performed_by}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* COSTING — OWNER ONLY */}
+            {activeTab==='costing' && (
+              <div>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
+                  <h2 style={h2s}>💰 Production Costing System</h2>
+                  <button style={{ ...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printCostingReport}>🖨️ PRINT REPORT</button>
+                </div>
+
+                {/* Sub-navigation */}
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'20px' }}>
+                  {[['dashboard','📊 Dashboard'],['recipes','📖 Recipes'],['production','🏭 Production'],['settings','⚙️ Settings']].map(([v,l])=>(
+                    <button key={v} onClick={()=>setCostingView(v)} style={{ padding:'10px', borderRadius:'10px', border:`2px solid ${costingView===v?'#ca1b1b':'#ddd'}`, background:costingView===v?'#ca1b1b':'white', color:costingView===v?'white':'#555', fontWeight:'bold', fontSize:'12px', cursor:'pointer' }}>{l}</button>
+                  ))}
+                </div>
+
+                {/* ── DASHBOARD VIEW ── */}
+                {costingView==='dashboard' && (() => {
+                  const fin = computeFinancials()
+                  const byCategory = VARIANT_CATEGORIES.map(cat => ({
+                    cat, variants: fin.variantData.filter(v => v.category === cat)
+                  })).filter(g => g.variants.length > 0)
+                  const catColors = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }
+                  const belowTarget = fin.variantData.filter(v => v.belowTarget)
+                  const avgMarginPct = fin.variantData.length > 0 ? fin.variantData.reduce((s,v) => s + (v.grossMarginPct||0), 0) / fin.variantData.length : 0
+                  return (
+                    <div>
+                      {/* Hero BEP Card */}
+                      <div style={{ background:'linear-gradient(135deg,#ca1b1b,#8b0000)', borderRadius:'16px', padding:'20px', marginBottom:'16px', color:'white' }}>
+                        <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', fontWeight:'bold', letterSpacing:'1px', margin:'0 0 8px' }}>BREAK-EVEN POINT</p>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'12px' }}>
+                          <div>
+                            <p style={{ fontSize:'36px', fontWeight:'bold', margin:'0 0 2px' }}>{fin.dailyBEP.toLocaleString()}</p>
+                            <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'12px', margin:0 }}>pieces per day to break even</p>
+                          </div>
+                          <div style={{ textAlign:'right' }}>
+                            <p style={{ fontSize:'22px', fontWeight:'bold', margin:'0 0 2px' }}>{fin.monthlyBEP.toLocaleString()}</p>
+                            <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'12px', margin:0 }}>pieces per month</p>
+                          </div>
+                        </div>
+                        <div style={{ background:'rgba(255,255,255,0.2)', borderRadius:'20px', height:'8px', marginTop:'14px', overflow:'hidden' }}>
+                          <div style={{ background:'#a8e6a3', width:`${Math.min(100,(fin.dailyBEP/Math.max(1,Number(costSettings.total_daily_pieces)))*100)}%`, height:'100%', borderRadius:'20px' }} />
+                        </div>
+                        <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', margin:'6px 0 0' }}>
+                          BEP is {((fin.dailyBEP/Math.max(1,Number(costSettings.total_daily_pieces)))*100).toFixed(1)}% of your {Number(costSettings.total_daily_pieces).toLocaleString()} daily production
+                        </p>
+                      </div>
+
+                      {/* Stat Cards */}
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
+                        {[
+                          { label:'Daily Fixed Cost', value:php(fin.dailyFixed), color:'#4a90d9', sub:'Rent + Electricity + Loans + Depreciation' },
+                          { label:'Daily Labor Cost', value:php(fin.dailyLabor), color:'#7b4f9e', sub:`₱${(fin.laborPerPiece).toFixed(2)}/piece` },
+                          { label:'Avg Gross Margin', value:`${avgMarginPct.toFixed(1)}%`, color:avgMarginPct>=30?'#2d8a4e':'#ca1b1b', sub:`Target: ${costSettings.target_margin_percentage}%` },
+                          { label:'Below Target', value:belowTarget.length, color:belowTarget.length>0?'#ca1b1b':'#2d8a4e', sub:belowTarget.length>0?'variants need attention':'All variants healthy' },
+                        ].map(c=>(
+                          <div key={c.label} style={{ background:'white', border:`2px solid ${c.color}22`, borderRadius:'12px', padding:'14px' }}>
+                            <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>{c.label}</p>
+                            <p style={{ fontWeight:'bold', fontSize:'20px', color:c.color, margin:'0 0 2px' }}>{c.value}</p>
+                            <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{c.sub}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Cost Breakdown */}
+                      <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', marginBottom:'14px' }}>
+                        <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 14px' }}>📊 Daily Cost Breakdown per Piece</p>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px', marginBottom:'12px' }}>
+                          {[['🥚 Ingredients','varies per variant','#ca1b1b'],['👷 Labor',`${php(fin.laborPerPiece)}/pc`,'#7b4f9e'],['🏭 Fixed+Overhead',`${php(fin.fixedPerPiece)}/pc`,'#4a90d9']].map(([l,v,c])=>(
+                            <div key={l} style={{ background:`${c}11`, borderRadius:'8px', padding:'10px', textAlign:'center', border:`1px solid ${c}33` }}>
+                              <p style={{ fontSize:'11px', color:'#555', margin:'0 0 4px' }}>{l}</p>
+                              <p style={{ fontWeight:'bold', color:c, fontSize:'13px', margin:0 }}>{v}</p>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'10px', border:'1px solid #f5c518', fontSize:'12px', color:'#555' }}>
+                          ⚠️ <strong>Waste buffer: {costSettings.waste_percentage}%</strong> added to all costs — meaning every ₱10 of cost becomes ₱{(10*(1+Number(costSettings.waste_percentage)/100)).toFixed(2)} effective cost.
+                        </div>
+                      </div>
+
+                      {/* Below Target Alert */}
+                      {belowTarget.length > 0 && (
+                        <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 10px' }}>🔴 {belowTarget.length} Variant(s) Below {costSettings.target_margin_percentage}% Target Margin</p>
+                          {belowTarget.map(v=>(
+                            <div key={v.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:'1px solid #fee', flexWrap:'wrap', gap:'8px' }}>
+                              <span style={{ fontWeight:'bold', fontSize:'13px' }}>{v.name}</span>
+                              <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
+                                <span style={{ fontSize:'12px', color:'#888' }}>Sell: {php(v.selling_price)} | Cost: {php(v.totalCost||0)}</span>
+                                <Badge label={`${(v.grossMarginPct||0).toFixed(1)}%`} color="red" />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Variant Profitability Table by Category */}
+                      {byCategory.map(g=>(
+                        <div key={g.cat} style={{ marginBottom:'16px' }}>
+                          <div style={{ background:catColors[g.cat]||'#333', color:'white', padding:'8px 14px', borderRadius:'10px 10px 0 0', fontWeight:'bold', fontSize:'13px', display:'flex', justifyContent:'space-between' }}>
+                            <span>📦 {g.cat}</span>
+                            <span style={{ opacity:0.8, fontSize:'11px', fontWeight:'normal' }}>{g.variants.length} variant(s)</span>
+                          </div>
+                          <div style={{ border:`1px solid ${catColors[g.cat]||'#333'}33`, borderTop:'none', borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
+                            {/* Header */}
+                            <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', background:'#f9f9f9', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#888' }}>
+                              <span>Variant</span><span style={{ textAlign:'right' }}>Sell Price</span><span style={{ textAlign:'right' }}>Total Cost</span><span style={{ textAlign:'right' }}>Margin ₱</span><span style={{ textAlign:'right' }}>Margin %</span><span style={{ textAlign:'center' }}>Status</span>
+                            </div>
+                            {g.variants.map((v,i)=>(
+                              <div key={v.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', padding:'8px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{v.name}{v.isEstimate?<span style={{ color:'#aaa', fontSize:'10px', fontWeight:'normal' }}> *</span>:null}</span>
+                                <span style={{ textAlign:'right', fontSize:'12px' }}>{php(v.selling_price)}</span>
+                                <span style={{ textAlign:'right', fontSize:'12px', color:'#888' }}>{php(v.totalCost||0)}</span>
+                                <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:(v.grossMargin||0)>=0?'#2d8a4e':'#ca1b1b' }}>{php(v.grossMargin||0)}</span>
+                                <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:(v.grossMarginPct||0)>=Number(costSettings.target_margin_percentage)?'#2d8a4e':'#ca1b1b' }}>{(v.grossMarginPct||0).toFixed(1)}%</span>
+                                <span style={{ textAlign:'center' }}>
+                                  <Badge label={v.belowTarget?'⚠️ LOW':'✅ OK'} color={v.belowTarget?'red':'green'} />
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                      {donutVariants.length === 0 && (
+                        <div style={{ background:'white', border:'2px dashed #ddd', borderRadius:'14px', padding:'30px', textAlign:'center' }}>
+                          <p style={{ fontSize:'28px', margin:'0 0 10px' }}>📋</p>
+                          <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333' }}>No variants loaded yet</p>
+                          <p style={{ fontSize:'12px', color:'#888', margin:'6px 0 14px' }}>Go to Recipes tab and click "Load All Variants" to get started.</p>
+                          <button style={{ ...btnRed, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setCostingView('recipes')}>📖 GO TO RECIPES</button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })()}
+
+                {/* ── RECIPES VIEW ── */}
+                {costingView==='recipes' && (
+                  <div>
+                    <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'12px' }}>
+                      <strong style={{ color:'#ca1b1b' }}>⚙️ Required Supabase Tables:</strong>
+                      <p style={{ color:'#555', margin:'6px 0 2px' }}>• <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> — id (uuid PK), name, category, selling_price (numeric), pieces_per_batch (numeric), is_active (bool default true), created_at</p>
+                      <p style={{ color:'#555', margin:'2px 0' }}>• <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>base_dough_recipe</code> — id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
+                      <p style={{ color:'#555', margin:'2px 0' }}>• <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>variant_recipes</code> — id (uuid PK), variant_id (uuid), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), ingredient_type (text), notes (text), created_at</p>
+                      <p style={{ color:'#555', margin:'2px 0' }}>• <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_logs</code> — id (uuid PK), production_date (date), total_pieces (numeric), ingredient_cost (numeric), labor_cost (numeric), overhead_cost (numeric), total_cost (numeric), notes (text), logged_by (text), created_at</p>
+                      <p style={{ color:'#555', margin:'2px 0' }}>• <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_log_items</code> — id (uuid PK), log_id (uuid), variant_id (uuid), variant_name (text), pieces_produced (numeric), ingredient_cost (numeric), created_at</p>
+                      <p style={{ color:'#555', margin:'2px 0' }}>• <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>cost_settings</code> — id (uuid PK), daily_labor_cost (numeric), waste_percentage (numeric), monthly_rent (numeric), monthly_electricity (numeric), monthly_other_fixed (numeric), fryer_cost (numeric), fryer_lifespan_years (numeric), mixer_cost (numeric), mixer_lifespan_years (numeric), sheeter_cost (numeric), sheeter_lifespan_years (numeric), production_days_per_month (numeric), target_margin_percentage (numeric), total_daily_pieces (numeric), updated_at (timestamptz)</p>
+                    </div>
+
+                    {/* Load variants button */}
+                    {donutVariants.length === 0 && (
+                      <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'20px', marginBottom:'16px', textAlign:'center' }}>
+                        <p style={{ fontSize:'24px', margin:'0 0 8px' }}>📋</p>
+                        <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 6px' }}>Load All Roma's Donuts Variants</p>
+                        <p style={{ fontSize:'12px', color:'#888', margin:'0 0 14px' }}>All {DONUT_VARIANTS_DEFAULT.length} variants from your price list will be added automatically.</p>
+                        <button style={{ ...btnGreen, width:'auto', padding:'12px 24px', marginTop:0 }} onClick={seedVariants}>📋 LOAD ALL VARIANTS</button>
+                      </div>
+                    )}
+
+                    {/* BASE DOUGH RECIPE */}
+                    <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+                        <div>
+                          <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>🥚 Base Dough Recipe</h3>
+                          <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across ALL variants. Enter ingredients per batch.</p>
+                        </div>
+                        {selectedRecipeVariantId !== 'base' ? (
+                          <button style={{ ...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}>✏️ EDIT BASE DOUGH</button>
+                        ) : (
+                          <div style={{ display:'flex', gap:'8px' }}>
+                            <button style={{ ...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={saveBaseDough}>{savingRecipe?'⏳ Saving...':'💾 SAVE'}</button>
+                            <button style={{ ...btnGray, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setSelectedRecipeVariantId(null)}>✕ CANCEL</button>
+                          </div>
+                        )}
+                      </div>
+                      {selectedRecipeVariantId === 'base' ? (
+                        <div>
+                          {editingBaseDough.map((row,i)=>(
+                            <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
+                              <div>
+                                <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingBaseDough]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:inv?.unit||upd[i].unit}; setEditingBaseDough(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'12px' }}>
+                                  <option value="">— Link to inventory item —</option>
+                                  {inventoryItems.filter(it=>it.category==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
+                                </select>
+                                <input placeholder="Or type ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],item_name:e.target.value};setEditingBaseDough(upd)}} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'4px' }} />
+                              </div>
+                              <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],quantity_per_batch:e.target.value};setEditingBaseDough(upd)}} style={{ ...inputStyle, marginBottom:0, fontSize:'12px' }} min="0" step="0.01" />
+                              <select value={row.unit||'g'} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],unit:e.target.value};setEditingBaseDough(upd)}} style={{ ...inputStyle, marginBottom:0, fontSize:'12px' }}>
+                                {['g','kg','mL','L','pcs','tbsp','tsp','cups'].map(u=><option key={u} value={u}>{u}</option>)}
+                              </select>
+                              <input placeholder="Notes (optional)" value={row.notes||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],notes:e.target.value};setEditingBaseDough(upd)}} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} />
+                              <button onClick={()=>setEditingBaseDough(editingBaseDough.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}>✕</button>
+                            </div>
+                          ))}
+                          <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 16px', marginTop:'8px', fontSize:'12px' }} onClick={()=>setEditingBaseDough([...editingBaseDough, { item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }])}>+ ADD INGREDIENT</button>
+                        </div>
+                      ) : (
+                        <div>
+                          {baseDoughIngredients.length === 0 ? (
+                            <p style={{ color:'#aaa', fontSize:'13px', fontStyle:'italic' }}>No base dough recipe set yet. Click Edit to define your base dough ingredients.</p>
+                          ) : (
+                            <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
+                              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#f9f9f9', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#888' }}>
+                                <span>Ingredient</span><span style={{ textAlign:'right' }}>Qty/batch</span><span style={{ textAlign:'right' }}>Unit</span><span style={{ textAlign:'right' }}>Cost/batch</span>
+                              </div>
+                              {baseDoughIngredients.map((r,i)=>{
+                                const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+                                const cost = inv ? Number(r.quantity_per_batch||0) * Number(inv.cost_per_unit||0) : 0
+                                return (
+                                  <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+                                    <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> ✓ linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}</span>
+                                    <span style={{ textAlign:'right', fontSize:'12px' }}>{r.quantity_per_batch}</span>
+                                    <span style={{ textAlign:'right', fontSize:'12px' }}>{r.unit}</span>
+                                    <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* VARIANT RECIPES */}
+                    <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}>🍩 Per-Variant Topping / Filling Recipes</h3>
+                    <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define the additional ingredients (toppings, fillings, glazes) for each variant on top of the base dough.</p>
+                    {variantsLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading variants...</p>}
+                    {VARIANT_CATEGORIES.map(cat => {
+                      const catVariants = donutVariants.filter(v => v.category === cat)
+                      if (catVariants.length === 0) return null
+                      const catColor = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }[cat] || '#333'
+                      return (
+                        <div key={cat} style={{ marginBottom:'16px' }}>
+                          <div style={{ background:catColor, color:'white', padding:'8px 14px', borderRadius:'10px 10px 0 0', fontWeight:'bold', fontSize:'13px' }}>📦 {cat}</div>
+                          {catVariants.map((v,i)=>{
+                            const hasRecipe = (variantRecipes[v.id]||[]).length > 0
+                            const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId !== 'base'
+                            return (
+                              <div key={v.id} style={{ border:`1px solid ${catColor}33`, borderTop:'none', background:i%2===0?'white':'#fafafa', padding:'10px 14px' }}>
+                                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                                  <div style={{ flex:1 }}>
+                                    <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                                      <span style={{ fontWeight:'bold', fontSize:'13px', color:'#333' }}>{v.name}</span>
+                                      <Badge label={`₱${v.selling_price}`} color="gray" />
+                                      {!editingVariantId || editingVariantId !== v.id ? (
+                                        <span style={{ fontSize:'11px', color:'#888' }}>{v.pieces_per_batch} pcs/batch</span>
+                                      ) : null}
+                                      {hasRecipe && !isEditing && <Badge label={`${variantRecipes[v.id].length} ingredient(s)`} color="green" />}
+                                      {!hasRecipe && !isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No toppings/filling set</span>}
+                                    </div>
+                                    {editingVariantId === v.id && (
+                                      <div style={{ display:'flex', gap:'8px', marginTop:'8px', alignItems:'center', flexWrap:'wrap' }}>
+                                        <label style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Pieces/batch:</label>
+                                        <input type="number" value={editVariantFields.pieces_per_batch??v.pieces_per_batch} onChange={e=>setEditVariantFields(p=>({...p,pieces_per_batch:e.target.value}))} style={{ ...inputStyle, marginBottom:0, width:'80px', fontSize:'12px' }} min="1" />
+                                        <label style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Sell Price:</label>
+                                        <input type="number" value={editVariantFields.selling_price??v.selling_price} onChange={e=>setEditVariantFields(p=>({...p,selling_price:e.target.value}))} style={{ ...inputStyle, marginBottom:0, width:'80px', fontSize:'12px' }} min="0" step="0.5" />
+                                        <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>updateVariant(v.id,{ pieces_per_batch:Number(editVariantFields.pieces_per_batch||v.pieces_per_batch), selling_price:Number(editVariantFields.selling_price||v.selling_price) })}>✅ SAVE</button>
+                                        <button style={{ ...btnGray, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setEditingVariantId(null)}>✕</button>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div style={{ display:'flex', gap:'6px' }}>
+                                    {editingVariantId !== v.id && <button style={{ ...btnYellow, padding:'5px 10px', fontSize:'11px' }} onClick={()=>{ setEditingVariantId(v.id); setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price }) }}>✏️ EDIT</button>}
+                                    {!isEditing ? (
+                                      <button style={{ ...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasRecipe?variantRecipes[v.id].map(r=>({...r})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}>📖 {hasRecipe?'EDIT':'ADD'} RECIPE</button>
+                                    ) : (
+                                      <div style={{ display:'flex', gap:'6px' }}>
+                                        <button style={{ ...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?'⏳':'💾 SAVE'}</button>
+                                        <button style={{ ...btnGray, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>setSelectedRecipeVariantId(null)}>✕</button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                {isEditing && (
+                                  <div style={{ marginTop:'10px', background:'#f9f9f9', padding:'12px', borderRadius:'8px', border:'1px solid #eee' }}>
+                                    {editingVariantRecipe.map((row,ri)=>(
+                                      <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
+                                        <div>
+                                          <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingVariantRecipe]; upd[ri]={...upd[ri],inventory_item_id:e.target.value,item_name:inv?.name||upd[ri].item_name,unit:inv?.unit||upd[ri].unit}; setEditingVariantRecipe(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                                            <option value="">— Link inventory item —</option>
+                                            {inventoryItems.map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
+                                          </select>
+                                          <input placeholder="Ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],item_name:e.target.value};setEditingVariantRecipe(upd)}} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'3px' }} />
+                                        </div>
+                                        <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],quantity_per_batch:e.target.value};setEditingVariantRecipe(upd)}} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" step="0.01" />
+                                        <select value={row.unit||'g'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],unit:e.target.value};setEditingVariantRecipe(upd)}} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                                          {['g','kg','mL','L','pcs','tbsp','tsp','cups'].map(u=><option key={u} value={u}>{u}</option>)}
+                                        </select>
+                                        <select value={row.ingredient_type||'topping'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],ingredient_type:e.target.value};setEditingVariantRecipe(upd)}} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                                          <option value="topping">Topping</option>
+                                          <option value="filling">Filling</option>
+                                          <option value="glaze">Glaze</option>
+                                          <option value="coating">Coating</option>
+                                        </select>
+                                        <button onClick={()=>setEditingVariantRecipe(editingVariantRecipe.filter((_,j)=>j!==ri))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}>✕</button>
+                                      </div>
+                                    ))}
+                                    <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:'6px', fontSize:'11px' }} onClick={()=>setEditingVariantRecipe([...editingVariantRecipe, { item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }])}>+ ADD INGREDIENT</button>
+                                  </div>
+                                )}
+                                {/* Show existing recipe (read mode) */}
+                                {!isEditing && hasRecipe && (
+                                  <div style={{ marginTop:'8px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                                    {variantRecipes[v.id].map((r,ri)=>{
+                                      const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+                                      const cost = inv ? Number(r.quantity_per_batch||0)*Number(inv.cost_per_unit||0)/Math.max(1,Number(v.pieces_per_batch)) : 0
+                                      return (
+                                        <div key={ri} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+                                          <strong>{r.item_name}</strong>: {r.quantity_per_batch}{r.unit} <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({r.ingredient_type})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* ── PRODUCTION VIEW ── */}
+                {costingView==='production' && (
+                  <div>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+                      <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🏭 Daily Production Log</h3>
+                      <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setShowProductionForm(!showProductionForm)}>
+                        {showProductionForm?'✕ CANCEL':'+ LOG PRODUCTION'}
+                      </button>
+                    </div>
+
+                    {showProductionForm && (
+                      <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                        <h4 style={{ color:'#2d8a4e', margin:'0 0 14px', fontSize:'13px' }}>📋 Log Today's Production</h4>
+                        <label style={lblS}>Production Date:</label>
+                        <input type="date" value={prodDate} onChange={e=>setProdDate(e.target.value)} style={{ ...inputStyle, maxWidth:'200px' }} />
+                        <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>Variants Produced:</p>
+                        {prodEntries.map((entry,i)=>(
+                          <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr auto', gap:'8px', marginBottom:'8px', alignItems:'center' }}>
+                            <select value={entry.variant_id} onChange={e=>{ const upd=[...prodEntries]; upd[i]={...upd[i],variant_id:e.target.value}; setProdEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'12px' }}>
+                              <option value="">— Select variant —</option>
+                              {VARIANT_CATEGORIES.map(cat=>{
+                                const catV = donutVariants.filter(v=>v.category===cat)
+                                if (!catV.length) return null
+                                return <optgroup key={cat} label={cat}>{catV.map(v=><option key={v.id} value={v.id}>{v.name} (₱{v.selling_price})</option>)}</optgroup>
+                              })}
+                            </select>
+                            <input type="number" placeholder="Pieces" value={entry.pieces} onChange={e=>{ const upd=[...prodEntries]; upd[i]={...upd[i],pieces:e.target.value}; setProdEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'12px' }} min="1" />
+                            <button onClick={()=>setProdEntries(prodEntries.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}>✕</button>
+                          </div>
+                        ))}
+                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'12px', fontSize:'12px' }} onClick={()=>setProdEntries([...prodEntries, { variant_id:'', pieces:'' }])}>+ ADD VARIANT</button>
+
+                        {/* Production cost preview */}
+                        {prodEntries.some(e=>e.variant_id&&Number(e.pieces)>0) && (()=>{
+                          const validEntries = prodEntries.filter(e=>e.variant_id&&Number(e.pieces)>0)
+                          const totalPieces = validEntries.reduce((s,e)=>s+Number(e.pieces),0)
+                          const monthlyDepreciation = (Number(costSettings.fryer_cost)/(Number(costSettings.fryer_lifespan_years)*12))+(Number(costSettings.mixer_cost)/(Number(costSettings.mixer_lifespan_years)*12))+(Number(costSettings.sheeter_cost)/(Number(costSettings.sheeter_lifespan_years)*12))
+                          const monthlyFixed = Number(costSettings.monthly_rent)+Number(costSettings.monthly_electricity)+Number(costSettings.monthly_other_fixed)+monthlyDepreciation
+                          const overhead = monthlyFixed/Math.max(1,Number(costSettings.production_days_per_month))
+                          const labor = Number(costSettings.daily_labor_cost)
+                          let totalIngCost = 0
+                          validEntries.forEach(e=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); const cost=computeVariantCost(e.variant_id,v?.pieces_per_batch||12); totalIngCost += cost ? cost.ingredientCost*Number(e.pieces) : 0 })
+                          return (
+                            <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+                              <p style={{ fontWeight:'bold', fontSize:'13px', color:'#2d8a4e', margin:'0 0 8px' }}>📊 Production Cost Preview</p>
+                              <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'6px', fontSize:'12px' }}>
+                                <p style={cps}>Total pieces: <strong>{totalPieces.toLocaleString()}</strong></p>
+                                <p style={cps}>Ingredient cost: <strong>{php(totalIngCost)}</strong></p>
+                                <p style={cps}>Labor cost: <strong>{php(labor)}</strong></p>
+                                <p style={cps}>Overhead: <strong>{php(overhead)}</strong></p>
+                              </div>
+                              <div style={{ borderTop:'1px solid #c8e6c9', marginTop:'8px', paddingTop:'8px', display:'flex', justifyContent:'space-between' }}>
+                                <span style={{ fontWeight:'bold', color:'#2d8a4e' }}>Total Production Cost:</span>
+                                <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>{php(totalIngCost+labor+overhead)}</span>
+                              </div>
+                              <p style={{ color:'#888', fontSize:'11px', margin:'4px 0 0' }}>Cost per piece: {php((totalIngCost+labor+overhead)/Math.max(1,totalPieces))}</p>
+                            </div>
+                          )
+                        })()}
+
+                        <label style={lblS}>Notes (optional):</label>
+                        <input type="text" placeholder="e.g. Morning production, extra batch for orders" value={prodNotes} onChange={e=>setProdNotes(e.target.value)} style={inputStyle} />
+                        <button style={{ ...btnGreen, opacity:savingProduction?0.6:1 }} disabled={savingProduction} onClick={logProduction}>{savingProduction?'⏳ Saving...':'✅ CONFIRM PRODUCTION LOG'}</button>
+                      </div>
+                    )}
+
+                    {productionLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading...</p>}
+                    {!productionLoading && productionLogs.length === 0 && (
+                      <div style={{ textAlign:'center', padding:'30px', color:'#888' }}>
+                        <p style={{ fontSize:'28px', margin:'0 0 10px' }}>🏭</p>
+                        <p style={{ fontWeight:'bold', fontSize:'14px' }}>No production logs yet.</p>
+                        <p style={{ fontSize:'12px' }}>Start logging your daily production to track costs automatically.</p>
+                      </div>
+                    )}
+                    {productionLogs.map(log=>(
+                      <div key={log.id} style={{ ...cardS, border:'2px solid #2d8a4e', background:'#f0fff4', marginBottom:'12px' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                          <div>
+                            <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'15px', margin:'0 0 2px' }}>📅 {log.production_date}</p>
+                            <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{log.total_pieces?.toLocaleString()} pieces produced</p>
+                          </div>
+                          <div style={{ textAlign:'right' }}>
+                            <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:'0 0 2px' }}>{php(log.total_cost||0)}</p>
+                            <p style={{ color:'#888', fontSize:'11px', margin:0 }}>total cost</p>
+                          </div>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'6px', marginBottom:'8px' }}>
+                          {[['🥚 Ingredients',log.ingredient_cost],['👷 Labor',log.labor_cost],['🏭 Overhead',log.overhead_cost]].map(([l,v])=>(
+                            <div key={l} style={{ background:'white', borderRadius:'6px', padding:'6px 8px', textAlign:'center' }}>
+                              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 2px' }}>{l}</p>
+                              <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:0 }}>{php(v||0)}</p>
+                            </div>
+                          ))}
+                        </div>
+                        {log.notes && <p style={cps}>📝 {log.notes}</p>}
+                        {(log.production_log_items||[]).length > 0 && (
+                          <div style={{ marginTop:'8px' }}>
+                            <p style={{ fontSize:'11px', fontWeight:'bold', color:'#555', margin:'0 0 4px' }}>Variants produced:</p>
+                            <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                              {log.production_log_items.map(item=>(
+                                <div key={item.id} style={{ background:'white', borderRadius:'6px', padding:'3px 8px', fontSize:'11px', border:'1px solid #c8e6c9' }}>
+                                  <strong>{item.variant_name}</strong>: {item.pieces_produced?.toLocaleString()} pcs
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        <p style={{ ...cps, color:'#aaa', marginTop:'6px' }}>Logged by: {log.logged_by} on {new Date(log.created_at).toLocaleString()}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── SETTINGS VIEW ── */}
+                {costingView==='settings' && (
+                  <div>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px', flexWrap:'wrap', gap:'8px' }}>
+                      <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>⚙️ Cost Settings</h3>
+                      <p style={{ color:'#888', fontSize:'12px', margin:0 }}>All computations update instantly when you save.</p>
+                    </div>
+
+                    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginBottom:'14px' }}>
+                      <h4 style={{ color:'#7b4f9e', margin:'0 0 12px', fontSize:'13px' }}>👷 Labor & Production</h4>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                        <div><label style={lblS}>Daily Labor Cost (₱):</label><input type="number" value={costSettings.daily_labor_cost} onChange={e=>setCostSettings(p=>({...p,daily_labor_cost:Number(e.target.value)}))} style={inputStyle} min="0" /></div>
+                        <div><label style={lblS}>Total Daily Pieces (all variants):</label><input type="number" value={costSettings.total_daily_pieces} onChange={e=>setCostSettings(p=>({...p,total_daily_pieces:Number(e.target.value)}))} style={inputStyle} min="1" /></div>
+                        <div><label style={lblS}>Production Days per Month:</label><input type="number" value={costSettings.production_days_per_month} onChange={e=>setCostSettings(p=>({...p,production_days_per_month:Number(e.target.value)}))} style={inputStyle} min="1" max="31" /></div>
+                        <div><label style={lblS}>Waste / Loss Buffer (%):</label><input type="number" value={costSettings.waste_percentage} onChange={e=>setCostSettings(p=>({...p,waste_percentage:Number(e.target.value)}))} style={inputStyle} min="0" max="50" /></div>
+                        <div><label style={lblS}>Target Gross Margin (%):</label><input type="number" value={costSettings.target_margin_percentage} onChange={e=>setCostSettings(p=>({...p,target_margin_percentage:Number(e.target.value)}))} style={inputStyle} min="0" max="100" /></div>
+                      </div>
+                    </div>
+
+                    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginBottom:'14px' }}>
+                      <h4 style={{ color:'#4a90d9', margin:'0 0 12px', fontSize:'13px' }}>🏭 Monthly Fixed Overhead</h4>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                        <div><label style={lblS}>Monthly Rent (₱):</label><input type="number" value={costSettings.monthly_rent} onChange={e=>setCostSettings(p=>({...p,monthly_rent:Number(e.target.value)}))} style={inputStyle} min="0" /></div>
+                        <div><label style={lblS}>Monthly Electricity (₱):</label><input type="number" value={costSettings.monthly_electricity} onChange={e=>setCostSettings(p=>({...p,monthly_electricity:Number(e.target.value)}))} style={inputStyle} min="0" /></div>
+                        <div><label style={lblS}>Other Fixed Expenses / Loans (₱):</label><input type="number" value={costSettings.monthly_other_fixed} onChange={e=>setCostSettings(p=>({...p,monthly_other_fixed:Number(e.target.value)}))} style={inputStyle} min="0" /></div>
+                      </div>
+                    </div>
+
+                    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginBottom:'14px' }}>
+                      <h4 style={{ color:'#2d8a4e', margin:'0 0 12px', fontSize:'13px' }}>⚙️ Equipment Depreciation</h4>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px' }}>
+                        <div style={{ background:'#f9f9f9', borderRadius:'8px', padding:'12px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 8px' }}>🔥 Fryer</p>
+                          <label style={lblS}>Cost (₱):</label><input type="number" value={costSettings.fryer_cost} onChange={e=>setCostSettings(p=>({...p,fryer_cost:Number(e.target.value)}))} style={inputStyle} min="0" />
+                          <label style={lblS}>Lifespan (years):</label><input type="number" value={costSettings.fryer_lifespan_years} onChange={e=>setCostSettings(p=>({...p,fryer_lifespan_years:Number(e.target.value)}))} style={inputStyle} min="1" />
+                          <p style={{ color:'#ca1b1b', fontSize:'11px', margin:0 }}>= {php((Number(costSettings.fryer_cost)/(Number(costSettings.fryer_lifespan_years)*12)))}/month</p>
+                        </div>
+                        <div style={{ background:'#f9f9f9', borderRadius:'8px', padding:'12px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 8px' }}>🔧 Mixer</p>
+                          <label style={lblS}>Cost (₱):</label><input type="number" value={costSettings.mixer_cost} onChange={e=>setCostSettings(p=>({...p,mixer_cost:Number(e.target.value)}))} style={inputStyle} min="0" />
+                          <label style={lblS}>Lifespan (years):</label><input type="number" value={costSettings.mixer_lifespan_years} onChange={e=>setCostSettings(p=>({...p,mixer_lifespan_years:Number(e.target.value)}))} style={inputStyle} min="1" />
+                          <p style={{ color:'#ca1b1b', fontSize:'11px', margin:0 }}>= {php((Number(costSettings.mixer_cost)/(Number(costSettings.mixer_lifespan_years)*12)))}/month</p>
+                        </div>
+                        <div style={{ background:'#f9f9f9', borderRadius:'8px', padding:'12px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 8px' }}>📋 Dough Sheeter</p>
+                          <label style={lblS}>Cost (₱):</label><input type="number" value={costSettings.sheeter_cost} onChange={e=>setCostSettings(p=>({...p,sheeter_cost:Number(e.target.value)}))} style={inputStyle} min="0" />
+                          <label style={lblS}>Lifespan (years):</label><input type="number" value={costSettings.sheeter_lifespan_years} onChange={e=>setCostSettings(p=>({...p,sheeter_lifespan_years:Number(e.target.value)}))} style={inputStyle} min="1" />
+                          <p style={{ color:'#ca1b1b', fontSize:'11px', margin:0 }}>= {php((Number(costSettings.sheeter_cost)/(Number(costSettings.sheeter_lifespan_years)*12)))}/month</p>
+                        </div>
+                      </div>
+                      <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'10px', marginTop:'12px', border:'1px solid #f5c518' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 4px' }}>Total Monthly Depreciation:</p>
+                        <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:0 }}>{php((Number(costSettings.fryer_cost)/(Number(costSettings.fryer_lifespan_years)*12))+(Number(costSettings.mixer_cost)/(Number(costSettings.mixer_lifespan_years)*12))+(Number(costSettings.sheeter_cost)/(Number(costSettings.sheeter_lifespan_years)*12)))}/month</p>
+                      </div>
+                    </div>
+
+                    {/* Live BEP Preview */}
+                    {(()=>{
+                      const fin = computeFinancials()
+                      return (
+                        <div style={{ background:'linear-gradient(135deg,#1a1a2e,#16213e)', borderRadius:'14px', padding:'18px', marginBottom:'14px' }}>
+                          <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', fontWeight:'bold', letterSpacing:'1px', margin:'0 0 10px' }}>LIVE PREVIEW — UPDATES AS YOU TYPE</p>
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'10px' }}>
+                            {[
+                              ['Monthly Fixed Costs', php(fin.monthlyFixed)],
+                              ['Monthly Depreciation', php(fin.monthlyDepreciation)],
+                              ['Daily Fixed Cost', php(fin.dailyFixed)],
+                              ['Labor Per Piece', php(fin.laborPerPiece)],
+                              ['Fixed Per Piece', php(fin.fixedPerPiece)],
+                              ['Daily BEP', `${fin.dailyBEP} pieces`],
+                            ].map(([l,v])=>(
+                              <div key={l}>
+                                <p style={{ color:'rgba(255,255,255,0.5)', fontSize:'10px', margin:'0 0 2px' }}>{l}</p>
+                                <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0 }}>{v}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    <button style={{ ...btnGreen, opacity:savingCostSettings?0.6:1 }} disabled={savingCostSettings} onClick={saveCostSettings}>{savingCostSettings?'⏳ Saving...':'💾 SAVE ALL COST SETTINGS'}</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* SALES & RESELLERS */}
+            {activeTab==='sales' && (
+              <div>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
+                  <h2 style={h2s}>📈 Sales & Resellers</h2>
+                  {salesView==='financial' && financialData && <button style={{ ...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printPLReport}>🖨️ PRINT P&L</button>}
+                </div>
+
+                {/* Sub-navigation */}
+                <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(3,1fr)':'repeat(6,1fr)', gap:'8px', marginBottom:'20px' }}>
+                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['resellers','🏪 Resellers']].map(([v,l])=>(
+                    <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'9px 6px', borderRadius:'10px', border:`2px solid ${salesView===v?'#ca1b1b':'#ddd'}`, background:salesView===v?'#ca1b1b':'white', color:salesView===v?'white':'#555', fontWeight:'bold', fontSize:'11px', cursor:'pointer' }}>{l}</button>
+                  ))}
+                </div>
+
+                {/* ── FINANCIAL DASHBOARD ── */}
+                {salesView==='dashboard' && (
+                  <div>
+                    <div style={{ display:'flex', gap:'10px', alignItems:'center', marginBottom:'14px', flexWrap:'wrap' }}>
+                      <label style={{ fontSize:'13px', fontWeight:'bold', color:'#555' }}>Period:</label>
+                      <input type="month" value={financialMonth} onChange={e=>setFinancialMonth(e.target.value)} style={{ ...inputStyle, width:'auto', marginBottom:0 }} />
+                      <button style={{ ...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:financialLoading?0.6:1 }} disabled={financialLoading} onClick={loadFinancialData}>{financialLoading?'⏳ Loading...':'🔄 REFRESH'}</button>
+                    </div>
+                    {!financialData && !financialLoading && (
+                      <div style={{ textAlign:'center', padding:'40px', color:'#888' }}>
+                        <p style={{ fontSize:'28px', margin:'0 0 10px' }}>📊</p>
+                        <p style={{ fontWeight:'bold', fontSize:'14px' }}>Click Refresh to load financial data</p>
+                      </div>
+                    )}
+                    {financialData && (
+                      <div>
+                        {/* Revenue hero */}
+                        <div style={{ background:'linear-gradient(135deg,#ca1b1b,#8b0000)', borderRadius:'16px', padding:'20px', marginBottom:'14px', color:'white' }}>
+                          <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', fontWeight:'bold', letterSpacing:'1px', margin:'0 0 8px' }}>TOTAL REVENUE — {financialMonth}</p>
+                          <p style={{ fontSize:'36px', fontWeight:'bold', margin:'0 0 4px' }}>{php(financialData.totalRevenue)}</p>
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'10px', marginTop:'12px' }}>
+                            {[['🏪 Walk-in',financialData.walkinRevenue],['💬 Messenger',financialData.messengerRevenue],['🚚 Resellers',financialData.resellerRevenue]].map(([l,v])=>(
+                              <div key={l} style={{ background:'rgba(255,255,255,0.15)', borderRadius:'8px', padding:'8px', textAlign:'center' }}>
+                                <p style={{ fontSize:'10px', color:'rgba(255,255,255,0.7)', margin:'0 0 4px' }}>{l}</p>
+                                <p style={{ fontWeight:'bold', fontSize:'14px', margin:0 }}>{php(v||0)}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                        {/* P&L Cards */}
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+                          {[
+                            { label:'Total COGS', value:php(financialData.totalCOGS), color:'#ca1b1b', sub:'From production logs' },
+                            { label:'Gross Profit', value:php(financialData.grossProfit), color:financialData.grossProfit>=0?'#2d8a4e':'#ca1b1b', sub:`${financialData.grossMarginPct.toFixed(1)}% margin` },
+                            { label:'Add\'l Expenses', value:php(financialData.totalExpenses), color:'#f57c00', sub:'Fuel, misc, supplies' },
+                            { label:'Net Profit', value:php(financialData.netProfit), color:financialData.netProfit>=0?'#2d8a4e':'#ca1b1b', sub:`${financialData.netMarginPct.toFixed(1)}% net margin` },
+                          ].map(c=>(
+                            <div key={c.label} style={{ background:'white', border:`2px solid ${c.color}22`, borderRadius:'12px', padding:'14px' }}>
+                              <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>{c.label}</p>
+                              <p style={{ fontWeight:'bold', fontSize:'18px', color:c.color, margin:'0 0 2px' }}>{c.value}</p>
+                              <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{c.sub}</p>
+                            </div>
+                          ))}
+                        </div>
+                        {/* AR Warning */}
+                        {financialData.totalAR > 0 && (
+                          <div style={{ background:financialData.overdueAR>0?'#fff5f5':'#fff8dc', border:`2px solid ${financialData.overdueAR>0?'#ca1b1b':'#f5c518'}`, borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+                            <p style={{ fontWeight:'bold', color:financialData.overdueAR>0?'#ca1b1b':'#f57c00', fontSize:'13px', margin:'0 0 6px' }}>{financialData.overdueAR>0?'🔴':'🟡'} Accounts Receivable Outstanding</p>
+                            <div style={{ display:'flex', gap:'20px', flexWrap:'wrap' }}>
+                              <div><p style={{ color:'#888', fontSize:'11px', margin:0 }}>Total Outstanding</p><p style={{ fontWeight:'bold', fontSize:'16px', color:'#ca1b1b' }}>{php(financialData.totalAR)}</p></div>
+                              {financialData.overdueAR > 0 && <div><p style={{ color:'#888', fontSize:'11px', margin:0 }}>Overdue</p><p style={{ fontWeight:'bold', fontSize:'16px', color:'#ca1b1b' }}>{php(financialData.overdueAR)}</p></div>}
+                            </div>
+                            <p style={{ color:'#888', fontSize:'11px', margin:'6px 0 0' }}>Go to Receivables tab to see details and record payments.</p>
+                          </div>
+                        )}
+                        {/* Expense breakdown */}
+                        {financialData.expenseByCategory.length > 0 && (
+                          <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', marginBottom:'14px' }}>
+                            <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 12px' }}>💸 Expense Breakdown</p>
+                            {financialData.expenseByCategory.map(c=>(
+                              <div key={c.cat} style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:'1px solid #f0f0f0' }}>
+                                <span style={{ fontSize:'12px', color:'#555' }}>{c.cat}</span>
+                                <span style={{ fontWeight:'bold', fontSize:'12px', color:'#ca1b1b' }}>{php(c.total)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {/* Sales trend */}
+                        {financialData.salesByDay.length > 0 && (
+                          <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px' }}>
+                            <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 12px' }}>📈 Daily Revenue Trend ({financialData.salesDays} days encoded)</p>
+                            <div style={{ display:'flex', alignItems:'flex-end', gap:'3px', height:'80px', overflowX:'auto' }}>
+                              {(()=>{
+                                const maxRev = Math.max(...financialData.salesByDay.map(d=>d.revenue), 1)
+                                return financialData.salesByDay.map(d=>(
+                                  <div key={d.date} style={{ display:'flex', flexDirection:'column', alignItems:'center', minWidth:'28px' }}>
+                                    <div style={{ background:'#ca1b1b', width:'20px', borderRadius:'3px 3px 0 0', height:`${Math.max(4,(d.revenue/maxRev)*70)}px` }} title={`${d.date}: ${php(d.revenue)}`} />
+                                    <span style={{ fontSize:'8px', color:'#aaa', marginTop:'2px', transform:'rotate(-45deg)', transformOrigin:'top left', whiteSpace:'nowrap' }}>{d.date.slice(5)}</span>
+                                  </div>
+                                ))
+                              })()}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── DELIVERIES VIEW ── */}
+                {salesView==='deliveries' && (
+                  <div>
+                    {/* PRODUCTION FORECAST */}
+                    {(()=>{
+                      // Compute forecast from default orders
+                      const forecastMap = {}
+                      resellers.forEach(r => {
+                        const orders = resellerDefaultOrders[r.id] || []
+                        orders.forEach(o => {
+                          if (!forecastMap[o.variant_name]) forecastMap[o.variant_name] = { variant_name:o.variant_name, variant_id:o.variant_id, total:0, manual:0 }
+                          forecastMap[o.variant_name].total += Number(o.default_quantity||0)
+                        })
+                      })
+                      const forecastRows = Object.values(forecastMap).sort((a,b)=>a.variant_name.localeCompare(b.variant_name))
+                      const totalPieces = forecastRows.reduce((s,r)=>s+r.total,0)
+                      const printForecast = () => {
+                        const pw = window.open('','_blank','width=900,height=700')
+                        pw.document.write(`<!DOCTYPE html><html><head><title>Production Forecast</title>
+                          <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
+                          @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
+                          h1{font-size:18px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin-top:12px;}
+                          th{background:#ca1b1b;color:white;padding:6px 8px;text-align:left;font-size:10px;}
+                          td{padding:5px 8px;border-bottom:1px solid #eee;font-size:11px;}
+                          .total{background:#fff9e6;font-weight:bold;border-top:2px solid #ca1b1b;}
+                          </style></head><body>
+                          <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:16px;">
+                            <div><h1>Roma's Donuts</h1><div style="font-size:11px;color:#888;">Production Forecast — ${today}</div></div>
+                            <div style="text-align:right;"><div style="font-size:16px;font-weight:bold;color:#ca1b1b;">DAILY PRODUCTION ORDER</div></div>
+                          </div>
+                          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+                            <div style="background:#fff9e6;border:1px solid #ca1b1b;border-radius:6px;padding:10px;text-align:center;">
+                              <div style="font-size:10px;color:#888;margin-bottom:4px;">TOTAL PIECES TO PRODUCE</div>
+                              <div style="font-size:28px;font-weight:bold;color:#ca1b1b;">${totalPieces.toLocaleString()}</div>
+                            </div>
+                            <div style="background:#f0fff4;border:1px solid #2d8a4e;border-radius:6px;padding:10px;text-align:center;">
+                              <div style="font-size:10px;color:#888;margin-bottom:4px;">RESELLERS COVERED</div>
+                              <div style="font-size:28px;font-weight:bold;color:#2d8a4e;">${resellers.length}</div>
+                            </div>
+                          </div>
+                          <table>
+                            <tr><th>Variant</th><th style="text-align:right;">Total Pieces</th><th style="text-align:right;">Batches Needed</th><th style="text-align:center;">Actual Produced</th><th style="text-align:center;">Remarks</th></tr>
+                            ${forecastRows.map(r => {
+                              const variant = donutVariants.find(v=>v.id===r.variant_id)
+                              const ppb = variant?.pieces_per_batch || 12
+                              const batches = Math.ceil(r.total / ppb)
+                              return `<tr><td><strong>${r.variant_name}</strong></td><td style="text-align:right;font-weight:bold;">${r.total.toLocaleString()}</td><td style="text-align:right;">${batches} batch${batches!==1?'es':''}</td><td style="text-align:center;border:1px solid #ddd;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td><td style="text-align:center;border:1px solid #ddd;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td></tr>`
+                            }).join('')}
+                            <tr class="total"><td>TOTAL</td><td style="text-align:right;color:#ca1b1b;font-size:14px;">${totalPieces.toLocaleString()} pcs</td><td colspan="3"></td></tr>
+                          </table>
+                          <div style="margin-top:40px;display:flex;justify-content:space-between;">
+                            <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Prepared by / Date</div></div>
+                            <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Checked by / Date</div></div>
+                            <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Approved by / Date</div></div>
+                          </div>
+                          <div class="no-print" style="text-align:center;margin-top:20px;">
+                            <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT</button>
+                          </div>
+                        </body></html>`)
+                        pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+                      }
+                      return (
+                        <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'14px' }}>
+                            <div>
+                              <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}>📊 Production Forecast</h3>
+                              <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Based on all reseller default orders</p>
+                            </div>
+                            <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                              <div style={{ background:'#fff9e6', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 14px', textAlign:'center' }}>
+                                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 1px' }}>Total Pieces</p>
+                                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'20px', margin:0 }}>{totalPieces.toLocaleString()}</p>
+                              </div>
+                              <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={printForecast}>🖨️ PRINT</button>
+                            </div>
+                          </div>
+                          {forecastRows.length === 0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px', textAlign:'center', padding:'10px' }}>No default orders set. Go to Resellers tab and set default orders per reseller.</p>
+                          ) : (
+                            <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
+                              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', background:'#fff9e6', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#ca1b1b', letterSpacing:'0.5px' }}>
+                                <span>VARIANT</span><span style={{ textAlign:'right' }}>TOTAL PIECES</span><span style={{ textAlign:'right' }}>BATCHES</span>
+                              </div>
+                              {forecastRows.map((r,i)=>{
+                                const variant = donutVariants.find(v=>v.id===r.variant_id)
+                                const ppb = variant?.pieces_per_batch || 12
+                                const batches = Math.ceil(r.total/ppb)
+                                return (
+                                  <div key={r.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'8px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center' }}>
+                                    <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{r.variant_name}</span>
+                                    <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{r.total.toLocaleString()}</span>
+                                    <span style={{ textAlign:'right', fontSize:'12px', color:'#888' }}>{batches} batch{batches!==1?'es':''}</span>
+                                  </div>
+                                )
+                              })}
+                              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'10px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
+                                <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</span>
+                                <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{totalPieces.toLocaleString()}</span>
+                                <span style={{ textAlign:'right', fontSize:'12px', color:'#888' }}>{forecastRows.reduce((s,r)=>{ const v=donutVariants.find(dv=>dv.id===r.variant_id); return s+Math.ceil(r.total/(v?.pieces_per_batch||12)) },0)} batches</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
+
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+                      <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🚚 Delivery Invoices</h3>
+                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                        {deliveryInvoices.filter(i=>i.delivery_date===invoiceDate).length > 0 && (
+                          <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDate)}>🖨️ PRINT ALL ({invoiceDate})</button>
+                        )}
+                        <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowCreateInvoice(!showCreateInvoice); if(!showCreateInvoice){ setInvoiceResellerId(''); setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }]); setInvoiceNotes('') } }}>
+                          {showCreateInvoice?'✕ CANCEL':'+ CREATE INVOICE'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {showCreateInvoice && (
+                      <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                        <h4 style={{ color:'#2d8a4e', margin:'0 0 14px', fontSize:'13px' }}>📋 New Delivery Invoice</h4>
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+                          <div>
+                            <label style={lblS}>Reseller:</label>
+                            <select value={invoiceResellerId} onChange={e=>{ setInvoiceResellerId(e.target.value); buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
+                              <option value="">— Select reseller —</option>
+                              {resellers.map(r=><option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label style={lblS}>Delivery Date:</label>
+                            <input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={inputStyle} />
+                          </div>
+                        </div>
+                        {/* Invoice items */}
+                        <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>Items:</p>
+                        {/* Header */}
+                        <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
+                          {['Variant','Qty','Retail','Reseller (-20%)',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
+                        </div>
+                        {invoiceItems.map((item,i)=>{
+                          const variant = donutVariants.find(v=>v.id===item.variant_id)
+                          const retailPrice = variant?.selling_price || 0
+                          const resellerPrice = Math.round(retailPrice*0.80*100)/100
+                          return (
+                            <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
+                              <select value={item.variant_id} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...invoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                                <option value="">— Select —</option>
+                                {donutVariants.length === 0
+                                  ? <option disabled>⚠️ No variants loaded — go to Costing → Recipes → Load All Variants</option>
+                                  : donutVariants.map(v=><option key={v.id} value={v.id}>{v.name} — ₱{v.selling_price}</option>)
+                                }
+                              </select>
+                              <input type="number" value={item.quantity} onChange={e=>{ const upd=[...invoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'right' }} min="1" placeholder="0" />
+                              <span style={{ textAlign:'right', fontSize:'11px', color:'#888' }}>{php(retailPrice)}</span>
+                              <span style={{ textAlign:'right', fontSize:'11px', fontWeight:'bold', color:'#2d8a4e' }}>{php(resellerPrice)}</span>
+                              <button onClick={()=>setInvoiceItems(invoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}>✕</button>
+                            </div>
+                          )
+                        })}
+                        {/* Totals preview */}
+                        {invoiceItems.some(i=>i.variant_id&&Number(i.quantity)>0) && (()=>{
+                          const total = invoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const rp=Math.round((v?.selling_price||0)*0.80*100)/100; return s+rp*Number(i.quantity||0) },0)
+                          const pieces = invoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)
+                          return (
+                            <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', margin:'8px 0', border:'1px solid #c8e6c9', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                              <span style={{ fontSize:'12px', color:'#555' }}>{pieces.toLocaleString()} pieces</span>
+                              <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>Total: {php(total)}</span>
+                            </div>
+                          )
+                        })()}
+                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setInvoiceItems([...invoiceItems, { variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])}>+ ADD ITEM</button>
+                        <label style={lblS}>Notes (optional):</label>
+                        <input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
+                        <button style={{ ...btnGreen, opacity:savingInvoice?0.6:1 }} disabled={savingInvoice} onClick={createDeliveryInvoice}>{savingInvoice?'⏳ Creating...':'✅ CREATE & SAVE INVOICE'}</button>
+                      </div>
+                    )}
+
+                    {invoicesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading invoices...</p>}
+                    {!invoicesLoading && deliveryInvoices.length===0 && (
+                      <div style={{ textAlign:'center', padding:'30px', color:'#888' }}>
+                        <p style={{ fontSize:'28px', margin:'0 0 10px' }}>🧾</p>
+                        <p style={{ fontWeight:'bold', fontSize:'14px' }}>No invoices yet</p>
+                        <p style={{ fontSize:'12px' }}>Create your first delivery invoice above.</p>
+                      </div>
+                    )}
+                    {deliveryInvoices.map(inv=>{
+                      const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
+                      const isOverdue = inv.status!=='paid' && inv.due_date < today
+                      const statusColor = inv.status==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':'#f57c00'
+                      return (
+                        <div key={inv.id} style={{ ...cardS, border:`2px solid ${statusColor}44`, marginBottom:'12px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                            <div>
+                              <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 2px' }}>{inv.invoice_number}</p>
+                              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{inv.reseller_name}</p>
+                              <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Delivered: {inv.delivery_date} | Due: {inv.due_date}</p>
+                            </div>
+                            <div style={{ textAlign:'right' }}>
+                              <p style={{ fontWeight:'bold', fontSize:'18px', color:'#333', margin:'0 0 2px' }}>{php(inv.total_amount)}</p>
+                              <Badge label={isOverdue?'⚠️ OVERDUE':inv.status?.toUpperCase()} color={inv.status==='paid'?'green':isOverdue?'red':'yellow'} />
+                              {balance > 0 && balance < Number(inv.total_amount) && <p style={{ color:'#f57c00', fontSize:'11px', margin:'4px 0 0' }}>Balance: {php(balance)}</p>}
+                            </div>
+                          </div>
+                          {/* Items preview */}
+                          {(inv.delivery_invoice_items||[]).length > 0 && (
+                            <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'8px' }}>
+                              {inv.delivery_invoice_items.map(item=>(
+                                <div key={item.id} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'3px 8px', fontSize:'11px' }}>
+                                  <strong>{item.variant_name}</strong>: {item.quantity} pcs × {php(item.reseller_price)} = {php(item.total_price)}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'8px' }}>
+                            <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}>🖨️ PRINT</button>
+                            {inv.status!=='paid' && (
+                              <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowPaymentForm(p=>({...p,[inv.id]:!p[inv.id]}))}>💵 RECORD PAYMENT</button>
+                            )}
+                            {adminRole==='owner' && (
+                              <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>deleteInvoice(inv)}>🗑️ DELETE</button>
+                            )}
+                          </div>
+                          {showPaymentForm[inv.id] && (
+                            <div style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'10px', padding:'12px', marginTop:'10px' }}>
+                              <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'12px', margin:'0 0 8px' }}>Record Payment — Balance: {php(balance)}</p>
+                              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                                <div><label style={lblS}>Amount (₱):</label><input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="1" max={balance} placeholder={`Max: ${php(balance)}`} /></div>
+                                <div><label style={lblS}>Payment Date:</label><input type="date" value={paymentDate[inv.id]||today} onChange={e=>setPaymentDate(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                              </div>
+                              <label style={lblS}>Notes:</label>
+                              <input type="text" value={paymentNote[inv.id]||''} onChange={e=>setPaymentNote(p=>({...p,[inv.id]:e.target.value}))} placeholder="e.g. Cash, GCash, bank transfer" style={inputStyle} />
+                              <button style={{ ...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>recordPayment(inv)}>✅ CONFIRM PAYMENT</button>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* ── RECEIVABLES VIEW ── */}
+                {salesView==='receivables' && (
+                  <div>
+                    <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>💵 Accounts Receivable</h3>
+                    {/* AR Summary */}
+                    {(()=>{
+                      const unpaid = deliveryInvoices.filter(i=>i.status!=='paid')
+                      const totalAR = unpaid.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+                      const overdue = unpaid.filter(i=>i.due_date<today)
+                      const overdueAR = overdue.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+                      return (
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'10px', marginBottom:'16px' }}>
+                          <div style={{ background:'linear-gradient(135deg,#ca1b1b,#8b0000)', color:'white', borderRadius:'12px', padding:'14px', gridColumn:isMobile?'span 2':'span 1' }}>
+                            <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'0 0 4px' }}>TOTAL OUTSTANDING</p>
+                            <p style={{ fontWeight:'bold', fontSize:'24px', margin:0 }}>{php(totalAR)}</p>
+                            <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', margin:'4px 0 0' }}>{unpaid.length} unpaid invoice(s)</p>
+                          </div>
+                          <div style={{ background:overdueAR>0?'#fff5f5':'#f0fff4', border:`2px solid ${overdueAR>0?'#ca1b1b':'#2d8a4e'}`, borderRadius:'12px', padding:'14px' }}>
+                            <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px' }}>OVERDUE</p>
+                            <p style={{ fontWeight:'bold', fontSize:'22px', color:overdueAR>0?'#ca1b1b':'#2d8a4e', margin:0 }}>{php(overdueAR)}</p>
+                            <p style={{ color:'#888', fontSize:'11px', margin:'4px 0 0' }}>{overdue.length} invoice(s) past due</p>
+                          </div>
+                          <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'12px', padding:'14px' }}>
+                            <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px' }}>COLLECTED THIS MONTH</p>
+                            <p style={{ fontWeight:'bold', fontSize:'22px', color:'#2d8a4e', margin:0 }}>{php(deliveryInvoices.filter(i=>i.paid_date&&i.paid_date.startsWith(today.slice(0,7))).reduce((s,i)=>s+Number(i.paid_amount||0),0))}</p>
+                          </div>
+                        </div>
+                      )
+                    })()}
+                    {/* Filter */}
+                    <div style={{ display:'flex', gap:'8px', marginBottom:'14px', flexWrap:'wrap' }}>
+                      {[['all','All'],['unpaid','Unpaid'],['partial','Partial'],['overdue','Overdue'],['paid','Paid']].map(([v,l])=>(
+                        <button key={v} onClick={()=>setArFilter(v)} style={{ padding:'6px 14px', borderRadius:'20px', border:`2px solid ${arFilter===v?'#ca1b1b':'#ddd'}`, background:arFilter===v?'#ca1b1b':'white', color:arFilter===v?'white':'#555', fontSize:'12px', cursor:'pointer', fontWeight:'bold' }}>{l}</button>
+                      ))}
+                    </div>
+                    {(()=>{
+                      let filtered = deliveryInvoices
+                      if (arFilter==='unpaid') filtered = filtered.filter(i=>i.status==='unpaid')
+                      else if (arFilter==='partial') filtered = filtered.filter(i=>i.status==='partial')
+                      else if (arFilter==='overdue') filtered = filtered.filter(i=>i.status!=='paid'&&i.due_date<today)
+                      else if (arFilter==='paid') filtered = filtered.filter(i=>i.status==='paid')
+                      if (filtered.length===0) return <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No invoices found.</p>
+                      return filtered.map(inv=>{
+                        const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
+                        const isOverdue = inv.status!=='paid' && inv.due_date < today
+                        const daysOverdue = isOverdue ? Math.floor((new Date(today)-new Date(inv.due_date))/(1000*60*60*24)) : 0
+                        return (
+                          <div key={inv.id} style={{ ...cardS, border:`2px solid ${isOverdue?'#ca1b1b':inv.status==='paid'?'#2d8a4e':'#f5c518'}33`, marginBottom:'10px' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                              <div>
+                                <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{inv.reseller_name}</p>
+                                <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{inv.invoice_number} | Delivered: {inv.delivery_date} | Due: {inv.due_date}</p>
+                                {isOverdue && <p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'bold', margin:'2px 0 0' }}>⚠️ {daysOverdue} day(s) overdue</p>}
+                              </div>
+                              <div style={{ textAlign:'right' }}>
+                                <p style={{ fontWeight:'bold', fontSize:'16px', color:'#333', margin:'0 0 2px' }}>{php(inv.total_amount)}</p>
+                                {balance > 0 && balance < Number(inv.total_amount) && <p style={{ color:'#f57c00', fontSize:'11px', margin:0 }}>Balance: {php(balance)}</p>}
+                                <Badge label={isOverdue?'OVERDUE':inv.status?.toUpperCase()} color={inv.status==='paid'?'green':isOverdue?'red':'yellow'} />
+                              </div>
+                            </div>
+                            <div style={{ display:'flex', gap:'8px', marginTop:'8px', flexWrap:'wrap' }}>
+                              <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}>🖨️ PRINT</button>
+                              {inv.status!=='paid' && (
+                                <button style={{ ...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setShowPaymentForm(p=>({...p,[inv.id]:!p[inv.id]})); setSalesView('deliveries') }}>💵 RECORD PAYMENT</button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })
+                    })()}
+                  </div>
+                )}
+
+                {/* ── DAILY SALES VIEW ── */}
+                {salesView==='sales' && (
+                  <div>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+                      <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>📊 Daily Sales Encoder</h3>
+                      <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setShowSalesForm(!showSalesForm)}>{showSalesForm?'✕ CANCEL':'+ ENCODE TODAY\'S SALES'}</button>
+                    </div>
+                    {showSalesForm && (
+                      <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                        <h4 style={{ color:'#2d8a4e', margin:'0 0 14px', fontSize:'13px' }}>📋 End-of-Day Sales Entry</h4>
+                        <label style={lblS}>Sales Date:</label>
+                        <input type="date" value={salesDate} onChange={e=>setSalesDate(e.target.value)} style={{ ...inputStyle, maxWidth:'200px' }} />
+                        <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>Sales Entries:</p>
+                        <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
+                          {['Variant','Channel','Qty',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+                        </div>
+                        {salesEntries.map((entry,i)=>(
+                          <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
+                            <select value={entry.variant_id} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...salesEntries]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||'',unit_price:v?.selling_price||0}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                              <option value="">— Select variant —</option>
+                              {VARIANT_CATEGORIES.map(cat=>{ const cv=donutVariants.filter(v=>v.category===cat); if(!cv.length) return null; return <optgroup key={cat} label={cat}>{cv.map(v=><option key={v.id} value={v.id}>{v.name} (₱{v.selling_price})</option>)}</optgroup> })}
+                            </select>
+                            <select value={entry.channel} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],channel:e.target.value}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                              <option value="walkin">Walk-in</option>
+                              <option value="messenger">Messenger</option>
+                            </select>
+                            <input type="number" placeholder="Qty" value={entry.quantity} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],quantity:e.target.value}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="1" />
+                            <button onClick={()=>setSalesEntries(salesEntries.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'7px 9px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕</button>
+                          </div>
+                        ))}
+                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setSalesEntries([...salesEntries, { variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])}>+ ADD ROW</button>
+                        {salesEntries.some(e=>e.variant_id&&Number(e.quantity)>0) && (()=>{
+                          const walkin = salesEntries.filter(e=>e.channel==='walkin'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
+                          const messenger = salesEntries.filter(e=>e.channel==='messenger'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
+                          const resellerTotal = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
+                          return (
+                            <div style={{ background:'#e8f5e9', borderRadius:'10px', padding:'12px', marginBottom:'12px', border:'1px solid #c8e6c9' }}>
+                              <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>📊 Revenue Preview</p>
+                              <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'6px', fontSize:'12px' }}>
+                                <p style={cps}>Walk-in: <strong>{php(walkin)}</strong></p>
+                                <p style={cps}>Messenger: <strong>{php(messenger)}</strong></p>
+                                <p style={cps}>Reseller deliveries: <strong>{php(resellerTotal)}</strong></p>
+                                <p style={{ ...cps, fontWeight:'bold', color:'#ca1b1b' }}>Total: <strong>{php(walkin+messenger+resellerTotal)}</strong></p>
+                              </div>
+                            </div>
+                          )
+                        })()}
+                        <label style={lblS}>Notes:</label>
+                        <input type="text" value={salesNotes} onChange={e=>setSalesNotes(e.target.value)} placeholder="e.g. Rainy day, slow sales" style={inputStyle} />
+                        <button style={{ ...btnGreen, opacity:savingSales?0.6:1 }} disabled={savingSales} onClick={saveDailySales}>{savingSales?'⏳ Saving...':'✅ SAVE DAILY SALES'}</button>
+                      </div>
+                    )}
+                    {dailySalesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading...</p>}
+                    {!dailySalesLoading && dailySales.length===0 && <p style={{ color:'#aaa', textAlign:'center', padding:'30px', fontSize:'13px' }}>No sales encoded yet. Start encoding above.</p>}
+                    {dailySales.map(sale=>(
+                      <div key={sale.id} style={{ ...cardS, border:'2px solid #4a90d933', marginBottom:'10px' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                          <div>
+                            <p style={{ fontWeight:'bold', color:'#333', fontSize:'14px', margin:'0 0 2px' }}>📅 {sale.sale_date}</p>
+                            <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Encoded by: {sale.encoded_by}</p>
+                          </div>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'18px', margin:0 }}>{php(sale.total_revenue)}</p>
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'6px' }}>
+                          {[['🏪 Walk-in',sale.total_walkin],['💬 Messenger',sale.total_messenger],['🚚 Reseller',sale.total_reseller]].map(([l,v])=>(
+                            <div key={l} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'6px', textAlign:'center' }}>
+                              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 2px' }}>{l}</p>
+                              <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:0 }}>{php(v||0)}</p>
+                            </div>
+                          ))}
+                        </div>
+                        {sale.notes && <p style={{ ...cps, color:'#888', marginTop:'6px' }}>📝 {sale.notes}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── EXPENSES VIEW ── */}
+                {salesView==='expenses' && (
+                  <div>
+                    <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>💸 Daily Expenses</h3>
+                    <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+                      <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>➕ Add Expense</h4>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                        <div><label style={lblS}>Date:</label><input type="date" value={expenseForm.date} onChange={e=>setExpenseForm(p=>({...p,date:e.target.value}))} style={inputStyle} /></div>
+                        <div><label style={lblS}>Category:</label>
+                          <select value={expenseForm.category} onChange={e=>setExpenseForm(p=>({...p,category:e.target.value}))} style={inputStyle}>
+                            {EXPENSE_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+                          </select>
+                        </div>
+                        <div><label style={lblS}>Amount (₱):</label><input type="number" value={expenseForm.amount} onChange={e=>setExpenseForm(p=>({...p,amount:e.target.value}))} style={inputStyle} min="0" step="0.01" placeholder="0.00" /></div>
+                        <div><label style={lblS}>Description:</label><input type="text" value={expenseForm.description} onChange={e=>setExpenseForm(p=>({...p,description:e.target.value}))} style={inputStyle} placeholder="e.g. Fuel for delivery to resellers" /></div>
+                      </div>
+                      <button style={{ ...btnYellow, width:'auto', padding:'10px 20px', marginTop:'4px', opacity:savingExpense?0.6:1 }} disabled={savingExpense} onClick={saveExpense}>{savingExpense?'⏳ Saving...':'➕ ADD EXPENSE'}</button>
+                    </div>
+                    {expensesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading...</p>}
+                    {!expensesLoading && dailyExpenses.length===0 && <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No expenses recorded yet.</p>}
+                    {/* Pending approval banner for owner */}
+                    {adminRole==='owner' && dailyExpenses.filter(e=>e.status==='pending').length > 0 && (
+                      <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+                        <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:'0 0 10px' }}>🟡 {dailyExpenses.filter(e=>e.status==='pending').length} Expense(s) Awaiting Your Approval</p>
+                        {dailyExpenses.filter(e=>e.status==='pending').map(exp=>(
+                          <div key={exp.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'8px', border:'1px solid #f5c518' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                              <div>
+                                <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{exp.category}</p>
+                                <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{exp.expense_date} — {exp.description||'No description'} — by {exp.encoded_by}</p>
+                              </div>
+                              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:0 }}>{php(exp.amount)}</p>
+                            </div>
+                            {rejectingExpenseId===exp.id ? (
+                              <div>
+                                <input value={rejectExpenseReason} onChange={e=>setRejectExpenseReason(e.target.value)} placeholder="Reason for rejection..." style={{ ...inputStyle, marginBottom:'6px' }} />
+                                <div style={{ display:'flex', gap:'8px' }}>
+                                  <button style={{ ...btnRed, flex:1, marginTop:0, padding:'8px' }} onClick={()=>rejectExpense(exp.id)}>✕ CONFIRM REJECT</button>
+                                  <button style={{ ...btnGray, flex:1, marginTop:0, padding:'8px' }} onClick={()=>{ setRejectingExpenseId(null); setRejectExpenseReason('') }}>Cancel</button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ display:'flex', gap:'8px' }}>
+                                <button style={{ ...btnGreen, flex:1, marginTop:0, padding:'8px', fontSize:'12px' }} onClick={()=>approveExpense(exp.id)}>✅ APPROVE</button>
+                                <button style={{ ...btnRed, flex:1, marginTop:0, padding:'8px', fontSize:'12px' }} onClick={()=>setRejectingExpenseId(exp.id)}>✕ REJECT</button>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(()=>{
+                      const monthTotal = dailyExpenses.filter(e=>e.expense_date?.startsWith(today.slice(0,7))).reduce((s,e)=>s+Number(e.amount||0),0)
+                      return monthTotal > 0 && (
+                        <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'10px', padding:'12px', marginBottom:'12px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                          <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>This Month's Total Expenses:</span>
+                          <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'18px' }}>{php(monthTotal)}</span>
+                        </div>
+                      )
+                    })()}
+                    {dailyExpenses.filter(e=>e.status!=='pending'||adminRole==='owner').map(exp=>(
+                      <div key={exp.id} style={{ ...cardS, border:`1px solid ${exp.status==='rejected'?'#ffcdd2':exp.status==='pending'?'#f5c518':'#eee'}`, marginBottom:'8px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', background:exp.status==='rejected'?'#fff5f5':exp.status==='pending'?'#fffbf0':'white' }}>
+                        <div style={{ flex:1 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                            <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{exp.category}</p>
+                            <Badge label={exp.status==='approved'?'✅ Approved':exp.status==='pending'?'🟡 Pending':exp.status==='rejected'?'❌ Rejected':'✅'} color={exp.status==='approved'?'green':exp.status==='pending'?'yellow':'red'} />
+                          </div>
+                          <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{exp.expense_date} {exp.description?`— ${exp.description}`:''}</p>
+                          {exp.status==='rejected' && exp.rejection_reason && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'2px 0 0' }}>Rejected: {exp.rejection_reason}</p>}
+                        </div>
+                        <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+                          <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>{php(exp.amount)}</span>
+                          {adminRole==='owner' && <button onClick={()=>deleteExpense(exp.id)} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'5px 8px', cursor:'pointer', fontSize:'12px' }}>🗑️</button>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── RESELLERS VIEW ── */}
+                {salesView==='resellers' && (
+                  <div>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+                      <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🏪 Reseller Management ({resellers.length})</h3>
+                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' }) }}>
+                        {showResellerForm?'✕ CANCEL':'+ ADD RESELLER'}
+                      </button>
+                    </div>
+                    {showResellerForm && (
+                      <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                        <h4 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'13px' }}>{editingResellerId?'✏️ Edit Reseller':'➕ Add New Reseller'}</h4>
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                          <div><label style={lblS}>Reseller Name: *</label><input value={resellerForm.name} onChange={e=>setResellerForm(p=>({...p,name:e.target.value}))} style={inputStyle} placeholder="e.g. Aling Rosa's Store" /></div>
+                          <div><label style={lblS}>Area / Location:</label><input value={resellerForm.area} onChange={e=>setResellerForm(p=>({...p,area:e.target.value}))} style={inputStyle} placeholder="e.g. Dagupan City" /></div>
+                          <div><label style={lblS}>Contact Person:</label><input value={resellerForm.contact_person} onChange={e=>setResellerForm(p=>({...p,contact_person:e.target.value}))} style={inputStyle} placeholder="Name of contact" /></div>
+                          <div><label style={lblS}>Phone Number:</label><input value={resellerForm.phone} onChange={e=>setResellerForm(p=>({...p,phone:e.target.value}))} style={inputStyle} placeholder="09XX-XXX-XXXX" /></div>
+                          <div><label style={lblS}>Address:</label><input value={resellerForm.address} onChange={e=>setResellerForm(p=>({...p,address:e.target.value}))} style={inputStyle} placeholder="Full delivery address" /></div>
+                          <div><label style={lblS}>Delivery Day:</label>
+                            <select value={resellerForm.delivery_day} onChange={e=>setResellerForm(p=>({...p,delivery_day:e.target.value}))} style={inputStyle}>
+                              {WEEK_DAYS.map(d=><option key={d} value={d}>{d}</option>)}
+                              <option value="Daily">Daily</option>
+                              <option value="As needed">As needed</option>
+                            </select>
+                          </div>
+                        </div>
+                        <button style={{ ...btnRed, width:'auto', padding:'10px 20px', marginTop:'8px' }} onClick={saveReseller}>💾 {editingResellerId?'UPDATE RESELLER':'SAVE RESELLER'}</button>
+                      </div>
+                    )}
+                    {resellersLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading...</p>}
+                    {resellers.map(r=>{
+                      const rInvoices = deliveryInvoices.filter(i=>i.reseller_id===r.id)
+                      const rAR = rInvoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+                      const isEditingOrder = editingDefaultOrder===r.id
+                      return (
+                        <div key={r.id} style={{ ...cardS, border:`2px solid ${rAR>0?'#f5c51844':'#ca1b1b22'}`, marginBottom:'12px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
+                            <div>
+                              <p style={{ fontWeight:'bold', fontSize:'15px', color:'#ca1b1b', margin:'0 0 2px' }}>{r.name}</p>
+                              <p style={{ color:'#888', fontSize:'12px', margin:'0 0 2px' }}>📍 {r.area||'—'} | 📅 Delivery: {r.delivery_day}</p>
+                              <p style={{ color:'#888', fontSize:'12px', margin:0 }}>👤 {r.contact_person||'—'} | 📞 {r.phone||'—'}</p>
+                            </div>
+                            <div style={{ textAlign:'right' }}>
+                              {rAR > 0 && <div style={{ marginBottom:'4px' }}><Badge label={`AR: ${php(rAR)}`} color="yellow" /></div>}
+                              <Badge label={`${rInvoices.length} invoice(s)`} color="gray" />
+                            </div>
+                          </div>
+                          {/* Default order */}
+                          <div style={{ background:'#f9f9f9', borderRadius:'8px', padding:'10px', marginBottom:'8px' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
+                              <span style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>📋 Default Order Template</span>
+                              {!isEditingOrder ? (
+                                <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingDefaultOrder(r.id); setDefaultOrderItems(resellerDefaultOrders[r.id]?.map(i=>({...i}))||[{ variant_id:'', variant_name:'', default_quantity:'' }]) }}>✏️ EDIT</button>
+                              ) : (
+                                <div style={{ display:'flex', gap:'6px' }}>
+                                  <button style={{ ...btnGreen, width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>saveDefaultOrder(r.id)}>💾 SAVE</button>
+                                  <button style={{ ...btnGray, width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>setEditingDefaultOrder(null)}>✕</button>
+                                </div>
+                              )}
+                            </div>
+                            {isEditingOrder ? (
+                              <div>
+                                {defaultOrderItems.map((item,i)=>(
+                                  <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
+                                    <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...defaultOrderItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setDefaultOrderItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                                      <option value="">— Select variant —</option>
+                                      {VARIANT_CATEGORIES.filter(c=>c!=='Giant').map(cat=>{ const cv=donutVariants.filter(v=>v.category===cat); if(!cv.length) return null; return <optgroup key={cat} label={cat}>{cv.map(v=><option key={v.id} value={v.id}>{v.name} (₱{v.selling_price})</option>)}</optgroup> })}
+                                    </select>
+                                    <input type="number" placeholder="Qty" value={item.default_quantity||''} onChange={e=>{ const upd=[...defaultOrderItems]; upd[i]={...upd[i],default_quantity:e.target.value}; setDefaultOrderItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="1" />
+                                    <button onClick={()=>setDefaultOrderItems(defaultOrderItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}>✕</button>
+                                  </div>
+                                ))}
+                                <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:'4px', fontSize:'11px' }} onClick={()=>setDefaultOrderItems([...defaultOrderItems, { variant_id:'', variant_name:'', default_quantity:'' }])}>+ ADD</button>
+                              </div>
+                            ) : (resellerDefaultOrders[r.id]||[]).length > 0 ? (
+                              <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                                {resellerDefaultOrders[r.id].map(item=>(
+                                  <div key={item.id} style={{ background:'white', borderRadius:'6px', padding:'3px 8px', fontSize:'11px', border:'1px solid #ddd' }}>
+                                    <strong>{item.variant_name}</strong>: {item.default_quantity} pcs
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p style={{ color:'#aaa', fontSize:'11px', fontStyle:'italic', margin:0 }}>No default order set. Click Edit to define.</p>
+                            )}
+                          </div>
+                          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                            <button style={{ ...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setInvoiceResellerId(r.id); buildInvoiceFromReseller(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>🚚 CREATE DELIVERY</button>
+                            <button style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingResellerId(r.id); setResellerForm({ name:r.name, area:r.area||'', contact_person:r.contact_person||'', phone:r.phone||'', address:r.address||'', delivery_day:r.delivery_day||'Monday' }); setShowResellerForm(true) }}>✏️ EDIT</button>
+                            <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>deleteReseller(r)}>🗑️</button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                    {resellers.length===0 && !resellersLoading && (
+                      <div style={{ textAlign:'center', padding:'30px', color:'#888' }}>
+                        <p style={{ fontSize:'28px', margin:'0 0 10px' }}>🏪</p>
+                        <p style={{ fontWeight:'bold', fontSize:'14px' }}>No resellers yet</p>
+                        <p style={{ fontSize:'12px' }}>Add your 16 resellers above.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+          </div>
           </div>
         </div>
       </div>
@@ -3724,36 +7181,30 @@ export default function App() {
   if (employee) {
     const onBreak = todayBreaks.length>0 && !todayBreaks[todayBreaks.length-1]?.break_in
     const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
-
     return (
-      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
-        {/* Sticky Header */}
-        <div style={{ background:'rgba(0,0,0,0.25)', backdropFilter:'blur(8px)', padding:'10px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, zIndex:100 }}>
+      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f0f2f5', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+        {/* Header */}
+        <div style={{ background:'#1a1a2e', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, zIndex:100, boxShadow:'0 2px 8px rgba(0,0,0,0.3)' }}>
           <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
             <div style={{ position:'relative' }}>
               {profilePhotoUrl ?
-                <img src={profilePhotoUrl} alt="Profile" style={{ width:'40px', height:'40px', borderRadius:'50%', objectFit:'cover', border:'2px solid white' }} /> :
-                <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:'rgba(255,255,255,0.3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', border:'2px solid white' }}>👤</div>
+                <img src={profilePhotoUrl} alt="Profile" style={{ width:'40px', height:'40px', borderRadius:'50%', objectFit:'cover', border:'2px solid #ca1b1b' }} /> :
+                <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:'#ca1b1b', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', border:'2px solid rgba(255,255,255,0.2)' }}>👤</div>
               }
-              <label style={{ position:'absolute', bottom:'-2px', right:'-2px', background:'#ca1b1b', color:'white', borderRadius:'50%', width:'18px', height:'18px', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:'9px', border:'1px solid white' }}>
+              <label style={{ position:'absolute', bottom:'-2px', right:'-2px', background:'#ca1b1b', color:'white', borderRadius:'50%', width:'16px', height:'16px', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:'8px', border:'1px solid #1a1a2e' }}>
                 📷<input type="file" accept="image/*" onChange={handleProfilePhotoUpload} style={{ display:'none' }} />
               </label>
             </div>
             <div>
-              <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0 }}>{employee.full_name}</p>
-              <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', margin:0 }}>{employee.position} — {employee.employee_code}</p>
+              <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0, letterSpacing:'0.3px' }}>{employee.full_name}</p>
+              <p style={{ color:'rgba(255,255,255,0.5)', fontSize:'11px', margin:0 }}>{employee.position} · {employee.employee_code}</p>
             </div>
           </div>
           <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
             {cameFromAdmin && (
-              <button style={{ background:'white', color:'#ca1b1b', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}>← ADMIN</button>
+              <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}>← Admin</button>
             )}
-            {!cameFromAdmin && (
-              <button style={{ background:'rgba(255,255,255,0.2)', color:'white', border:'1px solid rgba(255,255,255,0.5)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={logout}>🚪 LOGOUT</button>
-            )}
-            {cameFromAdmin && (
-              <button style={{ background:'rgba(255,255,255,0.2)', color:'white', border:'1px solid rgba(255,255,255,0.5)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }}>🚪 LOGOUT</button>
-            )}
+            <button style={{ background:'rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.8)', border:'1px solid rgba(255,255,255,0.2)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={cameFromAdmin?()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }:logout}>Logout</button>
           </div>
         </div>
 
@@ -3775,16 +7226,17 @@ export default function App() {
         )}
 
         {/* Scrollable Content Area */}
-        <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'24px', display:'flex', justifyContent:'center' }}>
-        <div style={{ background:'white', borderRadius:isMobile?'16px':'20px', padding:isMobile?'16px':'24px', width:'100%', maxWidth:'600px', boxShadow:'0 10px 40px rgba(0,0,0,0.2)', marginBottom:'16px' }}>
+        <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'20px', display:'flex', justifyContent:'center' }}>
+        <div style={{ background:'white', borderRadius:'16px', padding:isMobile?'16px':'20px', width:'100%', maxWidth:'560px', boxShadow:'0 4px 20px rgba(0,0,0,0.08)', marginBottom:'16px', border:'1px solid #eee' }}>
         {uploadingPhoto && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 8px', textAlign:'center' }}>⏳ Uploading photo...</p>}
         {cameFromAdmin && (
-            <div style={{ background:'#ca1b1b', borderRadius:'10px', padding:'8px 14px', marginBottom:'14px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-              <span style={{ color:'white', fontWeight:'bold', fontSize:'12px' }}>👑 Admin View — {adminRole?.toUpperCase()}</span>
+            <div style={{ background:'#1a1a2e', borderRadius:'10px', padding:'8px 14px', marginBottom:'14px', display:'flex', alignItems:'center', gap:'8px' }}>
+              <span style={{ fontSize:'16px' }}>👑</span>
+              <span style={{ color:'white', fontWeight:'bold', fontSize:'12px' }}>Admin View — {adminRole?.toUpperCase()}</span>
             </div>
           )}
           <div style={{ textAlign:'center', marginBottom:'12px' }}>
-            <p style={{ color:'#888', margin:'0', fontSize:'13px' }}>{employee.position} — {employee.employee_code}</p>
+            <p style={{ color:'#888', margin:'0', fontSize:'12px', letterSpacing:'0.5px', textTransform:'uppercase' }}>{employee.position} · {employee.employee_code}</p>
           </div>
 
           {!isOnline && (
@@ -3803,53 +7255,93 @@ export default function App() {
           )}
           {geoStatus && <p style={{ color:'#f5a623', textAlign:'center', fontWeight:'bold', fontSize:'13px', margin:'0 0 8px' }}>{geoStatus}</p>}
 
-          <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'12px', marginBottom:'10px' }}>
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>📅 Shift: <strong>{todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Assigned Shift'}</strong></p>
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>🟢 In: <strong>{todayLog?.time_in||'Not yet'}</strong> &nbsp; 🔴 Out: <strong>{todayLog?.time_out||'Not yet'}</strong></p>
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>☕ Break: <strong>{totalBreakMins} min used</strong>
-              {totalBreakMins>60&&!onBreak&&<span style={{ color:'#ca1b1b', fontWeight:'bold', marginLeft:'6px' }}>⚠️ Exceeded 60min limit</span>}
-            </p>
+          <div style={{ background:'#f8f9fa', borderRadius:'12px', padding:'14px', marginBottom:'12px', border:'1px solid #eee' }}>
+            <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Today's Attendance</p>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
+              <div style={{ background:'white', borderRadius:'8px', padding:'8px 10px', border:'1px solid #eee' }}>
+                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Shift</p>
+                <p style={{ fontWeight:'bold', color:'#1a1a2e', fontSize:'12px', margin:0 }}>{todaySchedule?`${todaySchedule.shift_start} – ${todaySchedule.shift_end}`:'No Shift'}</p>
+              </div>
+              <div style={{ background:'white', borderRadius:'8px', padding:'8px 10px', border:'1px solid #eee' }}>
+                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Status</p>
+                <p style={{ fontWeight:'bold', color:todayLog?.status==='Absent'?'#ca1b1b':todayLog?.status==='Late'?'#f57c00':todayLog?.status?'#2d8a4e':'#888', fontSize:'12px', margin:0 }}>{todayLog?.status||'No record yet'}</p>
+              </div>
+              <div style={{ background:'white', borderRadius:'8px', padding:'8px 10px', border:'1px solid #eee' }}>
+                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Time In</p>
+                <p style={{ fontWeight:'bold', color:todayLog?.time_in?'#2d8a4e':'#bbb', fontSize:'13px', margin:0 }}>{todayLog?.time_in||'—'}</p>
+              </div>
+              <div style={{ background:'white', borderRadius:'8px', padding:'8px 10px', border:'1px solid #eee' }}>
+                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Time Out</p>
+                <p style={{ fontWeight:'bold', color:todayLog?.time_out?'#ca1b1b':'#bbb', fontSize:'13px', margin:0 }}>{todayLog?.time_out||'—'}</p>
+              </div>
+            </div>
+            <div style={{ background:'white', borderRadius:'8px', padding:'8px 10px', border:'1px solid #eee', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <span style={{ color:'#888', fontSize:'11px' }}>Break used</span>
+              <span style={{ fontWeight:'bold', color:totalBreakMins>60?'#ca1b1b':'#1a1a2e', fontSize:'12px' }}>{totalBreakMins} min {totalBreakMins>60&&!onBreak?'⚠️ Over limit':''}</span>
+            </div>
             {onBreak && (
-              <div style={{ background: breakTimerSeconds >= 3600 ? '#ca1b1b' : breakTimerSeconds >= 3000 ? '#f5a623' : '#2d8a4e', borderRadius:'10px', padding:'10px 14px', margin:'6px 0', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              <div style={{ background:breakTimerSeconds>=3600?'#ca1b1b':breakTimerSeconds>=3000?'#f57c00':'#2d8a4e', borderRadius:'10px', padding:'10px 14px', marginTop:'8px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                 <div>
-                  <p style={{ color:'white', fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>☕ Currently on Break</p>
-                  <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', margin:0 }}>
-                    {breakTimerSeconds >= 3600 ? '🚨 OVERTIME! Please Break In now!' : breakTimerSeconds >= 3000 ? '⚠️ Almost at 60min limit!' : '✅ Within allowed break time'}
-                  </p>
+                  <p style={{ color:'white', fontWeight:'bold', fontSize:'12px', margin:'0 0 2px' }}>On Break</p>
+                  <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', margin:0 }}>{breakTimerSeconds>=3600?'🚨 Overtime — Return now!':breakTimerSeconds>=3000?'⚠️ Almost at limit':'Within allowed time'}</p>
                 </div>
-                <div style={{ textAlign:'right' }}>
-                  <p style={{ color:'white', fontWeight:'bold', fontSize:'22px', margin:0, fontFamily:'monospace' }}>
-                    {String(Math.floor(breakTimerSeconds/60)).padStart(2,'0')}:{String(breakTimerSeconds%60).padStart(2,'0')}
-                  </p>
-                  <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:0 }}>/ 60:00 allowed</p>
-                </div>
+                <p style={{ color:'white', fontWeight:'bold', fontSize:'22px', margin:0, fontFamily:'monospace' }}>{String(Math.floor(breakTimerSeconds/60)).padStart(2,'0')}:{String(breakTimerSeconds%60).padStart(2,'0')}</p>
               </div>
             )}
-            {todayBreaks.length>0&&todayBreaks.map((b,i)=>(
-              <p key={b.id} style={{ margin:'2px 0', fontSize:'11px', color:'#888' }}>Break {i+1}: {b.break_out} {b.break_in?`→ ${b.break_in} (${b.break_minutes}min)`:'→ ongoing'}</p>
-            ))}
-            <p style={{ margin:'3px 0', fontSize:'13px' }}>📌 Status: <strong>{todayLog?.status||'No record yet'}</strong></p>
-            {(todayLog?.selfie_in_url||todayLog?.selfie_out_url)&&(
+            {todayBreaks.length>0 && <div style={{ marginTop:'6px' }}>{todayBreaks.map((b,i)=><p key={b.id} style={{ margin:'1px 0', fontSize:'10px', color:'#aaa' }}>Break {i+1}: {b.break_out} {b.break_in?`→ ${b.break_in} (${b.break_minutes}min)`:'→ ongoing'}</p>)}</div>}
+            {(todayLog?.selfie_in_url||todayLog?.selfie_out_url) && (
               <div style={{ display:'flex', gap:'8px', marginTop:'8px' }}>
-                {todayLog?.selfie_in_url&&<img src={todayLog.selfie_in_url} alt="IN" style={{ width:'50px', height:'50px', objectFit:'cover', borderRadius:'8px', border:'2px solid #2d8a4e' }} />}
-                {todayLog?.selfie_out_url&&<img src={todayLog.selfie_out_url} alt="OUT" style={{ width:'50px', height:'50px', objectFit:'cover', borderRadius:'8px', border:'2px solid #ca1b1b' }} />}
+                {todayLog?.selfie_in_url&&<img src={todayLog.selfie_in_url} alt="IN" style={{ width:'44px', height:'44px', objectFit:'cover', borderRadius:'8px', border:'2px solid #2d8a4e' }} />}
+                {todayLog?.selfie_out_url&&<img src={todayLog.selfie_out_url} alt="OUT" style={{ width:'44px', height:'44px', objectFit:'cover', borderRadius:'8px', border:'2px solid #ca1b1b' }} />}
               </div>
             )}
           </div>
 
-          <div style={{ background:'#e8f5e9', borderRadius:'10px', padding:'8px 14px', marginBottom:'10px', display:'flex', gap:'20px', justifyContent:'center' }}>
-            <div style={{ textAlign:'center' }}><p style={{ fontSize:'11px', color:'#888', margin:'0 0 2px' }}>Sick Leave</p><p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'16px', margin:0 }}>{myLeaveBalance.sick}d</p></div>
-            <div style={{ textAlign:'center' }}><p style={{ fontSize:'11px', color:'#888', margin:'0 0 2px' }}>Vacation Leave</p><p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'16px', margin:0 }}>{myLeaveBalance.vacation}d</p></div>
+          <div style={{ background:'#f8f9fa', borderRadius:'12px', padding:'12px 14px', marginBottom:'14px', border:'1px solid #eee', display:'flex', gap:'12px', justifyContent:'center' }}>
+            <div style={{ textAlign:'center', flex:1 }}>
+              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Sick Leave</p>
+              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'22px', margin:0, lineHeight:1 }}>{myLeaveBalance.sick}</p>
+              <p style={{ fontSize:'10px', color:'#aaa', margin:'2px 0 0' }}>days left</p>
+            </div>
+            <div style={{ width:'1px', background:'#eee' }} />
+            <div style={{ textAlign:'center', flex:1 }}>
+              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Vacation Leave</p>
+              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'22px', margin:0, lineHeight:1 }}>{myLeaveBalance.vacation}</p>
+              <p style={{ fontSize:'10px', color:'#aaa', margin:'2px 0 0' }}>days left</p>
+            </div>
           </div>
 
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'6px' }}>
-            <button style={{ ...btnGreen, margin:0, opacity:todayLog?0.5:1, fontSize:'13px' }} onClick={initiateTimeIn} disabled={loading||!!todayLog}>⏰ TIME IN</button>
-            <button style={{ ...btnBlack, margin:0, opacity:(!todayLog||!!todayLog?.time_out)?0.5:1, fontSize:'13px' }} onClick={initiateTimeOut} disabled={loading||!todayLog||!!todayLog?.time_out}>⏰ TIME OUT</button>
-            <button style={{ background:'#4a90d9', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:(!todayLog||!!todayLog?.time_out||onBreak)?0.5:1 }} onClick={initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out||onBreak}>☕ BREAK OUT</button>
-            <button style={{ background:'#f5a623', color:'white', padding:'11px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', opacity:!onBreak?0.5:1 }} onClick={initiateBreakIn} disabled={!onBreak}>☕ BREAK IN</button>
+          {/* Primary Time Actions */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
+            <button style={{ background:todayLog?'#f0f0f0':'#ca1b1b', color:todayLog?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:todayLog?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={initiateTimeIn} disabled={loading||!!todayLog}>⏱ TIME IN</button>
+            <button style={{ background:(!todayLog||!!todayLog?.time_out)?'#f0f0f0':'#1a1a2e', color:(!todayLog||!!todayLog?.time_out)?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={initiateTimeOut} disabled={loading||!todayLog||!!todayLog?.time_out}>⏱ TIME OUT</button>
+            <button style={{ background:(!todayLog||!!todayLog?.time_out||onBreak)?'#f0f0f0':'#4a90d9', color:(!todayLog||!!todayLog?.time_out||onBreak)?'#aaa':'white', padding:'11px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||onBreak)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out||onBreak}>☕ BREAK OUT</button>
+            <button style={{ background:!onBreak?'#f0f0f0':'#2d8a4e', color:!onBreak?'#aaa':'white', padding:'11px', border:'none', borderRadius:'10px', cursor:!onBreak?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={initiateBreakIn} disabled={!onBreak}>☕ BREAK IN</button>
           </div>
-          <button style={{ background:'#8b5cf6', color:'white', padding:'11px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginBottom:'4px', opacity:(!todayLog||!todayLog?.time_out)?0.5:1 }} onClick={()=>{ closeAllPanels(); setShowOTRequest(!showOTRequest) }} disabled={!todayLog||!todayLog?.time_out}>📝 FILE OT / UNDERTIME REQUEST</button>
-          <p style={{ color:'#888', fontSize:'11px', textAlign:'center', margin:'2px 0 10px' }}>📸 Selfie required | 📍 Must be at store location</p>
+          <p style={{ color:'#bbb', fontSize:'11px', textAlign:'center', margin:'0 0 16px' }}>📸 Selfie required · 📍 Store location required</p>
+
+          {/* Secondary Actions Grid */}
+          <div style={{ borderTop:'1px solid #f0f0f0', paddingTop:'14px', marginBottom:'8px' }}>
+            <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Quick Actions</p>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px' }}>
+              {[
+                { label:'OT / UT', icon:'📝', action:()=>{ closeAllPanels(); setShowOTRequest(!showOTRequest) }, disabled:!todayLog||!todayLog?.time_out },
+                { label:'File Leave', icon:'🏖️', action:()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }, disabled:false },
+                { label:'Cash Advance', icon:'💵', action:()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }, disabled:false },
+                { label:'My Payslips', icon:'💰', action:()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }, disabled:false },
+                { label:'Attendance', icon:'📋', action:()=>{ closeAllPanels(); setShowMyAttendance(!showMyAttendance) }, disabled:false },
+                { label:'My Profile', icon:'👤', action:()=>setShowMyProfile(!showMyProfile), disabled:false },
+              ].map(btn=>(
+                <button key={btn.label} onClick={btn.action} disabled={btn.disabled} style={{ background:btn.disabled?'#f8f8f8':'white', color:btn.disabled?'#ccc':'#333', border:`1px solid ${btn.disabled?'#f0f0f0':'#e0e0e0'}`, borderRadius:'10px', padding:'10px 6px', cursor:btn.disabled?'not-allowed':'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:'4px', transition:'all 0.15s' }}>
+                  <span style={{ fontSize:'18px' }}>{btn.icon}</span>
+                  <span style={{ fontSize:'10px', fontWeight:'bold', textAlign:'center', letterSpacing:'0.3px' }}>{btn.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          {employee?.is_admin && (
+            <button style={{ background:'#1a1a2e', color:'white', padding:'11px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:'8px', letterSpacing:'0.5px' }} onClick={()=>openAdmin('owner')}>🔧 ADMIN PANEL</button>
+          )}
 
           {showOTRequest && (
             <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginBottom:'8px' }}>
@@ -3904,20 +7396,22 @@ export default function App() {
             </div>
           )}
 
-          <button style={{ ...btnRed, background:'#ca1b1b' }} onClick={()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }}>🏖️ FILE LEAVE REQUEST</button>
           {showLeaveRequest && (
-            <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginTop:'8px' }}>
-              <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowLeaveRequest(false)}>← BACK</button>
+            <div style={{ background:'#f8f9fa', padding:'14px', borderRadius:'12px', border:'1px solid #eee', marginTop:'8px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px' }}>
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:0 }}>🏖️ File Leave Request</p>
+                <button style={{ background:'#f0f0f0', border:'none', borderRadius:'6px', padding:'5px 10px', cursor:'pointer', fontSize:'11px', color:'#555' }} onClick={()=>setShowLeaveRequest(false)}>✕ Close</button>
+              </div>
               <input type="date" value={leaveStartDate} min={new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
               <input type="date" value={leaveEndDate} onChange={e=>setLeaveEndDate(e.target.value)} style={inputStyle} />
               {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {Math.ceil((new Date(leaveEndDate)-new Date(leaveStartDate))/(1000*60*60*24))+1} day(s)</p>}
               <select value={leaveType} onChange={e=>setLeaveType(e.target.value)} style={inputStyle}><option value="">Select Leave Type</option><option value="Sick Leave">Sick Leave ({myLeaveBalance.sick} days left)</option><option value="Vacation Leave">Vacation Leave ({myLeaveBalance.vacation} days left)</option><option value="Emergency Leave">Emergency Leave</option></select>
               <textarea placeholder="Reason for leave..." value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{ ...inputStyle, minHeight:'70px', resize:'none' }} />
-              <button style={btnGreen} onClick={submitLeaveRequest}>SUBMIT LEAVE REQUEST</button>
+              <button style={{ ...btnRed }} onClick={submitLeaveRequest}>SUBMIT LEAVE REQUEST</button>
             </div>
           )}
 
-          <button style={{ background:'#e8505b', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowMyLeaves(!showMyLeaves); if(!showMyLeaves) loadMyLeaves() }}>{showMyLeaves?'🔼 HIDE':'🔽 VIEW'} MY LEAVE HISTORY</button>
+          <button style={{ background:'#f8f9fa', color:'#555', border:'1px solid #eee', padding:'10px', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ closeAllPanels(); setShowMyLeaves(!showMyLeaves); if(!showMyLeaves) loadMyLeaves() }}>{showMyLeaves?'▲ Hide':'▼ View'} My Leave History</button>
           {showMyLeaves && (
             <div style={{ marginTop:'10px' }}>
               <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowMyLeaves(false)}>← BACK</button>
@@ -4018,7 +7512,7 @@ export default function App() {
             </div>
           )}
 
-          <button style={{ background:'#f5a623', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }}>💵 REQUEST CASH ADVANCE</button>
+          <button style={{ background:'#f8f9fa', color:'#555', border:'1px solid #eee', padding:'10px', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }}>{showCashAdvanceRequest?'▲ Hide':'▼'} Request Cash Advance</button>
           {showCashAdvanceRequest && (
             <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginTop:'8px' }}>
               <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowCashAdvanceRequest(false)}>← BACK</button>
@@ -4056,7 +7550,7 @@ export default function App() {
             </div>
           )}
 
-          <button style={{ background:'#f5a623', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvances(!showCashAdvances); if(!showCashAdvances) loadMyCashAdvances(employee) }}>{showCashAdvances?'🔼 HIDE':'🔽 VIEW'} MY CASH ADVANCES</button>
+          <button style={{ background:'#f8f9fa', color:'#555', border:'1px solid #eee', padding:'10px', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ closeAllPanels(); setShowCashAdvances(!showCashAdvances); if(!showCashAdvances) loadMyCashAdvances(employee) }}>{showCashAdvances?'▲ Hide':'▼'} My Cash Advances</button>
           {showCashAdvances && (
             <div style={{ marginTop:'10px' }}>
               <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowCashAdvances(false)}>← BACK</button>
@@ -4178,7 +7672,7 @@ export default function App() {
             </div>
           )}
 
-          <button style={{ background:'#4a90d9', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>{ closeAllPanels(); setShowMyAttendance(!showMyAttendance) }}>{showMyAttendance?'🔼 HIDE':'🔽 VIEW'} MY ATTENDANCE HISTORY</button>
+          <button style={{ background:'#f8f9fa', color:'#555', border:'1px solid #eee', padding:'10px', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ closeAllPanels(); setShowMyAttendance(!showMyAttendance) }}>{showMyAttendance?'▲ Hide':'▼'} My Attendance History</button>
           {showMyAttendance && (
             <div style={{ marginTop:'10px' }}>
               <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowMyAttendance(false)}>← BACK</button>
@@ -4197,11 +7691,53 @@ export default function App() {
             </div>
           )}
 
-          {employee?.is_admin&&(
-            <button style={{ ...btnBlack, background:'#444', marginTop:'8px' }} onClick={()=>openAdmin('owner')}>🔧 ADMIN PANEL</button>
+          {/* PENDING CHARGES NOTIFICATION */}
+          {myCharges.filter(c=>c.status==='pending_employee').length>0 && (
+            <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'16px', marginTop:'12px' }}>
+              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 10px' }}>⚠️ You have {myCharges.filter(c=>c.status==='pending_employee').length} pending charge(s) requiring your response</p>
+              {myCharges.filter(c=>c.status==='pending_employee').map(c=>(
+                <div key={c.id} style={{ background:'white', border:'1px solid #ffcdd2', borderRadius:'10px', padding:'12px', marginBottom:'10px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:'6px', marginBottom:'8px' }}>
+                    <div>
+                      <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 2px' }}>{c.item_name}</p>
+                      <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Qty: {Number(c.quantity||0).toFixed(2)} {c.unit}</p>
+                    </div>
+                    <p style={{ fontWeight:'bold', fontSize:'18px', color:'#ca1b1b', margin:0 }}>{php(c.total_cost)}</p>
+                  </div>
+                  <p style={cps}>Reason: <strong>{c.reason}</strong></p>
+                  {c.notes && <p style={cps}>Notes: {c.notes}</p>}
+                  <p style={{ ...cps, color:'#888' }}>Date: {new Date(c.created_at).toLocaleDateString()}</p>
+                  <p style={{ fontSize:'12px', color:'#555', margin:'8px 0', background:'#fff8dc', padding:'8px', borderRadius:'8px' }}>
+                    By clicking "I Agree", you acknowledge that <strong>{php(c.total_cost)}</strong> will be deducted from your next payroll. If you believe this charge is incorrect, click "I Dispute".
+                  </p>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                    <button style={{ ...btnGreen, margin:0 }} onClick={()=>respondToCharge(c,'agree')}>✅ I AGREE</button>
+                    <button style={{ ...btnRed, margin:0 }} onClick={()=>respondToCharge(c,'dispute')}>❌ I DISPUTE</button>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
 
-          <button style={{ ...btnBlack, background:'#222', marginTop:'8px' }} onClick={()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }}>{showPayslips?'🔼 HIDE':'🔽 VIEW'} MY PAYSLIPS</button>
+          {/* CHARGE HISTORY */}
+          {myCharges.filter(c=>c.status!=='pending_employee').length>0 && (
+            <button style={{ background:'#f8f9fa', color:'#555', border:'1px solid #eee', padding:'10px', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>setShowMyCharges(!showMyCharges)}>
+              {showMyCharges?'▲ Hide':'▼'} My Charge History ({myCharges.filter(c=>c.status!=='pending_employee').length})
+            </button>
+          )}
+          {showMyCharges && myCharges.filter(c=>c.status!=='pending_employee').map(c=>(
+            <div key={c.id} style={{ ...cardS, borderLeft:`4px solid ${c.status==='agreed'?'#ca1b1b':c.status==='disputed'?'#f57c00':'#888'}`, marginTop:'8px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:'6px' }}>
+                <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:0 }}>{c.item_name}</p>
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:0 }}>{php(c.total_cost)}</p>
+              </div>
+              <p style={cps}>Reason: {c.reason}</p>
+              <p style={cps}>Status: <strong style={{ color:c.status==='agreed'?'#ca1b1b':c.status==='disputed'?'#f57c00':'#888' }}>{c.status==='agreed'?'✅ Agreed — Will be deducted':c.status==='disputed'?'⏳ Disputed — Owner reviewing':'Dismissed'}</strong></p>
+              {c.acknowledged_at && <p style={{ ...cps, color:'#aaa' }}>Responded: {new Date(c.acknowledged_at).toLocaleString()}</p>}
+            </div>
+          ))}
+
+          <button style={{ background:'#f8f9fa', color:'#555', border:'1px solid #eee', padding:'10px', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }}>{showPayslips?'▲ Hide':'▼'} My Payslips</button>
           {showPayslips && (
             <div style={{ marginTop:'10px' }}>
               <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowPayslips(false)}>← BACK</button>
@@ -4271,8 +7807,8 @@ export default function App() {
             </div>
           )}
 
-          <button style={{ background:'#4a90d9', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={()=>setShowMyProfile(!showMyProfile)}>
-            {showMyProfile?'🔼 HIDE':'👤 VIEW'} MY PROFILE
+          <button style={{ background:'#f8f9fa', color:'#555', border:'1px solid #eee', padding:'10px', borderRadius:'10px', width:'100%', marginTop:'8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>setShowMyProfile(!showMyProfile)}>
+            {showMyProfile?'▲ Hide':'▼'} My Profile
           </button>
           {showMyProfile && (
             <div style={{ background:'#f9f9f9', borderRadius:'14px', padding:'16px', marginTop:'10px', border:'1px solid #eee' }}>
@@ -4316,16 +7852,12 @@ export default function App() {
             </div>
           )}
           {cameFromAdmin ? (
-            <div style={{ display:'flex', gap:'8px', marginTop:'8px' }}>
-              <button style={{ ...btnRed, background:'#ca1b1b', flex:1, marginTop:0 }} onClick={()=>{
-                setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false)
-                setAdminMode(true); setSidebarOpen(false)
-                loadEmployees(); loadDashboard(); loadDashboardCharts()
-              }}>← ADMIN PANEL</button>
-              <button style={{ ...btnGray, flex:1, marginTop:0 }} onClick={()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }}>🚪 LOGOUT</button>
+            <div style={{ display:'flex', gap:'8px', marginTop:'16px' }}>
+              <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px', flex:1, fontWeight:'bold', fontSize:'13px', cursor:'pointer', letterSpacing:'0.5px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}>← Admin Panel</button>
+              <button style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'10px', padding:'12px', flex:1, fontWeight:'bold', fontSize:'13px', cursor:'pointer' }} onClick={()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }}>Logout</button>
             </div>
           ) : (
-            <button style={{ ...btnGray, marginTop:'8px' }} onClick={logout}>🚪 LOGOUT</button>
+            <button style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'10px', padding:'12px', width:'100%', marginTop:'16px', fontWeight:'bold', fontSize:'13px', cursor:'pointer' }} onClick={logout}>Logout</button>
           )}
         </div>
         </div>
