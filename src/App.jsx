@@ -372,6 +372,9 @@ export default function App() {
   const [editingResellerId, setEditingResellerId] = useState(null)
   const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' })
   const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1)
+  const tomorrowStr = tomorrow.toISOString().slice(0,10)
+  const [forecastDate, setForecastDate] = useState(tomorrowStr)
   const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
   const [defaultOrderItems, setDefaultOrderItems] = useState([])
   const [deliveryInvoices, setDeliveryInvoices] = useState([])
@@ -7041,100 +7044,130 @@ export default function App() {
                   <div>
                     {/* PRODUCTION FORECAST */}
                     {(()=>{
-                      // Compute forecast from default orders
+                      // Dry premix weight per piece (grams) after 10% reduction
+                      const DRY_PREMIX_GRAMS = {
+                        'Choco Balls': 9.45, 'Bavarian Bites': 9.45, 'Bavarian Pops': 9.45,
+                        'Choco Lollisticks': 0,
+                        'Glazed Circlets': 11.7,
+                        'Cinnamon Rolls': 27, 'Rings': 27, 'Shells': 27,
+                        'Bavarian Midnight': 27, 'Biscoreo': 27,
+                        'Fanfans': 31.5, 'Oreo Dream': 31.5, 'Almond Glitz': 31.5, 'Lotus Cloud': 31.5
+                      }
+                      const forecastInvoices = deliveryInvoices.filter(i => i.delivery_date === forecastDate)
                       const forecastMap = {}
-                      resellers.forEach(r => {
-                        const orders = resellerDefaultOrders[r.id] || []
-                        orders.forEach(o => {
-                          if (!forecastMap[o.variant_name]) forecastMap[o.variant_name] = { variant_name:o.variant_name, variant_id:o.variant_id, total:0, manual:0 }
-                          forecastMap[o.variant_name].total += Number(o.default_quantity||0)
+                      forecastInvoices.forEach(inv => {
+                        ;(inv.delivery_invoice_items || []).forEach(item => {
+                          const key = item.variant_name
+                          if (!forecastMap[key]) forecastMap[key] = { variant_name:item.variant_name, variant_id:item.variant_id, total:0 }
+                          forecastMap[key].total += Number(item.quantity||0)
                         })
                       })
                       const forecastRows = Object.values(forecastMap).sort((a,b)=>a.variant_name.localeCompare(b.variant_name))
                       const totalPieces = forecastRows.reduce((s,r)=>s+r.total,0)
+                      const totalDryPremixG = forecastRows.reduce((s,r)=>s+(DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total, 0)
+                      const totalDryPremixKg = (totalDryPremixG/1000).toFixed(2)
                       const printForecast = () => {
-                        const pw = window.open('','_blank','width=900,height=700')
+                        const pw = window.open('','_blank','width=700,height=900')
                         pw.document.write(`<!DOCTYPE html><html><head><title>Production Forecast</title>
-                          <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
-                          @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
-                          h1{font-size:18px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin-top:12px;}
-                          th{background:#ca1b1b;color:white;padding:6px 8px;text-align:left;font-size:10px;}
-                          td{padding:5px 8px;border-bottom:1px solid #eee;font-size:11px;}
-                          .total{background:#fff9e6;font-weight:bold;border-top:2px solid #ca1b1b;}
-                          </style></head><body>
-                          <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:16px;">
-                            <div><h1>Roma's Donuts</h1><div style="font-size:11px;color:#888;">Production Forecast — ${today}</div></div>
-                            <div style="text-align:right;"><div style="font-size:16px;font-weight:bold;color:#ca1b1b;">DAILY PRODUCTION ORDER</div></div>
+                          <style>
+                            *{margin:0;padding:0;box-sizing:border-box;}
+                            body{font-family:Arial,sans-serif;font-size:10px;width:150mm;background:white;}
+                            @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
+                            .wrap{padding:5mm 6mm;}
+                            h1{font-size:14px;color:#ca1b1b;}
+                            table{width:100%;border-collapse:collapse;margin-top:8px;}
+                            th{background:#ca1b1b;color:white;padding:5px 6px;text-align:left;font-size:9px;}
+                            td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+                            .total-row{background:#fff9e6;font-weight:bold;border-top:2px solid #ca1b1b;}
+                            .kg-box{background:#e8f5e9;border:2px solid #2d8a4e;border-radius:8px;padding:10px;text-align:center;margin:10px 0;}
+                          </style></head><body><div class="wrap">
+                          <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
+                            <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">Delivery Date: ${forecastDate}</div><div style="font-size:8px;color:#888;">Created: ${today}</div></div>
+                            <div style="text-align:right;font-size:11px;font-weight:bold;color:#ca1b1b;">PRODUCTION ORDER</div>
                           </div>
-                          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
-                            <div style="background:#fff9e6;border:1px solid #ca1b1b;border-radius:6px;padding:10px;text-align:center;">
-                              <div style="font-size:10px;color:#888;margin-bottom:4px;">TOTAL PIECES TO PRODUCE</div>
-                              <div style="font-size:28px;font-weight:bold;color:#ca1b1b;">${totalPieces.toLocaleString()}</div>
-                            </div>
-                            <div style="background:#f0fff4;border:1px solid #2d8a4e;border-radius:6px;padding:10px;text-align:center;">
-                              <div style="font-size:10px;color:#888;margin-bottom:4px;">RESELLERS COVERED</div>
-                              <div style="font-size:28px;font-weight:bold;color:#2d8a4e;">${resellers.length}</div>
-                            </div>
+                          <!-- Big dry premix box -->
+                          <div class="kg-box">
+                            <div style="font-size:9px;color:#2d8a4e;font-weight:bold;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Total Dry Premix to Knead</div>
+                            <div style="font-size:36px;font-weight:bold;color:#2d8a4e;line-height:1;">${totalDryPremixKg}</div>
+                            <div style="font-size:14px;font-weight:bold;color:#2d8a4e;">kilograms</div>
+                          </div>
+                          <div style="text-align:center;background:#fff9e6;border:1px solid #ca1b1b;border-radius:6px;padding:6px;margin-bottom:8px;">
+                            <div style="font-size:8px;color:#888;">Total Pieces | ${forecastInvoices.length} Invoice(s)</div>
+                            <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">${totalPieces.toLocaleString()} pcs</div>
                           </div>
                           <table>
-                            <tr><th>Variant</th><th style="text-align:right;">Total Pieces</th><th style="text-align:right;">Batches Needed</th><th style="text-align:center;">Actual Produced</th><th style="text-align:center;">Remarks</th></tr>
+                            <tr><th>Variant</th><th style="text-align:right;">Pieces</th><th style="text-align:right;">Dry Premix</th><th style="text-align:center;">Actual</th></tr>
                             ${forecastRows.map(r => {
-                              const variant = donutVariants.find(v=>v.id===r.variant_id)
-                              const ppb = variant?.pieces_per_batch || 12
-                              const batches = Math.ceil(r.total / ppb)
-                              return `<tr><td><strong>${r.variant_name}</strong></td><td style="text-align:right;font-weight:bold;">${r.total.toLocaleString()}</td><td style="text-align:right;">${batches} batch${batches!==1?'es':''}</td><td style="text-align:center;border:1px solid #ddd;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td><td style="text-align:center;border:1px solid #ddd;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td></tr>`
+                              const grams = (DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total
+                              const kgDisplay = grams>=1000 ? (grams/1000).toFixed(2)+' kg' : grams.toFixed(0)+' g'
+                              return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+r.total.toLocaleString()+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
                             }).join('')}
-                            <tr class="total"><td>TOTAL</td><td style="text-align:right;color:#ca1b1b;font-size:14px;">${totalPieces.toLocaleString()} pcs</td><td colspan="3"></td></tr>
+                            <tr class="total-row"><td>TOTAL</td><td style="text-align:right;color:#ca1b1b;">${totalPieces.toLocaleString()}</td><td style="text-align:right;color:#2d8a4e;">${totalDryPremixKg} kg</td><td></td></tr>
                           </table>
-                          <div style="margin-top:40px;display:flex;justify-content:space-between;">
-                            <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Prepared by / Date</div></div>
-                            <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Checked by / Date</div></div>
-                            <div style="text-align:center;"><div style="border-top:1px solid #000;width:160px;padding-top:4px;font-size:10px;">Approved by / Date</div></div>
+                          <div style="margin-top:12px;display:flex;justify-content:space-between;gap:8px;">
+                            <div style="text-align:center;flex:1;"><div style="border-top:1px solid #000;padding-top:3px;font-size:8px;">Prepared by</div></div>
+                            <div style="text-align:center;flex:1;"><div style="border-top:1px solid #000;padding-top:3px;font-size:8px;">Checked by</div></div>
                           </div>
-                          <div class="no-print" style="text-align:center;margin-top:20px;">
-                            <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;">🖨️ PRINT</button>
-                          </div>
-                        </body></html>`)
+                          <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">🖨️ PRINT (150×210mm)</button><p style="font-size:9px;color:#888;margin-top:4px;">Set paper to custom 150×210mm. Uncheck headers/footers.</p></div>
+                        </div></body></html>`)
                         pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
                       }
                       return (
                         <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
-                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'14px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'12px' }}>
                             <div>
                               <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}>📊 Production Forecast</h3>
-                              <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Based on all reseller default orders</p>
+                              <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Based on invoices for the selected delivery date</p>
                             </div>
-                            <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                            <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', flexWrap:'wrap' }}>
+                              <div>
+                                <label style={{ fontSize:'10px', color:'#888', display:'block', marginBottom:'2px' }}>Delivery Date to Forecast:</label>
+                                <input type="date" value={forecastDate} onChange={e=>setForecastDate(e.target.value)} style={{ ...inputStyle, marginBottom:0, width:'150px', fontSize:'12px', padding:'6px 10px' }} />
+                              </div>
                               <div style={{ background:'#fff9e6', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 14px', textAlign:'center' }}>
                                 <p style={{ color:'#888', fontSize:'10px', margin:'0 0 1px' }}>Total Pieces</p>
                                 <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'20px', margin:0 }}>{totalPieces.toLocaleString()}</p>
                               </div>
+                              <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'12px', padding:'14px', textAlign:'center', marginTop:'12px' }}>
+                                <p style={{ color:'#2d8a4e', fontSize:'11px', fontWeight:'bold', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'1px' }}>Total Dry Premix to Knead Tonight</p>
+                                <p style={{ color:'#2d8a4e', fontSize:'42px', fontWeight:'bold', margin:'0 0 2px', lineHeight:1 }}>{totalDryPremixKg}</p>
+                                <p style={{ color:'#2d8a4e', fontSize:'16px', fontWeight:'bold', margin:0 }}>kilograms</p>
+                              </div>
                               <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={printForecast}>🖨️ PRINT</button>
                             </div>
                           </div>
-                          {forecastRows.length === 0 ? (
-                            <p style={{ color:'#aaa', fontSize:'12px', textAlign:'center', padding:'10px' }}>No default orders set. Go to Resellers tab and set default orders per reseller.</p>
+                          {forecastInvoices.length === 0 ? (
+                            <div style={{ textAlign:'center', padding:'24px', color:'#aaa' }}>
+                              <p style={{ fontSize:'32px', margin:'0 0 8px' }}>📋</p>
+                              <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#555' }}>No invoices for {forecastDate}</p>
+                              <p style={{ fontSize:'11px', margin:0 }}>Create invoices with delivery date <strong>{forecastDate}</strong> and they will automatically appear here.</p>
+                            </div>
                           ) : (
-                            <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
-                              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', background:'#fff9e6', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#ca1b1b', letterSpacing:'0.5px' }}>
-                                <span>VARIANT</span><span style={{ textAlign:'right' }}>TOTAL PIECES</span><span style={{ textAlign:'right' }}>BATCHES</span>
+                            <div>
+                              <div style={{ display:'flex', gap:'6px', marginBottom:'8px', flexWrap:'wrap' }}>
+                                <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''}</span>
+                                <span style={{ background:'#fff9e6', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#ca1b1b', fontWeight:'bold' }}>{forecastRows.length} variant{forecastRows.length!==1?'s':''}</span>
                               </div>
-                              {forecastRows.map((r,i)=>{
-                                const variant = donutVariants.find(v=>v.id===r.variant_id)
-                                const ppb = variant?.pieces_per_batch || 12
-                                const batches = Math.ceil(r.total/ppb)
-                                return (
-                                  <div key={r.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'8px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center' }}>
-                                    <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{r.variant_name}</span>
-                                    <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{r.total.toLocaleString()}</span>
-                                    <span style={{ textAlign:'right', fontSize:'12px', color:'#888' }}>{batches} batch{batches!==1?'es':''}</span>
-                                  </div>
-                                )
-                              })}
-                              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'10px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
-                                <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</span>
-                                <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{totalPieces.toLocaleString()}</span>
-                                <span style={{ textAlign:'right', fontSize:'12px', color:'#888' }}>{forecastRows.reduce((s,r)=>{ const v=donutVariants.find(dv=>dv.id===r.variant_id); return s+Math.ceil(r.total/(v?.pieces_per_batch||12)) },0)} batches</span>
+                              <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
+                                <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', background:'#ca1b1b', padding:'7px 12px' }}>
+                                  {['Variant','Total Pieces','Dry Premix'].map(h=><span key={h} style={{ color:'white', fontSize:'11px', fontWeight:'bold', textAlign:h==='Variant'?'left':'right' }}>{h}</span>)}
+                                </div>
+                                {forecastRows.map((r,i)=>{
+                                  const grams = (DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total
+                                  const kg = (grams/1000).toFixed(2)
+                                  return (
+                                    <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+                                      <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}</span>
+                                      <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{r.total.toLocaleString()}</span>
+                                      <span style={{ textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</span>
+                                    </div>
+                                  )
+                                })}
+                                <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'9px 12px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
+                                  <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</span>
+                                  <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{totalPieces.toLocaleString()}</span>
+                                  <span style={{ textAlign:'right', fontWeight:'bold', color:'#2d8a4e', fontSize:'16px' }}>{totalDryPremixKg} kg</span>
+                                </div>
                               </div>
                             </div>
                           )}
@@ -7186,13 +7219,36 @@ export default function App() {
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
                           <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:0 }}>Items:</p>
                           <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-                            {invoiceResellerId && (resellerDefaultOrders[invoiceResellerId]||[]).length > 0 && (
-                              <button style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>buildInvoiceFromReseller(invoiceResellerId)}>✅ USE DEFAULT ORDER</button>
-                            )}
-                            <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{
-                              const allItems = donutVariants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 }))
-                              setInvoiceItems(allItems)
-                            }}>📋 LOAD ALL VARIANTS</button>
+                            <button style={{ background: invoiceResellerId ? '#2d8a4e' : '#aaa', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor: invoiceResellerId ? 'pointer' : 'not-allowed', fontWeight:'bold', fontSize:'11px' }}
+                              onClick={async ()=>{
+                                if (!invoiceResellerId) { showToast('❌ Select a reseller first.','red'); return }
+                                // Always fetch fresh from DB
+                                const { data } = await supabase.from('reseller_default_orders').select('*').eq('reseller_id', invoiceResellerId)
+                                if (!data || data.length === 0) { showToast('⚠️ No default order set. Go to Resellers tab → EDIT to set one.','red'); return }
+                                // Fetch variants too if needed
+                                let variants = donutVariants
+                                if (!variants || variants.length === 0) {
+                                  const { data:vd } = await supabase.from('donut_variants').select('*')
+                                  variants = vd || []
+                                }
+                                const items = data.map(d => {
+                                  const v = variants.find(vv=>vv.id===d.variant_id)
+                                  return { variant_id:d.variant_id, variant_name:d.variant_name||v?.name||'', quantity:d.default_quantity, retail_price:v?.selling_price||0, reseller_price:Math.round((v?.selling_price||0)*0.80*100)/100 }
+                                })
+                                setInvoiceItems(items)
+                                showToast(`✅ Default order loaded — ${items.length} variants`)
+                              }}>✅ USE DEFAULT ORDER</button>
+                            <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}
+                              onClick={async ()=>{
+                                let variants = donutVariants
+                                if (!variants || variants.length === 0) {
+                                  const { data } = await supabase.from('donut_variants').select('*').order('name')
+                                  variants = data || []
+                                }
+                                if (variants.length === 0) { showToast('⚠️ No variants found. Go to Costing → Recipes → Load All Variants first.','red'); return }
+                                setInvoiceItems(variants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 })))
+                                showToast(`✅ ${variants.length} variants loaded`)
+                              }}>📋 LOAD ALL VARIANTS</button>
                           </div>
                         </div>
                         {/* Header */}
