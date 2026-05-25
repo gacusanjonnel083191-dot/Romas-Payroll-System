@@ -2434,16 +2434,52 @@ export default function App() {
   }
 
   // ── Department Location Management ────────────────────────────────────────
-  function saveDepartmentLocations(locs) {
-    setDepartmentLocations(locs)
-    localStorage.setItem('dept_locations', JSON.stringify(locs))
-    showToast('✅ Department locations saved!')
-  }
-  function loadDepartmentLocations() {
+  async function saveDepartmentLocations(locs) {
     try {
+      for (const [dept, loc] of Object.entries(locs)) {
+        if (!loc) continue
+        await supabase.from('department_locations').upsert({
+          department: dept,
+          location_name: loc.name || null,
+          latitude: loc.lat ? Number(loc.lat) : null,
+          longitude: loc.lng ? Number(loc.lng) : null,
+          radius_meters: Number(loc.radius || 200),
+          is_active: true,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'department' })
+      }
+      setDepartmentLocations(locs)
+      showToast('✅ All department locations saved!')
+    } catch(err) {
+      showToast('❌ Failed to save: ' + err.message, 'red')
+    }
+  }
+  async function loadDepartmentLocations() {
+    try {
+      // Try Supabase first
+      const { data, error } = await supabase.from('department_locations').select('*').eq('is_active', true)
+      if (!error && data && data.length > 0) {
+        const locs = {}
+        data.forEach(row => {
+          locs[row.department] = {
+            name: row.location_name || '',
+            lat: row.latitude || '',
+            lng: row.longitude || '',
+            radius: row.radius_meters || 200
+          }
+        })
+        setDepartmentLocations(locs)
+        return
+      }
+      // Fallback to localStorage
       const saved = localStorage.getItem('dept_locations')
       if (saved) setDepartmentLocations(JSON.parse(saved))
-    } catch(e) {}
+    } catch(e) {
+      try {
+        const saved = localStorage.getItem('dept_locations')
+        if (saved) setDepartmentLocations(JSON.parse(saved))
+      } catch(e2) {}
+    }
   }
 
   // ── Payroll Approval Workflow ─────────────────────────────────────────────
@@ -4006,27 +4042,85 @@ export default function App() {
 
                 {/* Department Locations for Geofencing */}
                 <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'16px', marginBottom:'20px' }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
-                    <h3 style={{ color:'#f5a623', margin:0, fontSize:'14px' }}>📍 Department Locations (Geofencing)</h3>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px', flexWrap:'wrap', gap:'8px' }}>
+                    <div>
+                      <h3 style={{ color:'#f5a623', margin:'0 0 2px', fontSize:'14px' }}>📍 Work Location Setup (Geofencing)</h3>
+                      <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Set GPS location per department. Employees auto-use their department's location when timing in.</p>
+                    </div>
                     <button style={{ ...btnBlack, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'12px', background:'#f5a623' }} onClick={()=>setShowDeptLocations(!showDeptLocations)}>
                       {showDeptLocations?'▲ HIDE':'▼ CONFIGURE'}
                     </button>
                   </div>
-                  <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Set a GPS location per department. Employees in that department must be within the radius when timing in/out. Individual employee location (set in employee profile) takes priority over department location.</p>
                   {showDeptLocations && (
                     <div style={{ marginTop:'14px' }}>
-                      {['Kitchen','Cashier','Service Crew','Delivery','Production','Supervisor','Manager','Admin','Security','Maintenance'].map(dept=>(
-                        <div key={dept} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:'1px solid #eee' }}>
-                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 8px' }}>📌 {dept}</p>
-                          <input placeholder="Location Name (e.g. Main Kitchen, Warehouse)" value={departmentLocations[dept]?.name||''} onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],name:e.target.value}}))} style={{ ...inputStyle, marginBottom:'6px' }} />
-                          <div style={{ display:'flex', gap:'8px' }}>
-                            <div style={{ flex:1 }}><label style={lblS}>Latitude:</label><input type="number" step="0.000001" value={departmentLocations[dept]?.lat||''} onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lat:e.target.value}}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
-                            <div style={{ flex:1 }}><label style={lblS}>Longitude:</label><input type="number" step="0.000001" value={departmentLocations[dept]?.lng||''} onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lng:e.target.value}}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
-                            <div style={{ flex:1 }}><label style={lblS}>Radius (m):</label><input type="number" value={departmentLocations[dept]?.radius||200} onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],radius:e.target.value}}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                      {/* Info banner */}
+                      <div style={{ background:'#fff3cd', borderRadius:'8px', padding:'10px 14px', marginBottom:'14px', fontSize:'12px', color:'#856404', border:'1px solid #ffc107' }}>
+                        💡 <strong>How it works:</strong> Set coordinates per department below. All employees assigned to that department will automatically use it when timing in. Individual employee location (set in their profile) overrides department location.
+                      </div>
+                      {/* Column headers */}
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 80px 80px', gap:'6px', padding:'6px 10px', background:'#ca1b1b', borderRadius:'8px 8px 0 0', marginBottom:'2px' }}>
+                        {['Department','Location Name','Latitude','Longitude','Radius (m)',''].map(h=>(
+                          <span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.3px' }}>{h}</span>
+                        ))}
+                      </div>
+                      {/* Department rows */}
+                      {['Production','Kitchen','Admin','Delivery','Cashier','Service Crew','Supervisor','Manager','Security','Maintenance'].map((dept, i) => {
+                        const loc = departmentLocations[dept] || {}
+                        const empCount = employees.filter(e => e.department === dept).length
+                        return (
+                          <div key={dept} style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 80px 80px', gap:'6px', padding:'8px 10px', background:i%2===0?'white':'#fafafa', border:'1px solid #f0f0f0', borderTop:'none', alignItems:'center' }}>
+                            <div>
+                              <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>📌 {dept}</p>
+                              {empCount > 0 && <p style={{ color:'#2d8a4e', fontSize:'10px', margin:0 }}>👥 {empCount} employee{empCount!==1?'s':''}</p>}
+                              {empCount === 0 && <p style={{ color:'#bbb', fontSize:'10px', margin:0 }}>No employees yet</p>}
+                            </div>
+                            <input
+                              placeholder="e.g. Main Production Area"
+                              value={loc.name||''}
+                              onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],name:e.target.value}}))}
+                              style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}
+                            />
+                            <input
+                              type="number" step="0.000001" placeholder="15.4755"
+                              value={loc.lat||''}
+                              onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lat:e.target.value}}))}
+                              style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}
+                            />
+                            <input
+                              type="number" step="0.000001" placeholder="120.5963"
+                              value={loc.lng||''}
+                              onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lng:e.target.value}}))}
+                              style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}
+                            />
+                            <input
+                              type="number" placeholder="200"
+                              value={loc.radius||''}
+                              onChange={e=>setDepartmentLocations(p=>({...p,[dept]:{...p[dept],radius:e.target.value}}))}
+                              style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}
+                            />
+                            <button
+                              style={{ background:'#4a90d9', color:'white', border:'none', borderRadius:'6px', padding:'6px 4px', cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap' }}
+                              onClick={()=>{
+                                if (!navigator.geolocation) { showToast('❌ GPS not available','red'); return }
+                                showToast('📍 Detecting location...')
+                                navigator.geolocation.getCurrentPosition(pos => {
+                                  setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lat:pos.coords.latitude.toFixed(6),lng:pos.coords.longitude.toFixed(6)}}))
+                                  showToast(`✅ ${dept} location detected!`)
+                                }, () => showToast('❌ Could not detect location','red'))
+                              }}
+                            >📍 Detect</button>
                           </div>
+                        )
+                      })}
+                      {/* Summary */}
+                      <div style={{ background:'#fff8f0', border:'1px solid #f5a623', borderRadius:'0 0 8px 8px', padding:'10px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                        <div style={{ fontSize:'11px', color:'#888' }}>
+                          {Object.values(departmentLocations).filter(l=>l?.lat&&l?.lng).length} of 10 departments configured
                         </div>
-                      ))}
-                      <button style={{ ...btnGreen, width:'auto', padding:'8px 18px', marginTop:'4px' }} onClick={()=>saveDepartmentLocations(departmentLocations)}>💾 SAVE ALL LOCATIONS</button>
+                        <button style={{ ...btnGreen, width:'auto', padding:'8px 20px', marginTop:0, fontSize:'12px' }} onClick={()=>saveDepartmentLocations(departmentLocations)}>
+                          💾 SAVE ALL LOCATIONS
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
