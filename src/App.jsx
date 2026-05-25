@@ -476,6 +476,11 @@ export default function App() {
   const [showTimedInModal, setShowTimedInModal] = useState(false)
   const [timedInList, setTimedInList] = useState([])
   const [storeLocation, setStoreLocation] = useState({ lat: STORE_LAT, lng: STORE_LNG, radius: STORE_RADIUS_METERS })
+  const [isCompanyDevice, setIsCompanyDevice] = useState(()=>localStorage.getItem('roma_company_device')==='true')
+  const [showDeviceRegister, setShowDeviceRegister] = useState(false)
+  const [devicePinInput, setDevicePinInput] = useState('')
+  const COMPANY_DEVICE_PIN = 'ROMA2025'
+  const DEVICE_RESTRICTED_DEPTS = ['Production'] // Only these departments require company tablet
   const [showLocationSetting, setShowLocationSetting] = useState(false)
   const [locationStatus, setLocationStatus] = useState('')
 
@@ -7693,12 +7698,59 @@ export default function App() {
           </div>
 
           {/* Primary Time Actions */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
-            <button style={{ background:todayLog?'#f0f0f0':'#ca1b1b', color:todayLog?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:todayLog?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={initiateTimeIn} disabled={loading||!!todayLog}>⏱ TIME IN</button>
-            <button style={{ background:(!todayLog||!!todayLog?.time_out)?'#f0f0f0':'#1a1a2e', color:(!todayLog||!!todayLog?.time_out)?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={initiateTimeOut} disabled={loading||!todayLog||!!todayLog?.time_out}>⏱ TIME OUT</button>
-            <button style={{ background:(!todayLog||!!todayLog?.time_out||onBreak)?'#f0f0f0':'#4a90d9', color:(!todayLog||!!todayLog?.time_out||onBreak)?'#aaa':'white', padding:'11px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||onBreak)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out||onBreak}>☕ BREAK OUT</button>
-            <button style={{ background:!onBreak?'#f0f0f0':'#2d8a4e', color:!onBreak?'#aaa':'white', padding:'11px', border:'none', borderRadius:'10px', cursor:!onBreak?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={initiateBreakIn} disabled={!onBreak}>☕ BREAK IN</button>
-          </div>
+          {(()=>{
+            const needsCompanyDevice = DEVICE_RESTRICTED_DEPTS.includes(employee?.department)
+            const deviceOk = !needsCompanyDevice || isCompanyDevice
+            return (
+              <div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
+                  <button style={{ background:todayLog?'#f0f0f0':deviceOk?'#ca1b1b':'#e0e0e0', color:todayLog?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(todayLog||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeIn:()=>showToast('🔒 Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog}>⏱ TIME IN</button>
+                  <button style={{ background:(!todayLog||!!todayLog?.time_out)?'#f0f0f0':deviceOk?'#1a1a2e':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out)?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeOut:()=>showToast('🔒 Production staff must time out on the company tablet.','red')} disabled={loading||!todayLog||!!todayLog?.time_out}>⏱ TIME OUT</button>
+                  <button style={{ background:(!todayLog||!!todayLog?.time_out||onBreak)?'#f0f0f0':deviceOk?'#4a90d9':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out||onBreak)?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakOut:()=>showToast('🔒 Production staff must use the company tablet.','red')} disabled={!todayLog||!!todayLog?.time_out||onBreak}>☕ BREAK OUT</button>
+                  <button style={{ background:!onBreak?'#f0f0f0':deviceOk?'#2d8a4e':'#e0e0e0', color:!onBreak?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakIn:()=>showToast('🔒 Production staff must use the company tablet.','red')} disabled={!onBreak}>☕ BREAK IN</button>
+                </div>
+
+                {/* Device restriction banner — only for Production dept on non-company device */}
+                {needsCompanyDevice && !isCompanyDevice && (
+                  <div style={{ background:'#fff5f5', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', marginBottom:'8px', textAlign:'center' }}>
+                    <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'0 0 4px' }}>🔒 Time In/Out locked on this device</p>
+                    <p style={{ color:'#888', fontSize:'11px', margin:'0 0 8px' }}>Production staff must use the company tablet in the production area.</p>
+                    <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>setShowDeviceRegister(true)}>🔑 Register This Device</button>
+                  </div>
+                )}
+
+                {/* Company device badge */}
+                {isCompanyDevice && (
+                  <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'8px 14px', marginBottom:'8px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'11px', margin:0 }}>✅ Company Device — All departments active</p>
+                    <button style={{ background:'none', color:'#ca1b1b', border:'none', cursor:'pointer', fontSize:'11px', fontWeight:'bold', textDecoration:'underline' }} onClick={()=>{ localStorage.removeItem('roma_company_device'); setIsCompanyDevice(false); showToast('Device unregistered.') }}>Unregister</button>
+                  </div>
+                )}
+
+                {/* Register device form */}
+                {showDeviceRegister && (
+                  <div style={{ background:'#f8f9fa', border:'2px solid #1a1a2e', borderRadius:'12px', padding:'16px', marginBottom:'8px' }}>
+                    <p style={{ fontWeight:'bold', color:'#1a1a2e', fontSize:'13px', margin:'0 0 6px' }}>🔑 Register Company Device</p>
+                    <p style={{ color:'#888', fontSize:'12px', margin:'0 0 10px' }}>Enter the device PIN from your admin to activate Time In/Out on this tablet.</p>
+                    <input type="password" placeholder="Enter Device PIN" value={devicePinInput} onChange={e=>setDevicePinInput(e.target.value)} style={{ ...inputStyle, marginBottom:'8px' }} autoComplete="off" />
+                    <div style={{ display:'flex', gap:'8px' }}>
+                      <button style={{ ...btnRed, flex:1, marginTop:0, fontSize:'12px', padding:'10px' }} onClick={()=>{
+                        if (devicePinInput === COMPANY_DEVICE_PIN) {
+                          localStorage.setItem('roma_company_device','true')
+                          setIsCompanyDevice(true); setShowDeviceRegister(false); setDevicePinInput('')
+                          showToast('✅ Company device registered! Time In/Out active for all departments.')
+                        } else {
+                          showToast('❌ Wrong PIN. Contact your admin.','red')
+                          setDevicePinInput('')
+                        }
+                      }}>✅ REGISTER</button>
+                      <button style={{ ...btnGray, flex:1, marginTop:0, fontSize:'12px', padding:'10px' }} onClick={()=>{ setShowDeviceRegister(false); setDevicePinInput('') }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
           <p style={{ color:'#bbb', fontSize:'11px', textAlign:'center', margin:'0 0 16px' }}>📸 Live selfie required — no photo uploads allowed</p>
 
           {/* Secondary Actions Grid */}
@@ -8258,9 +8310,11 @@ export default function App() {
           <h1 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'26px', fontWeight:'900', letterSpacing:'-0.5px' }}>Roma's Donuts</h1>
           <p style={{ color:'#aaa', margin:0, fontSize:'13px' }}>Payroll & Attendance System</p>
         </div>
-        <input placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-        <input placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-        <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
+        <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
+          <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+          <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+          <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
+        </form>
         {employeeCode.toUpperCase()==='ADMIN001' && (
           <p style={{ color:'#bbb', fontSize:'10px', marginTop:'10px', textAlign:'center' }}>👑 Master Owner Access</p>
         )}
