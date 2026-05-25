@@ -1863,7 +1863,7 @@ export default function App() {
     const grandTotal = dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
     pw.document.write(`<!DOCTYPE html><html><head><title>All Invoices — ${date}</title>
       <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:10mm;font-size:10px;}
-      @media print{@page{size:A4;margin:10mm;}.no-print{display:none;}.page-break{page-break-after:always;}}
+      @media print{@page{size:A5 portrait;margin:5mm;}.no-print{display:none;}.page-break{page-break-after:always;}}
       h1{font-size:16px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin:8px 0;}
       th{background:#ca1b1b;color:white;padding:5px 6px;font-size:9px;text-align:left;}
       td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
@@ -1950,10 +1950,10 @@ export default function App() {
     pw.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoice_number}</title>
       <style>
         *{margin:0;padding:0;box-sizing:border-box;}
-        body{font-family:Arial,sans-serif;font-size:8px;width:4in;background:white;}
+        body{font-family:Arial,sans-serif;font-size:9px;width:105mm;background:white;}
         @media print{
-          @page{size:4in 6in;margin:0;}
-          html,body{width:4in;height:6in;}
+          @page{size:A5 portrait;margin:5mm;}
+          html,body{width:105mm;}
           .no-print{display:none!important;}
         }
         .wrap{padding:4mm 5mm;}
@@ -2046,8 +2046,8 @@ export default function App() {
         </div>
       </div>
       <div class="no-print" style="text-align:center;margin-top:12px;">
-        <button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;font-weight:bold;cursor:pointer;">🖨️ PRINT (4×6)</button>
-        <p style="font-size:10px;color:#888;margin-top:4px;">Set page size to 4×6 in print dialog. Uncheck "Headers and footers".</p>
+        <button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;font-weight:bold;cursor:pointer;">🖨️ PRINT (A5 Half-A4)</button>
+        <p style="font-size:10px;color:#888;margin-top:4px;">Set paper to A5 or Half-Letter. Uncheck "Headers and footers".</p>
       </div>
     </div></body></html>`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
@@ -7692,7 +7692,16 @@ export default function App() {
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
                               <span style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>📋 Default Order Template</span>
                               {!isEditingOrder ? (
-                                <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingDefaultOrder(r.id); setDefaultOrderItems(resellerDefaultOrders[r.id]?.map(i=>({...i}))||[{ variant_id:'', variant_name:'', default_quantity:'' }]) }}>✏️ EDIT</button>
+                                <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{
+                                  setEditingDefaultOrder(r.id)
+                                  // Load all variants, pre-fill existing quantities
+                                  const existing = resellerDefaultOrders[r.id] || []
+                                  const allItems = donutVariants.map(v => {
+                                    const found = existing.find(e=>e.variant_id===v.id)
+                                    return { variant_id:v.id, variant_name:v.name, default_quantity: found?.default_quantity||'' }
+                                  })
+                                  setDefaultOrderItems(allItems.length > 0 ? allItems : existing.map(i=>({...i})))
+                                }}>✏️ EDIT</button>
                               ) : (
                                 <div style={{ display:'flex', gap:'6px' }}>
                                   <button style={{ ...btnGreen, width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>saveDefaultOrder(r.id)}>💾 SAVE</button>
@@ -7702,17 +7711,29 @@ export default function App() {
                             </div>
                             {isEditingOrder ? (
                               <div>
-                                {defaultOrderItems.map((item,i)=>(
-                                  <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
-                                    <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...defaultOrderItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setDefaultOrderItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
-                                      <option value="">— Select variant —</option>
-                                      {VARIANT_CATEGORIES.filter(c=>c!=='Giant').map(cat=>{ const cv=donutVariants.filter(v=>v.category===cat); if(!cv.length) return null; return <optgroup key={cat} label={cat}>{cv.map(v=><option key={v.id} value={v.id}>{v.name} (₱{v.selling_price})</option>)}</optgroup> })}
-                                    </select>
-                                    <input type="number" placeholder="Qty" value={item.default_quantity||''} onChange={e=>{ const upd=[...defaultOrderItems]; upd[i]={...upd[i],default_quantity:e.target.value}; setDefaultOrderItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="1" />
-                                    <button onClick={()=>setDefaultOrderItems(defaultOrderItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}>✕</button>
-                                  </div>
-                                ))}
-                                <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:'4px', fontSize:'11px' }} onClick={()=>setDefaultOrderItems([...defaultOrderItems, { variant_id:'', variant_name:'', default_quantity:'' }])}>+ ADD</button>
+                                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}>
+                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Set default qty per variant. Leave 0 to exclude.</p>
+                                  <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'6px', padding:'4px 10px', cursor:'pointer', fontSize:'10px', fontWeight:'bold' }} onClick={()=>{
+                                    const all = donutVariants.map(v => { const existing = defaultOrderItems.find(i=>i.variant_id===v.id); return { variant_id:v.id, variant_name:v.name, default_quantity: existing?.default_quantity||'' } })
+                                    setDefaultOrderItems(all)
+                                  }}>📋 LOAD ALL VARIANTS</button>
+                                </div>
+                                <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr', gap:'4px', marginBottom:'4px', padding:'4px 6px', background:'#ca1b1b', borderRadius:'6px' }}>
+                                  <span style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>Variant</span>
+                                  <span style={{ color:'white', fontSize:'10px', fontWeight:'bold', textAlign:'center' }}>Default Qty</span>
+                                </div>
+                                {defaultOrderItems.map((item,i)=>{
+                                  const variant = donutVariants.find(v=>v.id===item.variant_id)
+                                  return (
+                                    <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr', gap:'4px', marginBottom:'4px', alignItems:'center', background:i%2===0?'white':'#fafafa', padding:'4px 6px', borderRadius:'6px', border:'1px solid #eee' }}>
+                                      <span style={{ fontSize:'11px', fontWeight:'bold', color:'#333' }}>{variant?.name||item.variant_name||'—'}</span>
+                                      <input type="number" placeholder="0" value={item.default_quantity||''} onChange={e=>{ const upd=[...defaultOrderItems]; upd[i]={...upd[i],default_quantity:e.target.value}; setDefaultOrderItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'center' }} min="0" />
+                                    </div>
+                                  )
+                                })}
+                                {defaultOrderItems.length===0 && (
+                                  <p style={{ color:'#aaa', fontSize:'11px', textAlign:'center', padding:'10px' }}>Click "📋 LOAD ALL VARIANTS" to start setting quantities.</p>
+                                )}
                               </div>
                             ) : (resellerDefaultOrders[r.id]||[]).length > 0 ? (
                               <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
