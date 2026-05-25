@@ -11,20 +11,23 @@ const STORE_LNG = 120.5963
 const STORE_RADIUS_METERS = 200
 const ALLOWED_BREAK_MINUTES = 60
 
-// ── Styles (must be at top level, NOT inside function) ────────────────────────
-const pageStyle = { position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'auto' }
-const cardStyle = { background:'white', padding:'24px', borderRadius:'20px', boxShadow:'0 10px 30px rgba(0,0,0,0.2)', width:'100%', boxSizing:'border-box' }
-const logoStyle = { width:'80px', height:'80px', objectFit:'contain', display:'block', margin:'0 auto 8px' }
-const inputStyle = { width:'100%', padding:'12px', marginBottom:'12px', borderRadius:'10px', border:'1px solid #ddd', boxSizing:'border-box', fontSize:'14px', background:'white', color:'#333' }
-const cardS = { border:'1px solid #eee', padding:'12px', borderRadius:'12px', marginBottom:'10px', background:'#fafafa' }
+// ── Design System ─────────────────────────────────────────────────────────────
+// Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
+const pageStyle = { position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(150deg,#1a1a2e 0%,#2d1515 50%,#ca1b1b 100%)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'auto' }
+const cardStyle = { background:'white', padding:'28px', borderRadius:'20px', boxShadow:'0 8px 32px rgba(0,0,0,0.13)', width:'100%', boxSizing:'border-box' }
+const logoStyle = { width:'90px', height:'90px', objectFit:'contain', display:'block', margin:'0 auto 10px' }
+const inputStyle = { width:'100%', padding:'11px 14px', marginBottom:'12px', borderRadius:'10px', border:'1.5px solid #e8e8e8', boxSizing:'border-box', fontSize:'13px', background:'white', color:'#222', outline:'none', fontFamily:'inherit' }
+const cardS = { border:'1px solid #f0f0f0', padding:'14px', borderRadius:'14px', marginBottom:'10px', background:'white', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }
 const cps = { margin:'3px 0', color:'#555', fontSize:'13px' }
-const h2s = { color:'#ca1b1b', marginTop:0, marginBottom:'15px' }
-const lblS = { display:'block', marginBottom:'4px', fontWeight:'bold', color:'#555', fontSize:'13px' }
-const btnRed = { width:'100%', padding:'13px', borderRadius:'10px', border:'none', background:'#ca1b1b', color:'white', fontWeight:'bold', cursor:'pointer', marginTop:'8px', fontSize:'14px' }
-const btnGreen = { ...btnRed, background:'#2d8a4e' }
-const btnBlack = { ...btnRed, background:'#222' }
-const btnGray = { ...btnRed, background:'#777' }
-const btnYellow = { ...btnRed, background:'#f5c518', color:'#222', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'13px' }
+const h2s = { color:'#ca1b1b', marginTop:0, marginBottom:'16px', fontWeight:'800', letterSpacing:'-0.3px' }
+const lblS = { display:'block', marginBottom:'5px', fontWeight:'700', color:'#555', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px' }
+// Buttons
+const btnBase = { display:'inline-flex', alignItems:'center', justifyContent:'center', width:'100%', padding:'12px 18px', borderRadius:'10px', border:'none', fontWeight:'700', cursor:'pointer', marginTop:'8px', fontSize:'13px', letterSpacing:'0.3px', transition:'opacity 0.15s', fontFamily:'inherit' }
+const btnRed = { ...btnBase, background:'#ca1b1b', color:'white', boxShadow:'0 2px 8px rgba(202,27,27,0.25)' }
+const btnGreen = { ...btnBase, background:'#2d8a4e', color:'white', boxShadow:'0 2px 8px rgba(45,138,78,0.25)' }
+const btnBlack = { ...btnBase, background:'#1a1a2e', color:'white', boxShadow:'0 2px 8px rgba(0,0,0,0.18)' }
+const btnGray = { ...btnBase, background:'#f0f0f0', color:'#333', boxShadow:'none' }
+const btnYellow = { ...btnBase, background:'#FDD412', color:'#1a1a2e', width:'auto', padding:'10px 20px', marginTop:0, boxShadow:'0 2px 8px rgba(253,212,18,0.35)' }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getTodayDate() {
@@ -608,36 +611,13 @@ export default function App() {
   }
   function retakePhoto() { setCapturedPhoto(null); startCamera() }
   async function uploadSelfie(dataUrl, fileName) {
-  const b64 = dataUrl.split(',')[1]
-  const bs = atob(b64)
-  const ab = new ArrayBuffer(bs.length)
-  const ia = new Uint8Array(ab)
-
-  for (let i = 0; i < bs.length; i++) {
-    ia[i] = bs.charCodeAt(i)
+    const b64=dataUrl.split(',')[1], bs=atob(b64), ab=new ArrayBuffer(bs.length), ia=new Uint8Array(ab)
+    for (let i=0;i<bs.length;i++) ia[i]=bs.charCodeAt(i)
+    const blob = new Blob([ab], { type:'image/jpeg' })
+    await supabase.storage.from('selfies').upload(fileName, blob, { upsert:true })
+    const { data } = supabase.storage.from('selfies').getPublicUrl(fileName)
+    return data.publicUrl
   }
-
-  const blob = new Blob([ab], { type: 'image/jpeg' })
-
-  const cleanFileName = fileName.replace(/[^a-zA-Z0-9-_]/g, '')
-  const uniqueFileName = `${cleanFileName}-${Date.now()}-${crypto.randomUUID()}.jpg`
-
-  const { error } = await supabase.storage
-    .from('selfies')
-    .upload(uniqueFileName, blob, {
-      cacheControl: '0',
-      upsert: false,
-      contentType: 'image/jpeg'
-    })
-
-  if (error) throw error
-
-  const { data } = supabase.storage
-    .from('selfies')
-    .getPublicUrl(uniqueFileName)
-
-  return `${data.publicUrl}?v=${Date.now()}`
-}
   async function uploadProfilePhoto(file, empId) {
     const { error } = await supabase.storage.from('profile-photos').upload(`${empId}.jpg`, file, { upsert:true })
     if (error) throw error
@@ -3604,9 +3584,9 @@ export default function App() {
           <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden', background:'#f0f2f5' }}>
             {/* Sub-tab Navigation Bar */}
             {visibleSubTabs.length > 1 && (
-              <div style={{ background:'#fff9e6', borderBottom:'2px solid #ca1b1b', padding:'0 20px', display:'flex', gap:'2px', overflowX:'auto', flexShrink:0, boxShadow:'0 2px 6px rgba(202,27,27,0.1)' }}>
+              <div style={{ background:'white', borderBottom:'1px solid #f0f0f0', padding:'10px 20px', display:'flex', gap:'6px', overflowX:'auto', flexShrink:0 }}>
                 {visibleSubTabs.map(tab => (
-                  <button key={tab.key} onClick={()=>handleTabClick(tab.key)} style={{ padding:'11px 16px', border:'none', borderBottom:`3px solid ${activeTab===tab.key?'#ca1b1b':'transparent'}`, background:activeTab===tab.key?'white':'transparent', color:activeTab===tab.key?'#ca1b1b':'#555', cursor:'pointer', fontWeight:activeTab===tab.key?'bold':'500', fontSize:'12px', whiteSpace:'nowrap', transition:'all 0.15s', letterSpacing:'0.2px', borderRadius:activeTab===tab.key?'6px 6px 0 0':'0', marginBottom:activeTab===tab.key?'-2px':'0' }}>
+                  <button key={tab.key} onClick={()=>handleTabClick(tab.key)} style={{ padding:'8px 16px', border:'none', borderRadius:'20px', background:activeTab===tab.key?'#ca1b1b':'#f4f4f4', color:activeTab===tab.key?'white':'#555', cursor:'pointer', fontWeight:activeTab===tab.key?'700':'500', fontSize:'12px', whiteSpace:'nowrap', transition:'all 0.15s', letterSpacing:'0.2px', boxShadow:activeTab===tab.key?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>
                     {tab.label}
                   </button>
                 ))}
@@ -3614,7 +3594,7 @@ export default function App() {
             )}
 
             {/* Content Area */}
-            <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'24px', background:'#f0f2f5' }}>
+            <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'24px', background:'#f8f7f5' }}>
 
             {/* DASHBOARD */}
             {activeTab==='dashboard' && (
@@ -6919,9 +6899,9 @@ export default function App() {
                 </div>
 
                 {/* Sub-navigation */}
-                <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(3,1fr)':'repeat(6,1fr)', gap:'8px', marginBottom:'20px' }}>
+                <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
                   {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['resellers','🏪 Resellers']].map(([v,l])=>(
-                    <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'9px 6px', borderRadius:'10px', border:`2px solid ${salesView===v?'#ca1b1b':'#ddd'}`, background:salesView===v?'#ca1b1b':'white', color:salesView===v?'white':'#555', fontWeight:'bold', fontSize:'11px', cursor:'pointer' }}>{l}</button>
+                    <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
                   ))}
                 </div>
 
@@ -7886,26 +7866,26 @@ export default function App() {
     const onBreak = todayBreaks.length>0 && !todayBreaks[todayBreaks.length-1]?.break_in
     const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
     return (
-      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f0f2f5', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f8f7f5', display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {/* Header */}
-        <div style={{ background:'#1a1a2e', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, zIndex:100, boxShadow:'0 2px 8px rgba(0,0,0,0.3)' }}>
+        <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, zIndex:100, boxShadow:'0 2px 12px rgba(0,0,0,0.25)' }}>
           <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
             <div style={{ position:'relative' }}>
               {profilePhotoUrl ?
-                <img src={profilePhotoUrl} alt="Profile" style={{ width:'40px', height:'40px', borderRadius:'50%', objectFit:'cover', border:'2px solid #ca1b1b' }} /> :
-                <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:'#ca1b1b', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', border:'2px solid rgba(255,255,255,0.2)' }}>👤</div>
+                <img src={profilePhotoUrl} alt="Profile" style={{ width:'40px', height:'40px', borderRadius:'50%', objectFit:'cover', border:'2px solid #FDD412' }} /> :
+                <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:'#FDD412', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', border:'2px solid rgba(255,255,255,0.2)' }}>👤</div>
               }
             </div>
             <div>
               <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0, letterSpacing:'0.3px' }}>{employee.full_name}</p>
-              <p style={{ color:'rgba(255,255,255,0.5)', fontSize:'11px', margin:0 }}>{employee.position} · {employee.employee_code}</p>
+              <p style={{ color:'rgba(255,255,255,0.6)', fontSize:'11px', margin:0 }}>{employee.position} · {employee.employee_code}</p>
             </div>
           </div>
           <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
             {cameFromAdmin && (
-              <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}>← Admin</button>
+              <button style={{ background:'#FDD412', color:'#1a1a2e', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}>← Admin</button>
             )}
-            <button style={{ background:'rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.8)', border:'1px solid rgba(255,255,255,0.2)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={cameFromAdmin?()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }:logout}>Logout</button>
+            <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.25)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={cameFromAdmin?()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }:logout}>Logout</button>
           </div>
         </div>
 
@@ -7927,7 +7907,7 @@ export default function App() {
         )}
 
         {/* Scrollable Content Area */}
-        <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'20px', display:'flex', justifyContent:'center' }}>
+        <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'20px', display:'flex', justifyContent:'center', background:'#f8f7f5' }}>
         <div style={{ background:'white', borderRadius:'16px', padding:isMobile?'16px':'20px', width:'100%', maxWidth:'560px', boxShadow:'0 4px 20px rgba(0,0,0,0.08)', marginBottom:'16px', border:'1px solid #eee' }}>
         {uploadingPhoto && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 8px', textAlign:'center' }}>⏳ Uploading photo...</p>}
         {cameFromAdmin && (
@@ -8603,7 +8583,7 @@ export default function App() {
         <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
           <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
           <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-          <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
+        <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
         </form>
         {employeeCode.toUpperCase()==='ADMIN001' && (
           <p style={{ color:'#bbb', fontSize:'10px', marginTop:'10px', textAlign:'center' }}>👑 Master Owner Access</p>
