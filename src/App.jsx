@@ -391,6 +391,9 @@ export default function App() {
   const [paymentNote, setPaymentNote] = useState({})
   const [paymentMethod, setPaymentMethod] = useState({})
   const [viewingInvoice, setViewingInvoice] = useState(null)
+  const [editingInvoice, setEditingInvoice] = useState(null)
+  const [editInvoiceItems, setEditInvoiceItems] = useState([])
+  const [savingEditInvoice, setSavingEditInvoice] = useState(false)
   const PAYMENT_METHODS = ['Cash','GCash','Bank Transfer']
   const [arFilter, setArFilter] = useState('all')
   const [dailySales, setDailySales] = useState([])
@@ -1807,6 +1810,42 @@ export default function App() {
       loadDeliveryInvoices()
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingInvoice(false)
+  }
+  async function saveInvoiceEdit() {
+    if (!editingInvoice) return
+    const validItems = editInvoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
+    if (validItems.length === 0) { showToast('❌ Please add at least one item.','red'); return }
+    setSavingEditInvoice(true)
+    try {
+      // Recalculate totals
+      const lineItems = validItems.map(i => {
+        const variant = donutVariants.find(v => v.id === i.variant_id)
+        const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
+        const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
+        return { ...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
+      })
+      const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
+      // Update invoice header
+      await supabase.from('delivery_invoices').update({
+        subtotal, total_amount:subtotal,
+        notes:editingInvoice.notes||null,
+        prepared_by:editingInvoice.prepared_by||null,
+        dispatched_by:editingInvoice.dispatched_by||null,
+        crates_used:Number(editingInvoice.crates_used||0)
+      }).eq('id', editingInvoice.id)
+      // Replace line items
+      await supabase.from('delivery_invoice_items').delete().eq('invoice_id', editingInvoice.id)
+      await supabase.from('delivery_invoice_items').insert(lineItems.map(i => ({
+        invoice_id:editingInvoice.id, variant_id:i.variant_id, variant_name:i.variant_name,
+        retail_price:i.retail_price, reseller_price:i.reseller_price,
+        quantity:Number(i.quantity), total_price:i.total_price
+      })))
+      await logAudit('INVOICE EDITED', adminRole, editingInvoice.reseller_name, `${editingInvoice.invoice_number} — updated to ${php(subtotal)}`)
+      showToast(`✅ Invoice updated — new total: ${php(subtotal)}`)
+      setEditingInvoice(null); setEditInvoiceItems([])
+      loadDeliveryInvoices()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingEditInvoice(false)
   }
   async function deleteInvoice(invoice) {
     if (!window.confirm(`Delete invoice ${invoice.invoice_number} for ${invoice.reseller_name}?\nThis cannot be undone.`)) return
@@ -7220,9 +7259,12 @@ export default function App() {
                             <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}>🖨️ PRINT</button>
                             <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setViewingInvoice(inv)}>👁️ VIEW</button>
                             {inv.status!=='paid' && (
+                              <button style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingInvoice({...inv}); setEditInvoiceItems((inv.delivery_invoice_items||[]).map(i=>({...i}))) }}>✏️ EDIT</button>
+                            )}
+                            {inv.status!=='paid' && (
                               <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowPaymentForm(p=>({...p,[inv.id]:!p[inv.id]}))}>💵 RECORD PAYMENT</button>
                             )}
-                            {adminRole==='owner' && (
+                            {['owner','manager','payroll'].includes(adminRole) && (
                               <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>deleteInvoice(inv)}>🗑️ DELETE</button>
                             )}
                           </div>
@@ -7249,6 +7291,61 @@ export default function App() {
                 )}
 
                 {/* ── RECEIVABLES VIEW ── */}
+                {/* EDIT INVOICE MODAL */}
+                {editingInvoice && (
+                  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>{ if(!savingEditInvoice){ setEditingInvoice(null); setEditInvoiceItems([]) }}}>
+                    <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'640px', width:'100%', maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', margin:'0 0 2px' }}>✏️ Edit Invoice</p>
+                          <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{editingInvoice.invoice_number} · {editingInvoice.reseller_name}</p>
+                        </div>
+                        <button onClick={()=>{ setEditingInvoice(null); setEditInvoiceItems([]) }} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Cancel</button>
+                      </div>
+                      {/* Invoice details editable */}
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'12px' }}>
+                        <div><label style={lblS}>Prepared by:</label><input value={editingInvoice.prepared_by||''} onChange={e=>setEditingInvoice(p=>({...p,prepared_by:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                        <div><label style={lblS}>Dispatched by:</label><input value={editingInvoice.dispatched_by||''} onChange={e=>setEditingInvoice(p=>({...p,dispatched_by:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                        <div><label style={lblS}>Crates Used:</label><input type="number" value={editingInvoice.crates_used||0} onChange={e=>setEditingInvoice(p=>({...p,crates_used:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" /></div>
+                        <div><label style={lblS}>Notes:</label><input value={editingInvoice.notes||''} onChange={e=>setEditingInvoice(p=>({...p,notes:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                      </div>
+                      {/* Line items */}
+                      <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>Items:</p>
+                      <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
+                        {['Variant','Qty','Retail','Reseller',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+                      </div>
+                      {editInvoiceItems.map((item,i)=>{
+                        const variant = donutVariants.find(v=>v.id===item.variant_id)
+                        const retailPrice = variant?.selling_price || Number(item.retail_price) || 0
+                        const resellerPrice = Math.round(retailPrice*0.80*100)/100
+                        return (
+                          <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
+                            <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...editInvoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setEditInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                              <option value="">— Select —</option>
+                              {donutVariants.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                            </select>
+                            <input type="number" value={item.quantity} onChange={e=>{ const upd=[...editInvoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setEditInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" />
+                            <span style={{ fontSize:'11px', color:'#888', textAlign:'center' }}>{php(retailPrice)}</span>
+                            <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold', textAlign:'center' }}>{php(resellerPrice)}</span>
+                            <button onClick={()=>setEditInvoiceItems(editInvoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}>✕</button>
+                          </div>
+                        )
+                      })}
+                      {/* Total preview */}
+                      {editInvoiceItems.some(i=>i.variant_id&&Number(i.quantity)>0) && (
+                        <div style={{ background:'#fff9e6', borderRadius:'8px', padding:'8px 12px', margin:'6px 0', display:'flex', justifyContent:'space-between' }}>
+                          <span style={{ fontSize:'12px', color:'#555' }}>{editInvoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)} pieces</span>
+                          <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px' }}>
+                            New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); return s+Math.round((v?.selling_price||0)*0.80*100)/100*Number(i.quantity||0) },0))}
+                          </span>
+                        </div>
+                      )}
+                      <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setEditInvoiceItems([...editInvoiceItems,{variant_id:'',variant_name:'',quantity:'',retail_price:0,reseller_price:0}])}>+ ADD ITEM</button>
+                      <button style={{ ...btnGreen, opacity:savingEditInvoice?0.6:1 }} disabled={savingEditInvoice} onClick={saveInvoiceEdit}>{savingEditInvoice?'⏳ Saving...':'💾 SAVE CHANGES'}</button>
+                    </div>
+                  </div>
+                )}
+
                 {/* VIEW INVOICE MODAL */}
                 {viewingInvoice && (
                   <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setViewingInvoice(null)}>
