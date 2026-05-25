@@ -7264,7 +7264,7 @@ export default function App() {
                             {inv.status!=='paid' && (
                               <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowPaymentForm(p=>({...p,[inv.id]:!p[inv.id]}))}>💵 RECORD PAYMENT</button>
                             )}
-                            {['owner','manager','payroll'].includes(adminRole) && (
+                            {['owner','manager','payroll','hr'].includes(adminRole) && (
                               <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>deleteInvoice(inv)}>🗑️ DELETE</button>
                             )}
                           </div>
