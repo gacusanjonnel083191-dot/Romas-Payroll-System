@@ -2024,32 +2024,28 @@ export default function App() {
         <tr class="total-row"><td colspan="4" style="text-align:right;">Balance:</td><td style="text-align:right;color:#ca1b1b;">${php(Number(invoice.total_amount)-(Number(invoice.paid_amount)||0))}</td><td></td></tr>`:''}
       </table>
       <div class="divider" style="margin-top:6px;"></div>
-      <!-- Crates + Signatures at bottom -->
-      <div style="margin-top:8px;background:#f9f9f9;border-radius:6px;padding:6px 8px;margin-bottom:6px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-size:8px;font-weight:bold;color:#555;">Crates Used:</span>
-          <span style="font-size:9px;font-weight:bold;color:#ca1b1b;">${invoice.crates_used||0} crate(s)</span>
+      <!-- Bottom fields -->
+      <div style="margin-top:8px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+          <div>
+            <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:14px;">Dispatcher:</div>
+            <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
+          </div>
+          <div>
+            <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;">Delivery Personnel:</div>
+            <div style="font-size:8px;font-weight:bold;color:#333;margin-bottom:8px;">Ronald Reyes / Jomar Cerezo</div>
+            <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
+          </div>
         </div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px;">
-          <span style="font-size:8px;color:#555;">Crates Returned: ___________</span>
-          <span style="font-size:8px;color:#555;">Missing: ___________</span>
-        </div>
-      </div>
-      <div style="display:flex;justify-content:space-between;margin-top:10px;gap:8px;">
-        <div style="flex:1;text-align:center;">
-          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;">Prepared / Dispatched by</div>
-          <div style="font-size:8px;color:#333;margin-bottom:18px;">${invoice.prepared_by||'Ronald Reyes / Jomar Cerezo'}</div>
-          <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
-        </div>
-        <div style="flex:1;text-align:center;">
-          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;">Received by (Reseller)</div>
-          <div style="font-size:8px;color:#333;margin-bottom:18px;">&nbsp;</div>
-          <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
-        </div>
-        <div style="flex:1;text-align:center;">
-          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;">Checked by</div>
-          <div style="font-size:8px;color:#333;margin-bottom:18px;">&nbsp;</div>
-          <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div>
+            <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:14px;">Crates Used:</div>
+            <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">&nbsp;</div>
+          </div>
+          <div>
+            <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:14px;">Crates Returned:</div>
+            <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">&nbsp;</div>
+          </div>
         </div>
       </div>
       <div class="no-print" style="text-align:center;margin-top:12px;">
