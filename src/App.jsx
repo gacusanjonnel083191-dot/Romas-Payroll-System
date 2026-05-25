@@ -2024,25 +2024,32 @@ export default function App() {
         <tr class="total-row"><td colspan="4" style="text-align:right;">Balance:</td><td style="text-align:right;color:#ca1b1b;">${php(Number(invoice.total_amount)-(Number(invoice.paid_amount)||0))}</td><td></td></tr>`:''}
       </table>
       <div class="divider" style="margin-top:6px;"></div>
-      <!-- Signatures -->
-      <div style="display:flex;justify-content:space-between;margin-top:6px;">
-        <div style="text-align:center;">
-          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:10px;">Prepared by</div>
-          <div style="font-size:7px;margin-bottom:2px;">${invoice.prepared_by||'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;'}</div>
-          <div class="sig" style="margin:0 auto;"></div>
-          <div style="font-size:6px;color:#888;">Signature / Date</div>
+      <!-- Crates + Signatures at bottom -->
+      <div style="margin-top:8px;background:#f9f9f9;border-radius:6px;padding:6px 8px;margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:8px;font-weight:bold;color:#555;">Crates Used:</span>
+          <span style="font-size:9px;font-weight:bold;color:#ca1b1b;">${invoice.crates_used||0} crate(s)</span>
         </div>
-        <div style="text-align:center;">
-          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:10px;">Dispatched by</div>
-          <div style="font-size:7px;margin-bottom:2px;">${invoice.dispatched_by||'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;'}</div>
-          <div class="sig" style="margin:0 auto;"></div>
-          <div style="font-size:6px;color:#888;">Signature / Date</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px;">
+          <span style="font-size:8px;color:#555;">Crates Returned: ___________</span>
+          <span style="font-size:8px;color:#555;">Missing: ___________</span>
         </div>
-        <div style="text-align:center;">
-          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:10px;">Received by</div>
-          <div style="font-size:7px;margin-bottom:2px;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</div>
-          <div class="sig" style="margin:0 auto;"></div>
-          <div style="font-size:6px;color:#888;">Signature / Date</div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:10px;gap:8px;">
+        <div style="flex:1;text-align:center;">
+          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;">Prepared / Dispatched by</div>
+          <div style="font-size:8px;color:#333;margin-bottom:18px;">${invoice.prepared_by||'Ronald Reyes / Jomar Cerezo'}</div>
+          <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
+        </div>
+        <div style="flex:1;text-align:center;">
+          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;">Received by (Reseller)</div>
+          <div style="font-size:8px;color:#333;margin-bottom:18px;">&nbsp;</div>
+          <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
+        </div>
+        <div style="flex:1;text-align:center;">
+          <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;">Checked by</div>
+          <div style="font-size:8px;color:#333;margin-bottom:18px;">&nbsp;</div>
+          <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
         </div>
       </div>
       <div class="no-print" style="text-align:center;margin-top:12px;">
@@ -7135,7 +7142,7 @@ export default function App() {
                         {deliveryInvoices.filter(i=>i.delivery_date===invoiceDate).length > 0 && (
                           <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDate)}>🖨️ PRINT ALL ({invoiceDate})</button>
                         )}
-                        <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowCreateInvoice(!showCreateInvoice); if(!showCreateInvoice){ setInvoiceResellerId(''); setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }]); setInvoiceNotes('') } }}>
+                        <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowCreateInvoice(!showCreateInvoice); if(!showCreateInvoice){ setInvoiceResellerId(''); setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }]); setInvoiceNotes(''); setInvoicePreparedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceDispatchedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceCrates('') } }}>
                           {showCreateInvoice?'✕ CANCEL':'+ CREATE INVOICE'}
                         </button>
                       </div>
@@ -7158,11 +7165,11 @@ export default function App() {
                           </div>
                           <div>
                             <label style={lblS}>Prepared by:</label>
-                            <input value={invoicePreparedBy} onChange={e=>setInvoicePreparedBy(e.target.value)} placeholder="Name of person who prepared" style={inputStyle} />
+                            <input value={invoicePreparedBy} onChange={e=>setInvoicePreparedBy(e.target.value)} placeholder="Ronald Reyes / Jomar Cerezo" style={inputStyle} />
                           </div>
                           <div>
                             <label style={lblS}>Dispatched by:</label>
-                            <input value={invoiceDispatchedBy} onChange={e=>setInvoiceDispatchedBy(e.target.value)} placeholder="Name of delivery person" style={inputStyle} />
+                            <input value={invoiceDispatchedBy} onChange={e=>setInvoiceDispatchedBy(e.target.value)} placeholder="Ronald Reyes / Jomar Cerezo" style={inputStyle} />
                           </div>
                           <div>
                             <label style={lblS}>Crates Used:</label>
@@ -7172,10 +7179,15 @@ export default function App() {
                         {/* Invoice items */}
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
                           <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:0 }}>Items:</p>
-                          <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{
-                            const allItems = donutVariants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 }))
-                            setInvoiceItems(allItems)
-                          }}>📋 LOAD ALL VARIANTS</button>
+                          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                            {invoiceResellerId && (resellerDefaultOrders[invoiceResellerId]||[]).length > 0 && (
+                              <button style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>buildInvoiceFromReseller(invoiceResellerId)}>✅ USE DEFAULT ORDER</button>
+                            )}
+                            <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{
+                              const allItems = donutVariants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 }))
+                              setInvoiceItems(allItems)
+                            }}>📋 LOAD ALL VARIANTS</button>
+                          </div>
                         </div>
                         {/* Header */}
                         <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
