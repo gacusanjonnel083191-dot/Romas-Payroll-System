@@ -80,11 +80,13 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
             <th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th>
           </tr>
           <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
-          <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(pay.basicPay)}</td></tr>
-          ${pay.overtimePay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay</td><td style="padding:3px 8px;text-align:right;">${php(pay.overtimePay)}</td></tr>`:''}
-          ${pay.nightDiffPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential</td><td style="padding:3px 8px;text-align:right;">${php(pay.nightDiffPay)}</td></tr>`:''}
+          <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${Math.round((pay.totalWorkedMinutes||0)/60*10)/10} hrs)</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(pay.basicPay)}</td></tr>
+          ${(pay.birthdayPay||0)>0?`<tr style="background:#fff8dc;"><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">🎂 Birthday Pay (200%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.birthdayPay)}</td></tr>`:''}
+          ${pay.overtimePay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay (${pay.overtimeMinutes} min × 1.25x)</td><td style="padding:3px 8px;text-align:right;">${php(pay.overtimePay)}</td></tr>`:''}
+          ${pay.nightDiffPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential (10%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.nightDiffPay)}</td></tr>`:''}
           ${pay.holidayPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;">${php(pay.holidayPay)}</td></tr>`:''}
-          ${pay.adjustmentEarnings>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Bonus / Other</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentEarnings)}</td></tr>`:''}
+          ${(pay.paidLeaveDays||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Paid Leave (${pay.paidLeaveDays} day(s))</td><td style="padding:3px 8px;text-align:right;">${php((pay.paidLeaveDays||0)*((pay.basicPay||0)/Math.max(1,pay.workedDays+(pay.paidLeaveDays||0))))}</td></tr>`:''}
+          ${pay.adjustmentEarnings>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Bonus / Other Earnings</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentEarnings)}</td></tr>`:''}
           <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Earnings</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalEarnings)}</td></tr>
           <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
           ${pay.lateDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Late (${pay.lateMinutes} min)</td><td style="padding:3px 8px;text-align:right;">${php(pay.lateDeduction)}</td></tr>`:''}
@@ -2619,9 +2621,25 @@ export default function App() {
     setResolvedLeaves(data || [])
   }
   async function updateLeaveStatus(id, status, reason) {
+    const req = leaveRequests.find(r=>r.id===id)
     const { error } = await supabase.from('leave_requests').update({ status, admin_reason:reason||null }).eq('id', id)
     if (error) { showToast('Failed: '+error.message,'red'); return }
-    await logAudit(`LEAVE ${status.toUpperCase()}`,'Admin','',`Leave ID ${id}`)
+    // Deduct leave balance when approved
+    if (status==='approved' && req) {
+      const dur = Number(req.duration_days||1)
+      const emp = employees.find(e=>e.id===req.employee_id)
+      if (emp) {
+        if (req.leave_type==='Sick Leave') {
+          const newBal = Math.max(0, Number(emp.sick_leave_balance||0) - dur)
+          await supabase.from('employees').update({ sick_leave_balance:newBal }).eq('id', emp.id)
+        } else if (req.leave_type==='Vacation Leave') {
+          const newBal = Math.max(0, Number(emp.vacation_leave_balance||0) - dur)
+          await supabase.from('employees').update({ vacation_leave_balance:newBal }).eq('id', emp.id)
+        }
+        await loadEmployees()
+      }
+    }
+    await logAudit(`LEAVE ${status.toUpperCase()}`,'Admin',req?.employee_name||'',`Leave ID ${id} — ${dur||0} day(s)`)
     setLeaveRequests(prev=>prev.filter(r=>r.id!==id))
     showToast(`✅ Leave ${status} successfully!`)
   }
@@ -3216,7 +3234,7 @@ export default function App() {
       const totalDeductions=caDeduction+sssDeduction+pagibigDeduction+philhealthDeduction+adjDeductions
       const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
       const undertimeMinutesInfo=logs?.reduce((s,l)=>s+Number(l.undertime_minutes||0),0)||0
-      results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:totalEarnings-totalDeductions, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', mobileNumber:emp.contact_number||'' })
+      results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
     } // end for emp
     for (const pay of results) {
       const { data:empCAs } = await supabase.from('cash_advances').select('*').eq('employee_id', pay.employeeId).eq('status', 'Unpaid')
@@ -3225,7 +3243,7 @@ export default function App() {
         const newBal=Math.max(0,Number(ca.balance||0)-ded), newRem=Math.max(0,Number(ca.installments_remaining||1)-1)
         await supabase.from('cash_advances').update({ amount_paid:Number(ca.amount_paid||0)+ded, balance:newBal, installments_remaining:newRem, status:newBal<=0||newRem<=0?'Paid':'Unpaid' }).eq('id', ca.id)
       }
-      await supabase.from('payroll_records').insert([{ employee_id:pay.employeeId, employee_code:pay.employeeCode, employee_name:pay.employeeName, payroll_start:payrollStart, payroll_end:payrollEnd, worked_days:pay.workedDays, basic_pay:pay.basicPay, birthday_pay:pay.birthdayPay||0, overtime_pay:pay.overtimePay, night_diff_pay:pay.nightDiffPay, holiday_pay:pay.holidayPay, other_earnings:pay.adjustmentEarnings, total_earnings:pay.totalEarnings, late_minutes:pay.lateMinutes||0, undertime_minutes:pay.undertimeMinutes||0, cash_advance_deduction:pay.cashAdvanceDeduction, sss_deduction:pay.sssDeduction, pagibig_deduction:pay.pagibigDeduction, philhealth_deduction:pay.philhealthDeduction, other_deductions:pay.adjustmentDeductions, total_deductions:pay.totalDeductions, net_pay:pay.netPay, employee_acknowledgement:'pending', payslip_serial:genSerial(payrollStart,results.indexOf(pay)) }])
+      await supabase.from('payroll_records').insert([{ employee_id:pay.employeeId, employee_code:pay.employeeCode, employee_name:pay.employeeName, payroll_start:payrollStart, payroll_end:payrollEnd, worked_days:pay.workedDays, basic_pay:pay.basicPay, birthday_pay:pay.birthdayPay||0, overtime_pay:pay.overtimePay, night_diff_pay:pay.nightDiffPay, holiday_pay:pay.holidayPay, other_earnings:pay.adjustmentEarnings, total_earnings:pay.totalEarnings, late_minutes:pay.lateMinutes||0, undertime_minutes:pay.undertimeMinutes||0, cash_advance_deduction:pay.cashAdvanceDeduction, sss_deduction:pay.sssDeduction, pagibig_deduction:pay.pagibigDeduction, philhealth_deduction:pay.philhealthDeduction, other_deductions:pay.adjustmentDeductions, total_deductions:pay.totalDeductions, net_pay:pay.netPay, employee_acknowledgement:'pending', payslip_serial:genSerial(payrollStart,results.indexOf(pay)), bank_name:pay.bankName, bank_account:pay.bankAccount, bank_account_name:pay.bankAccountName }])
     }
     const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
     setPayrollResults(results); setPayrollSummary(s); setPayrollComputing(false)
