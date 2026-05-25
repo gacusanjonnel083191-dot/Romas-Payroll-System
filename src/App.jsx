@@ -1751,13 +1751,23 @@ export default function App() {
     setResellerDefaultOrders(grouped)
   }
   async function saveDefaultOrder(resellerId) {
-    await supabase.from('reseller_default_orders').delete().eq('reseller_id', resellerId)
-    const valid = defaultOrderItems.filter(i => i.variant_id && Number(i.default_quantity) > 0)
-    if (valid.length > 0) {
-      const rows = valid.map(i => ({ reseller_id:resellerId, variant_id:i.variant_id, variant_name:i.variant_name, default_quantity:Number(i.default_quantity) }))
-      await supabase.from('reseller_default_orders').insert(rows)
-    }
-    showToast('✅ Default order saved!'); setEditingDefaultOrder(null); loadResellerDefaultOrders()
+    try {
+      await supabase.from('reseller_default_orders').delete().eq('reseller_id', resellerId)
+      const valid = defaultOrderItems.filter(i => i.variant_id && Number(i.default_quantity) > 0)
+      if (valid.length > 0) {
+        const rows = valid.map(i => ({
+          reseller_id: resellerId,
+          variant_id: i.variant_id,
+          variant_name: i.variant_name || donutVariants.find(v=>v.id===i.variant_id)?.name || '',
+          default_quantity: Number(i.default_quantity)
+        }))
+        const { error } = await supabase.from('reseller_default_orders').insert(rows)
+        if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+      }
+      showToast(`✅ Default order saved! (${valid.length} variant${valid.length!==1?'s':''})`)
+      setEditingDefaultOrder(null)
+      loadResellerDefaultOrders()
+    } catch(err) { showToast('❌ Error: '+err.message,'red') }
   }
   // ── Invoice Functions ─────────────────────────────────────────────────────
   function buildInvoiceFromReseller(resellerId) {
@@ -7700,15 +7710,20 @@ export default function App() {
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
                               <span style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>📋 Default Order Template</span>
                               {!isEditingOrder ? (
-                                <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{
+                                <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={async ()=>{
                                   setEditingDefaultOrder(r.id)
-                                  // Load all variants, pre-fill existing quantities
+                                  // Make sure variants are loaded first
+                                  let variants = donutVariants
+                                  if (!variants || variants.length === 0) {
+                                    const { data } = await supabase.from('donut_variants').select('*').order('category').order('name')
+                                    variants = data || []
+                                  }
                                   const existing = resellerDefaultOrders[r.id] || []
-                                  const allItems = donutVariants.map(v => {
+                                  const allItems = variants.map(v => {
                                     const found = existing.find(e=>e.variant_id===v.id)
                                     return { variant_id:v.id, variant_name:v.name, default_quantity: found?.default_quantity||'' }
                                   })
-                                  setDefaultOrderItems(allItems.length > 0 ? allItems : existing.map(i=>({...i})))
+                                  setDefaultOrderItems(allItems)
                                 }}>✏️ EDIT</button>
                               ) : (
                                 <div style={{ display:'flex', gap:'6px' }}>
@@ -7721,8 +7736,13 @@ export default function App() {
                               <div>
                                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}>
                                   <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Set default qty per variant. Leave 0 to exclude.</p>
-                                  <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'6px', padding:'4px 10px', cursor:'pointer', fontSize:'10px', fontWeight:'bold' }} onClick={()=>{
-                                    const all = donutVariants.map(v => { const existing = defaultOrderItems.find(i=>i.variant_id===v.id); return { variant_id:v.id, variant_name:v.name, default_quantity: existing?.default_quantity||'' } })
+                                  <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'6px', padding:'4px 10px', cursor:'pointer', fontSize:'10px', fontWeight:'bold' }} onClick={async ()=>{
+                                    let variants = donutVariants
+                                    if (!variants || variants.length === 0) {
+                                      const { data } = await supabase.from('donut_variants').select('*').order('category').order('name')
+                                      variants = data || []
+                                    }
+                                    const all = variants.map(v => { const existing = defaultOrderItems.find(i=>i.variant_id===v.id); return { variant_id:v.id, variant_name:v.name, default_quantity: existing?.default_quantity||'' } })
                                     setDefaultOrderItems(all)
                                   }}>📋 LOAD ALL VARIANTS</button>
                                 </div>
