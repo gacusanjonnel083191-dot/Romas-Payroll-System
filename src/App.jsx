@@ -7715,7 +7715,13 @@ export default function App() {
                   <div style={{ background:'#fff5f5', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', marginBottom:'8px', textAlign:'center' }}>
                     <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'0 0 4px' }}>🔒 Time In/Out locked on this device</p>
                     <p style={{ color:'#888', fontSize:'11px', margin:'0 0 8px' }}>Production staff must use the company tablet in the production area.</p>
-                    <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>setShowDeviceRegister(true)}>🔑 Register This Device</button>
+                  </div>
+                )}
+
+                {/* Register device — show to ALL employees on any unregistered device */}
+                {!isCompanyDevice && (
+                  <div style={{ textAlign:'center', marginBottom:'8px' }}>
+                    <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>setShowDeviceRegister(true)}>🔑 Register This as Company Device</button>
                   </div>
                 )}
 
