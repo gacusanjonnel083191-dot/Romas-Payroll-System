@@ -413,6 +413,15 @@ export default function App() {
   const [salesNotes, setSalesNotes] = useState('')
   const [savingSales, setSavingSales] = useState(false)
   const [dailyExpenses, setDailyExpenses] = useState([])
+  const [cashReconciliations, setCashReconciliations] = useState([])
+  const [reconciliationDate, setReconciliationDate] = useState(today)
+  const [actualCash, setActualCash] = useState('')
+  const [reconciliationNotes, setReconciliationNotes] = useState('')
+  const [savingReconciliation, setSavingReconciliation] = useState(false)
+  const [showReconciliationHistory, setShowReconciliationHistory] = useState(false)
+  const [showReturnForm, setShowReturnForm] = useState({})
+  const [returnItems, setReturnItems] = useState({})
+  const [savingReturn, setSavingReturn] = useState(false)
   const [expensesLoading, setExpensesLoading] = useState(false)
   const [expenseForm, setExpenseForm] = useState({ date:today, category:'Transportation/Fuel', amount:'', description:'' })
   const [savingExpense, setSavingExpense] = useState(false)
@@ -1654,7 +1663,15 @@ export default function App() {
           const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
           if (deductQty <= 0) continue
           const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
-          if (inv) await supabase.from('inventory_items').update({ current_stock: Math.max(0, Number(inv.current_stock) - deductQty) }).eq('id', ing.inventory_item_id)
+          if (inv) {
+            const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
+            await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
+            // Low stock alert
+            const { data:invFull } = await supabase.from('inventory_items').select('name,min_stock,unit').eq('id', ing.inventory_item_id).single()
+            if (invFull && newStock <= Number(invFull.min_stock||0)) {
+              await createNotification(null, 'System', 'inventory', `⚠️ Low Stock Alert`, `${invFull.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${invFull.unit}`)
+            }
+          }
         }
         // Deduct variant-specific ingredients
         for (const ing of (variantRecipes[e.variant_id] || [])) {
@@ -1662,9 +1679,16 @@ export default function App() {
           const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
           if (deductQty <= 0) continue
           const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
-          if (inv) await supabase.from('inventory_items').update({ current_stock: Math.max(0, Number(inv.current_stock) - deductQty) }).eq('id', ing.inventory_item_id)
+          if (inv) {
+            const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
+            await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
+            const { data:invFull } = await supabase.from('inventory_items').select('name,min_stock,unit').eq('id', ing.inventory_item_id).single()
+            if (invFull && newStock <= Number(invFull.min_stock||0)) {
+              await createNotification(null, 'System', 'inventory', `⚠️ Low Stock Alert`, `${invFull.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${invFull.unit}`)
+            }
+          }
         }
-      }
+      } // end for validEntries
       await logAudit('PRODUCTION LOGGED', adminRole, 'Production', `${totalPieces} pcs on ${prodDate} — Cost: ${php(totalCost)}`)
       showToast(`✅ Production logged — ${totalPieces} pieces | Cost: ${php(totalCost)}`)
       setShowProductionForm(false); setProdEntries([{ variant_id:'', pieces:'' }]); setProdNotes('')
@@ -2111,6 +2135,95 @@ export default function App() {
     setSavingSales(false)
   }
   // ── Expenses Functions ────────────────────────────────────────────────────
+  // ── FEATURE 1: Cash Reconciliation ───────────────────────────────────────
+  async function loadCashReconciliations() {
+    const { data } = await supabase.from('cash_reconciliations').select('*').order('reconciliation_date', { ascending:false }).limit(30)
+    setCashReconciliations(data||[])
+  }
+  async function saveReconciliation(expectedCash) {
+    if (!actualCash && actualCash!=='0') { showToast('❌ Enter actual cash count.','red'); return }
+    setSavingReconciliation(true)
+    const actual = Number(actualCash)
+    const expected = Number(expectedCash)
+    const variance = actual - expected
+    const { error } = await supabase.from('cash_reconciliations').upsert({
+      reconciliation_date: reconciliationDate,
+      expected_cash: expected,
+      actual_cash: actual,
+      variance,
+      notes: reconciliationNotes||null,
+      submitted_by: adminRole
+    }, { onConflict:'reconciliation_date' })
+    if (error) { showToast('❌ Failed: '+error.message,'red'); setSavingReconciliation(false); return }
+    await logAudit('CASH RECONCILIATION', adminRole, 'Finance', `${reconciliationDate} — Expected: ${php(expected)}, Actual: ${php(actual)}, Variance: ${php(variance)}`)
+    showToast(variance===0?'✅ Balanced! No variance.':variance>0?`✅ Saved — Overage: ${php(Math.abs(variance))}`:`⚠️ Saved — Shortage: ${php(Math.abs(variance))}`)
+    setActualCash(''); setReconciliationNotes(''); loadCashReconciliations()
+    setSavingReconciliation(false)
+  }
+
+  // ── FEATURE 2: Inventory Auto-Deduction ───────────────────────────────────
+  async function autoDeductInventory(productionLogId, items) {
+    // items = [{variant_name, pieces}]
+    // For each variant, find its recipe ingredients and deduct from inventory
+    let deducted = []
+    for (const item of items) {
+      const { data:variant } = await supabase.from('donut_variants').select('id').eq('name', item.variant_name).single()
+      if (!variant) continue
+      const { data:recipe } = await supabase.from('variant_recipes').select('*').eq('variant_id', variant.id)
+      if (!recipe || recipe.length === 0) continue
+      for (const ing of recipe) {
+        const totalQty = ing.quantity_per_batch ? (ing.quantity_per_batch * item.pieces / (variant.pieces_per_batch||12)) : (ing.quantity * item.pieces)
+        const { data:invItem } = await supabase.from('inventory_items').select('*').ilike('name', `%${ing.ingredient_name}%`).single()
+        if (invItem) {
+          const newStock = Math.max(0, Number(invItem.current_stock||0) - totalQty)
+          await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', invItem.id)
+          deducted.push({ item: ing.ingredient_name, deducted: totalQty.toFixed(2), unit: ing.unit, remaining: newStock.toFixed(2) })
+          if (newStock <= Number(invItem.min_stock||0)) {
+            await createNotification(null, 'System', 'inventory', `⚠️ Low Stock: ${invItem.name}`, `${invItem.name} is below minimum stock level. Remaining: ${newStock.toFixed(2)} ${invItem.unit}`)
+          }
+        }
+      }
+    }
+    if (deducted.length > 0) showToast(`✅ Inventory auto-deducted: ${deducted.length} ingredient(s) updated`)
+    return deducted
+  }
+
+  // ── FEATURE 3: Reseller Returns ───────────────────────────────────────────
+  async function initReturnForm(invoice) {
+    const items = (invoice.delivery_invoice_items||[]).map(i=>({ variant_id:i.variant_id, variant_name:i.variant_name, delivered_qty:Number(i.quantity||0), returned_qty:'', reseller_price:Number(i.reseller_price||0) }))
+    setReturnItems(p=>({...p,[invoice.id]:items}))
+    setShowReturnForm(p=>({...p,[invoice.id]:true}))
+  }
+  async function saveReturn(invoice) {
+    const items = returnItems[invoice.id]||[]
+    const validItems = items.filter(i=>Number(i.returned_qty)>0)
+    if (validItems.length===0) { showToast('❌ Enter at least one returned quantity.','red'); return }
+    for (const item of validItems) {
+      if (Number(item.returned_qty) > item.delivered_qty) { showToast(`❌ ${item.variant_name}: returned qty cannot exceed delivered qty.`,'red'); return }
+    }
+    setSavingReturn(true)
+    try {
+      const totalCredit = validItems.reduce((s,i)=>s+Number(i.returned_qty)*i.reseller_price,0)
+      const { data:ret, error:retErr } = await supabase.from('reseller_returns').insert({
+        invoice_id:invoice.id, reseller_id:invoice.reseller_id, reseller_name:invoice.reseller_name,
+        return_date:today, total_returned_amount:totalCredit, recorded_by:adminRole
+      }).select().single()
+      if (retErr) throw retErr
+      await supabase.from('reseller_return_items').insert(validItems.map(i=>({
+        return_id:ret.id, variant_id:i.variant_id, variant_name:i.variant_name,
+        returned_quantity:Number(i.returned_qty), reseller_price:i.reseller_price,
+        total_credit:Number(i.returned_qty)*i.reseller_price
+      })))
+      // Adjust invoice total
+      const newTotal = Math.max(0, Number(invoice.total_amount||0) - totalCredit)
+      await supabase.from('delivery_invoices').update({ total_amount:newTotal, notes:(invoice.notes?invoice.notes+' | ':'')+'Returns recorded: '+today }).eq('id', invoice.id)
+      await logAudit('RETURNS RECORDED', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${validItems.length} variants, credit: ${php(totalCredit)}`)
+      showToast(`✅ Returns saved! Credit: ${php(totalCredit)} deducted from invoice.`)
+      setShowReturnForm(p=>({...p,[invoice.id]:false}))
+      loadDeliveryInvoices()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingReturn(false)
+  }
   async function loadDailyExpenses() {
     setExpensesLoading(true)
     const { data } = await supabase.from('daily_expenses').select('*').order('expense_date', { ascending:false }).limit(100)
@@ -3508,7 +3621,7 @@ export default function App() {
       if(key==='contracts') { loadContracts(); loadEmployees() }
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders() }
       if(key==='costing') { loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
-      if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData() }
+      if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations() }
     }
 
     // ── Open full employee portal from admin panel ─────────────────────────
@@ -7411,7 +7524,38 @@ export default function App() {
                             {['owner','manager','payroll','hr'].includes(adminRole) && (
                               <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>deleteInvoice(inv)}>🗑️ DELETE</button>
                             )}
+                            {inv.status!=='unpaid' && (
+                              <button style={{ ...btnGray, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>initReturnForm(inv)}>🔄 RETURNS</button>
+                            )}
                           </div>
+                          {/* Returns Form */}
+                          {showReturnForm[inv.id] && (
+                            <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginTop:'10px' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+                                <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:0 }}>🔄 Record Unsold Returns — {inv.reseller_name}</p>
+                                <button onClick={()=>setShowReturnForm(p=>({...p,[inv.id]:false}))} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'14px', color:'#888' }}>✕</button>
+                              </div>
+                              <p style={{ color:'#888', fontSize:'11px', margin:'0 0 10px' }}>Enter quantities that were returned unsold. Invoice total will be adjusted.</p>
+                              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', gap:'6px', marginBottom:'4px', padding:'4px 8px', background:'#f5a623', borderRadius:'6px' }}>
+                                {['Variant','Delivered','Returned','Credit'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', textAlign:h==='Variant'?'left':'center' }}>{h}</span>)}
+                              </div>
+                              {(returnItems[inv.id]||[]).map((item,i)=>(
+                                <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', gap:'6px', marginBottom:'6px', alignItems:'center', padding:'4px 8px', background:i%2===0?'white':'#fafafa', borderRadius:'6px', border:'1px solid #f0e0d0' }}>
+                                  <span style={{ fontSize:'11px', fontWeight:'bold' }}>{item.variant_name}</span>
+                                  <span style={{ textAlign:'center', fontSize:'11px', color:'#555' }}>{item.delivered_qty}</span>
+                                  <input type="number" placeholder="0" min="0" max={item.delivered_qty} value={item.returned_qty||''} onChange={e=>{ const upd=[...(returnItems[inv.id]||[])]; upd[i]={...upd[i],returned_qty:e.target.value}; setReturnItems(p=>({...p,[inv.id]:upd})) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'center', padding:'4px' }} />
+                                  <span style={{ textAlign:'center', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{Number(item.returned_qty||0)>0?php(Number(item.returned_qty)*item.reseller_price):'—'}</span>
+                                </div>
+                              ))}
+                              {(returnItems[inv.id]||[]).some(i=>Number(i.returned_qty)>0) && (
+                                <div style={{ background:'#fff3cd', borderRadius:'8px', padding:'8px 12px', margin:'8px 0', display:'flex', justifyContent:'space-between' }}>
+                                  <span style={{ fontSize:'12px', color:'#856404', fontWeight:'bold' }}>Total Credit:</span>
+                                  <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>{php((returnItems[inv.id]||[]).reduce((s,i)=>s+Number(i.returned_qty||0)*i.reseller_price,0))}</span>
+                                </div>
+                              )}
+                              <button style={{ ...btnRed, opacity:savingReturn?0.6:1 }} disabled={savingReturn} onClick={()=>saveReturn(inv)}>{savingReturn?'⏳ Saving...':'✅ CONFIRM RETURNS'}</button>
+                            </div>
+                          )}
                           {showPaymentForm[inv.id] && (
                             <div style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'10px', padding:'12px', marginTop:'10px' }}>
                               <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'12px', margin:'0 0 8px' }}>Record Payment — Balance: {php(balance)}</p>
@@ -7708,6 +7852,84 @@ export default function App() {
                 {/* ── EXPENSES VIEW ── */}
                 {salesView==='expenses' && (
                   <div>
+                    {/* CASH RECONCILIATION */}
+                    {(()=>{
+                      const dayInvoices = deliveryInvoices.filter(i=>i.delivery_date===reconciliationDate||i.paid_date===reconciliationDate)
+                      const dayPaidAmount = dayInvoices.reduce((s,i)=>s+Number(i.paid_amount||0),0)
+                      const daySales = dailySales.filter(s=>s.sale_date===reconciliationDate).reduce((s,d)=>s+Number(d.total_amount||0),0)
+                      const dayExpenses = dailyExpenses.filter(e=>e.expense_date===reconciliationDate&&e.status==='approved').reduce((s,e)=>s+Number(e.amount||0),0)
+                      const expectedCash = dayPaidAmount + daySales - dayExpenses
+                      const todayRecon = cashReconciliations.find(r=>r.reconciliation_date===reconciliationDate)
+                      const variance = todayRecon ? Number(todayRecon.actual_cash) - expectedCash : null
+                      return (
+                        <div style={{ background:'white', border:`2px solid ${todayRecon?(Math.abs(Number(todayRecon.variance))>0?'#ca1b1b':'#2d8a4e'):'#FDD412'}`, borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px', flexWrap:'wrap', gap:'8px' }}>
+                            <div>
+                              <h3 style={{ color:'#1a1a2e', margin:'0 0 2px', fontSize:'14px' }}>💰 Cash Reconciliation</h3>
+                              <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Compare expected vs actual cash on hand</p>
+                            </div>
+                            <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                              <input type="date" value={reconciliationDate} onChange={e=>setReconciliationDate(e.target.value)} style={{ ...inputStyle, marginBottom:0, width:'140px', fontSize:'12px', padding:'6px 10px' }} />
+                              <button style={{ ...btnBlack, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowReconciliationHistory(!showReconciliationHistory)}>📋 HISTORY</button>
+                            </div>
+                          </div>
+                          {/* Summary */}
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+                            {[
+                              ['Reseller Payments',php(dayPaidAmount),'#4a90d9'],
+                              ['Walk-in Sales',php(daySales),'#2d8a4e'],
+                              ['Expenses',php(dayExpenses),'#ca1b1b'],
+                              ['Expected Cash',php(expectedCash),'#1a1a2e'],
+                            ].map(([l,v,c])=>(
+                              <div key={l} style={{ background:'#f8f7f5', borderRadius:'10px', padding:'10px', textAlign:'center', border:`1px solid ${c}22` }}>
+                                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.4px' }}>{l}</p>
+                                <p style={{ fontWeight:'bold', color:c, fontSize:'16px', margin:0 }}>{v}</p>
+                              </div>
+                            ))}
+                          </div>
+                          {todayRecon ? (
+                            <div style={{ background:Math.abs(Number(todayRecon.variance))===0?'#e8f5e9':Number(todayRecon.variance)>0?'#e8f5e9':'#fff5f5', borderRadius:'10px', padding:'14px', border:`1px solid ${Number(todayRecon.variance)===0?'#2d8a4e':Number(todayRecon.variance)>0?'#2d8a4e':'#ca1b1b'}` }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                                <div>
+                                  <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#333' }}>
+                                    {Number(todayRecon.variance)===0?'✅ Balanced!':Number(todayRecon.variance)>0?`📈 Overage: ${php(Math.abs(Number(todayRecon.variance)))}`:`⚠️ Shortage: ${php(Math.abs(Number(todayRecon.variance)))}`}
+                                  </p>
+                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Actual: {php(todayRecon.actual_cash)} | Expected: {php(expectedCash)} | Submitted by: {todayRecon.submitted_by}</p>
+                                  {todayRecon.notes && <p style={{ color:'#888', fontSize:'11px', margin:'4px 0 0' }}>Note: {todayRecon.notes}</p>}
+                                </div>
+                                <button style={{ ...btnGray, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setActualCash(String(todayRecon.actual_cash)); setReconciliationNotes(todayRecon.notes||'') }}>✏️ UPDATE</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ background:'#f8f7f5', borderRadius:'10px', padding:'14px', border:'1px solid #eee' }}>
+                              <p style={{ fontWeight:'bold', color:'#555', fontSize:'12px', margin:'0 0 10px' }}>Enter Actual Cash Count for {reconciliationDate}:</p>
+                              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 2fr 1fr', gap:'8px', alignItems:'flex-end' }}>
+                                <div><label style={lblS}>Actual Cash on Hand (₱):</label><input type="number" value={actualCash} onChange={e=>setActualCash(e.target.value)} placeholder="0.00" style={{ ...inputStyle, marginBottom:0, border:'2px solid #FDD412', fontSize:'16px', fontWeight:'bold' }} min="0" step="0.01" /></div>
+                                <div><label style={lblS}>Notes (optional):</label><input type="text" value={reconciliationNotes} onChange={e=>setReconciliationNotes(e.target.value)} placeholder="Any remarks..." style={{ ...inputStyle, marginBottom:0 }} /></div>
+                                <button style={{ ...btnYellow, padding:'12px 16px', fontSize:'13px', fontWeight:'bold' }} onClick={()=>saveReconciliation(expectedCash)} disabled={savingReconciliation}>{savingReconciliation?'⏳ Saving...':'💾 SUBMIT'}</button>
+                              </div>
+                            </div>
+                          )}
+                          {/* History */}
+                          {showReconciliationHistory && cashReconciliations.length > 0 && (
+                            <div style={{ marginTop:'12px', border:'1px solid #eee', borderRadius:'10px', overflow:'hidden' }}>
+                              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', background:'#1a1a2e', padding:'8px 12px' }}>
+                                {['Date','Expected','Actual','Variance','By'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
+                              </div>
+                              {cashReconciliations.slice(0,10).map((r,i)=>(
+                                <div key={r.id} style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 1fr', padding:'8px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+                                  <span style={{ fontSize:'11px', fontWeight:'bold' }}>{r.reconciliation_date}</span>
+                                  <span style={{ fontSize:'11px', color:'#555' }}>{php(r.expected_cash)}</span>
+                                  <span style={{ fontSize:'11px', color:'#555' }}>{php(r.actual_cash)}</span>
+                                  <span style={{ fontSize:'11px', fontWeight:'bold', color:Number(r.variance)===0?'#2d8a4e':Number(r.variance)>0?'#2d8a4e':'#ca1b1b' }}>{Number(r.variance)>0?'+':''}{php(r.variance)}</span>
+                                  <span style={{ fontSize:'11px', color:'#888' }}>{r.submitted_by}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                     <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>💸 Daily Expenses</h3>
                     <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
                       <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>➕ Add Expense</h4>
