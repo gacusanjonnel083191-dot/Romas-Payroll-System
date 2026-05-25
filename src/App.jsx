@@ -238,6 +238,9 @@ export default function App() {
   const [finalPayLastDate, setFinalPayLastDate] = useState(today)
   const [finalPayResult, setFinalPayResult] = useState(null)
   const [adminLogs, setAdminLogs] = useState([])
+  const [notifications, setNotifications] = useState([])
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [unreadCount, setUnreadCount] = useState(0)
   const [adminDate, setAdminDate] = useState(today)
   const [absentEmployeeId, setAbsentEmployeeId] = useState('')
   const [absentDate, setAbsentDate] = useState(today)
@@ -2607,7 +2610,8 @@ export default function App() {
     setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
-    loadDepartmentLocations(); loadDashboardCharts(); autoAcknowledgeExpired().catch(()=>{})
+    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); autoAcknowledgeExpired().catch(()=>{})
+    requestPushPermission()
   }
   async function loadDashboard() {
     const { data:emps } = await supabase.from('employees').select('*').eq('is_active', true)
@@ -2666,6 +2670,33 @@ export default function App() {
     showToast(`✅ ${empName} reactivated!`)
     loadDeactivatedEmployees(); loadEmployees()
   }
+  async function createNotification(employeeId, employeeName, type, title, message) {
+    await supabase.from('notifications').insert({ employee_id:employeeId, employee_name:employeeName, type, title, message })
+    // Browser push notification
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(`Roma's Donuts — ${title}`, { body:message, icon:'/logo.png' })
+    }
+  }
+  async function loadNotifications() {
+    const { data } = await supabase.from('notifications').select('*').order('created_at', { ascending:false }).limit(50)
+    setNotifications(data||[])
+    setUnreadCount((data||[]).filter(n=>!n.is_read).length)
+  }
+  async function markAllRead() {
+    await supabase.from('notifications').update({ is_read:true }).eq('is_read', false)
+    setNotifications(p=>p.map(n=>({...n,is_read:true})))
+    setUnreadCount(0)
+  }
+  async function markOneRead(id) {
+    await supabase.from('notifications').update({ is_read:true }).eq('id', id)
+    setNotifications(p=>p.map(n=>n.id===id?{...n,is_read:true}:n))
+    setUnreadCount(p=>Math.max(0,p-1))
+  }
+  async function requestPushPermission() {
+    if ('Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission()
+    }
+  }
   async function loadAdminLogs() {
     const { data } = await supabase.from('attendance_logs').select('*').eq('attendance_date', adminDate).order('employee_name')
     setAdminLogs(data || [])
@@ -2708,6 +2739,9 @@ export default function App() {
         }
         await loadEmployees()
       }
+      await createNotification(req.employee_id, req.employee_name, 'leave', '🏖️ Leave Approved', `Your ${req.leave_type} request for ${dur} day(s) has been approved.`)
+    } else if (status==='rejected' && req) {
+      await createNotification(req.employee_id, req.employee_name, 'leave', '❌ Leave Rejected', `Your ${req.leave_type} request has been rejected.${reason?' Reason: '+reason:''}`)
     }
     await logAudit(`LEAVE ${status.toUpperCase()}`,'Admin',req?.employee_name||'',`Leave ID ${id} — ${dur||0} day(s)`)
     setLeaveRequests(prev=>prev.filter(r=>r.id!==id))
@@ -2740,6 +2774,7 @@ export default function App() {
       await supabase.from('attendance_logs').update({ undertime_minutes:req.minutes, status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
     }
     await logAudit(`${req.request_type.toUpperCase()} APPROVED`,'Admin',req.employee_name,`${req.minutes} min on ${req.attendance_date}`)
+    await createNotification(req.employee_id, req.employee_name, 'overtime', `✅ ${req.request_type==='overtime'?'Overtime':'Undertime'} Approved`, `Your ${req.request_type} request of ${req.minutes} minutes on ${req.attendance_date} has been approved.`)
     setTimeAdjRequests(prev=>prev.filter(r=>r.id!==req.id))
     showToast('✅ OT/UT Approved successfully!')
   }
@@ -2754,6 +2789,7 @@ export default function App() {
       await supabase.from('attendance_logs').update({ undertime_minutes:0, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
     }
     await logAudit(`${req.request_type.toUpperCase()} REJECTED`,'Admin',req.employee_name,`Reason: ${reason}`)
+    await createNotification(req.employee_id, req.employee_name, 'overtime', `❌ ${req.request_type==='overtime'?'Overtime':'Undertime'} Rejected`, `Your ${req.request_type} request on ${req.attendance_date} was rejected. Reason: ${reason}`)
     setTimeAdjRequests(prev=>prev.filter(r=>r.id!==req.id))
     showToast('❌ OT/UT Rejected.','red')
   }
@@ -2800,6 +2836,7 @@ export default function App() {
       const { error } = await supabase.from('cash_advance_requests').update({ status:'disapproved', admin_reason:reason }).eq('id', id)
       if (error) { showToast('Failed: '+error.message,'red'); return }
       await logAudit('CA DISAPPROVED','Admin',req.employee_name,`Reason: ${reason}`)
+      await createNotification(req.employee_id, req.employee_name, 'cash_advance', '❌ Cash Advance Disapproved', `Your cash advance request of ${php(req.amount)} was disapproved. Reason: ${reason}`)
       setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
       showToast('✅ Cash advance disapproved.','red'); return
     }
@@ -2809,6 +2846,7 @@ export default function App() {
     const perPayroll=Math.ceil((totalAmount/installments)*100)/100
     await supabase.from('cash_advances').insert({ employee_id:req.employee_id, employee_code:req.employee_code, employee_name:req.employee_name, advance_date:today, amount:totalAmount, amount_paid:0, balance:totalAmount, per_payroll_deduction:perPayroll, installments_total:installments, installments_remaining:installments, notes:req.reason, status:'Unpaid' })
     await logAudit('CA APPROVED','Admin',req.employee_name,`${php(totalAmount)} in ${installments} installments`)
+    await createNotification(req.employee_id, req.employee_name, 'cash_advance', '💵 Cash Advance Approved', `Your cash advance of ${php(totalAmount)} has been approved. ${php(perPayroll)} will be deducted per payroll for ${installments} payroll(s).`)
     setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
     showToast(`✅ Approved! ${php(perPayroll)} × ${installments} payroll(s).`)
   }
@@ -2823,13 +2861,14 @@ export default function App() {
   async function resolveDispute(id) {
     const reason = (disputeAdminReason[id] || '').trim()
     if (!reason) { showToast('❌ Please enter admin response before resolving.','red'); return }
+    const dispute = payslipDisputes.find(d=>d.id===id)
     const { error } = await supabase.from('payslip_disputes').update({ status:'resolved', admin_reason:reason }).eq('id', id)
     if (error) { showToast('❌ Failed: '+error.message,'red'); console.error(error); return }
     await logAudit('DISPUTE RESOLVED','Admin','',`Dispute ID ${id} — ${reason}`)
+    if (dispute) await createNotification(dispute.employee_id, dispute.employee_name, 'dispute', '⚠️ Dispute Resolved', `Your payslip dispute has been resolved. Response: ${reason}`)
     setDisputeAdminReason(p=>({ ...p,[id]:'' }))
     setPayslipDisputes(prev=>prev.filter(d=>d.id!==id))
     showToast('✅ Dispute resolved and removed successfully!')
-    // Reload to update resolved list
     loadResolvedDisputes()
   }
   async function saveAdjustment() {
@@ -3443,6 +3482,9 @@ export default function App() {
       { key:'sales', icon:'📈', label:'Sales & Expenses',
         tabs:[{key:'sales',label:'Sales & Expenses'}],
         roles:['owner','manager','hr'] },
+      { key:'analytics', icon:'📊', label:'Analytics',
+        tabs:[{key:'analytics',label:'Analytics'}],
+        roles:['owner'] },
     ]
     const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
     const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
@@ -3518,14 +3560,39 @@ export default function App() {
             <div style={{ width:isMobile?'100%':'200px', minWidth:isMobile?'auto':'200px', background:'#1a1a2e', padding:'0', display:'flex', flexDirection:'column', flexShrink:0, overflowY:'auto', height:isMobile?'auto':'100%' }}>
               {/* Logo */}
               {!isMobile && (
-                <div style={{ padding:'20px 16px 16px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
-                    <img src="/logo.png" alt="Logo" style={{ width:'36px', height:'36px', objectFit:'contain' }} />
-                    <div>
-                      <p style={{ color:'white', fontWeight:'bold', fontSize:'13px', margin:0, lineHeight:1.2 }}>Roma's Donuts</p>
-                      <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'10px', margin:0 }}>Management System</p>
+                <div style={{ padding:'16px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+                      <img src="/logo.png" alt="Logo" style={{ width:'36px', height:'36px', objectFit:'contain' }} />
+                      <div>
+                        <p style={{ color:'white', fontWeight:'bold', fontSize:'13px', margin:0, lineHeight:1.2 }}>Roma's Donuts</p>
+                        <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'10px', margin:0 }}>Management System</p>
+                      </div>
+                    </div>
+                    {/* Bell icon */}
+                    <div style={{ position:'relative', cursor:'pointer' }} onClick={()=>{ setShowNotifications(!showNotifications); if(!showNotifications) loadNotifications() }}>
+                      <span style={{ fontSize:'20px' }}>🔔</span>
+                      {unreadCount > 0 && <span style={{ position:'absolute', top:'-4px', right:'-6px', background:'#FDD412', color:'#1a1a2e', borderRadius:'50%', width:'16px', height:'16px', fontSize:'9px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center' }}>{unreadCount > 9 ? '9+' : unreadCount}</span>}
                     </div>
                   </div>
+                </div>
+              )}
+              {/* Notification Panel */}
+              {showNotifications && (
+                <div style={{ background:'#16213e', borderBottom:'1px solid rgba(255,255,255,0.1)', maxHeight:'320px', overflowY:'auto' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
+                    <p style={{ color:'white', fontWeight:'bold', fontSize:'11px', margin:0 }}>🔔 Notifications {unreadCount>0&&<span style={{ background:'#FDD412', color:'#1a1a2e', borderRadius:'10px', padding:'1px 6px', fontSize:'9px', marginLeft:'4px' }}>{unreadCount} new</span>}</p>
+                    {unreadCount > 0 && <button onClick={markAllRead} style={{ background:'none', border:'none', color:'#FDD412', fontSize:'10px', cursor:'pointer', fontWeight:'bold' }}>Mark all read</button>}
+                  </div>
+                  {notifications.length === 0 ? (
+                    <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'11px', textAlign:'center', padding:'16px', margin:0 }}>No notifications yet</p>
+                  ) : notifications.map(n=>(
+                    <div key={n.id} onClick={()=>markOneRead(n.id)} style={{ padding:'8px 14px', borderBottom:'1px solid rgba(255,255,255,0.05)', background:n.is_read?'transparent':'rgba(253,212,18,0.08)', cursor:'pointer', transition:'background 0.15s' }}>
+                      <p style={{ color:n.is_read?'rgba(255,255,255,0.5)':'white', fontSize:'11px', fontWeight:n.is_read?'normal':'bold', margin:'0 0 2px' }}>{n.title}</p>
+                      <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'10px', margin:'0 0 2px', lineHeight:1.4 }}>{n.message}</p>
+                      <p style={{ color:'rgba(255,255,255,0.25)', fontSize:'9px', margin:0 }}>{n.employee_name} · {new Date(n.created_at).toLocaleDateString('en-PH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</p>
+                    </div>
+                  ))}
                 </div>
               )}
               {/* Role Badge + Switch */}
@@ -7851,6 +7918,166 @@ export default function App() {
                     )}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* ANALYTICS — Owner Only */}
+            {activeTab==='analytics' && adminRole==='owner' && (
+              <div>
+                <h2 style={h2s}>📊 Sales Analytics</h2>
+                {(()=>{
+                  // Compute analytics from deliveryInvoices and dailyExpenses
+                  const paidInvoices = deliveryInvoices.filter(i=>i.status==='paid'||i.status==='partial')
+                  const allInvoices = deliveryInvoices
+
+                  // Revenue by day (last 30 days)
+                  const last30 = Array.from({length:30},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-29+i); return d.toISOString().slice(0,10) })
+                  const revenueByDay = last30.map(date=>({ date:date.slice(5), revenue:allInvoices.filter(i=>i.delivery_date===date).reduce((s,i)=>s+Number(i.total_amount||0),0) }))
+
+                  // Top variants
+                  const variantMap = {}
+                  allInvoices.forEach(inv=>{ (inv.delivery_invoice_items||[]).forEach(item=>{ if(!variantMap[item.variant_name]) variantMap[item.variant_name]=0; variantMap[item.variant_name]+=Number(item.quantity||0) }) })
+                  const topVariants = Object.entries(variantMap).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([name,qty])=>({name:name.length>12?name.slice(0,12)+'…':name,qty}))
+
+                  // Top resellers
+                  const resellerMap = {}
+                  allInvoices.forEach(inv=>{ if(!resellerMap[inv.reseller_name]) resellerMap[inv.reseller_name]=0; resellerMap[inv.reseller_name]+=Number(inv.total_amount||0) })
+                  const topResellers = Object.entries(resellerMap).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([name,rev])=>({name:name.length>14?name.slice(0,14)+'…':name,rev}))
+
+                  // Monthly revenue
+                  const monthMap = {}
+                  allInvoices.forEach(inv=>{ const m=inv.delivery_date?.slice(0,7); if(m){ if(!monthMap[m]) monthMap[m]=0; monthMap[m]+=Number(inv.total_amount||0) } })
+                  const monthlyRevenue = Object.entries(monthMap).sort().slice(-6).map(([m,rev])=>({month:m.slice(5)+'/'+m.slice(2,4),rev}))
+
+                  // Summary stats
+                  const totalRevenue = allInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
+                  const totalPaid = allInvoices.reduce((s,i)=>s+Number(i.paid_amount||0),0)
+                  const totalUnpaid = totalRevenue - totalPaid
+                  const totalExpenses = dailyExpenses.filter(e=>e.status==='approved').reduce((s,e)=>s+Number(e.amount||0),0)
+                  const netProfit = totalPaid - totalExpenses
+                  const COLORS = ['#ca1b1b','#FDD412','#2d8a4e','#4a90d9','#9b59b6','#e67e22','#1abc9c','#e74c3c']
+
+                  return (
+                    <div>
+                      {/* Summary Cards */}
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'20px' }}>
+                        {[
+                          ['Total Revenue',php(totalRevenue),'#ca1b1b','📈'],
+                          ['Total Collected',php(totalPaid),'#2d8a4e','💵'],
+                          ['Outstanding',php(totalUnpaid),'#f5a623','⏳'],
+                          ['Net (Collected - Expenses)',php(netProfit),netProfit>=0?'#2d8a4e':'#ca1b1b','💰'],
+                        ].map(([l,v,c,icon])=>(
+                          <div key={l} style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)', border:`1px solid ${c}22` }}>
+                            <p style={{ color:'#888', fontSize:'11px', margin:'0 0 6px', textTransform:'uppercase', letterSpacing:'0.5px' }}>{icon} {l}</p>
+                            <p style={{ fontWeight:'800', color:c, fontSize:'22px', margin:0 }}>{v}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Revenue Trend Chart */}
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>📈 Daily Revenue — Last 30 Days</p>
+                        <div style={{ overflowX:'auto' }}>
+                          <svg width={Math.max(600,revenueByDay.length*22)} height="160" style={{ display:'block' }}>
+                            {(() => {
+                              const maxR = Math.max(...revenueByDay.map(d=>d.revenue),1)
+                              const w = Math.max(600,revenueByDay.length*22)
+                              const barW = w/revenueByDay.length*0.6
+                              return revenueByDay.map((d,i)=>{
+                                const bh = Math.max(2,(d.revenue/maxR)*120)
+                                const x = (w/revenueByDay.length)*i + (w/revenueByDay.length)*0.2
+                                return (
+                                  <g key={d.date}>
+                                    <rect x={x} y={130-bh} width={barW} height={bh} fill={d.revenue>0?'#ca1b1b':'#f0f0f0'} rx="3" />
+                                    {i%5===0&&<text x={x+barW/2} y={150} textAnchor="middle" fontSize="8" fill="#888">{d.date}</text>}
+                                    {d.revenue>0&&<title>{d.date}: {php(d.revenue)}</title>}
+                                  </g>
+                                )
+                              })
+                            })()}
+                          </svg>
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'16px', marginBottom:'16px' }}>
+                        {/* Top Variants */}
+                        <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>🍩 Top Variants by Volume</p>
+                          {topVariants.length===0?<p style={{ color:'#aaa', fontSize:'12px' }}>No data yet</p>:topVariants.map((v,i)=>{
+                            const maxQ = topVariants[0].qty
+                            return (
+                              <div key={v.name} style={{ marginBottom:'8px' }}>
+                                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'3px' }}>
+                                  <span style={{ fontSize:'11px', fontWeight:'bold', color:'#333' }}>{i+1}. {v.name}</span>
+                                  <span style={{ fontSize:'11px', color:'#ca1b1b', fontWeight:'bold' }}>{v.qty.toLocaleString()} pcs</span>
+                                </div>
+                                <div style={{ background:'#f0f0f0', borderRadius:'4px', height:'8px', overflow:'hidden' }}>
+                                  <div style={{ background:COLORS[i%COLORS.length], width:`${(v.qty/maxQ)*100}%`, height:'100%', borderRadius:'4px', transition:'width 0.5s' }} />
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+
+                        {/* Top Resellers */}
+                        <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>🏪 Top Resellers by Revenue</p>
+                          {topResellers.length===0?<p style={{ color:'#aaa', fontSize:'12px' }}>No data yet</p>:topResellers.map((r,i)=>{
+                            const maxR = topResellers[0].rev
+                            return (
+                              <div key={r.name} style={{ marginBottom:'8px' }}>
+                                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'3px' }}>
+                                  <span style={{ fontSize:'11px', fontWeight:'bold', color:'#333' }}>{i+1}. {r.name}</span>
+                                  <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{php(r.rev)}</span>
+                                </div>
+                                <div style={{ background:'#f0f0f0', borderRadius:'4px', height:'8px', overflow:'hidden' }}>
+                                  <div style={{ background:COLORS[i%COLORS.length], width:`${(r.rev/maxR)*100}%`, height:'100%', borderRadius:'4px', transition:'width 0.5s' }} />
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Monthly Revenue */}
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>📅 Monthly Revenue — Last 6 Months</p>
+                        {monthlyRevenue.length===0?<p style={{ color:'#aaa', fontSize:'12px' }}>No data yet</p>:(
+                          <div style={{ display:'flex', gap:'12px', alignItems:'flex-end', height:'140px', padding:'10px 0 0' }}>
+                            {monthlyRevenue.map((m,i)=>{
+                              const maxR = Math.max(...monthlyRevenue.map(m=>m.rev),1)
+                              const bh = Math.max(8,(m.rev/maxR)*110)
+                              return (
+                                <div key={m.month} style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:'4px' }}>
+                                  <span style={{ fontSize:'10px', fontWeight:'bold', color:'#ca1b1b' }}>{php(m.rev).replace('₱','₱')}</span>
+                                  <div style={{ background:'#ca1b1b', width:'100%', height:`${bh}px`, borderRadius:'6px 6px 0 0', transition:'height 0.5s' }} />
+                                  <span style={{ fontSize:'10px', color:'#888', fontWeight:'bold' }}>{m.month}</span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Invoice Status */}
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>📋 Invoice Status Breakdown</p>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'10px' }}>
+                          {[
+                            ['Paid',allInvoices.filter(i=>i.status==='paid').length,'#2d8a4e'],
+                            ['Partial',allInvoices.filter(i=>i.status==='partial').length,'#f5a623'],
+                            ['Unpaid',allInvoices.filter(i=>i.status==='unpaid').length,'#ca1b1b'],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{ background:`${c}11`, borderRadius:'10px', padding:'12px', textAlign:'center', border:`1px solid ${c}33` }}>
+                              <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase' }}>{l}</p>
+                              <p style={{ fontWeight:'bold', color:c, fontSize:'24px', margin:0 }}>{v}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
             )}
 
