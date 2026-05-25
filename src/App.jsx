@@ -608,13 +608,36 @@ export default function App() {
   }
   function retakePhoto() { setCapturedPhoto(null); startCamera() }
   async function uploadSelfie(dataUrl, fileName) {
-    const b64=dataUrl.split(',')[1], bs=atob(b64), ab=new ArrayBuffer(bs.length), ia=new Uint8Array(ab)
-    for (let i=0;i<bs.length;i++) ia[i]=bs.charCodeAt(i)
-    const blob = new Blob([ab], { type:'image/jpeg' })
-    await supabase.storage.from('selfies').upload(fileName, blob, { upsert:true })
-    const { data } = supabase.storage.from('selfies').getPublicUrl(fileName)
-    return data.publicUrl
+  const b64 = dataUrl.split(',')[1]
+  const bs = atob(b64)
+  const ab = new ArrayBuffer(bs.length)
+  const ia = new Uint8Array(ab)
+
+  for (let i = 0; i < bs.length; i++) {
+    ia[i] = bs.charCodeAt(i)
   }
+
+  const blob = new Blob([ab], { type: 'image/jpeg' })
+
+  const cleanFileName = fileName.replace(/[^a-zA-Z0-9-_]/g, '')
+  const uniqueFileName = `${cleanFileName}-${Date.now()}-${crypto.randomUUID()}.jpg`
+
+  const { error } = await supabase.storage
+    .from('selfies')
+    .upload(uniqueFileName, blob, {
+      cacheControl: '0',
+      upsert: false,
+      contentType: 'image/jpeg'
+    })
+
+  if (error) throw error
+
+  const { data } = supabase.storage
+    .from('selfies')
+    .getPublicUrl(uniqueFileName)
+
+  return `${data.publicUrl}?v=${Date.now()}`
+}
   async function uploadProfilePhoto(file, empId) {
     const { error } = await supabase.storage.from('profile-photos').upload(`${empId}.jpg`, file, { upsert:true })
     if (error) throw error
