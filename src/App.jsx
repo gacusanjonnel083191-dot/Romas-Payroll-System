@@ -2205,7 +2205,6 @@ export default function App() {
     setUploadingPhoto(false)
   }
   async function initiateTimeIn() {
-    const geo = await checkLocation(); if (!geo.ok) { alert(geo.message); return }
     setCapturedPhoto(null); setCameraMode('timein')
   }
   async function initiateTimeOut() {
@@ -2213,7 +2212,6 @@ export default function App() {
     if (todayLog.time_out) { alert('You already timed out today.'); return }
     const openBreak = todayBreaks.find(b=>!b.break_in)
     if (openBreak) { alert('Please Break In first before timing out.'); return }
-    const geo = await checkLocation(); if (!geo.ok) { alert(geo.message); return }
     setCapturedPhoto(null); setCameraMode('timeout')
   }
   async function initiateBreakOut() {
@@ -2436,8 +2434,10 @@ export default function App() {
   // ── Department Location Management ────────────────────────────────────────
   async function saveDepartmentLocations(locs) {
     try {
+      let updatedEmployees = 0
       for (const [dept, loc] of Object.entries(locs)) {
         if (!loc) continue
+        // Save to department_locations table
         await supabase.from('department_locations').upsert({
           department: dept,
           location_name: loc.name || null,
@@ -2447,11 +2447,28 @@ export default function App() {
           is_active: true,
           updated_at: new Date().toISOString()
         }, { onConflict: 'department' })
+        // Auto-apply to all employees in this department
+        if (loc.lat && loc.lng) {
+          const { data: deptEmps } = await supabase.from('employees')
+            .select('id')
+            .eq('department', dept)
+            .eq('is_active', true)
+          if (deptEmps && deptEmps.length > 0) {
+            await supabase.from('employees').update({
+              work_location: loc.name || dept,
+              location_lat: String(loc.lat),
+              location_lng: String(loc.lng),
+              location_radius: String(loc.radius || 200)
+            }).eq('department', dept).eq('is_active', true)
+            updatedEmployees += deptEmps.length
+          }
+        }
       }
       setDepartmentLocations(locs)
-      showToast('✅ All department locations saved!')
+      await loadEmployees()
+      showToast(`✅ Locations saved! Auto-applied to ${updatedEmployees} employee(s).`)
     } catch(err) {
-      showToast('❌ Failed to save: ' + err.message, 'red')
+      showToast('❌ Failed: ' + err.message, 'red')
     }
   }
   async function loadDepartmentLocations() {
@@ -4058,8 +4075,8 @@ export default function App() {
                         💡 <strong>How it works:</strong> Set coordinates per department below. All employees assigned to that department will automatically use it when timing in. Individual employee location (set in their profile) overrides department location.
                       </div>
                       {/* Column headers */}
-                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 80px 80px', gap:'6px', padding:'6px 10px', background:'#ca1b1b', borderRadius:'8px 8px 0 0', marginBottom:'2px' }}>
-                        {['Department','Location Name','Latitude','Longitude','Radius (m)',''].map(h=>(
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 80px 60px 60px', gap:'6px', padding:'6px 10px', background:'#ca1b1b', borderRadius:'8px 8px 0 0', marginBottom:'2px' }}>
+                        {['Department','Location Name','Latitude','Longitude','Radius (m)','GPS','Apply'].map(h=>(
                           <span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.3px' }}>{h}</span>
                         ))}
                       </div>
@@ -4068,7 +4085,7 @@ export default function App() {
                         const loc = departmentLocations[dept] || {}
                         const empCount = employees.filter(e => e.department === dept).length
                         return (
-                          <div key={dept} style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 80px 80px', gap:'6px', padding:'8px 10px', background:i%2===0?'white':'#fafafa', border:'1px solid #f0f0f0', borderTop:'none', alignItems:'center' }}>
+                          <div key={dept} style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr 80px 60px 60px', gap:'6px', padding:'8px 10px', background:i%2===0?'white':'#fafafa', border:'1px solid #f0f0f0', borderTop:'none', alignItems:'center' }}>
                             <div>
                               <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>📌 {dept}</p>
                               {empCount > 0 && <p style={{ color:'#2d8a4e', fontSize:'10px', margin:0 }}>👥 {empCount} employee{empCount!==1?'s':''}</p>}
@@ -4108,7 +4125,23 @@ export default function App() {
                                   showToast(`✅ ${dept} location detected!`)
                                 }, () => showToast('❌ Could not detect location','red'))
                               }}
-                            >📍 Detect</button>
+                            >📍 GPS</button>
+                            <button
+                              style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'6px', padding:'6px 4px', cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap' }}
+                              onClick={async ()=>{
+                                const loc = departmentLocations[dept]
+                                if (!loc?.lat || !loc?.lng) { showToast('❌ Set coordinates first.','red'); return }
+                                await supabase.from('employees').update({
+                                  work_location: loc.name || dept,
+                                  location_lat: String(loc.lat),
+                                  location_lng: String(loc.lng),
+                                  location_radius: String(loc.radius || 200)
+                                }).eq('department', dept).eq('is_active', true)
+                                await loadEmployees()
+                                const count = employees.filter(e=>e.department===dept).length
+                                showToast(`✅ Applied to ${count} employee(s) in ${dept}!`)
+                              }}
+                            >✅ Apply</button>
                           </div>
                         )
                       })}
@@ -7542,9 +7575,6 @@ export default function App() {
                 <img src={profilePhotoUrl} alt="Profile" style={{ width:'40px', height:'40px', borderRadius:'50%', objectFit:'cover', border:'2px solid #ca1b1b' }} /> :
                 <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:'#ca1b1b', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', border:'2px solid rgba(255,255,255,0.2)' }}>👤</div>
               }
-              <label style={{ position:'absolute', bottom:'-2px', right:'-2px', background:'#ca1b1b', color:'white', borderRadius:'50%', width:'16px', height:'16px', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', fontSize:'8px', border:'1px solid #1a1a2e' }}>
-                📷<input type="file" accept="image/*" onChange={handleProfilePhotoUpload} style={{ display:'none' }} />
-              </label>
             </div>
             <div>
               <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0, letterSpacing:'0.3px' }}>{employee.full_name}</p>
@@ -7669,7 +7699,7 @@ export default function App() {
             <button style={{ background:(!todayLog||!!todayLog?.time_out||onBreak)?'#f0f0f0':'#4a90d9', color:(!todayLog||!!todayLog?.time_out||onBreak)?'#aaa':'white', padding:'11px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||onBreak)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={initiateBreakOut} disabled={!todayLog||!!todayLog?.time_out||onBreak}>☕ BREAK OUT</button>
             <button style={{ background:!onBreak?'#f0f0f0':'#2d8a4e', color:!onBreak?'#aaa':'white', padding:'11px', border:'none', borderRadius:'10px', cursor:!onBreak?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={initiateBreakIn} disabled={!onBreak}>☕ BREAK IN</button>
           </div>
-          <p style={{ color:'#bbb', fontSize:'11px', textAlign:'center', margin:'0 0 16px' }}>📸 Selfie required · 📍 Store location required</p>
+          <p style={{ color:'#bbb', fontSize:'11px', textAlign:'center', margin:'0 0 16px' }}>📸 Live selfie required — no photo uploads allowed</p>
 
           {/* Secondary Actions Grid */}
           <div style={{ borderTop:'1px solid #f0f0f0', paddingTop:'14px', marginBottom:'8px' }}>
