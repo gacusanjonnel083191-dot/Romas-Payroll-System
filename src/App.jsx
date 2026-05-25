@@ -180,8 +180,9 @@ export default function App() {
   const [otRequestMinutes, setOtRequestMinutes] = useState('')
   const [otRequestDate, setOtRequestDate] = useState('')
   const [adminMode, setAdminMode] = useState(false)
-  const [adminRole, setAdminRole] = useState(null) // 'owner'|'hr'|'payroll'|'supervisor'
+  const [adminRole, setAdminRole] = useState(null) // 'owner'|'manager'|'hr'|'payroll'|'supervisor'|'asst_supervisor'
   const [adminEmployee, setAdminEmployee] = useState(null) // employee record of the logged-in admin
+  const [availableRoles, setAvailableRoles] = useState([]) // all roles this employee can access
   const [showAdminAttendance, setShowAdminAttendance] = useState(false) // modal toggle
   const [cameFromAdmin, setCameFromAdmin] = useState(false) // tracks if employee portal was opened from admin
   const [adminCredentials] = useState({
@@ -420,6 +421,7 @@ export default function App() {
   const [newItemUnit, setNewItemUnit] = useState('kg')
   const [newItemMinStock, setNewItemMinStock] = useState('')
   const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
+  const [newItemCurrentStock, setNewItemCurrentStock] = useState('')
   const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
   const [newItemSupplierId, setNewItemSupplierId] = useState('')
   const [inventoryTransactions, setInventoryTransactions] = useState([])
@@ -662,7 +664,11 @@ export default function App() {
     setLoading(false)
     if (error || !data) { alert('Invalid Employee ID or PIN. Please try again.'); return }
     // 3. If employee has an admin_role assigned, open admin panel with that role
-    if (data.admin_role && ['owner','hr','payroll','supervisor'].includes(data.admin_role)) {
+    if (data.admin_role && ['owner','manager','hr','payroll','supervisor','asst_supervisor'].includes(data.admin_role)) {
+      // Build list of all roles this employee can access (primary + extra roles)
+      const extraRoles = data.extra_roles ? data.extra_roles.split(',').filter(r=>r.trim()) : []
+      const allRoles = [data.admin_role, ...extraRoles].filter((r,i,a)=>a.indexOf(r)===i)
+      setAvailableRoles(allRoles)
       openAdmin(data.admin_role, data)
       return
     }
@@ -880,7 +886,7 @@ export default function App() {
         name: newItemName.trim(),
         category: newItemCategory,
         unit: newItemUnit.trim()||'kg',
-        current_stock: 0,
+        current_stock: Number(newItemCurrentStock||0),
         min_stock: Number(newItemMinStock||0),
         cost_per_unit: Number(newItemCostPerUnit||0),
         selling_price: Number(newItemSellingPrice||0),
@@ -897,6 +903,7 @@ export default function App() {
       setNewItemName('')
       setNewItemMinStock('')
       setNewItemCostPerUnit('')
+      setNewItemCurrentStock('')
       setNewItemSellingPrice('')
       setNewItemSupplierId('')
       setNewItemCategory('Raw Ingredients')
@@ -924,6 +931,7 @@ export default function App() {
     const { error } = await supabase.from('inventory_items').update({
       name: f.name||item.name,
       unit: f.unit||item.unit,
+      current_stock: Number(f.current_stock??item.current_stock??0),
       min_stock: Number(f.min_stock??item.min_stock),
       cost_per_unit: Number(f.cost_per_unit??item.cost_per_unit),
       selling_price: Number(f.selling_price??item.selling_price??0),
@@ -2342,9 +2350,11 @@ export default function App() {
   // ── Admin Functions ───────────────────────────────────────────────────────
   function canAccess(tab) {
     if (adminRole === 'owner') return true
-    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory'].includes(tab)
+    if (adminRole === 'manager') return true // Manager = full access same as owner
+    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sales'].includes(tab)
     if (adminRole === 'payroll') return ['dashboard','payroll','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
     if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
+    if (adminRole === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
     return false
   }
 
@@ -2529,11 +2539,13 @@ export default function App() {
     setAdminMode(true); setAdminRole(role||'owner'); setEmployeeSearch(''); setSidebarOpen(false)
     if (empData) {
       setAdminEmployee(empData)
-      // Pre-load their today log and schedule for the attendance modal
       loadTodayLog(empData); loadTodaySchedule(empData); loadTodayBreaks(null)
+      // Set available roles from employee record
+      const extraRoles = empData.extra_roles ? empData.extra_roles.split(',').filter(r=>r.trim()) : []
+      const allRoles = [empData.admin_role||role, ...extraRoles].filter((r,i,a)=>r&&a.indexOf(r)===i)
+      if (allRoles.length > 0) setAvailableRoles(allRoles)
     }
-    // Set default tab based on role
-    const defaultTab = role==='payroll'?'payroll':role==='supervisor'?'attendance':role==='hr'?'employees':'dashboard'
+    const defaultTab = role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'
     setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
@@ -2689,7 +2701,7 @@ export default function App() {
   }
   async function saveEmployeeChanges() {
     setSaveEmployeeLoading(true)
-    const { error } = await supabase.from('employees').update({ employee_code:editFields.code, full_name:editFields.name, position:editFields.position, pin:editFields.pin, daily_rate:Number(editFields.rate||0), has_sss:editFields.hasSss, has_pagibig:editFields.hasPagibig, has_philhealth:editFields.hasPhilhealth, hire_date:editFields.hireDate, sick_leave_balance:Number(editFields.sick||5), vacation_leave_balance:Number(editFields.vacation||5), sil_balance:Number(editFields.sil||5), pay_type:editFields.payType||'daily', hourly_rate:Number(editFields.hourlyRate||0), grace_period_minutes:Number(editFields.gracePeriod||10), date_of_birth:editFields.dob||null, gender:editFields.gender||'', civil_status:editFields.civil_status||'', home_address:editFields.address||'', contact_number:editFields.contact||'', emergency_contact_name:editFields.emergency_name||'', emergency_contact_number:editFields.emergency_contact||'', employment_type:editFields.employment_type||'regular', department:editFields.department||'', admin_role:editFields.admin_role||null }).eq('id', editingEmployeeId)
+    const { error } = await supabase.from('employees').update({ employee_code:editFields.code, full_name:editFields.name, position:editFields.position, pin:editFields.pin, daily_rate:Number(editFields.rate||0), has_sss:editFields.hasSss, has_pagibig:editFields.hasPagibig, has_philhealth:editFields.hasPhilhealth, hire_date:editFields.hireDate, sick_leave_balance:Number(editFields.sick||5), vacation_leave_balance:Number(editFields.vacation||5), sil_balance:Number(editFields.sil||5), pay_type:editFields.payType||'daily', hourly_rate:Number(editFields.hourlyRate||0), grace_period_minutes:Number(editFields.gracePeriod||10), date_of_birth:editFields.dob||null, gender:editFields.gender||'', civil_status:editFields.civil_status||'', home_address:editFields.address||'', contact_number:editFields.contact||'', emergency_contact_name:editFields.emergency_name||'', emergency_contact_number:editFields.emergency_contact||'', employment_type:editFields.employment_type||'regular', department:editFields.department||'', admin_role:editFields.admin_role||null, extra_roles:editFields.extra_roles||null }).eq('id', editingEmployeeId)
     setSaveEmployeeLoading(false)
     if (error) { showToast('❌ Failed to save: '+error.message,'red'); return }
     await logAudit('EMPLOYEE UPDATED','Admin',editFields.name,'Employee details updated')
@@ -3357,22 +3369,22 @@ export default function App() {
     const SECTIONS = [
       { key:'dashboard', icon:'🏠', label:'Dashboard',
         tabs:[{key:'dashboard',label:'Overview'}],
-        roles:['owner','hr','payroll','supervisor'] },
+        roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
       { key:'hr', icon:'👥', label:'HR & Attendance',
         tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
-        roles:['owner','hr','supervisor'] },
+        roles:['owner','manager','hr','supervisor','asst_supervisor'] },
       { key:'payroll', icon:'💰', label:'Payroll',
         tabs:[{key:'payroll',label:'Payroll'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'announcements',label:'Announcements'},{key:'leaveRequests',label:'Leave 🔔'},{key:'cashRequests',label:'Cash Adv 🔔'},{key:'disputes',label:'Disputes 🔔'},{key:'contracts',label:'Contracts'}],
-        roles:['owner','hr','payroll'] },
+        roles:['owner','manager','hr','payroll'] },
       { key:'inventory', icon:'📦', label:'Inventory',
         tabs:[{key:'inventory',label:'Inventory'}],
-        roles:['owner','hr','supervisor'] },
+        roles:['owner','manager','hr','supervisor','asst_supervisor'] },
       { key:'costing', icon:'🍩', label:'Costing',
         tabs:[{key:'costing',label:'Costing'}],
-        roles:['owner'] },
+        roles:['owner','manager'] },
       { key:'sales', icon:'📈', label:'Sales & Expenses',
         tabs:[{key:'sales',label:'Sales & Expenses'}],
-        roles:['owner','hr'] },
+        roles:['owner','manager','hr'] },
     ]
     const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
     const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
@@ -3458,13 +3470,28 @@ export default function App() {
                   </div>
                 </div>
               )}
-              {/* Role Badge */}
+              {/* Role Badge + Switch */}
               <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
-                <div style={{ background:'#ca1b1b', borderRadius:'6px', padding:'5px 10px', textAlign:'center' }}>
+                <div style={{ background:'#ca1b1b', borderRadius:'6px', padding:'5px 10px', textAlign:'center', marginBottom: availableRoles.length > 1 ? '8px' : '0' }}>
                   <p style={{ color:'white', fontSize:'11px', fontWeight:'bold', margin:0 }}>
-                    {adminRole==='owner'?'👑 Owner':adminRole==='hr'?'👤 HR Admin':adminRole==='payroll'?'💰 Payroll':'👁 Supervisor'}
+                    {adminRole==='owner'?'👑 Owner':adminRole==='manager'?'👔 Manager':adminRole==='hr'?'👤 HR Admin':adminRole==='payroll'?'💰 Payroll Officer':adminRole==='supervisor'?'👁 Supervisor':adminRole==='asst_supervisor'?'🔰 Asst. Supervisor':'👑 Owner'}
                   </p>
+                  {adminEmployee && <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'2px 0 0' }}>{adminEmployee.full_name}</p>}
                 </div>
+                {/* Role Switch — only shows if employee has multiple roles */}
+                {availableRoles.length > 1 && (
+                  <div>
+                    <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'9px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.5px', textAlign:'center' }}>Switch Role</p>
+                    <div style={{ display:'flex', flexDirection:'column', gap:'3px' }}>
+                      {availableRoles.map(role => (
+                        <button key={role} onClick={()=>{ setAdminRole(role); setActiveTab(role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'); showToast(`✅ Switched to ${role==='owner'?'Owner':role==='manager'?'Manager':role==='hr'?'HR Admin':role==='payroll'?'Payroll Officer':role==='supervisor'?'Supervisor':'Asst. Supervisor'}`) }} style={{ padding:'5px 8px', borderRadius:'6px', border:`1px solid ${adminRole===role?'#ca1b1b':'rgba(255,255,255,0.15)'}`, background:adminRole===role?'#ca1b1b':'rgba(255,255,255,0.05)', color:adminRole===role?'white':'rgba(255,255,255,0.6)', cursor:'pointer', fontSize:'10px', fontWeight:adminRole===role?'bold':'normal', textAlign:'left', transition:'all 0.15s' }}>
+                          {role==='owner'?'👑 Owner':role==='manager'?'👔 Manager':role==='hr'?'👤 HR Admin':role==='payroll'?'💰 Payroll':role==='supervisor'?'👁 Supervisor':'🔰 Asst. Supervisor'}
+                          {adminRole===role && <span style={{ float:'right', fontSize:'9px' }}>✓ Active</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
               {/* Main Navigation */}
               <div style={{ flex:1, padding:'8px 10px', display:'flex', flexDirection:'column', gap:'2px' }}>
@@ -3941,7 +3968,7 @@ export default function App() {
                           </div>
                         </div>
                         <div style={{ display:'flex', gap:'5px', flexShrink:0 }}>
-                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, sil:emp.sil_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'' }) }}>✏ EDIT</button>
+                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, sil:emp.sil_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}>✏ EDIT</button>
                           <button style={{ ...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}>🚫</button>
                         </div>
                       </div>
@@ -3967,16 +3994,28 @@ export default function App() {
                           </select>
                           <label style={lblS}>Employment Type:</label>
                           <select value={editFields.employment_type||'regular'} onChange={e=>setEditFields(p=>({...p,employment_type:e.target.value}))} style={inputStyle}><option value="regular">Regular</option><option value="probationary">Probationary</option><option value="part-time">Part-Time</option><option value="contractual">Contractual</option></select>
-                          {adminRole==='owner' && (<>
-                          <label style={lblS}>🔐 Admin Role (Owner only — grants system access):</label>
+                          {adminRole==='owner'||adminRole==='manager' ? (<>
+                          <label style={lblS}>🔐 Primary Role (grants system access):</label>
                           <select value={editFields.admin_role||''} onChange={e=>setEditFields(p=>({...p,admin_role:e.target.value||null}))} style={{ ...inputStyle, borderColor:editFields.admin_role?'#ca1b1b':'#ddd', fontWeight:editFields.admin_role?'bold':'normal' }}>
                             <option value="">— None (Regular Employee) —</option>
                             <option value="owner">👑 Owner — Full Access</option>
+                            <option value="manager">👔 Manager — Full Access</option>
                             <option value="hr">👤 HR Admin — People & Attendance</option>
                             <option value="payroll">💰 Payroll Officer — Payroll & Finance</option>
-                            <option value="supervisor">👁 Supervisor — Attendance & Schedules</option>
+                            <option value="supervisor">👁 Supervisor — Attendance & Inventory</option>
+                            <option value="asst_supervisor">🔰 Asst. Supervisor — Attendance & Inventory</option>
                           </select>
-                          </>)}
+                          <label style={lblS}>🔀 Additional Roles (Dual Access — hold Ctrl to select multiple):</label>
+                          <select multiple value={(editFields.extra_roles||'').split(',').filter(r=>r)} onChange={e=>{ const selected=Array.from(e.target.selectedOptions).map(o=>o.value); setEditFields(p=>({...p,extra_roles:selected.join(',')})) }} style={{ ...inputStyle, height:'100px', borderColor:'#4a90d9' }}>
+                            <option value="owner">👑 Owner</option>
+                            <option value="manager">👔 Manager</option>
+                            <option value="hr">👤 HR Admin</option>
+                            <option value="payroll">💰 Payroll Officer</option>
+                            <option value="supervisor">👁 Supervisor</option>
+                            <option value="asst_supervisor">🔰 Asst. Supervisor</option>
+                          </select>
+                          <p style={{ color:'#888', fontSize:'11px', margin:'-8px 0 8px' }}>Selected extra roles: <strong>{(editFields.extra_roles||'').split(',').filter(r=>r).join(', ') || 'None'}</strong></p>
+                          </>):null}
                           <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 8px' }}>👤 Personal Information</p>
                           <label style={lblS}>Date of Birth:</label>
                           <input type="date" value={editFields.dob||''} onChange={e=>setEditFields(p=>({...p,dob:e.target.value}))} style={inputStyle} />
@@ -6139,8 +6178,16 @@ export default function App() {
                         </select>
                       </div>
                       <div>
+                        <label style={lblS}>Current Stock on Hand:</label>
+                        <input type="number" placeholder="0.00" value={newItemCurrentStock} onChange={e=>setNewItemCurrentStock(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+                      </div>
+                      <div>
                         <label style={lblS}>Cost per Unit (PHP):</label>
                         <input type="number" placeholder="0.00" value={newItemCostPerUnit} onChange={e=>setNewItemCostPerUnit(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+                      </div>
+                      <div>
+                        <label style={lblS}>Min Stock Level:</label>
+                        <input type="number" placeholder="e.g. 5" value={newItemMinStock} onChange={e=>setNewItemMinStock(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
                       </div>
                       {newItemCategory==='Finished Products' && (
                         <div>
@@ -6148,10 +6195,6 @@ export default function App() {
                           <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
                         </div>
                       )}
-                      <div>
-                        <label style={lblS}>Min Stock Level:</label>
-                        <input type="number" placeholder="e.g. 5" value={newItemMinStock} onChange={e=>setNewItemMinStock(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
-                      </div>
                     </div>
                     <button style={{ ...btnBlack, background:'#4a90d9', marginTop:'14px', opacity:addItemLoading?0.6:1 }} disabled={addItemLoading} onClick={addInventoryItem}>{addItemLoading?'⏳ Adding...':'➕ ADD ITEM'}</button>
                   </div>
@@ -6186,7 +6229,8 @@ export default function App() {
                                       {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
                                     </select>
                                   </div>
-                                  <div><label style={lblS}>Min Stock:</label><input type="number" value={editItemFields.min_stock??item.min_stock} onChange={e=>setEditItemFields(p=>({...p,min_stock:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
+                                  <div><label style={lblS}>📦 Current Stock on Hand:</label><input type="number" value={editItemFields.current_stock??item.current_stock} onChange={e=>setEditItemFields(p=>({...p,current_stock:e.target.value}))} style={{ ...inputStyle, marginBottom:0, border:'2px solid #2d8a4e' }} min="0" step="0.01" /></div>
+                                  <div><label style={lblS}>Min Stock Level:</label><input type="number" value={editItemFields.min_stock??item.min_stock} onChange={e=>setEditItemFields(p=>({...p,min_stock:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
                                   <div><label style={lblS}>Cost/Unit (PHP):</label><input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
                                   {(editItemFields.category??item.category)==='Finished Products' && <div><label style={lblS}>Selling Price (PHP):</label><input type="number" value={editItemFields.selling_price??item.selling_price??0} onChange={e=>setEditItemFields(p=>({...p,selling_price:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>}
                                   <div><label style={lblS}>Supplier:</label>
