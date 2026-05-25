@@ -477,10 +477,7 @@ export default function App() {
   const [timedInList, setTimedInList] = useState([])
   const [storeLocation, setStoreLocation] = useState({ lat: STORE_LAT, lng: STORE_LNG, radius: STORE_RADIUS_METERS })
   const [isCompanyDevice, setIsCompanyDevice] = useState(()=>localStorage.getItem('roma_company_device')==='true')
-  const [showDeviceRegister, setShowDeviceRegister] = useState(false)
-  const [devicePinInput, setDevicePinInput] = useState('')
-  const COMPANY_DEVICE_PIN = 'ROMA2025'
-  const DEVICE_RESTRICTED_DEPTS = ['Production'] // Only these departments require company tablet
+  const DEVICE_RESTRICTED_DEPTS = ['Production']
   const [showLocationSetting, setShowLocationSetting] = useState(false)
   const [locationStatus, setLocationStatus] = useState('')
 
@@ -4061,6 +4058,37 @@ export default function App() {
                     </div>
                   )}
                 </div>
+
+                {/* COMPANY DEVICE REGISTRATION — Owner Only */}
+                {adminRole==='owner' && (
+                  <div style={{ background:'#1a1a2e', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'16px', marginBottom:'20px' }}>
+                    <h3 style={{ color:'white', margin:'0 0 6px', fontSize:'14px' }}>📱 Company Device Registration</h3>
+                    <p style={{ color:'rgba(255,255,255,0.6)', fontSize:'12px', margin:'0 0 14px' }}>Register the production tablet here. Only this device will allow Production staff to Time In/Out. Employees cannot register devices themselves.</p>
+                    <div style={{ background:'rgba(255,255,255,0.05)', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                        <div>
+                          <p style={{ color:'rgba(255,255,255,0.5)', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase', letterSpacing:'0.5px' }}>This Device Status</p>
+                          <p style={{ fontWeight:'bold', fontSize:'14px', margin:0, color:isCompanyDevice?'#4ade80':'#f87171' }}>{isCompanyDevice?'✅ Registered as Company Device':'❌ Not a Company Device'}</p>
+                        </div>
+                        {isCompanyDevice && (
+                          <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'8px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ localStorage.removeItem('roma_company_device'); setIsCompanyDevice(false); showToast('✅ Device unregistered.') }}>🔓 Unregister This Device</button>
+                        )}
+                      </div>
+                    </div>
+                    {!isCompanyDevice && (
+                      <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', letterSpacing:'0.5px' }} onClick={()=>{
+                        if (window.confirm('Register THIS device as the company production tablet?\n\nOnly do this on the physical tablet in your production area.')) {
+                          localStorage.setItem('roma_company_device','true')
+                          setIsCompanyDevice(true)
+                          showToast('✅ This device is now the company tablet! Production staff can Time In/Out here.')
+                        }
+                      }}>📱 REGISTER THIS DEVICE AS COMPANY TABLET</button>
+                    )}
+                    <div style={{ marginTop:'12px', background:'rgba(255,200,0,0.1)', border:'1px solid rgba(255,200,0,0.3)', borderRadius:'8px', padding:'10px' }}>
+                      <p style={{ color:'#fdd412', fontSize:'11px', margin:0, fontWeight:'bold' }}>⚠️ Important: Only register from the physical production tablet. Do not register from your personal phone or office computer.</p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Department Locations for Geofencing */}
                 <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'16px', marginBottom:'20px' }}>
@@ -7714,44 +7742,13 @@ export default function App() {
                 {needsCompanyDevice && !isCompanyDevice && (
                   <div style={{ background:'#fff5f5', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', marginBottom:'8px', textAlign:'center' }}>
                     <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'0 0 4px' }}>🔒 Time In/Out locked on this device</p>
-                    <p style={{ color:'#888', fontSize:'11px', margin:'0 0 8px' }}>Production staff must use the company tablet in the production area.</p>
+                    <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Please use the company tablet in the production area.</p>
                   </div>
                 )}
-
-                {/* Register device — show to ALL employees on any unregistered device */}
-                {!isCompanyDevice && (
-                  <div style={{ textAlign:'center', marginBottom:'8px' }}>
-                    <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>setShowDeviceRegister(true)}>🔑 Register This as Company Device</button>
-                  </div>
-                )}
-
                 {/* Company device badge */}
                 {isCompanyDevice && (
-                  <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'8px 14px', marginBottom:'8px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                    <p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'11px', margin:0 }}>✅ Company Device — All departments active</p>
-                    <button style={{ background:'none', color:'#ca1b1b', border:'none', cursor:'pointer', fontSize:'11px', fontWeight:'bold', textDecoration:'underline' }} onClick={()=>{ localStorage.removeItem('roma_company_device'); setIsCompanyDevice(false); showToast('Device unregistered.') }}>Unregister</button>
-                  </div>
-                )}
-
-                {/* Register device form */}
-                {showDeviceRegister && (
-                  <div style={{ background:'#f8f9fa', border:'2px solid #1a1a2e', borderRadius:'12px', padding:'16px', marginBottom:'8px' }}>
-                    <p style={{ fontWeight:'bold', color:'#1a1a2e', fontSize:'13px', margin:'0 0 6px' }}>🔑 Register Company Device</p>
-                    <p style={{ color:'#888', fontSize:'12px', margin:'0 0 10px' }}>Enter the device PIN from your admin to activate Time In/Out on this tablet.</p>
-                    <input type="password" placeholder="Enter Device PIN" value={devicePinInput} onChange={e=>setDevicePinInput(e.target.value)} style={{ ...inputStyle, marginBottom:'8px' }} autoComplete="off" />
-                    <div style={{ display:'flex', gap:'8px' }}>
-                      <button style={{ ...btnRed, flex:1, marginTop:0, fontSize:'12px', padding:'10px' }} onClick={()=>{
-                        if (devicePinInput === COMPANY_DEVICE_PIN) {
-                          localStorage.setItem('roma_company_device','true')
-                          setIsCompanyDevice(true); setShowDeviceRegister(false); setDevicePinInput('')
-                          showToast('✅ Company device registered! Time In/Out active for all departments.')
-                        } else {
-                          showToast('❌ Wrong PIN. Contact your admin.','red')
-                          setDevicePinInput('')
-                        }
-                      }}>✅ REGISTER</button>
-                      <button style={{ ...btnGray, flex:1, marginTop:0, fontSize:'12px', padding:'10px' }} onClick={()=>{ setShowDeviceRegister(false); setDevicePinInput('') }}>Cancel</button>
-                    </div>
+                  <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'8px 14px', marginBottom:'8px', textAlign:'center' }}>
+                    <p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'11px', margin:0 }}>✅ Company Device — Time In/Out Active</p>
                   </div>
                 )}
               </div>
@@ -8290,36 +8287,6 @@ export default function App() {
               </div>
             </div>
           )}
-          {/* DEVICE REGISTRATION — Always visible at bottom */}
-          {!isCompanyDevice ? (
-            <div style={{ background:'#1a1a2e', borderRadius:'12px', padding:'14px', marginTop:'12px', textAlign:'center' }}>
-              <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', margin:'0 0 8px' }}>Is this the company production tablet?</p>
-              <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'10px 20px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', width:'100%' }} onClick={()=>setShowDeviceRegister(!showDeviceRegister)}>🔑 Register This as Company Device</button>
-              {showDeviceRegister && (
-                <div style={{ marginTop:'10px', textAlign:'left' }}>
-                  <input type="password" placeholder="Enter Device PIN" value={devicePinInput} onChange={e=>setDevicePinInput(e.target.value)} style={{ ...inputStyle, marginBottom:'8px', background:'rgba(255,255,255,0.1)', color:'white', border:'1px solid rgba(255,255,255,0.3)' }} autoComplete="off" />
-                  <div style={{ display:'flex', gap:'8px' }}>
-                    <button style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'8px', padding:'10px', flex:1, fontWeight:'bold', fontSize:'12px', cursor:'pointer' }} onClick={()=>{
-                      if (devicePinInput === COMPANY_DEVICE_PIN) {
-                        localStorage.setItem('roma_company_device','true')
-                        setIsCompanyDevice(true); setShowDeviceRegister(false); setDevicePinInput('')
-                        showToast('✅ Company device registered! Time In/Out now active.')
-                      } else {
-                        showToast('❌ Wrong PIN.','red'); setDevicePinInput('')
-                      }
-                    }}>✅ CONFIRM</button>
-                    <button style={{ background:'rgba(255,255,255,0.1)', color:'white', border:'none', borderRadius:'8px', padding:'10px', flex:1, fontWeight:'bold', fontSize:'12px', cursor:'pointer' }} onClick={()=>{ setShowDeviceRegister(false); setDevicePinInput('') }}>Cancel</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'8px 14px', marginTop:'12px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-              <span style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>✅ Registered Company Device</span>
-              <button style={{ background:'none', color:'#ca1b1b', border:'none', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>{ localStorage.removeItem('roma_company_device'); setIsCompanyDevice(false); showToast('Device unregistered.') }}>Unregister</button>
-            </div>
-          )}
-
           {cameFromAdmin ? (
             <div style={{ display:'flex', gap:'8px', marginTop:'16px' }}>
               <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px', flex:1, fontWeight:'bold', fontSize:'13px', cursor:'pointer', letterSpacing:'0.5px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}>← Admin Panel</button>
