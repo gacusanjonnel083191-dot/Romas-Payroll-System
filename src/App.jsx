@@ -473,6 +473,8 @@ export default function App() {
   const [newAnnouncementContent, setNewAnnouncementContent] = useState('')
   const [announcementViews, setAnnouncementViews] = useState([])
   const [dashboardData, setDashboardData] = useState(null)
+  const [showTimedInModal, setShowTimedInModal] = useState(false)
+  const [timedInList, setTimedInList] = useState([])
   const [storeLocation, setStoreLocation] = useState({ lat: STORE_LAT, lng: STORE_LNG, radius: STORE_RADIUS_METERS })
   const [showLocationSetting, setShowLocationSetting] = useState(false)
   const [locationStatus, setLocationStatus] = useState('')
@@ -2511,6 +2513,16 @@ export default function App() {
       probDue, birthdays, anniversaries
     })
   }
+  async function loadTimedInEmployees() {
+    const { data } = await supabase.from('attendance_logs')
+      .select('*, employees(full_name, position, department, profile_photo_url)')
+      .eq('attendance_date', today)
+      .not('time_in', 'is', null)
+      .is('time_out', null)
+      .order('time_in', { ascending: true })
+    setTimedInList(data || [])
+    setShowTimedInModal(true)
+  }
   async function loadEmployees() {
     const { data } = await supabase.from('employees').select('*').eq('is_active', true).order('full_name')
     setEmployees(data || [])
@@ -3430,20 +3442,73 @@ export default function App() {
             {activeTab==='dashboard' && (
               <div>
                 <h2 style={h2s}>🏠 Dashboard — {today}</h2>
+
+                {/* TIMED IN MODAL */}
+                {showTimedInModal && (
+                  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setShowTimedInModal(false)}>
+                    <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'500px', width:'100%', maxHeight:'85vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'16px', margin:'0 0 2px' }}>🟢 Currently On Duty</p>
+                          <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{today} · {timedInList.length} employee{timedInList.length!==1?'s':''} on duty</p>
+                        </div>
+                        <button onClick={()=>setShowTimedInModal(false)} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Close</button>
+                      </div>
+                      {timedInList.length === 0 ? (
+                        <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
+                          <p style={{ fontSize:'32px', margin:'0 0 10px' }}>😴</p>
+                          <p style={{ fontWeight:'bold', fontSize:'14px' }}>No one is timed in yet</p>
+                          <p style={{ fontSize:'12px' }}>Employees will appear here once they time in.</p>
+                        </div>
+                      ) : (
+                        <div>
+                          {timedInList.map((log, i) => {
+                            const emp = log.employees || {}
+                            const now = new Date()
+                            const [h, m] = (log.time_in||'00:00').split(':').map(Number)
+                            const timeInDate = new Date(); timeInDate.setHours(h, m, 0)
+                            const hoursOnDuty = ((now - timeInDate) / (1000*60*60)).toFixed(1)
+                            return (
+                              <div key={log.id} style={{ display:'flex', alignItems:'center', gap:'12px', padding:'12px', background:i%2===0?'white':'#f8f9fa', borderRadius:'10px', marginBottom:'6px', border:'1px solid #eee' }}>
+                                {emp.profile_photo_url ? (
+                                  <img src={emp.profile_photo_url} alt="" style={{ width:'44px', height:'44px', borderRadius:'50%', objectFit:'cover', border:'2px solid #2d8a4e', flexShrink:0 }} />
+                                ) : (
+                                  <div style={{ width:'44px', height:'44px', borderRadius:'50%', background:'#2d8a4e', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', flexShrink:0 }}>👤</div>
+                                )}
+                                <div style={{ flex:1, minWidth:0 }}>
+                                  <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{emp.full_name || log.employee_name}</p>
+                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{emp.position || '—'} {emp.department?`· ${emp.department}`:''}</p>
+                                </div>
+                                <div style={{ textAlign:'right', flexShrink:0 }}>
+                                  <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 2px' }}>{log.time_in}</p>
+                                  <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{hoursOnDuty}h on duty</p>
+                                </div>
+                              </div>
+                            )
+                          })}
+                          <div style={{ background:'#e8f5e9', borderRadius:'10px', padding:'10px 14px', marginTop:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                            <span style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px' }}>Total On Duty</span>
+                            <span style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'20px' }}>{timedInList.length}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {!dashboardData && <p style={{ color:'#888' }}>Loading...</p>}
                 {dashboardData && (
                   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'24px' }}>
                     {[
-                      ['👥 Total Employees', dashboardData.totalEmployees, 'blue', 'employees'],
-                      ['🟢 Timed In', dashboardData.timedIn, 'green', 'attendance'],
-                      ['✅ Timed Out', dashboardData.timedOut, 'gray', 'attendance'],
-                      ['🔴 Absent Today', dashboardData.absent, 'red', 'attendance'],
-                      ['🏖️ Pending Leave', dashboardData.pendingLeave, dashboardData.pendingLeave>0?'orange':'gray', 'leaveRequests'],
-                      ['💵 Pending CA', dashboardData.pendingCA, dashboardData.pendingCA>0?'orange':'gray', 'cashRequests'],
-                      ['⏰ Pending OT/UT', dashboardData.pendingOT, dashboardData.pendingOT>0?'orange':'gray', 'overtime'],
-                      ['⚠️ Disputes', dashboardData.pendingDisputes, dashboardData.pendingDisputes>0?'red':'gray', 'disputes'],
-                    ].map(([label,value,color,tab])=>(
-                      <div key={label} onClick={()=>{ setActiveTab(tab); if(tab==='leaveRequests')loadLeaveRequests(); if(tab==='cashRequests')loadCashAdvanceRequests(); if(tab==='overtime')loadTimeAdjRequests(); if(tab==='disputes')loadPayslipDisputes(); }} style={{ background:'white', border:`2px solid ${color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#ddd'}`, borderRadius:'12px', padding:'16px', textAlign:'center', cursor:'pointer', userSelect:'none', transition:'all 0.15s' }} onMouseEnter={e=>{ e.currentTarget.style.transform='scale(1.04)'; e.currentTarget.style.boxShadow='0 4px 15px rgba(0,0,0,0.12)' }} onMouseLeave={e=>{ e.currentTarget.style.transform='scale(1)'; e.currentTarget.style.boxShadow='none' }}>
+                      ['👥 Total Employees', dashboardData.totalEmployees, 'blue', 'employees', null],
+                      ['🟢 Timed In', dashboardData.timedIn, 'green', 'attendance', loadTimedInEmployees],
+                      ['✅ Timed Out', dashboardData.timedOut, 'gray', 'attendance', null],
+                      ['🔴 Absent Today', dashboardData.absent, 'red', 'attendance', null],
+                      ['🏖️ Pending Leave', dashboardData.pendingLeave, dashboardData.pendingLeave>0?'orange':'gray', 'leaveRequests', null],
+                      ['💵 Pending CA', dashboardData.pendingCA, dashboardData.pendingCA>0?'orange':'gray', 'cashRequests', null],
+                      ['⏰ Pending OT/UT', dashboardData.pendingOT, dashboardData.pendingOT>0?'orange':'gray', 'overtime', null],
+                      ['⚠️ Disputes', dashboardData.pendingDisputes, dashboardData.pendingDisputes>0?'red':'gray', 'disputes', null],
+                    ].map(([label,value,color,tab,action])=>(
+                      <div key={label} onClick={()=>{ if(action){ action() } else { setActiveTab(tab); if(tab==='leaveRequests')loadLeaveRequests(); if(tab==='cashRequests')loadCashAdvanceRequests(); if(tab==='overtime')loadTimeAdjRequests(); if(tab==='disputes')loadPayslipDisputes(); }}} style={{ background:'white', border:`2px solid ${color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#ddd'}`, borderRadius:'12px', padding:'16px', textAlign:'center', cursor:'pointer', userSelect:'none', transition:'all 0.15s' }} onMouseEnter={e=>{ e.currentTarget.style.transform='scale(1.04)'; e.currentTarget.style.boxShadow='0 4px 15px rgba(0,0,0,0.12)' }} onMouseLeave={e=>{ e.currentTarget.style.transform='scale(1)'; e.currentTarget.style.boxShadow='none' }}>
                         <p style={{ color:'#888', fontSize:'11px', margin:'0 0 6px' }}>{label}</p>
                         <p style={{ fontWeight:'bold', fontSize:'26px', margin:'0 0 4px', color:color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#555' }}>{value}</p>
                         <p style={{ color:'#bbb', fontSize:'10px', margin:0 }}>tap to view →</p>
