@@ -448,7 +448,7 @@ export default function App() {
   const [showReturnForm, setShowReturnForm] = useState({})
   const [returnItems, setReturnItems] = useState({})
   const [savingReturn, setSavingReturn] = useState(false)
-  const [invoiceFilter, setInvoiceFilter] = useState('all')
+  const [invoiceFilter, setInvoiceFilter] = useState('active')
   const [markingDelivered, setMarkingDelivered] = useState({})
   const [showPaymentFormMap, setShowPaymentFormMap] = useState({})
   const [paymentAmount, setPaymentAmount] = useState({})
@@ -8828,6 +8828,13 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+                    {/* Delivery Filter Tabs */}
+                    <div style={{ display:'flex', gap:'6px', marginBottom:'12px', flexWrap:'wrap' }}>
+                      {[['active','📋 Active (hide paid)'],['unpaid','⏳ Unpaid'],['delivered','🚚 Delivered'],['partial','💰 Partial'],['paid','✅ Paid'],['all','📋 All']].map(([v,l])=>(
+                        <button key={v} onClick={()=>setInvoiceFilter(v)} style={{ padding:'7px 14px', borderRadius:'20px', border:'none', background:invoiceFilter===v?'#ca1b1b':'#f4f4f4', color:invoiceFilter===v?'white':'#555', fontWeight:invoiceFilter===v?'700':'500', fontSize:'11px', cursor:'pointer', whiteSpace:'nowrap', boxShadow:invoiceFilter===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>
+                          {l}
+                        </button>
+                      ))}
 
                     {/* Pending Orders Panel */}
                     {showOrdersPanel && pendingResellerOrders.length > 0 && (
@@ -8971,7 +8978,8 @@ export default function App() {
                         <p style={{ fontSize:'12px' }}>Create your first delivery invoice above.</p>
                       </div>
                     )}
-                    {deliveryInvoices.map(inv=>{
+                    {/* Filter: hide paid by default */}
+                    {deliveryInvoices.filter(i=>invoiceFilter==='all'?true:invoiceFilter==='paid'?i.status==='paid':invoiceFilter==='unpaid'?i.status==='unpaid':invoiceFilter==='delivered'?i.status==='delivered':invoiceFilter==='partial'?i.status==='partial':i.status!=='paid').map(inv=>{
                       const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
                       const isOverdue = inv.status!=='paid' && inv.due_date < today
                       const statusColor = inv.status==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':'#f57c00'
@@ -9216,8 +9224,12 @@ export default function App() {
                         </div>
                       )
                     })()}
-                    {/* Filter Tabs */}
-                    <div style={{ display:'flex', gap:'6px', marginBottom:'14px', flexWrap:'wrap', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+                    {/* Hide Paid Toggle */}
+                    <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'10px' }}>
+                      <label style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Show paid invoices:</label>
+                      <input type="checkbox" id="showPaid" onChange={e=>{ const els=document.querySelectorAll('.paid-invoice'); els.forEach(el=>el.style.display=e.target.checked?'block':'none') }} />
+                      <label htmlFor="showPaid" style={{ fontSize:'12px', color:'#888', cursor:'pointer' }}>Toggle</label>
+                    </div>
                       {[['delivered','🚚 For Collection'],['partial','💰 Partial'],['overdue','🔴 Overdue'],['paid','✅ Paid Today'],['all','📋 All']].map(([v,l])=>(
                         <button key={v} onClick={()=>setInvoiceFilter(v)} style={{ padding:'7px 14px', borderRadius:'20px', border:'none', background:invoiceFilter===v?'#ca1b1b':'#f4f4f4', color:invoiceFilter===v?'white':'#555', fontWeight:invoiceFilter===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:invoiceFilter===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>
                           {l} <span style={{ background:invoiceFilter===v?'rgba(255,255,255,0.3)':'rgba(0,0,0,0.1)', borderRadius:'10px', padding:'1px 6px', fontSize:'10px', marginLeft:'2px' }}>
