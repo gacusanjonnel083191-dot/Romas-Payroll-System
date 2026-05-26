@@ -8998,9 +8998,6 @@ export default function App() {
                             {(inv.status==='delivered'||inv.status==='partial') && (
                               <button style={{ ...btnRed, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>initDriverReturn(inv)}>🔄 RECORD RETURNS</button>
                             )}
-                            {inv.status!=='paid' && inv.status!=='unpaid' && (
-                              <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowPaymentFormMap(p=>({...p,[inv.id]:!p[inv.id]}))}>💵 RECORD PAYMENT</button>
-                            )}
                             {inv.status!=='unpaid' && (
                               <button style={{ ...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv,[])}>🖨️ RETURN FORM</button>
                             )}
@@ -9008,6 +9005,13 @@ export default function App() {
                               <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>deleteInvoice(inv)}>🗑️ DELETE</button>
                             )}
                           </div>
+                          {/* Info banner — payment in Receivables */}
+                          {(inv.status==='delivered'||inv.status==='partial') && (
+                            <div style={{ background:'#e8f0fe', borderRadius:'8px', padding:'8px 12px', marginTop:'8px', display:'flex', alignItems:'center', gap:'8px' }}>
+                              <span style={{ fontSize:'16px' }}>💵</span>
+                              <p style={{ color:'#4a90d9', fontSize:'11px', fontWeight:'bold', margin:0 }}>Payment recording is in <button onClick={()=>setSalesView('receivables')} style={{ background:'none', border:'none', color:'#ca1b1b', fontWeight:'bold', cursor:'pointer', fontSize:'11px', textDecoration:'underline', padding:0 }}>Receivables tab →</button></p>
+                            </div>
+                          )}
 
                           {/* Driver Return Form */}
                           {showDriverReturnForm?.id===inv.id && (
@@ -9039,37 +9043,7 @@ export default function App() {
                             </div>
                           )}
 
-                          {/* Payment Form */}
-                          {showPaymentFormMap[inv.id] && (
-                            <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'12px', padding:'14px', marginTop:'10px' }}>
-                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
-                                <div>
-                                  <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 2px' }}>💵 Record Payment — {inv.reseller_name}</p>
-                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Invoice: {php(inv.total_amount)} | Paid: {php(inv.paid_amount||0)} | <strong>Balance: {php(balance)}</strong></p>
-                                </div>
-                                <button onClick={()=>setShowPaymentFormMap(p=>({...p,[inv.id]:false}))} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'14px', color:'#888' }}>✕</button>
-                              </div>
-                              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'8px' }}>
-                                <div><label style={lblS}>Amount Received (₱):</label>
-                                  <input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0, border:'2px solid #FDD412', fontWeight:'bold', fontSize:'15px' }} min="1" placeholder={`Balance: ${php(balance)}`} />
-                                </div>
-                                <div><label style={lblS}>Payment Method:</label>
-                                  <select value={paymentMethod[inv.id]||'Cash'} onChange={e=>setPaymentMethod(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
-                                    {['Cash','GCash','Bank Transfer','Maya','Check'].map(m=><option key={m}>{m}</option>)}
-                                  </select>
-                                </div>
-                                <div><label style={lblS}>Notes:</label><input value={paymentNotes[inv.id]||''} onChange={e=>setPaymentNotes(p=>({...p,[inv.id]:e.target.value}))} placeholder="Reference #, etc." style={{ ...inputStyle, marginBottom:0 }} /></div>
-                              </div>
-                              {paymentAmount[inv.id] && (
-                                <div style={{ background:Number(paymentAmount[inv.id])>=balance?'#e8f5e9':'#fff3cd', borderRadius:'8px', padding:'8px 12px', margin:'8px 0', border:`1px solid ${Number(paymentAmount[inv.id])>=balance?'#2d8a4e':'#ffc107'}` }}>
-                                  <p style={{ margin:0, fontSize:'12px', fontWeight:'bold', color:Number(paymentAmount[inv.id])>=balance?'#2d8a4e':'#856404' }}>
-                                    {Number(paymentAmount[inv.id])>=balance?`✅ Full payment — Invoice will be marked PAID`:`⏳ Partial payment — Balance remaining: ${php(balance-Number(paymentAmount[inv.id]))} (stays as Partial)`}
-                                  </p>
-                                </div>
-                              )}
-                              <button style={{ ...btnGreen, opacity:false?0.6:1 }} onClick={()=>recordPaymentNew(inv)}>✅ CONFIRM PAYMENT</button>
-                            </div>
-                          )}
+                          {/* Payment form moved to Receivables tab */}
                         </div>
                       )
                     })}
@@ -9200,79 +9174,136 @@ export default function App() {
 
                 {salesView==='receivables' && (
                   <div>
-                    <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>💵 Accounts Receivable</h3>
-                    {/* AR Summary */}
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+                      <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>💵 Accounts Receivable & Payment Collection</h3>
+                      <button style={{ ...btnBlack, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printCashCollection(today)}>🖨️ PRINT CASH COLLECTION</button>
+                    </div>
+                    {/* AR Summary Cards */}
                     {(()=>{
-                      const unpaid = deliveryInvoices.filter(i=>i.status!=='paid')
-                      const totalAR = unpaid.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
-                      const overdue = unpaid.filter(i=>i.due_date<today)
+                      const outstanding = deliveryInvoices.filter(i=>i.status!=='paid')
+                      const totalAR = outstanding.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+                      const overdue = outstanding.filter(i=>i.due_date<today)
                       const overdueAR = overdue.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+                      const collectedToday = deliveryInvoices.reduce((s,i)=>s+(i.paid_date===today||i.status==='partial'?Number(i.paid_amount||0):i.status==='paid'&&i.paid_date===today?Number(i.total_amount||0):0),0)
+                      const collectedMonth = deliveryInvoices.filter(i=>i.paid_date?.startsWith(today.slice(0,7))).reduce((s,i)=>s+Number(i.paid_amount||0),0)
                       return (
-                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'10px', marginBottom:'16px' }}>
-                          <div style={{ background:'linear-gradient(135deg,#ca1b1b,#8b0000)', color:'white', borderRadius:'12px', padding:'14px', gridColumn:isMobile?'span 2':'span 1' }}>
-                            <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'0 0 4px' }}>TOTAL OUTSTANDING</p>
-                            <p style={{ fontWeight:'bold', fontSize:'24px', margin:0 }}>{php(totalAR)}</p>
-                            <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', margin:'4px 0 0' }}>{unpaid.length} unpaid invoice(s)</p>
-                          </div>
-                          <div style={{ background:overdueAR>0?'#fff5f5':'#f0fff4', border:`2px solid ${overdueAR>0?'#ca1b1b':'#2d8a4e'}`, borderRadius:'12px', padding:'14px' }}>
-                            <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px' }}>OVERDUE</p>
-                            <p style={{ fontWeight:'bold', fontSize:'22px', color:overdueAR>0?'#ca1b1b':'#2d8a4e', margin:0 }}>{php(overdueAR)}</p>
-                            <p style={{ color:'#888', fontSize:'11px', margin:'4px 0 0' }}>{overdue.length} invoice(s) past due</p>
-                          </div>
-                          <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'12px', padding:'14px' }}>
-                            <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px' }}>COLLECTED THIS MONTH</p>
-                            <p style={{ fontWeight:'bold', fontSize:'22px', color:'#2d8a4e', margin:0 }}>{php(deliveryInvoices.filter(i=>i.paid_date&&i.paid_date.startsWith(today.slice(0,7))).reduce((s,i)=>s+Number(i.paid_amount||0),0))}</p>
-                          </div>
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
+                          {[
+                            ['Total Outstanding', php(totalAR), '#ca1b1b', `${outstanding.length} invoices`],
+                            ['Overdue', php(overdueAR), overdueAR>0?'#ca1b1b':'#2d8a4e', `${overdue.length} past due`],
+                            ['Collected Today', php(collectedToday), '#2d8a4e', today],
+                            ['Collected This Month', php(collectedMonth), '#4a90d9', today.slice(0,7)],
+                          ].map(([l,v,c,sub])=>(
+                            <div key={l} style={{ background:'white', borderRadius:'12px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${c}22` }}>
+                              <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.4px' }}>{l}</p>
+                              <p style={{ fontWeight:'800', color:c, fontSize:'20px', margin:'0 0 2px' }}>{v}</p>
+                              <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{sub}</p>
+                            </div>
+                          ))}
                         </div>
                       )
                     })()}
                     {/* Filter Tabs */}
                     <div style={{ display:'flex', gap:'6px', marginBottom:'14px', flexWrap:'wrap', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                      {[['all','📋 All'],['unpaid','⏳ Unpaid'],['delivered','🚚 Delivered'],['partial','💰 Partial'],['overdue','🔴 Overdue'],['paid','✅ Paid']].map(([v,l])=>(
+                      {[['delivered','🚚 For Collection'],['partial','💰 Partial'],['overdue','🔴 Overdue'],['paid','✅ Paid Today'],['all','📋 All']].map(([v,l])=>(
                         <button key={v} onClick={()=>setInvoiceFilter(v)} style={{ padding:'7px 14px', borderRadius:'20px', border:'none', background:invoiceFilter===v?'#ca1b1b':'#f4f4f4', color:invoiceFilter===v?'white':'#555', fontWeight:invoiceFilter===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:invoiceFilter===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>
                           {l} <span style={{ background:invoiceFilter===v?'rgba(255,255,255,0.3)':'rgba(0,0,0,0.1)', borderRadius:'10px', padding:'1px 6px', fontSize:'10px', marginLeft:'2px' }}>
-                            {v==='all'?deliveryInvoices.length:v==='overdue'?deliveryInvoices.filter(i=>i.status!=='paid'&&i.due_date<today).length:deliveryInvoices.filter(i=>i.status===v).length}
+                            {v==='delivered'?deliveryInvoices.filter(i=>i.status==='delivered').length
+                            :v==='partial'?deliveryInvoices.filter(i=>i.status==='partial').length
+                            :v==='overdue'?deliveryInvoices.filter(i=>i.status!=='paid'&&i.due_date<today).length
+                            :v==='paid'?deliveryInvoices.filter(i=>i.status==='paid'&&i.paid_date===today).length
+                            :deliveryInvoices.length}
                           </span>
                         </button>
                       ))}
-                      {/* Action Buttons */}
-                      <div style={{ marginLeft:'auto', display:'flex', gap:'6px' }}>
-                        <button style={{ ...btnBlack, width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printCashCollection(invoiceDate)}>🖨️ CASH COLLECTION</button>
-                        {productionReports.length>0 && <button style={{ ...btnGray, width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printProductionReleaseForm(productionReports[0])}>🖨️ RELEASE FORM</button>}
-                      </div>
                     </div>
+                    {/* Invoice List */}
                     {(()=>{
                       let filtered = deliveryInvoices
-                      if (invoiceFilter==='unpaid') filtered = filtered.filter(i=>i.status==='unpaid')
-                      else if (invoiceFilter==='delivered') filtered = filtered.filter(i=>i.status==='delivered')
+                      if (invoiceFilter==='delivered') filtered = filtered.filter(i=>i.status==='delivered')
                       else if (invoiceFilter==='partial') filtered = filtered.filter(i=>i.status==='partial')
                       else if (invoiceFilter==='overdue') filtered = filtered.filter(i=>i.status!=='paid'&&i.due_date<today)
-                      else if (invoiceFilter==='paid') filtered = filtered.filter(i=>i.status==='paid')
-                      if (filtered.length===0) return <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No {invoiceFilter} invoices found.</p>
+                      else if (invoiceFilter==='paid') filtered = filtered.filter(i=>i.status==='paid'&&i.paid_date===today)
+                      if (filtered.length===0) return (
+                        <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
+                          <p style={{ fontSize:'32px', margin:'0 0 8px' }}>{invoiceFilter==='delivered'?'🚚':invoiceFilter==='paid'?'✅':'💵'}</p>
+                          <p style={{ fontWeight:'bold', color:'#555', fontSize:'13px' }}>No {invoiceFilter} invoices</p>
+                          {invoiceFilter==='delivered' && <p style={{ fontSize:'12px' }}>Mark invoices as delivered in the Deliveries tab first.</p>}
+                        </div>
+                      )
                       return filtered.map(inv=>{
                         const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
                         const isOverdue = inv.status!=='paid' && inv.due_date < today
                         const daysOverdue = isOverdue ? Math.floor((new Date(today)-new Date(inv.due_date))/(1000*60*60*24)) : 0
                         return (
-                          <div key={inv.id} style={{ ...cardS, border:`2px solid ${isOverdue?'#ca1b1b33':inv.status==='paid'?'#2d8a4e33':inv.status==='delivered'?'#4a90d933':'#f5c51833'}`, marginBottom:'10px' }}>
-                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
+                          <div key={inv.id} style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'10px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`2px solid ${isOverdue?'#ca1b1b33':inv.status==='paid'?'#2d8a4e33':inv.status==='delivered'?'#4a90d933':'#f5a62333'}` }}>
+                            {/* Invoice Header */}
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'10px' }}>
                               <div>
-                                <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{inv.reseller_name}</p>
-                                <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{inv.invoice_number} | Delivery: {inv.delivery_date} | Due: {inv.due_date}</p>
-                                {isOverdue && <p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'bold', margin:'2px 0 0' }}>⚠️ {daysOverdue} day(s) overdue</p>}
+                                <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 2px' }}>{inv.reseller_name}</p>
+                                <p style={{ color:'#888', fontSize:'11px', margin:'0 0 2px' }}>{inv.invoice_number} · Delivery: {inv.delivery_date}</p>
+                                {isOverdue && <p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'bold', margin:0 }}>🔴 {daysOverdue} day(s) overdue</p>}
                               </div>
                               <div style={{ textAlign:'right' }}>
-                                <p style={{ fontWeight:'bold', fontSize:'16px', color:'#333', margin:'0 0 2px' }}>{php(inv.total_amount)}</p>
-                                {balance > 0 && balance < Number(inv.total_amount) && <p style={{ color:'#f57c00', fontSize:'11px', margin:0 }}>Balance: {php(balance)}</p>}
-                                <Badge label={isOverdue?'OVERDUE':inv.status?.toUpperCase()} color={inv.status==='paid'?'green':isOverdue?'red':'yellow'} />
+                                <span style={{ background:inv.status==='paid'?'#e8f5e9':isOverdue?'#fff5f5':inv.status==='delivered'?'#e8f0fe':'#fff3cd', color:inv.status==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':inv.status==='delivered'?'#4a90d9':'#856404', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>{isOverdue&&inv.status!=='paid'?'OVERDUE':inv.status?.toUpperCase()}</span>
                               </div>
                             </div>
-                            <div style={{ display:'flex', gap:'8px', marginTop:'8px', flexWrap:'wrap' }}>
-                              <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}>🖨️ PRINT</button>
-                              {inv.status!=='paid' && (
-                                <button style={{ ...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setShowPaymentForm(p=>({...p,[inv.id]:!p[inv.id]})); setSalesView('deliveries') }}>💵 RECORD PAYMENT</button>
+                            {/* Amount Summary */}
+                            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'8px', marginBottom:'10px', background:'#f8f7f5', borderRadius:'10px', padding:'10px' }}>
+                              <div style={{ textAlign:'center' }}>
+                                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase' }}>Invoice Total</p>
+                                <p style={{ fontWeight:'bold', color:'#333', fontSize:'14px', margin:0 }}>{php(inv.total_amount)}</p>
+                              </div>
+                              <div style={{ textAlign:'center', borderLeft:'1px solid #eee', borderRight:'1px solid #eee' }}>
+                                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase' }}>Already Paid</p>
+                                <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'14px', margin:0 }}>{php(inv.paid_amount||0)}</p>
+                              </div>
+                              <div style={{ textAlign:'center' }}>
+                                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase' }}>Balance Due</p>
+                                <p style={{ fontWeight:'bold', color:balance>0?'#ca1b1b':'#2d8a4e', fontSize:'16px', margin:0 }}>{php(Math.max(0,balance))}</p>
+                              </div>
+                            </div>
+                            {/* Action Buttons */}
+                            <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                              <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}>🖨️ PRINT</button>
+                              {inv.status!=='paid' && balance > 0 && (
+                                <button style={{ ...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>setShowPaymentFormMap(p=>({...p,[inv.id]:!p[inv.id]}))}>
+                                  {showPaymentFormMap[inv.id]?'✕ CANCEL':'💵 RECORD PAYMENT'}
+                                </button>
                               )}
                             </div>
+                            {/* Payment Form */}
+                            {showPaymentFormMap[inv.id] && (
+                              <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'12px', padding:'16px', marginTop:'12px' }}>
+                                <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 12px' }}>💵 Record Payment — Balance: {php(Math.max(0,balance))}</p>
+                                <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px' }}>
+                                  <div>
+                                    <label style={lblS}>Amount Received (₱):</label>
+                                    <input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0, border:'2px solid #FDD412', fontWeight:'bold', fontSize:'16px' }} min="1" placeholder={`Balance: ${php(balance)}`} />
+                                  </div>
+                                  <div>
+                                    <label style={lblS}>Payment Method:</label>
+                                    <select value={paymentMethod[inv.id]||'Cash'} onChange={e=>setPaymentMethod(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
+                                      {['Cash','GCash','Bank Transfer','Maya','Check'].map(m=><option key={m}>{m}</option>)}
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label style={lblS}>Notes / Reference #:</label>
+                                    <input value={paymentNotes[inv.id]||''} onChange={e=>setPaymentNotes(p=>({...p,[inv.id]:e.target.value}))} placeholder="GCash ref, slip #, etc." style={{ ...inputStyle, marginBottom:0 }} />
+                                  </div>
+                                </div>
+                                {paymentAmount[inv.id] && (
+                                  <div style={{ background:Number(paymentAmount[inv.id])>=balance?'#c8e6c9':'#fff3cd', borderRadius:'10px', padding:'10px 14px', margin:'10px 0', border:`1px solid ${Number(paymentAmount[inv.id])>=balance?'#2d8a4e':'#ffc107'}` }}>
+                                    <p style={{ margin:0, fontSize:'13px', fontWeight:'bold', color:Number(paymentAmount[inv.id])>=balance?'#2d8a4e':'#856404' }}>
+                                      {Number(paymentAmount[inv.id])>=balance
+                                        ?`✅ Full payment — Invoice will be marked as PAID`
+                                        :`⏳ Partial — Remaining balance: ${php(Math.max(0,balance-Number(paymentAmount[inv.id])))} (Invoice stays in Partial)`}
+                                    </p>
+                                  </div>
+                                )}
+                                <button style={{ ...btnGreen, fontSize:'14px', fontWeight:'bold' }} onClick={()=>recordPaymentNew(inv)}>✅ CONFIRM PAYMENT</button>
+                              </div>
+                            )}
                           </div>
                         )
                       })
