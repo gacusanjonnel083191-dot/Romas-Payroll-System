@@ -5583,7 +5583,20 @@ export default function App() {
                 {/* Existing Schedules */}
                 {existingSchedules.length > 0 && (
                   <div>
-                    <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}>📋 Upcoming Schedules (next 30 days from start date)</h3>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px' }}>
+                      <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>📋 Upcoming Schedules ({existingSchedules.length} entries)</h3>
+                      <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'2px solid #ca1b1b', borderRadius:'8px', padding:'7px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}
+                        onClick={async()=>{
+                          if (!window.confirm(`Remove ALL ${existingSchedules.length} schedule entries? This cannot be undone.`)) return
+                          const ids = existingSchedules.map(s=>s.id)
+                          await supabase.from('employee_schedules').delete().in('id', ids)
+                          await logAudit('SCHEDULES CLEARED', adminRole, 'All', `Removed ${ids.length} schedule entries`)
+                          showToast(`✅ All ${ids.length} schedules removed!`)
+                          loadSchedules()
+                        }}>
+                        🗑️ REMOVE ALL ({existingSchedules.length})
+                      </button>
+                    </div>
                     <div style={{ overflowX:'auto', borderRadius:'10px', border:'1px solid #eee' }}>
                       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
                         <thead>
