@@ -2252,32 +2252,41 @@ export default function App() {
   }
   // ── Feature: CSV/XLSX Bulk Upload ──────────────────────────────────────────
   async function handleInventoryCSV(e) {
-    const file = e.target.files ? e.target.files[0] : e
+    const file = e.target ? e.target.files[0] : e
     if (!file) return
     setCsvUploading(true)
     try {
       let rows = []
       if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
-        // Handle XLSX
-        const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm')
+        showToast('⏳ Reading XLSX file...')
+        // Load SheetJS from CDN
+        await new Promise((resolve, reject) => {
+          if (window.XLSX) { resolve(); return }
+          const script = document.createElement('script')
+          script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+          script.onload = resolve
+          script.onerror = reject
+          document.head.appendChild(script)
+        })
         const buffer = await file.arrayBuffer()
-        const wb = XLSX.read(buffer, { type:'array' })
+        const wb = window.XLSX.read(buffer, { type:'array' })
         const ws = wb.Sheets[wb.SheetNames[0]]
-        const data = XLSX.utils.sheet_to_json(ws, { defval:'' })
+        const data = window.XLSX.utils.sheet_to_json(ws, { defval:'' })
         rows = data.map(row=>({
-          name: row.name || row.Name || row['Item Name'] || '',
-          category: row.category || row.Category || 'Raw Ingredients',
-          unit: row.unit || row.Unit || 'kg',
-          current_stock: row.current_stock || row['Current Stock'] || row['Current Stock on Hand'] || 0,
-          min_stock: row.min_stock || row['Min Stock'] || row['Min Stock Level'] || 0,
-          cost_per_unit: row.cost_per_unit || row['Cost per Unit'] || row['Cost/Unit'] || 0,
-          selling_price: row.selling_price || row['Selling Price'] || 0,
+          name: String(row.name || row.Name || row['Item Name'] || row['ITEM NAME'] || '').trim(),
+          category: String(row.category || row.Category || row.CATEGORY || 'Raw Ingredients').trim(),
+          unit: String(row.unit || row.Unit || row.UNIT || 'kg').trim(),
+          current_stock: Number(row.current_stock || row['Current Stock'] || row['Current Stock on Hand'] || row['CURRENT STOCK'] || 0),
+          min_stock: Number(row.min_stock || row['Min Stock'] || row['Min Stock Level'] || row['MIN STOCK'] || 0),
+          cost_per_unit: Number(row.cost_per_unit || row['Cost per Unit'] || row['Cost/Unit'] || row['COST PER UNIT'] || 0),
+          selling_price: Number(row.selling_price || row['Selling Price'] || row['SELLING PRICE'] || 0),
         })).filter(r=>r.name)
       } else {
         // Handle CSV
         const text = await file.text()
         const lines = text.split('\n').filter(l=>l.trim())
-        const headers = lines[0].split(',').map(h=>h.trim().toLowerCase().replace(/[^a-z_]/g,''))
+        if (lines.length < 2) { showToast('❌ CSV file is empty or invalid.','red'); setCsvUploading(false); return }
+        const headers = lines[0].split(',').map(h=>h.trim().toLowerCase().replace(/[^a-z_]/g,'').replace(/\s+/g,'_'))
         rows = lines.slice(1).map(line=>{
           const vals = line.split(',').map(v=>v.trim().replace(/^"|"$/g,''))
           const obj = {}
@@ -2285,6 +2294,7 @@ export default function App() {
           return obj
         }).filter(r=>r.name)
       }
+      if (rows.length === 0) { showToast('❌ No valid rows found. Check that your file has a "name" column.','red'); setCsvUploading(false); return }
       setCsvPreview(rows)
       setShowCsvPreview(true)
     } catch(err) { showToast('❌ Failed to read file: '+err.message,'red') }
