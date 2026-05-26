@@ -2250,23 +2250,46 @@ export default function App() {
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingReturn(false)
   }
-  // ── Feature: CSV Bulk Upload ──────────────────────────────────────────────
+  // ── Feature: CSV/XLSX Bulk Upload ──────────────────────────────────────────
   async function handleInventoryCSV(e) {
-    const file = e.target.files[0]; if (!file) return
+    const file = e.target.files ? e.target.files[0] : e
+    if (!file) return
     setCsvUploading(true)
-    const text = await file.text()
-    const lines = text.split('\n').filter(l=>l.trim())
-    const headers = lines[0].split(',').map(h=>h.trim().toLowerCase().replace(/[^a-z_]/g,''))
-    const rows = lines.slice(1).map(line=>{
-      const vals = line.split(',').map(v=>v.trim().replace(/^"|"$/g,''))
-      const obj = {}
-      headers.forEach((h,i)=>{ obj[h]=vals[i]||'' })
-      return obj
-    }).filter(r=>r.name)
-    setCsvPreview(rows)
-    setShowCsvPreview(true)
+    try {
+      let rows = []
+      if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+        // Handle XLSX
+        const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm')
+        const buffer = await file.arrayBuffer()
+        const wb = XLSX.read(buffer, { type:'array' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const data = XLSX.utils.sheet_to_json(ws, { defval:'' })
+        rows = data.map(row=>({
+          name: row.name || row.Name || row['Item Name'] || '',
+          category: row.category || row.Category || 'Raw Ingredients',
+          unit: row.unit || row.Unit || 'kg',
+          current_stock: row.current_stock || row['Current Stock'] || row['Current Stock on Hand'] || 0,
+          min_stock: row.min_stock || row['Min Stock'] || row['Min Stock Level'] || 0,
+          cost_per_unit: row.cost_per_unit || row['Cost per Unit'] || row['Cost/Unit'] || 0,
+          selling_price: row.selling_price || row['Selling Price'] || 0,
+        })).filter(r=>r.name)
+      } else {
+        // Handle CSV
+        const text = await file.text()
+        const lines = text.split('\n').filter(l=>l.trim())
+        const headers = lines[0].split(',').map(h=>h.trim().toLowerCase().replace(/[^a-z_]/g,''))
+        rows = lines.slice(1).map(line=>{
+          const vals = line.split(',').map(v=>v.trim().replace(/^"|"$/g,''))
+          const obj = {}
+          headers.forEach((h,i)=>{ obj[h]=vals[i]||'' })
+          return obj
+        }).filter(r=>r.name)
+      }
+      setCsvPreview(rows)
+      setShowCsvPreview(true)
+    } catch(err) { showToast('❌ Failed to read file: '+err.message,'red') }
     setCsvUploading(false)
-    e.target.value = ''
+    if (e.target) e.target.value = ''
   }
   async function confirmCSVUpload() {
     setCsvUploading(true)
@@ -6625,15 +6648,24 @@ export default function App() {
                   </select>
                 </div>
 
-                {/* Add Item Button + CSV Upload */}
-                <div style={{ display:'flex', gap:'8px', marginBottom:'14px', flexWrap:'wrap' }}>
+                {/* Add Item Button + CSV/XLSX Upload */}
+                <div style={{ display:'flex', gap:'8px', marginBottom:'8px', flexWrap:'wrap' }}>
                   <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'10px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>setShowAddItem(!showAddItem)}>
                     {showAddItem?'✕ CANCEL':'➕ ADD NEW ITEM'}
                   </button>
                   <label style={{ background:'#FDD412', color:'#1a1a2e', border:'none', borderRadius:'8px', padding:'10px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
-                    📤 BULK UPLOAD CSV
-                    <input type="file" accept=".csv" onChange={handleInventoryCSV} style={{ display:'none' }} />
+                    📤 BULK UPLOAD
+                    <input type="file" accept=".csv,.xlsx,.xls" onChange={handleInventoryCSV} style={{ display:'none' }} />
                   </label>
+                </div>
+                {/* Drag and Drop Zone */}
+                <div
+                  onDragOver={e=>{ e.preventDefault(); e.currentTarget.style.background='#fffde7'; e.currentTarget.style.borderColor='#FDD412'; e.currentTarget.style.color='#1a1a2e' }}
+                  onDragLeave={e=>{ e.currentTarget.style.background='transparent'; e.currentTarget.style.borderColor='#e0e0e0'; e.currentTarget.style.color='#bbb' }}
+                  onDrop={e=>{ e.preventDefault(); e.currentTarget.style.background='transparent'; e.currentTarget.style.borderColor='#e0e0e0'; e.currentTarget.style.color='#bbb'; const file=e.dataTransfer.files[0]; if(file){ handleInventoryCSV(file) } else { showToast('❌ Please drop a CSV or XLSX file.','red') } }}
+                  style={{ border:'2px dashed #e0e0e0', borderRadius:'10px', padding:'12px', marginBottom:'14px', textAlign:'center', transition:'all 0.2s', color:'#bbb', fontSize:'11px', cursor:'default' }}
+                >
+                  📂 Or drag & drop a <strong>CSV</strong> or <strong>XLSX</strong> file here to bulk upload inventory
                 </div>
 
                 {/* CSV Preview Modal */}
