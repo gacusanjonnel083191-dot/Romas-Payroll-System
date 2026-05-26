@@ -481,6 +481,22 @@ export default function App() {
   const [stockTxReference, setStockTxReference] = useState('')
   const [stockTxNotes, setStockTxNotes] = useState('')
   const [stockTxLoading, setStockTxLoading] = useState(false)
+  // New inventory features
+  const [inventorySubView, setInventorySubView] = useState('items')
+  const [selectedItemHistory, setSelectedItemHistory] = useState(null)
+  const [itemHistory, setItemHistory] = useState([])
+  const [itemHistoryLoading, setItemHistoryLoading] = useState(false)
+  const [showAdjustForm, setShowAdjustForm] = useState(false)
+  const [adjustItemId, setAdjustItemId] = useState('')
+  const [adjustQty, setAdjustQty] = useState('')
+  const [adjustReason, setAdjustReason] = useState('')
+  const [adjustNotes, setAdjustNotes] = useState('')
+  const [stockAdjustments, setStockAdjustments] = useState([])
+  const [showReceivingForm, setShowReceivingForm] = useState(null)
+  const [receivingItems, setReceivingItems] = useState([])
+  const [inventoryValuation, setInventoryValuation] = useState(null)
+  const [stockMovementMonth, setStockMovementMonth] = useState(today.slice(0,7))
+  const [stockMovementData, setStockMovementData] = useState([])
   const [editingItemId, setEditingItemId] = useState(null)
   const [editItemFields, setEditItemFields] = useState({})
   // Suppliers
@@ -912,6 +928,109 @@ export default function App() {
   }
 
   // ── Inventory Functions ───────────────────────────────────────────────────
+  // ── Feature 3: Item Transaction History ──────────────────────────────────
+  async function loadItemHistory(item) {
+    setSelectedItemHistory(item)
+    setItemHistoryLoading(true)
+    setInventorySubView('history')
+    const [txs, wastage, adjs] = await Promise.all([
+      supabase.from('inventory_transactions').select('*').eq('item_id', item.id).order('created_at', { ascending:false }).limit(50),
+      supabase.from('wastage_logs').select('*').eq('item_id', item.id).order('created_at', { ascending:false }).limit(20),
+      supabase.from('stock_adjustments').select('*').eq('item_id', item.id).order('created_at', { ascending:false }).limit(20),
+    ])
+    const allMovements = [
+      ...(txs.data||[]).map(t=>({ ...t, movementType: t.transaction_type==='in'?'Stock In':'Stock Out', color: t.transaction_type==='in'?'#2d8a4e':'#ca1b1b', icon:'📦' })),
+      ...(wastage.data||[]).map(w=>({ ...w, movementType:'Wastage', quantity:-(w.quantity||0), color:'#f57c00', icon:'🗑️', created_at:w.created_at||w.wastage_date })),
+      ...(adjs.data||[]).map(a=>({ ...a, movementType:'Adjustment', quantity:a.adjustment_qty, color: Number(a.adjustment_qty)>=0?'#4a90d9':'#ca1b1b', icon:'⚖️' })),
+    ].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))
+    setItemHistory(allMovements)
+    setItemHistoryLoading(false)
+  }
+
+  // ── Feature 4: Stock Adjustment ──────────────────────────────────────────
+  async function saveStockAdjustment() {
+    if (!adjustItemId) { showToast('❌ Select an item.','red'); return }
+    if (!adjustQty || adjustQty===0) { showToast('❌ Enter adjustment quantity.','red'); return }
+    if (!adjustReason.trim()) { showToast('❌ Enter reason.','red'); return }
+    const item = inventoryItems.find(i=>i.id===adjustItemId)
+    if (!item) return
+    const adjQty = Number(adjustQty)
+    const newStock = Math.max(0, Number(item.current_stock||0) + adjQty)
+    await supabase.from('stock_adjustments').insert({ item_id:adjustItemId, item_name:item.name, adjustment_qty:adjQty, reason:adjustReason, notes:adjustNotes||null, adjusted_by:adminRole })
+    await supabase.from('inventory_items').update({ current_stock:newStock }).eq('id', adjustItemId)
+    await logAudit('STOCK ADJUSTMENT', adminRole, item.name, `${adjQty>0?'+':''}${adjQty} ${item.unit} — Reason: ${adjustReason}`)
+    showToast(`✅ Stock adjusted! ${item.name}: ${Number(item.current_stock||0)} → ${newStock} ${item.unit}`)
+    setShowAdjustForm(false); setAdjustItemId(''); setAdjustQty(''); setAdjustReason(''); setAdjustNotes('')
+    loadInventoryItems()
+  }
+
+  // ── Feature 5: Receiving Report ───────────────────────────────────────────
+  async function initReceiving(po) {
+    const items = po.purchase_order_items || []
+    setReceivingItems(items.map(i=>({ ...i, received_qty:i.quantity, notes:'' })))
+    setShowReceivingForm(po)
+  }
+  async function saveReceivingReport() {
+    if (!showReceivingForm) return
+    const po = showReceivingForm
+    for (const item of receivingItems) {
+      const received = Number(item.received_qty||0)
+      const ordered = Number(item.quantity||0)
+      const discrepancy = received - ordered
+      await supabase.from('purchase_order_receipts').insert({ po_id:po.id, item_id:item.item_id||null, item_name:item.item_name||item.name, ordered_qty:ordered, received_qty:received, discrepancy, notes:item.notes||null, received_by:adminRole })
+      if (item.item_id && received > 0) {
+        const { data:inv } = await supabase.from('inventory_items').select('current_stock').eq('id', item.item_id).single()
+        if (inv) await supabase.from('inventory_items').update({ current_stock:Number(inv.current_stock||0)+received }).eq('id', item.item_id)
+        await supabase.from('inventory_transactions').insert({ item_id:item.item_id, item_name:item.item_name||item.name, transaction_type:'in', quantity:received, reference_number:po.po_number, notes:`PO Receipt — ${discrepancy!==0?'Discrepancy: '+discrepancy:'Fully received'}`, recorded_by:adminRole })
+      }
+    }
+    await supabase.from('purchase_orders').update({ status:'received' }).eq('id', po.id)
+    await logAudit('PO RECEIVED', adminRole, po.supplier_name||'', `${po.po_number} — ${receivingItems.length} items`)
+    showToast('✅ Receiving report saved! Stock updated.')
+    setShowReceivingForm(null); setReceivingItems([])
+    loadPurchaseOrders(); loadInventoryItems()
+  }
+
+  // ── Feature 6: Inventory Valuation ───────────────────────────────────────
+  function computeInventoryValuation() {
+    const byCategory = {}
+    let totalValue = 0
+    for (const item of inventoryItems) {
+      const value = Number(item.current_stock||0) * Number(item.cost_per_unit||0)
+      const cat = item.category || 'Uncategorized'
+      if (!byCategory[cat]) byCategory[cat] = { items:[], totalValue:0 }
+      byCategory[cat].items.push({ ...item, value })
+      byCategory[cat].totalValue += value
+      totalValue += value
+    }
+    setInventoryValuation({ byCategory, totalValue })
+    setInventorySubView('valuation')
+  }
+
+  // ── Feature 7 & 8: Stock Movement Report ─────────────────────────────────
+  async function loadStockMovement() {
+    const startDate = stockMovementMonth + '-01'
+    const endDate = new Date(stockMovementMonth + '-01'); endDate.setMonth(endDate.getMonth()+1); const endStr = endDate.toISOString().slice(0,10)
+    const [txs, wastage, adjs] = await Promise.all([
+      supabase.from('inventory_transactions').select('*').gte('created_at', startDate).lt('created_at', endStr),
+      supabase.from('wastage_logs').select('*').gte('wastage_date', startDate).lt('wastage_date', endStr),
+      supabase.from('stock_adjustments').select('*').gte('created_at', startDate).lt('created_at', endStr),
+    ])
+    const movementMap = {}
+    for (const item of inventoryItems) {
+      movementMap[item.id] = { item, stockIn:0, stockOut:0, wastage:0, adjustment:0 }
+    }
+    ;(txs.data||[]).forEach(t=>{ if(movementMap[t.item_id]){ if(t.transaction_type==='in') movementMap[t.item_id].stockIn+=Number(t.quantity||0); else movementMap[t.item_id].stockOut+=Number(t.quantity||0) } })
+    ;(wastage.data||[]).forEach(w=>{ if(movementMap[w.item_id]) movementMap[w.item_id].wastage+=Number(w.quantity||0) })
+    ;(adjs.data||[]).forEach(a=>{ if(movementMap[a.item_id]) movementMap[a.item_id].adjustment+=Number(a.adjustment_qty||0) })
+    const result = Object.values(movementMap).filter(m=>m.stockIn>0||m.stockOut>0||m.wastage>0||m.adjustment!==0).map(m=>({
+      ...m,
+      closingStock: Number(m.item.current_stock||0)
+    }))
+    setStockMovementData(result)
+    setInventorySubView('movement')
+  }
+
   async function loadInventoryItems() {
     setInventoryLoading(true)
     const { data } = await supabase.from('inventory_items').select('*').eq('is_active', true).order('category').order('name')
@@ -1016,6 +1135,10 @@ export default function App() {
       if (updateError) throw updateError
       await logAudit(`STOCK ${stockTxType.toUpperCase()}`,'Admin',item.name,`${stockTxType==='in'?'+':'-'}${qty} ${item.unit} | Stock: ${stockBefore} → ${stockAfter}`)
       showToast(`✅ Stock ${stockTxType==='in'?'added':'deducted'} — ${item.name}: ${stockBefore} → ${stockAfter} ${item.unit}`)
+      // Low stock alert notification
+      if (stockTxType==='out' && stockAfter <= Number(item.min_stock||0)) {
+        await createNotification(null, 'System', 'inventory', `⚠️ Low Stock: ${item.name}`, `${item.name} dropped to ${stockAfter} ${item.unit}. Minimum is ${item.min_stock} ${item.unit}. Please reorder.`)
+      }
       setStockTxItemId(''); setStockTxQty(''); setStockTxReference(''); setStockTxNotes('')
       setShowStockForm(false); loadInventoryItems()
     } catch(err) {
@@ -3905,7 +4028,7 @@ export default function App() {
       if(key==='remittance') loadPayrollHistory()
       if(key==='dtr') loadEmployees()
       if(key==='contracts') { loadContracts(); loadEmployees() }
-      if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders() }
+      if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
       if(key==='costing') { loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
       if(key==='franchise') { loadFranchises() }
       if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations() }
@@ -6108,13 +6231,259 @@ export default function App() {
             {/* INVENTORY */}
             {activeTab==='inventory' && (
               <div>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'6px' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
                   <h2 style={h2s}>📦 Inventory Management</h2>
                   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                     <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); showToast('✅ Refreshed!') }}>🔄 REFRESH</button>
                     <button style={{ ...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printInventoryReport}>🖨️ PRINT REPORT</button>
                   </div>
                 </div>
+
+                {/* Inventory Sub-Navigation */}
+                <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'16px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+                  {[
+                    ['items','📦 Items'],
+                    ['adjust','⚖️ Adjust Stock'],
+                    ['receiving','📥 Receiving'],
+                    ['valuation','💰 Valuation'],
+                    ['movement','📊 Movement Report'],
+                    ['history','📋 Item History'],
+                  ].map(([v,l])=>(
+                    <button key={v} onClick={()=>{ setInventorySubView(v); if(v==='valuation') computeInventoryValuation() }} style={{ padding:'8px 14px', borderRadius:'20px', border:'none', background:inventorySubView===v?'#ca1b1b':'#f4f4f4', color:inventorySubView===v?'white':'#555', fontWeight:inventorySubView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:inventorySubView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
+                  ))}
+                </div>
+
+                {/* Stock Adjustment View */}
+                {inventorySubView==='adjust' && (
+                  <div>
+                    <h3 style={{ color:'#ca1b1b', fontSize:'14px', margin:'0 0 14px' }}>⚖️ Stock Adjustment</h3>
+                    <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Use this to correct stock levels when physical count differs from system. Different from Stock In/Out — this is a manual correction with reason.</p>
+                    <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)' }}>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                        <div><label style={lblS}>Item:</label>
+                          <select value={adjustItemId} onChange={e=>setAdjustItemId(e.target.value)} style={inputStyle}>
+                            <option value="">— Select item —</option>
+                            {inventoryItems.map(i=><option key={i.id} value={i.id}>{i.name} (Current: {i.current_stock} {i.unit})</option>)}
+                          </select>
+                        </div>
+                        <div><label style={lblS}>Adjustment Qty (+ to add, - to deduct):</label>
+                          <input type="number" value={adjustQty} onChange={e=>setAdjustQty(e.target.value)} placeholder="e.g. +5 or -3" style={inputStyle} step="0.01" />
+                        </div>
+                        <div><label style={lblS}>Reason:</label>
+                          <select value={adjustReason} onChange={e=>setAdjustReason(e.target.value)} style={inputStyle}>
+                            <option value="">— Select reason —</option>
+                            {['Physical count variance','Damaged goods','Theft/pilferage','Data entry error','Unit conversion correction','Found missing stock','Other'].map(r=><option key={r} value={r}>{r}</option>)}
+                          </select>
+                        </div>
+                        <div><label style={lblS}>Notes (optional):</label>
+                          <input value={adjustNotes} onChange={e=>setAdjustNotes(e.target.value)} placeholder="Additional details..." style={inputStyle} />
+                        </div>
+                      </div>
+                      {adjustItemId && adjustQty && (()=>{
+                        const item = inventoryItems.find(i=>i.id===adjustItemId)
+                        const newStock = Number(item?.current_stock||0) + Number(adjustQty)
+                        return <div style={{ background:newStock>=0?'#e8f5e9':'#fff5f5', borderRadius:'8px', padding:'10px', margin:'4px 0 12px', border:`1px solid ${newStock>=0?'#2d8a4e':'#ca1b1b'}` }}>
+                          <p style={{ margin:0, fontSize:'12px', fontWeight:'bold', color:newStock>=0?'#2d8a4e':'#ca1b1b' }}>
+                            {item?.name}: {item?.current_stock} → <strong>{Math.max(0,newStock)}</strong> {item?.unit}
+                            {newStock<0?' ⚠️ Cannot go below 0':''}
+                          </p>
+                        </div>
+                      })()}
+                      <button style={{ ...btnRed }} onClick={saveStockAdjustment}>💾 SAVE ADJUSTMENT</button>
+                    </div>
+                    {/* Adjustment History */}
+                    <h4 style={{ color:'#555', fontSize:'13px', margin:'0 0 10px' }}>Recent Adjustments</h4>
+                    {stockAdjustments.length===0?<p style={{ color:'#aaa', fontSize:'12px' }}>No adjustments yet.</p>:stockAdjustments.slice(0,10).map(a=>(
+                      <div key={a.id} style={{ ...cardS, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>{a.item_name}</p>
+                          <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{a.reason} · {a.adjusted_by} · {new Date(a.created_at).toLocaleDateString('en-PH')}</p>
+                          {a.notes && <p style={{ color:'#888', fontSize:'10px', margin:'2px 0 0' }}>{a.notes}</p>}
+                        </div>
+                        <span style={{ fontWeight:'bold', fontSize:'16px', color:Number(a.adjustment_qty)>=0?'#2d8a4e':'#ca1b1b' }}>{Number(a.adjustment_qty)>0?'+':''}{a.adjustment_qty}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Receiving Report View */}
+                {inventorySubView==='receiving' && (
+                  <div>
+                    <h3 style={{ color:'#ca1b1b', fontSize:'14px', margin:'0 0 6px' }}>📥 Receiving Report</h3>
+                    <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>When a Purchase Order arrives, record what was actually received vs what was ordered. Stock updates automatically.</p>
+                    {purchaseOrders.filter(po=>po.status!=='received').length===0?(
+                      <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
+                        <p style={{ fontSize:'32px', margin:'0 0 10px' }}>📋</p>
+                        <p style={{ fontWeight:'bold', fontSize:'13px', color:'#555' }}>No pending Purchase Orders</p>
+                        <p style={{ fontSize:'12px' }}>Create a Purchase Order first, then come back to record receiving.</p>
+                      </div>
+                    ):purchaseOrders.filter(po=>po.status!=='received').map(po=>(
+                      <div key={po.id} style={{ ...cardS, border:'2px solid #e8f0fe' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+                          <div>
+                            <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{po.po_number}</p>
+                            <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{po.supplier_name} · {po.status?.toUpperCase()}</p>
+                          </div>
+                          <button style={{ ...btnGreen, width:'auto', padding:'7px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>initReceiving(po)}>📥 RECEIVE ORDER</button>
+                        </div>
+                      </div>
+                    ))}
+                    {/* Receiving Form Modal */}
+                    {showReceivingForm && (
+                      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setShowReceivingForm(null)}>
+                        <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'600px', width:'100%', maxHeight:'85vh', overflowY:'auto' }} onClick={e=>e.stopPropagation()}>
+                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'14px' }}>
+                            <div><p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', margin:'0 0 2px' }}>📥 Receive: {showReceivingForm.po_number}</p><p style={{ color:'#888', fontSize:'12px', margin:0 }}>{showReceivingForm.supplier_name}</p></div>
+                            <button onClick={()=>setShowReceivingForm(null)} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold' }}>✕</button>
+                          </div>
+                          <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', marginBottom:'14px' }}>
+                            <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr', background:'#ca1b1b', padding:'8px 12px' }}>
+                              {['Item','Ordered','Received','Notes'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
+                            </div>
+                            {receivingItems.map((item,i)=>(
+                              <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr', padding:'8px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center', gap:'6px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.item_name||item.name}</span>
+                                <span style={{ fontSize:'12px', color:'#555' }}>{item.quantity}</span>
+                                <input type="number" value={item.received_qty} min="0" onChange={e=>{ const upd=[...receivingItems]; upd[i]={...upd[i],received_qty:e.target.value}; setReceivingItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', padding:'4px 6px', border:Number(item.received_qty)!==Number(item.quantity)?'2px solid #f5a623':'1.5px solid #e8e8e8' }} />
+                                <input placeholder="Notes..." value={item.notes||''} onChange={e=>{ const upd=[...receivingItems]; upd[i]={...upd[i],notes:e.target.value}; setReceivingItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', padding:'4px 6px' }} />
+                              </div>
+                            ))}
+                          </div>
+                          {receivingItems.some(i=>Number(i.received_qty)!==Number(i.quantity)) && (
+                            <div style={{ background:'#fff3cd', borderRadius:'8px', padding:'10px', marginBottom:'12px', border:'1px solid #ffc107' }}>
+                              <p style={{ color:'#856404', fontSize:'12px', fontWeight:'bold', margin:0 }}>⚠️ Discrepancies detected — received quantities differ from ordered. This will be recorded.</p>
+                            </div>
+                          )}
+                          <button style={{ ...btnGreen }} onClick={saveReceivingReport}>✅ CONFIRM RECEIVING & UPDATE STOCK</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Valuation View */}
+                {inventorySubView==='valuation' && inventoryValuation && (
+                  <div>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                      <h3 style={{ color:'#ca1b1b', fontSize:'14px', margin:0 }}>💰 Inventory Valuation</h3>
+                      <div style={{ background:'#fff9e6', border:'2px solid #ca1b1b', borderRadius:'10px', padding:'8px 18px', textAlign:'center' }}>
+                        <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase' }}>Total Inventory Value</p>
+                        <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'22px', margin:0 }}>{php(inventoryValuation.totalValue)}</p>
+                      </div>
+                    </div>
+                    {Object.entries(inventoryValuation.byCategory).map(([cat,data])=>(
+                      <div key={cat} style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'12px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'10px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:0 }}>{cat}</p>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:0 }}>{php(data.totalValue)}</p>
+                        </div>
+                        <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
+                          <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr', background:'#f8f7f5', padding:'6px 10px' }}>
+                            {['Item','Unit','Stock','Cost/Unit','Value'].map(h=><span key={h} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:h==='Item'?'left':'right' }}>{h}</span>)}
+                          </div>
+                          {data.items.map((item,i)=>(
+                            <div key={item.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr', padding:'6px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+                              <span style={{ fontSize:'11px', fontWeight:'bold' }}>{item.name}</span>
+                              <span style={{ fontSize:'11px', color:'#888', textAlign:'right' }}>{item.unit}</span>
+                              <span style={{ fontSize:'11px', textAlign:'right', color:Number(item.current_stock)<=Number(item.min_stock)?'#ca1b1b':'#333', fontWeight:'bold' }}>{item.current_stock}</span>
+                              <span style={{ fontSize:'11px', textAlign:'right', color:'#555' }}>{php(item.cost_per_unit)}</span>
+                              <span style={{ fontSize:'11px', textAlign:'right', fontWeight:'bold', color:'#2d8a4e' }}>{php(item.value)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Stock Movement Report */}
+                {inventorySubView==='movement' && (
+                  <div>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+                      <h3 style={{ color:'#ca1b1b', fontSize:'14px', margin:0 }}>📊 Stock Movement Report</h3>
+                      <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+                        <input type="month" value={stockMovementMonth} onChange={e=>setStockMovementMonth(e.target.value)} style={{ ...inputStyle, marginBottom:0, width:'160px' }} />
+                        <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={loadStockMovement}>📊 GENERATE</button>
+                      </div>
+                    </div>
+                    {stockMovementData.length===0?(
+                      <p style={{ color:'#aaa', textAlign:'center', padding:'30px', fontSize:'12px' }}>Click GENERATE to load stock movement for the selected month.</p>
+                    ):(
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)' }}>
+                        <div style={{ overflowX:'auto' }}>
+                          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+                            <thead>
+                              <tr style={{ background:'#ca1b1b' }}>
+                                {['Item','Unit','Stock In','Stock Out','Wastage','Adj','Closing Stock'].map(h=>(
+                                  <th key={h} style={{ color:'white', padding:'8px 10px', textAlign:h==='Item'?'left':'right', fontSize:'11px', fontWeight:'bold', whiteSpace:'nowrap' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stockMovementData.map((m,i)=>(
+                                <tr key={m.item.id} style={{ background:i%2===0?'white':'#fafafa', borderBottom:'1px solid #f0f0f0' }}>
+                                  <td style={{ padding:'7px 10px', fontWeight:'bold', fontSize:'12px' }}>{m.item.name}</td>
+                                  <td style={{ padding:'7px 10px', textAlign:'right', color:'#888' }}>{m.item.unit}</td>
+                                  <td style={{ padding:'7px 10px', textAlign:'right', color:'#2d8a4e', fontWeight:'bold' }}>{m.stockIn>0?'+'+m.stockIn.toFixed(2):'—'}</td>
+                                  <td style={{ padding:'7px 10px', textAlign:'right', color:'#ca1b1b' }}>{m.stockOut>0?'-'+m.stockOut.toFixed(2):'—'}</td>
+                                  <td style={{ padding:'7px 10px', textAlign:'right', color:'#f57c00' }}>{m.wastage>0?'-'+m.wastage.toFixed(2):'—'}</td>
+                                  <td style={{ padding:'7px 10px', textAlign:'right', color:m.adjustment>=0?'#4a90d9':'#ca1b1b' }}>{m.adjustment!==0?(m.adjustment>0?'+':'')+m.adjustment.toFixed(2):'—'}</td>
+                                  <td style={{ padding:'7px 10px', textAlign:'right', fontWeight:'bold', color:m.closingStock<=Number(m.item.min_stock||0)?'#ca1b1b':'#333' }}>{m.closingStock.toFixed(2)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Item History View */}
+                {inventorySubView==='history' && (
+                  <div>
+                    <h3 style={{ color:'#ca1b1b', fontSize:'14px', margin:'0 0 6px' }}>📋 Item Transaction History</h3>
+                    {!selectedItemHistory ? (
+                      <div>
+                        <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Select an item to view its full movement history:</p>
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px' }}>
+                          {inventoryItems.map(item=>(
+                            <div key={item.id} style={{ ...cardS, cursor:'pointer', border:'1px solid #f0f0f0', transition:'all 0.15s' }} onClick={()=>loadItemHistory(item)} onMouseEnter={e=>e.currentTarget.style.borderColor='#ca1b1b'} onMouseLeave={e=>e.currentTarget.style.borderColor='#f0f0f0'}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                                <div><p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>{item.name}</p><p style={{ color:'#888', fontSize:'11px', margin:0 }}>{item.category} · {item.unit}</p></div>
+                                <div style={{ textAlign:'right' }}><p style={{ fontWeight:'bold', color:Number(item.current_stock)<=Number(item.min_stock||0)?'#ca1b1b':'#2d8a4e', fontSize:'16px', margin:'0 0 2px' }}>{item.current_stock}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{item.unit} on hand</p></div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                          <div><p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 2px' }}>{selectedItemHistory.name}</p><p style={{ color:'#888', fontSize:'12px', margin:0 }}>Current Stock: {selectedItemHistory.current_stock} {selectedItemHistory.unit}</p></div>
+                          <button onClick={()=>{ setSelectedItemHistory(null); setItemHistory([]) }} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>← Back</button>
+                        </div>
+                        {itemHistoryLoading ? <p style={{ textAlign:'center', color:'#888' }}>⏳ Loading history...</p> :
+                          itemHistory.length===0 ? <p style={{ color:'#aaa', textAlign:'center', padding:'20px' }}>No movement history for this item yet.</p> :
+                          itemHistory.map((m,i)=>(
+                            <div key={m.id||i} style={{ ...cardS, display:'flex', justifyContent:'space-between', alignItems:'center', borderLeft:`3px solid ${m.color}` }}>
+                              <div>
+                                <p style={{ fontWeight:'bold', fontSize:'12px', margin:'0 0 2px' }}>{m.icon} {m.movementType}</p>
+                                <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{m.reference_number||m.reason||'—'} · {m.performed_by||m.recorded_by||m.adjusted_by||'System'}</p>
+                                <p style={{ color:'#aaa', fontSize:'10px', margin:'2px 0 0' }}>{new Date(m.created_at).toLocaleString('en-PH')}</p>
+                                {m.notes && <p style={{ color:'#888', fontSize:'10px', margin:'2px 0 0' }}>{m.notes}</p>}
+                              </div>
+                              <span style={{ fontWeight:'bold', fontSize:'16px', color:m.color }}>{Number(m.quantity)>0?'+':''}{m.quantity} {selectedItemHistory.unit}</span>
+                            </div>
+                          ))
+                        }
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Default Items View */}
+                {inventorySubView==='items' && (<div>
 
                 {/* Supabase setup note */}
                 <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'12px' }}>
@@ -6949,6 +7318,7 @@ export default function App() {
                   </div>
                 )}
               </div>
+            </div>
             )}
 
             {/* COSTING — OWNER ONLY */}
