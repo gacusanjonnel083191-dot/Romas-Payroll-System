@@ -448,7 +448,22 @@ export default function App() {
   const [showReturnForm, setShowReturnForm] = useState({})
   const [returnItems, setReturnItems] = useState({})
   const [savingReturn, setSavingReturn] = useState(false)
-  // Bank Deposits
+  const [invoiceFilter, setInvoiceFilter] = useState('all')
+  const [markingDelivered, setMarkingDelivered] = useState({})
+  const [showPaymentFormMap, setShowPaymentFormMap] = useState({})
+  const [paymentAmount, setPaymentAmount] = useState({})
+  const [paymentMethod, setPaymentMethod] = useState({})
+  const [paymentNotes, setPaymentNotes] = useState({})
+  // Driver Return Form
+  const [showDriverReturnForm, setShowDriverReturnForm] = useState(null)
+  const [driverReturnItems, setDriverReturnItems] = useState([])
+  const [savingDriverReturn, setSavingDriverReturn] = useState(false)
+  // Cash Collection Summary
+  const [showCashCollection, setShowCashCollection] = useState(false)
+  const [cashCollectionDate, setCashCollectionDate] = useState(today)
+  // Production Release Form
+  const [showReleaseForm, setShowReleaseForm] = useState(false)
+  const [releaseFormDate, setReleaseFormDate] = useState(today)
   const [bankDeposits, setBankDeposits] = useState([])
   const [showDepositForm, setShowDepositForm] = useState(false)
   const [depositForm, setDepositForm] = useState({ deposit_date:today, deposit_slip_number:'', bank_name:'BDO', amount:'', notes:'' })
@@ -2475,6 +2490,193 @@ export default function App() {
     const { data } = await supabase.from('suspicious_alerts').select('*').order('created_at',{ascending:false}).limit(20)
     setSuspiciousAlerts(data||[])
   }
+  // ── Driver Return Form ────────────────────────────────────────────────────
+  function initDriverReturn(invoice) {
+    const items = (invoice.delivery_invoice_items||[]).map(i=>({
+      variant_id: i.variant_id, variant_name: i.variant_name,
+      delivered_qty: Number(i.quantity||0), returned_qty: '', reseller_price: Number(i.reseller_price||0)
+    }))
+    setDriverReturnItems(items)
+    setShowDriverReturnForm(invoice)
+  }
+  async function saveDriverReturn() {
+    const invoice = showDriverReturnForm
+    if (!invoice) return
+    const validItems = driverReturnItems.filter(i=>Number(i.returned_qty)>0)
+    setSavingDriverReturn(true)
+    try {
+      const totalCredit = validItems.reduce((s,i)=>s+Number(i.returned_qty)*i.reseller_price,0)
+      // Save return record
+      const { data:ret, error:retErr } = await supabase.from('reseller_returns').insert({
+        invoice_id:invoice.id, reseller_id:invoice.reseller_id, reseller_name:invoice.reseller_name,
+        return_date:today, total_returned_amount:totalCredit, recorded_by:adminRole, notes:'Driver return'
+      }).select().single()
+      if (retErr) throw retErr
+      if (validItems.length > 0) {
+        await supabase.from('reseller_return_items').insert(validItems.map(i=>({
+          return_id:ret.id, variant_id:i.variant_id, variant_name:i.variant_name,
+          returned_quantity:Number(i.returned_qty), reseller_price:i.reseller_price,
+          total_credit:Number(i.returned_qty)*i.reseller_price
+        })))
+      }
+      // Adjust invoice total
+      const newTotal = Math.max(0, Number(invoice.total_amount||0) - totalCredit)
+      await supabase.from('delivery_invoices').update({
+        total_amount:newTotal, status:'delivered',
+        notes:(invoice.notes?invoice.notes+' | ':'')+'Driver returns: '+today
+      }).eq('id', invoice.id)
+      // Check vs reseller portal returns for discrepancy
+      const { data:resellerReturn } = await supabase.from('reseller_returns').select('*, reseller_return_items(*)').eq('invoice_id', invoice.id).neq('id', ret.id).maybeSingle()
+      if (resellerReturn) {
+        const driverTotal = validItems.reduce((s,i)=>s+Number(i.returned_qty||0),0)
+        const resellerTotal = (resellerReturn.reseller_return_items||[]).reduce((s,i)=>s+Number(i.returned_quantity||0),0)
+        if (Math.abs(driverTotal-resellerTotal)>0) {
+          await supabase.from('suspicious_alerts').insert({ alert_type:'return_discrepancy', severity:'high', description:`Return discrepancy for ${invoice.reseller_name} — Invoice ${invoice.invoice_number}. Driver reported ${driverTotal} pcs returned, Reseller reported ${resellerTotal} pcs.`, related_to:invoice.reseller_name })
+          await createNotification(null,'System','alert','🚨 Return Discrepancy Alert',`${invoice.reseller_name}: Driver says ${driverTotal} pcs returned, Reseller portal says ${resellerTotal} pcs. Please verify!`)
+          showToast(`⚠️ Returns saved but DISCREPANCY detected vs reseller portal! Check alerts.`)
+        } else { showToast(`✅ Returns saved! Credit: ${php(totalCredit)}. Matches reseller count ✅`) }
+      } else { showToast(`✅ Returns saved! Credit: ${php(totalCredit)}`) }
+      await logAudit('DRIVER RETURNS', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${validItems.length} variants, credit: ${php(totalCredit)}`)
+      setShowDriverReturnForm(null); setDriverReturnItems([])
+      loadDeliveryInvoices()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingDriverReturn(false)
+  }
+
+  // ── Print Production Release Form ────────────────────────────────────────
+  function printProductionReleaseForm(report) {
+    const pw = window.open('','_blank','width=700,height=600')
+    const items = (report.production_report_items||[]).filter(i=>i.actual_qty>0)
+    const totalPieces = items.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+    pw.document.write(`<!DOCTYPE html><html><head><title>Production Release Form</title>
+    <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;font-size:10px;width:150mm;}
+    @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
+    .wrap{padding:6mm;}h1{font-size:13px;color:#ca1b1b;}
+    table{width:100%;border-collapse:collapse;margin:8px 0;}th{background:#ca1b1b;color:white;padding:5px 6px;font-size:9px;text-align:left;}
+    td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+    .sig{border-top:1px solid #000;margin-top:30px;padding-top:4px;font-size:8px;text-align:center;}
+    .total{background:#fff9e6;font-weight:bold;}
+    </style></head><body><div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
+      <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">PRODUCTION RELEASE FORM</div></div>
+      <div style="text-align:right;font-size:8px;"><div>Production Date: <strong>${report.report_date}</strong></div><div>Delivery Date: <strong>${report.delivery_date}</strong></div></div>
+    </div>
+    <table>
+      <tr><th>Variant</th><th style="text-align:right">Forecast</th><th style="text-align:right">Produced</th><th style="text-align:right">Variance</th></tr>
+      ${items.map(i=>`<tr><td><strong>${i.variant_name}</strong></td><td style="text-align:right">${i.forecast_qty}</td><td style="text-align:right;font-weight:bold">${i.actual_qty}</td><td style="text-align:right;color:${i.variance!==0?'#ca1b1b':'#2d8a4e'}">${i.variance>0?'+':''}${i.variance}</td></tr>`).join('')}
+      <tr class="total"><td>TOTAL</td><td style="text-align:right">${report.total_forecast}</td><td style="text-align:right">${report.total_produced}</td><td style="text-align:right;color:${report.variance!==0?'#ca1b1b':'#2d8a4e'}">${report.variance>0?'+':''}${report.variance}</td></tr>
+    </table>
+    ${report.variance_reason?`<div style="background:#fff3cd;padding:6px;border-radius:4px;font-size:8px;margin-bottom:8px;"><strong>Variance Reason:</strong> ${report.variance_reason}</div>`:''}
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:16px;">
+      <div class="sig">Produced by<br/><br/>${report.submitted_by||'_______________'}</div>
+      <div class="sig">Released by<br/><br/>_______________</div>
+      <div class="sig">Received by (Driver)<br/><br/>_______________</div>
+    </div>
+    <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;cursor:pointer;">🖨️ PRINT</button></div>
+    </div></body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
+  }
+
+  // ── Print Return Form ─────────────────────────────────────────────────────
+  function printReturnForm(invoice, returns) {
+    const pw = window.open('','_blank','width=700,height=600')
+    const items = invoice.delivery_invoice_items||[]
+    const returnMap = {}
+    ;(returns||[]).forEach(r=>{ returnMap[r.variant_name]=Number(r.returned_quantity||0) })
+    pw.document.write(`<!DOCTYPE html><html><head><title>Return Form</title>
+    <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;font-size:10px;width:150mm;}
+    @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
+    .wrap{padding:6mm;}h1{font-size:13px;color:#ca1b1b;}
+    table{width:100%;border-collapse:collapse;margin:8px 0;}th{background:#1a1a2e;color:white;padding:5px 6px;font-size:9px;text-align:left;}
+    td{padding:5px 6px;border-bottom:1px solid #eee;font-size:9px;}
+    .sig{border-top:1px solid #000;margin-top:28px;padding-top:4px;font-size:8px;text-align:center;}
+    .total{background:#fff9e6;font-weight:bold;}
+    </style></head><body><div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
+      <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">UNSOLD RETURN FORM</div></div>
+      <div style="text-align:right;font-size:8px;"><div>Date: <strong>${today}</strong></div><div>Invoice: <strong>${invoice.invoice_number}</strong></div></div>
+    </div>
+    <div style="font-size:9px;margin-bottom:8px;"><strong>Reseller:</strong> ${invoice.reseller_name} &nbsp;&nbsp; <strong>Area:</strong> ${invoice.reseller_area||'___'}</div>
+    <table>
+      <tr><th>Variant</th><th style="text-align:right">Delivered</th><th style="text-align:right">Returned</th><th style="text-align:right">Sold</th><th style="text-align:right">Amount</th></tr>
+      ${items.map(i=>{
+        const ret=returnMap[i.variant_name]||0
+        const sold=Number(i.quantity||0)-ret
+        const amt=sold*Number(i.reseller_price||0)
+        return `<tr><td><strong>${i.variant_name}</strong></td><td style="text-align:right">${i.quantity}</td><td style="text-align:right;color:#ca1b1b;font-weight:bold">${ret||'___'}</td><td style="text-align:right;color:#2d8a4e">${sold}</td><td style="text-align:right">${amt>0?'₱'+amt.toFixed(2):'___'}</td></tr>`
+      }).join('')}
+      <tr class="total"><td>TOTAL</td><td style="text-align:right">${items.reduce((s,i)=>s+Number(i.quantity||0),0)}</td><td style="text-align:right;color:#ca1b1b">${Object.values(returnMap).reduce((s,v)=>s+v,0)||'___'}</td><td style="text-align:right">${items.reduce((s,i)=>s+Number(i.quantity||0),0)-Object.values(returnMap).reduce((s,v)=>s+v,0)}</td><td style="text-align:right">₱${(Number(invoice.total_amount||0)).toFixed(2)}</td></tr>
+    </table>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;">
+      <div class="sig">Driver / Assistant<br/><br/>_______________</div>
+      <div class="sig">Reseller Signature<br/><br/>_______________</div>
+    </div>
+    <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#1a1a2e;color:white;border:none;border-radius:6px;cursor:pointer;">🖨️ PRINT</button></div>
+    </div></body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
+  }
+
+  // ── Print Cash Collection Summary ─────────────────────────────────────────
+  function printCashCollection(date) {
+    const dayInvoices = deliveryInvoices.filter(i=>i.delivery_date===date||i.paid_date===date)
+    const pw = window.open('','_blank','width=700,height=600')
+    const totalCollected = dayInvoices.reduce((s,i)=>s+Number(i.paid_amount||0),0)
+    const totalReturns = dayInvoices.reduce((s,i)=>s+Math.max(0,(Number(i.original_amount||i.total_amount||0))-Number(i.total_amount||0)),0)
+    const totalNet = dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
+    pw.document.write(`<!DOCTYPE html><html><head><title>Cash Collection</title>
+    <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;font-size:10px;width:150mm;}
+    @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
+    .wrap{padding:6mm;}h1{font-size:13px;color:#ca1b1b;}
+    table{width:100%;border-collapse:collapse;margin:8px 0;}th{background:#2d8a4e;color:white;padding:5px 6px;font-size:9px;text-align:left;}
+    td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+    .total{background:#fff9e6;font-weight:bold;border-top:2px solid #ca1b1b;}
+    .sig{border-top:1px solid #000;margin-top:28px;padding-top:4px;font-size:8px;text-align:center;}
+    </style></head><body><div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
+      <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">DAILY CASH COLLECTION SUMMARY</div></div>
+      <div style="text-align:right;font-size:8px;"><strong>${date}</strong></div>
+    </div>
+    <table>
+      <tr><th>Reseller</th><th style="text-align:right">Invoice</th><th style="text-align:right">Returns</th><th style="text-align:right">Net Due</th><th style="text-align:right">Collected</th><th style="text-align:right">Balance</th><th>Mode</th></tr>
+      ${dayInvoices.map(i=>{
+        const orig = Number(i.original_amount||i.total_amount||0)
+        const ret = Math.max(0,orig-Number(i.total_amount||0))
+        const net = Number(i.total_amount||0)
+        const collected = Number(i.paid_amount||0)
+        const balance = net-collected
+        return `<tr><td><strong>${i.reseller_name}</strong></td><td style="text-align:right">₱${orig.toFixed(2)}</td><td style="text-align:right;color:#ca1b1b">${ret>0?'₱'+ret.toFixed(2):'—'}</td><td style="text-align:right;font-weight:bold">₱${net.toFixed(2)}</td><td style="text-align:right;color:#2d8a4e;font-weight:bold">${collected>0?'₱'+collected.toFixed(2):'___'}</td><td style="text-align:right;color:${balance>0?'#ca1b1b':'#2d8a4e'}">${balance>0?'₱'+balance.toFixed(2):'✅'}</td><td>${i.payment_method||'Cash'}</td></tr>`
+      }).join('')}
+      <tr class="total"><td>TOTAL</td><td style="text-align:right">₱${dayInvoices.reduce((s,i)=>s+Number(i.original_amount||i.total_amount||0),0).toFixed(2)}</td><td style="text-align:right">₱${totalReturns.toFixed(2)}</td><td style="text-align:right">₱${totalNet.toFixed(2)}</td><td style="text-align:right;color:#2d8a4e">₱${totalCollected.toFixed(2)}</td><td style="text-align:right;color:${totalNet-totalCollected>0?'#ca1b1b':'#2d8a4e'}">₱${(totalNet-totalCollected).toFixed(2)}</td><td></td></tr>
+    </table>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;">
+      <div class="sig">Prepared by (Admin)<br/><br/>_______________</div>
+      <div class="sig">Checked by (Owner)<br/><br/>_______________</div>
+    </div>
+    <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#2d8a4e;color:white;border:none;border-radius:6px;cursor:pointer;">🖨️ PRINT</button></div>
+    </div></body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
+  }
+
+  // ── Record Payment with Partial Support ───────────────────────────────────
+  async function recordPaymentNew(inv) {
+    const amount = Number(paymentAmount[inv.id]||0)
+    if (!amount || amount<=0) { showToast('❌ Enter payment amount.','red'); return }
+    const method = paymentMethod[inv.id]||'Cash'
+    const notes = paymentNotes[inv.id]||''
+    const totalDue = Number(inv.total_amount||0)
+    const alreadyPaid = Number(inv.paid_amount||0)
+    const newPaidTotal = alreadyPaid + amount
+    const balance = totalDue - newPaidTotal
+    const newStatus = balance<=0?'paid':'partial'
+    await supabase.from('reseller_payments').insert({ reseller_id:inv.reseller_id, reseller_name:inv.reseller_name, invoice_id:inv.id, amount, payment_date:today, payment_method:method, notes:notes||null, recorded_by:adminRole })
+    await supabase.from('delivery_invoices').update({ paid_amount:newPaidTotal, paid_date:newStatus==='paid'?today:null, status:newStatus, payment_method:method }).eq('id',inv.id)
+    await logAudit('PAYMENT RECORDED', adminRole, inv.reseller_name, `${inv.invoice_number} — ${php(amount)} via ${method}. Status: ${newStatus}. Balance: ${php(Math.max(0,balance))}`)
+    showToast(newStatus==='paid'?`✅ ${inv.reseller_name} — Fully paid! ${php(newPaidTotal)}`:`💰 ${php(amount)} recorded. Outstanding balance: ${php(Math.max(0,balance))}`)
+    setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
+    setPaymentAmount(p=>({...p,[inv.id]:''}))
+    loadDeliveryInvoices()
+  }
+
   async function loadCashReconciliations() {
     const { data } = await supabase.from('cash_reconciliations').select('*').order('reconciliation_date', { ascending:false }).limit(30)
     setCashReconciliations(data||[])
@@ -2533,6 +2735,176 @@ export default function App() {
     setReturnItems(p=>({...p,[invoice.id]:items}))
     setShowReturnForm(p=>({...p,[invoice.id]:true}))
   }
+  // ── Mark Invoice as Delivered ─────────────────────────────────────────────
+  async function markAsDelivered(inv) {
+    setMarkingDelivered(p=>({...p,[inv.id]:true}))
+    const { error } = await supabase.from('delivery_invoices').update({ status:'delivered', delivered_at:new Date().toISOString() }).eq('id', inv.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); setMarkingDelivered(p=>({...p,[inv.id]:false})); return }
+    await logAudit('INVOICE DELIVERED', adminRole, inv.reseller_name, `${inv.invoice_number} marked as delivered`)
+    showToast(`✅ ${inv.invoice_number} marked as delivered!`)
+    setMarkingDelivered(p=>({...p,[inv.id]:false}))
+    loadDeliveryInvoices()
+  }
+
+  // ── Record Payment (with partial support) ────────────────────────────────
+  async function recordInvoicePayment(inv) {
+    const amt = Number(paymentAmount[inv.id]||0)
+    if (!amt || amt<=0) { showToast('❌ Enter payment amount.','red'); return }
+    const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
+    if (amt > balance) { showToast(`❌ Amount exceeds balance of ${php(balance)}.`,'red'); return }
+    const newPaid = Number(inv.paid_amount||0) + amt
+    const newStatus = newPaid >= Number(inv.total_amount||0) ? 'paid' : 'partial'
+    const { error } = await supabase.from('delivery_invoices').update({ paid_amount:newPaid, status:newStatus, paid_date:newStatus==='paid'?today:inv.paid_date }).eq('id', inv.id)
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    await supabase.from('reseller_payments').insert({ reseller_id:inv.reseller_id, reseller_name:inv.reseller_name, invoice_id:inv.id, amount:amt, payment_date:today, payment_method:paymentMethod[inv.id]||'Cash', notes:paymentNotes[inv.id]||null, recorded_by:adminRole })
+    await logAudit('PAYMENT RECORDED', adminRole, inv.reseller_name, `${inv.invoice_number} — ${php(amt)} via ${paymentMethod[inv.id]||'Cash'} — Status: ${newStatus}`)
+    showToast(newStatus==='paid'?`✅ ${inv.reseller_name} — FULLY PAID!`:`✅ Partial payment recorded. Balance: ${php(Number(inv.total_amount||0)-newPaid)}`)
+    setPaymentAmount(p=>({...p,[inv.id]:''}))
+    setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
+    loadDeliveryInvoices()
+    // Check suspicious pattern
+    setTimeout(()=>checkSuspiciousPatterns(),1000)
+  }
+
+  // ── Cross-check Returns (Driver vs Reseller Portal) ───────────────────────
+  async function crossCheckReturns(inv) {
+    const { data:driverReturns } = await supabase.from('reseller_returns').select('*, reseller_return_items(*)').eq('invoice_id', inv.id).single()
+    const { data:portalReturns } = await supabase.from('reseller_disputes').select('*').eq('invoice_id', inv.id).eq('dispute_type','Quantity mismatch').single()
+    if (!driverReturns) return
+    const driverTotal = (driverReturns.reseller_return_items||[]).reduce((s,i)=>s+Number(i.returned_quantity||0),0)
+    // If reseller confirmed different return qty → alert
+    if (portalReturns) {
+      await supabase.from('suspicious_alerts').insert({ alert_type:'returns_mismatch', severity:'high', description:`Returns mismatch for ${inv.reseller_name} — ${inv.invoice_number}. Driver recorded ${driverTotal} pieces returned but reseller reported discrepancy.`, related_to:inv.reseller_name })
+      await createNotification(null,'System','alert','🚨 Returns Mismatch Alert',`${inv.reseller_name}: Driver returns vs reseller portal returns don't match on invoice ${inv.invoice_number}`)
+    }
+  }
+
+  // ── Print Return Form (half A4) ───────────────────────────────────────────
+  function printReturnForm(inv) {
+    const items = inv.delivery_invoice_items || []
+    const pw = window.open('','_blank','width=700,height=900')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Return Form</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box;}
+      body{font-family:Arial,sans-serif;font-size:10px;width:148mm;background:white;}
+      @media print{@page{size:148mm 210mm;margin:5mm;}html,body{width:148mm;}.no-print{display:none!important;}}
+      .wrap{padding:5mm 6mm;}
+      h1{font-size:13px;color:#ca1b1b;margin-bottom:2px;}
+      table{width:100%;border-collapse:collapse;margin-top:8px;}
+      th{background:#ca1b1b;color:white;padding:4px 6px;font-size:9px;text-align:left;}
+      td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+      .sig{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+      .sig-box{text-align:center;}
+      .sig-line{border-top:1px solid #000;margin-top:24px;padding-top:3px;font-size:8px;}
+    </style></head><body><div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
+      <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">RETURN FORM</div></div>
+      <div style="text-align:right;font-size:8px;">
+        <div><strong>Invoice:</strong> ${inv.invoice_number}</div>
+        <div><strong>Reseller:</strong> ${inv.reseller_name}</div>
+        <div><strong>Delivery Date:</strong> ${inv.delivery_date}</div>
+        <div><strong>Return Date:</strong> ${today}</div>
+      </div>
+    </div>
+    <table>
+      <tr><th>Variant</th><th style="text-align:right;">Delivered</th><th style="text-align:center;width:60px;">Returned Qty</th><th style="text-align:center;width:50px;">Remarks</th></tr>
+      ${items.map(i=>`<tr><td><strong>${i.variant_name}</strong></td><td style="text-align:right;">${i.quantity}</td><td style="text-align:center;border:1px solid #ccc;">&nbsp;</td><td style="text-align:center;border:1px solid #ccc;">&nbsp;</td></tr>`).join('')}
+      <tr style="background:#f9f9f9;font-weight:bold;"><td>TOTAL</td><td style="text-align:right;">${items.reduce((s,i)=>s+Number(i.quantity||0),0)} pcs</td><td style="text-align:center;border:1px solid #ccc;">&nbsp;</td><td></td></tr>
+    </table>
+    <div class="sig">
+      <div class="sig-box"><div class="sig-line">Driver / Delivery Personnel</div></div>
+      <div class="sig-box"><div class="sig-line">Reseller / Outlet Representative</div></div>
+    </div>
+    <div style="margin-top:10px;border-top:1px solid #eee;padding-top:6px;">
+      <div style="font-size:8px;color:#888;">Received by Admin: _____________________ Date: _________</div>
+    </div>
+    <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">🖨️ Print Return Form</button></div>
+    </div></body></html>`)
+    pw.document.close(); setTimeout(()=>pw.print(),600)
+  }
+
+  // ── Print Daily Cash Collection Summary ───────────────────────────────────
+  function printDailyCashSummary(date) {
+    const dayInvoices = deliveryInvoices.filter(i=>i.delivery_date===date||i.paid_date===date)
+    const walkin = dailySales.filter(s=>s.sale_date===date).reduce((s,d)=>s+Number(d.total_amount||0),0)
+    const totalCash = dayInvoices.reduce((s,i)=>s+Number(i.paid_amount||0),0) + walkin
+    const pw = window.open('','_blank','width=700,height=900')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Cash Collection</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box;}
+      body{font-family:Arial,sans-serif;font-size:10px;width:148mm;}
+      @media print{@page{size:148mm 210mm;margin:5mm;}html,body{width:148mm;}.no-print{display:none!important;}}
+      .wrap{padding:5mm 6mm;}
+      h1{font-size:13px;color:#ca1b1b;}
+      table{width:100%;border-collapse:collapse;margin-top:8px;}
+      th{background:#1a1a2e;color:white;padding:4px 6px;font-size:9px;}
+      td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+      .total-row{background:#fff9e6;font-weight:bold;border-top:2px solid #ca1b1b;}
+    </style></head><body><div class="wrap">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
+      <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">DAILY CASH COLLECTION SUMMARY</div></div>
+      <div style="text-align:right;font-size:8px;"><div><strong>Date:</strong> ${date}</div><div><strong>Prepared:</strong> ${today}</div></div>
+    </div>
+    <table>
+      <tr><th>Reseller</th><th style="text-align:right;">Invoice</th><th style="text-align:right;">Returns</th><th style="text-align:right;">Net Payable</th><th style="text-align:right;">Received</th><th style="text-align:right;">Balance</th><th>Mode</th></tr>
+      ${dayInvoices.map(inv=>{
+        const ret = Number(inv.returns_amount||0)
+        const net = Number(inv.total_amount||0)
+        const recv = Number(inv.paid_amount||0)
+        const bal = net - recv
+        return `<tr><td><strong>${inv.reseller_name}</strong></td><td style="text-align:right;">${php(Number(inv.total_amount||0)+ret)}</td><td style="text-align:right;color:#f57c00;">${ret>0?'-'+php(ret):'—'}</td><td style="text-align:right;">${php(net)}</td><td style="text-align:right;color:${recv>0?'#2d8a4e':'#ca1b1b'};font-weight:bold;">${recv>0?php(recv):'—'}</td><td style="text-align:right;color:${bal>0?'#ca1b1b':'#2d8a4e'};">${bal>0?php(bal):'✅'}</td><td style="font-size:8px;">${inv.status==='paid'?'PAID':inv.status?.toUpperCase()}</td></tr>`
+      }).join('')}
+      ${walkin>0?`<tr><td><strong>Walk-in Sales</strong></td><td style="text-align:right;">—</td><td style="text-align:right;">—</td><td style="text-align:right;">${php(walkin)}</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">${php(walkin)}</td><td style="text-align:right;">✅</td><td style="font-size:8px;">CASH</td></tr>`:''}
+      <tr class="total-row"><td>TOTAL COLLECTED</td><td colspan="3"></td><td style="text-align:right;color:#ca1b1b;font-size:13px;">${php(totalCash)}</td><td style="text-align:right;color:#ca1b1b;">${php(dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0))}</td><td></td></tr>
+    </table>
+    <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="text-align:center;"><div style="border-top:1px solid #000;margin-top:24px;padding-top:3px;font-size:8px;">Prepared by / Admin</div></div>
+      <div style="text-align:center;"><div style="border-top:1px solid #000;margin-top:24px;padding-top:3px;font-size:8px;">Verified by / Owner</div></div>
+    </div>
+    <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#1a1a2e;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">🖨️ Print Cash Summary</button></div>
+    </div></body></html>`)
+    pw.document.close(); setTimeout(()=>pw.print(),600)
+  }
+
+  // ── Print Production Release Form ─────────────────────────────────────────
+  function printProductionReleaseForm(report) {
+    const items = report.production_report_items || []
+    const pw = window.open('','_blank','width=700,height=900')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Production Release</title>
+    <style>
+      *{margin:0;padding:0;box-sizing:border-box;}
+      body{font-family:Arial,sans-serif;font-size:10px;width:148mm;}
+      @media print{@page{size:148mm 210mm;margin:5mm;}html,body{width:148mm;}.no-print{display:none!important;}}
+      .wrap{padding:5mm 6mm;}
+      h1{font-size:13px;color:#ca1b1b;}
+      table{width:100%;border-collapse:collapse;margin-top:8px;}
+      th{background:#ca1b1b;color:white;padding:4px 6px;font-size:9px;}
+      td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+      .sig{margin-top:14px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}
+      .sig-box{text-align:center;}
+      .sig-line{border-top:1px solid #000;margin-top:24px;padding-top:3px;font-size:8px;}
+    </style></head><body><div class="wrap">
+    <div style="display:flex;justify-content:space-between;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
+      <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">PRODUCTION RELEASE FORM</div></div>
+      <div style="text-align:right;font-size:8px;">
+        <div><strong>Production Date:</strong> ${report.report_date}</div>
+        <div><strong>Delivery Date:</strong> ${report.delivery_date}</div>
+      </div>
+    </div>
+    <table>
+      <tr><th>Variant</th><th style="text-align:right;">Forecast</th><th style="text-align:right;">Actual Produced</th><th style="text-align:right;">Released</th></tr>
+      ${items.map(i=>`<tr><td><strong>${i.variant_name}</strong></td><td style="text-align:right;">${i.forecast_qty}</td><td style="text-align:right;font-weight:bold;">${i.actual_qty}</td><td style="text-align:right;border:1px solid #ccc;min-width:40px;">&nbsp;</td></tr>`).join('')}
+      <tr style="background:#fff9e6;font-weight:bold;border-top:2px solid #ca1b1b;"><td>TOTAL</td><td style="text-align:right;">${items.reduce((s,i)=>s+Number(i.forecast_qty||0),0)}</td><td style="text-align:right;">${items.reduce((s,i)=>s+Number(i.actual_qty||0),0)}</td><td style="text-align:right;border:1px solid #ccc;">&nbsp;</td></tr>
+    </table>
+    <div class="sig">
+      <div class="sig-box"><div class="sig-line">Baker / Produced by</div></div>
+      <div class="sig-box"><div class="sig-line">Supervisor / Released by</div></div>
+      <div class="sig-box"><div class="sig-line">Driver / Received by</div></div>
+    </div>
+    <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;">🖨️ Print</button></div>
+    </div></body></html>`)
+    pw.document.close(); setTimeout(()=>pw.print(),600)
+  }
   async function saveReturn(invoice) {
     const items = returnItems[invoice.id]||[]
     const validItems = items.filter(i=>Number(i.returned_qty)>0)
@@ -2553,11 +2925,13 @@ export default function App() {
         returned_quantity:Number(i.returned_qty), reseller_price:i.reseller_price,
         total_credit:Number(i.returned_qty)*i.reseller_price
       })))
-      // Adjust invoice total
       const newTotal = Math.max(0, Number(invoice.total_amount||0) - totalCredit)
-      await supabase.from('delivery_invoices').update({ total_amount:newTotal, notes:(invoice.notes?invoice.notes+' | ':'')+'Returns recorded: '+today }).eq('id', invoice.id)
-      await logAudit('RETURNS RECORDED', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${validItems.length} variants, credit: ${php(totalCredit)}`)
-      showToast(`✅ Returns saved! Credit: ${php(totalCredit)} deducted from invoice.`)
+      const totalReturned = validItems.reduce((s,i)=>s+Number(i.returned_qty),0)
+      await supabase.from('delivery_invoices').update({ total_amount:newTotal, returns_amount:totalCredit, returns_qty:totalReturned, notes:(invoice.notes?invoice.notes+' | ':'')+'Returns: '+today }).eq('id', invoice.id)
+      await logAudit('RETURNS RECORDED', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${validItems.length} variants, ${totalReturned} pcs, credit: ${php(totalCredit)}`)
+      // Cross-check with reseller portal
+      await crossCheckReturns({...invoice, total_amount:newTotal})
+      showToast(`✅ Returns saved! ${totalReturned} pcs. Credit: ${php(totalCredit)} deducted.`)
       setShowReturnForm(p=>({...p,[invoice.id]:false}))
       loadDeliveryInvoices()
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
@@ -7510,7 +7884,6 @@ export default function App() {
                   </div>
                 )}
               </div>
-            </div>
             )}
 
             {/* COSTING — OWNER ONLY */}
@@ -8613,64 +8986,88 @@ export default function App() {
                               ))}
                             </div>
                           )}
-                          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'8px' }}>
+                          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
                             <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}>🖨️ PRINT</button>
                             <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setViewingInvoice(inv)}>👁️ VIEW</button>
-                            {inv.status!=='paid' && (
+                            {inv.status==='unpaid' && (
+                              <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#4a90d9' }} onClick={()=>markAsDelivered(inv)} disabled={markingDelivered[inv.id]}>🚚 {markingDelivered[inv.id]?'Saving...':'MARK DELIVERED'}</button>
+                            )}
+                            {inv.status==='unpaid' && (
                               <button style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingInvoice({...inv}); setEditInvoiceItems((inv.delivery_invoice_items||[]).map(i=>({...i}))) }}>✏️ EDIT</button>
                             )}
-                            {inv.status!=='paid' && (
-                              <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowPaymentForm(p=>({...p,[inv.id]:!p[inv.id]}))}>💵 RECORD PAYMENT</button>
+                            {(inv.status==='delivered'||inv.status==='partial') && (
+                              <button style={{ ...btnRed, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>initDriverReturn(inv)}>🔄 RECORD RETURNS</button>
+                            )}
+                            {inv.status!=='paid' && inv.status!=='unpaid' && (
+                              <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowPaymentFormMap(p=>({...p,[inv.id]:!p[inv.id]}))}>💵 RECORD PAYMENT</button>
+                            )}
+                            {inv.status!=='unpaid' && (
+                              <button style={{ ...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv,[])}>🖨️ RETURN FORM</button>
                             )}
                             {['owner','manager','payroll','hr'].includes(adminRole) && (
                               <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>deleteInvoice(inv)}>🗑️ DELETE</button>
                             )}
-                            {inv.status!=='unpaid' && (
-                              <button style={{ ...btnGray, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>initReturnForm(inv)}>🔄 RETURNS</button>
-                            )}
                           </div>
-                          {/* Returns Form */}
-                          {showReturnForm[inv.id] && (
+
+                          {/* Driver Return Form */}
+                          {showDriverReturnForm?.id===inv.id && (
                             <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginTop:'10px' }}>
                               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
-                                <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:0 }}>🔄 Record Unsold Returns — {inv.reseller_name}</p>
-                                <button onClick={()=>setShowReturnForm(p=>({...p,[inv.id]:false}))} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'14px', color:'#888' }}>✕</button>
+                                <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:0 }}>🔄 Driver Returns — {inv.reseller_name}</p>
+                                <button onClick={()=>setShowDriverReturnForm(null)} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'14px', color:'#888' }}>✕</button>
                               </div>
-                              <p style={{ color:'#888', fontSize:'11px', margin:'0 0 10px' }}>Enter quantities that were returned unsold. Invoice total will be adjusted.</p>
-                              <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', gap:'6px', marginBottom:'4px', padding:'4px 8px', background:'#f5a623', borderRadius:'6px' }}>
-                                {['Variant','Delivered','Returned','Credit'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', textAlign:h==='Variant'?'left':'center' }}>{h}</span>)}
-                              </div>
-                              {(returnItems[inv.id]||[]).map((item,i)=>(
-                                <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', gap:'6px', marginBottom:'6px', alignItems:'center', padding:'4px 8px', background:i%2===0?'white':'#fafafa', borderRadius:'6px', border:'1px solid #f0e0d0' }}>
-                                  <span style={{ fontSize:'11px', fontWeight:'bold' }}>{item.variant_name}</span>
-                                  <span style={{ textAlign:'center', fontSize:'11px', color:'#555' }}>{item.delivered_qty}</span>
-                                  <input type="number" placeholder="0" min="0" max={item.delivered_qty} value={item.returned_qty||''} onChange={e=>{ const upd=[...(returnItems[inv.id]||[])]; upd[i]={...upd[i],returned_qty:e.target.value}; setReturnItems(p=>({...p,[inv.id]:upd})) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'center', padding:'4px' }} />
-                                  <span style={{ textAlign:'center', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{Number(item.returned_qty||0)>0?php(Number(item.returned_qty)*item.reseller_price):'—'}</span>
+                              <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', marginBottom:'10px' }}>
+                                <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#f5a623', padding:'6px 10px' }}>
+                                  {['Variant','Delivered','Returned','Credit'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', textAlign:h==='Variant'?'left':'right' }}>{h}</span>)}
                                 </div>
-                              ))}
-                              {(returnItems[inv.id]||[]).some(i=>Number(i.returned_qty)>0) && (
-                                <div style={{ background:'#fff3cd', borderRadius:'8px', padding:'8px 12px', margin:'8px 0', display:'flex', justifyContent:'space-between' }}>
-                                  <span style={{ fontSize:'12px', color:'#856404', fontWeight:'bold' }}>Total Credit:</span>
-                                  <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>{php((returnItems[inv.id]||[]).reduce((s,i)=>s+Number(i.returned_qty||0)*i.reseller_price,0))}</span>
+                                {driverReturnItems.map((item,i)=>(
+                                  <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'6px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center', gap:'4px' }}>
+                                    <span style={{ fontSize:'11px', fontWeight:'bold' }}>{item.variant_name}</span>
+                                    <span style={{ textAlign:'right', fontSize:'11px', color:'#555' }}>{item.delivered_qty}</span>
+                                    <input type="number" min="0" max={item.delivered_qty} placeholder="0" value={item.returned_qty||''} onChange={e=>{ const upd=[...driverReturnItems]; upd[i]={...upd[i],returned_qty:e.target.value}; setDriverReturnItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px', padding:'4px 6px', textAlign:'center', border:'1.5px solid #f5a623' }} />
+                                    <span style={{ textAlign:'right', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{Number(item.returned_qty||0)>0?php(Number(item.returned_qty)*item.reseller_price):'—'}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              {driverReturnItems.some(i=>Number(i.returned_qty)>0) && (
+                                <div style={{ background:'#fff3cd', borderRadius:'8px', padding:'8px 12px', marginBottom:'10px', display:'flex', justifyContent:'space-between' }}>
+                                  <span style={{ fontWeight:'bold', color:'#856404', fontSize:'12px' }}>Total Returns Credit:</span>
+                                  <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px' }}>{php(driverReturnItems.reduce((s,i)=>s+Number(i.returned_qty||0)*i.reseller_price,0))}</span>
                                 </div>
                               )}
-                              <button style={{ ...btnRed, opacity:savingReturn?0.6:1 }} disabled={savingReturn} onClick={()=>saveReturn(inv)}>{savingReturn?'⏳ Saving...':'✅ CONFIRM RETURNS'}</button>
+                              <button style={{ ...btnRed, background:'#f5a623', opacity:savingDriverReturn?0.6:1 }} disabled={savingDriverReturn} onClick={saveDriverReturn}>{savingDriverReturn?'⏳ Saving...':'✅ CONFIRM RETURNS'}</button>
                             </div>
                           )}
-                          {showPaymentForm[inv.id] && (
-                            <div style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'10px', padding:'12px', marginTop:'10px' }}>
-                              <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'12px', margin:'0 0 8px' }}>Record Payment — Balance: {php(balance)}</p>
-                              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-                                <div><label style={lblS}>Amount (₱):</label><input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="1" max={balance} placeholder={`Max: ${php(balance)}`} /></div>
-                                <div><label style={lblS}>Payment Date:</label><input type="date" value={paymentDate[inv.id]||today} onChange={e=>setPaymentDate(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+
+                          {/* Payment Form */}
+                          {showPaymentFormMap[inv.id] && (
+                            <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'12px', padding:'14px', marginTop:'10px' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+                                <div>
+                                  <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 2px' }}>💵 Record Payment — {inv.reseller_name}</p>
+                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Invoice: {php(inv.total_amount)} | Paid: {php(inv.paid_amount||0)} | <strong>Balance: {php(balance)}</strong></p>
+                                </div>
+                                <button onClick={()=>setShowPaymentFormMap(p=>({...p,[inv.id]:false}))} style={{ background:'none', border:'none', cursor:'pointer', fontSize:'14px', color:'#888' }}>✕</button>
+                              </div>
+                              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'8px' }}>
+                                <div><label style={lblS}>Amount Received (₱):</label>
+                                  <input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0, border:'2px solid #FDD412', fontWeight:'bold', fontSize:'15px' }} min="1" placeholder={`Balance: ${php(balance)}`} />
+                                </div>
                                 <div><label style={lblS}>Payment Method:</label>
                                   <select value={paymentMethod[inv.id]||'Cash'} onChange={e=>setPaymentMethod(p=>({...p,[inv.id]:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
-                                    {PAYMENT_METHODS.map(m=><option key={m} value={m}>{m}</option>)}
+                                    {['Cash','GCash','Bank Transfer','Maya','Check'].map(m=><option key={m}>{m}</option>)}
                                   </select>
                                 </div>
-                                <div><label style={lblS}>Notes:</label><input type="text" value={paymentNote[inv.id]||''} onChange={e=>setPaymentNote(p=>({...p,[inv.id]:e.target.value}))} placeholder="Reference number, etc." style={{ ...inputStyle, marginBottom:0 }} /></div>
+                                <div><label style={lblS}>Notes:</label><input value={paymentNotes[inv.id]||''} onChange={e=>setPaymentNotes(p=>({...p,[inv.id]:e.target.value}))} placeholder="Reference #, etc." style={{ ...inputStyle, marginBottom:0 }} /></div>
                               </div>
-                              <button style={{ ...btnGreen, width:'auto', padding:'8px 16px', marginTop:'8px', fontSize:'12px' }} onClick={()=>recordPayment(inv)}>✅ CONFIRM PAYMENT</button>
+                              {paymentAmount[inv.id] && (
+                                <div style={{ background:Number(paymentAmount[inv.id])>=balance?'#e8f5e9':'#fff3cd', borderRadius:'8px', padding:'8px 12px', margin:'8px 0', border:`1px solid ${Number(paymentAmount[inv.id])>=balance?'#2d8a4e':'#ffc107'}` }}>
+                                  <p style={{ margin:0, fontSize:'12px', fontWeight:'bold', color:Number(paymentAmount[inv.id])>=balance?'#2d8a4e':'#856404' }}>
+                                    {Number(paymentAmount[inv.id])>=balance?`✅ Full payment — Invoice will be marked PAID`:`⏳ Partial payment — Balance remaining: ${php(balance-Number(paymentAmount[inv.id]))} (stays as Partial)`}
+                                  </p>
+                                </div>
+                              )}
+                              <button style={{ ...btnGreen, opacity:false?0.6:1 }} onClick={()=>recordPaymentNew(inv)}>✅ CONFIRM PAYMENT</button>
                             </div>
                           )}
                         </div>
@@ -8829,29 +9226,39 @@ export default function App() {
                         </div>
                       )
                     })()}
-                    {/* Filter */}
-                    <div style={{ display:'flex', gap:'8px', marginBottom:'14px', flexWrap:'wrap' }}>
-                      {[['all','All'],['unpaid','Unpaid'],['partial','Partial'],['overdue','Overdue'],['paid','Paid']].map(([v,l])=>(
-                        <button key={v} onClick={()=>setArFilter(v)} style={{ padding:'6px 14px', borderRadius:'20px', border:`2px solid ${arFilter===v?'#ca1b1b':'#ddd'}`, background:arFilter===v?'#ca1b1b':'white', color:arFilter===v?'white':'#555', fontSize:'12px', cursor:'pointer', fontWeight:'bold' }}>{l}</button>
+                    {/* Filter Tabs */}
+                    <div style={{ display:'flex', gap:'6px', marginBottom:'14px', flexWrap:'wrap', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+                      {[['all','📋 All'],['unpaid','⏳ Unpaid'],['delivered','🚚 Delivered'],['partial','💰 Partial'],['overdue','🔴 Overdue'],['paid','✅ Paid']].map(([v,l])=>(
+                        <button key={v} onClick={()=>setInvoiceFilter(v)} style={{ padding:'7px 14px', borderRadius:'20px', border:'none', background:invoiceFilter===v?'#ca1b1b':'#f4f4f4', color:invoiceFilter===v?'white':'#555', fontWeight:invoiceFilter===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:invoiceFilter===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>
+                          {l} <span style={{ background:invoiceFilter===v?'rgba(255,255,255,0.3)':'rgba(0,0,0,0.1)', borderRadius:'10px', padding:'1px 6px', fontSize:'10px', marginLeft:'2px' }}>
+                            {v==='all'?deliveryInvoices.length:v==='overdue'?deliveryInvoices.filter(i=>i.status!=='paid'&&i.due_date<today).length:deliveryInvoices.filter(i=>i.status===v).length}
+                          </span>
+                        </button>
                       ))}
+                      {/* Action Buttons */}
+                      <div style={{ marginLeft:'auto', display:'flex', gap:'6px' }}>
+                        <button style={{ ...btnBlack, width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printCashCollection(invoiceDate)}>🖨️ CASH COLLECTION</button>
+                        {productionReports.length>0 && <button style={{ ...btnGray, width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printProductionReleaseForm(productionReports[0])}>🖨️ RELEASE FORM</button>}
+                      </div>
                     </div>
                     {(()=>{
                       let filtered = deliveryInvoices
-                      if (arFilter==='unpaid') filtered = filtered.filter(i=>i.status==='unpaid')
-                      else if (arFilter==='partial') filtered = filtered.filter(i=>i.status==='partial')
-                      else if (arFilter==='overdue') filtered = filtered.filter(i=>i.status!=='paid'&&i.due_date<today)
-                      else if (arFilter==='paid') filtered = filtered.filter(i=>i.status==='paid')
-                      if (filtered.length===0) return <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No invoices found.</p>
+                      if (invoiceFilter==='unpaid') filtered = filtered.filter(i=>i.status==='unpaid')
+                      else if (invoiceFilter==='delivered') filtered = filtered.filter(i=>i.status==='delivered')
+                      else if (invoiceFilter==='partial') filtered = filtered.filter(i=>i.status==='partial')
+                      else if (invoiceFilter==='overdue') filtered = filtered.filter(i=>i.status!=='paid'&&i.due_date<today)
+                      else if (invoiceFilter==='paid') filtered = filtered.filter(i=>i.status==='paid')
+                      if (filtered.length===0) return <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No {invoiceFilter} invoices found.</p>
                       return filtered.map(inv=>{
                         const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
                         const isOverdue = inv.status!=='paid' && inv.due_date < today
                         const daysOverdue = isOverdue ? Math.floor((new Date(today)-new Date(inv.due_date))/(1000*60*60*24)) : 0
                         return (
-                          <div key={inv.id} style={{ ...cardS, border:`2px solid ${isOverdue?'#ca1b1b':inv.status==='paid'?'#2d8a4e':'#f5c518'}33`, marginBottom:'10px' }}>
+                          <div key={inv.id} style={{ ...cardS, border:`2px solid ${isOverdue?'#ca1b1b33':inv.status==='paid'?'#2d8a4e33':inv.status==='delivered'?'#4a90d933':'#f5c51833'}`, marginBottom:'10px' }}>
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
                               <div>
                                 <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{inv.reseller_name}</p>
-                                <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{inv.invoice_number} | Delivered: {inv.delivery_date} | Due: {inv.due_date}</p>
+                                <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{inv.invoice_number} | Delivery: {inv.delivery_date} | Due: {inv.due_date}</p>
                                 {isOverdue && <p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'bold', margin:'2px 0 0' }}>⚠️ {daysOverdue} day(s) overdue</p>}
                               </div>
                               <div style={{ textAlign:'right' }}>
