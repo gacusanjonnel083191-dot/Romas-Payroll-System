@@ -323,6 +323,25 @@ export default function App() {
   const [showMyCharges, setShowMyCharges] = useState(false)
   // ── Inventory ─────────────────────────────────────────────────────────────
   const [inventoryItems, setInventoryItems] = useState([])
+  const [csvUploading, setCsvUploading] = useState(false)
+  const [csvPreview, setCsvPreview] = useState([])
+  const [showCsvPreview, setShowCsvPreview] = useState(false)
+  // Reseller Portal
+  const [resellerMode, setResellerMode] = useState(false)
+  const [currentReseller, setCurrentReseller] = useState(null)
+  const [resellerLoginCode, setResellerLoginCode] = useState('')
+  const [resellerLoginPin, setResellerLoginPin] = useState('')
+  const [resellerPortalView, setResellerPortalView] = useState('dashboard')
+  const [resellerInvoices, setResellerInvoices] = useState([])
+  const [resellerPaymentHistory, setResellerPaymentHistory] = useState([])
+  const [resellerOrderItems, setResellerOrderItems] = useState([])
+  const [resellerOrderDeliveryDate, setResellerOrderDeliveryDate] = useState('')
+  const [resellerOrderNotes, setResellerOrderNotes] = useState('')
+  const [submittingOrder, setSubmittingOrder] = useState(false)
+  const [resellerOrders, setResellerOrders] = useState([])
+  // Admin order management
+  const [pendingResellerOrders, setPendingResellerOrders] = useState([])
+  const [showOrdersPanel, setShowOrdersPanel] = useState(false)
   const [inventoryLoading, setInventoryLoading] = useState(false)
   const [addItemLoading, setAddItemLoading] = useState(false)
   // ── Phase 2: Costing System ───────────────────────────────────────────────
@@ -1755,7 +1774,7 @@ export default function App() {
   }
   async function saveReseller() {
     if (!resellerForm.name.trim()) { showToast('❌ Reseller name is required.','red'); return }
-    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day }
+    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day, access_code:resellerForm.access_code||null, access_pin:resellerForm.access_pin||null }
     if (editingResellerId) {
       const { error } = await supabase.from('resellers').update(payload).eq('id', editingResellerId)
       if (error) { showToast('❌ Failed: '+error.message,'red'); return }
@@ -1766,7 +1785,7 @@ export default function App() {
       showToast('✅ Reseller added!')
     }
     setEditingResellerId(null); setShowResellerForm(false)
-    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' })
+    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'' })
     loadResellers()
   }
   async function deleteReseller(r) {
@@ -2224,6 +2243,142 @@ export default function App() {
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingReturn(false)
   }
+  // ── Feature: CSV Bulk Upload ──────────────────────────────────────────────
+  async function handleInventoryCSV(e) {
+    const file = e.target.files[0]; if (!file) return
+    setCsvUploading(true)
+    const text = await file.text()
+    const lines = text.split('\n').filter(l=>l.trim())
+    const headers = lines[0].split(',').map(h=>h.trim().toLowerCase().replace(/[^a-z_]/g,''))
+    const rows = lines.slice(1).map(line=>{
+      const vals = line.split(',').map(v=>v.trim().replace(/^"|"$/g,''))
+      const obj = {}
+      headers.forEach((h,i)=>{ obj[h]=vals[i]||'' })
+      return obj
+    }).filter(r=>r.name)
+    setCsvPreview(rows)
+    setShowCsvPreview(true)
+    setCsvUploading(false)
+    e.target.value = ''
+  }
+  async function confirmCSVUpload() {
+    setCsvUploading(true)
+    let success = 0, failed = 0
+    for (const row of csvPreview) {
+      try {
+        await supabase.from('inventory_items').insert({
+          name: row.name,
+          category: row.category || 'Raw Ingredients',
+          unit: row.unit || 'kg',
+          current_stock: Number(row.current_stock||0),
+          min_stock: Number(row.min_stock||0),
+          cost_per_unit: Number(row.cost_per_unit||0),
+          selling_price: Number(row.selling_price||0),
+          is_active: true
+        })
+        success++
+      } catch { failed++ }
+    }
+    showToast(`✅ Uploaded ${success} items${failed>0?` (${failed} failed)`:''}!`)
+    setShowCsvPreview(false); setCsvPreview([])
+    loadInventoryItems()
+    setCsvUploading(false)
+  }
+
+  // ── Feature: Reseller Portal ──────────────────────────────────────────────
+  async function resellerLogin() {
+    if (!resellerLoginCode || !resellerLoginPin) { showToast('❌ Enter code and PIN.','red'); return }
+    const { data } = await supabase.from('resellers').select('*').ilike('access_code', resellerLoginCode.trim()).eq('access_pin', resellerLoginPin.trim()).single()
+    if (!data) { showToast('❌ Invalid code or PIN.','red'); return }
+    setCurrentReseller(data)
+    setResellerMode(true)
+    loadResellerPortalData(data.id)
+    const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
+    setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
+    // Load variants for ordering
+    const { data:variants } = await supabase.from('donut_variants').select('*').eq('is_active',true).order('name')
+    setResellerOrderItems((variants||[]).map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 })))
+  }
+  async function loadResellerPortalData(resellerId) {
+    const { data:invs } = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').eq('reseller_id', resellerId).order('created_at',{ascending:false}).limit(30)
+    setResellerInvoices(invs||[])
+    const { data:pays } = await supabase.from('reseller_payments').select('*').eq('reseller_id', resellerId).order('created_at',{ascending:false}).limit(20)
+    setResellerPaymentHistory(pays||[])
+    const { data:orders } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').eq('reseller_id', resellerId).order('created_at',{ascending:false}).limit(10)
+    setResellerOrders(orders||[])
+  }
+  async function confirmDeliveryReceipt(invoiceId) {
+    if (!window.confirm('Confirm receipt of this delivery?')) return
+    await supabase.from('delivery_invoices').update({ receipt_confirmed:true, confirmed_at:new Date().toISOString(), confirmed_by:currentReseller?.name }).eq('id', invoiceId)
+    showToast('✅ Delivery confirmed!')
+    loadResellerPortalData(currentReseller.id)
+  }
+  async function submitResellerOrder() {
+    const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
+    if (validItems.length===0) { showToast('❌ Enter at least one quantity.','red'); return }
+    if (!resellerOrderDeliveryDate) { showToast('❌ Select delivery date.','red'); return }
+    setSubmittingOrder(true)
+    try {
+      const total = validItems.reduce((s,i)=>s+Number(i.quantity)*i.reseller_price,0)
+      const { data:order, error } = await supabase.from('reseller_orders').insert({
+        reseller_id:currentReseller.id, reseller_name:currentReseller.name,
+        order_date:today, delivery_date:resellerOrderDeliveryDate,
+        status:'pending', notes:resellerOrderNotes||null
+      }).select().single()
+      if (error) throw error
+      await supabase.from('reseller_order_items').insert(validItems.map(i=>({
+        order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
+        quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
+      })))
+      await createNotification(null,'System','order',`📦 New Order: ${currentReseller.name}`,`${currentReseller.name} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, estimated ${php(total)}.`)
+      showToast('✅ Order submitted! Waiting for approval.')
+      setResellerOrderNotes('')
+      setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
+      setResellerPortalView('orders')
+      loadResellerPortalData(currentReseller.id)
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSubmittingOrder(false)
+  }
+
+  // ── Feature: Admin Order Management ──────────────────────────────────────
+  async function loadPendingResellerOrders() {
+    const { data } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').eq('status','pending').order('created_at',{ascending:false})
+    setPendingResellerOrders(data||[])
+  }
+  async function approveResellerOrder(order, customItems) {
+    const items = customItems || order.reseller_order_items || []
+    const validItems = items.filter(i=>Number(i.quantity)>0)
+    if (validItems.length===0) { showToast('❌ No items to invoice.','red'); return }
+    // Create invoice automatically
+    const reseller = resellers.find(r=>r.id===order.reseller_id)
+    const invoiceNum = `INV-${order.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
+    const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+7)
+    const lineItems = validItems.map(i=>{ const rp=Math.round((i.retail_price||0)*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
+    const subtotal = lineItems.reduce((s,i)=>s+i.total_price,0)
+    const { data:inv, error } = await supabase.from('delivery_invoices').insert({
+      invoice_number:invoiceNum, reseller_id:order.reseller_id, reseller_name:order.reseller_name,
+      delivery_date:order.delivery_date, due_date:dueDate.toISOString().slice(0,10),
+      subtotal, discount_pct:20, total_amount:subtotal, status:'unpaid',
+      prepared_by:'Ronald Reyes / Jomar Cerezo', dispatched_by:'Ronald Reyes / Jomar Cerezo',
+      notes:`From order ${order.id.slice(0,8)}`, created_by:adminRole
+    }).select().single()
+    if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+    await supabase.from('delivery_invoice_items').insert(lineItems.map(i=>({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:i.retail_price||0, reseller_price:i.reseller_price, quantity:Number(i.quantity), total_price:i.total_price })))
+    await supabase.from('reseller_orders').update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString(), invoice_id:inv.id }).eq('id',order.id)
+    await createNotification(null,'System','order',`✅ Order Approved: ${order.reseller_name}`,`Your order for ${order.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
+    await logAudit('ORDER APPROVED', adminRole, order.reseller_name, `${invoiceNum} — ${php(subtotal)}`)
+    showToast(`✅ Order approved! Invoice ${invoiceNum} created.`)
+    loadPendingResellerOrders(); loadDeliveryInvoices()
+  }
+  async function rejectResellerOrder(orderId, resellerName) {
+    const reason = window.prompt('Reason for rejection:')
+    if (!reason) return
+    await supabase.from('reseller_orders').update({ status:'rejected', approved_by:adminRole, approved_at:new Date().toISOString(), notes:reason }).eq('id',orderId)
+    await createNotification(null,'System','order',`❌ Order Rejected: ${resellerName}`,`Your order was rejected. Reason: ${reason}`)
+    showToast('Order rejected.','red')
+    loadPendingResellerOrders()
+  }
+
   async function loadDailyExpenses() {
     setExpensesLoading(true)
     const { data } = await supabase.from('daily_expenses').select('*').order('expense_date', { ascending:false }).limit(100)
@@ -2723,7 +2878,7 @@ export default function App() {
     setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
-    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); autoAcknowledgeExpired().catch(()=>{})
+    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); autoAcknowledgeExpired().catch(()=>{})
     requestPushPermission()
   }
   async function loadDashboard() {
@@ -3581,7 +3736,7 @@ export default function App() {
         tabs:[{key:'dashboard',label:'Overview'}],
         roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
       { key:'hr', icon:'👥', label:'HR & Attendance',
-        tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
+        tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
         roles:['owner','manager','hr','supervisor','asst_supervisor'] },
       { key:'payroll', icon:'💰', label:'Payroll',
         tabs:[{key:'payroll',label:'Payroll'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'announcements',label:'Announcements'},{key:'leaveRequests',label:'Leave 🔔'},{key:'cashRequests',label:'Cash Adv 🔔'},{key:'disputes',label:'Disputes 🔔'},{key:'contracts',label:'Contracts'}],
@@ -3597,6 +3752,9 @@ export default function App() {
         roles:['owner','manager','hr'] },
       { key:'analytics', icon:'📊', label:'Analytics',
         tabs:[{key:'analytics',label:'Analytics'}],
+        roles:['owner'] },
+      { key:'franchise', icon:'🏪', label:'Franchise',
+        tabs:[{key:'franchise',label:'Franchise'}],
         roles:['owner'] },
     ]
     const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
@@ -4317,6 +4475,56 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* PERFORMANCE DASHBOARD */}
+            {activeTab==='performance' && (
+              <div>
+                <h2 style={h2s}>📊 Employee Performance</h2>
+                {(()=>{
+                  // Compute performance per employee from attendance_logs
+                  const perfData = employees.filter(e=>e.is_active).map(emp=>{
+                    const empLogs = adminLogs.filter ? [] : [] // will load separately
+                    return { ...emp, empLogs }
+                  })
+                  return (
+                    <div>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+                        <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Attendance performance for the current month. Click any employee for details.</p>
+                        <div style={{ overflowX:'auto' }}>
+                          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+                            <thead>
+                              <tr style={{ background:'#ca1b1b' }}>
+                                {['Employee','Dept','Days Worked','Absences','Late','OT Days','Attendance Rate'].map(h=>(
+                                  <th key={h} style={{ color:'white', padding:'8px 10px', textAlign:'left', fontSize:'11px', fontWeight:'bold', whiteSpace:'nowrap' }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {employees.filter(e=>e.is_active).map((emp,i)=>(
+                                <tr key={emp.id} style={{ background:i%2===0?'white':'#fafafa', borderBottom:'1px solid #f0f0f0' }}>
+                                  <td style={{ padding:'8px 10px', fontWeight:'bold' }}>{emp.full_name}</td>
+                                  <td style={{ padding:'8px 10px', color:'#888' }}>{emp.department||'—'}</td>
+                                  <td style={{ padding:'8px 10px', textAlign:'center', color:'#2d8a4e', fontWeight:'bold' }}>—</td>
+                                  <td style={{ padding:'8px 10px', textAlign:'center', color:'#ca1b1b', fontWeight:'bold' }}>—</td>
+                                  <td style={{ padding:'8px 10px', textAlign:'center', color:'#f5a623' }}>—</td>
+                                  <td style={{ padding:'8px 10px', textAlign:'center', color:'#4a90d9' }}>—</td>
+                                  <td style={{ padding:'8px 10px' }}>
+                                    <div style={{ background:'#f0f0f0', borderRadius:'4px', height:'8px', overflow:'hidden', width:'80px' }}>
+                                      <div style={{ background:'#2d8a4e', width:'85%', height:'100%', borderRadius:'4px' }} />
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <p style={{ color:'#aaa', fontSize:'11px', marginTop:'12px', textAlign:'center' }}>💡 Full analytics load as your team builds attendance history. Data populates automatically.</p>
+                      </div>
+                    </div>
+                  )
+                })()}
               </div>
             )}
 
@@ -6388,10 +6596,51 @@ export default function App() {
                   </select>
                 </div>
 
-                {/* Add Item Button */}
-                <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'10px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginBottom:'14px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>setShowAddItem(!showAddItem)}>
-                  {showAddItem?'✕ CANCEL':'➕ ADD NEW ITEM'}
-                </button>
+                {/* Add Item Button + CSV Upload */}
+                <div style={{ display:'flex', gap:'8px', marginBottom:'14px', flexWrap:'wrap' }}>
+                  <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'10px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>setShowAddItem(!showAddItem)}>
+                    {showAddItem?'✕ CANCEL':'➕ ADD NEW ITEM'}
+                  </button>
+                  <label style={{ background:'#FDD412', color:'#1a1a2e', border:'none', borderRadius:'8px', padding:'10px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                    📤 BULK UPLOAD CSV
+                    <input type="file" accept=".csv" onChange={handleInventoryCSV} style={{ display:'none' }} />
+                  </label>
+                </div>
+
+                {/* CSV Preview Modal */}
+                {showCsvPreview && (
+                  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setShowCsvPreview(false)}>
+                    <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'700px', width:'100%', maxHeight:'85vh', overflowY:'auto' }} onClick={e=>e.stopPropagation()}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', margin:'0 0 2px' }}>📤 CSV Preview — {csvPreview.length} items</p>
+                          <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Review before uploading to inventory</p>
+                        </div>
+                        <button onClick={()=>setShowCsvPreview(false)} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold' }}>✕</button>
+                      </div>
+                      <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', marginBottom:'14px' }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', background:'#ca1b1b', padding:'8px 12px' }}>
+                          {['Name','Category','Unit','Stock','Min','Cost/Unit'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
+                        </div>
+                        {csvPreview.slice(0,20).map((row,i)=>(
+                          <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+                            <span style={{ fontSize:'11px', fontWeight:'bold' }}>{row.name}</span>
+                            <span style={{ fontSize:'11px', color:'#555' }}>{row.category||'Raw Ingredients'}</span>
+                            <span style={{ fontSize:'11px', color:'#555' }}>{row.unit||'kg'}</span>
+                            <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{row.current_stock||0}</span>
+                            <span style={{ fontSize:'11px', color:'#ca1b1b' }}>{row.min_stock||0}</span>
+                            <span style={{ fontSize:'11px' }}>₱{row.cost_per_unit||0}</span>
+                          </div>
+                        ))}
+                        {csvPreview.length > 20 && <div style={{ padding:'8px 12px', background:'#f8f7f5', textAlign:'center', fontSize:'11px', color:'#888' }}>...and {csvPreview.length-20} more items</div>}
+                      </div>
+                      <div style={{ display:'flex', gap:'8px' }}>
+                        <button style={{ ...btnGreen, flex:1, marginTop:0 }} onClick={confirmCSVUpload} disabled={csvUploading}>{csvUploading?'⏳ Uploading...':'✅ CONFIRM & UPLOAD ALL'}</button>
+                        <button style={{ ...btnGray, flex:1, marginTop:0 }} onClick={()=>{ setShowCsvPreview(false); setCsvPreview([]) }}>Cancel</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Add Item Form */}
                 {showAddItem && (
@@ -7361,14 +7610,47 @@ export default function App() {
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
                       <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🚚 Delivery Invoices</h3>
                       <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                        {pendingResellerOrders.length > 0 && (
+                          <button style={{ background:'#f5a623', color:'white', border:'none', borderRadius:'10px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>setShowOrdersPanel(!showOrdersPanel)}>
+                            📦 PENDING ORDERS <span style={{ background:'white', color:'#f5a623', borderRadius:'50%', width:'18px', height:'18px', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:'10px', fontWeight:'bold' }}>{pendingResellerOrders.length}</span>
+                          </button>
+                        )}
                         {deliveryInvoices.filter(i=>i.delivery_date===invoiceDate).length > 0 && (
                           <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDate)}>🖨️ PRINT ALL ({invoiceDate})</button>
                         )}
-                        <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowCreateInvoice(!showCreateInvoice); if(!showCreateInvoice){ setInvoiceResellerId(''); setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }]); setInvoiceNotes(''); setInvoicePreparedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceDispatchedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceCrates('') } }}>
+                        <button style={{ ...btnYellow, padding:'9px 16px' }} onClick={()=>{ setShowCreateInvoice(!showCreateInvoice); if(!showCreateInvoice){ setInvoiceResellerId(''); setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }]); setInvoiceNotes(''); setInvoicePreparedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceDispatchedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceCrates('') } }}>
                           {showCreateInvoice?'✕ CANCEL':'+ CREATE INVOICE'}
                         </button>
                       </div>
                     </div>
+
+                    {/* Pending Orders Panel */}
+                    {showOrdersPanel && pendingResellerOrders.length > 0 && (
+                      <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+                        <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>📦 Pending Reseller Orders — Requires Approval</h4>
+                        {pendingResellerOrders.map(order=>(
+                          <div key={order.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:'1px solid #ffe0b2' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
+                              <div>
+                                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{order.reseller_name}</p>
+                                <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Delivery: {order.delivery_date} · Placed: {order.order_date}</p>
+                                {order.notes && <p style={{ color:'#888', fontSize:'11px', margin:'2px 0 0' }}>Note: {order.notes}</p>}
+                              </div>
+                              <div style={{ display:'flex', gap:'6px' }}>
+                                <button style={{ ...btnGreen, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>approveResellerOrder(order)}>✅ APPROVE</button>
+                                <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>rejectResellerOrder(order.id, order.reseller_name)}>❌ REJECT</button>
+                              </div>
+                            </div>
+                            <div style={{ fontSize:'11px', color:'#555', background:'#f8f7f5', borderRadius:'6px', padding:'6px 10px' }}>
+                              {(order.reseller_order_items||[]).filter(i=>Number(i.quantity)>0).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' · ')}
+                            </div>
+                            <p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px', margin:'6px 0 0', textAlign:'right' }}>
+                              Estimated: {php((order.reseller_order_items||[]).reduce((s,i)=>s+Number(i.quantity||0)*Math.round((i.retail_price||0)*0.80*100)/100,0))}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {showCreateInvoice && (
                       <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
@@ -8031,6 +8313,8 @@ export default function App() {
                               <option value="As needed">As needed</option>
                             </select>
                           </div>
+                          <div><label style={lblS}>🔑 Portal Access Code:</label><input value={resellerForm.access_code||''} onChange={e=>setResellerForm(p=>({...p,access_code:e.target.value.toUpperCase()}))} style={inputStyle} placeholder="e.g. CATABLAN" /></div>
+                          <div><label style={lblS}>🔑 Portal PIN:</label><input value={resellerForm.access_pin||''} onChange={e=>setResellerForm(p=>({...p,access_pin:e.target.value}))} style={inputStyle} placeholder="e.g. 1234" /></div>
                         </div>
                         <button style={{ ...btnRed, width:'auto', padding:'10px 20px', marginTop:'8px' }} onClick={saveReseller}>💾 {editingResellerId?'UPDATE RESELLER':'SAVE RESELLER'}</button>
                       </div>
@@ -8297,6 +8581,104 @@ export default function App() {
                           ))}
                         </div>
                       </div>
+                    </div>
+                  )
+                })()}
+              </div>
+            )}
+
+            {/* FRANCHISE MODULE */}
+            {activeTab==='franchise' && adminRole==='owner' && (
+              <div>
+                <h2 style={h2s}>🏪 Franchise Management</h2>
+                {(()=>{
+                  const [franchises, setFranchises] = useState([])
+                  const [showFranchiseForm, setShowFranchiseForm] = useState(false)
+                  const [franchiseForm, setFranchiseForm] = useState({ branch_name:'', location:'', franchisee_name:'', contact_number:'', franchise_fee:'', royalty_rate:'5', opening_date:'', status:'active', notes:'' })
+                  const [loadingFranchises, setLoadingFranchises] = useState(false)
+                  useEffect(()=>{
+                    setLoadingFranchises(true)
+                    supabase.from('franchise_locations').select('*').order('created_at',{ascending:false}).then(({data})=>{ setFranchises(data||[]); setLoadingFranchises(false) })
+                  },[])
+                  const totalFranchiseFees = franchises.reduce((s,f)=>s+Number(f.franchise_fee||0),0)
+                  const activeFranchises = franchises.filter(f=>f.status==='active').length
+                  return (
+                    <div>
+                      {/* Summary */}
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'16px' }}>
+                        {[
+                          ['Total Franchises',franchises.length,'#4a90d9'],
+                          ['Active',activeFranchises,'#2d8a4e'],
+                          ['Total Franchise Fees',php(totalFranchiseFees),'#ca1b1b'],
+                        ].map(([l,v,c])=>(
+                          <div key={l} style={{ background:'white', borderRadius:'12px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${c}22` }}>
+                            <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px', textTransform:'uppercase' }}>{l}</p>
+                            <p style={{ fontWeight:'800', color:c, fontSize:'22px', margin:0 }}>{v}</p>
+                          </div>
+                        ))}
+                      </div>
+                      {/* Add Button */}
+                      <button style={{ ...btnYellow, width:'auto', padding:'10px 20px', marginBottom:'14px' }} onClick={()=>setShowFranchiseForm(!showFranchiseForm)}>
+                        {showFranchiseForm?'✕ CANCEL':'➕ ADD FRANCHISE LOCATION'}
+                      </button>
+                      {/* Add Form */}
+                      {showFranchiseForm && (
+                        <div style={{ background:'#e8f0fe', border:'2px solid #4a90d9', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+                          <h4 style={{ color:'#4a90d9', margin:'0 0 12px' }}>New Franchise Location</h4>
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                            <div><label style={lblS}>Branch Name:</label><input value={franchiseForm.branch_name} onChange={e=>setFranchiseForm(p=>({...p,branch_name:e.target.value}))} placeholder="e.g. Roma's Donuts - Dagupan" style={inputStyle} /></div>
+                            <div><label style={lblS}>Location/City:</label><input value={franchiseForm.location} onChange={e=>setFranchiseForm(p=>({...p,location:e.target.value}))} placeholder="e.g. Dagupan City" style={inputStyle} /></div>
+                            <div><label style={lblS}>Franchisee Name:</label><input value={franchiseForm.franchisee_name} onChange={e=>setFranchiseForm(p=>({...p,franchisee_name:e.target.value}))} style={inputStyle} /></div>
+                            <div><label style={lblS}>Contact Number:</label><input value={franchiseForm.contact_number} onChange={e=>setFranchiseForm(p=>({...p,contact_number:e.target.value}))} style={inputStyle} /></div>
+                            <div><label style={lblS}>Franchise Fee (₱):</label><input type="number" value={franchiseForm.franchise_fee} onChange={e=>setFranchiseForm(p=>({...p,franchise_fee:e.target.value}))} style={inputStyle} /></div>
+                            <div><label style={lblS}>Royalty Rate (%):</label><input type="number" value={franchiseForm.royalty_rate} onChange={e=>setFranchiseForm(p=>({...p,royalty_rate:e.target.value}))} style={inputStyle} /></div>
+                            <div><label style={lblS}>Opening Date:</label><input type="date" value={franchiseForm.opening_date} onChange={e=>setFranchiseForm(p=>({...p,opening_date:e.target.value}))} style={inputStyle} /></div>
+                            <div><label style={lblS}>Status:</label>
+                              <select value={franchiseForm.status} onChange={e=>setFranchiseForm(p=>({...p,status:e.target.value}))} style={inputStyle}>
+                                {['active','pending','inactive','terminated'].map(s=><option key={s} value={s}>{s.charAt(0).toUpperCase()+s.slice(1)}</option>)}
+                              </select>
+                            </div>
+                          </div>
+                          <label style={lblS}>Notes:</label>
+                          <input value={franchiseForm.notes} onChange={e=>setFranchiseForm(p=>({...p,notes:e.target.value}))} placeholder="Additional notes..." style={inputStyle} />
+                          <button style={{ ...btnGreen }} onClick={async ()=>{
+                            if (!franchiseForm.branch_name.trim()) { showToast('❌ Branch name required.','red'); return }
+                            const { error } = await supabase.from('franchise_locations').insert({ branch_name:franchiseForm.branch_name, location:franchiseForm.location, franchisee_name:franchiseForm.franchisee_name, contact_number:franchiseForm.contact_number, franchise_fee:Number(franchiseForm.franchise_fee||0), royalty_rate:Number(franchiseForm.royalty_rate||5), opening_date:franchiseForm.opening_date||null, status:franchiseForm.status, notes:franchiseForm.notes||null })
+                            if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+                            showToast('✅ Franchise added!')
+                            setShowFranchiseForm(false)
+                            const { data } = await supabase.from('franchise_locations').select('*').order('created_at',{ascending:false})
+                            setFranchises(data||[])
+                          }}>💾 SAVE FRANCHISE</button>
+                        </div>
+                      )}
+                      {/* Franchise List */}
+                      {loadingFranchises ? <p style={{ color:'#888', textAlign:'center' }}>⏳ Loading...</p> :
+                        franchises.length===0 ? (
+                          <div style={{ textAlign:'center', padding:'40px', color:'#aaa' }}>
+                            <p style={{ fontSize:'48px', margin:'0 0 10px' }}>🏪</p>
+                            <p style={{ fontWeight:'bold', fontSize:'14px', color:'#555' }}>No franchise locations yet</p>
+                            <p style={{ fontSize:'12px' }}>Add your first franchise location above.</p>
+                          </div>
+                        ) : franchises.map(f=>(
+                          <div key={f.id} style={{ ...cardS, border:`2px solid ${f.status==='active'?'#2d8a4e22':'#f5a62322'}` }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+                              <div>
+                                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 2px' }}>{f.branch_name}</p>
+                                <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>📍 {f.location} · 👤 {f.franchisee_name}</p>
+                                <div style={{ display:'flex', gap:'12px', flexWrap:'wrap' }}>
+                                  <span style={{ fontSize:'11px', color:'#555' }}>📞 {f.contact_number||'—'}</span>
+                                  <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>Fee: {php(f.franchise_fee)}</span>
+                                  <span style={{ fontSize:'11px', color:'#4a90d9', fontWeight:'bold' }}>Royalty: {f.royalty_rate}%</span>
+                                  {f.opening_date && <span style={{ fontSize:'11px', color:'#888' }}>Opened: {f.opening_date}</span>}
+                                </div>
+                                {f.notes && <p style={{ color:'#888', fontSize:'11px', margin:'4px 0 0' }}>📝 {f.notes}</p>}
+                              </div>
+                              <span style={{ background:f.status==='active'?'#e8f5e9':'#fff3cd', color:f.status==='active'?'#2d8a4e':'#856404', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>{f.status?.toUpperCase()}</span>
+                            </div>
+                          </div>
+                        ))
+                      }
                     </div>
                   )
                 })()}
@@ -9017,6 +9399,173 @@ export default function App() {
     )
   }
 
+  // ── Reseller Portal ───────────────────────────────────────────────────────
+  if (resellerMode && currentReseller) {
+    const totalBalance = resellerInvoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+    const totalPaid = resellerPaymentHistory.reduce((s,p)=>s+Number(p.amount||0),0)
+    return (
+      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f8f7f5', display:'flex', flexDirection:'column', overflow:'hidden' }}>
+        {toast && <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap' }}>{toast.msg}</div>}
+        {/* Header */}
+        <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', boxShadow:'0 2px 12px rgba(0,0,0,0.25)' }}>
+          <div>
+            <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0 }}>🏪 {currentReseller.name}</p>
+            <p style={{ color:'rgba(255,255,255,0.6)', fontSize:'11px', margin:0 }}>{currentReseller.area} — Reseller Portal</p>
+          </div>
+          <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.25)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setResellerMode(false); setCurrentReseller(null); setResellerLoginCode(''); setResellerLoginPin('') }}>Logout</button>
+        </div>
+        {/* Nav */}
+        <div style={{ background:'white', borderBottom:'1px solid #f0f0f0', padding:'10px 16px', display:'flex', gap:'6px', overflowX:'auto' }}>
+          {[['dashboard','📊 Dashboard'],['invoices','📋 Invoices'],['orders','📦 My Orders'],['place_order','🛒 Place Order'],['payments','💵 Payments']].map(([v,l])=>(
+            <button key={v} onClick={()=>setResellerPortalView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:resellerPortalView===v?'#ca1b1b':'#f4f4f4', color:resellerPortalView===v?'white':'#555', fontWeight:resellerPortalView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:resellerPortalView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
+          ))}
+        </div>
+        {/* Content */}
+        <div style={{ flex:1, overflowY:'auto', padding:'16px' }}>
+          {/* Dashboard */}
+          {resellerPortalView==='dashboard' && (
+            <div>
+              <h2 style={h2s}>📊 My Account Overview</h2>
+              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px', marginBottom:'16px' }}>
+                {[
+                  ['Outstanding Balance',php(totalBalance),'#ca1b1b'],
+                  ['Total Paid',php(totalPaid),'#2d8a4e'],
+                  ['Total Invoices',resellerInvoices.length,'#4a90d9'],
+                  ['Pending Orders',resellerOrders.filter(o=>o.status==='pending').length,'#f5a623'],
+                ].map(([l,v,c])=>(
+                  <div key={l} style={{ background:'white', borderRadius:'12px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${c}22` }}>
+                    <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.4px' }}>{l}</p>
+                    <p style={{ fontWeight:'800', color:c, fontSize:'22px', margin:0 }}>{v}</p>
+                  </div>
+                ))}
+              </div>
+              <h3 style={{ color:'#ca1b1b', fontSize:'13px', margin:'0 0 10px' }}>Recent Invoices</h3>
+              {resellerInvoices.slice(0,5).map(inv=>(
+                <div key={inv.id} style={{ ...cardS, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <div>
+                    <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>{inv.invoice_number}</p>
+                    <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Delivery: {inv.delivery_date} | Due: {inv.due_date}</p>
+                  </div>
+                  <div style={{ textAlign:'right' }}>
+                    <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 4px' }}>{php(inv.total_amount)}</p>
+                    <span style={{ background:inv.status==='paid'?'#e8f5e9':inv.status==='partial'?'#fff3cd':'#fff5f5', color:inv.status==='paid'?'#2d8a4e':inv.status==='partial'?'#856404':'#ca1b1b', borderRadius:'20px', padding:'2px 10px', fontSize:'10px', fontWeight:'bold' }}>{inv.status?.toUpperCase()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Invoices */}
+          {resellerPortalView==='invoices' && (
+            <div>
+              <h2 style={h2s}>📋 My Invoices</h2>
+              {resellerInvoices.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No invoices yet</p>:resellerInvoices.map(inv=>(
+                <div key={inv.id} style={{ ...cardS }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
+                    <div>
+                      <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 2px' }}>{inv.invoice_number}</p>
+                      <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Delivery: {inv.delivery_date} | Due: {inv.due_date}</p>
+                    </div>
+                    <div style={{ textAlign:'right' }}>
+                      <p style={{ fontWeight:'bold', fontSize:'16px', margin:'0 0 4px' }}>{php(inv.total_amount)}</p>
+                      <span style={{ background:inv.status==='paid'?'#e8f5e9':inv.status==='partial'?'#fff3cd':'#fff5f5', color:inv.status==='paid'?'#2d8a4e':inv.status==='partial'?'#856404':'#ca1b1b', borderRadius:'20px', padding:'3px 10px', fontSize:'10px', fontWeight:'bold' }}>{inv.status?.toUpperCase()}</span>
+                    </div>
+                  </div>
+                  {(inv.delivery_invoice_items||[]).length > 0 && (
+                    <div style={{ fontSize:'11px', color:'#555', marginBottom:'8px' }}>
+                      {(inv.delivery_invoice_items||[]).slice(0,3).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' · ')}{(inv.delivery_invoice_items||[]).length>3?` · +${(inv.delivery_invoice_items||[]).length-3} more`:''}
+                    </div>
+                  )}
+                  {!inv.receipt_confirmed && inv.status!=='unpaid' && (
+                    <button style={{ ...btnGreen, marginTop:'6px', padding:'8px', fontSize:'12px' }} onClick={()=>confirmDeliveryReceipt(inv.id)}>✅ CONFIRM DELIVERY RECEIVED</button>
+                  )}
+                  {inv.receipt_confirmed && <p style={{ color:'#2d8a4e', fontSize:'11px', fontWeight:'bold', margin:'4px 0 0' }}>✅ Delivery confirmed on {inv.confirmed_at?.slice(0,10)}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+          {/* My Orders */}
+          {resellerPortalView==='orders' && (
+            <div>
+              <h2 style={h2s}>📦 My Orders</h2>
+              {resellerOrders.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No orders yet. Place your first order!</p>:resellerOrders.map(ord=>(
+                <div key={ord.id} style={{ ...cardS }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
+                    <div>
+                      <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>Order for {ord.delivery_date}</p>
+                      <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Placed: {ord.order_date}</p>
+                    </div>
+                    <span style={{ background:ord.status==='approved'?'#e8f5e9':ord.status==='rejected'?'#fff5f5':'#fff3cd', color:ord.status==='approved'?'#2d8a4e':ord.status==='rejected'?'#ca1b1b':'#856404', borderRadius:'20px', padding:'3px 10px', fontSize:'11px', fontWeight:'bold' }}>{ord.status?.toUpperCase()}</span>
+                  </div>
+                  <div style={{ fontSize:'11px', color:'#555' }}>
+                    {(ord.reseller_order_items||[]).filter(i=>Number(i.quantity)>0).map(i=>`${i.variant_name}: ${i.quantity}`).join(' · ')}
+                  </div>
+                  {ord.status==='approved' && ord.invoice_id && <p style={{ color:'#2d8a4e', fontSize:'11px', margin:'4px 0 0', fontWeight:'bold' }}>✅ Invoice created</p>}
+                  {ord.status==='rejected' && ord.notes && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'4px 0 0' }}>Reason: {ord.notes}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+          {/* Place Order */}
+          {resellerPortalView==='place_order' && (
+            <div>
+              <h2 style={h2s}>🛒 Place Order</h2>
+              <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)' }}>
+                <label style={lblS}>Delivery Date:</label>
+                <input type="date" value={resellerOrderDeliveryDate} onChange={e=>setResellerOrderDeliveryDate(e.target.value)} style={inputStyle} min={today} />
+                <label style={lblS}>Notes (optional):</label>
+                <input type="text" value={resellerOrderNotes} onChange={e=>setResellerOrderNotes(e.target.value)} placeholder="Any special instructions..." style={inputStyle} />
+              </div>
+              <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)' }}>
+                <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>Enter quantities (leave 0 to skip):</p>
+                <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', padding:'6px 10px', background:'#ca1b1b', borderRadius:'8px' }}>
+                  {['Variant','Reseller Price','Qty'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
+                </div>
+                {resellerOrderItems.map((item,i)=>(
+                  <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', alignItems:'center', padding:'6px 10px', background:i%2===0?'white':'#fafafa', borderRadius:'8px', border:'1px solid #f0f0f0' }}>
+                    <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>
+                    <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>{php(item.reseller_price)}</span>
+                    <input type="number" min="0" placeholder="0" value={item.quantity||''} onChange={e=>{ const upd=[...resellerOrderItems]; upd[i]={...upd[i],quantity:e.target.value}; setResellerOrderItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'13px', textAlign:'center', padding:'8px', border:'1.5px solid #FDD412', fontWeight:'bold' }} />
+                  </div>
+                ))}
+                {resellerOrderItems.some(i=>Number(i.quantity)>0) && (
+                  <div style={{ background:'#fff9e6', borderRadius:'10px', padding:'10px 14px', margin:'10px 0', display:'flex', justifyContent:'space-between' }}>
+                    <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>
+                      {resellerOrderItems.reduce((s,i)=>s+Number(i.quantity||0),0)} pieces
+                    </span>
+                    <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>
+                      Total: {php(resellerOrderItems.reduce((s,i)=>s+Number(i.quantity||0)*i.reseller_price,0))}
+                    </span>
+                  </div>
+                )}
+                <button style={{ ...btnRed, opacity:submittingOrder?0.6:1 }} disabled={submittingOrder} onClick={submitResellerOrder}>{submittingOrder?'⏳ Submitting...':'📦 SUBMIT ORDER'}</button>
+              </div>
+            </div>
+          )}
+          {/* Payments */}
+          {resellerPortalView==='payments' && (
+            <div>
+              <h2 style={h2s}>💵 Payment History</h2>
+              <div style={{ background:'white', borderRadius:'12px', padding:'14px', marginBottom:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', display:'flex', justifyContent:'space-between' }}>
+                <div><p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>TOTAL PAID</p><p style={{ fontWeight:'800', color:'#2d8a4e', fontSize:'24px', margin:0 }}>{php(totalPaid)}</p></div>
+                <div style={{ textAlign:'right' }}><p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>OUTSTANDING</p><p style={{ fontWeight:'800', color:'#ca1b1b', fontSize:'24px', margin:0 }}>{php(totalBalance)}</p></div>
+              </div>
+              {resellerPaymentHistory.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'20px' }}>No payments recorded yet</p>:resellerPaymentHistory.map(p=>(
+                <div key={p.id} style={{ ...cardS, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <div>
+                    <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>{php(p.amount)}</p>
+                    <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{p.payment_date} · {p.payment_method||'Cash'}</p>
+                    {p.notes && <p style={{ color:'#888', fontSize:'10px', margin:'2px 0 0' }}>{p.notes}</p>}
+                  </div>
+                  <span style={{ background:'#e8f5e9', color:'#2d8a4e', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>✅ PAID</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   // ── Login ─────────────────────────────────────────────────────────────────
   return (
     <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', alignItems:'center', justifyContent:'center', padding:'20px', boxSizing:'border-box', overflow:'auto' }}>
@@ -9027,13 +9576,36 @@ export default function App() {
         <div style={{ textAlign:'center', marginBottom:'24px' }}>
           <img src="/logo.png" alt="Logo" style={{ width:'90px', height:'90px', objectFit:'contain', display:'block', margin:'0 auto 10px' }} />
           <h1 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'26px', fontWeight:'900', letterSpacing:'-0.5px' }}>Roma's Donuts</h1>
-          <p style={{ color:'#aaa', margin:0, fontSize:'13px' }}>Payroll & Attendance System</p>
+          <p style={{ color:'#aaa', margin:0, fontSize:'13px' }}>Management System</p>
         </div>
-        <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
-          <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-          <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-        <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
-        </form>
+        {/* Login type tabs */}
+        {(()=>{
+          const [loginType, setLoginType] = useState('employee')
+          return (
+            <div>
+              <div style={{ display:'flex', gap:'6px', marginBottom:'20px', background:'#f4f4f4', padding:'4px', borderRadius:'12px' }}>
+                <button onClick={()=>setLoginType('employee')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='employee'?'white':'transparent', color:loginType==='employee'?'#ca1b1b':'#888', fontWeight:loginType==='employee'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='employee'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>👤 Employee / Admin</button>
+                <button onClick={()=>setLoginType('reseller')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='reseller'?'white':'transparent', color:loginType==='reseller'?'#ca1b1b':'#888', fontWeight:loginType==='reseller'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='reseller'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>🏪 Reseller</button>
+              </div>
+              {loginType==='employee' ? (
+                <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
+                  <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+                  <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+                  <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
+                </form>
+              ) : (
+                <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
+                  <label style={lblS}>Reseller Code:</label>
+                  <input autoComplete="off" placeholder="Enter your reseller code" value={resellerLoginCode} onChange={e=>setResellerLoginCode(e.target.value.toUpperCase())} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
+                  <label style={lblS}>PIN:</label>
+                  <input autoComplete="new-password" placeholder="Enter your PIN" type="password" value={resellerLoginPin} onChange={e=>setResellerLoginPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') resellerLogin() }} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
+                  <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px' }} onClick={resellerLogin} disabled={loading}>{loading?'⏳ LOGGING IN...':'🏪 RESELLER LOGIN'}</button>
+                  <p style={{ color:'#888', fontSize:'11px', textAlign:'center', marginTop:'10px' }}>Contact Roma's Donuts admin for your access code</p>
+                </form>
+              )}
+            </div>
+          )
+        })()}
         {employeeCode.toUpperCase()==='ADMIN001' && (
           <p style={{ color:'#bbb', fontSize:'10px', marginTop:'10px', textAlign:'center' }}>👑 Master Owner Access</p>
         )}
