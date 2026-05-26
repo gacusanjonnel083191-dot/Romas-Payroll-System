@@ -5882,9 +5882,24 @@ export default function App() {
                   {contractStorageType === 'digital' && (
                     <div style={{ marginTop:'12px', background:'#e8f0fe', borderRadius:'10px', padding:'12px', border:'1px solid #4a90d9' }}>
                       <label style={{ ...lblS, color:'#4a90d9' }}>📎 Upload PDF Contract:</label>
-                      <input type="file" accept=".pdf,application/pdf" onChange={e=>setContractFile(e.target.files[0]||null)} style={{ ...inputStyle, padding:'8px', cursor:'pointer', marginBottom:0 }} />
+                      <div
+                        onDragOver={e=>{ e.preventDefault(); e.currentTarget.style.background='#dbeafe'; e.currentTarget.style.borderColor='#4a90d9' }}
+                        onDragLeave={e=>{ e.currentTarget.style.background='#f0f7ff'; e.currentTarget.style.borderColor='#93c5fd' }}
+                        onDrop={e=>{ e.preventDefault(); e.currentTarget.style.background='#f0f7ff'; e.currentTarget.style.borderColor='#93c5fd'; const file=e.dataTransfer.files[0]; if(file&&file.type==='application/pdf'){ setContractFile(file) } else { showToast('❌ Please drop a PDF file only.','red') } }}
+                        onClick={()=>document.getElementById('contract-file-input').click()}
+                        style={{ background:'#f0f7ff', border:'2px dashed #93c5fd', borderRadius:'12px', padding:'28px', textAlign:'center', cursor:'pointer', transition:'all 0.2s', marginBottom:'8px' }}
+                      >
+                        <p style={{ fontSize:'28px', margin:'0 0 8px' }}>📄</p>
+                        <p style={{ fontWeight:'bold', color:'#4a90d9', fontSize:'13px', margin:'0 0 4px' }}>Drag & Drop PDF here</p>
+                        <p style={{ color:'#888', fontSize:'11px', margin:'0 0 8px' }}>or click to browse</p>
+                        <span style={{ background:'#4a90d9', color:'white', borderRadius:'8px', padding:'6px 16px', fontSize:'12px', fontWeight:'bold' }}>Browse File</span>
+                        <input id="contract-file-input" type="file" accept=".pdf,application/pdf" onChange={e=>setContractFile(e.target.files[0]||null)} style={{ display:'none' }} />
+                      </div>
                       {contractFile && (
-                        <p style={{ fontSize:'12px', color:'#2d8a4e', margin:'6px 0 0', fontWeight:'bold' }}>✅ {contractFile.name} ({(contractFile.size/1024).toFixed(1)} KB)</p>
+                        <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'8px 12px', display:'flex', justifyContent:'space-between', alignItems:'center', border:'1px solid #c8e6c9' }}>
+                          <p style={{ fontSize:'12px', color:'#2d8a4e', margin:0, fontWeight:'bold' }}>✅ {contractFile.name} ({(contractFile.size/1024).toFixed(1)} KB)</p>
+                          <button onClick={()=>setContractFile(null)} style={{ background:'none', border:'none', color:'#ca1b1b', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Remove</button>
+                        </div>
                       )}
                       <p style={{ color:'#888', fontSize:'11px', marginTop:'6px' }}>Use Adobe Scan or Microsoft Lens to scan physical contracts into PDF.</p>
                     </div>
