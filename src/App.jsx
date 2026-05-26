@@ -2259,7 +2259,6 @@ export default function App() {
       let rows = []
       if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
         showToast('⏳ Reading XLSX file...')
-        // Load SheetJS from CDN
         await new Promise((resolve, reject) => {
           if (window.XLSX) { resolve(); return }
           const script = document.createElement('script')
@@ -2271,28 +2270,59 @@ export default function App() {
         const buffer = await file.arrayBuffer()
         const wb = window.XLSX.read(buffer, { type:'array' })
         const ws = wb.Sheets[wb.SheetNames[0]]
-        const data = window.XLSX.utils.sheet_to_json(ws, { defval:'' })
-        rows = data.map(row=>({
-          name: String(row.name || row.Name || row['Item Name'] || row['ITEM NAME'] || '').trim(),
-          category: String(row.category || row.Category || row.CATEGORY || 'Raw Ingredients').trim(),
-          unit: String(row.unit || row.Unit || row.UNIT || 'kg').trim(),
-          current_stock: Number(row.current_stock || row['Current Stock'] || row['Current Stock on Hand'] || row['CURRENT STOCK'] || 0),
-          min_stock: Number(row.min_stock || row['Min Stock'] || row['Min Stock Level'] || row['MIN STOCK'] || 0),
-          cost_per_unit: Number(row.cost_per_unit || row['Cost per Unit'] || row['Cost/Unit'] || row['COST PER UNIT'] || 0),
-          selling_price: Number(row.selling_price || row['Selling Price'] || row['SELLING PRICE'] || 0),
-        })).filter(r=>r.name)
+        // Get raw data with header row
+        const raw = window.XLSX.utils.sheet_to_json(ws, { header:1, defval:'' })
+        if (raw.length < 3) { showToast('❌ File has no data rows.','red'); setCsvUploading(false); return }
+        // Row 0 = headers, Row 1 = instructions (skip), Row 2+ = data
+        const headerRow = raw[0].map(h=>String(h||'').replace(/\n/g,' ').trim().toLowerCase())
+        // Find column indexes by flexible matching
+        const findCol = (...keys) => { for(const k of keys){ const i=headerRow.findIndex(h=>h.includes(k)); if(i>=0) return i } return -1 }
+        const nameIdx = findCol('item name','name')
+        const catIdx = findCol('category')
+        const unitIdx = findCol('unit')
+        const stockIdx = findCol('current stock','stock on hand')
+        const minIdx = findCol('min stock','reorder')
+        const costIdx = findCol('cost per unit','cost per')
+        const supplierIdx = findCol('supplier')
+        // Parse from row 2 (index 2) onward, skip instruction row (index 1)
+        rows = raw.slice(2).map(row=>{
+          const name = String(row[nameIdx]||'').trim()
+          if (!name || name.toLowerCase().includes('type item') || name.toLowerCase().includes('e.g.')) return null
+          return {
+            name,
+            category: String(row[catIdx]||'Raw Ingredients').trim() || 'Raw Ingredients',
+            unit: String(row[unitIdx]||'kg').trim() || 'kg',
+            current_stock: Number(row[stockIdx]||0) || 0,
+            min_stock: Number(row[minIdx]||0) || 0,
+            cost_per_unit: Number(row[costIdx]||0) || 0,
+            selling_price: 0,
+            supplier_name: supplierIdx>=0 ? String(row[supplierIdx]||'').trim() : ''
+          }
+        }).filter(r=>r && r.name)
       } else {
         // Handle CSV
         const text = await file.text()
         const lines = text.split('\n').filter(l=>l.trim())
-        if (lines.length < 2) { showToast('❌ CSV file is empty or invalid.','red'); setCsvUploading(false); return }
-        const headers = lines[0].split(',').map(h=>h.trim().toLowerCase().replace(/[^a-z_]/g,'').replace(/\s+/g,'_'))
+        if (lines.length < 2) { showToast('❌ CSV file is empty or has no data rows.','red'); setCsvUploading(false); return }
+        const rawHeaders = lines[0].split(',').map(h=>h.trim().replace(/^"|"$/g,''))
+        const headers = rawHeaders.map(h=>h.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/_+/g,'_').replace(/^_|_$/g,''))
+        showToast(`📋 Found ${lines.length-1} rows, ${headers.length} columns`)
         rows = lines.slice(1).map(line=>{
           const vals = line.split(',').map(v=>v.trim().replace(/^"|"$/g,''))
           const obj = {}
+          rawHeaders.forEach((h,i)=>{ obj[h]=vals[i]||''; obj[h.toLowerCase()]=vals[i]||'' })
           headers.forEach((h,i)=>{ obj[h]=vals[i]||'' })
-          return obj
-        }).filter(r=>r.name)
+          // Map common variations
+          return {
+            name: obj.name || obj.item_name || obj.item || obj['item name'] || '',
+            category: obj.category || 'Raw Ingredients',
+            unit: obj.unit || obj.unit_of_measure || 'kg',
+            current_stock: Number(obj.current_stock || obj.current_stock_on_hand || obj.stock || 0),
+            min_stock: Number(obj.min_stock || obj.min_stock_level || obj.minimum || 0),
+            cost_per_unit: Number(obj.cost_per_unit || obj.cost || obj.price || 0),
+            selling_price: Number(obj.selling_price || 0),
+          }
+        }).filter(r=>r.name.trim())
       }
       if (rows.length === 0) { showToast('❌ No valid rows found. Check that your file has a "name" column.','red'); setCsvUploading(false); return }
       setCsvPreview(rows)
