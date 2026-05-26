@@ -792,9 +792,9 @@ export default function App() {
       if (contractStorageType === 'digital' && contractFile) {
         const safeCode = emp.employee_code.replace(/[^a-zA-Z0-9]/g, '_')
         fileName = `${safeCode}_${contractType}_${contractStart}_${Date.now()}.pdf`
-        const { error: uploadError } = await supabase.storage.from('contracts').upload(fileName, contractFile, { upsert: false })
+        const { error: uploadError } = await supabase.storage.from('Contracts').upload(fileName, contractFile, { upsert: false })
         if (uploadError) throw uploadError
-        const { data: urlData } = supabase.storage.from('contracts').getPublicUrl(fileName)
+        const { data: urlData } = supabase.storage.from('Contracts').getPublicUrl(fileName)
         fileUrl = urlData.publicUrl
       }
       const isExpired = contractEnd && contractEnd < today
@@ -827,7 +827,7 @@ export default function App() {
   async function deleteContract(contract) {
     if (!window.confirm(`Delete contract for ${contract.employee_name}? This cannot be undone.`)) return
     try {
-      await supabase.storage.from('contracts').remove([contract.file_name])
+      await supabase.storage.from('Contracts').remove([contract.file_name])
     } catch(e) {}
     const { error } = await supabase.from('employee_contracts').delete().eq('id', contract.id)
     if (error) { showToast('Failed: ' + error.message, 'red'); return }
