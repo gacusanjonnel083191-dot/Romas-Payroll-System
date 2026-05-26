@@ -2561,9 +2561,27 @@ export default function App() {
 
   // ── Employee Portal ───────────────────────────────────────────────────────
   async function loadTodayLog(emp) {
-    const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).eq('attendance_date', today).maybeSingle()
-    setTodayLog(data)
-    if (data) loadTodayBreaks(data.id)
+    // First check today's log
+    const { data: todayData } = await supabase.from('attendance_logs')
+      .select('*').eq('employee_id', emp.id).eq('attendance_date', today).maybeSingle()
+    if (todayData) {
+      setTodayLog(todayData)
+      loadTodayBreaks(todayData.id)
+      return
+    }
+    // Night shift fix: check if there's an OPEN log from yesterday (timed in but not yet timed out)
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1)
+    const yesterdayStr = yesterday.toISOString().slice(0,10)
+    const { data: yesterdayData } = await supabase.from('attendance_logs')
+      .select('*').eq('employee_id', emp.id).eq('attendance_date', yesterdayStr).is('time_out', null).maybeSingle()
+    if (yesterdayData) {
+      // Employee is still on shift from yesterday — use that log
+      setTodayLog(yesterdayData)
+      loadTodayBreaks(yesterdayData.id)
+      showToast('🌙 Night shift active from ' + yesterdayStr)
+      return
+    }
+    setTodayLog(null)
   }
   async function loadTodaySchedule(emp) {
     const { data } = await supabase.from('daily_schedules').select('*').eq('employee_id', emp.id).eq('schedule_date', today).maybeSingle()
@@ -2664,6 +2682,11 @@ export default function App() {
     }
     const { data:existing } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', today).maybeSingle()
     if (existing) { setLoading(false); setTodayLog(existing); alert('Already timed in today.'); setCameraMode(null); return }
+    // Night shift check — prevent timing in if still has open shift from yesterday
+    const yest2 = new Date(); yest2.setDate(yest2.getDate()-1)
+    const yestStr2 = yest2.toISOString().slice(0,10)
+    const { data:openShift } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', yestStr2).is('time_out', null).maybeSingle()
+    if (openShift) { setLoading(false); setTodayLog(openShift); alert('You still have an open shift from yesterday. Please Time Out first.'); setCameraMode(null); return }
     let selfieUrl = null
     try { selfieUrl = await uploadSelfie(capturedPhoto, `timein_${employee.id}_${today}.jpg`) } catch(e){}
     const gracePeriod = employee.grace_period_minutes ?? 10
@@ -2692,17 +2715,40 @@ export default function App() {
       if (undertimeMinutes>0) status='Undertime - Pending Filing'
       if (overtimeMinutes>0) status='Overtime - Pending Filing'
     }
+    // ── Auto-compute Night Shift Differential (10PM - 6AM) ───────────────────
+    const timeIn = todayLog.time_in || nowTime()
+    const timeOut = nowTime()
+    const inM = minutesFromTime(timeIn)
+    const outRaw = minutesFromTime(timeOut)
+    const outM = outRaw < inM ? outRaw + 24*60 : outRaw  // handle next-day
+    const nsdStart = 22*60   // 10PM = 1320 mins
+    const nsdEnd = 30*60     // 6AM next day = 1800 mins
+    const os = Math.max(inM, nsdStart)
+    const oe = Math.min(outM, nsdEnd)
+    const nsdMinutes = oe > os ? Math.round(oe - os) : 0
+    // ─────────────────────────────────────────────────────────────────────────
     let selfieUrl = null
     try { selfieUrl = await uploadSelfie(capturedPhoto, `timeout_${employee.id}_${today}.jpg`) } catch(e){}
-    const { data, error } = await supabase.from('attendance_logs').update({ time_out:nowTime(), undertime_minutes:undertimeMinutes, overtime_minutes:overtimeMinutes, status, selfie_out_url:selfieUrl, total_break_minutes:totalBreakMins, excess_break_minutes:excessBreakMins, overtime_approved:null }).eq('id', todayLog.id).select().single()
+    const { data, error } = await supabase.from('attendance_logs').update({
+      time_out: timeOut,
+      undertime_minutes: undertimeMinutes,
+      overtime_minutes: overtimeMinutes,
+      status,
+      selfie_out_url: selfieUrl,
+      total_break_minutes: totalBreakMins,
+      excess_break_minutes: excessBreakMins,
+      overtime_approved: null,
+      night_diff_minutes: nsdMinutes
+    }).eq('id', todayLog.id).select().single()
     setLoading(false)
     if (error) { alert('Time Out failed: '+error.message); return }
     setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
-    await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${data.time_out}`)
-    let msg = 'Time Out saved successfully!'
-    if (overtimeMinutes>0) msg += `\n\n${overtimeMinutes} min overtime — please file an OT request.`
-    if (undertimeMinutes>0) msg += `\n\n${undertimeMinutes} min undertime — please file a UT request.`
-    if (excessBreakMins>0) msg += `\n\n${excessBreakMins} min excess break will be deducted.`
+    await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}`)
+    let msg = '✅ Time Out saved successfully!'
+    if (nsdMinutes > 0) msg += `\n\n🌙 Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) — will be computed in payroll at 10% premium.`
+    if (overtimeMinutes>0) msg += `\n\n⏱ ${overtimeMinutes} min overtime — please file an OT request.`
+    if (undertimeMinutes>0) msg += `\n\n⚠️ ${undertimeMinutes} min undertime — please file a UT request.`
+    if (excessBreakMins>0) msg += `\n\n☕ ${excessBreakMins} min excess break will be deducted.`
     alert(msg)
   }
   async function submitTimeAdjRequest() {
@@ -3622,8 +3668,14 @@ export default function App() {
       for (const log of workedLogs) {
         const inM=minutesFromTime(log.time_in)
         const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
-        const breakMins=Number(log.total_break_minutes||0)
-        const actualMins=Math.max(0,outM-inM-breakMins)
+        const rawMins=outM-inM
+        const recordedBreak=Number(log.total_break_minutes||0)
+        // If no break was recorded AND shift is 9+ hours → assume 1-hour break was taken
+        // Only exception: if OT is approved (employee worked through break intentionally)
+        const effectiveBreak = recordedBreak > 0
+          ? recordedBreak
+          : (rawMins >= 9*60 ? ALLOWED_BREAK_MINUTES : 0)
+        const actualMins=Math.max(0,rawMins-effectiveBreak)
         totalWorkedMinutes+=actualMins
         basicPay+=actualMins*minuteRate
       }
