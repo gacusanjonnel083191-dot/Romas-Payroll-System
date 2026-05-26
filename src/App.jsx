@@ -4596,7 +4596,7 @@ export default function App() {
       if(key==='contracts') { loadContracts(); loadEmployees() }
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
       if(key==='costing') { loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
-      if(key==='franchise') { loadFranchises() }
+      if(key==='schedule') { loadExistingSchedules() }
       if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>{ setResellerDisputes(data||[]) }) }
     }
 
@@ -5589,10 +5589,10 @@ export default function App() {
                         onClick={async()=>{
                           if (!window.confirm(`Remove ALL ${existingSchedules.length} schedule entries? This cannot be undone.`)) return
                           const ids = existingSchedules.map(s=>s.id)
-                          await supabase.from('employee_schedules').delete().in('id', ids)
+                          await supabase.from('daily_schedules').delete().in('id', ids)
                           await logAudit('SCHEDULES CLEARED', adminRole, 'All', `Removed ${ids.length} schedule entries`)
                           showToast(`✅ All ${ids.length} schedules removed!`)
-                          loadSchedules()
+                          loadExistingSchedules()
                         }}>
                         🗑️ REMOVE ALL ({existingSchedules.length})
                       </button>
