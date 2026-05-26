@@ -448,6 +448,32 @@ export default function App() {
   const [showReturnForm, setShowReturnForm] = useState({})
   const [returnItems, setReturnItems] = useState({})
   const [savingReturn, setSavingReturn] = useState(false)
+  // Bank Deposits
+  const [bankDeposits, setBankDeposits] = useState([])
+  const [showDepositForm, setShowDepositForm] = useState(false)
+  const [depositForm, setDepositForm] = useState({ deposit_date:today, deposit_slip_number:'', bank_name:'BDO', amount:'', notes:'' })
+  const [savingDeposit, setSavingDeposit] = useState(false)
+  // Production Reports
+  const tomorrowDate = new Date(); tomorrowDate.setDate(tomorrowDate.getDate()+1)
+  const tomorrowStr2 = tomorrowDate.toISOString().slice(0,10)
+  const [productionReports, setProductionReports] = useState([])
+  const [showProductionReport, setShowProductionReport] = useState(false)
+  const [productionReportItems, setProductionReportItems] = useState([])
+  const [productionReportDate, setProductionReportDate] = useState(today)
+  const [productionReportDeliveryDate, setProductionReportDeliveryDate] = useState(tomorrowStr2)
+  const [productionVarianceReason, setProductionVarianceReason] = useState('')
+  const [productionReportNotes, setProductionReportNotes] = useState('')
+  const [savingProductionReport, setSavingProductionReport] = useState(false)
+  const [viewingProductionReport, setViewingProductionReport] = useState(null)
+  // Suspicious Alerts
+  const [suspiciousAlerts, setSuspiciousAlerts] = useState([])
+  // Reseller Disputes
+  const [showDisputeForm, setShowDisputeForm] = useState(null)
+  const [disputeType, setDisputeType] = useState('')
+  const [disputeDesc, setDisputeDesc] = useState('')
+  const [disputePhoto, setDisputePhoto] = useState(null)
+  const [submittingDispute, setSubmittingDispute] = useState(false)
+  const [resellerDisputes, setResellerDisputes] = useState([])
   const [expensesLoading, setExpensesLoading] = useState(false)
   const [expenseForm, setExpenseForm] = useState({ date:today, category:'Transportation/Fuel', amount:'', description:'' })
   const [savingExpense, setSavingExpense] = useState(false)
@@ -2285,6 +2311,170 @@ export default function App() {
   }
   // ── Expenses Functions ────────────────────────────────────────────────────
   // ── FEATURE 1: Cash Reconciliation ───────────────────────────────────────
+  // ── Bank Deposit System ───────────────────────────────────────────────────
+  async function loadBankDeposits() {
+    const { data } = await supabase.from('bank_deposits').select('*').order('deposit_date', { ascending:false }).limit(20)
+    setBankDeposits(data||[])
+  }
+  async function saveBankDeposit(expectedCash, resellerCollections, walkinSales, expenses) {
+    if (!depositForm.amount) { showToast('❌ Enter deposit amount.','red'); return }
+    if (!depositForm.deposit_slip_number.trim()) { showToast('❌ Enter deposit slip number.','red'); return }
+    setSavingDeposit(true)
+    const amount = Number(depositForm.amount)
+    const variance = amount - expectedCash
+    // Get week range (Mon-Sun)
+    const depDate = new Date(depositForm.deposit_date)
+    const dow = depDate.getDay()
+    const monday = new Date(depDate); monday.setDate(depDate.getDate() - (dow===0?6:dow-1))
+    const sunday = new Date(monday); sunday.setDate(monday.getDate()+6)
+    const { error } = await supabase.from('bank_deposits').insert({
+      deposit_date: depositForm.deposit_date,
+      week_start: monday.toISOString().slice(0,10),
+      week_end: sunday.toISOString().slice(0,10),
+      amount, deposit_slip_number: depositForm.deposit_slip_number,
+      bank_name: depositForm.bank_name||'BDO',
+      deposited_by: adminRole,
+      reseller_collections: resellerCollections,
+      walkin_sales: walkinSales,
+      expenses_paid: expenses,
+      total_expected: expectedCash,
+      variance, notes: depositForm.notes||null,
+      status: 'deposited'
+    })
+    if (error) { showToast('❌ Failed: '+error.message,'red'); setSavingDeposit(false); return }
+    await logAudit('BANK DEPOSIT', adminRole, 'Finance', `${php(amount)} — Slip: ${depositForm.deposit_slip_number} — Variance: ${php(variance)}`)
+    if (Math.abs(variance) > 100) {
+      await supabase.from('suspicious_alerts').insert({ alert_type:'deposit_variance', severity: Math.abs(variance)>1000?'high':'medium', description:`Bank deposit variance of ${php(Math.abs(variance))} detected. Expected: ${php(expectedCash)}, Deposited: ${php(amount)}`, related_to:'Bank Deposit' })
+    }
+    showToast(variance===0?'✅ Deposit recorded — fully balanced!':Math.abs(variance)<50?`✅ Deposit recorded — minor variance: ${php(variance)}`:`⚠️ Deposit recorded — variance: ${php(variance)}`)
+    setShowDepositForm(false)
+    setDepositForm({ deposit_date:today, deposit_slip_number:'', bank_name:'BDO', amount:'', notes:'' })
+    loadBankDeposits(); loadCashReconciliations(); setSavingDeposit(false)
+  }
+  function checkTuesdayDepositReminder() {
+    const dayOfWeek = new Date().getDay() // 0=Sun, 2=Tue
+    if (dayOfWeek === 2) {
+      const lastDeposit = bankDeposits[0]
+      const lastDepDate = lastDeposit?.deposit_date
+      const isToday = lastDepDate === today
+      if (!isToday) createNotification(null, 'System', 'deposit', '💳 Tuesday Deposit Reminder', `Today is deposit day! Please deposit this week\'s collections and record the bank deposit slip.`)
+    }
+  }
+
+  // ── Production Report System ──────────────────────────────────────────────
+  async function loadProductionReports() {
+    const { data } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
+    setProductionReports(data||[])
+  }
+  async function initProductionReport(deliveryDate) {
+    // Load forecast from invoices for delivery date
+    const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+    const forecastMap = {}
+    forecastInvoices.forEach(inv=>{
+      ;(inv.delivery_invoice_items||[]).forEach(item=>{
+        if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:'' }
+        forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+      })
+    })
+    const items = Object.values(forecastMap)
+    if (items.length===0) { showToast('⚠️ No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+    // Also load all variants for items not in forecast
+    const { data:variants } = await supabase.from('donut_variants').select('*').eq('is_active',true).order('name')
+    const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
+    setProductionReportItems(variantItems)
+    setProductionReportDeliveryDate(deliveryDate)
+    setShowProductionReport(true)
+  }
+  async function saveProductionReport() {
+    const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+    if (validItems.length===0) { showToast('❌ No items to report.','red'); return }
+    const totalForecast = validItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
+    const totalProduced = validItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+    const variance = totalProduced - totalForecast
+    const hasVariance = Math.abs(variance) > 0
+    if (hasVariance && !productionVarianceReason.trim()) { showToast('❌ Variance detected — please enter reason.','red'); return }
+    setSavingProductionReport(true)
+    try {
+      const { data:report, error } = await supabase.from('production_reports').insert({
+        report_date: productionReportDate,
+        delivery_date: productionReportDeliveryDate,
+        submitted_by: adminEmployee?.full_name||adminRole,
+        submitted_by_role: adminRole,
+        status: 'submitted',
+        total_forecast: totalForecast,
+        total_produced: totalProduced,
+        variance,
+        variance_reason: hasVariance?productionVarianceReason:null,
+        notes: productionReportNotes||null
+      }).select().single()
+      if (error) throw error
+      await supabase.from('production_report_items').insert(validItems.map(i=>({ report_id:report.id, variant_id:i.variant_id, variant_name:i.variant_name, forecast_qty:Number(i.forecast_qty||0), actual_qty:Number(i.actual_qty||0), variance:Number(i.actual_qty||0)-Number(i.forecast_qty||0), variance_reason:i.variance_reason||null })))
+      // Alert if significant variance
+      if (Math.abs(variance) > 50) {
+        await supabase.from('suspicious_alerts').insert({ alert_type:'production_variance', severity:Math.abs(variance)>200?'high':'medium', description:`Production variance of ${variance} pieces for delivery on ${productionReportDeliveryDate}. Forecast: ${totalForecast}, Actual: ${totalProduced}. Reason: ${productionVarianceReason}`, related_to:'Production Report' })
+        await createNotification(null,'System','production',`⚠️ Production Variance Alert`,`${Math.abs(variance)} piece variance for ${productionReportDeliveryDate}. Forecast: ${totalForecast}, Produced: ${totalProduced}`)
+      }
+      await logAudit('PRODUCTION REPORT SUBMITTED', adminRole, adminEmployee?.full_name||'', `${productionReportDate} → Delivery ${productionReportDeliveryDate}: ${totalProduced}/${totalForecast} pieces`)
+      showToast(`✅ Production report saved! ${totalProduced} pieces produced.`)
+      setShowProductionReport(false); setProductionReportItems([]); setProductionVarianceReason(''); setProductionReportNotes('')
+      loadProductionReports()
+    } catch(err) { showToast('❌ Failed: '+err.message,'red') }
+    setSavingProductionReport(false)
+  }
+
+  // ── Suspicious Pattern Detection ──────────────────────────────────────────
+  async function checkSuspiciousPatterns() {
+    const alerts = []
+    // Check cash shortages for 2+ consecutive days
+    const recentRecons = cashReconciliations.slice(0,5)
+    const shortages = recentRecons.filter(r=>Number(r.variance)<-100)
+    if (shortages.length >= 2) alerts.push({ alert_type:'consecutive_shortages', severity:'high', description:`Cash shortage detected for ${shortages.length} recent reconciliations. Total missing: ${php(shortages.reduce((s,r)=>s+Math.abs(Number(r.variance)),0))}`, related_to:'Cash Reconciliation' })
+    // Check reseller with returns 3+ invoices
+    const returnCounts = {}
+    deliveryInvoices.forEach(inv=>{ if(inv.notes?.includes('Returns recorded')) { returnCounts[inv.reseller_name]=(returnCounts[inv.reseller_name]||0)+1 } })
+    Object.entries(returnCounts).forEach(([name,count])=>{ if(count>=3) alerts.push({ alert_type:'excessive_returns', severity:'medium', description:`${name} has recorded returns on ${count} invoices. Please verify delivery quality and reseller accountability.`, related_to:name }) })
+    // Check Tuesday deposit reminder
+    const dayOfWeek = new Date().getDay()
+    if (dayOfWeek===2) {
+      const todayDeposit = bankDeposits.find(d=>d.deposit_date===today)
+      if (!todayDeposit) alerts.push({ alert_type:'missing_deposit', severity:'high', description:`Today is Tuesday — deposit day! No bank deposit has been recorded yet for today.`, related_to:'Bank Deposit' })
+    }
+    // Save new alerts
+    for (const alert of alerts) {
+      const existing = suspiciousAlerts.find(a=>a.alert_type===alert.alert_type&&a.related_to===alert.related_to&&a.created_at?.startsWith(today))
+      if (!existing) {
+        await supabase.from('suspicious_alerts').insert(alert)
+        await createNotification(null,'System','alert',`🚨 ${alert.severity==='high'?'HIGH':'Medium'} Alert: ${alert.alert_type.replace(/_/g,' ')}`,alert.description)
+      }
+    }
+    const { data } = await supabase.from('suspicious_alerts').select('*').eq('is_read',false).order('created_at',{ascending:false}).limit(20)
+    setSuspiciousAlerts(data||[])
+  }
+
+  // ── Reseller Dispute with Photo ───────────────────────────────────────────
+  async function submitResellerDispute(invoice) {
+    if (!disputeType) { showToast('❌ Select dispute type.','red'); return }
+    if (!disputeDesc.trim()) { showToast('❌ Describe the issue.','red'); return }
+    setSubmittingDispute(true)
+    let photoUrl = null
+    if (disputePhoto) {
+      try {
+        const fileName = `dispute_${invoice.id}_${Date.now()}.jpg`
+        const { data:up } = await supabase.storage.from('disputes').upload(fileName, disputePhoto, { upsert:true })
+        if (up) photoUrl = supabase.storage.from('disputes').getPublicUrl(fileName).data.publicUrl
+      } catch(e) { console.error('Photo upload failed:', e) }
+    }
+    const { error } = await supabase.from('reseller_disputes').insert({ invoice_id:invoice.id, reseller_id:currentReseller?.id||invoice.reseller_id, reseller_name:currentReseller?.name||invoice.reseller_name, dispute_type:disputeType, description:disputeDesc, photo_url:photoUrl, status:'pending' })
+    if (error) { showToast('❌ Failed: '+error.message,'red'); setSubmittingDispute(false); return }
+    await createNotification(null,'System','dispute',`⚠️ Reseller Dispute: ${currentReseller?.name||invoice.reseller_name}`,`${disputeType} — ${disputeDesc}${photoUrl?' (Photo attached)':''}`)
+    showToast('✅ Dispute submitted! Admin will review shortly.')
+    setShowDisputeForm(null); setDisputeType(''); setDisputeDesc(''); setDisputePhoto(null)
+    setSubmittingDispute(false)
+  }
+  async function loadSuspiciousAlerts() {
+    const { data } = await supabase.from('suspicious_alerts').select('*').order('created_at',{ascending:false}).limit(20)
+    setSuspiciousAlerts(data||[])
+  }
   async function loadCashReconciliations() {
     const { data } = await supabase.from('cash_reconciliations').select('*').order('reconciliation_date', { ascending:false }).limit(30)
     setCashReconciliations(data||[])
@@ -3117,8 +3307,10 @@ export default function App() {
     setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
-    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); autoAcknowledgeExpired().catch(()=>{})
+    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{})
     requestPushPermission()
+    // Check Tuesday deposit reminder
+    setTimeout(()=>checkTuesdayDepositReminder(), 2000)
   }
   async function loadDashboard() {
     const { data:emps } = await supabase.from('employees').select('*').eq('is_active', true)
@@ -4031,7 +4223,7 @@ export default function App() {
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
       if(key==='costing') { loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
       if(key==='franchise') { loadFranchises() }
-      if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations() }
+      if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>{ setResellerDisputes(data||[]) }) }
     }
 
     // ── Open full employee portal from admin panel ─────────────────────────
@@ -7852,7 +8044,7 @@ export default function App() {
 
                 {/* Sub-navigation */}
                 <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['resellers','🏪 Resellers']].map(([v,l])=>(
+                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].map(([v,l])=>(
                     <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
                   ))}
                 </div>
@@ -7860,6 +8052,110 @@ export default function App() {
                 {/* ── FINANCIAL DASHBOARD ── */}
                 {salesView==='dashboard' && (
                   <div>
+                    {/* SUSPICIOUS ALERTS PANEL */}
+                    {suspiciousAlerts.filter(a=>!a.is_read).length > 0 && (
+                      <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:0 }}>🚨 Suspicious Pattern Alerts ({suspiciousAlerts.filter(a=>!a.is_read).length})</p>
+                          <button style={{ background:'none', border:'none', color:'#ca1b1b', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={async()=>{ await supabase.from('suspicious_alerts').update({is_read:true}).eq('is_read',false); loadSuspiciousAlerts() }}>Mark all read</button>
+                        </div>
+                        {suspiciousAlerts.filter(a=>!a.is_read).map(a=>(
+                          <div key={a.id} style={{ background:'white', borderRadius:'8px', padding:'10px 12px', marginBottom:'6px', border:`1px solid ${a.severity==='high'?'#ca1b1b':'#f5a623'}`, borderLeft:`4px solid ${a.severity==='high'?'#ca1b1b':'#f5a623'}` }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+                              <div>
+                                <p style={{ fontWeight:'bold', color:a.severity==='high'?'#ca1b1b':'#f57c00', fontSize:'12px', margin:'0 0 4px' }}>{a.severity==='high'?'🔴':'🟡'} {a.alert_type.replace(/_/g,' ').toUpperCase()}</p>
+                                <p style={{ color:'#555', fontSize:'11px', margin:'0 0 4px' }}>{a.description}</p>
+                                <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{new Date(a.created_at).toLocaleString('en-PH')}</p>
+                              </div>
+                              <button onClick={async()=>{ await supabase.from('suspicious_alerts').update({is_read:true}).eq('id',a.id); loadSuspiciousAlerts() }} style={{ background:'none', border:'none', color:'#888', cursor:'pointer', fontSize:'14px' }}>✕</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* PRODUCTION REPORT SECTION */}
+                    {(adminRole==='supervisor'||adminRole==='asst_supervisor'||adminRole==='owner'||adminRole==='manager') && (
+                      <div style={{ background:'white', border:'2px solid #1a1a2e', borderRadius:'14px', padding:'14px', marginBottom:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px', flexWrap:'wrap', gap:'8px' }}>
+                          <div>
+                            <p style={{ fontWeight:'bold', color:'#1a1a2e', fontSize:'14px', margin:'0 0 2px' }}>📋 Production Report</p>
+                            <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Fill daily — tonight's production for tomorrow's delivery</p>
+                          </div>
+                          <button style={{ ...btnBlack, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>initProductionReport(tomorrowStr2)}>📝 FILE TONIGHT'S REPORT</button>
+                        </div>
+                        {/* Recent Reports */}
+                        {productionReports.slice(0,3).map(r=>(
+                          <div key={r.id} style={{ background:'#f8f7f5', borderRadius:'8px', padding:'10px 12px', marginBottom:'6px', border:`1px solid ${Math.abs(r.variance)>50?'#ca1b1b':'#2d8a4e'}` }} onClick={()=>setViewingProductionReport(r)} style={{ cursor:'pointer', background:'#f8f7f5', borderRadius:'8px', padding:'10px 12px', marginBottom:'6px', border:`1px solid ${Math.abs(r.variance)>50?'#ca1b1b':'#eee'}` }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                              <div>
+                                <p style={{ fontWeight:'bold', fontSize:'12px', margin:'0 0 2px' }}>Production: {r.report_date} → Delivery: {r.delivery_date}</p>
+                                <p style={{ color:'#888', fontSize:'11px', margin:0 }}>By: {r.submitted_by} · Forecast: {r.total_forecast} pcs · Produced: {r.total_produced} pcs</p>
+                              </div>
+                              <div style={{ textAlign:'right' }}>
+                                <span style={{ background:Math.abs(r.variance)>50?'#fff5f5':'#e8f5e9', color:Math.abs(r.variance)>50?'#ca1b1b':'#2d8a4e', borderRadius:'20px', padding:'3px 10px', fontSize:'11px', fontWeight:'bold' }}>{r.variance>0?'+':''}{r.variance} pcs</span>
+                              </div>
+                            </div>
+                            {r.variance_reason && <p style={{ color:'#888', fontSize:'10px', margin:'4px 0 0' }}>Reason: {r.variance_reason}</p>}
+                          </div>
+                        ))}
+                        {productionReports.length===0 && <p style={{ color:'#aaa', fontSize:'12px', textAlign:'center', padding:'10px' }}>No production reports yet. File your first report tonight.</p>}
+                      </div>
+                    )}
+                    {/* Production Report Form */}
+                    {showProductionReport && (
+                      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setShowProductionReport(false)}>
+                        <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'650px', width:'100%', maxHeight:'90vh', overflowY:'auto' }} onClick={e=>e.stopPropagation()}>
+                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'14px' }}>
+                            <div><p style={{ fontWeight:'bold', color:'#1a1a2e', fontSize:'15px', margin:'0 0 2px' }}>📋 Production Report</p><p style={{ color:'#888', fontSize:'12px', margin:0 }}>Tonight: {productionReportDate} → Delivery: {productionReportDeliveryDate}</p></div>
+                            <button onClick={()=>setShowProductionReport(false)} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold' }}>✕</button>
+                          </div>
+                          {/* Variance Summary */}
+                          {productionReportItems.some(i=>Number(i.actual_qty)>0) && (()=>{
+                            const totalF = productionReportItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
+                            const totalA = productionReportItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+                            const v = totalA - totalF
+                            return (
+                              <div style={{ background:Math.abs(v)===0?'#e8f5e9':Math.abs(v)<=20?'#fff3cd':'#fff5f5', borderRadius:'10px', padding:'10px 14px', marginBottom:'14px', border:`1px solid ${Math.abs(v)===0?'#2d8a4e':Math.abs(v)<=20?'#ffc107':'#ca1b1b'}` }}>
+                                <p style={{ fontWeight:'bold', margin:0, fontSize:'13px', color:Math.abs(v)===0?'#2d8a4e':Math.abs(v)<=20?'#856404':'#ca1b1b' }}>
+                                  Forecast: {totalF} pcs | Produced: {totalA} pcs | Variance: {v>0?'+':''}{v} pcs {Math.abs(v)===0?'✅':Math.abs(v)<=20?'⚠️':'🚨'}
+                                </p>
+                              </div>
+                            )
+                          })()}
+                          {/* Items Table */}
+                          <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', marginBottom:'14px' }}>
+                            <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr', background:'#1a1a2e', padding:'8px 12px' }}>
+                              {['Variant','Forecast','Actual','Variance Reason'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
+                            </div>
+                            {productionReportItems.map((item,i)=>{
+                              const v = Number(item.actual_qty||0) - Number(item.forecast_qty||0)
+                              return (
+                                <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center', gap:'6px' }}>
+                                  <span style={{ fontSize:'11px', fontWeight:'bold' }}>{item.variant_name}</span>
+                                  <span style={{ fontSize:'12px', color:'#4a90d9', fontWeight:'bold' }}>{item.forecast_qty}</span>
+                                  <input type="number" min="0" value={item.actual_qty||''} onChange={e=>{ const upd=[...productionReportItems]; upd[i]={...upd[i],actual_qty:e.target.value}; setProductionReportItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'12px', padding:'4px 6px', border:v!==0&&item.actual_qty!==''?'2px solid #f5a623':'1.5px solid #e8e8e8', textAlign:'center' }} placeholder="0" />
+                                  {v!==0&&item.actual_qty!==''?<input placeholder="Reason..." value={item.variance_reason||''} onChange={e=>{ const upd=[...productionReportItems]; upd[i]={...upd[i],variance_reason:e.target.value}; setProductionReportItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'10px', padding:'4px 6px' }} />:<span style={{ fontSize:'10px', color:'#aaa' }}>—</span>}
+                                </div>
+                              )
+                            })}
+                          </div>
+                          {/* Overall Variance Reason */}
+                          {productionReportItems.some(i=>Number(i.actual_qty||0)!==Number(i.forecast_qty||0)&&i.actual_qty!=='') && (
+                            <div style={{ marginBottom:'12px' }}>
+                              <label style={lblS}>Overall Variance Reason (required if any variance):</label>
+                              <select value={productionVarianceReason} onChange={e=>setProductionVarianceReason(e.target.value)} style={inputStyle}>
+                                <option value="">— Select reason —</option>
+                                {['Equipment breakdown','Ingredient shortage','Power outage','Manpower shortage','Quality control rejection','Overproduction','Weather/force majeure','Others'].map(r=><option key={r} value={r}>{r}</option>)}
+                              </select>
+                              {productionVarianceReason==='Others' && <input placeholder="Describe..." value={productionReportNotes} onChange={e=>setProductionReportNotes(e.target.value)} style={inputStyle} />}
+                            </div>
+                          )}
+                          <label style={lblS}>Additional Notes:</label>
+                          <input value={productionReportNotes} onChange={e=>setProductionReportNotes(e.target.value)} placeholder="Any additional notes..." style={inputStyle} />
+                          <button style={{ ...btnBlack, opacity:savingProductionReport?0.6:1 }} disabled={savingProductionReport} onClick={saveProductionReport}>{savingProductionReport?'⏳ Saving...':'✅ SUBMIT PRODUCTION REPORT'}</button>
+                        </div>
+                      </div>
+                    )}
                     <div style={{ display:'flex', gap:'10px', alignItems:'center', marginBottom:'14px', flexWrap:'wrap' }}>
                       <label style={{ fontSize:'13px', fontWeight:'bold', color:'#555' }}>Period:</label>
                       <input type="month" value={financialMonth} onChange={e=>setFinancialMonth(e.target.value)} style={{ ...inputStyle, width:'auto', marginBottom:0 }} />
@@ -8735,6 +9031,70 @@ export default function App() {
                         </div>
                       )
                     })()}
+                    {/* BANK DEPOSIT TRACKER */}
+                    {(()=>{
+                      const weekPaid = deliveryInvoices.filter(i=>i.paid_date&&i.paid_date>=bankDeposits[0]?.week_start).reduce((s,i)=>s+Number(i.paid_amount||0),0)
+                      const weekSales = dailySales.filter(s=>s.sale_date>=bankDeposits[0]?.week_start).reduce((s,d)=>s+Number(d.total_amount||0),0)
+                      const weekExp = dailyExpenses.filter(e=>e.status==='approved'&&e.expense_date>=bankDeposits[0]?.week_start).reduce((s,e)=>s+Number(e.amount||0),0)
+                      const expectedDeposit = weekPaid + weekSales - weekExp
+                      const isDayOfWeek = new Date().getDay()===2 // Tuesday
+                      return (
+                        <div style={{ background:'white', border:`2px solid ${isDayOfWeek?'#ca1b1b':'#1a1a2e'}`, borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px', flexWrap:'wrap', gap:'8px' }}>
+                            <div>
+                              <h3 style={{ color:'#1a1a2e', margin:'0 0 2px', fontSize:'14px' }}>🏦 Weekly Bank Deposit {isDayOfWeek&&<span style={{ background:'#ca1b1b', color:'white', borderRadius:'6px', padding:'2px 8px', fontSize:'10px', marginLeft:'6px' }}>📅 DEPOSIT DAY TODAY!</span>}</h3>
+                              <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Every Tuesday · Admin deposits weekly collections</p>
+                            </div>
+                            <button style={{ ...btnYellow, padding:'8px 16px' }} onClick={()=>setShowDepositForm(!showDepositForm)}>💳 RECORD DEPOSIT</button>
+                          </div>
+                          {/* Summary */}
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'10px', marginBottom:'12px' }}>
+                            {[['This Week Collections',php(weekPaid+weekSales),'#2d8a4e'],['Expenses Paid',php(weekExp),'#ca1b1b'],['Expected Deposit',php(expectedDeposit),'#1a1a2e']].map(([l,v,c])=>(
+                              <div key={l} style={{ background:'#f8f7f5', borderRadius:'10px', padding:'10px', textAlign:'center', border:`1px solid ${c}22` }}>
+                                <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase' }}>{l}</p>
+                                <p style={{ fontWeight:'bold', color:c, fontSize:'16px', margin:0 }}>{v}</p>
+                              </div>
+                            ))}
+                          </div>
+                          {/* Deposit Form */}
+                          {showDepositForm && (
+                            <div style={{ background:'#f8f7f5', borderRadius:'10px', padding:'14px', marginBottom:'12px', border:'1px solid #eee' }}>
+                              <p style={{ fontWeight:'bold', color:'#1a1a2e', fontSize:'13px', margin:'0 0 10px' }}>Record Bank Deposit</p>
+                              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px' }}>
+                                <div><label style={lblS}>Deposit Date:</label><input type="date" value={depositForm.deposit_date} onChange={e=>setDepositForm(p=>({...p,deposit_date:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                                <div><label style={lblS}>Bank Name:</label><select value={depositForm.bank_name} onChange={e=>setDepositForm(p=>({...p,bank_name:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>{['BDO','BPI','Metrobank','UnionBank','Landbank','PNB','RCBC','Security Bank','GCash','Maya'].map(b=><option key={b}>{b}</option>)}</select></div>
+                                <div><label style={lblS}>Deposit Slip Number:</label><input value={depositForm.deposit_slip_number} onChange={e=>setDepositForm(p=>({...p,deposit_slip_number:e.target.value}))} placeholder="e.g. 2026-051234" style={{ ...inputStyle, marginBottom:0 }} /></div>
+                                <div><label style={lblS}>Amount Deposited (₱):</label><input type="number" value={depositForm.amount} onChange={e=>setDepositForm(p=>({...p,amount:e.target.value}))} placeholder="0.00" style={{ ...inputStyle, marginBottom:0, border:'2px solid #FDD412', fontWeight:'bold', fontSize:'16px' }} /></div>
+                              </div>
+                              <label style={lblS}>Notes:</label>
+                              <input value={depositForm.notes} onChange={e=>setDepositForm(p=>({...p,notes:e.target.value}))} placeholder="Any notes..." style={inputStyle} />
+                              {depositForm.amount && (
+                                <div style={{ background:Math.abs(Number(depositForm.amount)-expectedDeposit)<50?'#e8f5e9':'#fff3cd', borderRadius:'8px', padding:'8px 12px', marginBottom:'10px', border:`1px solid ${Math.abs(Number(depositForm.amount)-expectedDeposit)<50?'#2d8a4e':'#ffc107'}` }}>
+                                  <p style={{ margin:0, fontSize:'12px', fontWeight:'bold' }}>
+                                    Variance: {php(Number(depositForm.amount)-expectedDeposit)}
+                                    {Math.abs(Number(depositForm.amount)-expectedDeposit)<50?' ✅ Within acceptable range':' ⚠️ Significant variance — will be flagged'}
+                                  </p>
+                                </div>
+                              )}
+                              <button style={{ ...btnBlack, opacity:savingDeposit?0.6:1 }} disabled={savingDeposit} onClick={()=>saveBankDeposit(expectedDeposit, weekPaid, weekSales, weekExp)}>{savingDeposit?'⏳ Saving...':'💳 SAVE DEPOSIT RECORD'}</button>
+                            </div>
+                          )}
+                          {/* Deposit History */}
+                          {bankDeposits.slice(0,5).map(d=>(
+                            <div key={d.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 12px', background:'#fafafa', borderRadius:'8px', marginBottom:'4px', border:'1px solid #f0f0f0' }}>
+                              <div>
+                                <p style={{ fontWeight:'bold', fontSize:'12px', margin:'0 0 2px' }}>{d.deposit_date} · {d.bank_name}</p>
+                                <p style={{ color:'#888', fontSize:'10px', margin:0 }}>Slip: {d.deposit_slip_number} · By: {d.deposited_by}</p>
+                              </div>
+                              <div style={{ textAlign:'right' }}>
+                                <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'14px', margin:'0 0 2px' }}>{php(d.amount)}</p>
+                                <p style={{ fontSize:'10px', color:Number(d.variance)===0?'#2d8a4e':Math.abs(Number(d.variance))<50?'#f5a623':'#ca1b1b', fontWeight:'bold', margin:0 }}>{Number(d.variance)>0?'+':''}{php(d.variance)}</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
                     <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>💸 Daily Expenses</h3>
                     <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
                       <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>➕ Add Expense</h4>
@@ -9107,6 +9467,57 @@ export default function App() {
                     </div>
                   )
                 })()}
+              </div>
+            )}
+
+                {salesView==='disputes' && (
+                  <div>
+                    <h3 style={h2s}>⚠️ Reseller Disputes</h3>
+                    <button style={{ ...btnRed, width:'auto', padding:'8px 16px', marginBottom:'14px', marginTop:0 }} onClick={()=>{ supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>setResellerDisputes(data||[])); checkSuspiciousPatterns() }}>🔄 REFRESH</button>
+                    {resellerDisputes.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No disputes filed yet.</p>:resellerDisputes.map(d=>(
+                      <div key={d.id} style={{ ...cardS, border:`2px solid ${d.status==='pending'?'#f5a623':d.status==='resolved'?'#2d8a4e':'#eee'}` }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
+                          <div>
+                            <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{d.reseller_name}</p>
+                            <p style={{ color:'#555', fontSize:'12px', margin:'0 0 2px' }}>Type: {d.dispute_type}</p>
+                            <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{d.description}</p>
+                            <p style={{ color:'#aaa', fontSize:'10px', margin:'4px 0 0' }}>{new Date(d.created_at).toLocaleString('en-PH')}</p>
+                          </div>
+                          <span style={{ background:d.status==='pending'?'#fff3cd':d.status==='resolved'?'#e8f5e9':'#f0f0f0', color:d.status==='pending'?'#856404':d.status==='resolved'?'#2d8a4e':'#888', borderRadius:'20px', padding:'3px 10px', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap' }}>{d.status?.toUpperCase()}</span>
+                        </div>
+                        {d.photo_url && (
+                          <div style={{ marginBottom:'8px' }}>
+                            <a href={d.photo_url} target="_blank" rel="noreferrer">
+                              <img src={d.photo_url} alt="Dispute proof" style={{ width:'100%', maxWidth:'200px', borderRadius:'8px', border:'1px solid #eee', cursor:'pointer' }} />
+                            </a>
+                            <p style={{ color:'#4a90d9', fontSize:'10px', margin:'4px 0 0' }}>📸 Photo proof attached — click to view full size</p>
+                          </div>
+                        )}
+                        {d.status==='pending' && (
+                          <div style={{ marginTop:'8px' }}>
+                            <input placeholder="Admin response..." style={{ ...inputStyle, marginBottom:'6px' }} id={`dispute-resp-${d.id}`} />
+                            <div style={{ display:'flex', gap:'6px' }}>
+                              <button style={{ ...btnGreen, flex:1, marginTop:0, padding:'8px', fontSize:'11px' }} onClick={async()=>{
+                                const resp = document.getElementById(`dispute-resp-${d.id}`)?.value
+                                if (!resp?.trim()) { showToast('❌ Enter response first.','red'); return }
+                                await supabase.from('reseller_disputes').update({ status:'resolved', admin_response:resp, resolved_at:new Date().toISOString() }).eq('id',d.id)
+                                await createNotification(null,'System','dispute',`✅ Dispute Resolved: ${d.reseller_name}`,`Your dispute (${d.dispute_type}) has been resolved. Response: ${resp}`)
+                                showToast('✅ Dispute resolved!')
+                                supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>setResellerDisputes(data||[]))
+                              }}>✅ RESOLVE</button>
+                              <button style={{ ...btnGray, flex:1, marginTop:0, padding:'8px', fontSize:'11px' }} onClick={async()=>{
+                                await supabase.from('reseller_disputes').update({ status:'dismissed' }).eq('id',d.id)
+                                showToast('Dispute dismissed.')
+                                supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>setResellerDisputes(data||[]))
+                              }}>❌ DISMISS</button>
+                            </div>
+                          </div>
+                        )}
+                        {d.admin_response && <p style={{ color:'#2d8a4e', fontSize:'11px', margin:'6px 0 0', padding:'6px 10px', background:'#e8f5e9', borderRadius:'6px' }}>Admin response: {d.admin_response}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -9984,6 +10395,27 @@ export default function App() {
                     <button style={{ ...btnGreen, marginTop:'6px', padding:'8px', fontSize:'12px' }} onClick={()=>confirmDeliveryReceipt(inv.id)}>✅ CONFIRM DELIVERY RECEIVED</button>
                   )}
                   {inv.receipt_confirmed && <p style={{ color:'#2d8a4e', fontSize:'11px', fontWeight:'bold', margin:'4px 0 0' }}>✅ Delivery confirmed on {inv.confirmed_at?.slice(0,10)}</p>}
+                  {/* Dispute Button */}
+                  <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px', marginTop:'8px', width:'100%' }} onClick={()=>setShowDisputeForm(showDisputeForm===inv.id?null:inv.id)}>⚠️ REPORT DISCREPANCY / DISPUTE</button>
+                  {/* Dispute Form */}
+                  {showDisputeForm===inv.id && (
+                    <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'10px', padding:'14px', marginTop:'8px' }}>
+                      <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:'0 0 10px' }}>⚠️ Report Discrepancy</p>
+                      <label style={lblS}>Dispute Type:</label>
+                      <select value={disputeType} onChange={e=>setDisputeType(e.target.value)} style={inputStyle}>
+                        <option value="">— Select —</option>
+                        {['Wrong items delivered','Missing items','Damaged goods','Quantity mismatch','Quality issue','Wrong price','Other'].map(t=><option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <label style={lblS}>Description:</label>
+                      <textarea value={disputeDesc} onChange={e=>setDisputeDesc(e.target.value)} placeholder="Describe the issue in detail..." style={{ ...inputStyle, minHeight:'80px', resize:'vertical' }} />
+                      <label style={lblS}>Photo Proof (required for discrepancies):</label>
+                      <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#fff3cd'}} onDragLeave={e=>{e.currentTarget.style.background='#f8f7f5'}} onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#f8f7f5';const f=e.dataTransfer.files[0];if(f)setDisputePhoto(f)}} onClick={()=>document.getElementById('dispute-photo-'+inv.id).click()} style={{ background:'#f8f7f5', border:'2px dashed #f5a623', borderRadius:'10px', padding:'20px', textAlign:'center', cursor:'pointer', marginBottom:'10px' }}>
+                        {disputePhoto?<p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px', margin:0 }}>📸 {disputePhoto.name}</p>:<><p style={{ fontSize:'24px', margin:'0 0 4px' }}>📸</p><p style={{ color:'#888', fontSize:'11px', margin:0 }}>Tap to take/upload photo proof</p></>}
+                        <input id={'dispute-photo-'+inv.id} type="file" accept="image/*" capture="environment" onChange={e=>setDisputePhoto(e.target.files[0]||null)} style={{ display:'none' }} />
+                      </div>
+                      <button style={{ ...btnRed, opacity:submittingDispute?0.6:1 }} disabled={submittingDispute} onClick={()=>submitResellerDispute(inv)}>{submittingDispute?'⏳ Submitting...':'📤 SUBMIT DISPUTE'}</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
