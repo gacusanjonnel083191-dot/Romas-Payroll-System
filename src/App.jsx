@@ -342,6 +342,13 @@ export default function App() {
   // Admin order management
   const [pendingResellerOrders, setPendingResellerOrders] = useState([])
   const [showOrdersPanel, setShowOrdersPanel] = useState(false)
+  // Login type
+  const [loginType, setLoginType] = useState('employee')
+  // Franchise
+  const [franchises, setFranchises] = useState([])
+  const [showFranchiseForm, setShowFranchiseForm] = useState(false)
+  const [franchiseForm, setFranchiseForm] = useState({ branch_name:'', location:'', franchisee_name:'', contact_number:'', franchise_fee:'', royalty_rate:'5', opening_date:'', status:'active', notes:'' })
+  const [loadingFranchises, setLoadingFranchises] = useState(false)
   const [inventoryLoading, setInventoryLoading] = useState(false)
   const [addItemLoading, setAddItemLoading] = useState(false)
   // ── Phase 2: Costing System ───────────────────────────────────────────────
@@ -2965,6 +2972,12 @@ export default function App() {
       await Notification.requestPermission()
     }
   }
+  async function loadFranchises() {
+    setLoadingFranchises(true)
+    const { data } = await supabase.from('franchise_locations').select('*').order('created_at',{ascending:false})
+    setFranchises(data||[])
+    setLoadingFranchises(false)
+  }
   async function loadAdminLogs() {
     const { data } = await supabase.from('attendance_logs').select('*').eq('attendance_date', adminDate).order('employee_name')
     setAdminLogs(data || [])
@@ -3779,6 +3792,7 @@ export default function App() {
       if(key==='contracts') { loadContracts(); loadEmployees() }
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders() }
       if(key==='costing') { loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
+      if(key==='franchise') { loadFranchises() }
       if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations() }
     }
 
@@ -8591,15 +8605,81 @@ export default function App() {
             {activeTab==='franchise' && adminRole==='owner' && (
               <div>
                 <h2 style={h2s}>🏪 Franchise Management</h2>
-                {(()=>{
-                  const [franchises, setFranchises] = useState([])
-                  const [showFranchiseForm, setShowFranchiseForm] = useState(false)
-                  const [franchiseForm, setFranchiseForm] = useState({ branch_name:'', location:'', franchisee_name:'', contact_number:'', franchise_fee:'', royalty_rate:'5', opening_date:'', status:'active', notes:'' })
-                  const [loadingFranchises, setLoadingFranchises] = useState(false)
-                  useEffect(()=>{
-                    setLoadingFranchises(true)
-                    supabase.from('franchise_locations').select('*').order('created_at',{ascending:false}).then(({data})=>{ setFranchises(data||[]); setLoadingFranchises(false) })
-                  },[])
+                {/* Summary */}
+                <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'16px' }}>
+                  {[
+                    ['Total Franchises',franchises.length,'#4a90d9'],
+                    ['Active',franchises.filter(f=>f.status==='active').length,'#2d8a4e'],
+                    ['Total Franchise Fees',php(franchises.reduce((s,f)=>s+Number(f.franchise_fee||0),0)),'#ca1b1b'],
+                  ].map(([l,v,c])=>(
+                    <div key={l} style={{ background:'white', borderRadius:'12px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${c}22` }}>
+                      <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px', textTransform:'uppercase' }}>{l}</p>
+                      <p style={{ fontWeight:'800', color:c, fontSize:'22px', margin:0 }}>{v}</p>
+                    </div>
+                  ))}
+                </div>
+                <button style={{ ...btnYellow, width:'auto', padding:'10px 20px', marginBottom:'14px' }} onClick={()=>setShowFranchiseForm(!showFranchiseForm)}>
+                  {showFranchiseForm?'✕ CANCEL':'➕ ADD FRANCHISE LOCATION'}
+                </button>
+                {showFranchiseForm && (
+                  <div style={{ background:'#e8f0fe', border:'2px solid #4a90d9', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+                    <h4 style={{ color:'#4a90d9', margin:'0 0 12px' }}>New Franchise Location</h4>
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+                      <div><label style={lblS}>Branch Name:</label><input value={franchiseForm.branch_name} onChange={e=>setFranchiseForm(p=>({...p,branch_name:e.target.value}))} placeholder="e.g. Roma's Donuts - Dagupan" style={inputStyle} /></div>
+                      <div><label style={lblS}>Location/City:</label><input value={franchiseForm.location} onChange={e=>setFranchiseForm(p=>({...p,location:e.target.value}))} placeholder="e.g. Dagupan City" style={inputStyle} /></div>
+                      <div><label style={lblS}>Franchisee Name:</label><input value={franchiseForm.franchisee_name} onChange={e=>setFranchiseForm(p=>({...p,franchisee_name:e.target.value}))} style={inputStyle} /></div>
+                      <div><label style={lblS}>Contact Number:</label><input value={franchiseForm.contact_number} onChange={e=>setFranchiseForm(p=>({...p,contact_number:e.target.value}))} style={inputStyle} /></div>
+                      <div><label style={lblS}>Franchise Fee (₱):</label><input type="number" value={franchiseForm.franchise_fee} onChange={e=>setFranchiseForm(p=>({...p,franchise_fee:e.target.value}))} style={inputStyle} /></div>
+                      <div><label style={lblS}>Royalty Rate (%):</label><input type="number" value={franchiseForm.royalty_rate} onChange={e=>setFranchiseForm(p=>({...p,royalty_rate:e.target.value}))} style={inputStyle} /></div>
+                      <div><label style={lblS}>Opening Date:</label><input type="date" value={franchiseForm.opening_date} onChange={e=>setFranchiseForm(p=>({...p,opening_date:e.target.value}))} style={inputStyle} /></div>
+                      <div><label style={lblS}>Status:</label>
+                        <select value={franchiseForm.status} onChange={e=>setFranchiseForm(p=>({...p,status:e.target.value}))} style={inputStyle}>
+                          {['active','pending','inactive','terminated'].map(s=><option key={s} value={s}>{s.charAt(0).toUpperCase()+s.slice(1)}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <label style={lblS}>Notes:</label>
+                    <input value={franchiseForm.notes} onChange={e=>setFranchiseForm(p=>({...p,notes:e.target.value}))} placeholder="Additional notes..." style={inputStyle} />
+                    <button style={{ ...btnGreen }} onClick={async ()=>{
+                      if (!franchiseForm.branch_name.trim()) { showToast('❌ Branch name required.','red'); return }
+                      const { error } = await supabase.from('franchise_locations').insert({ branch_name:franchiseForm.branch_name, location:franchiseForm.location, franchisee_name:franchiseForm.franchisee_name, contact_number:franchiseForm.contact_number, franchise_fee:Number(franchiseForm.franchise_fee||0), royalty_rate:Number(franchiseForm.royalty_rate||5), opening_date:franchiseForm.opening_date||null, status:franchiseForm.status, notes:franchiseForm.notes||null })
+                      if (error) { showToast('❌ Failed: '+error.message,'red'); return }
+                      showToast('✅ Franchise added!')
+                      setShowFranchiseForm(false)
+                      setFranchiseForm({ branch_name:'', location:'', franchisee_name:'', contact_number:'', franchise_fee:'', royalty_rate:'5', opening_date:'', status:'active', notes:'' })
+                      const { data } = await supabase.from('franchise_locations').select('*').order('created_at',{ascending:false})
+                      setFranchises(data||[])
+                    }}>💾 SAVE FRANCHISE</button>
+                  </div>
+                )}
+                {loadingFranchises ? <p style={{ color:'#888', textAlign:'center' }}>⏳ Loading...</p> :
+                  franchises.length===0 ? (
+                    <div style={{ textAlign:'center', padding:'40px', color:'#aaa' }}>
+                      <p style={{ fontSize:'48px', margin:'0 0 10px' }}>🏪</p>
+                      <p style={{ fontWeight:'bold', fontSize:'14px', color:'#555' }}>No franchise locations yet</p>
+                      <p style={{ fontSize:'12px' }}>Add your first franchise location above.</p>
+                    </div>
+                  ) : franchises.map(f=>(
+                    <div key={f.id} style={{ ...cardS, border:`2px solid ${f.status==='active'?'#2d8a4e22':'#f5a62322'}` }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 2px' }}>{f.branch_name}</p>
+                          <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>📍 {f.location} · 👤 {f.franchisee_name}</p>
+                          <div style={{ display:'flex', gap:'12px', flexWrap:'wrap' }}>
+                            <span style={{ fontSize:'11px', color:'#555' }}>📞 {f.contact_number||'—'}</span>
+                            <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>Fee: {php(f.franchise_fee)}</span>
+                            <span style={{ fontSize:'11px', color:'#4a90d9', fontWeight:'bold' }}>Royalty: {f.royalty_rate}%</span>
+                            {f.opening_date && <span style={{ fontSize:'11px', color:'#888' }}>Opened: {f.opening_date}</span>}
+                          </div>
+                          {f.notes && <p style={{ color:'#888', fontSize:'11px', margin:'4px 0 0' }}>📝 {f.notes}</p>}
+                        </div>
+                        <span style={{ background:f.status==='active'?'#e8f5e9':'#fff3cd', color:f.status==='active'?'#2d8a4e':'#856404', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>{f.status?.toUpperCase()}</span>
+                      </div>
+                    </div>
+                  ))
+                }
+              </div>
+            )}
                   const totalFranchiseFees = franchises.reduce((s,f)=>s+Number(f.franchise_fee||0),0)
                   const activeFranchises = franchises.filter(f=>f.status==='active').length
                   return (
@@ -9579,33 +9659,26 @@ export default function App() {
           <p style={{ color:'#aaa', margin:0, fontSize:'13px' }}>Management System</p>
         </div>
         {/* Login type tabs */}
-        {(()=>{
-          const [loginType, setLoginType] = useState('employee')
-          return (
-            <div>
-              <div style={{ display:'flex', gap:'6px', marginBottom:'20px', background:'#f4f4f4', padding:'4px', borderRadius:'12px' }}>
-                <button onClick={()=>setLoginType('employee')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='employee'?'white':'transparent', color:loginType==='employee'?'#ca1b1b':'#888', fontWeight:loginType==='employee'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='employee'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>👤 Employee / Admin</button>
-                <button onClick={()=>setLoginType('reseller')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='reseller'?'white':'transparent', color:loginType==='reseller'?'#ca1b1b':'#888', fontWeight:loginType==='reseller'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='reseller'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>🏪 Reseller</button>
-              </div>
-              {loginType==='employee' ? (
-                <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
-                  <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-                  <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-                  <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
-                </form>
-              ) : (
-                <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
-                  <label style={lblS}>Reseller Code:</label>
-                  <input autoComplete="off" placeholder="Enter your reseller code" value={resellerLoginCode} onChange={e=>setResellerLoginCode(e.target.value.toUpperCase())} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
-                  <label style={lblS}>PIN:</label>
-                  <input autoComplete="new-password" placeholder="Enter your PIN" type="password" value={resellerLoginPin} onChange={e=>setResellerLoginPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') resellerLogin() }} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
-                  <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px' }} onClick={resellerLogin} disabled={loading}>{loading?'⏳ LOGGING IN...':'🏪 RESELLER LOGIN'}</button>
-                  <p style={{ color:'#888', fontSize:'11px', textAlign:'center', marginTop:'10px' }}>Contact Roma's Donuts admin for your access code</p>
-                </form>
-              )}
-            </div>
-          )
-        })()}
+        <div style={{ display:'flex', gap:'6px', marginBottom:'20px', background:'#f4f4f4', padding:'4px', borderRadius:'12px' }}>
+          <button onClick={()=>setLoginType('employee')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='employee'?'white':'transparent', color:loginType==='employee'?'#ca1b1b':'#888', fontWeight:loginType==='employee'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='employee'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>👤 Employee / Admin</button>
+          <button onClick={()=>setLoginType('reseller')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='reseller'?'white':'transparent', color:loginType==='reseller'?'#ca1b1b':'#888', fontWeight:loginType==='reseller'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='reseller'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>🏪 Reseller</button>
+        </div>
+        {loginType==='employee' ? (
+          <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
+            <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+            <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+            <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
+          </form>
+        ) : (
+          <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
+            <label style={lblS}>Reseller Code:</label>
+            <input autoComplete="off" placeholder="Enter your reseller code" value={resellerLoginCode} onChange={e=>setResellerLoginCode(e.target.value.toUpperCase())} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
+            <label style={lblS}>PIN:</label>
+            <input autoComplete="new-password" placeholder="Enter your PIN" type="password" value={resellerLoginPin} onChange={e=>setResellerLoginPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') resellerLogin() }} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
+            <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px' }} onClick={resellerLogin} disabled={loading}>{loading?'⏳ LOGGING IN...':'🏪 RESELLER LOGIN'}</button>
+            <p style={{ color:'#888', fontSize:'11px', textAlign:'center', marginTop:'10px' }}>Contact Roma's Donuts admin for your access code</p>
+          </form>
+        )}
         {employeeCode.toUpperCase()==='ADMIN001' && (
           <p style={{ color:'#bbb', fontSize:'10px', marginTop:'10px', textAlign:'center' }}>👑 Master Owner Access</p>
         )}
