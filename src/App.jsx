@@ -2001,16 +2001,15 @@ export default function App() {
   }
   async function autoMarkTodayDelivered() {
     try {
-      // Auto-mark invoices with delivery_date = today as delivered (if not already)
       const { data: todayInvoices } = await supabase.from('delivery_invoices')
-        .select('id, invoice_number, reseller_name').eq('delivery_date', today).not('status','in','(delivered,paid,cancelled)')
-      if (todayInvoices && todayInvoices.length > 0) {
-        for (const inv of todayInvoices) {
-          await supabase.from('delivery_invoices').update({ status:'delivered', delivered_at: new Date().toISOString() }).eq('id', inv.id)
-          await logAudit('AUTO-DELIVERED', 'System', inv.reseller_name, inv.invoice_number + ' auto-marked delivered (delivery date = today)')
-        }
+        .select('id, invoice_number, reseller_name, status').eq('delivery_date', today)
+      if (!todayInvoices) return
+      const toMark = todayInvoices.filter(i => i.status !== 'delivered' && i.status !== 'paid' && i.status !== 'cancelled')
+      for (const inv of toMark) {
+        await supabase.from('delivery_invoices').update({ status:'delivered', delivered_at: new Date().toISOString() }).eq('id', inv.id)
+        await logAudit('AUTO-DELIVERED', 'System', inv.reseller_name, inv.invoice_number + ' auto-marked delivered')
       }
-    } catch(e) { console.warn('autoMarkTodayDelivered error:', e) }
+    } catch(e) { console.warn('autoMarkTodayDelivered:', e) }
   }
   async function loadDeliveryInvoices() {
     try {
