@@ -2001,10 +2001,11 @@ export default function App() {
   }
   async function autoMarkTodayDelivered() {
     try {
-      const { data: todayInvs } = await supabase.from('delivery_invoices')
+      const { data: todayInvoices } = await supabase.from('delivery_invoices')
         .select('id, invoice_number, reseller_name, status').eq('delivery_date', today)
-      if (!todayInvs) return
-      for (const inv of todayInvs.filter(i => i.status !== 'delivered' && i.status !== 'paid' && i.status !== 'cancelled')) {
+      if (!todayInvoices) return
+      const toMark = todayInvoices.filter(i => i.status !== 'delivered' && i.status !== 'paid' && i.status !== 'cancelled')
+      for (const inv of toMark) {
         await supabase.from('delivery_invoices').update({ status:'delivered', delivered_at: new Date().toISOString() }).eq('id', inv.id)
         await logAudit('AUTO-DELIVERED', 'System', inv.reseller_name, inv.invoice_number + ' auto-marked delivered')
       }
@@ -2016,7 +2017,7 @@ export default function App() {
       await autoMarkTodayDelivered()
       const { data } = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(100)
       setDeliveryInvoices(data || [])
-    } catch(e) { console.warn('loadDeliveryInvoices:', e) }
+    } catch(e) { console.warn('loadDeliveryInvoices error:', e) }
     finally { setInvoicesLoading(false) }
   }
   async function createDeliveryInvoice() {
@@ -5493,7 +5494,7 @@ export default function App() {
                                   setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lat:pos.coords.latitude.toFixed(6),lng:pos.coords.longitude.toFixed(6)}}))
                                   showToast(`✅ ${dept} location detected!`)
                                 }, () => showToast('❌ Could not detect location','red'))
-                )}
+                              } }
                             >📍 GPS</button>
                             <button
                               style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'6px', padding:'6px 4px', cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap' }}
@@ -5509,7 +5510,7 @@ export default function App() {
                                 await loadEmployees()
                                 const count = employees.filter(e=>e.department===dept).length
                                 showToast(`✅ Applied to ${count} employee(s) in ${dept}!`)
-                )}
+                              } }
                             >✅ Apply</button>
                           </div>
                         )
@@ -8770,11 +8771,17 @@ export default function App() {
                             <div>
                               <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}>📊 Production Forecast</h3>
                               <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Based on invoices for the selected delivery date</p>
+                              <p style={{ color:'#ca1b1b', fontSize:'10px', margin:'2px 0 0', fontWeight:'bold' }}>
+                                {(()=>{ const t=new Date(); t.setDate(t.getDate()+1); const tom=t.toISOString().slice(0,10); return forecastDate===today?`📅 Producing for today's delivery`:forecastDate===tom?`🌙 Produce TONIGHT for tomorrow's delivery`:`📅 Producing for ${forecastDate}` })()}
+                              </p>
                             </div>
                             <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', flexWrap:'wrap' }}>
                               <div>
                                 <label style={{ fontSize:'10px', color:'#888', display:'block', marginBottom:'2px' }}>Delivery Date to Forecast:</label>
                                 <input type="date" value={forecastDate} onChange={e=>setForecastDate(e.target.value)} style={{ ...inputStyle, marginBottom:0, width:'150px', fontSize:'12px', padding:'6px 10px' }} />
+                                <p style={{ fontSize:'9px', color:'#2d8a4e', margin:'2px 0 0', fontWeight:'bold' }}>
+                                  {(()=>{ const t=new Date(); t.setDate(t.getDate()+1); return forecastDate===t.toISOString().slice(0,10) ? '🌙 Showing tomorrow — produce tonight!' : '📅 Custom date selected' })()}
+                                </p>
                               </div>
                               <div style={{ background:'#fff9e6', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 14px', textAlign:'center' }}>
                                 <p style={{ color:'#888', fontSize:'10px', margin:'0 0 1px' }}>Total Pieces</p>
@@ -8786,7 +8793,7 @@ export default function App() {
                                 <p style={{ color:'#2d8a4e', fontSize:'16px', fontWeight:'bold', margin:0 }}>kilograms</p>
                               </div>
                               <button style={{ ...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={printForecast}>🖨️ PRINT</button>
-                              <button style={{ background:showForecastVariants?'#f4f4f4':'#1a1a2e', color:showForecastVariants?'#555':'white', border:'none', borderRadius:'10px', padding:'8px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginTop:0 }} onClick={()=>setShowForecastVariants(v=>!v)}>
+                              <button style={{ background: showForecastVariants?'#f4f4f4':'#1a1a2e', color: showForecastVariants?'#555':'white', border:'none', borderRadius:'10px', padding:'8px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginTop:0 }} onClick={()=>setShowForecastVariants(v=>!v)}>
                                 {showForecastVariants ? '🙈 HIDE VARIANTS' : '👁️ SHOW VARIANTS'}
                               </button>
                             </div>
@@ -8799,7 +8806,7 @@ export default function App() {
                             </div>
                           ) : (
                             <div>
-                              {showForecastVariants ? (
+                              {showForecastVariants && (
                               <div>
                               <div style={{ display:'flex', gap:'6px', marginBottom:'8px', flexWrap:'wrap' }}>
                                 <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''}</span>
@@ -8827,12 +8834,13 @@ export default function App() {
                                 </div>
                               </div>
                               </div>
-                              ) : forecastInvoices.length > 0 ? (
+                              )}
+                              {!showForecastVariants && forecastInvoices.length > 0 && (
                                 <div style={{ textAlign:'center', padding:'12px', background:'#f8f7f5', borderRadius:'10px', marginTop:'8px' }}>
-                                  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>Variants hidden</p>
-                                  <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''} · {totalPieces.toLocaleString()} pcs · {totalDryPremixKg} kg</p>
+                                  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>Variants hidden — showing totals only</p>
+                                  <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''} · {forecastRows.length} variant{forecastRows.length!==1?'s':''} · {totalPieces.toLocaleString()} pcs</p>
                                 </div>
-                              ) : null}
+                              )}
                             </div>
                           )}
                         </div>
@@ -8858,24 +8866,29 @@ export default function App() {
                     {/* Delivery Filter Tabs */}
                     <div style={{ display:'flex', gap:'6px', marginBottom:'12px', flexWrap:'wrap' }}>
                       {(()=>{
-                        const tom2 = new Date(); tom2.setDate(tom2.getDate()+1)
-                        const tomS = tom2.toISOString().slice(0,10)
+                        const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
+                        const tomorrowStrLocal = tomorrow2.toISOString().slice(0,10)
                         const todayCount = deliveryInvoices.filter(i=>i.delivery_date===today).length
-                        const tomorrowCount = deliveryInvoices.filter(i=>i.delivery_date===tomS).length
-                        const upcomingCount = deliveryInvoices.filter(i=>i.delivery_date>tomS).length
-                        return [
+                        const tomorrowCount = deliveryInvoices.filter(i=>i.delivery_date===tomorrowStrLocal).length
+                        const upcomingCount = deliveryInvoices.filter(i=>i.delivery_date>tomorrowStrLocal).length
+                        const tabs = [
                           ['today', `📦 Today (${todayCount})`],
                           ['tomorrow', `🚚 Tomorrow (${tomorrowCount})`],
                           ['upcoming', `📅 Upcoming (${upcomingCount})`],
-                          ['active','📋 Active'],['unpaid','⏳ Unpaid'],
-                          ['delivered','✅ Delivered'],['partial','💰 Partial'],
-                          ['paid','💵 Paid'],['all','📋 All'],
-                        ].map(([v,l])=>(
+                          ['active','📋 Active'],
+                          ['unpaid','⏳ Unpaid'],
+                          ['delivered','✅ Delivered'],
+                          ['partial','💰 Partial'],
+                          ['paid','💵 Paid'],
+                          ['all','📋 All'],
+                        ]
+                        return tabs.map(([v,l])=>(
                           <button key={v} onClick={()=>setInvoiceFilter(v)} style={{ padding:'7px 14px', borderRadius:'20px', border:'none', background:invoiceFilter===v?'#ca1b1b':'#f4f4f4', color:invoiceFilter===v?'white':'#555', fontWeight:invoiceFilter===v?'700':'500', fontSize:'11px', cursor:'pointer', whiteSpace:'nowrap', boxShadow:invoiceFilter===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>
                             {l}
                           </button>
                         ))
                       })()}
+                    </div>
 
                     {/* Pending Orders Panel */}
                     {showOrdersPanel && pendingResellerOrders.length > 0 && (
@@ -9021,16 +9034,17 @@ export default function App() {
                     )}
                     {/* Filter: hide paid by default */}
                     {deliveryInvoices.filter(i=>{
-                      const t2=new Date();t2.setDate(t2.getDate()+1);const tS=t2.toISOString().slice(0,10)
-                      if(invoiceFilter==='today') return i.delivery_date===today
-                      if(invoiceFilter==='tomorrow') return i.delivery_date===tS
-                      if(invoiceFilter==='upcoming') return i.delivery_date>tS
-                      if(invoiceFilter==='all') return true
-                      if(invoiceFilter==='paid') return i.status==='paid'
-                      if(invoiceFilter==='unpaid') return i.status==='unpaid'
-                      if(invoiceFilter==='delivered') return i.status==='delivered'
-                      if(invoiceFilter==='partial') return i.status==='partial'
-                      return i.status!=='paid'
+                      const tom = new Date(); tom.setDate(tom.getDate()+1)
+                      const tomStr = tom.toISOString().slice(0,10)
+                      if (invoiceFilter==='today') return i.delivery_date===today
+                      if (invoiceFilter==='tomorrow') return i.delivery_date===tomStr
+                      if (invoiceFilter==='upcoming') return i.delivery_date>tomStr
+                      if (invoiceFilter==='all') return true
+                      if (invoiceFilter==='paid') return i.status==='paid'
+                      if (invoiceFilter==='unpaid') return i.status==='unpaid'
+                      if (invoiceFilter==='delivered') return i.status==='delivered'
+                      if (invoiceFilter==='partial') return i.status==='partial'
+                      return i.status!=='paid' // active
                     }).map(inv=>{
                       const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
                       const isOverdue = inv.status!=='paid' && inv.due_date < today
@@ -10316,7 +10330,7 @@ export default function App() {
                   setOtRequestReasonPreset(val)
                   if (val !== 'Others') setOtRequestReason(val)
                   else setOtRequestReason('')
-                )}
+                }}
                 style={inputStyle}
               >
                 <option value="">— Select a reason —</option>
@@ -10481,7 +10495,7 @@ export default function App() {
                   setRequestCashReasonPreset(val)
                   if (val !== 'Others') setRequestCashReason(val)
                   else setRequestCashReason('')
-                )}
+                }}
                 style={inputStyle}
               >
                 <option value="">— Select a reason —</option>
@@ -10732,7 +10746,7 @@ export default function App() {
                               setDisputeReasonPresets(p=>({...p,[pay.id]:val}))
                               if (val !== 'Others') setDisputeReasons(p=>({...p,[pay.id]:val}))
                               else setDisputeReasons(p=>({...p,[pay.id]:''}))
-                )}
+                }}
                             style={inputStyle}
                           >
                             <option value="">— Select a reason —</option>
