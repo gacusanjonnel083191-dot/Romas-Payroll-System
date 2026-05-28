@@ -10327,7 +10327,7 @@ export default function App() {
                   setOtRequestReasonPreset(val)
                   if (val !== 'Others') setOtRequestReason(val)
                   else setOtRequestReason('')
-                )}
+                }}
                 style={inputStyle}
               >
                 <option value="">— Select a reason —</option>
@@ -10492,7 +10492,7 @@ export default function App() {
                   setRequestCashReasonPreset(val)
                   if (val !== 'Others') setRequestCashReason(val)
                   else setRequestCashReason('')
-                )}
+                }}
                 style={inputStyle}
               >
                 <option value="">— Select a reason —</option>
@@ -10743,7 +10743,7 @@ export default function App() {
                               setDisputeReasonPresets(p=>({...p,[pay.id]:val}))
                               if (val !== 'Others') setDisputeReasons(p=>({...p,[pay.id]:val}))
                               else setDisputeReasons(p=>({...p,[pay.id]:''}))
-                )}
+                }}
                             style={inputStyle}
                           >
                             <option value="">— Select a reason —</option>
