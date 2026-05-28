@@ -981,7 +981,7 @@ export default function App() {
       ...(txs.data||[]).map(t=>({ ...t, movementType: t.transaction_type==='in'?'Stock In':'Stock Out', color: t.transaction_type==='in'?'#2d8a4e':'#ca1b1b', icon:'📦' })),
       ...(wastage.data||[]).map(w=>({ ...w, movementType:'Wastage', quantity:-(w.quantity||0), color:'#f57c00', icon:'🗑️', created_at:w.created_at||w.wastage_date })),
       ...(adjs.data||[]).map(a=>({ ...a, movementType:'Adjustment', quantity:a.adjustment_qty, color: Number(a.adjustment_qty)>=0?'#4a90d9':'#ca1b1b', icon:'⚖️' })),
-    ].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))
+    ].sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime())
     setItemHistory(allMovements)
     setItemHistoryLoading(false)
   }
@@ -2959,18 +2959,20 @@ export default function App() {
       if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
         showToast('⏳ Reading XLSX file...')
         await new Promise((resolve, reject) => {
-          if (window.XLSX) { resolve(); return }
+          if (window['XLSX']) { resolve(); return }
           const script = document.createElement('script')
           script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
           script.onload = resolve
           script.onerror = reject
           document.head.appendChild(script)
         })
+        const XLSX = window['XLSX']
+        if (!XLSX) throw new Error('XLSX library failed to load.')
         const buffer = await file.arrayBuffer()
-        const wb = window.XLSX.read(buffer, { type:'array' })
+        const wb = XLSX.read(buffer, { type:'array' })
         const ws = wb.Sheets[wb.SheetNames[0]]
         // Get raw data with header row
-        const raw = window.XLSX.utils.sheet_to_json(ws, { header:1, defval:'' })
+        const raw = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' })
         if (raw.length < 3) { showToast('❌ File has no data rows.','red'); setCsvUploading(false); return }
         // Row 0 = headers, Row 1 = instructions (skip), Row 2+ = data
         const headerRow = raw[0].map(h=>String(h||'').replace(/\n/g,' ').trim().toLowerCase())
@@ -3464,8 +3466,8 @@ export default function App() {
     if (!leaveStartDate||!leaveEndDate||!leaveType||!leaveReason) { alert('Please complete all fields'); return }
     const todayMid=new Date(); todayMid.setHours(0,0,0,0)
     const startD=new Date(leaveStartDate); startD.setHours(0,0,0,0)
-    if ((startD-todayMid)/(1000*60*60*24)<2) { alert('Must be filed at least 3 days in advance.'); return }
-    const dur=Math.ceil((new Date(leaveEndDate)-new Date(leaveStartDate))/(1000*60*60*24))+1
+    if ((startD.getTime()-todayMid.getTime())/(1000*60*60*24)<2) { alert('Must be filed at least 3 days in advance.'); return }
+    const dur=Math.ceil((new Date(leaveEndDate).getTime()-new Date(leaveStartDate).getTime())/(1000*60*60*24))+1
     if (leaveType==='Sick Leave'&&dur>myLeaveBalance.sick) { alert(`Only ${myLeaveBalance.sick} Sick Leave days remaining.`); return }
     if (leaveType==='Vacation Leave'&&dur>myLeaveBalance.vacation) { alert(`Only ${myLeaveBalance.vacation} Vacation Leave days remaining.`); return }
     const { error } = await supabase.from('leave_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, leave_start:leaveStartDate, leave_end:leaveEndDate, duration_days:dur, leave_type:leaveType, reason:leaveReason, status:'pending' })
@@ -3515,7 +3517,7 @@ export default function App() {
     let entitled=0, zeroed=0
     for (const emp of emps||[]) {
       if (!emp.hire_date) continue
-      const yearsOfService=(new Date()-new Date(emp.hire_date))/(1000*60*60*24*365)
+      const yearsOfService=(Date.now()-new Date(emp.hire_date).getTime())/(1000*60*60*24*365)
       if (yearsOfService>=1) {
         // Entitled to 5 SIL days — only set if not already manually adjusted above 0
         await supabase.from('employees').update({ sil_balance:5 }).eq('id', emp.id)
@@ -3712,7 +3714,7 @@ export default function App() {
     const probDue = (emps||[]).filter(e => {
       if (e.employment_type !== 'probationary' || !e.hire_date) return false
       const hireDate = new Date(e.hire_date)
-      const monthsEmployed = (new Date() - hireDate) / (1000*60*60*24*30)
+      const monthsEmployed = (Date.now() - hireDate.getTime()) / (1000*60*60*24*30)
       return monthsEmployed >= 5 && monthsEmployed <= 7
     })
     // Employees with birthdays this week
@@ -3817,11 +3819,11 @@ export default function App() {
   }
   async function updateLeaveStatus(id, status, reason) {
     const req = leaveRequests.find(r=>r.id===id)
+    const dur = req ? Number(req.duration_days || 1) : 0
     const { error } = await supabase.from('leave_requests').update({ status, admin_reason:reason||null }).eq('id', id)
     if (error) { showToast('Failed: '+error.message,'red'); return }
     // Deduct leave balance when approved
     if (status==='approved' && req) {
-      const dur = Number(req.duration_days||1)
       const emp = employees.find(e=>e.id===req.employee_id)
       if (emp) {
         if (req.leave_type==='Sick Leave') {
@@ -3834,8 +3836,8 @@ export default function App() {
         await loadEmployees()
       }
       await createNotification(req.employee_id, req.employee_name, 'leave', '🏖️ Leave Approved', `Your ${req.leave_type} request for ${dur} day(s) has been approved.`)
-    } else if (status==='rejected' && req) {
-      await createNotification(req.employee_id, req.employee_name, 'leave', '❌ Leave Rejected', `Your ${req.leave_type} request has been rejected.${reason?' Reason: '+reason:''}`)
+    } else if ((status==='disapproved' || status==='rejected') && req) {
+      await createNotification(req.employee_id, req.employee_name, 'leave', '❌ Leave Disapproved', `Your ${req.leave_type} request has been disapproved.${reason?' Reason: '+reason:''}`)
     }
     await logAudit(`LEAVE ${status.toUpperCase()}`,'Admin',req?.employee_name||'',`Leave ID ${id} — ${dur||0} day(s)`)
     setLeaveRequests(prev=>prev.filter(r=>r.id!==id))
@@ -4053,7 +4055,7 @@ export default function App() {
     const unusedSIL=Math.max(0,(emp.sick_leave_balance||5)+(emp.vacation_leave_balance||5)-usedS-usedV)
     const silPay=unusedSIL*Number(emp.daily_rate||0)
     const hireDate=emp.hire_date?new Date(emp.hire_date):new Date(finalPayLastDate)
-    const yearsOfService=Math.max(0,Math.floor((new Date(finalPayLastDate)-hireDate)/(1000*60*60*24*365)))
+    const yearsOfService=Math.max(0,Math.floor((new Date(finalPayLastDate).getTime()-hireDate.getTime())/(1000*60*60*24*365)))
     let separationPay=0
     if (finalPayReason==='redundancy'||finalPayReason==='retrenchment') separationPay=Number(emp.daily_rate||0)*26*yearsOfService
     else if (finalPayReason==='authorized') separationPay=Number(emp.daily_rate||0)*13*yearsOfService
@@ -4796,7 +4798,7 @@ export default function App() {
                             const now = new Date()
                             const [h, m] = (log.time_in||'00:00').split(':').map(Number)
                             const timeInDate = new Date(); timeInDate.setHours(h, m, 0)
-                            const hoursOnDuty = ((now - timeInDate) / (1000*60*60)).toFixed(1)
+                            const hoursOnDuty = ((now.getTime() - timeInDate.getTime()) / (1000*60*60)).toFixed(1)
                             return (
                               <div key={log.id} style={{ display:'flex', alignItems:'center', gap:'12px', padding:'12px', background:i%2===0?'white':'#f8f9fa', borderRadius:'10px', marginBottom:'6px', border:'1px solid #eee' }}>
                                 {emp.profile_photo_url ? (
@@ -4858,7 +4860,7 @@ export default function App() {
                   <div style={{ background:'#fff8dc', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
                     <p style={{ fontWeight:'bold', color:'#f5a623', fontSize:'13px', margin:'0 0 8px' }}>⚠️ Probationary Employees Due for Review ({dashboardData.probDue.length})</p>
                     {dashboardData.probDue.map(e=>{
-                      const months = Math.floor((new Date()-new Date(e.hire_date))/(1000*60*60*24*30))
+                      const months = Math.floor((Date.now()-new Date(e.hire_date).getTime())/(1000*60*60*24*30))
                       return (
                         <div key={e.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:'1px solid #eee', flexWrap:'wrap', gap:'6px' }}>
                           <div>
@@ -5493,7 +5495,7 @@ export default function App() {
                                   setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lat:pos.coords.latitude.toFixed(6),lng:pos.coords.longitude.toFixed(6)}}))
                                   showToast(`✅ ${dept} location detected!`)
                                 }, () => showToast('❌ Could not detect location','red'))
-                )}
+                              }}
                             >📍 GPS</button>
                             <button
                               style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'6px', padding:'6px 4px', cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap' }}
@@ -5509,7 +5511,7 @@ export default function App() {
                                 await loadEmployees()
                                 const count = employees.filter(e=>e.department===dept).length
                                 showToast(`✅ Applied to ${count} employee(s) in ${dept}!`)
-                )}
+                }}
                             >✅ Apply</button>
                           </div>
                         )
@@ -6776,7 +6778,7 @@ export default function App() {
                   .map(c => {
                     const statusColor = c.status==='active'?'green':c.status==='expired'?'red':'gray'
                     const statusLabel = c.status==='active'?'✅ Active':c.status==='expired'?'⛔ Expired':'🔴 Terminated'
-                    const isExpiringSoon = c.end_date && c.status==='active' && (new Date(c.end_date)-new Date())/(1000*60*60*24) <= 30
+                    const isExpiringSoon = c.end_date && c.status==='active' && (new Date(c.end_date).getTime()-Date.now())/(1000*60*60*24) <= 30
                     return (
                       <div key={c.id} style={{ ...cardS, border:`2px solid ${c.status==='active'?'#c8e6c9':c.status==='expired'?'#ffcdd2':'#eee'}`, background:c.status==='active'?'#f0fff4':c.status==='expired'?'#fff5f5':'#fafafa', marginBottom:'12px' }}>
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
@@ -7093,7 +7095,7 @@ export default function App() {
                 {!inventoryLoading && inventoryItems.length > 0 && (() => {
                   const lowStock = inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0)
                   const totalValue = inventoryItems.reduce((s,i)=>s+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0)
-                  const expiringThisWeek = inventoryItems.filter(i=>{ if(!i.expiry_date) return false; const d=Math.ceil((new Date(i.expiry_date)-new Date())/(1000*60*60*24)); return d>=0&&d<=7 })
+                  const expiringThisWeek = inventoryItems.filter(i=>{ if(!i.expiry_date) return false; const d=Math.ceil((new Date(i.expiry_date).getTime()-Date.now())/(1000*60*60*24)); return d>=0&&d<=7 })
                   const expiredItems = inventoryItems.filter(i=>i.expiry_date&&new Date(i.expiry_date)<new Date())
                   const now = new Date(); const monthStart = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`
                   const monthlyWastage = wastageLogs.filter(w=>w.wastage_date>=monthStart).reduce((s,w)=>s+Number(w.total_cost||0),0)
@@ -7426,7 +7428,7 @@ export default function App() {
                       <p style={{ fontWeight:'bold', fontSize:'13px', color:'#f57c00', margin:'0 0 8px' }}>📦 Set / Update Expiry Dates:</p>
                       {inventoryItems.filter(i=>['Raw Ingredients','Packaging Materials'].includes(i.category)).map(item=>{
                         const isEditing = editingExpiryId===item.id
-                        const daysLeft = item.expiry_date ? Math.ceil((new Date(item.expiry_date)-new Date())/(1000*60*60*24)) : null
+                        const daysLeft = item.expiry_date ? Math.ceil((new Date(item.expiry_date).getTime()-Date.now())/(1000*60*60*24)) : null
                         const expiryColor = daysLeft===null?'#888':daysLeft<=0?'#ca1b1b':daysLeft<=7?'#f57c00':'#2d8a4e'
                         return (
                           <div key={item.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', borderBottom:'1px solid #eee', flexWrap:'wrap', gap:'8px' }}>
@@ -7459,7 +7461,7 @@ export default function App() {
                     {/* Expiry alerts */}
                     {(() => {
                       const expired = inventoryItems.filter(i=>i.expiry_date && new Date(i.expiry_date)<new Date())
-                      const expiringSoon = inventoryItems.filter(i=>i.expiry_date && new Date(i.expiry_date)>=new Date() && Math.ceil((new Date(i.expiry_date)-new Date())/(1000*60*60*24))<=7)
+                      const expiringSoon = inventoryItems.filter(i=>i.expiry_date && new Date(i.expiry_date)>=new Date() && Math.ceil((new Date(i.expiry_date).getTime()-Date.now())/(1000*60*60*24))<=7)
                       return (expired.length>0||expiringSoon.length>0) ? (
                         <div>
                           {expired.length>0 && (
@@ -7472,7 +7474,7 @@ export default function App() {
                             <div style={{ background:'#fff8e1', border:'2px solid #f57c00', borderRadius:'10px', padding:'12px' }}>
                               <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:'0 0 8px' }}>🟡 EXPIRING WITHIN 7 DAYS — Use Soon</p>
                               {expiringSoon.map(i=>{
-                                const days = Math.ceil((new Date(i.expiry_date)-new Date())/(1000*60*60*24))
+                                const days = Math.ceil((new Date(i.expiry_date).getTime()-Date.now())/(1000*60*60*24))
                                 return <p key={i.id} style={cps}>{i.name} — expires in <strong style={{ color:'#f57c00' }}>{days} day(s)</strong> ({i.expiry_date})</p>
                               }) }
                             </div>
@@ -8486,7 +8488,7 @@ export default function App() {
                         </div>
                         {/* Recent Reports */}
                         {productionReports.slice(0,3).map(r=>(
-                          <div key={r.id} style={{ background:'#f8f7f5', borderRadius:'8px', padding:'10px 12px', marginBottom:'6px', border:`1px solid ${Math.abs(r.variance)>50?'#ca1b1b':'#2d8a4e'}` }} onClick={()=>setViewingProductionReport(r)} style={{ cursor:'pointer', background:'#f8f7f5', borderRadius:'8px', padding:'10px 12px', marginBottom:'6px', border:`1px solid ${Math.abs(r.variance)>50?'#ca1b1b':'#eee'}` }}>
+                          <div key={r.id} onClick={()=>setViewingProductionReport(r)} style={{ cursor:'pointer', background:'#f8f7f5', borderRadius:'8px', padding:'10px 12px', marginBottom:'6px', border:`1px solid ${Math.abs(r.variance)>50?'#ca1b1b':'#eee'}` }}>
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                               <div>
                                 <p style={{ fontWeight:'bold', fontSize:'12px', margin:'0 0 2px' }}>Production: {r.report_date} → Delivery: {r.delivery_date}</p>
@@ -8876,6 +8878,7 @@ export default function App() {
                           </button>
                         ))
                       })()}
+                    </div>
 
                     {/* Pending Orders Panel */}
                     {showOrdersPanel && pendingResellerOrders.length > 0 && (
@@ -9301,7 +9304,7 @@ export default function App() {
                       return filtered.map(inv=>{
                         const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
                         const isOverdue = inv.status!=='paid' && inv.due_date < today
-                        const daysOverdue = isOverdue ? Math.floor((new Date(today)-new Date(inv.due_date))/(1000*60*60*24)) : 0
+                        const daysOverdue = isOverdue ? Math.floor((new Date(today).getTime()-new Date(inv.due_date).getTime())/(1000*60*60*24)) : 0
                         return (
                           <div key={inv.id} style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'10px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`2px solid ${isOverdue?'#ca1b1b33':inv.status==='paid'?'#2d8a4e33':inv.status==='delivered'?'#4a90d933':'#f5a62333'}` }}>
                             {/* Invoice Header */}
@@ -10003,7 +10006,8 @@ export default function App() {
                             <input placeholder="Admin response..." style={{ ...inputStyle, marginBottom:'6px' }} id={`dispute-resp-${d.id}`} />
                             <div style={{ display:'flex', gap:'6px' }}>
                               <button style={{ ...btnGreen, flex:1, marginTop:0, padding:'8px', fontSize:'11px' }} onClick={async()=>{
-                                const resp = document.getElementById(`dispute-resp-${d.id}`)?.value
+                                const respInput = document.getElementById(`dispute-resp-${d.id}`)
+                                const resp = String(respInput && 'value' in respInput ? respInput.value : '')
                                 if (!resp?.trim()) { showToast('❌ Enter response first.','red'); return }
                                 await supabase.from('reseller_disputes').update({ status:'resolved', admin_response:resp, resolved_at:new Date().toISOString() }).eq('id',d.id)
                                 await createNotification(null,'System','dispute',`✅ Dispute Resolved: ${d.reseller_name}`,`Your dispute (${d.dispute_type}) has been resolved. Response: ${resp}`)
@@ -10316,7 +10320,7 @@ export default function App() {
                   setOtRequestReasonPreset(val)
                   if (val !== 'Others') setOtRequestReason(val)
                   else setOtRequestReason('')
-                )}
+                }}
                 style={inputStyle}
               >
                 <option value="">— Select a reason —</option>
@@ -10359,7 +10363,7 @@ export default function App() {
               </div>
               <input type="date" value={leaveStartDate} min={new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
               <input type="date" value={leaveEndDate} onChange={e=>setLeaveEndDate(e.target.value)} style={inputStyle} />
-              {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {Math.ceil((new Date(leaveEndDate)-new Date(leaveStartDate))/(1000*60*60*24))+1} day(s)</p>}
+              {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {Math.ceil((new Date(leaveEndDate).getTime()-new Date(leaveStartDate).getTime())/(1000*60*60*24))+1} day(s)</p>}
               <select value={leaveType} onChange={e=>setLeaveType(e.target.value)} style={inputStyle}><option value="">Select Leave Type</option><option value="Sick Leave">Sick Leave ({myLeaveBalance.sick} days left)</option><option value="Vacation Leave">Vacation Leave ({myLeaveBalance.vacation} days left)</option><option value="Emergency Leave">Emergency Leave</option></select>
               <textarea placeholder="Reason for leave..." value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{ ...inputStyle, minHeight:'70px', resize:'none' }} />
               <button style={{ ...btnRed }} onClick={submitLeaveRequest}>SUBMIT LEAVE REQUEST</button>
@@ -10481,7 +10485,7 @@ export default function App() {
                   setRequestCashReasonPreset(val)
                   if (val !== 'Others') setRequestCashReason(val)
                   else setRequestCashReason('')
-                )}
+                }}
                 style={inputStyle}
               >
                 <option value="">— Select a reason —</option>
@@ -10732,7 +10736,7 @@ export default function App() {
                               setDisputeReasonPresets(p=>({...p,[pay.id]:val}))
                               if (val !== 'Others') setDisputeReasons(p=>({...p,[pay.id]:val}))
                               else setDisputeReasons(p=>({...p,[pay.id]:''}))
-                )}
+                }}
                             style={inputStyle}
                           >
                             <option value="">— Select a reason —</option>
