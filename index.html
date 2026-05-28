@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#ca1b1b" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Roma's Payroll" />
+    <meta name="description" content="Roma's Donuts Payroll & Attendance System" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/logo.png" />
+    <link rel="icon" type="image/png" href="/logo.png" />
+    <title>Roma's Donuts</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html { height: 100%; }
+      body { min-height: 100%; overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
+      #root { min-height: 100vh; }
+      @media print {
+        @page { size: 145mm 210mm; margin: 0; }
+        body > * { display: none !important; }
+        .payslip-page { display: block !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Register Service Worker for PWA
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js')
+            .then(reg => console.log('SW registered:', reg.scope))
+            .catch(err => console.log('SW error:', err))
+        })
+      }
+    </script>
+  </body>
+</html>
