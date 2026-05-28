@@ -475,7 +475,7 @@ export default function App() {
   const [dailySalesLoading, setDailySalesLoading] = useState(false)
   const [showSalesForm, setShowSalesForm] = useState(false)
   const [salesDate, setSalesDate] = useState(today)
-  const [salesEntries, setSalesEntries] = useState([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])
+  const [salesEntries, setSalesEntries] = useState([{ product_type:'donut', variant_id:'', inventory_item_id:'', variant_name:'', item_name:'', channel:'walkin', quantity:'', unit_price:'' }])
   const [salesNotes, setSalesNotes] = useState('')
   const [savingSales, setSavingSales] = useState(false)
   const [dailyExpenses, setDailyExpenses] = useState([])
@@ -594,7 +594,8 @@ export default function App() {
   const [poNotes, setPONotes] = useState('')
   const [savingPO, setSavingPO] = useState(false)
   const PAYMENT_TERMS = ['COD (Cash on Delivery)','Net 7 Days','Net 15 Days','Net 30 Days','Net 60 Days','50% Down, 50% on Delivery','Down Payment + Balance','Others']
-  const INVENTORY_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Equipment & Supplies']
+  const INVENTORY_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Snacks','Drinks','Other Store Products','Equipment & Supplies']
+  const SELLABLE_INVENTORY_CATEGORIES = ['Finished Products','Snacks','Drinks','Other Store Products']
   const [payrollStart, setPayrollStart] = useState(today)
   const [payrollEnd, setPayrollEnd] = useState(today)
   const [payrollMonth, setPayrollMonth] = useState(today.slice(0,7))
@@ -1175,6 +1176,7 @@ export default function App() {
     const f = editItemFields
     const { error } = await supabase.from('inventory_items').update({
       name: f.name||item.name,
+      category: f.category||item.category,
       unit: f.unit||item.unit,
       current_stock: Number(f.current_stock??item.current_stock??0),
       min_stock: Number(f.min_stock??item.min_stock),
@@ -2435,6 +2437,112 @@ export default function App() {
     </div></body></html>`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
   }
+  function isSellableInventoryItem(item) {
+    if (!item) return false
+    return SELLABLE_INVENTORY_CATEGORIES.includes(item.category) || Number(item.selling_price||0) > 0
+  }
+  function getSalesEntryMeta(entry) {
+    if (entry.product_type === 'inventory') {
+      const item = inventoryItems.find(i => i.id === entry.inventory_item_id)
+      const unitPrice = Number(entry.unit_price || item?.selling_price || 0)
+      const costPrice = Number(item?.cost_per_unit || 0)
+      const qty = Number(entry.quantity || 0)
+      return {
+        productType:'inventory',
+        id: entry.inventory_item_id,
+        name: entry.item_name || item?.name || '',
+        category: item?.category || 'Other Store Products',
+        unit: item?.unit || 'pcs',
+        unitPrice,
+        costPrice,
+        qty,
+        total: qty * unitPrice,
+        grossProfit: qty * (unitPrice - costPrice),
+        item
+      }
+    }
+    const variant = donutVariants.find(v => v.id === entry.variant_id)
+    const unitPrice = Number(entry.unit_price || variant?.selling_price || 0)
+    const qty = Number(entry.quantity || 0)
+    return {
+      productType:'donut',
+      id: entry.variant_id,
+      name: entry.variant_name || variant?.name || '',
+      category: variant?.category || 'Donuts',
+      unit:'pcs',
+      unitPrice,
+      costPrice:0,
+      qty,
+      total: qty * unitPrice,
+      grossProfit: qty * unitPrice,
+      variant
+    }
+  }
+  async function insertDailySalesItemsWithFallback(rows) {
+    const enrichedRows = rows.map(r => ({
+      sale_id:r.sale_id,
+      variant_id:r.variant_id || null,
+      variant_name:r.variant_name,
+      channel:r.channel,
+      quantity:r.quantity,
+      unit_price:r.unit_price,
+      total_price:r.total_price,
+      product_type:r.product_type,
+      inventory_item_id:r.inventory_item_id || null,
+      inventory_item_name:r.inventory_item_name || null,
+      item_category:r.item_category || null,
+      cost_price:r.cost_price || 0,
+      gross_profit:r.gross_profit || 0
+    }))
+    const { error } = await supabase.from('daily_sales_items').insert(enrichedRows)
+    if (!error) return
+    console.warn('daily_sales_items enriched insert failed, trying legacy insert:', error)
+    const legacyRows = rows.map(r => ({
+      sale_id:r.sale_id,
+      variant_id:r.variant_id || null,
+      variant_name:r.variant_name,
+      channel:r.channel,
+      quantity:r.quantity,
+      unit_price:r.unit_price,
+      total_price:r.total_price
+    }))
+    const { error:legacyError } = await supabase.from('daily_sales_items').insert(legacyRows)
+    if (legacyError) throw legacyError
+    showToast('⚠️ Sales saved using legacy item format. Run the SQL update for full snack/drink reporting.', 'orange')
+  }
+  async function deductInventoryForSales(validEntries, saleId) {
+    const grouped = {}
+    for (const entry of validEntries.filter(e => e.product_type === 'inventory')) {
+      const meta = getSalesEntryMeta(entry)
+      if (!meta.item || !meta.id || meta.qty <= 0) continue
+      if (!grouped[meta.id]) grouped[meta.id] = { item:meta.item, qty:0, channel:entry.channel }
+      grouped[meta.id].qty += meta.qty
+    }
+    for (const group of Object.values(grouped)) {
+      const item = group.item
+      const stockBefore = Number(item.current_stock || 0)
+      const stockAfter = Math.max(0, stockBefore - group.qty)
+      const { error:updateError } = await supabase.from('inventory_items').update({ current_stock:stockAfter }).eq('id', item.id)
+      if (updateError) throw updateError
+      await supabase.from('inventory_transactions').insert({
+        item_id:item.id,
+        item_name:item.name,
+        category:item.category,
+        transaction_type:'out',
+        quantity:group.qty,
+        unit:item.unit,
+        stock_before:stockBefore,
+        stock_after:stockAfter,
+        reference:`Daily Sales ${salesDate}`,
+        notes:`Auto stock-out from sales record ${saleId}`,
+        performed_by:`Admin (${adminRole})`
+      })
+      if (stockAfter <= Number(item.min_stock||0) && Number(item.min_stock||0) > 0) {
+        await createNotification(null, 'System', 'inventory', `⚠️ Low Stock: ${item.name}`, `${item.name} dropped to ${stockAfter} ${item.unit}. Minimum is ${item.min_stock} ${item.unit}. Please reorder.`)
+      }
+    }
+  }
+
   // ── Daily Sales Functions ─────────────────────────────────────────────────
   async function loadDailySales() {
     setDailySalesLoading(true)
@@ -2444,12 +2552,29 @@ export default function App() {
   }
   async function saveDailySales() {
     if (!salesDate) { showToast('❌ Please select a date.','red'); return }
-    const valid = salesEntries.filter(e => e.variant_id && Number(e.quantity) > 0)
+    const valid = salesEntries.filter(e => {
+      const hasProduct = e.product_type === 'inventory' ? !!e.inventory_item_id : !!e.variant_id
+      return hasProduct && Number(e.quantity) > 0
+    })
     if (valid.length === 0) { showToast('❌ Please add at least one sale entry.','red'); return }
+    const neededByItem = {}
+    for (const entry of valid.filter(e => e.product_type === 'inventory')) {
+      const meta = getSalesEntryMeta(entry)
+      if (!meta.item) { showToast('❌ Inventory item not found. Please reload and try again.','red'); return }
+      neededByItem[meta.id] = (neededByItem[meta.id] || 0) + meta.qty
+    }
+    for (const [itemId, neededQty] of Object.entries(neededByItem)) {
+      const item = inventoryItems.find(i=>i.id===itemId)
+      const stock = Number(item?.current_stock || 0)
+      if (neededQty > stock) {
+        showToast(`❌ Insufficient stock for ${item?.name}. Need ${neededQty}, available ${stock} ${item?.unit||''}.`, 'red')
+        return
+      }
+    }
     setSavingSales(true)
     try {
-      const walkinTotal = valid.filter(e=>e.channel==='walkin').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
-      const messengerTotal = valid.filter(e=>e.channel==='messenger').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
+      const walkinTotal = valid.filter(e=>e.channel==='walkin').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
+      const messengerTotal = valid.filter(e=>e.channel==='messenger').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
       const resellerInvoicesDay = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
       const totalRevenue = walkinTotal + messengerTotal + resellerInvoicesDay
       const { data:saleData, error:sErr } = await supabase.from('daily_sales').insert({
@@ -2459,15 +2584,29 @@ export default function App() {
       }).select().single()
       if (sErr) throw sErr
       const itemRows = valid.map(e => {
-        const variant = donutVariants.find(v=>v.id===e.variant_id)
-        const unitPrice = variant?.selling_price || Number(e.unit_price||0)
-        return { sale_id:saleData.id, variant_id:e.variant_id, variant_name:e.variant_name||variant?.name||'', channel:e.channel, quantity:Number(e.quantity), unit_price:unitPrice, total_price:Number(e.quantity)*unitPrice }
+        const meta = getSalesEntryMeta(e)
+        return {
+          sale_id:saleData.id,
+          variant_id:meta.productType==='donut' ? meta.id : null,
+          variant_name:meta.name,
+          channel:e.channel,
+          quantity:meta.qty,
+          unit_price:meta.unitPrice,
+          total_price:meta.total,
+          product_type:meta.productType,
+          inventory_item_id:meta.productType==='inventory' ? meta.id : null,
+          inventory_item_name:meta.productType==='inventory' ? meta.name : null,
+          item_category:meta.category,
+          cost_price:meta.costPrice,
+          gross_profit:meta.grossProfit
+        }
       })
-      await supabase.from('daily_sales_items').insert(itemRows)
+      await insertDailySalesItemsWithFallback(itemRows)
+      await deductInventoryForSales(valid, saleData.id)
       await logAudit('DAILY SALES ENCODED', adminRole, 'Sales', `${salesDate} — ${php(totalRevenue)}`)
       showToast(`✅ Sales for ${salesDate} saved! Total: ${php(totalRevenue)}`)
-      setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setSalesNotes('')
-      loadDailySales()
+      setShowSalesForm(false); setSalesEntries([{ product_type:'donut', variant_id:'', inventory_item_id:'', variant_name:'', item_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setSalesNotes('')
+      loadDailySales(); loadInventoryItems(); loadFinancialData()
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingSales(false)
   }
@@ -3366,10 +3505,23 @@ export default function App() {
       const overdueAR = allUnpaid.filter(i=>i.due_date && i.due_date<today).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
       const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:expenses.filter(e=>e.category===cat).reduce((s,e)=>s+Number(e.amount||0),0) })).filter(c=>c.total>0)
       const salesByDay = sales.map(d=>({ date:d.sale_date, revenue:Number(d.total_revenue||0) })).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')))
-      setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length })
+      let snackRevenue = 0, drinkRevenue = 0, otherProductRevenue = 0
+      if (sales.length > 0) {
+        const saleIds = sales.map(s=>s.id).filter(Boolean)
+        const { data:itemData, error:itemErr } = await supabase.from('daily_sales_items').select('*').in('sale_id', saleIds)
+        if (itemErr) console.warn('daily_sales_items breakdown query failed:', itemErr)
+        ;(itemData||[]).forEach(it=>{
+          const cat = it.item_category || ''
+          const amt = Number(it.total_price||0)
+          if (cat === 'Snacks') snackRevenue += amt
+          else if (cat === 'Drinks') drinkRevenue += amt
+          else if (cat === 'Other Store Products') otherProductRevenue += amt
+        })
+      }
+      setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, snackRevenue, drinkRevenue, otherProductRevenue, totalCOGS, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length })
     } catch(e) {
       console.warn('loadFinancialData:', e)
-      setFinancialData({ totalRevenue:0, walkinRevenue:0, messengerRevenue:0, resellerRevenue:0, totalCOGS:0, totalExpenses:0, grossProfit:0, netProfit:0, grossMarginPct:0, netMarginPct:0, totalAR:0, overdueAR:0, expenseByCategory:[], salesByDay:[], salesDays:0, productionDays:0 })
+      setFinancialData({ totalRevenue:0, walkinRevenue:0, messengerRevenue:0, resellerRevenue:0, snackRevenue:0, drinkRevenue:0, otherProductRevenue:0, totalCOGS:0, totalExpenses:0, grossProfit:0, netProfit:0, grossMarginPct:0, netMarginPct:0, totalAR:0, overdueAR:0, expenseByCategory:[], salesByDay:[], salesDays:0, productionDays:0 })
     } finally {
       setFinancialLoading(false)
     }
@@ -3397,6 +3549,9 @@ export default function App() {
         <tr><td colspan="2" class="section">REVENUE</td></tr>
         <tr><td class="label">Walk-in Sales</td><td class="val">${php(financialData.walkinRevenue)}</td></tr>
         <tr><td class="label">Messenger/Online Sales</td><td class="val">${php(financialData.messengerRevenue)}</td></tr>
+        <tr><td class="label">Snack Sales (included in Walk-in/Messenger)</td><td class="val">${php(financialData.snackRevenue||0)}</td></tr>
+        <tr><td class="label">Drink Sales (included in Walk-in/Messenger)</td><td class="val">${php(financialData.drinkRevenue||0)}</td></tr>
+        <tr><td class="label">Other Store Product Sales (included above)</td><td class="val">${php(financialData.otherProductRevenue||0)}</td></tr>
         <tr><td class="label">Reseller Deliveries</td><td class="val">${php(financialData.resellerRevenue)}</td></tr>
         <tr class="total"><td>TOTAL REVENUE</td><td class="val">${php(financialData.totalRevenue)}</td></tr>
         <tr><td colspan="2" class="section">COST OF GOODS SOLD (COGS)</td></tr>
@@ -4784,7 +4939,7 @@ export default function App() {
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
       if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
       if(key==='schedule') { loadExistingSchedules() }
-      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
       if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadFinancialData() }
       if(key==='franchise') { loadFranchises() }
     }
@@ -7938,7 +8093,7 @@ export default function App() {
                   <div style={{ background:'#e8f0fe', border:'2px solid #4a90d9', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
                     <h3 style={{ color:'#4a90d9', margin:'0 0 14px', fontSize:'14px' }}>➕ Add New Inventory Item</h3>
                     <label style={lblS}>Item Name:</label>
-                    <input type="text" placeholder="e.g. All-purpose flour" value={newItemName} onChange={e=>setNewItemName(e.target.value)} style={inputStyle} />
+                    <input type="text" placeholder="e.g. Curls Cheese 24g / Bottled Water / All-purpose flour" value={newItemName} onChange={e=>setNewItemName(e.target.value)} style={inputStyle} />
                     <label style={lblS}>Category:</label>
                     <select value={newItemCategory} onChange={e=>setNewItemCategory(e.target.value)} style={inputStyle}>
                       {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
@@ -7952,7 +8107,7 @@ export default function App() {
                       <div>
                         <label style={lblS}>Unit of Measure:</label>
                         <select value={newItemUnit} onChange={e=>setNewItemUnit(e.target.value)} style={{ ...inputStyle, marginBottom:0 }}>
-                          {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+                          {['kg','g','L','mL','pcs','packs','boxes','bags','sacks','bottles','cans','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
                         </select>
                       </div>
                       <div>
@@ -7967,7 +8122,7 @@ export default function App() {
                         <label style={lblS}>Min Stock Level:</label>
                         <input type="number" placeholder="e.g. 5" value={newItemMinStock} onChange={e=>setNewItemMinStock(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
                       </div>
-                      {newItemCategory==='Finished Products' && (
+                      {SELLABLE_INVENTORY_CATEGORIES.includes(newItemCategory) && (
                         <div>
                           <label style={lblS}>Selling Price (PHP):</label>
                           <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
@@ -8002,15 +8157,16 @@ export default function App() {
                               <div>
                                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
                                   <div><label style={lblS}>Name:</label><input value={editItemFields.name??item.name} onChange={e=>setEditItemFields(p=>({...p,name:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                                  <div><label style={lblS}>Category:</label><select value={editItemFields.category??item.category} onChange={e=>setEditItemFields(p=>({...p,category:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>{INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
                                   <div><label style={lblS}>Unit:</label>
                                     <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
-                                      {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+                                      {['kg','g','L','mL','pcs','packs','boxes','bags','sacks','bottles','cans','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
                                     </select>
                                   </div>
                                   <div><label style={lblS}>📦 Current Stock on Hand:</label><input type="number" value={editItemFields.current_stock??item.current_stock} onChange={e=>setEditItemFields(p=>({...p,current_stock:e.target.value}))} style={{ ...inputStyle, marginBottom:0, border:'2px solid #2d8a4e' }} min="0" step="0.01" /></div>
                                   <div><label style={lblS}>Min Stock Level:</label><input type="number" value={editItemFields.min_stock??item.min_stock} onChange={e=>setEditItemFields(p=>({...p,min_stock:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
                                   <div><label style={lblS}>Cost/Unit (PHP):</label><input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
-                                  {(editItemFields.category??item.category)==='Finished Products' && <div><label style={lblS}>Selling Price (PHP):</label><input type="number" value={editItemFields.selling_price??item.selling_price??0} onChange={e=>setEditItemFields(p=>({...p,selling_price:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>}
+                                  {SELLABLE_INVENTORY_CATEGORIES.includes(editItemFields.category??item.category) && <div><label style={lblS}>Selling Price (PHP):</label><input type="number" value={editItemFields.selling_price??item.selling_price??0} onChange={e=>setEditItemFields(p=>({...p,selling_price:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>}
                                   <div><label style={lblS}>Supplier:</label>
                                     <select value={editItemFields.supplier_id??item.supplier_id??''} onChange={e=>setEditItemFields(p=>({...p,supplier_id:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
                                       <option value="">— No supplier —</option>
@@ -8762,7 +8918,7 @@ export default function App() {
                           <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', fontWeight:'bold', letterSpacing:'1px', margin:'0 0 8px' }}>TOTAL REVENUE — {financialMonth}</p>
                           <p style={{ fontSize:'36px', fontWeight:'bold', margin:'0 0 4px' }}>{php(financialData.totalRevenue)}</p>
                           <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'10px', marginTop:'12px' }}>
-                            {[['🏪 Walk-in',financialData.walkinRevenue],['💬 Messenger',financialData.messengerRevenue],['🚚 Resellers',financialData.resellerRevenue]].map(([l,v])=>(
+                            {[['🏪 Walk-in',financialData.walkinRevenue],['💬 Messenger',financialData.messengerRevenue],['🥨 Snacks',financialData.snackRevenue||0],['🥤 Drinks',financialData.drinkRevenue||0],['🛍️ Other',financialData.otherProductRevenue||0],['🚚 Resellers',financialData.resellerRevenue]].map(([l,v])=>(
                               <div key={l} style={{ background:'rgba(255,255,255,0.15)', borderRadius:'8px', padding:'8px', textAlign:'center' }}>
                                 <p style={{ fontSize:'10px', color:'rgba(255,255,255,0.7)', margin:'0 0 4px' }}>{l}</p>
                                 <p style={{ fontWeight:'bold', fontSize:'14px', margin:0 }}>{php(v||0)}</p>
@@ -9579,27 +9735,43 @@ export default function App() {
                         <label style={lblS}>Sales Date:</label>
                         <input type="date" value={salesDate} onChange={e=>setSalesDate(e.target.value)} style={{ ...inputStyle, maxWidth:'200px' }} />
                         <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>Sales Entries:</p>
-                        <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
-                          {['Variant','Channel','Qty',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.1fr 3fr 1fr 0.8fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
+                          {['Type','Product','Channel','Qty','Unit Price',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
                         </div>
-                        {salesEntries.map((entry,i)=>(
-                          <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
-                            <select value={entry.variant_id} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...salesEntries]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||'',unit_price:v?.selling_price||0}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
-                              <option value="">— Select variant —</option>
-                              {VARIANT_CATEGORIES.map(cat=>{ const cv=donutVariants.filter(v=>v.category===cat); if(!cv.length) return null; return <optgroup key={cat} label={cat}>{cv.map(v=><option key={v.id} value={v.id}>{v.name} (₱{v.selling_price})</option>)}</optgroup> })}
+                        {salesEntries.map((entry,i)=>{
+                          const sellableItems = inventoryItems.filter(isSellableInventoryItem)
+                          return (
+                          <div key={i} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.1fr 3fr 1fr 0.8fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
+                            <select value={entry.product_type||'donut'} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],product_type:e.target.value,variant_id:'',inventory_item_id:'',variant_name:'',item_name:'',unit_price:''}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                              <option value="donut">🍩 Donut</option>
+                              <option value="inventory">📦 Inventory</option>
                             </select>
+                            {(entry.product_type||'donut')==='inventory' ? (
+                              <select value={entry.inventory_item_id||''} onChange={e=>{ const item=inventoryItems.find(inv=>inv.id===e.target.value); const upd=[...salesEntries]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:item?.name||'',unit_price:item?.selling_price||''}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                                <option value="">— Select snack/drink/item —</option>
+                                {SELLABLE_INVENTORY_CATEGORIES.map(cat=>{ const items=sellableItems.filter(item=>item.category===cat); if(!items.length) return null; return <optgroup key={cat} label={cat}>{items.map(item=><option key={item.id} value={item.id}>{item.name} — Stock: {Number(item.current_stock||0).toFixed(2)} {item.unit} — ₱{Number(item.selling_price||0).toFixed(2)}</option>)}</optgroup> })}
+                              </select>
+                            ) : (
+                              <select value={entry.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...salesEntries]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||'',unit_price:v?.selling_price||0}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                                <option value="">— Select donut variant —</option>
+                                {VARIANT_CATEGORIES.map(cat=>{ const cv=donutVariants.filter(v=>v.category===cat); if(!cv.length) return null; return <optgroup key={cat} label={cat}>{cv.map(v=><option key={v.id} value={v.id}>{v.name} (₱{v.selling_price})</option>)}</optgroup> })}
+                              </select>
+                            )}
                             <select value={entry.channel} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],channel:e.target.value}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
                               <option value="walkin">Walk-in</option>
                               <option value="messenger">Messenger</option>
                             </select>
                             <input type="number" placeholder="Qty" value={entry.quantity} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],quantity:e.target.value}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="1" />
+                            <input type="number" placeholder="Price" value={entry.unit_price} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],unit_price:e.target.value}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" step="0.01" />
                             <button onClick={()=>setSalesEntries(salesEntries.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'7px 9px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕</button>
                           </div>
-                        ))}
-                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setSalesEntries([...salesEntries, { variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])}>+ ADD ROW</button>
-                        {salesEntries.some(e=>e.variant_id&&Number(e.quantity)>0) && (()=>{
-                          const walkin = salesEntries.filter(e=>e.channel==='walkin'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
-                          const messenger = salesEntries.filter(e=>e.channel==='messenger'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
+                        )})}
+                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setSalesEntries([...salesEntries, { product_type:'donut', variant_id:'', inventory_item_id:'', variant_name:'', item_name:'', channel:'walkin', quantity:'', unit_price:'' }])}>+ ADD ROW</button>
+                        {salesEntries.some(e=>Number(e.quantity)>0&&((e.product_type==='inventory'&&e.inventory_item_id)||((e.product_type||'donut')==='donut'&&e.variant_id))) && (()=>{
+                          const validPreview = salesEntries.filter(e=>Number(e.quantity)>0&&((e.product_type==='inventory'&&e.inventory_item_id)||((e.product_type||'donut')==='donut'&&e.variant_id)))
+                          const walkin = validPreview.filter(e=>e.channel==='walkin').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
+                          const messenger = validPreview.filter(e=>e.channel==='messenger').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
+                          const snackDrinkTotal = validPreview.filter(e=>e.product_type==='inventory').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
                           const resellerTotal = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
                           return (
                             <div style={{ background:'#e8f5e9', borderRadius:'10px', padding:'12px', marginBottom:'12px', border:'1px solid #c8e6c9' }}>
@@ -9607,6 +9779,7 @@ export default function App() {
                               <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'6px', fontSize:'12px' }}>
                                 <p style={cps}>Walk-in: <strong>{php(walkin)}</strong></p>
                                 <p style={cps}>Messenger: <strong>{php(messenger)}</strong></p>
+                                <p style={cps}>Snacks/Drinks/Other: <strong>{php(snackDrinkTotal)}</strong></p>
                                 <p style={cps}>Reseller deliveries: <strong>{php(resellerTotal)}</strong></p>
                                 <p style={{ ...cps, fontWeight:'bold', color:'#ca1b1b' }}>Total: <strong>{php(walkin+messenger+resellerTotal)}</strong></p>
                               </div>
@@ -9638,6 +9811,16 @@ export default function App() {
                           ))}
                         </div>
                         {sale.notes && <p style={{ ...cps, color:'#888', marginTop:'6px' }}>📝 {sale.notes}</p>}
+                        {(sale.daily_sales_items||[]).length>0 && (
+                          <div style={{ marginTop:'8px', background:'#fafafa', borderRadius:'8px', padding:'8px' }}>
+                            <p style={{ fontSize:'11px', fontWeight:'bold', color:'#555', margin:'0 0 6px' }}>Items sold:</p>
+                            {(sale.daily_sales_items||[]).slice(0,6).map((it,idx)=>(
+                              <p key={it.id||idx} style={{ fontSize:'11px', color:'#666', margin:'2px 0' }}>
+                                • {it.product_type==='inventory'?'📦':'🍩'} {it.inventory_item_name||it.variant_name} — {Number(it.quantity||0)} × {php(it.unit_price||0)} = <strong>{php(it.total_price||0)}</strong>
+                              </p>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
