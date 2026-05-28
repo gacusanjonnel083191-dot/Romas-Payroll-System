@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useRef, useState } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
@@ -29,6 +29,37 @@ const btnBlack = { ...btnBase, background:'#1a1a2e', color:'white', boxShadow:'0
 const btnGray = { ...btnBase, background:'#f0f0f0', color:'#333', boxShadow:'none' }
 const btnYellow = { ...btnBase, background:'#FDD412', color:'#1a1a2e', width:'auto', padding:'10px 20px', marginTop:0, boxShadow:'0 2px 8px rgba(253,212,18,0.35)' }
 
+class SectionErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError:false, error:null }
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError:true, error }
+  }
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError:false, error:null })
+    }
+  }
+  componentDidCatch(error, info) {
+    console.error('Admin section crashed:', error, info)
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'20px', maxWidth:'760px' }}>
+          <h2 style={{ color:'#ca1b1b', margin:'0 0 10px' }}>⚠️ This section failed to load</h2>
+          <p style={{ color:'#555', fontSize:'13px', lineHeight:1.6, margin:'0 0 10px' }}>The app caught the error so the screen will not go blank. Please copy the message below if you need help checking the exact database/table issue.</p>
+          <pre style={{ background:'#fff5f5', border:'1px solid #ffd0d0', borderRadius:'10px', padding:'12px', overflowX:'auto', color:'#8b0000', fontSize:'12px' }}>{String(this.state.error?.message || this.state.error || 'Unknown error')}</pre>
+          <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'10px 18px', fontWeight:'bold', cursor:'pointer' }} onClick={()=>this.setState({ hasError:false, error:null })}>Try Again</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getTodayDate() {
   const d = new Date()
@@ -38,7 +69,15 @@ function getTodayDate() {
 function nowTime() { return new Date().toLocaleTimeString('en-GB', { hour12: false }) }
 function minutesFromTime(t) { const [h, m] = t.split(':').map(Number); return h * 60 + m }
 function roundPenaltyMinutes(min) { if (!min || min <= 10) return 0; return Math.ceil(min / 30) * 30 }
-function php(a) { return `PHP ${Number(a || 0).toFixed(2)}` }
+function safeNum(value, fallback = 0) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+function positiveNum(value, fallback = 1) {
+  const n = safeNum(value, fallback)
+  return n > 0 ? n : fallback
+}
+function php(a) { return `PHP ${safeNum(a).toFixed(2)}` }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
 function getDistanceMeters(la1,lo1,la2,lo2) {
   const R=6371000,dL=(la2-la1)*Math.PI/180,dO=(lo2-lo1)*Math.PI/180
@@ -352,6 +391,7 @@ export default function App() {
   const [addItemLoading, setAddItemLoading] = useState(false)
   // ── Phase 2: Costing System ───────────────────────────────────────────────
   const [costingView, setCostingView] = useState('dashboard')
+  const [costingLoadErrors, setCostingLoadErrors] = useState([])
   const [costSettings, setCostSettings] = useState({
     daily_labor_cost: 8000, waste_percentage: 10,
     monthly_rent: 8000, monthly_electricity: 20000, monthly_other_fixed: 73000,
@@ -488,7 +528,7 @@ export default function App() {
   const [submittingDispute, setSubmittingDispute] = useState(false)
   const [resellerDisputes, setResellerDisputes] = useState([])
   const [expensesLoading, setExpensesLoading] = useState(false)
-  const [expenseForm, setExpenseForm] = useState({ date:today, category:'Transportation/Fuel', amount:'', description:'' })
+  const [expenseForm, setExpenseForm] = useState({ expense_date:today, category:'Transportation/Fuel', amount:'', description:'' })
   const [savingExpense, setSavingExpense] = useState(false)
   const [rejectingExpenseId, setRejectingExpenseId] = useState(null)
   const [rejectExpenseReason, setRejectExpenseReason] = useState('')
@@ -1649,51 +1689,120 @@ export default function App() {
 
   // ── Phase 2: Costing Functions ────────────────────────────────────────────
   async function loadCostSettings() {
-    const { data } = await supabase.from('cost_settings').select('*').maybeSingle()
-    if (data) setCostSettings(p=>({ ...p, ...data }))
+    try {
+      const { data, error } = await supabase.from('cost_settings').select('*').maybeSingle()
+      if (error) {
+        console.warn('Cost settings could not be loaded:', error)
+        setCostingLoadErrors(p => [...p.filter(x=>!x.includes('cost_settings')), `cost_settings: ${error.message}`])
+        return
+      }
+      if (data) setCostSettings(p=>({ ...p, ...data }))
+    } catch (err) {
+      console.warn('Cost settings load failed:', err)
+      setCostingLoadErrors(p => [...p.filter(x=>!x.includes('cost_settings')), `cost_settings: ${err.message || err}`])
+    }
   }
   async function saveCostSettings() {
     setSavingCostSettings(true)
-    const { data: existing } = await supabase.from('cost_settings').select('id').maybeSingle()
-    if (existing) {
-      await supabase.from('cost_settings').update({ ...costSettings, updated_at: new Date().toISOString() }).eq('id', existing.id)
-    } else {
-      await supabase.from('cost_settings').insert({ ...costSettings })
+    try {
+      const cleanSettings = {
+        daily_labor_cost: safeNum(costSettings.daily_labor_cost),
+        waste_percentage: safeNum(costSettings.waste_percentage),
+        monthly_rent: safeNum(costSettings.monthly_rent),
+        monthly_electricity: safeNum(costSettings.monthly_electricity),
+        monthly_other_fixed: safeNum(costSettings.monthly_other_fixed),
+        fryer_cost: safeNum(costSettings.fryer_cost),
+        fryer_lifespan_years: positiveNum(costSettings.fryer_lifespan_years),
+        mixer_cost: safeNum(costSettings.mixer_cost),
+        mixer_lifespan_years: positiveNum(costSettings.mixer_lifespan_years),
+        sheeter_cost: safeNum(costSettings.sheeter_cost),
+        sheeter_lifespan_years: positiveNum(costSettings.sheeter_lifespan_years),
+        production_days_per_month: positiveNum(costSettings.production_days_per_month),
+        target_margin_percentage: safeNum(costSettings.target_margin_percentage),
+        total_daily_pieces: positiveNum(costSettings.total_daily_pieces),
+      }
+      const { data: existing, error: findErr } = await supabase.from('cost_settings').select('id').maybeSingle()
+      if (findErr) throw findErr
+      const result = existing
+        ? await supabase.from('cost_settings').update({ ...cleanSettings, updated_at: new Date().toISOString() }).eq('id', existing.id)
+        : await supabase.from('cost_settings').insert({ ...cleanSettings })
+      if (result.error) throw result.error
+      await logAudit('COST SETTINGS UPDATED','Owner','System','Cost settings saved')
+      setCostSettings(p => ({ ...p, ...cleanSettings }))
+      showToast('✅ Cost settings saved! All computations updated.')
+    } catch (err) {
+      showToast('❌ Cost settings failed: ' + (err.message || err), 'red')
     }
-    await logAudit('COST SETTINGS UPDATED','Owner','System','Cost settings saved')
-    showToast('✅ Cost settings saved! All computations updated.')
     setSavingCostSettings(false)
   }
   async function loadDonutVariants() {
     setVariantsLoading(true)
-    const { data } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
-    setDonutVariants(data || [])
+    try {
+      const { data, error } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
+      if (error) throw error
+      setDonutVariants(data || [])
+      setCostingLoadErrors(p => p.filter(x=>!x.includes('donut_variants')))
+    } catch (err) {
+      console.warn('Donut variants could not be loaded:', err)
+      setCostingLoadErrors(p => [...p.filter(x=>!x.includes('donut_variants')), `donut_variants: ${err.message || err}`])
+      // Keep the costing screen visible even if the Supabase table is missing or blocked.
+      setDonutVariants(DONUT_VARIANTS_DEFAULT.map((v, i) => ({ ...v, id:`local-${i}`, is_active:true, isLocalFallback:true })))
+    }
     setVariantsLoading(false)
   }
   async function seedVariants() {
     if (!window.confirm(`This will add all ${DONUT_VARIANTS_DEFAULT.length} Roma's Donuts variants. Continue?`)) return
     let added = 0
-    for (const v of DONUT_VARIANTS_DEFAULT) {
-      const { data: existing } = await supabase.from('donut_variants').select('id').eq('name', v.name).maybeSingle()
-      if (!existing) { await supabase.from('donut_variants').insert({ ...v, is_active: true }); added++ }
+    try {
+      for (const v of DONUT_VARIANTS_DEFAULT) {
+        const { data: existing, error: findErr } = await supabase.from('donut_variants').select('id').eq('name', v.name).maybeSingle()
+        if (findErr) throw findErr
+        if (!existing) {
+          const { error: insertErr } = await supabase.from('donut_variants').insert({ ...v, is_active: true })
+          if (insertErr) throw insertErr
+          added++
+        }
+      }
+      showToast(`✅ Added ${added} variants!`); loadDonutVariants()
+    } catch (err) {
+      showToast('❌ Could not load variants. Create/fix the donut_variants table first: ' + (err.message || err), 'red')
     }
-    showToast(`✅ Added ${added} variants!`); loadDonutVariants()
   }
   async function updateVariant(id, fields) {
+    if (String(id).startsWith('local-')) {
+      showToast('❌ This is a local preview variant. Create the donut_variants table and load variants first.', 'red')
+      return
+    }
     const { error } = await supabase.from('donut_variants').update(fields).eq('id', id)
     if (error) { showToast('❌ Failed: '+error.message,'red'); return }
     showToast('✅ Variant updated!'); setEditingVariantId(null); loadDonutVariants()
   }
   async function loadRecipes() {
-    const { data: base } = await supabase.from('base_dough_recipe').select('*').order('created_at')
-    setBaseDoughIngredients(base || [])
-    const { data: variant } = await supabase.from('variant_recipes').select('*').order('variant_id')
-    const grouped = {}
-    for (const r of variant || []) {
-      if (!grouped[r.variant_id]) grouped[r.variant_id] = []
-      grouped[r.variant_id].push(r)
+    try {
+      const { data: base, error: baseErr } = await supabase.from('base_dough_recipe').select('*').order('created_at')
+      if (baseErr) throw baseErr
+      setBaseDoughIngredients(base || [])
+      setCostingLoadErrors(p => p.filter(x=>!x.includes('base_dough_recipe')))
+    } catch (err) {
+      console.warn('Base dough recipe could not be loaded:', err)
+      setBaseDoughIngredients([])
+      setCostingLoadErrors(p => [...p.filter(x=>!x.includes('base_dough_recipe')), `base_dough_recipe: ${err.message || err}`])
     }
-    setVariantRecipes(grouped)
+    try {
+      const { data: variant, error: variantErr } = await supabase.from('variant_recipes').select('*').order('variant_id')
+      if (variantErr) throw variantErr
+      const grouped = {}
+      for (const r of variant || []) {
+        if (!grouped[r.variant_id]) grouped[r.variant_id] = []
+        grouped[r.variant_id].push(r)
+      }
+      setVariantRecipes(grouped)
+      setCostingLoadErrors(p => p.filter(x=>!x.includes('variant_recipes')))
+    } catch (err) {
+      console.warn('Variant recipes could not be loaded:', err)
+      setVariantRecipes({})
+      setCostingLoadErrors(p => [...p.filter(x=>!x.includes('variant_recipes')), `variant_recipes: ${err.message || err}`])
+    }
   }
   async function saveBaseDough() {
     setSavingRecipe(true)
@@ -1737,69 +1846,80 @@ export default function App() {
     setSavingRecipe(false)
   }
   function computeVariantCost(variantId, piecesPerBatch) {
-    if (!piecesPerBatch || piecesPerBatch <= 0) return null
+    const safePiecesPerBatch = positiveNum(piecesPerBatch)
     // Base dough cost per piece (from inventory item cost_per_unit)
     const baseCostPerPiece = baseDoughIngredients.reduce((sum, ing) => {
       const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
-      const costPerUnit = invItem?.cost_per_unit || 0
-      return sum + (Number(ing.quantity_per_batch || 0) / piecesPerBatch) * costPerUnit
+      const costPerUnit = safeNum(invItem?.cost_per_unit)
+      return sum + (safeNum(ing.quantity_per_batch) / safePiecesPerBatch) * costPerUnit
     }, 0)
     // Variant topping/filling cost per piece
     const variantIngs = variantRecipes[variantId] || []
     const variantCostPerPiece = variantIngs.reduce((sum, ing) => {
       const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
-      const costPerUnit = invItem?.cost_per_unit || 0
-      return sum + (Number(ing.quantity_per_batch || 0) / piecesPerBatch) * costPerUnit
+      const costPerUnit = safeNum(invItem?.cost_per_unit)
+      return sum + (safeNum(ing.quantity_per_batch) / safePiecesPerBatch) * costPerUnit
     }, 0)
     const ingredientCost = baseCostPerPiece + variantCostPerPiece
-    // Labor per piece
-    const laborPerPiece = costSettings.daily_labor_cost / Math.max(1, Number(costSettings.total_daily_pieces))
-    // Fixed cost per piece
+    const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
+    const laborPerPiece = safeNum(costSettings.daily_labor_cost) / totalDailyPieces
     const monthlyDepreciation =
-      (Number(costSettings.fryer_cost) / (Number(costSettings.fryer_lifespan_years) * 12)) +
-      (Number(costSettings.mixer_cost) / (Number(costSettings.mixer_lifespan_years) * 12)) +
-      (Number(costSettings.sheeter_cost) / (Number(costSettings.sheeter_lifespan_years) * 12))
-    const monthlyFixed = Number(costSettings.monthly_rent) + Number(costSettings.monthly_electricity) +
-      Number(costSettings.monthly_other_fixed) + monthlyDepreciation
-    const dailyFixed = monthlyFixed / Math.max(1, Number(costSettings.production_days_per_month))
-    const fixedPerPiece = dailyFixed / Math.max(1, Number(costSettings.total_daily_pieces))
-    // Waste factor
-    const wasteFactor = 1 + (Number(costSettings.waste_percentage) / 100)
+      (safeNum(costSettings.fryer_cost) / (positiveNum(costSettings.fryer_lifespan_years) * 12)) +
+      (safeNum(costSettings.mixer_cost) / (positiveNum(costSettings.mixer_lifespan_years) * 12)) +
+      (safeNum(costSettings.sheeter_cost) / (positiveNum(costSettings.sheeter_lifespan_years) * 12))
+    const monthlyFixed = safeNum(costSettings.monthly_rent) + safeNum(costSettings.monthly_electricity) +
+      safeNum(costSettings.monthly_other_fixed) + monthlyDepreciation
+    const dailyFixed = monthlyFixed / positiveNum(costSettings.production_days_per_month)
+    const fixedPerPiece = dailyFixed / totalDailyPieces
+    const wasteFactor = 1 + (safeNum(costSettings.waste_percentage) / 100)
     const totalCost = (ingredientCost + laborPerPiece + fixedPerPiece) * wasteFactor
     return { ingredientCost, laborPerPiece, fixedPerPiece, totalCost, wasteFactor }
   }
   function computeFinancials() {
     const monthlyDepreciation =
-      (Number(costSettings.fryer_cost) / (Number(costSettings.fryer_lifespan_years) * 12)) +
-      (Number(costSettings.mixer_cost) / (Number(costSettings.mixer_lifespan_years) * 12)) +
-      (Number(costSettings.sheeter_cost) / (Number(costSettings.sheeter_lifespan_years) * 12))
-    const monthlyFixed = Number(costSettings.monthly_rent) + Number(costSettings.monthly_electricity) +
-      Number(costSettings.monthly_other_fixed) + monthlyDepreciation
-    const dailyFixed = monthlyFixed / Math.max(1, Number(costSettings.production_days_per_month))
-    const dailyLabor = Number(costSettings.daily_labor_cost)
-    const totalDailyPieces = Math.max(1, Number(costSettings.total_daily_pieces))
+      (safeNum(costSettings.fryer_cost) / (positiveNum(costSettings.fryer_lifespan_years) * 12)) +
+      (safeNum(costSettings.mixer_cost) / (positiveNum(costSettings.mixer_lifespan_years) * 12)) +
+      (safeNum(costSettings.sheeter_cost) / (positiveNum(costSettings.sheeter_lifespan_years) * 12))
+    const monthlyFixed = safeNum(costSettings.monthly_rent) + safeNum(costSettings.monthly_electricity) +
+      safeNum(costSettings.monthly_other_fixed) + monthlyDepreciation
+    const dailyFixed = monthlyFixed / positiveNum(costSettings.production_days_per_month)
+    const dailyLabor = safeNum(costSettings.daily_labor_cost)
+    const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
     const fixedPerPiece = dailyFixed / totalDailyPieces
     const laborPerPiece = dailyLabor / totalDailyPieces
-    const wasteFactor = 1 + (Number(costSettings.waste_percentage) / 100)
-    // Per-variant profitability
+    const wasteFactor = 1 + (safeNum(costSettings.waste_percentage) / 100)
     const variantData = donutVariants.map(v => {
+      const sellPrice = safeNum(v.selling_price)
       const cost = computeVariantCost(v.id, v.pieces_per_batch)
-      if (!cost) return { ...v, totalCost: laborPerPiece + fixedPerPiece, grossMargin: v.selling_price - (laborPerPiece + fixedPerPiece), grossMarginPct: 0, isEstimate: true }
-      const grossMargin = v.selling_price - cost.totalCost
-      const grossMarginPct = v.selling_price > 0 ? (grossMargin / v.selling_price) * 100 : 0
-      const belowTarget = grossMarginPct < Number(costSettings.target_margin_percentage)
-      return { ...v, ...cost, grossMargin, grossMarginPct, belowTarget, isEstimate: cost.ingredientCost === 0 }
+      const totalCost = cost ? cost.totalCost : laborPerPiece + fixedPerPiece
+      const grossMargin = sellPrice - totalCost
+      const grossMarginPct = sellPrice > 0 ? (grossMargin / sellPrice) * 100 : 0
+      const belowTarget = grossMarginPct < safeNum(costSettings.target_margin_percentage)
+      return { ...v, ...(cost || {}), selling_price:sellPrice, totalCost, grossMargin, grossMarginPct, belowTarget, isEstimate: !cost || (cost.ingredientCost === 0) }
     })
-    // BEP
-    const avgGrossMargin = variantData.length > 0 ? variantData.reduce((s,v) => s + v.grossMargin, 0) / variantData.length : fixedPerPiece
+    const avgGrossMargin = variantData.length > 0 ? variantData.reduce((s,v) => s + safeNum(v.grossMargin), 0) / variantData.length : fixedPerPiece
     const dailyBEP = avgGrossMargin > 0 ? Math.ceil(dailyFixed / avgGrossMargin) : 0
-    const monthlyBEP = dailyBEP * Number(costSettings.production_days_per_month)
+    const monthlyBEP = dailyBEP * positiveNum(costSettings.production_days_per_month)
     return { variantData, monthlyFixed, dailyFixed, dailyLabor, fixedPerPiece, laborPerPiece, wasteFactor, dailyBEP, monthlyBEP, monthlyDepreciation }
   }
   async function loadProductionLogs() {
     setProductionLoading(true)
-    const { data } = await supabase.from('production_logs').select('*, production_log_items(*)').order('production_date', { ascending:false }).limit(30)
-    setProductionLogs(data || [])
+    try {
+      let { data, error } = await supabase.from('production_logs').select('*, production_log_items(*)').order('production_date', { ascending:false }).limit(30)
+      if (error) {
+        console.warn('Production logs relation load failed. Trying simple load:', error)
+        const simple = await supabase.from('production_logs').select('*').order('production_date', { ascending:false }).limit(30)
+        data = simple.data
+        error = simple.error
+      }
+      if (error) throw error
+      setProductionLogs((data || []).map(log => ({ ...log, production_log_items: log.production_log_items || [] })))
+      setCostingLoadErrors(p => p.filter(x=>!x.includes('production_logs')))
+    } catch (err) {
+      console.warn('Production logs could not be loaded:', err)
+      setProductionLogs([])
+      setCostingLoadErrors(p => [...p.filter(x=>!x.includes('production_logs')), `production_logs: ${err.message || err}`])
+    }
     setProductionLoading(false)
   }
   async function logProduction() {
@@ -2005,19 +2125,34 @@ export default function App() {
         .select('id, invoice_number, reseller_name, status').eq('delivery_date', today)
       if (!todayInvs) return
       for (const inv of todayInvs.filter(i => i.status !== 'delivered' && i.status !== 'paid' && i.status !== 'cancelled')) {
-        await supabase.from('delivery_invoices').update({ status:'delivered', delivered_at: new Date().toISOString() }).eq('id', inv.id)
+        await supabase.from('delivery_invoices').update({ status:'delivered' }).eq('id', inv.id)
         await logAudit('AUTO-DELIVERED', 'System', inv.reseller_name, inv.invoice_number + ' auto-marked delivered')
       }
     } catch(e) { console.warn('autoMarkTodayDelivered:', e) }
   }
   async function loadDeliveryInvoices() {
+    setInvoicesLoading(true)
     try {
-      setInvoicesLoading(true)
       await autoMarkTodayDelivered()
-      const { data } = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(100)
-      setDeliveryInvoices(data || [])
-    } catch(e) { console.warn('loadDeliveryInvoices:', e) }
-    finally { setInvoicesLoading(false) }
+      const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(100)
+      if (!withItems.error) {
+        setDeliveryInvoices(withItems.data || [])
+        return
+      }
+      console.warn('delivery_invoices with items failed, trying basic invoice list:', withItems.error)
+      const basic = await supabase.from('delivery_invoices').select('*').order('delivery_date', { ascending:false }).limit(100)
+      if (basic.error) {
+        console.warn('delivery_invoices basic query failed:', basic.error)
+        setDeliveryInvoices([])
+        return
+      }
+      setDeliveryInvoices(basic.data || [])
+    } catch(e) {
+      console.warn('loadDeliveryInvoices:', e)
+      setDeliveryInvoices([])
+    } finally {
+      setInvoicesLoading(false)
+    }
   }
   async function createDeliveryInvoice() {
     if (!invoiceResellerId) { showToast('❌ Please select a reseller.','red'); return }
@@ -2390,8 +2525,11 @@ export default function App() {
 
   // ── Production Report System ──────────────────────────────────────────────
   async function loadProductionReports() {
-    const { data } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
-    setProductionReports(data||[])
+    try {
+      const { data, error } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
+      if (error) { console.warn('loadProductionReports:', error); setProductionReports([]); return }
+      setProductionReports(data||[])
+    } catch(e) { console.warn('loadProductionReports:', e); setProductionReports([]) }
   }
   async function initProductionReport(deliveryDate) {
     // Load forecast from invoices for delivery date
@@ -2499,8 +2637,11 @@ export default function App() {
     setSubmittingDispute(false)
   }
   async function loadSuspiciousAlerts() {
-    const { data } = await supabase.from('suspicious_alerts').select('*').order('created_at',{ascending:false}).limit(20)
-    setSuspiciousAlerts(data||[])
+    try {
+      const { data, error } = await supabase.from('suspicious_alerts').select('*').order('created_at',{ascending:false}).limit(20)
+      if (error) { console.warn('loadSuspiciousAlerts:', error); setSuspiciousAlerts([]); return }
+      setSuspiciousAlerts(data||[])
+    } catch(e) { console.warn('loadSuspiciousAlerts:', e); setSuspiciousAlerts([]) }
   }
   // ── Driver Return Form ────────────────────────────────────────────────────
   function initDriverReturn(invoice) {
@@ -3152,19 +3293,26 @@ export default function App() {
 
   async function loadDailyExpenses() {
     setExpensesLoading(true)
-    const { data } = await supabase.from('daily_expenses').select('*').order('expense_date', { ascending:false }).limit(100)
-    setDailyExpenses(data || [])
-    setExpensesLoading(false)
+    try {
+      const { data, error } = await supabase.from('daily_expenses').select('*').order('expense_date', { ascending:false }).limit(100)
+      if (error) { console.warn('loadDailyExpenses:', error); setDailyExpenses([]); return }
+      setDailyExpenses(data || [])
+    } catch(e) {
+      console.warn('loadDailyExpenses:', e)
+      setDailyExpenses([])
+    } finally {
+      setExpensesLoading(false)
+    }
   }
   async function saveExpense() {
     if (!expenseForm.amount || Number(expenseForm.amount) <= 0) { showToast('❌ Please enter a valid amount.','red'); return }
     setSavingExpense(true)
     const amt = Number(expenseForm.amount)
     const status = amt >= EXPENSE_APPROVAL_THRESHOLD ? 'pending' : 'approved'
-    const { error } = await supabase.from('daily_expenses').insert({ ...expenseForm, amount:amt, status, encoded_by:adminRole })
+    const { error } = await supabase.from('daily_expenses').insert({ ...expenseForm, expense_date:expenseForm.expense_date || today, amount:amt, status, encoded_by:adminRole })
     if (error) { showToast('❌ Failed: '+error.message,'red'); setSavingExpense(false); return }
     showToast(status==='pending'?`✅ Expense submitted — awaiting Owner approval (₱${amt} ≥ ₱500)`:`✅ Expense of ${php(amt)} recorded!`)
-    setExpenseForm({ date:today, category:'Transportation/Fuel', amount:'', description:'' })
+    setExpenseForm({ expense_date:today, category:'Transportation/Fuel', amount:'', description:'' })
     loadDailyExpenses(); setSavingExpense(false)
   }
   async function approveExpense(id) {
@@ -3184,32 +3332,47 @@ export default function App() {
   // ── Financial Dashboard ───────────────────────────────────────────────────
   async function loadFinancialData() {
     setFinancialLoading(true)
-    const monthStart = financialMonth + '-01'
-    const monthEnd = new Date(Number(financialMonth.split('-')[0]), Number(financialMonth.split('-')[1]), 0).toISOString().slice(0,10)
-    const [{ data:sales }, { data:prodLogs }, { data:expenses }, { data:invoices }] = await Promise.all([
-      supabase.from('daily_sales').select('*').gte('sale_date', monthStart).lte('sale_date', monthEnd),
-      supabase.from('production_logs').select('*').gte('production_date', monthStart).lte('production_date', monthEnd),
-      supabase.from('daily_expenses').select('*').gte('expense_date', monthStart).lte('expense_date', monthEnd),
-      supabase.from('delivery_invoices').select('*').gte('delivery_date', monthStart).lte('delivery_date', monthEnd),
-    ])
-    const totalRevenue = (sales||[]).reduce((s,d)=>s+Number(d.total_revenue||0),0)
-    const walkinRevenue = (sales||[]).reduce((s,d)=>s+Number(d.total_walkin||0),0)
-    const messengerRevenue = (sales||[]).reduce((s,d)=>s+Number(d.total_messenger||0),0)
-    const resellerRevenue = (invoices||[]).reduce((s,i)=>s+Number(i.total_amount||0),0)
-    const totalCOGS = (prodLogs||[]).reduce((s,l)=>s+Number(l.total_cost||0),0)
-    const totalExpenses = (expenses||[]).reduce((s,e)=>s+Number(e.amount||0),0)
-    const grossProfit = totalRevenue - totalCOGS
-    const netProfit = grossProfit - totalExpenses
-    const grossMarginPct = totalRevenue > 0 ? (grossProfit/totalRevenue)*100 : 0
-    const netMarginPct = totalRevenue > 0 ? (netProfit/totalRevenue)*100 : 0
-    // AR outstanding (all time unpaid)
-    const { data:allUnpaid } = await supabase.from('delivery_invoices').select('*').in('status',['unpaid','partial'])
-    const totalAR = (allUnpaid||[]).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
-    const overdueAR = (allUnpaid||[]).filter(i=>i.due_date<today).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
-    const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:(expenses||[]).filter(e=>e.category===cat).reduce((s,e)=>s+Number(e.amount||0),0) })).filter(c=>c.total>0)
-    const salesByDay = (sales||[]).map(d=>({ date:d.sale_date, revenue:Number(d.total_revenue||0) })).sort((a,b)=>a.date.localeCompare(b.date))
-    setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:(sales||[]).length, productionDays:(prodLogs||[]).length })
-    setFinancialLoading(false)
+    try {
+      const monthStart = financialMonth + '-01'
+      const monthEnd = new Date(Number(financialMonth.split('-')[0]), Number(financialMonth.split('-')[1]), 0).toISOString().slice(0,10)
+      const [salesRes, prodLogsRes, expensesRes, invoicesRes] = await Promise.all([
+        supabase.from('daily_sales').select('*').gte('sale_date', monthStart).lte('sale_date', monthEnd),
+        supabase.from('production_logs').select('*').gte('production_date', monthStart).lte('production_date', monthEnd),
+        supabase.from('daily_expenses').select('*').gte('expense_date', monthStart).lte('expense_date', monthEnd),
+        supabase.from('delivery_invoices').select('*').gte('delivery_date', monthStart).lte('delivery_date', monthEnd),
+      ])
+      if (salesRes.error) console.warn('daily_sales query failed:', salesRes.error)
+      if (prodLogsRes.error) console.warn('production_logs query failed:', prodLogsRes.error)
+      if (expensesRes.error) console.warn('daily_expenses query failed:', expensesRes.error)
+      if (invoicesRes.error) console.warn('delivery_invoices query failed:', invoicesRes.error)
+      const sales = salesRes.data || []
+      const prodLogs = prodLogsRes.data || []
+      const expenses = expensesRes.data || []
+      const invoices = invoicesRes.data || []
+      const totalRevenue = sales.reduce((s,d)=>s+Number(d.total_revenue||0),0)
+      const walkinRevenue = sales.reduce((s,d)=>s+Number(d.total_walkin||0),0)
+      const messengerRevenue = sales.reduce((s,d)=>s+Number(d.total_messenger||0),0)
+      const resellerRevenue = invoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
+      const totalCOGS = prodLogs.reduce((s,l)=>s+Number(l.total_cost||0),0)
+      const totalExpenses = expenses.reduce((s,e)=>s+Number(e.amount||0),0)
+      const grossProfit = totalRevenue - totalCOGS
+      const netProfit = grossProfit - totalExpenses
+      const grossMarginPct = totalRevenue > 0 ? (grossProfit/totalRevenue)*100 : 0
+      const netMarginPct = totalRevenue > 0 ? (netProfit/totalRevenue)*100 : 0
+      const unpaidRes = await supabase.from('delivery_invoices').select('*').in('status',['unpaid','partial'])
+      if (unpaidRes.error) console.warn('AR query failed:', unpaidRes.error)
+      const allUnpaid = unpaidRes.data || []
+      const totalAR = allUnpaid.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+      const overdueAR = allUnpaid.filter(i=>i.due_date && i.due_date<today).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+      const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:expenses.filter(e=>e.category===cat).reduce((s,e)=>s+Number(e.amount||0),0) })).filter(c=>c.total>0)
+      const salesByDay = sales.map(d=>({ date:d.sale_date, revenue:Number(d.total_revenue||0) })).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')))
+      setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length })
+    } catch(e) {
+      console.warn('loadFinancialData:', e)
+      setFinancialData({ totalRevenue:0, walkinRevenue:0, messengerRevenue:0, resellerRevenue:0, totalCOGS:0, totalExpenses:0, grossProfit:0, netProfit:0, grossMarginPct:0, netMarginPct:0, totalAR:0, overdueAR:0, expenseByCategory:[], salesByDay:[], salesDays:0, productionDays:0 })
+    } finally {
+      setFinancialLoading(false)
+    }
   }
   function printPLReport() {
     if (!financialData) return
@@ -3789,9 +3952,16 @@ export default function App() {
   }
   async function loadFranchises() {
     setLoadingFranchises(true)
-    const { data } = await supabase.from('franchise_locations').select('*').order('created_at',{ascending:false})
-    setFranchises(data||[])
-    setLoadingFranchises(false)
+    try {
+      const { data, error } = await supabase.from('franchise_locations').select('*').order('created_at',{ascending:false})
+      if (error) { console.warn('loadFranchises:', error); setFranchises([]); return }
+      setFranchises(data||[])
+    } catch(e) {
+      console.warn('loadFranchises:', e)
+      setFranchises([])
+    } finally {
+      setLoadingFranchises(false)
+    }
   }
   async function loadAdminLogs() {
     const { data } = await supabase.from('attendance_logs').select('*').eq('attendance_date', adminDate).order('employee_name')
@@ -4612,9 +4782,11 @@ export default function App() {
       if(key==='dtr') loadEmployees()
       if(key==='contracts') { loadContracts(); loadEmployees() }
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
-      if(key==='costing') { loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
+      if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
       if(key==='schedule') { loadExistingSchedules() }
-      if(key==='sales') { loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>{ setResellerDisputes(data||[]) }) }
+      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+      if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadFinancialData() }
+      if(key==='franchise') { loadFranchises() }
     }
 
     // ── Open full employee portal from admin panel ─────────────────────────
@@ -4768,6 +4940,7 @@ export default function App() {
 
             {/* Content Area */}
             <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'24px', background:'#f8f7f5' }}>
+            <SectionErrorBoundary resetKey={activeTab}>
 
             {/* DASHBOARD */}
             {activeTab==='dashboard' && (
@@ -7931,11 +8104,20 @@ export default function App() {
                   ))}
                 </div>
 
+                {costingLoadErrors.length > 0 && (
+                  <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'12px', padding:'12px 14px', marginBottom:'16px' }}>
+                    <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:'0 0 6px' }}>⚠️ Costing database setup warning</p>
+                    <p style={{ color:'#555', fontSize:'12px', margin:'0 0 6px' }}>The screen will keep working, but some costing data cannot load until the missing Supabase table/column/relationship is fixed.</p>
+                    {costingLoadErrors.slice(0,4).map((err,i)=><p key={i} style={{ color:'#777', fontSize:'11px', margin:'2px 0' }}>• {err}</p>)}
+                  </div>
+                )}
+
                 {/* ── DASHBOARD VIEW ── */}
                 {costingView==='dashboard' && (() => {
                   const fin = computeFinancials()
-                  const byCategory = VARIANT_CATEGORIES.map(cat => ({
-                    cat, variants: fin.variantData.filter(v => v.category === cat)
+                  const dynamicCategories = Array.from(new Set([...(VARIANT_CATEGORIES || []), ...fin.variantData.map(v => v.category || 'Uncategorized')]))
+                  const byCategory = dynamicCategories.map(cat => ({
+                    cat, variants: fin.variantData.filter(v => (v.category || 'Uncategorized') === cat)
                   })).filter(g => g.variants.length > 0)
                   const catColors = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }
                   const belowTarget = fin.variantData.filter(v => v.belowTarget)
@@ -8025,7 +8207,7 @@ export default function App() {
                             </div>
                             {g.variants.map((v,i)=>(
                               <div key={v.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', padding:'8px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center' }}>
-                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{v.name}{v.isEstimate?<span style={{ color:'#aaa', fontSize:'10px', fontWeight:'normal' }}> *</span>:null}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{v.name}{v.isEstimate?<span style={{ color:'#aaa', fontSize:'10px', fontWeight:'normal' }}> *</span>:null}{v.isLocalFallback?<span style={{ color:'#f5a623', fontSize:'10px', fontWeight:'normal' }}> preview</span>:null}</span>
                                 <span style={{ textAlign:'right', fontSize:'12px' }}>{php(v.selling_price)}</span>
                                 <span style={{ textAlign:'right', fontSize:'12px', color:'#888' }}>{php(v.totalCost||0)}</span>
                                 <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:(v.grossMargin||0)>=0?'#2d8a4e':'#ca1b1b' }}>{php(v.grossMargin||0)}</span>
@@ -9607,7 +9789,7 @@ export default function App() {
                     <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
                       <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>➕ Add Expense</h4>
                       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
-                        <div><label style={lblS}>Date:</label><input type="date" value={expenseForm.date} onChange={e=>setExpenseForm(p=>({...p,date:e.target.value}))} style={inputStyle} /></div>
+                        <div><label style={lblS}>Date:</label><input type="date" value={expenseForm.expense_date} onChange={e=>setExpenseForm(p=>({...p,expense_date:e.target.value}))} style={inputStyle} /></div>
                         <div><label style={lblS}>Category:</label>
                           <select value={expenseForm.category} onChange={e=>setExpenseForm(p=>({...p,category:e.target.value}))} style={inputStyle}>
                             {EXPENSE_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
@@ -10110,6 +10292,7 @@ export default function App() {
               </div>
             )}
 
+            </SectionErrorBoundary>
           </div>
         </div>
       </div>
