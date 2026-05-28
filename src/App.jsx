@@ -8089,6 +8089,9 @@ export default function App() {
               </div>
             )}
 
+              </div>
+            )}
+
             {/* COSTING — OWNER ONLY */}
             {activeTab==='costing' && (
               <div>
@@ -10160,7 +10163,7 @@ export default function App() {
               </div>
             )}
 
-                {salesView==='disputes' && (
+                {activeTab==='sales' && salesView==='disputes' && (
                   <div>
                     <h3 style={h2s}>⚠️ Reseller Disputes</h3>
                     <button style={{ ...btnRed, width:'auto', padding:'8px 16px', marginBottom:'14px', marginTop:0 }} onClick={()=>{ supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>setResellerDisputes(data||[])); checkSuspiciousPatterns() }}>🔄 REFRESH</button>
@@ -10209,8 +10212,6 @@ export default function App() {
                     ))}
                   </div>
                 )}
-              </div>
-            )}
 
             {/* FRANCHISE MODULE */}
             {activeTab==='franchise' && adminRole==='owner' && (
