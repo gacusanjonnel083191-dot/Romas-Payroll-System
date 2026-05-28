@@ -2000,22 +2000,26 @@ export default function App() {
     }
   }
   async function autoMarkTodayDelivered() {
-    // Auto-mark invoices with delivery_date = today as delivered (if not already)
-    const { data: todayInvoices } = await supabase.from('delivery_invoices')
-      .select('id, invoice_number, reseller_name').eq('delivery_date', today).not('status','in','("delivered","paid","cancelled")')
-    if (todayInvoices && todayInvoices.length > 0) {
-      for (const inv of todayInvoices) {
-        await supabase.from('delivery_invoices').update({ status:'delivered', delivered_at: new Date().toISOString() }).eq('id', inv.id)
-        await logAudit('AUTO-DELIVERED', 'System', inv.reseller_name, inv.invoice_number + ' auto-marked delivered (delivery date = today)')
+    try {
+      // Auto-mark invoices with delivery_date = today as delivered (if not already)
+      const { data: todayInvoices } = await supabase.from('delivery_invoices')
+        .select('id, invoice_number, reseller_name').eq('delivery_date', today).not('status','in','(delivered,paid,cancelled)')
+      if (todayInvoices && todayInvoices.length > 0) {
+        for (const inv of todayInvoices) {
+          await supabase.from('delivery_invoices').update({ status:'delivered', delivered_at: new Date().toISOString() }).eq('id', inv.id)
+          await logAudit('AUTO-DELIVERED', 'System', inv.reseller_name, inv.invoice_number + ' auto-marked delivered (delivery date = today)')
+        }
       }
-    }
+    } catch(e) { console.warn('autoMarkTodayDelivered error:', e) }
   }
   async function loadDeliveryInvoices() {
-    setInvoicesLoading(true)
-    await autoMarkTodayDelivered()
-    const { data } = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(100)
-    setDeliveryInvoices(data || [])
-    setInvoicesLoading(false)
+    try {
+      setInvoicesLoading(true)
+      await autoMarkTodayDelivered()
+      const { data } = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(100)
+      setDeliveryInvoices(data || [])
+    } catch(e) { console.warn('loadDeliveryInvoices error:', e) }
+    finally { setInvoicesLoading(false) }
   }
   async function createDeliveryInvoice() {
     if (!invoiceResellerId) { showToast('❌ Please select a reseller.','red'); return }
@@ -8864,10 +8868,10 @@ export default function App() {
                     <div style={{ display:'flex', gap:'6px', marginBottom:'12px', flexWrap:'wrap' }}>
                       {(()=>{
                         const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
-                        const tomorrowStr = tomorrow2.toISOString().slice(0,10)
+                        const tomorrowStrLocal = tomorrow2.toISOString().slice(0,10)
                         const todayCount = deliveryInvoices.filter(i=>i.delivery_date===today).length
-                        const tomorrowCount = deliveryInvoices.filter(i=>i.delivery_date===tomorrowStr).length
-                        const upcomingCount = deliveryInvoices.filter(i=>i.delivery_date>tomorrowStr).length
+                        const tomorrowCount = deliveryInvoices.filter(i=>i.delivery_date===tomorrowStrLocal).length
+                        const upcomingCount = deliveryInvoices.filter(i=>i.delivery_date>tomorrowStrLocal).length
                         const tabs = [
                           ['today', `📦 Today (${todayCount})`],
                           ['tomorrow', `🚚 Tomorrow (${tomorrowCount})`],
