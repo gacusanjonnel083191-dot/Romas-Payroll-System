@@ -5491,7 +5491,7 @@ export default function App() {
                                   setDepartmentLocations(p=>({...p,[dept]:{...p[dept],lat:pos.coords.latitude.toFixed(6),lng:pos.coords.longitude.toFixed(6)}}))
                                   showToast(`✅ ${dept} location detected!`)
                                 }, () => showToast('❌ Could not detect location','red'))
-                )}
+                              } }
                             >📍 GPS</button>
                             <button
                               style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'6px', padding:'6px 4px', cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap' }}
@@ -5507,7 +5507,7 @@ export default function App() {
                                 await loadEmployees()
                                 const count = employees.filter(e=>e.department===dept).length
                                 showToast(`✅ Applied to ${count} employee(s) in ${dept}!`)
-                )}
+                              } }
                             >✅ Apply</button>
                           </div>
                         )
