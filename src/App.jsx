@@ -67,7 +67,30 @@ function getTodayDate() {
   return d.toISOString().slice(0, 10)
 }
 function nowTime() { return new Date().toLocaleTimeString('en-GB', { hour12: false }) }
-function minutesFromTime(t) { const [h, m] = t.split(':').map(Number); return h * 60 + m }
+function minutesFromTime(t) { const [h, m] = String(t||'00:00').split(':').map(Number); return (Number(h)||0) * 60 + (Number(m)||0) }
+function diffMinutesAcrossMidnight(startTime, endTime) {
+  const start = minutesFromTime(startTime)
+  let end = minutesFromTime(endTime)
+  if (end < start) end += 24 * 60
+  return Math.max(0, end - start)
+}
+function diffFromShiftEndMinutes(shiftStart, shiftEnd, clockOutTime, actualTimeIn) {
+  if (!shiftEnd) return 0
+  let end = minutesFromTime(shiftEnd)
+  let out = minutesFromTime(clockOutTime)
+  const start = shiftStart ? minutesFromTime(shiftStart) : (actualTimeIn ? minutesFromTime(actualTimeIn) : null)
+  const actualCrossedMidnight = actualTimeIn && minutesFromTime(clockOutTime) < minutesFromTime(actualTimeIn)
+  const scheduledOvernight = start !== null && end <= start
+  if (scheduledOvernight) end += 24 * 60
+  if ((start !== null && out < start) || actualCrossedMidnight) out += 24 * 60
+  return out - end
+}
+function getDateOffsetString(days) {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+  return d.toISOString().slice(0, 10)
+}
 function roundPenaltyMinutes(min) { if (!min || min <= 10) return 0; return Math.ceil(min / 30) * 30 }
 function safeNum(value, fallback = 0) {
   const n = Number(value)
@@ -170,6 +193,7 @@ export default function App() {
   const today = getTodayDate()
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
+  const profilePhotoInputRef = useRef(null)
 
   const [employeeCode, setEmployeeCode] = useState('')
   const [pin, setPin] = useState('')
@@ -475,7 +499,7 @@ export default function App() {
   const [dailySalesLoading, setDailySalesLoading] = useState(false)
   const [showSalesForm, setShowSalesForm] = useState(false)
   const [salesDate, setSalesDate] = useState(today)
-  const [salesEntries, setSalesEntries] = useState([{ product_type:'donut', variant_id:'', inventory_item_id:'', variant_name:'', item_name:'', channel:'walkin', quantity:'', unit_price:'' }])
+  const [salesEntries, setSalesEntries] = useState([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])
   const [salesNotes, setSalesNotes] = useState('')
   const [savingSales, setSavingSales] = useState(false)
   const [dailyExpenses, setDailyExpenses] = useState([])
@@ -594,8 +618,7 @@ export default function App() {
   const [poNotes, setPONotes] = useState('')
   const [savingPO, setSavingPO] = useState(false)
   const PAYMENT_TERMS = ['COD (Cash on Delivery)','Net 7 Days','Net 15 Days','Net 30 Days','Net 60 Days','50% Down, 50% on Delivery','Down Payment + Balance','Others']
-  const INVENTORY_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Snacks','Drinks','Other Store Products','Equipment & Supplies']
-  const SELLABLE_INVENTORY_CATEGORIES = ['Finished Products','Snacks','Drinks','Other Store Products']
+  const INVENTORY_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Equipment & Supplies']
   const [payrollStart, setPayrollStart] = useState(today)
   const [payrollEnd, setPayrollEnd] = useState(today)
   const [payrollMonth, setPayrollMonth] = useState(today.slice(0,7))
@@ -753,9 +776,12 @@ export default function App() {
     return data.publicUrl
   }
   async function uploadProfilePhoto(file, empId) {
-    const { error } = await supabase.storage.from('profile-photos').upload(`${empId}.jpg`, file, { upsert:true })
+    const safeName = file.name?.split('.').pop()?.toLowerCase() || 'jpg'
+    const ext = ['jpg','jpeg','png','webp'].includes(safeName) ? safeName : 'jpg'
+    const fileName = `${empId}_${Date.now()}.${ext}`
+    const { error } = await supabase.storage.from('profile-photos').upload(fileName, file, { upsert:false, contentType:file.type || 'image/jpeg' })
     if (error) throw error
-    const { data } = supabase.storage.from('profile-photos').getPublicUrl(`${empId}.jpg`)
+    const { data } = supabase.storage.from('profile-photos').getPublicUrl(fileName)
     return data.publicUrl
   }
 
@@ -1176,7 +1202,6 @@ export default function App() {
     const f = editItemFields
     const { error } = await supabase.from('inventory_items').update({
       name: f.name||item.name,
-      category: f.category||item.category,
       unit: f.unit||item.unit,
       current_stock: Number(f.current_stock??item.current_stock??0),
       min_stock: Number(f.min_stock??item.min_stock),
@@ -2437,112 +2462,6 @@ export default function App() {
     </div></body></html>`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
   }
-  function isSellableInventoryItem(item) {
-    if (!item) return false
-    return SELLABLE_INVENTORY_CATEGORIES.includes(item.category) || Number(item.selling_price||0) > 0
-  }
-  function getSalesEntryMeta(entry) {
-    if (entry.product_type === 'inventory') {
-      const item = inventoryItems.find(i => i.id === entry.inventory_item_id)
-      const unitPrice = Number(entry.unit_price || item?.selling_price || 0)
-      const costPrice = Number(item?.cost_per_unit || 0)
-      const qty = Number(entry.quantity || 0)
-      return {
-        productType:'inventory',
-        id: entry.inventory_item_id,
-        name: entry.item_name || item?.name || '',
-        category: item?.category || 'Other Store Products',
-        unit: item?.unit || 'pcs',
-        unitPrice,
-        costPrice,
-        qty,
-        total: qty * unitPrice,
-        grossProfit: qty * (unitPrice - costPrice),
-        item
-      }
-    }
-    const variant = donutVariants.find(v => v.id === entry.variant_id)
-    const unitPrice = Number(entry.unit_price || variant?.selling_price || 0)
-    const qty = Number(entry.quantity || 0)
-    return {
-      productType:'donut',
-      id: entry.variant_id,
-      name: entry.variant_name || variant?.name || '',
-      category: variant?.category || 'Donuts',
-      unit:'pcs',
-      unitPrice,
-      costPrice:0,
-      qty,
-      total: qty * unitPrice,
-      grossProfit: qty * unitPrice,
-      variant
-    }
-  }
-  async function insertDailySalesItemsWithFallback(rows) {
-    const enrichedRows = rows.map(r => ({
-      sale_id:r.sale_id,
-      variant_id:r.variant_id || null,
-      variant_name:r.variant_name,
-      channel:r.channel,
-      quantity:r.quantity,
-      unit_price:r.unit_price,
-      total_price:r.total_price,
-      product_type:r.product_type,
-      inventory_item_id:r.inventory_item_id || null,
-      inventory_item_name:r.inventory_item_name || null,
-      item_category:r.item_category || null,
-      cost_price:r.cost_price || 0,
-      gross_profit:r.gross_profit || 0
-    }))
-    const { error } = await supabase.from('daily_sales_items').insert(enrichedRows)
-    if (!error) return
-    console.warn('daily_sales_items enriched insert failed, trying legacy insert:', error)
-    const legacyRows = rows.map(r => ({
-      sale_id:r.sale_id,
-      variant_id:r.variant_id || null,
-      variant_name:r.variant_name,
-      channel:r.channel,
-      quantity:r.quantity,
-      unit_price:r.unit_price,
-      total_price:r.total_price
-    }))
-    const { error:legacyError } = await supabase.from('daily_sales_items').insert(legacyRows)
-    if (legacyError) throw legacyError
-    showToast('⚠️ Sales saved using legacy item format. Run the SQL update for full snack/drink reporting.', 'orange')
-  }
-  async function deductInventoryForSales(validEntries, saleId) {
-    const grouped = {}
-    for (const entry of validEntries.filter(e => e.product_type === 'inventory')) {
-      const meta = getSalesEntryMeta(entry)
-      if (!meta.item || !meta.id || meta.qty <= 0) continue
-      if (!grouped[meta.id]) grouped[meta.id] = { item:meta.item, qty:0, channel:entry.channel }
-      grouped[meta.id].qty += meta.qty
-    }
-    for (const group of Object.values(grouped)) {
-      const item = group.item
-      const stockBefore = Number(item.current_stock || 0)
-      const stockAfter = Math.max(0, stockBefore - group.qty)
-      const { error:updateError } = await supabase.from('inventory_items').update({ current_stock:stockAfter }).eq('id', item.id)
-      if (updateError) throw updateError
-      await supabase.from('inventory_transactions').insert({
-        item_id:item.id,
-        item_name:item.name,
-        category:item.category,
-        transaction_type:'out',
-        quantity:group.qty,
-        unit:item.unit,
-        stock_before:stockBefore,
-        stock_after:stockAfter,
-        reference:`Daily Sales ${salesDate}`,
-        notes:`Auto stock-out from sales record ${saleId}`,
-        performed_by:`Admin (${adminRole})`
-      })
-      if (stockAfter <= Number(item.min_stock||0) && Number(item.min_stock||0) > 0) {
-        await createNotification(null, 'System', 'inventory', `⚠️ Low Stock: ${item.name}`, `${item.name} dropped to ${stockAfter} ${item.unit}. Minimum is ${item.min_stock} ${item.unit}. Please reorder.`)
-      }
-    }
-  }
-
   // ── Daily Sales Functions ─────────────────────────────────────────────────
   async function loadDailySales() {
     setDailySalesLoading(true)
@@ -2552,29 +2471,12 @@ export default function App() {
   }
   async function saveDailySales() {
     if (!salesDate) { showToast('❌ Please select a date.','red'); return }
-    const valid = salesEntries.filter(e => {
-      const hasProduct = e.product_type === 'inventory' ? !!e.inventory_item_id : !!e.variant_id
-      return hasProduct && Number(e.quantity) > 0
-    })
+    const valid = salesEntries.filter(e => e.variant_id && Number(e.quantity) > 0)
     if (valid.length === 0) { showToast('❌ Please add at least one sale entry.','red'); return }
-    const neededByItem = {}
-    for (const entry of valid.filter(e => e.product_type === 'inventory')) {
-      const meta = getSalesEntryMeta(entry)
-      if (!meta.item) { showToast('❌ Inventory item not found. Please reload and try again.','red'); return }
-      neededByItem[meta.id] = (neededByItem[meta.id] || 0) + meta.qty
-    }
-    for (const [itemId, neededQty] of Object.entries(neededByItem)) {
-      const item = inventoryItems.find(i=>i.id===itemId)
-      const stock = Number(item?.current_stock || 0)
-      if (neededQty > stock) {
-        showToast(`❌ Insufficient stock for ${item?.name}. Need ${neededQty}, available ${stock} ${item?.unit||''}.`, 'red')
-        return
-      }
-    }
     setSavingSales(true)
     try {
-      const walkinTotal = valid.filter(e=>e.channel==='walkin').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
-      const messengerTotal = valid.filter(e=>e.channel==='messenger').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
+      const walkinTotal = valid.filter(e=>e.channel==='walkin').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
+      const messengerTotal = valid.filter(e=>e.channel==='messenger').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
       const resellerInvoicesDay = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
       const totalRevenue = walkinTotal + messengerTotal + resellerInvoicesDay
       const { data:saleData, error:sErr } = await supabase.from('daily_sales').insert({
@@ -2584,29 +2486,15 @@ export default function App() {
       }).select().single()
       if (sErr) throw sErr
       const itemRows = valid.map(e => {
-        const meta = getSalesEntryMeta(e)
-        return {
-          sale_id:saleData.id,
-          variant_id:meta.productType==='donut' ? meta.id : null,
-          variant_name:meta.name,
-          channel:e.channel,
-          quantity:meta.qty,
-          unit_price:meta.unitPrice,
-          total_price:meta.total,
-          product_type:meta.productType,
-          inventory_item_id:meta.productType==='inventory' ? meta.id : null,
-          inventory_item_name:meta.productType==='inventory' ? meta.name : null,
-          item_category:meta.category,
-          cost_price:meta.costPrice,
-          gross_profit:meta.grossProfit
-        }
+        const variant = donutVariants.find(v=>v.id===e.variant_id)
+        const unitPrice = variant?.selling_price || Number(e.unit_price||0)
+        return { sale_id:saleData.id, variant_id:e.variant_id, variant_name:e.variant_name||variant?.name||'', channel:e.channel, quantity:Number(e.quantity), unit_price:unitPrice, total_price:Number(e.quantity)*unitPrice }
       })
-      await insertDailySalesItemsWithFallback(itemRows)
-      await deductInventoryForSales(valid, saleData.id)
+      await supabase.from('daily_sales_items').insert(itemRows)
       await logAudit('DAILY SALES ENCODED', adminRole, 'Sales', `${salesDate} — ${php(totalRevenue)}`)
       showToast(`✅ Sales for ${salesDate} saved! Total: ${php(totalRevenue)}`)
-      setShowSalesForm(false); setSalesEntries([{ product_type:'donut', variant_id:'', inventory_item_id:'', variant_name:'', item_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setSalesNotes('')
-      loadDailySales(); loadInventoryItems(); loadFinancialData()
+      setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setSalesNotes('')
+      loadDailySales()
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingSales(false)
   }
@@ -3505,23 +3393,10 @@ export default function App() {
       const overdueAR = allUnpaid.filter(i=>i.due_date && i.due_date<today).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
       const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:expenses.filter(e=>e.category===cat).reduce((s,e)=>s+Number(e.amount||0),0) })).filter(c=>c.total>0)
       const salesByDay = sales.map(d=>({ date:d.sale_date, revenue:Number(d.total_revenue||0) })).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')))
-      let snackRevenue = 0, drinkRevenue = 0, otherProductRevenue = 0
-      if (sales.length > 0) {
-        const saleIds = sales.map(s=>s.id).filter(Boolean)
-        const { data:itemData, error:itemErr } = await supabase.from('daily_sales_items').select('*').in('sale_id', saleIds)
-        if (itemErr) console.warn('daily_sales_items breakdown query failed:', itemErr)
-        ;(itemData||[]).forEach(it=>{
-          const cat = it.item_category || ''
-          const amt = Number(it.total_price||0)
-          if (cat === 'Snacks') snackRevenue += amt
-          else if (cat === 'Drinks') drinkRevenue += amt
-          else if (cat === 'Other Store Products') otherProductRevenue += amt
-        })
-      }
-      setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, snackRevenue, drinkRevenue, otherProductRevenue, totalCOGS, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length })
+      setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length })
     } catch(e) {
       console.warn('loadFinancialData:', e)
-      setFinancialData({ totalRevenue:0, walkinRevenue:0, messengerRevenue:0, resellerRevenue:0, snackRevenue:0, drinkRevenue:0, otherProductRevenue:0, totalCOGS:0, totalExpenses:0, grossProfit:0, netProfit:0, grossMarginPct:0, netMarginPct:0, totalAR:0, overdueAR:0, expenseByCategory:[], salesByDay:[], salesDays:0, productionDays:0 })
+      setFinancialData({ totalRevenue:0, walkinRevenue:0, messengerRevenue:0, resellerRevenue:0, totalCOGS:0, totalExpenses:0, grossProfit:0, netProfit:0, grossMarginPct:0, netMarginPct:0, totalAR:0, overdueAR:0, expenseByCategory:[], salesByDay:[], salesDays:0, productionDays:0 })
     } finally {
       setFinancialLoading(false)
     }
@@ -3549,9 +3424,6 @@ export default function App() {
         <tr><td colspan="2" class="section">REVENUE</td></tr>
         <tr><td class="label">Walk-in Sales</td><td class="val">${php(financialData.walkinRevenue)}</td></tr>
         <tr><td class="label">Messenger/Online Sales</td><td class="val">${php(financialData.messengerRevenue)}</td></tr>
-        <tr><td class="label">Snack Sales (included in Walk-in/Messenger)</td><td class="val">${php(financialData.snackRevenue||0)}</td></tr>
-        <tr><td class="label">Drink Sales (included in Walk-in/Messenger)</td><td class="val">${php(financialData.drinkRevenue||0)}</td></tr>
-        <tr><td class="label">Other Store Product Sales (included above)</td><td class="val">${php(financialData.otherProductRevenue||0)}</td></tr>
         <tr><td class="label">Reseller Deliveries</td><td class="val">${php(financialData.resellerRevenue)}</td></tr>
         <tr class="total"><td>TOTAL REVENUE</td><td class="val">${php(financialData.totalRevenue)}</td></tr>
         <tr><td colspan="2" class="section">COST OF GOODS SOLD (COGS)</td></tr>
@@ -3580,7 +3452,29 @@ export default function App() {
 
   // ── Employee Portal ───────────────────────────────────────────────────────
   async function loadTodayLog(emp) {
-    // First check today's log
+    const yesterdayStr = getDateOffsetString(-1)
+
+    // Night shift protection: always restore any open attendance log from today OR yesterday.
+    // This prevents the employee portal from resetting at 12:00 AM while a night shift is still active.
+    const { data: openLogs } = await supabase.from('attendance_logs')
+      .select('*')
+      .eq('employee_id', emp.id)
+      .is('time_out', null)
+      .gte('attendance_date', yesterdayStr)
+      .order('attendance_date', { ascending:false })
+      .limit(1)
+
+    if (openLogs && openLogs.length > 0) {
+      const activeLog = openLogs[0]
+      setTodayLog(activeLog)
+      loadTodayBreaks(activeLog.id)
+      if (activeLog.attendance_date !== today) {
+        showToast('🌙 Night shift active from ' + activeLog.attendance_date)
+      }
+      return
+    }
+
+    // If there is no open night-shift log, load the normal current-day record.
     const { data: todayData } = await supabase.from('attendance_logs')
       .select('*').eq('employee_id', emp.id).eq('attendance_date', today).maybeSingle()
     if (todayData) {
@@ -3588,25 +3482,11 @@ export default function App() {
       loadTodayBreaks(todayData.id)
       return
     }
-    // Night shift fix: only check yesterday's open log between 12AM–6AM (night shift window)
-    const currentHour = new Date().getHours()
-    if (currentHour >= 0 && currentHour < 6) {
-      const yesterday = new Date(); yesterday.setDate(yesterday.getDate()-1)
-      const yesterdayStr = yesterday.toISOString().slice(0,10)
-      const { data: yesterdayData } = await supabase.from('attendance_logs')
-        .select('*').eq('employee_id', emp.id).eq('attendance_date', yesterdayStr).is('time_out', null).maybeSingle()
-      if (yesterdayData) {
-        // Employee is still on night shift from yesterday — use that log
-        setTodayLog(yesterdayData)
-        loadTodayBreaks(yesterdayData.id)
-        showToast('🌙 Night shift active from ' + yesterdayStr)
-        return
-      }
-    }
     setTodayLog(null)
+    setTodayBreaks([])
   }
-  async function loadTodaySchedule(emp) {
-    const { data } = await supabase.from('daily_schedules').select('*').eq('employee_id', emp.id).eq('schedule_date', today).maybeSingle()
+  async function loadTodaySchedule(emp, scheduleDate = today) {
+    const { data } = await supabase.from('daily_schedules').select('*').eq('employee_id', emp.id).eq('schedule_date', scheduleDate).maybeSingle()
     setTodaySchedule(data)
   }
   async function loadTodayBreaks(logId) {
@@ -3645,15 +3525,30 @@ export default function App() {
     setMyLeavesLoading(false)
     setMyLeaves(data || [])
   }
+  function openProfilePhotoPicker() {
+    if (uploadingPhoto) return
+    profilePhotoInputRef.current?.click()
+  }
   async function handleProfilePhotoUpload(e) {
-    const file = e.target.files[0]; if (!file) return
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type?.startsWith('image/')) { showToast('Please choose an image file.','red'); e.target.value=''; return }
+    if (file.size > 5 * 1024 * 1024) { showToast('Image is too large. Maximum is 5MB.','red'); e.target.value=''; return }
     setUploadingPhoto(true)
     try {
       const url = await uploadProfilePhoto(file, employee.id)
-      await supabase.from('employees').update({ profile_photo_url:url }).eq('id', employee.id)
-      setProfilePhotoUrl(url); showToast('✅ Profile photo updated!')
-    } catch(err) { showToast('Failed: '+err.message,'red') }
-    setUploadingPhoto(false)
+      const { error } = await supabase.from('employees').update({ profile_photo_url:url }).eq('id', employee.id)
+      if (error) throw error
+      setProfilePhotoUrl(url)
+      setEmployee(prev => prev ? { ...prev, profile_photo_url:url } : prev)
+      setEmployees(prev => prev.map(emp => emp.id === employee.id ? { ...emp, profile_photo_url:url } : emp))
+      showToast('✅ Profile photo updated!')
+    } catch(err) {
+      showToast('Failed: '+err.message,'red')
+    } finally {
+      setUploadingPhoto(false)
+      e.target.value = ''
+    }
   }
   async function initiateTimeIn() {
     setCapturedPhoto(null); setCameraMode('timein')
@@ -3667,19 +3562,20 @@ export default function App() {
   }
   async function initiateBreakOut() {
     if (!todayLog || todayLog.time_out) { alert('You must be timed in to take a break.'); return }
-    // Only 1 break per day
-    if (todayBreaks.length > 0) { showToast('❌ You have already taken your break today. Only 1 break is allowed per day.','red'); return }
+    // Only 1 break per attendance log/shift
+    if (todayBreaks.length > 0) { showToast('❌ You have already taken your break for this shift. Only 1 break is allowed per shift.','red'); return }
     const openBreak = todayBreaks.find(b=>!b.break_in)
     if (openBreak) { alert('You are already on break. Please Break In first.'); return }
-    const { error } = await supabase.from('break_logs').insert({ attendance_log_id:todayLog.id, employee_id:employee.id, employee_name:employee.full_name, attendance_date:today, break_out:nowTime() })
+    const activeAttendanceDate = todayLog.attendance_date || today
+    const { error } = await supabase.from('break_logs').insert({ attendance_log_id:todayLog.id, employee_id:employee.id, employee_name:employee.full_name, attendance_date:activeAttendanceDate, break_out:nowTime() })
     if (error) { showToast('Failed: '+error.message,'red'); return }
     loadTodayBreaks(todayLog.id); showToast('☕ Break started!')
   }
   async function initiateBreakIn() {
     const openBreak = todayBreaks.find(b=>!b.break_in)
     if (!openBreak) { alert('You are not currently on break.'); return }
-    const duration = minutesFromTime(nowTime()) - minutesFromTime(openBreak.break_out)
-    const { error } = await supabase.from('break_logs').update({ break_in:nowTime(), break_minutes:Math.max(0,duration) }).eq('id', openBreak.id)
+    const duration = diffMinutesAcrossMidnight(openBreak.break_out, nowTime())
+    const { error } = await supabase.from('break_logs').update({ break_in:nowTime(), break_minutes:duration }).eq('id', openBreak.id)
     if (error) { showToast('Failed: '+error.message,'red'); return }
     loadTodayBreaks(todayLog.id); showToast('✅ Break ended!')
   }
@@ -3727,30 +3623,40 @@ export default function App() {
   }
   async function confirmTimeOut() {
     if (!capturedPhoto) { alert('Please take a selfie first.'); return }
+    if (!todayLog) { alert('No active attendance log found. Please reload and try again.'); return }
     setLoading(true)
+
+    const timeIn = todayLog.time_in || nowTime()
+    const timeOut = nowTime()
+    const activeAttendanceDate = todayLog.attendance_date || today
+    const shiftStartForCalc = todayLog.shift_start || todaySchedule?.shift_start || null
+    const shiftEndForCalc = todayLog.shift_end || todaySchedule?.shift_end || null
+
     let undertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
     const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
     const excessBreakMins = Math.max(0, totalBreakMins-ALLOWED_BREAK_MINUTES)
-    if (todaySchedule?.shift_end) {
-      const cur=minutesFromTime(nowTime()), shiftE=minutesFromTime(todaySchedule.shift_end), diff=cur-shiftE
-      undertimeMinutes = diff<0?Math.abs(diff):0; overtimeMinutes = diff>0?diff:0
+
+    // Correctly compare time-out vs scheduled shift end even when the shift crosses midnight.
+    if (shiftEndForCalc) {
+      const diff = diffFromShiftEndMinutes(shiftStartForCalc, shiftEndForCalc, timeOut, timeIn)
+      undertimeMinutes = diff < 0 ? Math.abs(diff) : 0
+      overtimeMinutes = diff > 0 ? diff : 0
       if (undertimeMinutes>0) status='Undertime - Pending Filing'
       if (overtimeMinutes>0) status='Overtime - Pending Filing'
     }
-    // ── Auto-compute Night Shift Differential (10PM - 6AM) ───────────────────
-    const timeIn = todayLog.time_in || nowTime()
-    const timeOut = nowTime()
+
+    // ── Auto-compute Night Shift Differential (10PM - 6AM), including next-day time-out ──
     const inM = minutesFromTime(timeIn)
-    const outRaw = minutesFromTime(timeOut)
-    const outM = outRaw < inM ? outRaw + 24*60 : outRaw  // handle next-day
+    const outM = minutesFromTime(timeOut) < inM ? minutesFromTime(timeOut) + 24*60 : minutesFromTime(timeOut)
     const nsdStart = 22*60   // 10PM = 1320 mins
     const nsdEnd = 30*60     // 6AM next day = 1800 mins
     const os = Math.max(inM, nsdStart)
     const oe = Math.min(outM, nsdEnd)
     const nsdMinutes = oe > os ? Math.round(oe - os) : 0
     // ─────────────────────────────────────────────────────────────────────────
+
     let selfieUrl = null
-    try { selfieUrl = await uploadSelfie(capturedPhoto, `timeout_${employee.id}_${today}.jpg`) } catch(e){}
+    try { selfieUrl = await uploadSelfie(capturedPhoto, `timeout_${employee.id}_${activeAttendanceDate}.jpg`) } catch(e){}
     const { data, error } = await supabase.from('attendance_logs').update({
       time_out: timeOut,
       undertime_minutes: undertimeMinutes,
@@ -3765,8 +3671,9 @@ export default function App() {
     setLoading(false)
     if (error) { alert('Time Out failed: '+error.message); return }
     setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
-    await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}`)
+    await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}`)
     let msg = '✅ Time Out saved successfully!'
+    if (activeAttendanceDate !== today) msg += `\n\n🌙 Night shift time-out saved under attendance date: ${activeAttendanceDate}.`
     if (nsdMinutes > 0) msg += `\n\n🌙 Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) — will be computed in payroll at 10% premium.`
     if (overtimeMinutes>0) msg += `\n\n⏱ ${overtimeMinutes} min overtime — please file an OT request.`
     if (undertimeMinutes>0) msg += `\n\n⚠️ ${undertimeMinutes} min undertime — please file a UT request.`
@@ -4939,7 +4846,7 @@ export default function App() {
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
       if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
       if(key==='schedule') { loadExistingSchedules() }
-      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
       if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadFinancialData() }
       if(key==='franchise') { loadFranchises() }
     }
@@ -8093,7 +8000,7 @@ export default function App() {
                   <div style={{ background:'#e8f0fe', border:'2px solid #4a90d9', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
                     <h3 style={{ color:'#4a90d9', margin:'0 0 14px', fontSize:'14px' }}>➕ Add New Inventory Item</h3>
                     <label style={lblS}>Item Name:</label>
-                    <input type="text" placeholder="e.g. Curls Cheese 24g / Bottled Water / All-purpose flour" value={newItemName} onChange={e=>setNewItemName(e.target.value)} style={inputStyle} />
+                    <input type="text" placeholder="e.g. All-purpose flour" value={newItemName} onChange={e=>setNewItemName(e.target.value)} style={inputStyle} />
                     <label style={lblS}>Category:</label>
                     <select value={newItemCategory} onChange={e=>setNewItemCategory(e.target.value)} style={inputStyle}>
                       {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
@@ -8107,7 +8014,7 @@ export default function App() {
                       <div>
                         <label style={lblS}>Unit of Measure:</label>
                         <select value={newItemUnit} onChange={e=>setNewItemUnit(e.target.value)} style={{ ...inputStyle, marginBottom:0 }}>
-                          {['kg','g','L','mL','pcs','packs','boxes','bags','sacks','bottles','cans','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+                          {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
                         </select>
                       </div>
                       <div>
@@ -8122,7 +8029,7 @@ export default function App() {
                         <label style={lblS}>Min Stock Level:</label>
                         <input type="number" placeholder="e.g. 5" value={newItemMinStock} onChange={e=>setNewItemMinStock(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
                       </div>
-                      {SELLABLE_INVENTORY_CATEGORIES.includes(newItemCategory) && (
+                      {newItemCategory==='Finished Products' && (
                         <div>
                           <label style={lblS}>Selling Price (PHP):</label>
                           <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" />
@@ -8157,16 +8064,15 @@ export default function App() {
                               <div>
                                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
                                   <div><label style={lblS}>Name:</label><input value={editItemFields.name??item.name} onChange={e=>setEditItemFields(p=>({...p,name:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
-                                  <div><label style={lblS}>Category:</label><select value={editItemFields.category??item.category} onChange={e=>setEditItemFields(p=>({...p,category:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>{INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
                                   <div><label style={lblS}>Unit:</label>
                                     <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
-                                      {['kg','g','L','mL','pcs','packs','boxes','bags','sacks','bottles','cans','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+                                      {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
                                     </select>
                                   </div>
                                   <div><label style={lblS}>📦 Current Stock on Hand:</label><input type="number" value={editItemFields.current_stock??item.current_stock} onChange={e=>setEditItemFields(p=>({...p,current_stock:e.target.value}))} style={{ ...inputStyle, marginBottom:0, border:'2px solid #2d8a4e' }} min="0" step="0.01" /></div>
                                   <div><label style={lblS}>Min Stock Level:</label><input type="number" value={editItemFields.min_stock??item.min_stock} onChange={e=>setEditItemFields(p=>({...p,min_stock:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
                                   <div><label style={lblS}>Cost/Unit (PHP):</label><input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
-                                  {SELLABLE_INVENTORY_CATEGORIES.includes(editItemFields.category??item.category) && <div><label style={lblS}>Selling Price (PHP):</label><input type="number" value={editItemFields.selling_price??item.selling_price??0} onChange={e=>setEditItemFields(p=>({...p,selling_price:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>}
+                                  {(editItemFields.category??item.category)==='Finished Products' && <div><label style={lblS}>Selling Price (PHP):</label><input type="number" value={editItemFields.selling_price??item.selling_price??0} onChange={e=>setEditItemFields(p=>({...p,selling_price:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>}
                                   <div><label style={lblS}>Supplier:</label>
                                     <select value={editItemFields.supplier_id??item.supplier_id??''} onChange={e=>setEditItemFields(p=>({...p,supplier_id:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }}>
                                       <option value="">— No supplier —</option>
@@ -8918,7 +8824,7 @@ export default function App() {
                           <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', fontWeight:'bold', letterSpacing:'1px', margin:'0 0 8px' }}>TOTAL REVENUE — {financialMonth}</p>
                           <p style={{ fontSize:'36px', fontWeight:'bold', margin:'0 0 4px' }}>{php(financialData.totalRevenue)}</p>
                           <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'10px', marginTop:'12px' }}>
-                            {[['🏪 Walk-in',financialData.walkinRevenue],['💬 Messenger',financialData.messengerRevenue],['🥨 Snacks',financialData.snackRevenue||0],['🥤 Drinks',financialData.drinkRevenue||0],['🛍️ Other',financialData.otherProductRevenue||0],['🚚 Resellers',financialData.resellerRevenue]].map(([l,v])=>(
+                            {[['🏪 Walk-in',financialData.walkinRevenue],['💬 Messenger',financialData.messengerRevenue],['🚚 Resellers',financialData.resellerRevenue]].map(([l,v])=>(
                               <div key={l} style={{ background:'rgba(255,255,255,0.15)', borderRadius:'8px', padding:'8px', textAlign:'center' }}>
                                 <p style={{ fontSize:'10px', color:'rgba(255,255,255,0.7)', margin:'0 0 4px' }}>{l}</p>
                                 <p style={{ fontWeight:'bold', fontSize:'14px', margin:0 }}>{php(v||0)}</p>
@@ -9735,43 +9641,27 @@ export default function App() {
                         <label style={lblS}>Sales Date:</label>
                         <input type="date" value={salesDate} onChange={e=>setSalesDate(e.target.value)} style={{ ...inputStyle, maxWidth:'200px' }} />
                         <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>Sales Entries:</p>
-                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.1fr 3fr 1fr 0.8fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
-                          {['Type','Product','Channel','Qty','Unit Price',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+                        <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
+                          {['Variant','Channel','Qty',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
                         </div>
-                        {salesEntries.map((entry,i)=>{
-                          const sellableItems = inventoryItems.filter(isSellableInventoryItem)
-                          return (
-                          <div key={i} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.1fr 3fr 1fr 0.8fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
-                            <select value={entry.product_type||'donut'} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],product_type:e.target.value,variant_id:'',inventory_item_id:'',variant_name:'',item_name:'',unit_price:''}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
-                              <option value="donut">🍩 Donut</option>
-                              <option value="inventory">📦 Inventory</option>
+                        {salesEntries.map((entry,i)=>(
+                          <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
+                            <select value={entry.variant_id} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...salesEntries]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||'',unit_price:v?.selling_price||0}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                              <option value="">— Select variant —</option>
+                              {VARIANT_CATEGORIES.map(cat=>{ const cv=donutVariants.filter(v=>v.category===cat); if(!cv.length) return null; return <optgroup key={cat} label={cat}>{cv.map(v=><option key={v.id} value={v.id}>{v.name} (₱{v.selling_price})</option>)}</optgroup> })}
                             </select>
-                            {(entry.product_type||'donut')==='inventory' ? (
-                              <select value={entry.inventory_item_id||''} onChange={e=>{ const item=inventoryItems.find(inv=>inv.id===e.target.value); const upd=[...salesEntries]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:item?.name||'',unit_price:item?.selling_price||''}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
-                                <option value="">— Select snack/drink/item —</option>
-                                {SELLABLE_INVENTORY_CATEGORIES.map(cat=>{ const items=sellableItems.filter(item=>item.category===cat); if(!items.length) return null; return <optgroup key={cat} label={cat}>{items.map(item=><option key={item.id} value={item.id}>{item.name} — Stock: {Number(item.current_stock||0).toFixed(2)} {item.unit} — ₱{Number(item.selling_price||0).toFixed(2)}</option>)}</optgroup> })}
-                              </select>
-                            ) : (
-                              <select value={entry.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...salesEntries]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||'',unit_price:v?.selling_price||0}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
-                                <option value="">— Select donut variant —</option>
-                                {VARIANT_CATEGORIES.map(cat=>{ const cv=donutVariants.filter(v=>v.category===cat); if(!cv.length) return null; return <optgroup key={cat} label={cat}>{cv.map(v=><option key={v.id} value={v.id}>{v.name} (₱{v.selling_price})</option>)}</optgroup> })}
-                              </select>
-                            )}
                             <select value={entry.channel} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],channel:e.target.value}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
                               <option value="walkin">Walk-in</option>
                               <option value="messenger">Messenger</option>
                             </select>
                             <input type="number" placeholder="Qty" value={entry.quantity} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],quantity:e.target.value}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="1" />
-                            <input type="number" placeholder="Price" value={entry.unit_price} onChange={e=>{ const upd=[...salesEntries]; upd[i]={...upd[i],unit_price:e.target.value}; setSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" step="0.01" />
                             <button onClick={()=>setSalesEntries(salesEntries.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'7px 9px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕</button>
                           </div>
-                        )})}
-                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setSalesEntries([...salesEntries, { product_type:'donut', variant_id:'', inventory_item_id:'', variant_name:'', item_name:'', channel:'walkin', quantity:'', unit_price:'' }])}>+ ADD ROW</button>
-                        {salesEntries.some(e=>Number(e.quantity)>0&&((e.product_type==='inventory'&&e.inventory_item_id)||((e.product_type||'donut')==='donut'&&e.variant_id))) && (()=>{
-                          const validPreview = salesEntries.filter(e=>Number(e.quantity)>0&&((e.product_type==='inventory'&&e.inventory_item_id)||((e.product_type||'donut')==='donut'&&e.variant_id)))
-                          const walkin = validPreview.filter(e=>e.channel==='walkin').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
-                          const messenger = validPreview.filter(e=>e.channel==='messenger').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
-                          const snackDrinkTotal = validPreview.filter(e=>e.product_type==='inventory').reduce((s,e)=>s+getSalesEntryMeta(e).total,0)
+                        ))}
+                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setSalesEntries([...salesEntries, { variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])}>+ ADD ROW</button>
+                        {salesEntries.some(e=>e.variant_id&&Number(e.quantity)>0) && (()=>{
+                          const walkin = salesEntries.filter(e=>e.channel==='walkin'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
+                          const messenger = salesEntries.filter(e=>e.channel==='messenger'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
                           const resellerTotal = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
                           return (
                             <div style={{ background:'#e8f5e9', borderRadius:'10px', padding:'12px', marginBottom:'12px', border:'1px solid #c8e6c9' }}>
@@ -9779,7 +9669,6 @@ export default function App() {
                               <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'6px', fontSize:'12px' }}>
                                 <p style={cps}>Walk-in: <strong>{php(walkin)}</strong></p>
                                 <p style={cps}>Messenger: <strong>{php(messenger)}</strong></p>
-                                <p style={cps}>Snacks/Drinks/Other: <strong>{php(snackDrinkTotal)}</strong></p>
                                 <p style={cps}>Reseller deliveries: <strong>{php(resellerTotal)}</strong></p>
                                 <p style={{ ...cps, fontWeight:'bold', color:'#ca1b1b' }}>Total: <strong>{php(walkin+messenger+resellerTotal)}</strong></p>
                               </div>
@@ -9811,16 +9700,6 @@ export default function App() {
                           ))}
                         </div>
                         {sale.notes && <p style={{ ...cps, color:'#888', marginTop:'6px' }}>📝 {sale.notes}</p>}
-                        {(sale.daily_sales_items||[]).length>0 && (
-                          <div style={{ marginTop:'8px', background:'#fafafa', borderRadius:'8px', padding:'8px' }}>
-                            <p style={{ fontSize:'11px', fontWeight:'bold', color:'#555', margin:'0 0 6px' }}>Items sold:</p>
-                            {(sale.daily_sales_items||[]).slice(0,6).map((it,idx)=>(
-                              <p key={it.id||idx} style={{ fontSize:'11px', color:'#666', margin:'2px 0' }}>
-                                • {it.product_type==='inventory'?'📦':'🍩'} {it.inventory_item_name||it.variant_name} — {Number(it.quantity||0)} × {php(it.unit_price||0)} = <strong>{php(it.total_price||0)}</strong>
-                              </p>
-                            ))}
-                          </div>
-                        )}
                       </div>
                     ))}
                   </div>
@@ -10492,18 +10371,20 @@ export default function App() {
       <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f8f7f5', display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {/* Header */}
         <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0, zIndex:100, boxShadow:'0 2px 12px rgba(0,0,0,0.25)' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+          <input ref={profilePhotoInputRef} type="file" accept="image/*" style={{ display:'none' }} onChange={handleProfilePhotoUpload} />
+          <button type="button" onClick={openProfilePhotoPicker} disabled={uploadingPhoto} title="Change profile picture" style={{ display:'flex', alignItems:'center', gap:'10px', background:'transparent', border:'none', padding:0, margin:0, cursor:uploadingPhoto?'wait':'pointer', textAlign:'left', opacity:uploadingPhoto?0.75:1 }}>
             <div style={{ position:'relative' }}>
               {profilePhotoUrl ?
                 <img src={profilePhotoUrl} alt="Profile" style={{ width:'40px', height:'40px', borderRadius:'50%', objectFit:'cover', border:'2px solid #FDD412' }} /> :
                 <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:'#FDD412', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', border:'2px solid rgba(255,255,255,0.2)' }}>👤</div>
               }
+              <span style={{ position:'absolute', right:'-3px', bottom:'-3px', width:'17px', height:'17px', borderRadius:'50%', background:'#ca1b1b', color:'white', border:'2px solid #1a1a2e', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'9px', lineHeight:1 }}>📷</span>
             </div>
             <div>
               <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0, letterSpacing:'0.3px' }}>{employee.full_name}</p>
-              <p style={{ color:'rgba(255,255,255,0.6)', fontSize:'11px', margin:0 }}>{employee.position} · {employee.employee_code}</p>
+              <p style={{ color:'rgba(255,255,255,0.6)', fontSize:'11px', margin:0 }}>{uploadingPhoto ? 'Uploading photo...' : `${employee.position} · ${employee.employee_code}`}</p>
             </div>
-          </div>
+          </button>
           <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
             {cameFromAdmin && (
               <button style={{ background:'#FDD412', color:'#1a1a2e', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}>← Admin</button>
