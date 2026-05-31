@@ -639,6 +639,13 @@ export default function App() {
   const [resellerOrderNotes, setResellerOrderNotes] = useState('')
   const [submittingOrder, setSubmittingOrder] = useState(false)
   const [resellerOrders, setResellerOrders] = useState([])
+  const [resellerReturns, setResellerReturns] = useState([])
+  const [resellerReturnInvoiceId, setResellerReturnInvoiceId] = useState('')
+  const [resellerReturnItems, setResellerReturnItems] = useState([])
+  const [resellerReturnNotes, setResellerReturnNotes] = useState('')
+  const [submittingResellerReturn, setSubmittingResellerReturn] = useState(false)
+  const [resellerNotices, setResellerNotices] = useState([])
+  const [resellerPortalLoading, setResellerPortalLoading] = useState(false)
   // Admin order management
   const [pendingResellerOrders, setPendingResellerOrders] = useState([])
   const [showOrdersPanel, setShowOrdersPanel] = useState(false)
@@ -2587,6 +2594,92 @@ export default function App() {
       setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])
     }
   }
+
+
+  // ── Reseller Credit Hold / Delivery Resume Guard ─────────────────────────
+  // Rule: if a reseller has an unpaid/partial invoice that reaches the 8th day
+  // after delivery (7-day grace), new invoice creation is blocked until settled.
+  function getInvoiceBalance(inv) {
+    return Math.max(0, safeNum(inv?.total_amount, 0) - safeNum(inv?.paid_amount, 0))
+  }
+
+  function getInvoiceCreditHoldDate(inv) {
+    if (inv?.due_date) return String(inv.due_date).slice(0, 10)
+    const deliveryDate = parseLocalDate(inv?.delivery_date)
+    if (!deliveryDate) return ''
+    deliveryDate.setDate(deliveryDate.getDate() + 7)
+    return formatDateLocal(deliveryDate)
+  }
+
+  function getInvoiceCreditAgeDays(inv, asOfDate = today) {
+    const delivered = parseLocalDate(inv?.delivery_date)
+    const asOf = parseLocalDate(asOfDate)
+    if (!delivered || !asOf) return 0
+    return Math.max(0, Math.floor((asOf - delivered) / (1000 * 60 * 60 * 24)))
+  }
+
+  function isInvoiceCreditBlocked(inv, asOfDate = today) {
+    const status = String(inv?.status || '').toLowerCase()
+    if (!inv || status === 'paid' || status === 'cancelled') return false
+    if (getInvoiceBalance(inv) <= 0) return false
+    const holdDate = getInvoiceCreditHoldDate(inv)
+    if (!holdDate) return false
+    return holdDate <= asOfDate
+  }
+
+  function buildResellerCreditStatus(resellerId, invoiceRows = deliveryInvoices, asOfDate = today) {
+    const related = (invoiceRows || []).filter(inv => String(inv.reseller_id || '') === String(resellerId || ''))
+    const outstanding = related
+      .filter(inv => getInvoiceBalance(inv) > 0 && !['paid','cancelled'].includes(String(inv.status || '').toLowerCase()))
+      .map(inv => ({
+        ...inv,
+        balance_amount: getInvoiceBalance(inv),
+        hold_date: getInvoiceCreditHoldDate(inv),
+        credit_age_days: getInvoiceCreditAgeDays(inv, asOfDate),
+        is_credit_blocked: isInvoiceCreditBlocked(inv, asOfDate)
+      }))
+      .sort((a, b) => String(a.delivery_date || '').localeCompare(String(b.delivery_date || '')))
+
+    const blockedInvoices = outstanding.filter(inv => inv.is_credit_blocked)
+    const totalBalance = outstanding.reduce((sum, inv) => sum + safeNum(inv.balance_amount, 0), 0)
+    const blockedBalance = blockedInvoices.reduce((sum, inv) => sum + safeNum(inv.balance_amount, 0), 0)
+    const oldest = blockedInvoices[0] || outstanding[0] || null
+
+    return {
+      resellerId,
+      blocked: blockedInvoices.length > 0,
+      outstanding,
+      blockedInvoices,
+      totalBalance,
+      blockedBalance,
+      oldest,
+      message: blockedInvoices.length > 0
+        ? `Delivery hold: ${blockedInvoices.length} invoice(s) unpaid for 7+ days. Settle ${php(blockedBalance)} before creating a new invoice.`
+        : outstanding.length > 0
+          ? `Open balance: ${php(totalBalance)}. Delivery is still allowed until the 7-day grace period ends.`
+          : 'Clear account — delivery allowed.'
+    }
+  }
+
+  function getResellerCreditBlockInfo(resellerId) {
+    return buildResellerCreditStatus(resellerId, deliveryInvoices, today)
+  }
+
+  async function checkResellerCreditBlockFresh(resellerId) {
+    if (!resellerId) return buildResellerCreditStatus('', [], today)
+    const { data, error } = await supabase
+      .from('delivery_invoices')
+      .select('id, invoice_number, reseller_id, reseller_name, delivery_date, due_date, total_amount, paid_amount, status')
+      .eq('reseller_id', resellerId)
+      .order('delivery_date', { ascending:true })
+
+    if (error) {
+      console.warn('checkResellerCreditBlockFresh:', error)
+      return getResellerCreditBlockInfo(resellerId)
+    }
+
+    return buildResellerCreditStatus(resellerId, data || [], today)
+  }
   async function autoMarkTodayDelivered() {
     try {
       const { data: todayInvs } = await supabase.from('delivery_invoices')
@@ -2627,9 +2720,22 @@ export default function App() {
     if (!invoiceDate) { showToast('❌ Please select a delivery date.','red'); return }
     const validItems = invoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
     if (validItems.length === 0) { showToast('❌ Please add at least one item with quantity.','red'); return }
+    const visibleCreditStatus = getResellerCreditBlockInfo(invoiceResellerId)
+    if (visibleCreditStatus.blocked) {
+      showToast(`🚫 Delivery hold. ${visibleCreditStatus.message}`, 'red')
+      return
+    }
+
     setSavingInvoice(true)
     try {
       const reseller = resellers.find(r => r.id === invoiceResellerId)
+      const freshCreditStatus = await checkResellerCreditBlockFresh(invoiceResellerId)
+      if (freshCreditStatus.blocked) {
+        showToast(`🚫 Cannot create invoice for ${reseller?.name || 'this reseller'}. ${freshCreditStatus.message}`, 'red')
+        await logAudit('INVOICE BLOCKED - CREDIT HOLD', adminRole, reseller?.name || '', freshCreditStatus.message)
+        setSavingInvoice(false)
+        return
+      }
       const invoiceNum = `INV-${invoiceDate.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
       const dueDate = new Date(invoiceDate); dueDate.setDate(dueDate.getDate() + 7)
       const dueDateStr = dueDate.toISOString().slice(0,10)
@@ -3672,41 +3778,211 @@ export default function App() {
   // ── Feature: Reseller Portal ──────────────────────────────────────────────
   async function resellerLogin() {
     if (!resellerLoginCode || !resellerLoginPin) { showToast('❌ Enter code and PIN.','red'); return }
-    const { data } = await supabase.from('resellers').select('*').ilike('access_code', resellerLoginCode.trim()).eq('access_pin', resellerLoginPin.trim()).single()
-    if (!data) { showToast('❌ Invalid code or PIN.','red'); return }
-    setCurrentReseller(data)
-    setResellerMode(true)
-    loadResellerPortalData(data.id)
-    const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
-    setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
-    // Load variants for ordering
-    const { data:variants } = await supabase.from('donut_variants').select('*').eq('is_active',true).order('name')
-    setResellerOrderItems((variants||[]).map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 })))
+    setLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('resellers')
+        .select('*')
+        .ilike('access_code', resellerLoginCode.trim())
+        .eq('access_pin', resellerLoginPin.trim())
+        .eq('is_active', true)
+        .maybeSingle()
+
+      if (error) throw error
+      if (!data) { showToast('❌ Invalid code/PIN or inactive reseller account.','red'); setLoading(false); return }
+
+      setCurrentReseller(data)
+      setResellerMode(true)
+      setResellerPortalView('dashboard')
+      await loadResellerPortalData(data.id)
+
+      const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
+      setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
+      await loadResellerOrderItems()
+      showToast(`✅ Welcome, ${data.name}!`)
+    } catch(err) {
+      showToast('❌ Reseller login failed: ' + (err?.message || err), 'red')
+    }
+    setLoading(false)
   }
+
+  async function loadResellerOrderItems() {
+    const { data:variants, error } = await supabase.from('donut_variants').select('*').eq('is_active',true).order('name')
+    const source = (!error && variants && variants.length > 0)
+      ? variants
+      : DONUT_VARIANTS_DEFAULT.map((v, idx)=>({ id:`default-${idx}`, name:v.name, selling_price:v.selling_price }))
+
+    setResellerOrderItems(source.map(v=>({
+      variant_id:v.id,
+      variant_name:v.name,
+      quantity:'',
+      retail_price:safeNum(v.selling_price, 0),
+      reseller_price:Math.round(safeNum(v.selling_price, 0)*0.80*100)/100
+    })))
+  }
+
   async function loadResellerPortalData(resellerId) {
-    const { data:invs } = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').eq('reseller_id', resellerId).order('created_at',{ascending:false}).limit(30)
-    setResellerInvoices(invs||[])
-    const { data:pays } = await supabase.from('reseller_payments').select('*').eq('reseller_id', resellerId).order('created_at',{ascending:false}).limit(20)
-    setResellerPaymentHistory(pays||[])
-    const { data:orders } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').eq('reseller_id', resellerId).order('created_at',{ascending:false}).limit(10)
-    setResellerOrders(orders||[])
+    if (!resellerId) return
+    setResellerPortalLoading(true)
+
+    const { data:invs, error:invErr } = await supabase
+      .from('delivery_invoices')
+      .select('*, delivery_invoice_items(*)')
+      .eq('reseller_id', resellerId)
+      .order('delivery_date',{ascending:false})
+      .limit(80)
+    if (!invErr) setResellerInvoices(invs||[])
+    else console.warn('Reseller invoices load error:', invErr)
+
+    const { data:pays, error:payErr } = await supabase
+      .from('reseller_payments')
+      .select('*')
+      .eq('reseller_id', resellerId)
+      .order('payment_date',{ascending:false})
+      .limit(80)
+    if (!payErr) setResellerPaymentHistory(pays||[])
+    else console.warn('Reseller payments load error:', payErr)
+
+    const { data:orders, error:ordErr } = await supabase
+      .from('reseller_orders')
+      .select('*, reseller_order_items(*)')
+      .eq('reseller_id', resellerId)
+      .order('created_at',{ascending:false})
+      .limit(40)
+    if (!ordErr) setResellerOrders(orders||[])
+    else console.warn('Reseller orders load error:', ordErr)
+
+    const { data:returns, error:returnErr } = await supabase
+      .from('reseller_returns')
+      .select('*, reseller_return_items(*)')
+      .eq('reseller_id', resellerId)
+      .order('return_date',{ascending:false})
+      .limit(50)
+    if (!returnErr) setResellerReturns(returns||[])
+    else console.warn('Reseller returns load error:', returnErr)
+
+    const { data:notices, error:noticeErr } = await supabase
+      .from('reseller_notices')
+      .select('*')
+      .or(`reseller_id.eq.${resellerId},reseller_id.is.null`)
+      .order('created_at',{ascending:false})
+      .limit(20)
+    if (!noticeErr) setResellerNotices((notices||[]).filter(n=>String(n.status||'active').toLowerCase() !== 'archived'))
+    else {
+      console.warn('Reseller notices load error:', noticeErr)
+      setResellerNotices([])
+    }
+
+    setResellerPortalLoading(false)
   }
+
+  function resellerLogout() {
+    setCurrentReseller(null)
+    setResellerMode(false)
+    setResellerLoginCode('')
+    setResellerLoginPin('')
+    setResellerPortalView('dashboard')
+    setResellerInvoices([])
+    setResellerPaymentHistory([])
+    setResellerOrders([])
+    setResellerReturns([])
+    setResellerNotices([])
+  }
+
   async function confirmDeliveryReceipt(invoiceId) {
     if (!window.confirm('Confirm receipt of this delivery?')) return
-    await supabase.from('delivery_invoices').update({ receipt_confirmed:true, confirmed_at:new Date().toISOString(), confirmed_by:currentReseller?.name }).eq('id', invoiceId)
+    const { error } = await supabase.from('delivery_invoices').update({ receipt_confirmed:true, confirmed_at:new Date().toISOString(), confirmed_by:currentReseller?.name }).eq('id', invoiceId)
+    if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
+    await createNotification(null,'System','invoice','✅ Delivery Receipt Confirmed',`${currentReseller?.name || 'Reseller'} confirmed receipt of invoice.`)
     showToast('✅ Delivery confirmed!')
     loadResellerPortalData(currentReseller.id)
   }
+
+  function startResellerReturnReport(invoice) {
+    const items = (invoice.delivery_invoice_items || []).map(i => ({
+      variant_id:i.variant_id,
+      variant_name:i.variant_name,
+      delivered_qty:safeNum(i.quantity,0),
+      returned_qty:'',
+      reseller_price:safeNum(i.reseller_price,0)
+    }))
+    setResellerReturnInvoiceId(invoice.id)
+    setResellerReturnItems(items)
+    setResellerReturnNotes('')
+    setResellerPortalView('returns')
+  }
+
+  async function submitResellerReturnReport() {
+    const inv = resellerInvoices.find(i=>String(i.id)===String(resellerReturnInvoiceId))
+    if (!inv) { showToast('❌ Select an invoice first.','red'); return }
+
+    const validItems = resellerReturnItems.filter(i=>safeNum(i.returned_qty,0)>0)
+    if (validItems.length===0) { showToast('❌ Enter at least one returned/unsold quantity.','red'); return }
+
+    for (const item of validItems) {
+      if (safeNum(item.returned_qty,0) > safeNum(item.delivered_qty,0)) {
+        showToast(`❌ ${item.variant_name}: return cannot exceed delivered quantity.`, 'red')
+        return
+      }
+    }
+
+    setSubmittingResellerReturn(true)
+    try {
+      const totalQty = validItems.reduce((s,i)=>s+safeNum(i.returned_qty,0),0)
+      const totalCredit = validItems.reduce((s,i)=>s+safeNum(i.returned_qty,0)*safeNum(i.reseller_price,0),0)
+
+      const { data:ret, error:retErr } = await supabase.from('reseller_returns').insert({
+        invoice_id:inv.id,
+        reseller_id:currentReseller.id,
+        reseller_name:currentReseller.name,
+        return_date:today,
+        total_returned_amount:totalCredit,
+        recorded_by:`Reseller Portal: ${currentReseller.name}`,
+        notes:resellerReturnNotes || null
+      }).select().single()
+      if (retErr) throw retErr
+
+      const { error:itemErr } = await supabase.from('reseller_return_items').insert(validItems.map(i=>({
+        return_id:ret.id,
+        variant_id:i.variant_id,
+        variant_name:i.variant_name,
+        returned_quantity:safeNum(i.returned_qty,0),
+        reseller_price:safeNum(i.reseller_price,0),
+        total_credit:safeNum(i.returned_qty,0)*safeNum(i.reseller_price,0)
+      })))
+      if (itemErr) throw itemErr
+
+      await createNotification(null,'System','returns',`📦 Reseller Return Report: ${currentReseller.name}`,`${currentReseller.name} reported ${totalQty} returned/unsold pcs for ${inv.invoice_number}. Estimated credit: ${php(totalCredit)}.`)
+      await logAudit('RESELLER RETURN REPORT', 'Reseller Portal', currentReseller.name, `${inv.invoice_number} — ${totalQty} pcs — ${php(totalCredit)}`)
+
+      showToast('✅ Return/unsold report submitted for admin review.')
+      setResellerReturnInvoiceId('')
+      setResellerReturnItems([])
+      setResellerReturnNotes('')
+      await loadResellerPortalData(currentReseller.id)
+    } catch(err) {
+      showToast('❌ Failed to submit returns: ' + (err?.message || err), 'red')
+    }
+    setSubmittingResellerReturn(false)
+  }
+
   async function submitResellerOrder() {
     const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
     if (validItems.length===0) { showToast('❌ Enter at least one quantity.','red'); return }
     if (!resellerOrderDeliveryDate) { showToast('❌ Select delivery date.','red'); return }
+    const creditStatus = await checkResellerCreditBlockFresh(currentReseller?.id)
+    if (creditStatus.blocked) {
+      showToast(`🚫 Order blocked. ${creditStatus.message}`, 'red')
+      return
+    }
     setSubmittingOrder(true)
     try {
       const total = validItems.reduce((s,i)=>s+Number(i.quantity)*i.reseller_price,0)
+      const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
       const { data:order, error } = await supabase.from('reseller_orders').insert({
         reseller_id:currentReseller.id, reseller_name:currentReseller.name,
         order_date:today, delivery_date:resellerOrderDeliveryDate,
+        total_qty:totalQty, estimated_amount:total,
         status:'pending', notes:resellerOrderNotes||null
       }).select().single()
       if (error) throw error
@@ -3714,8 +3990,9 @@ export default function App() {
         order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
         quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
       })))
-      await createNotification(null,'System','order',`📦 New Order: ${currentReseller.name}`,`${currentReseller.name} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, estimated ${php(total)}.`)
-      showToast('✅ Order submitted! Waiting for approval.')
+      await createNotification(null,'System','order',`📦 New Order: ${currentReseller.name}`,`${currentReseller.name} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.`)
+      await logAudit('RESELLER ORDER SUBMITTED', 'Reseller Portal', currentReseller.name, `${resellerOrderDeliveryDate} — ${totalQty} pcs — ${php(total)}`)
+      showToast('✅ Order submitted! Waiting for admin approval.')
       setResellerOrderNotes('')
       setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
       setResellerPortalView('orders')
@@ -3733,6 +4010,12 @@ export default function App() {
     const items = customItems || order.reseller_order_items || []
     const validItems = items.filter(i=>Number(i.quantity)>0)
     if (validItems.length===0) { showToast('❌ No items to invoice.','red'); return }
+    const creditStatus = await checkResellerCreditBlockFresh(order.reseller_id)
+    if (creditStatus.blocked) {
+      showToast(`🚫 Cannot approve order for ${order.reseller_name}. ${creditStatus.message}`, 'red')
+      await logAudit('ORDER BLOCKED - CREDIT HOLD', adminRole, order.reseller_name, creditStatus.message)
+      return
+    }
     // Create invoice automatically
     const reseller = resellers.find(r=>r.id===order.reseller_id)
     const invoiceNum = `INV-${order.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
@@ -4819,6 +5102,109 @@ This will create one approved expense record using the total payroll earnings.`)
     return '#ca1b1b'
   }
 
+
+  function getExecutiveStatusColor(status) {
+    const s = String(status || '').toLowerCase()
+    if (s.includes('critical') || s.includes('alert') || s.includes('urgent')) return '#ca1b1b'
+    if (s.includes('watch') || s.includes('review')) return '#f5a623'
+    return '#2d8a4e'
+  }
+
+  function buildExecutiveCommandCenter(data) {
+    const d = data || {}
+    const netSalesBasis = safeNum(d.netSales ?? d.totalSales, 0)
+    const profitMargin = safeNum(d.netMarginPct, 0)
+    const salaryRatio = safeNum(d.salaryToSalesRatio, 0)
+    const foodCostRatio = safeNum(d.foodCostPct, 0)
+    const returnsRatio = safeNum(d.returnsRate, 0)
+    const cashFlowValue = safeNum(d.netCashFlow, 0)
+    const totalARValue = safeNum(d.totalAR, 0)
+    const overdueARValue = safeNum(d.overdueAR, 0)
+    const arOverduePct = totalARValue > 0 ? (overdueARValue / totalARValue) * 100 : 0
+    const criticalStock = safeNum(d.inventoryControl?.criticalItems, 0)
+    const reorderStock = safeNum(d.inventoryControl?.reorderNowItems, 0)
+    const pendingApprovalCount = safeNum(d.totalPendingApprovals ?? d.approvalWorkflowSummary?.total, 0)
+    const highRiskAudit = safeNum(d.auditReviewSummary?.high, 0)
+    const documentCompletion = safeNum(d.employeeDocumentSummary?.completionPct, 100)
+    const wastagePctSales = safeNum(d.wastageReport?.pctOfSales, 0)
+    const productMargin = safeNum(d.productProfitabilitySummary?.avgMarginPct, 0)
+
+    const riskRows = [
+      { area:'Net Profit Margin', value:`${profitMargin.toFixed(1)}%`, target:'Target ≥15%', status:profitMargin >= 15 ? 'GOOD' : profitMargin >= 10 ? 'WATCH' : 'ALERT', action:profitMargin >= 15 ? 'Maintain current controls.' : 'Review COGS, payroll, returns, and non-payroll expenses.' },
+      { area:'Sales-to-Salary Ratio', value:`${salaryRatio.toFixed(1)}%`, target:'Target ≤25%', status:salaryRatio <= 25 ? 'GOOD' : salaryRatio <= 30 ? 'WATCH' : 'CRITICAL', action:salaryRatio <= 25 ? 'Payroll is inside target.' : 'Control overtime, review staffing, or increase sales volume.' },
+      { area:'Food Cost / COGS', value:`${foodCostRatio.toFixed(1)}%`, target:'Target ≤40%', status:foodCostRatio <= 40 ? 'GOOD' : foodCostRatio <= 50 ? 'WATCH' : 'CRITICAL', action:foodCostRatio <= 40 ? 'COGS is inside control ceiling.' : 'Audit recipe usage, wastage, supplier cost, and batch yield.' },
+      { area:'Returns / Unsold', value:`${returnsRatio.toFixed(1)}%`, target:'Target ≤5%', status:returnsRatio <= 5 ? 'GOOD' : returnsRatio <= 10 ? 'WATCH' : 'CRITICAL', action:returnsRatio <= 5 ? 'Returns are controlled.' : 'Reduce delivery quantity to high-return outlets and adjust forecasting.' },
+      { area:'Cash Flow', value:php(cashFlowValue), target:'Positive monthly cash flow', status:cashFlowValue >= 0 ? 'GOOD' : 'ALERT', action:cashFlowValue >= 0 ? 'Cash flow is positive.' : 'Delay non-critical expenses and prioritize collections.' },
+      { area:'Receivables', value:php(overdueARValue), target:'Low overdue AR', status:overdueARValue <= 0 ? 'GOOD' : arOverduePct <= 30 ? 'WATCH' : 'CRITICAL', action:overdueARValue <= 0 ? 'No overdue AR detected.' : 'Collect overdue reseller balances before increasing deliveries.' },
+      { area:'Inventory Stock Risk', value:`${criticalStock} critical / ${reorderStock} reorder`, target:'0 critical items', status:criticalStock > 0 ? 'CRITICAL' : reorderStock > 0 ? 'WATCH' : 'GOOD', action:criticalStock > 0 ? 'Reorder critical ingredients/packaging immediately.' : reorderStock > 0 ? 'Prepare purchase orders before stockout.' : 'Inventory is stable.' },
+      { area:'Approvals', value:`${pendingApprovalCount} pending`, target:'No aging approvals', status:pendingApprovalCount > 8 ? 'CRITICAL' : pendingApprovalCount > 0 ? 'WATCH' : 'GOOD', action:pendingApprovalCount > 0 ? 'Clear pending leave, CA, OT/UT, disputes, and expenses.' : 'Approval queue is clear.' },
+      { area:'Audit / Security', value:`${highRiskAudit} high-risk`, target:'0 high-risk actions', status:highRiskAudit > 0 ? 'ALERT' : 'GOOD', action:highRiskAudit > 0 ? 'Review high-risk audit actions today.' : 'No high-risk audit flags detected.' },
+      { area:'Employee Documents', value:`${documentCompletion.toFixed(0)}% complete`, target:'≥95% complete', status:documentCompletion >= 95 ? 'GOOD' : documentCompletion >= 85 ? 'WATCH' : 'ALERT', action:documentCompletion >= 95 ? 'HR documents are controlled.' : 'Complete missing IDs, contracts, contacts, and government records.' },
+    ]
+
+    const alertRows = riskRows.filter(r => ['ALERT','CRITICAL'].includes(r.status))
+    const watchRows = riskRows.filter(r => r.status === 'WATCH')
+    const goodRows = riskRows.filter(r => r.status === 'GOOD')
+    const topRisks = [...alertRows, ...watchRows].slice(0, 6)
+
+    const headline = alertRows.length > 0
+      ? `Owner attention needed: ${alertRows.length} critical area(s) require action.`
+      : watchRows.length > 0
+        ? `Business is stable but ${watchRows.length} area(s) need monitoring.`
+        : 'Business controls are healthy based on current available data.'
+
+    const nextMove = topRisks[0]?.action || 'Continue daily monitoring and keep records updated.'
+
+    const kpiCards = [
+      { label:'Business Health', value:`${safeNum(d.healthScore,0).toFixed(0)}/100`, note:d.businessHealthGrade || 'Overall score', color:getBusinessHealthColor(safeNum(d.healthScore,0)), icon:'🏥' },
+      { label:'Net Sales', value:php(netSalesBasis), note:'After returns / unsold', color:'#1a1a2e', icon:'🧾' },
+      { label:'Net Profit', value:php(d.netProfit), note:`${profitMargin.toFixed(1)}% margin`, color:safeNum(d.netProfit,0) >= 0 ? '#2d8a4e' : '#ca1b1b', icon:'💰' },
+      { label:'Cash Flow', value:php(cashFlowValue), note:cashFlowValue >= 0 ? 'Positive cash flow' : 'Negative cash flow', color:cashFlowValue >= 0 ? '#2d8a4e' : '#ca1b1b', icon:'💵' },
+      { label:'Payroll Ratio', value:`${salaryRatio.toFixed(1)}%`, note:'Target ≤25%', color:salaryRatio <= 25 ? '#2d8a4e' : salaryRatio <= 30 ? '#f5a623' : '#ca1b1b', icon:'👥' },
+      { label:'Food Cost', value:`${foodCostRatio.toFixed(1)}%`, note:'Target ≤40%', color:foodCostRatio <= 40 ? '#2d8a4e' : foodCostRatio <= 50 ? '#f5a623' : '#ca1b1b', icon:'🍩' },
+      { label:'Returns', value:`${returnsRatio.toFixed(1)}%`, note:`${safeNum(d.totalReturnsQty,0)} pcs returned`, color:returnsRatio <= 5 ? '#2d8a4e' : returnsRatio <= 10 ? '#f5a623' : '#ca1b1b', icon:'↩️' },
+      { label:'Receivables', value:php(totalARValue), note:`Overdue ${php(overdueARValue)}`, color:overdueARValue <= 0 ? '#2d8a4e' : '#f5a623', icon:'🧾' },
+      { label:'Low Stock', value:`${safeNum(d.lowStockItems?.length,0)} item(s)`, note:`${criticalStock} critical`, color:criticalStock > 0 ? '#ca1b1b' : reorderStock > 0 ? '#f5a623' : '#2d8a4e', icon:'📦' },
+      { label:'Pending Approvals', value:String(pendingApprovalCount), note:'Owner/admin action queue', color:pendingApprovalCount > 0 ? '#f5a623' : '#2d8a4e', icon:'✅' },
+      { label:'Wastage', value:`${wastagePctSales.toFixed(1)}%`, note:`Cost ${php(d.wastageReport?.cost || d.wastageCost || 0)}`, color:wastagePctSales <= 5 ? '#2d8a4e' : wastagePctSales <= 8 ? '#f5a623' : '#ca1b1b', icon:'⚠️' },
+      { label:'Product Margin', value:`${productMargin.toFixed(1)}%`, note:`${safeNum(d.productProfitabilitySummary?.lowMarginCount,0)} low-margin`, color:productMargin >= 45 ? '#2d8a4e' : productMargin >= 30 ? '#f5a623' : '#ca1b1b', icon:'🏷️' },
+    ]
+
+    const dailyChecklist = [
+      { task:'Check cash-in vs cash-out and bank deposits', status:cashFlowValue >= 0 ? 'GOOD' : 'DO TODAY', note:cashFlowValue >= 0 ? 'Cash flow is positive.' : 'Negative cash flow needs owner review.' },
+      { task:'Collect priority reseller receivables', status:overdueARValue > 0 ? 'DO TODAY' : 'GOOD', note:overdueARValue > 0 ? `${php(overdueARValue)} overdue AR detected.` : 'No overdue AR detected.' },
+      { task:'Review production quantity against forecast', status:(d.productionForecast?.suggestedProductionQty || 0) > 0 ? 'CHECK' : 'SETUP', note:(d.productionForecast?.suggestedProductionQty || 0) > 0 ? `${safeNum(d.productionForecast?.suggestedProductionQty,0)} pcs suggested.` : 'Need sales/production basis.' },
+      { task:'Review returns and reduce high-return deliveries', status:returnsRatio > 5 ? 'DO TODAY' : 'GOOD', note:returnsRatio > 5 ? `Return rate is ${returnsRatio.toFixed(1)}%.` : 'Returns within target.' },
+      { task:'Check critical inventory and reorder alerts', status:criticalStock > 0 || reorderStock > 0 ? 'DO TODAY' : 'GOOD', note:criticalStock > 0 ? `${criticalStock} critical items.` : reorderStock > 0 ? `${reorderStock} items need reorder.` : 'Stock status is stable.' },
+      { task:'Clear approval queue', status:pendingApprovalCount > 0 ? 'CHECK' : 'GOOD', note:pendingApprovalCount > 0 ? `${pendingApprovalCount} pending approvals.` : 'No pending approvals.' },
+    ]
+
+    const sevenDayPlan = [
+      { day:'Day 1', focus:'Cash & AR Collection', action:overdueARValue > 0 ? 'Collect overdue reseller balances and pause risky credit deliveries.' : 'Confirm daily closing and deposit accuracy.' },
+      { day:'Day 2', focus:'Production Forecast', action:'Compare forecast quantity vs actual outlet demand and adjust next delivery quantities.' },
+      { day:'Day 3', focus:'Food Cost & Wastage', action:'Review top COGS drivers, wastage reasons, and product yield variance.' },
+      { day:'Day 4', focus:'Payroll Productivity', action:salaryRatio > 25 ? 'Review staffing, overtime, and schedule efficiency.' : 'Maintain payroll controls and monitor overtime.' },
+      { day:'Day 5', focus:'Product Profitability', action:'Push high-margin products and review low-margin or high-return variants.' },
+      { day:'Day 6', focus:'Inventory & Purchasing', action:'Create reorder plan for critical ingredients, packaging, and supplies.' },
+      { day:'Day 7', focus:'Owner Review', action:'Print/export the Foundation report and review the next week’s owner action priorities.' },
+    ]
+
+    return {
+      headline,
+      nextMove,
+      status:alertRows.length ? 'ALERT' : watchRows.length ? 'WATCH' : 'GOOD',
+      statusColor:alertRows.length ? '#ca1b1b' : watchRows.length ? '#f5a623' : '#2d8a4e',
+      alertCount:alertRows.length,
+      watchCount:watchRows.length,
+      goodCount:goodRows.length,
+      kpiCards,
+      riskRows,
+      topRisks,
+      dailyChecklist,
+      sevenDayPlan,
+    }
+  }
+
   function getRecentFoundationMonths(monthValue, count = 6) {
     const [year, month] = String(monthValue || today.slice(0,7)).split('-').map(Number)
     const months = []
@@ -4966,7 +5352,14 @@ This will create one approved expense record using the total payroll earnings.`)
   }
   function buildFoundationExportRows(data) {
     if (!data) return []
+    const executive = buildExecutiveCommandCenter(data)
     return [
+      { metric:'Executive Status', value:executive.status },
+      { metric:'Executive Headline', value:executive.headline },
+      { metric:'Executive Next Move', value:executive.nextMove },
+      { metric:'Critical / Alert Areas', value:executive.alertCount },
+      { metric:'Watch Areas', value:executive.watchCount },
+      { metric:'Good Control Areas', value:executive.goodCount },
       { metric:'Gross Sales', value:data.grossSales },
       { metric:'Less Returns', value:data.salesReturns },
       { metric:'Net Sales', value:data.netSales ?? data.totalSales },
@@ -5033,6 +5426,20 @@ This will create one approved expense record using the total payroll earnings.`)
       { metric:'Pending Approvals', value:data.totalPendingApprovals },
       { metric:'Business Health Score', value:data.healthScore },
     ]
+  }
+
+  function exportExecutiveSummaryCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const executive = buildExecutiveCommandCenter(foundationData)
+    const rows = [
+      { section:'Executive Summary', item:'Status', value:executive.status, action:executive.nextMove },
+      { section:'Executive Summary', item:'Headline', value:executive.headline, action:'' },
+      ...executive.kpiCards.map(k => ({ section:'KPI', item:k.label, value:k.value, action:k.note })),
+      ...executive.riskRows.map(r => ({ section:'Risk Review', item:r.area, value:r.value, target:r.target, status:r.status, action:r.action })),
+      ...executive.dailyChecklist.map(r => ({ section:'Daily Checklist', item:r.task, value:r.status, action:r.note })),
+      ...executive.sevenDayPlan.map(r => ({ section:'7-Day Plan', item:`${r.day} — ${r.focus}`, value:'', action:r.action })),
+    ]
+    downloadTextFile(`romas-executive-command-center-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
   }
 
   function exportFoundationCSV() {
@@ -5451,11 +5858,15 @@ This will create one approved expense record using the total payroll earnings.`)
   function printFoundationReport() {
     if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
     const d = foundationData
+    const executive = buildExecutiveCommandCenter(d)
     const pw = window.open('', '_blank', 'width=1000,height=720')
     pw.document.write(`<!DOCTYPE html><html><head><title>Foundation Report ${foundationMonth}</title>
       <style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;padding:18mm;color:#111;font-size:11px}h1{color:#ca1b1b;margin:0 0 4px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.card{border:1px solid #ddd;border-radius:8px;padding:10px}.label{font-size:9px;color:#777;text-transform:uppercase}.value{font-size:16px;font-weight:bold;color:#ca1b1b;margin-top:4px}table{width:100%;border-collapse:collapse;margin:12px 0}th{background:#ca1b1b;color:white;text-align:left}td,th{padding:6px;border:1px solid #eee}.good{color:#2d8a4e}.warn{color:#f5a623}.bad{color:#ca1b1b}@media print{@page{size:A4;margin:12mm}.no-print{display:none}}</style>
       </head><body>
       <h1>Roma's Donuts — Business Foundation Report</h1><div>Month: ${foundationMonth} | Generated: ${new Date().toLocaleString('en-PH')}</div>
+      <h2>Owner Executive Command Center</h2>
+      <table><tr><th>Status</th><th>Headline</th><th>Next Owner Move</th></tr><tr><td>${executive.status}</td><td>${executive.headline}</td><td>${executive.nextMove}</td></tr></table>
+      <table><tr><th>Area</th><th>Value</th><th>Target</th><th>Status</th><th>Action</th></tr>${executive.riskRows.map(r=>`<tr><td>${r.area}</td><td>${r.value}</td><td>${r.target}</td><td>${r.status}</td><td>${r.action}</td></tr>`).join('')}</table>
       <div class="grid">
         <div class="card"><div class="label">Total Sales</div><div class="value">${php(d.totalSales)}</div></div>
         <div class="card"><div class="label">Net Profit</div><div class="value">${php(d.netProfit)}</div></div>
@@ -13000,16 +13411,27 @@ This will create one approved expense record using the total payroll earnings.`)
                     {showOrdersPanel && pendingResellerOrders.length > 0 && (
                       <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
                         <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>📦 Pending Reseller Orders — Requires Approval</h4>
-                        {pendingResellerOrders.map(order=>(
-                          <div key={order.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:'1px solid #ffe0b2' }}>
+                        {pendingResellerOrders.map(order=>{
+                          const credit = getResellerCreditBlockInfo(order.reseller_id)
+                          return (
+                          <div key={order.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:`1px solid ${credit.blocked?'#ca1b1b':'#ffe0b2'}` }}>
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
                               <div>
                                 <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{order.reseller_name}</p>
                                 <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Delivery: {order.delivery_date} · Placed: {order.order_date}</p>
                                 {order.notes && <p style={{ color:'#888', fontSize:'11px', margin:'2px 0 0' }}>Note: {order.notes}</p>}
+                                {credit.blocked && (
+                                  <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'4px 0 0', fontWeight:'bold' }}>
+                                    🚫 Delivery hold: settle overdue balance before invoice approval.
+                                  </p>
+                                )}
                               </div>
                               <div style={{ display:'flex', gap:'6px' }}>
-                                <button style={{ ...btnGreen, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>approveResellerOrder(order)}>✅ APPROVE</button>
+                                <button
+                                  style={{ ...btnGreen, background:credit.blocked?'#999':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:credit.blocked?'not-allowed':'pointer' }}
+                                  disabled={credit.blocked}
+                                  onClick={()=>approveResellerOrder(order)}
+                                >{credit.blocked?'🚫 HOLD':'✅ APPROVE'}</button>
                                 <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>rejectResellerOrder(order.id, order.reseller_name)}>❌ REJECT</button>
                               </div>
                             </div>
@@ -13020,7 +13442,8 @@ This will create one approved expense record using the total payroll earnings.`)
                               Estimated: {php((order.reseller_order_items||[]).reduce((s,i)=>s+Number(i.quantity||0)*Math.round((i.retail_price||0)*0.80*100)/100,0))}
                             </p>
                           </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     )}
 
@@ -13032,9 +13455,27 @@ This will create one approved expense record using the total payroll earnings.`)
                             <label style={lblS}>Reseller:</label>
                             <select value={invoiceResellerId} onChange={e=>{ setInvoiceResellerId(e.target.value); buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
                               <option value="">— Select reseller —</option>
-                              {resellers.map(r=><option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}</option>)}
+                              {resellers.map(r=>{
+                                const credit = getResellerCreditBlockInfo(r.id)
+                                return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked ? ' — DELIVERY HOLD' : ''}</option>
+                              })}
                             </select>
                           </div>
+                          {invoiceResellerId && (()=>{
+                            const credit = getResellerCreditBlockInfo(invoiceResellerId)
+                            const oldest = credit.oldest
+                            return (
+                              <div style={{ gridColumn:'1 / -1', background:credit.blocked?'#fff5f5':'#f0fff4', border:`1.5px solid ${credit.blocked?'#ca1b1b':'#2d8a4e'}`, borderRadius:'10px', padding:'10px', marginBottom:'2px' }}>
+                                <p style={{ margin:'0 0 4px', color:credit.blocked?'#ca1b1b':'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>
+                                  {credit.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : '✅ Credit status clear for invoice creation'}
+                                </p>
+                                <p style={{ margin:0, color:'#555', fontSize:'11px', lineHeight:1.5 }}>
+                                  {credit.message}
+                                  {oldest ? ` Oldest open invoice: ${oldest.invoice_number || 'Invoice'} from ${oldest.delivery_date || '—'} (${oldest.credit_age_days || 0} day(s), balance ${php(oldest.balance_amount || 0)}).` : ''}
+                                </p>
+                              </div>
+                            )
+                          })()}
                           <div>
                             <label style={lblS}>Delivery Date:</label>
                             <input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={inputStyle} />
@@ -13126,7 +13567,19 @@ This will create one approved expense record using the total payroll earnings.`)
                         <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setInvoiceItems([...invoiceItems, { variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])}>+ ADD ROW</button>
                         <label style={lblS}>Notes (optional):</label>
                         <input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
-                        <button style={{ ...btnGreen, opacity:savingInvoice?0.6:1 }} disabled={savingInvoice} onClick={createDeliveryInvoice}>{savingInvoice?'⏳ Creating...':'✅ CREATE & SAVE INVOICE'}</button>
+                        {(()=>{
+                          const credit = getResellerCreditBlockInfo(invoiceResellerId)
+                          const disabled = savingInvoice || credit.blocked
+                          return (
+                            <button
+                              style={{ ...btnGreen, background:credit.blocked?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
+                              disabled={disabled}
+                              onClick={createDeliveryInvoice}
+                            >
+                              {credit.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : savingInvoice ? '⏳ Creating...' : '✅ CREATE & SAVE INVOICE'}
+                            </button>
+                          )
+                        })()}
                       </div>
                     )}
 
@@ -13946,6 +14399,7 @@ This will create one approved expense record using the total payroll earnings.`)
                   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
                     <input type="month" value={foundationMonth} onChange={e=>setFoundationMonth(e.target.value)} style={{ ...inputStyle, width:'160px', marginBottom:0 }} />
                     <button style={{ ...btnGreen, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={()=>loadFoundationData(foundationMonth, { silent:false, showLoading:true })} disabled={foundationLoading}>{foundationLoading?'⏳ Loading...':'🔄 LOAD / REFRESH'}</button>
+                    <button style={{ ...btnRed, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={exportExecutiveSummaryCSV}>👑 EXEC SUMMARY</button>
                     <button style={{ ...btnGray, width:'auto', marginTop:0, padding:'10px 16px', background:foundationAutoRefresh?'#e8f5e9':'#fff5f5', color:foundationAutoRefresh?'#2d8a4e':'#ca1b1b', border:`1px solid ${foundationAutoRefresh?'#2d8a4e':'#ca1b1b'}` }} onClick={()=>setFoundationAutoRefresh(v=>!v)}>
                       {foundationAutoRefresh ? `🟢 AUTO ${FOUNDATION_REFRESH_SECONDS}s` : '🔴 AUTO OFF'}
                     </button>
@@ -13982,6 +14436,87 @@ This will create one approved expense record using the total payroll earnings.`)
                         <details><summary style={{ cursor:'pointer', fontSize:'11px', color:'#555' }}>Show technical notes</summary><ul style={{ margin:'8px 0 0 18px', color:'#777', fontSize:'11px' }}>{foundationData.errors.slice(0,8).map((err,i)=><li key={i}>{err}</li>)}</ul></details>
                       </div>
                     )}
+
+                    {/* Owner Executive Command Center */}
+                    {(() => {
+                      const executive = buildExecutiveCommandCenter(foundationData)
+                      return (
+                        <div style={{ background:'linear-gradient(135deg,#1a1a2e 0%,#2d1515 55%,#ca1b1b 100%)', color:'white', borderRadius:'18px', padding:isMobile?'16px':'20px', marginBottom:'16px', boxShadow:'0 8px 24px rgba(26,26,46,0.22)' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', gap:'14px', flexWrap:'wrap', alignItems:'flex-start', marginBottom:'14px' }}>
+                            <div style={{ flex:'1 1 360px' }}>
+                              <p style={{ margin:'0 0 4px', color:'#FDD412', fontSize:'11px', fontWeight:'900', letterSpacing:'0.8px', textTransform:'uppercase' }}>👑 Owner Executive Command Center</p>
+                              <h3 style={{ margin:'0 0 6px', fontSize:isMobile?'20px':'26px', lineHeight:1.15 }}>Morning Business Briefing</h3>
+                              <p style={{ margin:0, fontSize:'13px', color:'rgba(255,255,255,0.82)', lineHeight:1.5 }}>{executive.headline}</p>
+                            </div>
+                            <div style={{ minWidth:isMobile?'100%':'260px', background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.18)', borderRadius:'14px', padding:'12px' }}>
+                              <p style={{ margin:'0 0 4px', color:'#FDD412', fontSize:'11px', fontWeight:'bold' }}>NEXT OWNER MOVE</p>
+                              <p style={{ margin:0, color:'white', fontSize:'13px', lineHeight:1.45, fontWeight:'bold' }}>{executive.nextMove}</p>
+                              <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'10px' }}>
+                                <span style={{ background:'#ca1b1b', borderRadius:'20px', padding:'4px 8px', fontSize:'10px', fontWeight:'bold' }}>Alert: {executive.alertCount}</span>
+                                <span style={{ background:'#f5a623', color:'#1a1a2e', borderRadius:'20px', padding:'4px 8px', fontSize:'10px', fontWeight:'bold' }}>Watch: {executive.watchCount}</span>
+                                <span style={{ background:'#2d8a4e', borderRadius:'20px', padding:'4px 8px', fontSize:'10px', fontWeight:'bold' }}>Good: {executive.goodCount}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'10px', marginBottom:'14px' }}>
+                            {executive.kpiCards.map(card => (
+                              <div key={card.label} style={{ background:'white', color:'#222', borderRadius:'14px', padding:'12px', border:`2px solid ${card.color}` }}>
+                                <p style={{ margin:'0 0 4px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'900' }}>{card.icon} {card.label}</p>
+                                <p style={{ margin:0, color:card.color, fontSize:isMobile?'15px':'18px', fontWeight:'900' }}>{card.value}</p>
+                                <p style={{ margin:'4px 0 0', color:'#888', fontSize:'10px' }}>{card.note}</p>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.15fr 0.85fr', gap:'12px' }}>
+                            <div style={{ background:'rgba(255,255,255,0.96)', color:'#222', borderRadius:'14px', padding:'14px' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', marginBottom:'8px' }}>
+                                <p style={{ margin:0, fontWeight:'900', color:'#1a1a2e', fontSize:'13px' }}>🚨 Executive Risk Board</p>
+                                <button style={{ ...btnYellow, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'10px' }} onClick={exportExecutiveSummaryCSV}>⬇️ EXPORT</button>
+                              </div>
+                              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px' }}>
+                                {executive.riskRows.map(row => (
+                                  <div key={row.area} style={{ border:`1px solid ${getExecutiveStatusColor(row.status)}55`, borderLeft:`5px solid ${getExecutiveStatusColor(row.status)}`, borderRadius:'10px', padding:'9px', background:'#fff' }}>
+                                    <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center' }}>
+                                      <p style={{ margin:0, color:'#333', fontSize:'12px', fontWeight:'bold' }}>{row.area}</p>
+                                      <span style={{ color:getExecutiveStatusColor(row.status), fontSize:'10px', fontWeight:'900' }}>{row.status}</span>
+                                    </div>
+                                    <p style={{ margin:'3px 0 0', color:'#555', fontSize:'11px' }}>{row.value} · {row.target}</p>
+                                    <p style={{ margin:'4px 0 0', color:'#777', fontSize:'10px', lineHeight:1.35 }}>{row.action}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div style={{ display:'grid', gap:'12px' }}>
+                              <div style={{ background:'rgba(255,255,255,0.96)', color:'#222', borderRadius:'14px', padding:'14px' }}>
+                                <p style={{ margin:'0 0 8px', fontWeight:'900', color:'#1a1a2e', fontSize:'13px' }}>✅ Today’s Owner Checklist</p>
+                                {executive.dailyChecklist.map(item => (
+                                  <div key={item.task} style={{ borderBottom:'1px solid #eee', padding:'7px 0' }}>
+                                    <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                      <span style={{ color:'#333', fontSize:'11px', fontWeight:'bold' }}>{item.task}</span>
+                                      <span style={{ color:getExecutiveStatusColor(item.status), fontSize:'10px', fontWeight:'900' }}>{item.status}</span>
+                                    </div>
+                                    <p style={{ margin:'2px 0 0', color:'#777', fontSize:'10px' }}>{item.note}</p>
+                                  </div>
+                                ))}
+                              </div>
+
+                              <div style={{ background:'rgba(255,255,255,0.96)', color:'#222', borderRadius:'14px', padding:'14px' }}>
+                                <p style={{ margin:'0 0 8px', fontWeight:'900', color:'#1a1a2e', fontSize:'13px' }}>📅 7-Day Owner Action Plan</p>
+                                {executive.sevenDayPlan.map(row => (
+                                  <div key={row.day} style={{ borderBottom:'1px solid #eee', padding:'6px 0' }}>
+                                    <p style={{ margin:0, color:'#ca1b1b', fontSize:'11px', fontWeight:'900' }}>{row.day} · {row.focus}</p>
+                                    <p style={{ margin:'2px 0 0', color:'#666', fontSize:'10px', lineHeight:1.35 }}>{row.action}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })()}
 
                     {/* Owner Financial Command Center */}
                     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'12px', marginBottom:'16px' }}>
@@ -16173,183 +16708,299 @@ This will create one approved expense record using the total payroll earnings.`)
 
   // ── Reseller Portal ───────────────────────────────────────────────────────
   if (resellerMode && currentReseller) {
-    const totalBalance = resellerInvoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
-    const totalPaid = resellerPaymentHistory.reduce((s,p)=>s+Number(p.amount||0),0)
+    const totalInvoiceAmount = resellerInvoices.reduce((s,i)=>s+safeNum(i.total_amount,0),0)
+    const totalPaid = resellerInvoices.reduce((s,i)=>s+safeNum(i.paid_amount,0),0)
+    const totalBalance = resellerInvoices.reduce((s,i)=>s+getInvoiceBalance(i),0)
+    const openInvoices = resellerInvoices.filter(i=>getInvoiceBalance(i)>0 && !['paid','cancelled'].includes(String(i.status||'').toLowerCase()))
+    const paidInvoices = resellerInvoices.filter(i=>String(i.status||'').toLowerCase()==='paid')
+    const creditStatus = buildResellerCreditStatus(currentReseller.id, resellerInvoices, today)
+    const latestInvoice = resellerInvoices[0]
+    const pendingOrders = resellerOrders.filter(o=>String(o.status||'').toLowerCase()==='pending')
+    const approvedOrders = resellerOrders.filter(o=>String(o.status||'').toLowerCase()==='approved')
+    const rejectedOrders = resellerOrders.filter(o=>String(o.status||'').toLowerCase()==='rejected')
+    const totalReturnAmount = resellerReturns.reduce((s,r)=>s+safeNum(r.total_returned_amount,0),0)
+    const totalReturnQty = resellerReturns.reduce((s,r)=>s+(r.reseller_return_items||[]).reduce((a,it)=>a+safeNum(it.returned_quantity,0),0),0)
+    const collectionRate = totalInvoiceAmount>0 ? (totalPaid/totalInvoiceAmount)*100 : 100
+    const navItems = [
+      ['dashboard','📊 Dashboard'],['invoices','🧾 Invoices'],['balances','💰 Balances'],['orders','📦 Orders'],['place_order','🛒 Place Order'],['returns','↩️ Returns'],['payments','💵 Payments'],['notices','🔔 Notices']
+    ]
+    const portalCard = { background:'white', borderRadius:'16px', padding:'16px', boxShadow:'0 2px 12px rgba(0,0,0,0.08)', border:'1px solid #f3f3f3' }
+    const kpiCard = (label, value, note, color='#ca1b1b') => (
+      <div style={{ ...portalCard, minHeight:'92px' }}>
+        <p style={{ color:'#888', fontSize:'10px', margin:'0 0 5px', fontWeight:'900', textTransform:'uppercase', letterSpacing:'0.5px' }}>{label}</p>
+        <p style={{ color, fontSize:'22px', fontWeight:'900', margin:'0 0 3px', lineHeight:1.1 }}>{value}</p>
+        <p style={{ color:'#777', fontSize:'11px', margin:0 }}>{note}</p>
+      </div>
+    )
+
     return (
-      <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f8f7f5', display:'flex', flexDirection:'column', overflow:'hidden' }}>
-        {toast && <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap' }}>{toast.msg}</div>}
-        {/* Header */}
-        <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', boxShadow:'0 2px 12px rgba(0,0,0,0.25)' }}>
-          <div>
-            <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0 }}>🏪 {currentReseller.name}</p>
-            <p style={{ color:'rgba(255,255,255,0.6)', fontSize:'11px', margin:0 }}>{currentReseller.area} — Reseller Portal</p>
+      <div style={{ minHeight:'100vh', background:'#f6f6f6', fontFamily:'Arial, sans-serif' }}>
+        {toast && <div style={{ position:'fixed', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 24px', borderRadius:'12px', fontWeight:'bold', boxShadow:'0 6px 18px rgba(0,0,0,0.25)' }}>{toast.msg}</div>}
+
+        <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', color:'white', padding:isMobile?'18px 14px':'20px 28px', boxShadow:'0 4px 18px rgba(0,0,0,0.18)' }}>
+          <div style={{ maxWidth:'1180px', margin:'0 auto', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+            <div>
+              <p style={{ color:'#FDD412', fontSize:'11px', margin:'0 0 3px', fontWeight:'900', letterSpacing:'0.8px', textTransform:'uppercase' }}>Roma's Donuts Reseller Portal</p>
+              <h1 style={{ margin:'0 0 4px', fontSize:isMobile?'21px':'28px', lineHeight:1.1 }}>{currentReseller.name}</h1>
+              <p style={{ color:'rgba(255,255,255,0.78)', fontSize:'12px', margin:0 }}>{currentReseller.area || 'No area set'} · {currentReseller.contact_person || 'No contact person set'}</p>
+            </div>
+            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+              <button style={{ ...btnYellow, padding:'9px 14px', fontSize:'12px' }} onClick={()=>loadResellerPortalData(currentReseller.id)} disabled={resellerPortalLoading}>{resellerPortalLoading?'⏳ Loading':'🔄 Refresh'}</button>
+              <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.35)', borderRadius:'10px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={resellerLogout}>🚪 Logout</button>
+            </div>
           </div>
-          <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.25)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setResellerMode(false); setCurrentReseller(null); setResellerLoginCode(''); setResellerLoginPin('') }}>Logout</button>
         </div>
-        {/* Nav */}
-        <div style={{ background:'white', borderBottom:'1px solid #f0f0f0', padding:'10px 16px', display:'flex', gap:'6px', overflowX:'auto' }}>
-          {[['dashboard','📊 Dashboard'],['invoices','📋 Invoices'],['orders','📦 My Orders'],['place_order','🛒 Place Order'],['payments','💵 Payments']].map(([v,l])=>(
-            <button key={v} onClick={()=>setResellerPortalView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:resellerPortalView===v?'#ca1b1b':'#f4f4f4', color:resellerPortalView===v?'white':'#555', fontWeight:resellerPortalView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:resellerPortalView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
-          ))}
-        </div>
-        {/* Content */}
-        <div style={{ flex:1, overflowY:'auto', padding:'16px' }}>
-          {/* Dashboard */}
+
+        <div style={{ maxWidth:'1180px', margin:'0 auto', padding:isMobile?'14px':'20px' }}>
+          {creditStatus.blocked ? (
+            <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 12px rgba(202,27,27,0.12)' }}>
+              <h3 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'16px' }}>🚫 DELIVERY HOLD — SETTLE FIRST</h3>
+              <p style={{ color:'#7a1a1a', margin:'0 0 8px', fontSize:'13px', lineHeight:1.5 }}>{creditStatus.message}</p>
+              <p style={{ color:'#555', margin:0, fontSize:'12px' }}>New order requests are disabled until overdue invoice balance is settled with admin.</p>
+            </div>
+          ) : (
+            <div style={{ background:'#f0fff4', border:'1.5px solid #2d8a4e', borderRadius:'14px', padding:'12px 14px', marginBottom:'16px' }}>
+              <p style={{ color:'#2d8a4e', margin:0, fontSize:'13px', fontWeight:'bold' }}>✅ Account Status: {creditStatus.message}</p>
+            </div>
+          )}
+
+          <div style={{ display:'flex', gap:'8px', overflowX:'auto', padding:'0 0 12px', marginBottom:'12px' }}>
+            {navItems.map(([v,l])=>(
+              <button key={v} onClick={()=>setResellerPortalView(v)} style={{ padding:'10px 14px', borderRadius:'999px', border:'none', background:resellerPortalView===v?'#ca1b1b':'white', color:resellerPortalView===v?'white':'#555', fontWeight:'800', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', boxShadow:resellerPortalView===v?'0 3px 10px rgba(202,27,27,0.25)':'0 1px 6px rgba(0,0,0,0.08)' }}>{l}</button>
+            ))}
+          </div>
+
           {resellerPortalView==='dashboard' && (
             <div>
-              <h2 style={h2s}>📊 My Account Overview</h2>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px', marginBottom:'16px' }}>
-                {[
-                  ['Outstanding Balance',php(totalBalance),'#ca1b1b'],
-                  ['Total Paid',php(totalPaid),'#2d8a4e'],
-                  ['Total Invoices',resellerInvoices.length,'#4a90d9'],
-                  ['Pending Orders',resellerOrders.filter(o=>o.status==='pending').length,'#f5a623'],
-                ].map(([l,v,c])=>(
-                  <div key={l} style={{ background:'white', borderRadius:'12px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${c}22` }}>
-                    <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.4px' }}>{l}</p>
-                    <p style={{ fontWeight:'800', color:c, fontSize:'22px', margin:0 }}>{v}</p>
+              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'16px' }}>
+                {kpiCard('Outstanding Balance', php(totalBalance), `${openInvoices.length} open invoice(s)`, totalBalance>0?'#ca1b1b':'#2d8a4e')}
+                {kpiCard('Collection Rate', `${collectionRate.toFixed(1)}%`, `${paidInvoices.length} fully paid invoice(s)`, collectionRate>=90?'#2d8a4e':'#f5a623')}
+                {kpiCard('Pending Orders', pendingOrders.length, `${approvedOrders.length} approved · ${rejectedOrders.length} rejected`, pendingOrders.length?'#f5a623':'#2d8a4e')}
+                {kpiCard('Reported Returns', `${totalReturnQty} pcs`, php(totalReturnAmount), totalReturnQty>0?'#f5a623':'#2d8a4e')}
+              </div>
+
+              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.1fr 0.9fr', gap:'14px' }}>
+                <div style={portalCard}>
+                  <h2 style={{ ...h2s, fontSize:'18px' }}>📋 Account Summary</h2>
+                  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                    <p style={cps}><strong>Total Invoices:</strong><br/>{resellerInvoices.length}</p>
+                    <p style={cps}><strong>Total Delivered Value:</strong><br/>{php(totalInvoiceAmount)}</p>
+                    <p style={cps}><strong>Total Paid:</strong><br/>{php(totalPaid)}</p>
+                    <p style={cps}><strong>Current Balance:</strong><br/>{php(totalBalance)}</p>
+                  </div>
+                  {latestInvoice ? <p style={{ margin:'10px 0 0', color:'#777', fontSize:'12px' }}>Latest invoice: <strong>{latestInvoice.invoice_number}</strong> · {latestInvoice.delivery_date} · {php(latestInvoice.total_amount)}</p> : <p style={{ color:'#aaa', margin:0 }}>No invoice yet.</p>}
+                </div>
+
+                <div style={portalCard}>
+                  <h2 style={{ ...h2s, fontSize:'18px' }}>🔔 Latest Notices</h2>
+                  {resellerNotices.length===0 ? <p style={{ color:'#aaa', margin:0, fontSize:'12px' }}>No notices yet.</p> : resellerNotices.slice(0,4).map(n=>(
+                    <div key={n.id} style={{ borderBottom:'1px solid #eee', padding:'8px 0' }}>
+                      <p style={{ margin:'0 0 2px', color:'#333', fontWeight:'bold', fontSize:'13px' }}>{n.title}</p>
+                      <p style={{ margin:0, color:'#777', fontSize:'11px' }}>{n.message || n.content || ''}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ ...portalCard, marginTop:'14px' }}>
+                <h2 style={{ ...h2s, fontSize:'18px' }}>✅ Today's Reseller Checklist</h2>
+                <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px' }}>
+                  {[creditStatus.blocked?'Settle overdue balance before requesting delivery.':'Check next delivery and submit order early.', openInvoices.length>0?'Review open invoices and coordinate payment.':'Keep payment records clean and updated.', 'Report unsold/returned donuts on the same day.'].map((t,i)=><div key={i} style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', fontSize:'12px', color:'#555' }}>{i+1}. {t}</div>)}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {resellerPortalView==='invoices' && (
+            <div>
+              <h2 style={h2s}>🧾 Invoice History</h2>
+              {resellerInvoices.length===0 ? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No invoices yet.</p> : resellerInvoices.map(inv=>{
+                const balance = getInvoiceBalance(inv)
+                const blocked = isInvoiceCreditBlocked(inv, today)
+                return (
+                  <div key={inv.id} style={{ ...portalCard, marginBottom:'12px', border:`1.5px solid ${blocked?'#ca1b1b':balance>0?'#f5a623':'#2d8a4e'}` }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', marginBottom:'8px' }}>
+                      <div>
+                        <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'15px', margin:'0 0 2px' }}>{inv.invoice_number}</p>
+                        <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Delivery: {inv.delivery_date} · Due/Hold Date: {getInvoiceCreditHoldDate(inv)||'—'}</p>
+                      </div>
+                      <Badge label={balance<=0?'PAID':blocked?'DELIVERY HOLD':String(inv.status||'OPEN').toUpperCase()} color={balance<=0?'green':blocked?'red':'orange'} />
+                    </div>
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', background:'#fafafa', borderRadius:'10px', padding:'10px' }}>
+                      <p style={cps}><strong>Total:</strong><br/>{php(inv.total_amount)}</p>
+                      <p style={cps}><strong>Paid:</strong><br/>{php(inv.paid_amount)}</p>
+                      <p style={cps}><strong>Balance:</strong><br/>{php(balance)}</p>
+                      <p style={cps}><strong>Returns:</strong><br/>{php(inv.returns_amount||0)} / {safeNum(inv.returns_qty,0)} pcs</p>
+                    </div>
+                    {(inv.delivery_invoice_items||[]).length>0 && <div style={{ marginTop:'10px', fontSize:'11px', color:'#555' }}>{(inv.delivery_invoice_items||[]).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' · ')}</div>}
+                    <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'10px' }}>
+                      {!inv.receipt_confirmed && <button style={{ ...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>confirmDeliveryReceipt(inv.id)}>✅ CONFIRM RECEIPT</button>}
+                      <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', fontSize:'11px' }} onClick={()=>startResellerReturnReport(inv)}>↩️ REPORT RETURNS/UNSOLD</button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {resellerPortalView==='balances' && (
+            <div>
+              <h2 style={h2s}>💰 Balances & Credit Hold</h2>
+              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'14px' }}>
+                {kpiCard('Total Balance', php(totalBalance), `${openInvoices.length} unpaid/partial invoices`, totalBalance>0?'#ca1b1b':'#2d8a4e')}
+                {kpiCard('Overdue / Hold Balance', php(creditStatus.blockedBalance), `${creditStatus.blockedInvoices.length} blocked invoice(s)`, creditStatus.blocked?'#ca1b1b':'#2d8a4e')}
+                {kpiCard('Delivery Status', creditStatus.blocked?'ON HOLD':'ALLOWED', creditStatus.blocked?'Settle first':'Account clear for delivery', creditStatus.blocked?'#ca1b1b':'#2d8a4e')}
+              </div>
+              <div style={portalCard}>
+                <h3 style={{ margin:'0 0 10px', color:'#333', fontSize:'14px' }}>Collection Priority</h3>
+                {creditStatus.outstanding.length===0 ? <p style={{ color:'#2d8a4e', margin:0, fontWeight:'bold' }}>✅ No outstanding balance.</p> : creditStatus.outstanding.map(inv=>(
+                  <div key={inv.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1fr 1fr', gap:'8px', alignItems:'center', padding:'9px 0', borderBottom:'1px solid #eee' }}>
+                    <strong style={{ color:'#ca1b1b', fontSize:'12px' }}>{inv.invoice_number}</strong>
+                    <span style={{ fontSize:'12px', color:'#555' }}>Age: {inv.credit_age_days} day(s)</span>
+                    <span style={{ fontSize:'12px', color:'#555' }}>Balance: {php(inv.balance_amount)}</span>
+                    <Badge label={inv.is_credit_blocked?'HOLD':'OPEN'} color={inv.is_credit_blocked?'red':'orange'} />
                   </div>
                 ))}
               </div>
-              <h3 style={{ color:'#ca1b1b', fontSize:'13px', margin:'0 0 10px' }}>Recent Invoices</h3>
-              {resellerInvoices.slice(0,5).map(inv=>(
-                <div key={inv.id} style={{ ...cardS, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                  <div>
-                    <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>{inv.invoice_number}</p>
-                    <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Delivery: {inv.delivery_date} | Due: {inv.due_date}</p>
-                  </div>
-                  <div style={{ textAlign:'right' }}>
-                    <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 4px' }}>{php(inv.total_amount)}</p>
-                    <span style={{ background:inv.status==='paid'?'#e8f5e9':inv.status==='partial'?'#fff3cd':'#fff5f5', color:inv.status==='paid'?'#2d8a4e':inv.status==='partial'?'#856404':'#ca1b1b', borderRadius:'20px', padding:'2px 10px', fontSize:'10px', fontWeight:'bold' }}>{inv.status?.toUpperCase()}</span>
-                  </div>
-                </div>
-              ))}
             </div>
           )}
-          {/* Invoices */}
-          {resellerPortalView==='invoices' && (
-            <div>
-              <h2 style={h2s}>📋 My Invoices</h2>
-              {resellerInvoices.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No invoices yet</p>:resellerInvoices.map(inv=>(
-                <div key={inv.id} style={{ ...cardS }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
-                    <div>
-                      <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 2px' }}>{inv.invoice_number}</p>
-                      <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Delivery: {inv.delivery_date} | Due: {inv.due_date}</p>
-                    </div>
-                    <div style={{ textAlign:'right' }}>
-                      <p style={{ fontWeight:'bold', fontSize:'16px', margin:'0 0 4px' }}>{php(inv.total_amount)}</p>
-                      <span style={{ background:inv.status==='paid'?'#e8f5e9':inv.status==='partial'?'#fff3cd':'#fff5f5', color:inv.status==='paid'?'#2d8a4e':inv.status==='partial'?'#856404':'#ca1b1b', borderRadius:'20px', padding:'3px 10px', fontSize:'10px', fontWeight:'bold' }}>{inv.status?.toUpperCase()}</span>
-                    </div>
-                  </div>
-                  {(inv.delivery_invoice_items||[]).length > 0 && (
-                    <div style={{ fontSize:'11px', color:'#555', marginBottom:'8px' }}>
-                      {(inv.delivery_invoice_items||[]).slice(0,3).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' · ')}{(inv.delivery_invoice_items||[]).length>3?` · +${(inv.delivery_invoice_items||[]).length-3} more`:''}
-                    </div>
-                  )}
-                  {!inv.receipt_confirmed && inv.status!=='unpaid' && (
-                    <button style={{ ...btnGreen, marginTop:'6px', padding:'8px', fontSize:'12px' }} onClick={()=>confirmDeliveryReceipt(inv.id)}>✅ CONFIRM DELIVERY RECEIVED</button>
-                  )}
-                  {inv.receipt_confirmed && <p style={{ color:'#2d8a4e', fontSize:'11px', fontWeight:'bold', margin:'4px 0 0' }}>✅ Delivery confirmed on {inv.confirmed_at?.slice(0,10)}</p>}
-                  {/* Dispute Button */}
-                  <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px', marginTop:'8px', width:'100%' }} onClick={()=>setShowDisputeForm(showDisputeForm===inv.id?null:inv.id)}>⚠️ REPORT DISCREPANCY / DISPUTE</button>
-                  {/* Dispute Form */}
-                  {showDisputeForm===inv.id && (
-                    <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'10px', padding:'14px', marginTop:'8px' }}>
-                      <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:'0 0 10px' }}>⚠️ Report Discrepancy</p>
-                      <label style={lblS}>Dispute Type:</label>
-                      <select value={disputeType} onChange={e=>setDisputeType(e.target.value)} style={inputStyle}>
-                        <option value="">— Select —</option>
-                        {['Wrong items delivered','Missing items','Damaged goods','Quantity mismatch','Quality issue','Wrong price','Other'].map(t=><option key={t} value={t}>{t}</option>)}
-                      </select>
-                      <label style={lblS}>Description:</label>
-                      <textarea value={disputeDesc} onChange={e=>setDisputeDesc(e.target.value)} placeholder="Describe the issue in detail..." style={{ ...inputStyle, minHeight:'80px', resize:'vertical' }} />
-                      <label style={lblS}>Photo Proof (required for discrepancies):</label>
-                      <div onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#fff3cd'}} onDragLeave={e=>{e.currentTarget.style.background='#f8f7f5'}} onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#f8f7f5';const f=e.dataTransfer.files[0];if(f)setDisputePhoto(f)}} onClick={()=>document.getElementById('dispute-photo-'+inv.id).click()} style={{ background:'#f8f7f5', border:'2px dashed #f5a623', borderRadius:'10px', padding:'20px', textAlign:'center', cursor:'pointer', marginBottom:'10px' }}>
-                        {disputePhoto?<p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px', margin:0 }}>📸 {disputePhoto.name}</p>:<><p style={{ fontSize:'24px', margin:'0 0 4px' }}>📸</p><p style={{ color:'#888', fontSize:'11px', margin:0 }}>Tap to take/upload photo proof</p></>}
-                        <input id={'dispute-photo-'+inv.id} type="file" accept="image/*" capture="environment" onChange={e=>setDisputePhoto(e.target.files[0]||null)} style={{ display:'none' }} />
-                      </div>
-                      <button style={{ ...btnRed, opacity:submittingDispute?0.6:1 }} disabled={submittingDispute} onClick={()=>submitResellerDispute(inv)}>{submittingDispute?'⏳ Submitting...':'📤 SUBMIT DISPUTE'}</button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-          {/* My Orders */}
+
           {resellerPortalView==='orders' && (
             <div>
-              <h2 style={h2s}>📦 My Orders</h2>
-              {resellerOrders.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No orders yet. Place your first order!</p>:resellerOrders.map(ord=>(
-                <div key={ord.id} style={{ ...cardS }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
+              <h2 style={h2s}>📦 Order Requests</h2>
+              {resellerOrders.length===0 ? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No orders yet. Place your first order.</p> : resellerOrders.map(ord=>(
+                <div key={ord.id} style={{ ...portalCard, marginBottom:'10px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
                     <div>
-                      <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>Order for {ord.delivery_date}</p>
-                      <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Placed: {ord.order_date}</p>
+                      <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 2px' }}>Order for {ord.delivery_date}</p>
+                      <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Placed: {ord.order_date || String(ord.created_at||'').slice(0,10)}</p>
                     </div>
-                    <span style={{ background:ord.status==='approved'?'#e8f5e9':ord.status==='rejected'?'#fff5f5':'#fff3cd', color:ord.status==='approved'?'#2d8a4e':ord.status==='rejected'?'#ca1b1b':'#856404', borderRadius:'20px', padding:'3px 10px', fontSize:'11px', fontWeight:'bold' }}>{ord.status?.toUpperCase()}</span>
+                    <Badge label={String(ord.status||'PENDING').toUpperCase()} color={ord.status==='approved'?'green':ord.status==='rejected'?'red':'orange'} />
                   </div>
-                  <div style={{ fontSize:'11px', color:'#555' }}>
-                    {(ord.reseller_order_items||[]).filter(i=>Number(i.quantity)>0).map(i=>`${i.variant_name}: ${i.quantity}`).join(' · ')}
-                  </div>
-                  {ord.status==='approved' && ord.invoice_id && <p style={{ color:'#2d8a4e', fontSize:'11px', margin:'4px 0 0', fontWeight:'bold' }}>✅ Invoice created</p>}
-                  {ord.status==='rejected' && ord.notes && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'4px 0 0' }}>Reason: {ord.notes}</p>}
+                  <p style={{ color:'#555', fontSize:'12px', margin:'8px 0 0' }}>{(ord.reseller_order_items||[]).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' · ')}</p>
+                  {ord.invoice_id && <p style={{ color:'#2d8a4e', fontSize:'11px', margin:'6px 0 0', fontWeight:'bold' }}>Invoice created by admin.</p>}
+                  {ord.status==='rejected' && ord.notes && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'6px 0 0' }}>Reason: {ord.notes}</p>}
                 </div>
               ))}
             </div>
           )}
-          {/* Place Order */}
+
           {resellerPortalView==='place_order' && (
             <div>
               <h2 style={h2s}>🛒 Place Order</h2>
-              <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)' }}>
-                <label style={lblS}>Delivery Date:</label>
-                <input type="date" value={resellerOrderDeliveryDate} onChange={e=>setResellerOrderDeliveryDate(e.target.value)} style={inputStyle} min={today} />
-                <label style={lblS}>Notes (optional):</label>
-                <input type="text" value={resellerOrderNotes} onChange={e=>setResellerOrderNotes(e.target.value)} placeholder="Any special instructions..." style={inputStyle} />
-              </div>
-              <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)' }}>
-                <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>Enter quantities (leave 0 to skip):</p>
-                <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', padding:'6px 10px', background:'#ca1b1b', borderRadius:'8px' }}>
-                  {['Variant','Reseller Price','Qty'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
+              {creditStatus.blocked ? (
+                <div style={{ ...portalCard, border:'2px solid #ca1b1b', background:'#fff5f5' }}>
+                  <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}>🚫 Order Request Blocked</h3>
+                  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px' }}>{creditStatus.message}</p>
                 </div>
-                {resellerOrderItems.map((item,i)=>(
-                  <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', alignItems:'center', padding:'6px 10px', background:i%2===0?'white':'#fafafa', borderRadius:'8px', border:'1px solid #f0f0f0' }}>
-                    <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>
-                    <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>{php(item.reseller_price)}</span>
-                    <input type="number" min="0" placeholder="0" value={item.quantity||''} onChange={e=>{ const upd=[...resellerOrderItems]; upd[i]={...upd[i],quantity:e.target.value}; setResellerOrderItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'13px', textAlign:'center', padding:'8px', border:'1.5px solid #FDD412', fontWeight:'bold' }} />
+              ) : (
+                <>
+                  <div style={portalCard}>
+                    <label style={lblS}>Delivery Date:</label>
+                    <input type="date" value={resellerOrderDeliveryDate} onChange={e=>setResellerOrderDeliveryDate(e.target.value)} style={inputStyle} min={today} />
+                    <label style={lblS}>Notes / special instruction:</label>
+                    <input type="text" value={resellerOrderNotes} onChange={e=>setResellerOrderNotes(e.target.value)} placeholder="Optional notes..." style={inputStyle} />
+                  </div>
+                  <div style={{ ...portalCard, marginTop:'12px' }}>
+                    <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>Enter quantities</p>
+                    <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', padding:'7px 10px', background:'#ca1b1b', borderRadius:'9px' }}>
+                      {['Variant','Price','Qty'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
+                    </div>
+                    {resellerOrderItems.map((item,i)=>(
+                      <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', alignItems:'center', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderRadius:'9px', border:'1px solid #f0f0f0' }}>
+                        <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>
+                        <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>{php(item.reseller_price)}</span>
+                        <input type="number" min="0" placeholder="0" value={item.quantity||''} onChange={e=>{ const upd=[...resellerOrderItems]; upd[i]={...upd[i],quantity:e.target.value}; setResellerOrderItems(upd) }} style={{ ...inputStyle, marginBottom:0, textAlign:'center', padding:'8px', border:'1.5px solid #FDD412', fontWeight:'bold' }} />
+                      </div>
+                    ))}
+                    <div style={{ background:'#fff9e6', borderRadius:'10px', padding:'10px 14px', margin:'10px 0', display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
+                      <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
+                      <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
+                    </div>
+                    <button style={{ ...btnRed, opacity:submittingOrder?0.6:1 }} disabled={submittingOrder} onClick={submitResellerOrder}>{submittingOrder?'⏳ Submitting...':'📦 SUBMIT ORDER REQUEST'}</button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {resellerPortalView==='returns' && (
+            <div>
+              <h2 style={h2s}>↩️ Returns / Unsold Reporting</h2>
+              <div style={portalCard}>
+                <label style={lblS}>Invoice to report:</label>
+                <select value={resellerReturnInvoiceId} onChange={e=>{ const inv=resellerInvoices.find(x=>String(x.id)===String(e.target.value)); if(inv) startResellerReturnReport(inv); else { setResellerReturnInvoiceId(''); setResellerReturnItems([]) } }} style={inputStyle}>
+                  <option value="">— Select invoice —</option>
+                  {resellerInvoices.filter(i=>String(i.status||'').toLowerCase()!=='cancelled').map(inv=><option key={inv.id} value={inv.id}>{inv.invoice_number} — {inv.delivery_date} — {php(inv.total_amount)}</option>)}
+                </select>
+                {resellerReturnItems.length>0 && (
+                  <>
+                    <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', gap:'6px', padding:'7px 10px', background:'#1a1a2e', borderRadius:'9px', marginBottom:'6px' }}>
+                      {['Item','Delivered','Returned','Credit'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
+                    </div>
+                    {resellerReturnItems.map((item,i)=>(
+                      <div key={`${item.variant_id}-${i}`} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', gap:'6px', alignItems:'center', padding:'7px 10px', border:'1px solid #eee', borderRadius:'9px', marginBottom:'6px' }}>
+                        <span style={{ fontWeight:'bold', fontSize:'12px' }}>{item.variant_name}</span>
+                        <span style={{ fontSize:'12px', color:'#555' }}>{item.delivered_qty}</span>
+                        <input type="number" min="0" max={item.delivered_qty} value={item.returned_qty} onChange={e=>{ const upd=[...resellerReturnItems]; upd[i]={...upd[i], returned_qty:e.target.value}; setResellerReturnItems(upd) }} style={{ ...inputStyle, marginBottom:0, padding:'8px', textAlign:'center' }} />
+                        <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>{php(safeNum(item.returned_qty,0)*safeNum(item.reseller_price,0))}</span>
+                      </div>
+                    ))}
+                    <label style={lblS}>Remarks:</label>
+                    <input type="text" value={resellerReturnNotes} onChange={e=>setResellerReturnNotes(e.target.value)} placeholder="Example: unsold at closing / damaged packaging" style={inputStyle} />
+                    <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px', display:'flex', justifyContent:'space-between' }}>
+                      <strong style={{ fontSize:'12px', color:'#333' }}>{resellerReturnItems.reduce((s,i)=>s+safeNum(i.returned_qty,0),0)} pcs</strong>
+                      <strong style={{ fontSize:'13px', color:'#ca1b1b' }}>Estimated credit: {php(resellerReturnItems.reduce((s,i)=>s+safeNum(i.returned_qty,0)*safeNum(i.reseller_price,0),0))}</strong>
+                    </div>
+                    <button style={{ ...btnRed, opacity:submittingResellerReturn?0.6:1 }} disabled={submittingResellerReturn} onClick={submitResellerReturnReport}>{submittingResellerReturn?'⏳ Submitting...':'↩️ SUBMIT RETURN / UNSOLD REPORT'}</button>
+                  </>
+                )}
+              </div>
+
+              <div style={{ ...portalCard, marginTop:'14px' }}>
+                <h3 style={{ color:'#333', margin:'0 0 10px', fontSize:'14px' }}>Submitted Reports</h3>
+                {resellerReturns.length===0 ? <p style={{ color:'#aaa', margin:0, fontSize:'12px' }}>No return reports submitted yet.</p> : resellerReturns.map(r=>(
+                  <div key={r.id} style={{ borderBottom:'1px solid #eee', padding:'8px 0' }}>
+                    <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{r.return_date} · {php(r.total_returned_amount)}</p>
+                    <p style={{ margin:0, color:'#777', fontSize:'11px' }}>{(r.reseller_return_items||[]).map(i=>`${i.variant_name}: ${i.returned_quantity} pcs`).join(' · ')}</p>
                   </div>
                 ))}
-                {resellerOrderItems.some(i=>Number(i.quantity)>0) && (
-                  <div style={{ background:'#fff9e6', borderRadius:'10px', padding:'10px 14px', margin:'10px 0', display:'flex', justifyContent:'space-between' }}>
-                    <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>
-                      {resellerOrderItems.reduce((s,i)=>s+Number(i.quantity||0),0)} pieces
-                    </span>
-                    <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>
-                      Total: {php(resellerOrderItems.reduce((s,i)=>s+Number(i.quantity||0)*i.reseller_price,0))}
-                    </span>
-                  </div>
-                )}
-                <button style={{ ...btnRed, opacity:submittingOrder?0.6:1 }} disabled={submittingOrder} onClick={submitResellerOrder}>{submittingOrder?'⏳ Submitting...':'📦 SUBMIT ORDER'}</button>
               </div>
             </div>
           )}
-          {/* Payments */}
+
           {resellerPortalView==='payments' && (
             <div>
               <h2 style={h2s}>💵 Payment History</h2>
-              <div style={{ background:'white', borderRadius:'12px', padding:'14px', marginBottom:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', display:'flex', justifyContent:'space-between' }}>
-                <div><p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>TOTAL PAID</p><p style={{ fontWeight:'800', color:'#2d8a4e', fontSize:'24px', margin:0 }}>{php(totalPaid)}</p></div>
-                <div style={{ textAlign:'right' }}><p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>OUTSTANDING</p><p style={{ fontWeight:'800', color:'#ca1b1b', fontSize:'24px', margin:0 }}>{php(totalBalance)}</p></div>
+              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'14px' }}>
+                {kpiCard('Total Paid', php(totalPaid), `${resellerPaymentHistory.length} payment record(s)`, '#2d8a4e')}
+                {kpiCard('Outstanding', php(totalBalance), 'Current invoice balance', totalBalance>0?'#ca1b1b':'#2d8a4e')}
+                {kpiCard('Collection Rate', `${collectionRate.toFixed(1)}%`, 'Paid vs invoice value', collectionRate>=90?'#2d8a4e':'#f5a623')}
               </div>
-              {resellerPaymentHistory.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'20px' }}>No payments recorded yet</p>:resellerPaymentHistory.map(p=>(
-                <div key={p.id} style={{ ...cardS, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+              {resellerPaymentHistory.length===0 ? <p style={{ color:'#aaa', textAlign:'center', padding:'20px' }}>No payments recorded yet.</p> : resellerPaymentHistory.map(p=>(
+                <div key={p.id} style={{ ...portalCard, display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
                   <div>
-                    <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 2px' }}>{php(p.amount)}</p>
+                    <p style={{ fontWeight:'bold', fontSize:'14px', margin:'0 0 2px', color:'#2d8a4e' }}>{php(p.amount)}</p>
                     <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{p.payment_date} · {p.payment_method||'Cash'}</p>
                     {p.notes && <p style={{ color:'#888', fontSize:'10px', margin:'2px 0 0' }}>{p.notes}</p>}
                   </div>
-                  <span style={{ background:'#e8f5e9', color:'#2d8a4e', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>✅ PAID</span>
+                  <Badge label="RECORDED" color="green" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {resellerPortalView==='notices' && (
+            <div>
+              <h2 style={h2s}>🔔 Notices & Reminders</h2>
+              {creditStatus.blocked && <div style={{ ...portalCard, background:'#fff5f5', border:'2px solid #ca1b1b', marginBottom:'12px' }}><h3 style={{ color:'#ca1b1b', margin:'0 0 6px' }}>🚫 Delivery Hold Reminder</h3><p style={{ margin:0, color:'#7a1a1a', fontSize:'13px' }}>{creditStatus.message}</p></div>}
+              {resellerNotices.length===0 ? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No admin notices yet.</p> : resellerNotices.map(n=>(
+                <div key={n.id} style={{ ...portalCard, marginBottom:'10px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap' }}>
+                    <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'15px' }}>{n.title}</h3>
+                    <span style={{ color:'#888', fontSize:'11px' }}>{String(n.created_at||'').slice(0,10)}</span>
+                  </div>
+                  <p style={{ color:'#555', fontSize:'13px', margin:0, lineHeight:1.5 }}>{n.message || n.content || ''}</p>
                 </div>
               ))}
             </div>
