@@ -154,6 +154,48 @@ function getLeaveOverlapDays(leave, periodStart, periodEnd) {
   return daysInclusive(formatDateLocal(overlapStart), formatDateLocal(overlapEnd))
 }
 
+
+function getAttendanceDateTime(attendanceDate, timeValue, addDay = false) {
+  const base = parseLocalDate(attendanceDate)
+  if (!base || !timeValue) return null
+  const [h, m, s] = String(timeValue).split(':').map(Number)
+  base.setHours(Number(h) || 0, Number(m) || 0, Number(s) || 0, 0)
+  if (addDay) base.setDate(base.getDate() + 1)
+  return base
+}
+
+function getOpenShiftHours(log, asOf = new Date()) {
+  if (!log?.attendance_date || !log?.time_in) return 0
+  const start = getAttendanceDateTime(log.attendance_date, log.time_in)
+  if (!start) return 0
+  return Math.max(0, (asOf.getTime() - start.getTime()) / (1000 * 60 * 60))
+}
+
+function isOpenAttendanceLogInDutyWindow(log, asOf = new Date(), maxHours = 36) {
+  if (!log?.time_in || log?.time_out) return false
+  const hours = getOpenShiftHours(log, asOf)
+  return hours >= 0 && hours <= maxHours
+}
+
+function isTimedOutOnDate(log, targetDate) {
+  if (!log?.time_in || !log?.time_out || !targetDate) return false
+
+  // Normal same-day logs use the attendance date.
+  if (String(log.attendance_date || '').slice(0, 10) === targetDate) return true
+
+  // Overnight logs are saved under the shift start date, so a 10PM-6AM shift
+  // that timed out after midnight should count as timed out on the next day.
+  const inM = minutesFromTime(log.time_in)
+  const outM = minutesFromTime(log.time_out)
+  const crossedMidnight = outM < inM
+  if (!crossedMidnight) return false
+
+  const outDate = parseLocalDate(log.attendance_date)
+  if (!outDate) return false
+  outDate.setDate(outDate.getDate() + 1)
+  return formatDateLocal(outDate) === targetDate
+}
+
 function getCurrentSILCycle(hireDate, asOf = new Date()) {
   const hire = parseLocalDate(hireDate)
   const todayDate = parseLocalDate(formatDateLocal(asOf))
@@ -1787,7 +1829,7 @@ export default function App() {
       showToast(`✅ Wastage logged — ${qty} ${item.unit} of ${item.name} deducted.${wastageChargeEmployee?` Charge sent to owner for approval.`:''}`)
       setShowWastageForm(false); setWastageItemId(''); setWastageQty(''); setWastageReason('')
       setWastageReasonOther(''); setWastageNotes(''); setWastageChargeEmployee(false); setWastageEmployeeId('')
-      loadInventoryItems(); loadWastageLogs()
+      loadInventoryItems(); loadWastageLogs(); refreshFoundationAfterDataChange('wastage-logged')
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setWastageSaving(false)
   }
@@ -4897,6 +4939,31 @@ This will create one approved expense record using the total payroll earnings.`)
     if (status.includes('paid') || status.includes('delivered') || status.includes('partial')) return { label:'COMPLETED', color:'#2d8a4e', level:'good' }
     return { label:'PENDING / CHECK', color:'#777', level:'none' }
   }
+
+
+  function getWastageCostStatus(wastagePct, cost = 0, cogs = 0) {
+    const amount = safeNum(cost, 0)
+    const base = safeNum(cogs, 0)
+    const pct = safeNum(wastagePct, 0)
+    if (amount <= 0) return { label:'CONTROLLED', color:'#2d8a4e', level:'good', message:'No wastage cost recorded for this period.' }
+    if (base <= 0) return { label:'CHECK COGS DATA', color:'#f5a623', level:'watch', message:'Wastage exists but COGS/production cost is missing. Encode production cost to read the real impact.' }
+    if (pct <= 2) return { label:'EXCELLENT', color:'#2d8a4e', level:'good', message:'Wastage cost is very low against production cost.' }
+    if (pct <= 5) return { label:'HEALTHY', color:'#2d8a4e', level:'good', message:'Wastage is inside the normal control range.' }
+    if (pct <= 8) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Wastage is above ideal. Review product handling, overproduction, and rejected items.' }
+    return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Wastage cost is too high. Immediate production and accountability review is needed.' }
+  }
+
+  function getProductProfitStatus(marginPct, revenue = 0, cogs = 0) {
+    const sales = safeNum(revenue, 0)
+    const cost = safeNum(cogs, 0)
+    const margin = safeNum(marginPct, 0)
+    if (sales <= 0) return { label:'NO SALES', color:'#777', level:'none', message:'No sales detected for this product.' }
+    if (cost <= 0) return { label:'NEEDS COGS', color:'#4a90d9', level:'check', message:'Sales exist but COGS is estimated or missing. Add costing data for accuracy.' }
+    if (margin >= 45) return { label:'HIGH PROFIT', color:'#2d8a4e', level:'good', message:'Strong product margin.' }
+    if (margin >= 30) return { label:'GOOD', color:'#2d8a4e', level:'good', message:'Healthy product margin.' }
+    if (margin >= 15) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Margin is thin. Review price, toppings, filling, and labor handling.' }
+    return { label:'LOW / CRITICAL', color:'#ca1b1b', level:'critical', message:'Low product margin. Review cost, pricing, returns, and portion control.' }
+  }
   function buildFoundationExportRows(data) {
     if (!data) return []
     return [
@@ -4956,6 +5023,13 @@ This will create one approved expense record using the total payroll earnings.`)
       { metric:'Actual vs Standard Variance Value', value:data.actualVsStandard?.varianceValue || 0 },
       { metric:'Production Yield %', value:data.yieldMonitoring?.yieldPct || 0 },
       { metric:'Yield Status', value:data.yieldMonitoring?.status || '' },
+      { metric:'Wastage Cost Report Status', value:data.wastageReport?.status || '' },
+      { metric:'Wastage Cost % of COGS', value:data.wastageReport?.pctOfCOGS || 0 },
+      { metric:'Wastage Cost % of Sales', value:data.wastageReport?.pctOfSales || 0 },
+      { metric:'Wastage Avoidable Loss vs 5%', value:data.wastageReport?.avoidableLossVs5Pct || 0 },
+      { metric:'Product Profitability Avg Margin %', value:data.productProfitabilitySummary?.avgMarginPct || 0 },
+      { metric:'Low Margin Product Count', value:data.productProfitabilitySummary?.lowMarginCount || 0 },
+      { metric:'Most Profitable Product', value:data.productProfitabilitySummary?.mostProfitable?.name || '' },
       { metric:'Pending Approvals', value:data.totalPendingApprovals },
       { metric:'Business Health Score', value:data.healthScore },
     ]
@@ -5262,6 +5336,102 @@ This will create one approved expense record using the total payroll earnings.`)
     const yieldRows = (foundationData.productionYieldRows || []).map(r => ({ section:r.source, metric:r.name, value:safeNum(r.yieldPct,0).toFixed(2) + '%', note:`Expected ${r.expectedQty} | Actual ${r.actualQty} | Variance ${r.varianceQty} | ${r.status}` }))
     downloadTextFile(`romas-production-yield-monitoring-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...yieldRows]), 'text/csv')
   }
+
+  function exportWastageCostCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const summaryRows = [
+      { section:'Summary', metric:'Total Wastage Cost', value:safeNum(d.wastageReport?.cost,0), note:d.wastageReport?.status || '' },
+      { section:'Summary', metric:'Wastage Quantity', value:safeNum(d.wastageReport?.qty,0), note:`${safeNum(d.wastageReport?.entries,0)} record(s)` },
+      { section:'Summary', metric:'Wastage % of COGS', value:safeNum(d.wastageReport?.pctOfCOGS,0).toFixed(2) + '%', note:'Target ≤5%' },
+      { section:'Summary', metric:'Wastage % of Sales', value:safeNum(d.wastageReport?.pctOfSales,0).toFixed(2) + '%', note:'Sales leakage indicator' },
+      { section:'Action', metric:'Avoidable Loss vs 5% Target', value:safeNum(d.wastageReport?.avoidableLossVs5Pct,0), note:d.wastageReport?.message || '' },
+    ]
+    const itemRows = (d.wastageItemRows || []).map(r => ({ section:'By Item', metric:r.name, value:r.cost, note:`${safeNum(r.qty,0)} ${r.unit || ''} | ${safeNum(r.sharePct,0).toFixed(1)}% share | Top reason: ${r.topReason}` }))
+    const reasonRows = (d.wastageReasonRows || []).map(r => ({ section:'By Reason', metric:r.name, value:r.total, note:`${safeNum(r.sharePct,0).toFixed(1)}% share` }))
+    const employeeRows = (d.wastageEmployeeRows || []).map(r => ({ section:'By Employee / Logger', metric:r.name, value:r.total, note:'Use only for review; verify responsibility before charging.' }))
+    const detailRows = (d.wastageDetailRows || []).map(r => ({ section:'Detail', metric:`${r.date} — ${r.item}`, value:r.cost, note:`${r.reason} | ${safeNum(r.qty,0)} ${r.unit || ''} | ${r.employee || 'No employee'} | ${r.status}` }))
+    const trendRows = (d.wastageTrend || []).map(r => ({ section:'Monthly Trend', metric:r.label, value:r.cost, note:`${safeNum(r.ratio,0).toFixed(2)}% of COGS | ${safeNum(r.qty,0)} qty | ${r.status}` }))
+    downloadTextFile(`romas-wastage-cost-report-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...itemRows, ...reasonRows, ...employeeRows, ...detailRows, ...trendRows]), 'text/csv')
+  }
+
+  function exportProductProfitabilityCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const summaryRows = [
+      { section:'Summary', product:'All Products', net_revenue:safeNum(d.productProfitabilitySummary?.totalRevenue,0), estimated_cogs:safeNum(d.productProfitabilitySummary?.totalEstimatedCOGS,0), gross_profit:safeNum(d.productProfitabilitySummary?.totalGrossProfit,0), margin:safeNum(d.productProfitabilitySummary?.avgMarginPct,0).toFixed(2) + '%', note:`${safeNum(d.productProfitabilitySummary?.productCount,0)} product(s)` },
+      { section:'Summary', product:'Most Profitable', net_revenue:safeNum(d.productProfitabilitySummary?.mostProfitable?.netRevenueAfterReturns,0), estimated_cogs:safeNum(d.productProfitabilitySummary?.mostProfitable?.estimatedCOGS,0), gross_profit:safeNum(d.productProfitabilitySummary?.mostProfitable?.grossProfit,0), margin:safeNum(d.productProfitabilitySummary?.mostProfitable?.marginPct,0).toFixed(2) + '%', note:d.productProfitabilitySummary?.mostProfitable?.name || '' },
+      { section:'Summary', product:'Weakest Margin', net_revenue:safeNum(d.productProfitabilitySummary?.weakestMargin?.netRevenueAfterReturns,0), estimated_cogs:safeNum(d.productProfitabilitySummary?.weakestMargin?.estimatedCOGS,0), gross_profit:safeNum(d.productProfitabilitySummary?.weakestMargin?.grossProfit,0), margin:safeNum(d.productProfitabilitySummary?.weakestMargin?.marginPct,0).toFixed(2) + '%', note:d.productProfitabilitySummary?.weakestMargin?.name || '' },
+    ]
+    const productRows = (d.productProfitabilityRows || []).map((r, index) => ({
+      section:'Product', rank:index + 1, product:r.name, quantity:safeNum(r.qty,0), gross_revenue:safeNum(r.grossRevenue,0), returns:safeNum(r.returnsAmount,0), net_revenue:safeNum(r.netRevenueAfterReturns,0), estimated_cogs:safeNum(r.estimatedCOGS,0), gross_profit:safeNum(r.grossProfit,0), margin:safeNum(r.marginPct,0).toFixed(2) + '%', food_cost:safeNum(r.foodCostPct,0).toFixed(2) + '%', status:r.status, recommendation:r.recommendation
+    }))
+    downloadTextFile(`romas-product-profitability-report-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...productRows]), 'text/csv')
+  }
+
+  function exportEmployeeDocumentsCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.employeeDocumentRows || []).map(r => ({ employee_code:r.employeeCode, employee:r.employee, department:r.department, position:r.position, hire_date:r.hireDate, completeness:r.completeness + '%', status:r.status, missing:r.missing, contract_status:r.contractStatus, contract_end:r.contractEnd }))
+    downloadTextFile(`romas-employee-document-tracker-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportApprovalWorkflowCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.approvalRows || []).map(r => ({ type:r.type, employee_or_account:r.employee, date:String(r.date || '').slice(0,10), age_days:r.ageDays, amount:r.amount, priority:r.priority, reason:r.reason, id:r.id }))
+    downloadTextFile(`romas-approval-workflow-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportRolePermissionsCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.roleRiskRows || []).map(r => ({ employee_code:r.code, employee:r.employee, department:r.department, roles:r.role, risk:r.risk }))
+    downloadTextFile(`romas-role-permissions-review-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportAuditReviewCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.auditSecurityRows || []).map(r => ({ date:r.date, severity:r.severity, action:r.action, performed_by:r.performed_by || r.actor || '', target:r.target || r.employee_name || '', details:r.details || '' }))
+    downloadTextFile(`romas-audit-review-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportTestDataCandidatesCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    downloadTextFile(`romas-test-data-candidates-${foundationMonth}.csv`, rowsToCSV(foundationData.testDataRows || []), 'text/csv')
+  }
+
+  function exportDeviceControlCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    downloadTextFile(`romas-employee-device-control-${foundationMonth}.csv`, rowsToCSV(foundationData.deviceControlRows || []), 'text/csv')
+  }
+
+  function exportBusinessHealthCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.businessHealthRows || []).map(r => ({ metric:r.name, status:r.status, value:r.value, target:r.target }))
+    downloadTextFile(`romas-business-health-score-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportCompleteDataPackage() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const payload = {
+      exported_at:new Date().toISOString(),
+      month:foundationMonth,
+      purpose:'Complete Foundation data export package for owner review and backup.',
+      summary:{
+        healthScore:foundationData.healthScore,
+        healthGrade:foundationData.businessHealthGrade,
+        netSales:foundationData.totalSales,
+        netProfit:foundationData.netProfit,
+        payrollExpense:foundationData.payrollExpense,
+        cogs:foundationData.totalCOGS,
+        totalAR:foundationData.totalAR,
+        pendingApprovals:foundationData.totalPendingApprovals,
+        employeeDocumentStatus:foundationData.employeeDocumentSummary?.status,
+        auditStatus:foundationData.auditReviewSummary?.status,
+      },
+      foundationData
+    }
+    downloadTextFile(`romas-complete-foundation-export-${foundationMonth}.json`, JSON.stringify(payload, null, 2), 'application/json')
+  }
+
   function exportFoundationBackup() {
     if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
     const backup = {
@@ -5322,7 +5492,15 @@ This will create one approved expense record using the total payroll earnings.`)
         <tr><td>Actual vs Standard Variance</td><td>${safeNum(d.actualVsStandard?.totalVarianceQty,0)} pcs</td><td>${d.actualVsStandard?.status || ''}</td></tr>
         <tr><td>Production Yield</td><td>${safeNum(d.yieldMonitoring?.yieldPct,0).toFixed(1)}%</td><td>${d.yieldMonitoring?.status || ''}</td></tr>
       </table>
-      <h3>Recommended Actions</h3><ul>${[...(d.deliveryRouteActionPlan||[]), ...(d.inventoryReorderActionPlan||[]), ...(d.batchCostingActionPlan||[]), ...(d.actualVsStandardActionPlan||[]), ...(d.productionYieldActionPlan||[]), ...(d.receivableActionPlan||[]), ...(d.cashFlowActionPlan||[]), ...(d.productionForecastActionPlan||[]), ...(d.resellerPerformanceActionPlan||[]), ...(d.dailyClosingActionPlan||[]), ...(d.salaryRatioActionPlan||[]), ...(d.foodCostActionPlan||[]), ...d.recommendations].map(r=>`<li>${r}</li>`).join('')}</ul>
+      <h3>Wastage & Product Profitability</h3>
+      <table><tr><th>Metric</th><th>Value</th><th>Status</th></tr>
+        <tr><td>Wastage Cost</td><td>${php(d.wastageReport?.cost || d.wastageCost || 0)}</td><td>${d.wastageReport?.status || ''}</td></tr>
+        <tr><td>Wastage % of COGS</td><td>${safeNum(d.wastageReport?.pctOfCOGS,0).toFixed(1)}%</td><td>Target ≤5%</td></tr>
+        <tr><td>Product Profit Margin</td><td>${safeNum(d.productProfitabilitySummary?.avgMarginPct,0).toFixed(1)}%</td><td>${safeNum(d.productProfitabilitySummary?.lowMarginCount,0)} low-margin product(s)</td></tr>
+        <tr><td>Most Profitable Product</td><td>${d.productProfitabilitySummary?.mostProfitable?.name || 'No product data'}</td><td>${php(d.productProfitabilitySummary?.mostProfitable?.grossProfit || 0)}</td></tr>
+      </table>
+      <h3>Top Product Profitability</h3><table><tr><th>Product</th><th>Net Revenue</th><th>Est. COGS</th><th>Gross Profit</th><th>Margin</th></tr>${(d.productProfitabilityRows||[]).slice(0,10).map(r=>`<tr><td>${r.name}</td><td>${php(r.netRevenueAfterReturns)}</td><td>${php(r.estimatedCOGS)}</td><td>${php(r.grossProfit)}</td><td>${safeNum(r.marginPct,0).toFixed(1)}%</td></tr>`).join('')}</table>
+      <h3>Recommended Actions</h3><ul>${[...(d.wastageActionPlan||[]), ...(d.productProfitabilityActionPlan||[]), ...(d.deliveryRouteActionPlan||[]), ...(d.inventoryReorderActionPlan||[]), ...(d.batchCostingActionPlan||[]), ...(d.actualVsStandardActionPlan||[]), ...(d.productionYieldActionPlan||[]), ...(d.receivableActionPlan||[]), ...(d.cashFlowActionPlan||[]), ...(d.productionForecastActionPlan||[]), ...(d.resellerPerformanceActionPlan||[]), ...(d.dailyClosingActionPlan||[]), ...(d.salaryRatioActionPlan||[]), ...(d.foodCostActionPlan||[]), ...d.recommendations].map(r=>`<li>${r}</li>`).join('')}</ul>
       <button class="no-print" onclick="window.print()" style="padding:10px 20px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-weight:bold">Print Report</button>
       </body></html>`)
     pw.document.close()
@@ -5358,7 +5536,7 @@ This will create one approved expense record using the total payroll earnings.`)
         productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes,
         contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes,
         bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes,
-        trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes
+        trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendWastageRes
       ] = await Promise.all([
         foundationSelect('employees', '*', q=>q.eq('is_active', true)),
         foundationSelect('attendance_logs', '*', q=>q.gte('attendance_date', start).lte('attendance_date', end)),
@@ -5387,11 +5565,12 @@ This will create one approved expense record using the total payroll earnings.`)
         foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', trendStart).lte('delivery_date', end)),
         foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', trendStart).lte('return_date', end)),
         foundationSelect('payroll_records', '*', q=>q.gte('payroll_start', trendStart).lte('payroll_end', end)),
-        foundationSelect('production_logs', '*', q=>q.gte('production_date', trendStart).lte('production_date', end))
+        foundationSelect('production_logs', '*', q=>q.gte('production_date', trendStart).lte('production_date', end)),
+        foundationSelect('wastage_logs', '*', q=>q.gte('wastage_date', trendStart).lte('wastage_date', end))
       ])
 
       let invoices = invoicesWithItemsRes.data || []
-      const errors = [employeesRes, attendanceRes, dailySalesRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes].map(r=>r.error).filter(Boolean)
+      const errors = [employeesRes, attendanceRes, dailySalesRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
       if (invoicesWithItemsRes.error) {
         const fallbackInv = await foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', start).lte('delivery_date', end))
         invoices = fallbackInv.data || []
@@ -5425,6 +5604,7 @@ This will create one approved expense record using the total payroll earnings.`)
       const trendReturnRows = trendReturnsRes.data || []
       const trendPayrollRows = trendPayrollRes.data || []
       const trendProductionLogRows = trendProductionLogsRes.data || []
+      const trendWastageRows = trendWastageRes.data || []
 
       const walkinMessengerSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_revenue ?? r.total_amount,0),0)
       const walkinSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_walkin,0),0)
@@ -5694,15 +5874,46 @@ This will create one approved expense record using the total payroll earnings.`)
       if (highReturnInvoices.some(i=>i.returnRatePct > 20)) returnsActionPlan.push('At least one invoice has returns above 20%. Review that outlet/reseller before sending the same quantity again.')
 
       const productMap = {}
+      const ensureProductRow = (name) => {
+        const key = name || 'Unassigned Product'
+        if (!productMap[key]) productMap[key] = { name:key, qty:0, revenue:0, avgPrice:0, estProfit:0, channelSales:0, resellerSales:0, returnsAmount:0, returnsQty:0 }
+        return productMap[key]
+      }
       invoices.forEach(inv => {
         ;(inv.delivery_invoice_items || []).forEach(item => {
           const key = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
-          if (!productMap[key]) productMap[key] = { name:key, qty:0, revenue:0, avgPrice:0, estProfit:0 }
-          const qty = safeNum(item.quantity,0)
-          const revenue = safeNum(item.total_amount ?? item.subtotal, safeNum(item.unit_price,0)*qty)
-          productMap[key].qty += qty
-          productMap[key].revenue += revenue
+          const row = ensureProductRow(key)
+          const qty = safeNum(item.quantity ?? item.qty ?? item.delivered_qty,0)
+          const revenue = safeNum(item.total_amount ?? item.subtotal, safeNum(item.unit_price ?? item.reseller_price,0)*qty)
+          row.qty += qty
+          row.revenue += revenue
+          row.resellerSales += revenue
         })
+      })
+      dailySalesRows.forEach(row => {
+        const key = row.variant_name || row.product_name || row.item_name || row.product || ''
+        const revenue = safeNum(row.total_revenue ?? row.total_amount ?? row.amount,0)
+        const qty = safeNum(row.quantity ?? row.qty ?? row.sold_qty,0)
+        if (key) {
+          const prod = ensureProductRow(key)
+          prod.qty += qty
+          prod.revenue += revenue
+          prod.channelSales += revenue
+        } else if (revenue > 0 && productMap['Walk-in / Messenger Sales']) {
+          productMap['Walk-in / Messenger Sales'].revenue += revenue
+          productMap['Walk-in / Messenger Sales'].channelSales += revenue
+          productMap['Walk-in / Messenger Sales'].qty += qty
+        } else if (revenue > 0 && Object.keys(productMap).length === 0) {
+          const prod = ensureProductRow('Walk-in / Messenger Sales')
+          prod.qty += qty
+          prod.revenue += revenue
+          prod.channelSales += revenue
+        }
+      })
+      Object.values(returnItemMap).forEach(ret => {
+        const prod = ensureProductRow(ret.name)
+        prod.returnsAmount += safeNum(ret.amount,0)
+        prod.returnsQty += safeNum(ret.qty,0)
       })
       const productProfitability = Object.values(productMap).map(p=>({ ...p, avgPrice:p.qty>0?p.revenue/p.qty:0, estProfit:p.revenue })).sort((a,b)=>b.revenue-a.revenue)
 
@@ -6080,9 +6291,110 @@ This will create one approved expense record using the total payroll earnings.`)
       const inventoryValue = inventoryRows.reduce((s,i)=>s+(safeNum(i.current_stock,0)*safeNum(i.cost_per_unit,0)),0)
       const stockOutMovement = inventoryTxRows.filter(t=>String(t.transaction_type || t.type || '').toLowerCase().includes('out')).reduce((s,t)=>s+safeNum(t.quantity,0),0)
       const stockInMovement = inventoryTxRows.filter(t=>String(t.transaction_type || t.type || '').toLowerCase().includes('in')).reduce((s,t)=>s+safeNum(t.quantity,0),0)
-      const wastageCost = wastageRows.reduce((s,w)=>s+safeNum(w.total_cost ?? w.amount ?? w.charge_amount, safeNum(w.quantity,0)*safeNum(w.unit_cost,0)),0)
+      const wastageCost = wastageRows.reduce((s,w)=>s+safeNum(w.total_cost ?? w.amount ?? w.charge_amount, safeNum(w.quantity ?? w.qty,0)*safeNum(w.unit_cost,0)),0)
       const wastageByReason = groupSum(wastageRows, w=>w.reason || w.wastage_reason || 'Unspecified', w=>w.total_cost ?? w.amount ?? w.charge_amount ?? 0)
 
+      const inventoryLookup = {}
+      inventoryRows.forEach(item => {
+        inventoryLookup[String(item.id)] = item
+        if (item.name) inventoryLookup[String(item.name)] = item
+      })
+      const employeeLookup = {}
+      activeEmployees.forEach(emp => {
+        employeeLookup[String(emp.id)] = emp
+        if (emp.employee_code) employeeLookup[String(emp.employee_code)] = emp
+        if (emp.full_name) employeeLookup[String(emp.full_name)] = emp
+      })
+      const wastageCostPctOfCOGS = totalCOGS > 0 ? (wastageCost / totalCOGS) * 100 : 0
+      const wastageCostPctOfSales = totalSales > 0 ? (wastageCost / totalSales) * 100 : 0
+      const wastageStatus = getWastageCostStatus(wastageCostPctOfCOGS, wastageCost, totalCOGS)
+      const wastageDetailRows = wastageRows.map((w, idx) => {
+        const item = inventoryLookup[String(w.item_id || w.inventory_item_id || w.item_name || '')] || {}
+        const qty = safeNum(w.quantity ?? w.qty,0)
+        const unitCost = safeNum(w.unit_cost ?? item.cost_per_unit,0)
+        const cost = safeNum(w.total_cost ?? w.amount ?? w.charge_amount, qty * unitCost)
+        const emp = employeeLookup[String(w.employee_id || w.charged_employee_id || w.responsible_employee_id || w.employee_name || '')] || {}
+        const reason = w.reason || w.wastage_reason || 'Unspecified'
+        const status = String(w.status || '').toLowerCase().includes('pending') ? 'Pending Review' : String(w.status || 'approved')
+        const severity = cost >= Math.max(500, wastageCost * 0.20) ? 'High Impact' : cost > 0 ? 'Monitor' : 'No Cost'
+        const color = severity === 'High Impact' ? '#ca1b1b' : severity === 'Monitor' ? '#f5a623' : '#777'
+        return {
+          id:w.id || idx,
+          date:String(w.wastage_date || w.created_at || '').slice(0,10),
+          item:item.name || w.item_name || w.name || 'Unassigned Item',
+          category:item.category || w.category || '',
+          reason,
+          qty,
+          unit:item.unit || w.unit || '',
+          unitCost,
+          cost,
+          employee:emp.full_name || w.employee_name || w.responsible_employee_name || w.charged_employee_name || w.logged_by || '',
+          chargeEmployee:w.charge_employee === true || !!(w.employee_id || w.charged_employee_id || w.responsible_employee_id),
+          status,
+          severity,
+          color,
+          notes:w.notes || ''
+        }
+      }).sort((a,b)=>safeNum(b.cost,0)-safeNum(a.cost,0))
+      const wastageItemMap = {}
+      wastageDetailRows.forEach(row => {
+        const key = row.item || 'Unassigned Item'
+        if (!wastageItemMap[key]) wastageItemMap[key] = { name:key, category:row.category, qty:0, cost:0, count:0, topReason:'', reasons:{} }
+        wastageItemMap[key].qty += safeNum(row.qty,0)
+        wastageItemMap[key].cost += safeNum(row.cost,0)
+        wastageItemMap[key].count += 1
+        wastageItemMap[key].reasons[row.reason] = (wastageItemMap[key].reasons[row.reason] || 0) + safeNum(row.cost,0)
+      })
+      const wastageItemRows = Object.values(wastageItemMap).map(row => {
+        const top = Object.entries(row.reasons).sort((a,b)=>b[1]-a[1])[0]
+        return { ...row, topReason:top?.[0] || '', sharePct:wastageCost > 0 ? (row.cost / wastageCost) * 100 : 0 }
+      }).sort((a,b)=>b.cost-a.cost).slice(0,12)
+      const wastageEmployeeRows = groupSum(wastageDetailRows.filter(r=>r.employee), r=>r.employee, r=>r.cost).slice(0,10)
+      const wastageReasonRows = wastageByReason.map(r => ({ ...r, sharePct:wastageCost > 0 ? (safeNum(r.total,0) / wastageCost) * 100 : 0 })).sort((a,b)=>b.total-a.total)
+      const wastageDailyRows = Object.values(wastageDetailRows.reduce((map,row) => {
+        const key = row.date || 'No Date'
+        if (!map[key]) map[key] = { date:key, cost:0, qty:0, count:0 }
+        map[key].cost += safeNum(row.cost,0)
+        map[key].qty += safeNum(row.qty,0)
+        map[key].count += 1
+        return map
+      }, {})).sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,14)
+      const wastageTrend = trendMonths.map(m => {
+        const monthWastage = trendWastageRows
+          .filter(w => String(w.wastage_date || w.created_at || '').slice(0,10) >= m.start && String(w.wastage_date || w.created_at || '').slice(0,10) <= m.end)
+        const cost = monthWastage.reduce((sum,w)=>sum+safeNum(w.total_cost ?? w.amount ?? w.charge_amount, safeNum(w.quantity ?? w.qty,0)*safeNum(w.unit_cost,0)),0)
+        const qty = monthWastage.reduce((sum,w)=>sum+safeNum(w.quantity ?? w.qty,0),0)
+        const cogs = trendProductionLogRows
+          .filter(l => String(l.production_date || '').slice(0,10) >= m.start && String(l.production_date || '').slice(0,10) <= m.end)
+          .reduce((sum,l)=>sum+safeNum(l.total_cost,0),0)
+        const pct = cogs > 0 ? (cost / cogs) * 100 : 0
+        const status = getWastageCostStatus(pct, cost, cogs)
+        return { month:m.key, label:m.label, start:m.start, end:m.end, cost, qty, cogs, ratio:pct, status:status.label, color:status.color }
+      })
+      const wastageReport = {
+        cost:wastageCost,
+        qty:wastageDetailRows.reduce((s,r)=>s+safeNum(r.qty,0),0),
+        entries:wastageDetailRows.length,
+        pctOfCOGS:wastageCostPctOfCOGS,
+        pctOfSales:wastageCostPctOfSales,
+        status:wastageStatus.label,
+        color:wastageStatus.color,
+        message:wastageStatus.message,
+        highImpactCount:wastageDetailRows.filter(r=>r.severity === 'High Impact').length,
+        chargedCount:wastageDetailRows.filter(r=>r.chargeEmployee).length,
+        topReason:wastageReasonRows[0] || null,
+        topItem:wastageItemRows[0] || null,
+        topEmployee:wastageEmployeeRows[0] || null,
+        maxHealthyAt5Pct:totalCOGS * 0.05,
+        avoidableLossVs5Pct:Math.max(0, wastageCost - (totalCOGS * 0.05))
+      }
+      const wastageActionPlan = []
+      if (wastageCost <= 0) wastageActionPlan.push('No wastage cost recorded this month. Continue daily wastage logging to keep this control reliable.')
+      else if (wastageReport.pctOfCOGS <= 5) wastageActionPlan.push(`Wastage is controlled at ${wastageReport.pctOfCOGS.toFixed(1)}% of COGS. Continue logging reasons and checking recurring losses.`)
+      else wastageActionPlan.push(`Wastage is ${wastageReport.pctOfCOGS.toFixed(1)}% of COGS. Reduce wastage by at least ${php(wastageReport.avoidableLossVs5Pct)} to return to the 5% control target.`)
+      if (wastageReport.topReason?.total > 0) wastageActionPlan.push(`Top wastage reason is ${wastageReport.topReason.name}: ${php(wastageReport.topReason.total)}. Create a corrective action for this reason first.`)
+      if (wastageReport.topItem?.cost > 0) wastageActionPlan.push(`${wastageReport.topItem.name} has the highest wastage cost at ${php(wastageReport.topItem.cost)}. Check storage, handling, and production quantity.`)
+      if (wastageReport.highImpactCount > 0) wastageActionPlan.push(`${wastageReport.highImpactCount} wastage record(s) are high-impact. Review notes, responsible person, and employee charge/approval records.`)
 
       const invoiceQty = inv => (inv.delivery_invoice_items || []).reduce((sum,item)=>sum+safeNum(item.quantity ?? item.qty ?? item.delivered_qty,0),0)
       const routeStatusCounts = { total:invoices.length, completed:0, pending:0, returnWatch:0, uncollected:0 }
@@ -6377,6 +6689,63 @@ This will create one approved expense record using the total payroll earnings.`)
         }
       }).sort((a,b)=>b.estimatedCOGS-a.estimatedCOGS).slice(0,12)
 
+      const productProfitabilityRows = productProfitability.map(p => {
+        const share = totalProductRevenue > 0 ? safeNum(p.revenue,0) / totalProductRevenue : 0
+        const estimatedCOGS = totalCOGS * share
+        const returnsAmount = safeNum(p.returnsAmount,0)
+        const netRevenueAfterReturns = Math.max(0, safeNum(p.revenue,0) - returnsAmount)
+        const grossProfitValue = netRevenueAfterReturns - estimatedCOGS
+        const marginPct = netRevenueAfterReturns > 0 ? (grossProfitValue / netRevenueAfterReturns) * 100 : 0
+        const foodCostPctValue = netRevenueAfterReturns > 0 ? (estimatedCOGS / netRevenueAfterReturns) * 100 : 0
+        const returnRatePct = safeNum(p.revenue,0) > 0 ? (returnsAmount / safeNum(p.revenue,0)) * 100 : 0
+        const status = getProductProfitStatus(marginPct, netRevenueAfterReturns, estimatedCOGS)
+        const recommendation = status.level === 'critical'
+          ? 'Review pricing, portioning, toppings/fillings, return rate, and whether this product should be repriced or reformulated.'
+          : status.level === 'watch'
+            ? 'Monitor margin and check ingredient/topping cost before scaling volume.'
+            : status.level === 'check'
+              ? 'Add product-level costing or production data for a more reliable margin.'
+              : 'Keep product active and protect quality/consistency.'
+        return {
+          ...p,
+          grossRevenue:safeNum(p.revenue,0),
+          returnsAmount,
+          returnsQty:safeNum(p.returnsQty,0),
+          netRevenueAfterReturns,
+          estimatedCOGS,
+          grossProfit:grossProfitValue,
+          marginPct,
+          foodCostPct:foodCostPctValue,
+          returnRatePct,
+          revenueShare:share * 100,
+          status:status.label,
+          color:status.color,
+          recommendation
+        }
+      }).sort((a,b)=>b.grossProfit-a.grossProfit)
+      const productProfitabilitySummary = {
+        productCount:productProfitabilityRows.length,
+        totalRevenue:productProfitabilityRows.reduce((s,r)=>s+safeNum(r.netRevenueAfterReturns,0),0),
+        totalEstimatedCOGS:productProfitabilityRows.reduce((s,r)=>s+safeNum(r.estimatedCOGS,0),0),
+        totalGrossProfit:productProfitabilityRows.reduce((s,r)=>s+safeNum(r.grossProfit,0),0),
+        avgMarginPct:productProfitabilityRows.reduce((s,r)=>s+safeNum(r.netRevenueAfterReturns,0),0) > 0 ? (productProfitabilityRows.reduce((s,r)=>s+safeNum(r.grossProfit,0),0) / productProfitabilityRows.reduce((s,r)=>s+safeNum(r.netRevenueAfterReturns,0),0)) * 100 : 0,
+        lowMarginCount:productProfitabilityRows.filter(r=>r.marginPct < 20 && r.netRevenueAfterReturns > 0).length,
+        lossProductCount:productProfitabilityRows.filter(r=>r.grossProfit < 0).length,
+        bestSeller:[...productProfitabilityRows].sort((a,b)=>safeNum(b.grossRevenue,0)-safeNum(a.grossRevenue,0))[0] || null,
+        mostProfitable:productProfitabilityRows[0] || null,
+        weakestMargin:productProfitabilityRows.filter(r=>safeNum(r.netRevenueAfterReturns,0)>0).sort((a,b)=>safeNum(a.marginPct,0)-safeNum(b.marginPct,0))[0] || null,
+        highestReturnProduct:productProfitabilityRows.filter(r=>safeNum(r.returnsAmount,0)>0).sort((a,b)=>safeNum(b.returnsAmount,0)-safeNum(a.returnsAmount,0))[0] || null,
+      }
+      const productProfitabilityActionPlan = []
+      if (productProfitabilityRows.length === 0) productProfitabilityActionPlan.push('No product-level sales were detected. Encode delivery invoice items or product-level daily sales to activate profitability ranking.')
+      else {
+        if (productProfitabilitySummary.mostProfitable) productProfitabilityActionPlan.push(`${productProfitabilitySummary.mostProfitable.name} is currently the most profitable product by estimated gross profit: ${php(productProfitabilitySummary.mostProfitable.grossProfit)}.`)
+        if (productProfitabilitySummary.bestSeller && productProfitabilitySummary.bestSeller.name !== productProfitabilitySummary.mostProfitable?.name) productProfitabilityActionPlan.push(`${productProfitabilitySummary.bestSeller.name} is the best seller by revenue, but not the highest profit. Compare volume vs margin before prioritizing production.`)
+        if (productProfitabilitySummary.lowMarginCount > 0) productProfitabilityActionPlan.push(`${productProfitabilitySummary.lowMarginCount} product(s) have low margin below 20%. Review prices, toppings, fillings, weight, and return behavior.`)
+        if (productProfitabilitySummary.lossProductCount > 0) productProfitabilityActionPlan.push(`${productProfitabilitySummary.lossProductCount} product(s) show estimated loss. Stop scaling these until costing and pricing are corrected.`)
+        if (productProfitabilitySummary.highestReturnProduct) productProfitabilityActionPlan.push(`${productProfitabilitySummary.highestReturnProduct.name} has the highest return value at ${php(productProfitabilitySummary.highestReturnProduct.returnsAmount)}. Check demand, display life, and delivery quantity.`)
+      }
+
       const foodCostActionPlan = []
       if (totalCOGS <= 0) foodCostActionPlan.push('No COGS/production cost detected. Encode production logs with total cost so food cost percentage becomes reliable.')
       else if (totalSales <= 0) foodCostActionPlan.push('COGS exists but no sales were detected. Confirm sales entries and delivery invoices for this month.')
@@ -6416,6 +6785,131 @@ This will create one approved expense record using the total payroll earnings.`)
       const auditRedFlags = auditRows.filter(a=>/delete|removed|deactivated|reset|override|manual|failed/i.test(`${a.action || ''} ${a.details || ''}`)).slice(0,12)
       const testDataCandidates = activeEmployees.filter(e=>/test|sample|demo/i.test(`${e.full_name || ''} ${e.employee_code || ''}`)).length + dailySalesRows.filter(s=>/test|sample|demo/i.test(`${s.notes || ''}`)).length + expenses.filter(e=>/test|sample|demo/i.test(`${e.description || ''}`)).length
 
+      const employeeDocumentRows = activeEmployees.map(emp => {
+        const empContracts = contracts.filter(c => String(c.employee_id) === String(emp.id))
+        const activeContract = empContracts.find(c => String(c.status || '').toLowerCase() === 'active') || empContracts.find(c => !c.end_date || c.end_date >= todayDate) || null
+        const missing = []
+        if (!activeContract) missing.push('Contract')
+        if (!emp.sss_no) missing.push('SSS')
+        if (!emp.pagibig_no) missing.push('Pag-IBIG')
+        if (!emp.philhealth_no) missing.push('PhilHealth')
+        if (!emp.tin_no) missing.push('TIN')
+        if (!emp.contact) missing.push('Contact')
+        if (!emp.emergency_contact) missing.push('Emergency Contact')
+        if (!emp.address) missing.push('Address')
+        const completeness = Math.max(0, Math.round(((7 - missing.length) / 7) * 100))
+        const status = missing.length === 0 ? 'COMPLETE' : missing.includes('Contract') ? 'CRITICAL' : 'INCOMPLETE'
+        const color = status === 'COMPLETE' ? '#2d8a4e' : status === 'CRITICAL' ? '#ca1b1b' : '#f5a623'
+        return {
+          id:emp.id,
+          employee:emp.full_name || emp.employee_code || 'Unknown',
+          employeeCode:emp.employee_code || '',
+          department:emp.department || '',
+          position:emp.position || '',
+          hireDate:emp.hire_date || '',
+          completeness,
+          status,
+          color,
+          missing:missing.join(', ') || 'None',
+          contractStatus:activeContract ? (activeContract.status || 'active') : 'Missing',
+          contractEnd:activeContract?.end_date || ''
+        }
+      }).sort((a,b)=>a.status === 'CRITICAL' ? -1 : b.status === 'CRITICAL' ? 1 : safeNum(a.completeness,0)-safeNum(b.completeness,0))
+      const employeeDocumentSummary = {
+        total:employeeDocumentRows.length,
+        complete:employeeDocumentRows.filter(r=>r.status === 'COMPLETE').length,
+        incomplete:employeeDocumentRows.filter(r=>r.status !== 'COMPLETE').length,
+        critical:employeeDocumentRows.filter(r=>r.status === 'CRITICAL').length,
+        completionPct:employeeDocumentRows.length > 0 ? (employeeDocumentRows.filter(r=>r.status === 'COMPLETE').length / employeeDocumentRows.length) * 100 : 0,
+        expiredContracts:expiredContracts.length,
+        missingContracts:employeesMissingContracts.length,
+        status:employeeDocumentRows.some(r=>r.status === 'CRITICAL') ? 'CRITICAL DOCUMENT GAPS' : employeeDocumentRows.some(r=>r.status === 'INCOMPLETE') ? 'NEEDS COMPLETION' : 'CONTROLLED',
+        color:employeeDocumentRows.some(r=>r.status === 'CRITICAL') ? '#ca1b1b' : employeeDocumentRows.some(r=>r.status === 'INCOMPLETE') ? '#f5a623' : '#2d8a4e'
+      }
+      const employeeDocumentActionPlan = []
+      if (employeeDocumentRows.length === 0) employeeDocumentActionPlan.push('No active employees found for document tracking.')
+      else if (employeeDocumentSummary.critical > 0) employeeDocumentActionPlan.push(`${employeeDocumentSummary.critical} employee(s) have critical document gaps, usually missing active contract. Complete these first.`)
+      else if (employeeDocumentSummary.incomplete > 0) employeeDocumentActionPlan.push(`${employeeDocumentSummary.incomplete} employee(s) still have incomplete HR master data. Complete IDs, emergency contact, and address details.`)
+      else employeeDocumentActionPlan.push('Employee document checklist looks complete based on available fields. Continue attaching contracts and HR documents as employees are onboarded/offboarded.')
+      if (expiredContracts.length > 0) employeeDocumentActionPlan.push(`${expiredContracts.length} contract(s) appear expired. Review renewal, regularization, or termination documentation.`)
+
+      const approvalRows = [
+        ...leaves.filter(r=>r.status==='pending').map(r=>({ type:'Leave', employee:r.employee_name || r.employee_code || '', date:r.created_at || r.leave_start || '', amount:0, reason:r.reason || '', id:r.id })),
+        ...caRequestsRows.filter(r=>r.status==='pending').map(r=>({ type:'Cash Advance', employee:r.employee_name || r.employee_code || '', date:r.created_at || r.request_date || '', amount:safeNum(r.amount,0), reason:r.reason || '', id:r.id })),
+        ...otRequestsRows.filter(r=>r.status==='pending').map(r=>({ type:'OT/UT', employee:r.employee_name || r.employee_code || '', date:r.created_at || r.request_date || '', amount:0, reason:r.reason || '', id:r.id })),
+        ...disputesRows.filter(r=>r.status==='pending').map(r=>({ type:'Payslip Dispute', employee:r.employee_name || r.employee_code || '', date:r.created_at || '', amount:0, reason:r.reason || r.dispute_reason || '', id:r.id })),
+        ...expenses.filter(r=>r.status==='pending').map(r=>({ type:'Expense', employee:r.created_by || r.requested_by || '', date:r.created_at || r.expense_date || '', amount:safeNum(r.amount,0), reason:r.description || r.category || '', id:r.id })),
+        ...resellerDisputesRows.filter(r=>r.status==='pending').map(r=>({ type:'Reseller Dispute', employee:r.reseller_name || r.customer_name || '', date:r.created_at || '', amount:0, reason:r.description || r.dispute_type || '', id:r.id })),
+      ].map(row => {
+        const ageDays = row.date ? daysBetweenLocal(row.date, todayDate) : 0
+        const priority = ageDays >= 7 ? 'CRITICAL' : ageDays >= 3 ? 'AGING' : safeNum(row.amount,0) >= EXPENSE_APPROVAL_THRESHOLD ? 'HIGH VALUE' : 'NORMAL'
+        const color = priority === 'CRITICAL' ? '#ca1b1b' : priority === 'AGING' || priority === 'HIGH VALUE' ? '#f5a623' : '#2d8a4e'
+        return { ...row, ageDays, priority, color }
+      }).sort((a,b)=>safeNum(b.ageDays,0)-safeNum(a.ageDays,0) || safeNum(b.amount,0)-safeNum(a.amount,0))
+      const approvalWorkflowSummary = {
+        total:approvalRows.length,
+        critical:approvalRows.filter(r=>r.priority === 'CRITICAL').length,
+        aging:approvalRows.filter(r=>r.priority === 'AGING').length,
+        highValue:approvalRows.filter(r=>r.priority === 'HIGH VALUE').length,
+        status:approvalRows.some(r=>r.priority === 'CRITICAL') ? 'CRITICAL BACKLOG' : approvalRows.length > 0 ? 'PENDING ACTION' : 'CLEAR',
+        color:approvalRows.some(r=>r.priority === 'CRITICAL') ? '#ca1b1b' : approvalRows.length > 0 ? '#f5a623' : '#2d8a4e'
+      }
+      const approvalWorkflowActionPlan = []
+      if (approvalRows.length === 0) approvalWorkflowActionPlan.push('No pending approvals. Keep approval review as part of daily admin closing.')
+      else approvalWorkflowActionPlan.push(`${approvalRows.length} pending approval(s) need review. Clear critical/aging requests first before payroll or daily closing.`)
+      if (approvalWorkflowSummary.critical > 0) approvalWorkflowActionPlan.push(`${approvalWorkflowSummary.critical} approval(s) are 7+ days old. These can affect payroll, employee trust, and expense accuracy.`)
+      if (approvalWorkflowSummary.highValue > 0) approvalWorkflowActionPlan.push(`${approvalWorkflowSummary.highValue} high-value approval(s) need owner/manager review.`)
+
+      const roleCounts = {}
+      activeEmployees.forEach(emp => {
+        const roles = [emp.admin_role, ...(String(emp.extra_roles || '').split(',').map(r=>r.trim()).filter(Boolean))].filter(Boolean)
+        roles.forEach(role => { roleCounts[role] = (roleCounts[role] || 0) + 1 })
+      })
+      const rolePermissionRows = Object.entries(roleCounts).map(([role,count]) => ({ role, count, risk:count > 3 && role === 'owner' ? 'REVIEW OWNER ACCESS' : count === 0 ? 'NO ASSIGNED USER' : 'OK' })).sort((a,b)=>b.count-a.count)
+      const roleRiskRows = activeEmployees.filter(emp => emp.admin_role || emp.extra_roles).map(emp => {
+        const roles = [emp.admin_role, ...(String(emp.extra_roles || '').split(',').map(r=>r.trim()).filter(Boolean))].filter(Boolean)
+        const risky = roles.includes('owner') || roles.length > 2
+        return { employee:emp.full_name || emp.employee_code, code:emp.employee_code, role:roles.join(', '), department:emp.department || '', risk:risky?'REVIEW':'OK', color:risky?'#f5a623':'#2d8a4e' }
+      }).sort((a,b)=>a.risk === 'REVIEW' ? -1 : b.risk === 'REVIEW' ? 1 : 0)
+      const rolePermissionSummary = { totalAdmins:roleRiskRows.length, ownerAccess:roleRiskRows.filter(r=>String(r.role).includes('owner')).length, multiRole:roleRiskRows.filter(r=>String(r.role).split(',').length > 2).length, status:roleRiskRows.some(r=>r.risk === 'REVIEW')?'REVIEW ACCESS':'CONTROLLED', color:roleRiskRows.some(r=>r.risk === 'REVIEW')?'#f5a623':'#2d8a4e' }
+      const rolePermissionActionPlan = []
+      if (roleRiskRows.length === 0) rolePermissionActionPlan.push('No employee admin roles found. Make sure operational admins have assigned roles instead of relying only on master owner login.')
+      else rolePermissionActionPlan.push(`${roleRiskRows.length} employee(s) have admin-level roles. Review owner and multi-role access monthly.`)
+      if (rolePermissionSummary.ownerAccess > 1) rolePermissionActionPlan.push(`${rolePermissionSummary.ownerAccess} account(s) have owner access. Keep owner access limited to the real business owner only when possible.`)
+
+      const auditActionRows = groupSum(auditRows, r=>r.action || 'Unknown Action', r=>1).slice(0,12)
+      const auditSecurityRows = auditRows.map(a => {
+        const text = `${a.action || ''} ${a.details || ''}`
+        const severity = /delete|reset|deactivate|remove|override/i.test(text) ? 'HIGH' : /manual|failed|edit|update/i.test(text) ? 'MEDIUM' : 'NORMAL'
+        const color = severity === 'HIGH' ? '#ca1b1b' : severity === 'MEDIUM' ? '#f5a623' : '#777'
+        return { ...a, severity, color, date:String(a.created_at || '').slice(0,19).replace('T',' ') }
+      }).sort((a,b)=>String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0,30)
+      const auditReviewSummary = { total:auditRows.length, flagged:auditSecurityRows.filter(r=>r.severity !== 'NORMAL').length, high:auditSecurityRows.filter(r=>r.severity === 'HIGH').length, status:auditSecurityRows.some(r=>r.severity === 'HIGH')?'HIGH RISK ACTIONS':'MONITORING', color:auditSecurityRows.some(r=>r.severity === 'HIGH')?'#ca1b1b':'#2d8a4e' }
+      const auditReviewActionPlan = []
+      if (auditReviewSummary.high > 0) auditReviewActionPlan.push(`${auditReviewSummary.high} high-risk audit action(s) detected. Review deletes, resets, deactivations, and manual overrides.`)
+      else auditReviewActionPlan.push('No high-risk audit actions detected in the latest logs. Continue reviewing audit logs before payroll release and month-end closing.')
+      if (auditRows.length === 0) auditReviewActionPlan.push('No audit logs found. Ensure important actions are logged for accountability.')
+
+      const testDataRows = [
+        ...activeEmployees.filter(e=>/test|sample|demo/i.test(`${e.full_name || ''} ${e.employee_code || ''}`)).map(e=>({ table:'employees', id:e.id, label:`${e.employee_code || ''} ${e.full_name || ''}`, reason:'Name/code contains test/demo/sample' })),
+        ...dailySalesRows.filter(s=>/test|sample|demo/i.test(`${s.notes || ''}`)).map(s=>({ table:'daily_sales', id:s.id, label:s.sale_date || '', reason:'Notes contain test/demo/sample' })),
+        ...expenses.filter(e=>/test|sample|demo/i.test(`${e.description || ''}`)).map(e=>({ table:'daily_expenses', id:e.id, label:e.description || e.category || '', reason:'Description contains test/demo/sample' })),
+        ...payrollRecords.filter(p=>/test|sample|demo/i.test(`${p.employee_name || ''} ${p.employee_code || ''}`)).map(p=>({ table:'payroll_records', id:p.id, label:p.employee_name || p.employee_code || '', reason:'Payroll employee name/code contains test/demo/sample' })),
+      ].slice(0,100)
+      const dataExportSummary = { availableExports:22, backupReady:true, rowsInSnapshot:Object.values({ activeEmployees, attendance, dailySalesRows, invoices, expenses, payrollRecords, productionLogsRows, inventoryRows, wastageRows, auditRows }).reduce((s,arr)=>s+(Array.isArray(arr)?arr.length:0),0), status:'READY', color:'#2d8a4e' }
+      const deviceControlRows = activeEmployees.map(emp => {
+        const restricted = DEVICE_RESTRICTED_DEPTS.includes(emp.department)
+        const hasLocationRule = !!(emp.location_lat || emp.location_lng || emp.location_radius || emp.work_location)
+        const status = restricted && !isCompanyDevice ? 'RESTRICTED DEPT / PERSONAL DEVICE' : hasLocationRule ? 'LOCATION CONTROLLED' : 'STANDARD'
+        const color = status === 'RESTRICTED DEPT / PERSONAL DEVICE' ? '#f5a623' : status === 'LOCATION CONTROLLED' ? '#2d8a4e' : '#777'
+        return { employee:emp.full_name || emp.employee_code, code:emp.employee_code || '', department:emp.department || '', workLocation:emp.work_location || 'Default store', restrictedDept:restricted, hasLocationRule, status, color }
+      }).sort((a,b)=>a.status === 'RESTRICTED DEPT / PERSONAL DEVICE' ? -1 : b.status === 'RESTRICTED DEPT / PERSONAL DEVICE' ? 1 : 0)
+      const deviceControlSummary = { total:deviceControlRows.length, restricted:deviceControlRows.filter(r=>r.restrictedDept).length, locationControlled:deviceControlRows.filter(r=>r.hasLocationRule).length, currentDevice:isCompanyDevice?'Company Device':'Personal / Unknown Device', status:deviceControlRows.some(r=>r.status === 'RESTRICTED DEPT / PERSONAL DEVICE')?'REVIEW DEVICE POLICY':'CONTROLLED', color:deviceControlRows.some(r=>r.status === 'RESTRICTED DEPT / PERSONAL DEVICE')?'#f5a623':'#2d8a4e' }
+      const deviceControlActionPlan = []
+      if (deviceControlSummary.restricted > 0 && !isCompanyDevice) deviceControlActionPlan.push(`${deviceControlSummary.restricted} production/restricted employee(s) are best handled on a registered company device. Mark this device as company-owned if this is the official attendance device.`)
+      else deviceControlActionPlan.push('Device control status is acceptable. Keep production attendance on authorized company devices where possible.')
+      if (deviceControlSummary.locationControlled < activeEmployees.length) deviceControlActionPlan.push('Some employees do not have individual work-location rules. Department/default location will be used for geofencing.')
+
       const healthChecks = [
         { name:'Net Profit Margin', ok:netMarginPct >= 15, warn:netMarginPct >= 10 && netMarginPct < 15, value:`${netMarginPct.toFixed(1)}%`, target:'Target 15%+' },
         { name:'Salary Ratio', ok:salaryToSalesRatio > 0 && salaryToSalesRatio <= 25, warn:salaryToSalesRatio > 25 && salaryToSalesRatio <= 35, value:`${salaryToSalesRatio.toFixed(1)}%`, target:'Target 20–25%' },
@@ -6425,8 +6919,19 @@ This will create one approved expense record using the total payroll earnings.`)
         { name:'Receivables', ok:totalSales === 0 || totalAR <= totalSales * 0.15, warn:totalAR <= totalSales * 0.30, value:php(totalAR), target:'≤15% of sales' },
         { name:'Low Stock', ok:lowStockItems.length === 0, warn:lowStockItems.length <= 3, value:String(lowStockItems.length), target:'0 critical items' },
         { name:'Approvals', ok:totalPendingApprovals === 0, warn:totalPendingApprovals <= 5, value:String(totalPendingApprovals), target:'0 pending' },
+        { name:'Employee Documents', ok:employeeDocumentSummary.critical === 0 && employeeDocumentSummary.completionPct >= 90, warn:employeeDocumentSummary.critical === 0 && employeeDocumentSummary.completionPct >= 70, value:`${employeeDocumentSummary.completionPct.toFixed(0)}%`, target:'90%+ complete' },
+        { name:'Audit Risk', ok:auditReviewSummary.high === 0, warn:auditReviewSummary.high <= 2, value:String(auditReviewSummary.high), target:'0 high-risk actions' },
       ]
-      const healthScore = Math.round(healthChecks.reduce((s,c)=>s+(c.ok?12.5:c.warn?6:0),0))
+      const healthScore = Math.round(healthChecks.reduce((s,c)=>s+(c.ok?(100/healthChecks.length):c.warn?(50/healthChecks.length):0),0))
+      const businessHealthGrade = healthScore >= 85 ? 'A — Strong' : healthScore >= 75 ? 'B — Healthy' : healthScore >= 60 ? 'C — Watch' : healthScore >= 45 ? 'D — Needs Action' : 'F — Critical'
+      const businessHealthRows = healthChecks.map(c => ({ ...c, status:c.ok?'GOOD':c.warn?'WATCH':'ALERT', color:c.ok?'#2d8a4e':c.warn?'#f5a623':'#ca1b1b' }))
+      const businessHealthActionPlan = []
+      const alertChecks = businessHealthRows.filter(r=>r.status === 'ALERT')
+      const watchChecks = businessHealthRows.filter(r=>r.status === 'WATCH')
+      if (alertChecks.length > 0) businessHealthActionPlan.push(`${alertChecks.length} business health area(s) are in ALERT status. Prioritize the first red metric before expanding production.`)
+      if (watchChecks.length > 0) businessHealthActionPlan.push(`${watchChecks.length} area(s) need monitoring. Set weekly review for these controls.`)
+      if (alertChecks.length === 0 && watchChecks.length === 0) businessHealthActionPlan.push('Business health score is stable. Continue weekly review of P&L, returns, AR, stock, and payroll ratios.')
+
       const recommendations = []
       if (totalSales === 0) recommendations.push('No net sales were detected for this month. Confirm sales encoding and delivery invoices before making decisions.')
       if (payrollExpense === 0) recommendations.push('No payroll expense was detected. Release/post payroll so salary-to-sales and P&L become complete.')
@@ -6435,11 +6940,15 @@ This will create one approved expense record using the total payroll earnings.`)
       if (salaryToSalesRatio > 30) recommendations.push(`Salary-to-sales ratio is critical at ${salaryToSalesRatio.toFixed(1)}%. Bring payroll closer to 20–25% of sales by improving sales or controlling manpower cost.`)
       else if (salaryToSalesRatio > 25) recommendations.push('Salary-to-sales ratio is above 25%. Review scheduling, overtime, and manpower per outlet.')
       if (foodCostPct > 40) recommendations.push('Food cost/COGS is above the ideal 30–40% control range. Check ingredient cost, wastage, standard yield, and pricing.')
+      if ((wastageReport?.pctOfCOGS || 0) > 5) recommendations.push(`Wastage is above the 5% control target at ${safeNum(wastageReport.pctOfCOGS,0).toFixed(1)}% of COGS. Review wastage reason, item, and employee accountability reports.`)
+      if ((productProfitabilitySummary?.lowMarginCount || 0) > 0) recommendations.push(`${productProfitabilitySummary.lowMarginCount} product(s) have low estimated margin. Review product pricing, portioning, topping/filling cost, and return rate.`)
       if (operatingExpenseRatio > 20) recommendations.push('Non-payroll operating expenses are above 20% of sales. Review recurring expenses and remove non-essential spending.')
       if (returnsRate > 5) recommendations.push('Returns are above ideal level. Review production forecast and outlet/reseller orders.')
       if (totalAR > totalSales * 0.15) recommendations.push('Accounts receivable is high. Follow up overdue reseller balances.')
       if (lowStockItems.length > 0) recommendations.push(`${lowStockItems.length} inventory item(s) are at or below minimum stock. Prepare purchase orders.`)
       if (totalPendingApprovals > 0) recommendations.push(`${totalPendingApprovals} pending approval(s) need admin action.`)
+      if (employeeDocumentSummary.critical > 0) recommendations.push(`${employeeDocumentSummary.critical} employee(s) have critical HR document gaps. Complete contracts and employee records before audits or final pay processing.`)
+      if (auditReviewSummary.high > 0) recommendations.push(`${auditReviewSummary.high} high-risk audit log action(s) need owner review.`)
       if (recommendations.length === 0) recommendations.push('Business indicators are stable for this period. Continue monitoring daily sales, returns, and cash flow.')
 
       const moduleChecklist = [
@@ -6458,21 +6967,21 @@ This will create one approved expense record using the total payroll earnings.`)
         { no:13, name:'Batch Production Costing / Forecasting', status:productionLogsRows.length?'Polished':'Needs production logs', value:`${php(totalCOGS)} · ${php(avgBatchCostPerPiece)}/pc` },
         { no:14, name:'Actual vs Standard Usage', status:(actualVsStandardRows.length || inventoryUsageRows.length)?'Polished':'Needs standard/usage data', value:`Variance ${actualVsStandard.totalVarianceQty} pcs` },
         { no:15, name:'Production Yield Monitoring', status:expectedOutput>0?'Polished':'Needs expected output', value:expectedOutput>0?`${yieldPct.toFixed(1)}% · ${yieldMonitoring.status}`:'No standard yet' },
-        { no:16, name:'Wastage Cost Report', status:'Live', value:php(wastageCost) },
-        { no:17, name:'Product Profitability Report', status:productProfitability.length?'Live':'Needs invoice items', value:`${productProfitability.length} product(s)` },
+        { no:16, name:'Wastage Cost Report', status:'Polished', value:`${wastageReport.status} · ${php(wastageCost)}` },
+        { no:17, name:'Product Profitability Report', status:productProfitabilityRows.length?'Polished':'Needs product sales', value:`${productProfitabilityRows.length} product(s) · ${productProfitabilitySummary.avgMarginPct.toFixed(1)}% margin` },
         { no:18, name:'Automated 13th Month Pay Report', status:'Live', value:`${payrollAnalysis.employeeCount} employee(s)` },
         { no:19, name:'Government Contribution Reports', status:'Live', value:php(payrollAnalysis.govTotal) },
         { no:20, name:'Employee Performance Record', status:'Live', value:`${employeePerformance.length} monitored` },
-        { no:21, name:'Employee Document Tracker', status:'Live', value:`${employeesMissingContracts.length} missing contract(s)` },
+        { no:21, name:'Employee Document Tracker', status:'Polished', value:`${employeeDocumentSummary.status} · ${employeeDocumentSummary.completionPct.toFixed(0)}%` },
         { no:22, name:'Final Pay Workflow', status:'Live', value:`${finalPayReady.length} ready/check` },
-        { no:23, name:'Approval Workflow', status:'Live', value:`${totalPendingApprovals} pending` },
-        { no:24, name:'Role-Based Permissions', status:'Live', value:'Owner/Manager/HR/Payroll/Supervisor' },
-        { no:25, name:'Audit Log Review Page', status:'Live', value:`${auditRedFlags.length} flagged` },
-        { no:26, name:'Data Export Buttons', status:'Live', value:'CSV / JSON / Print' },
-        { no:27, name:'Test Data Cleaner', status:'Safe template', value:`${testDataCandidates} candidate(s)` },
-        { no:28, name:'Backup Before Major Update', status:'Live', value:'JSON snapshot' },
-        { no:29, name:'Employee Device Control', status:'Basic', value:isCompanyDevice?'Company device':'Personal device' },
-        { no:30, name:'Business Health Score', status:'Live', value:`${healthScore}/100` },
+        { no:23, name:'Approval Workflow', status:'Polished', value:`${approvalWorkflowSummary.status} · ${approvalWorkflowSummary.total} pending` },
+        { no:24, name:'Role-Based Permissions', status:'Polished', value:`${rolePermissionSummary.totalAdmins} admin user(s)` },
+        { no:25, name:'Audit Log Review Page', status:'Polished', value:`${auditReviewSummary.high} high-risk / ${auditReviewSummary.flagged} flagged` },
+        { no:26, name:'Complete Data Export System', status:'Polished', value:`${dataExportSummary.availableExports}+ exports / backup ready` },
+        { no:27, name:'Safe Test Data Cleaner', status:'Polished', value:`${testDataRows.length} candidate(s)` },
+        { no:28, name:'Backup Before Major Update', status:'Polished', value:`${dataExportSummary.rowsInSnapshot} rows in snapshot` },
+        { no:29, name:'Employee Device Control', status:'Polished', value:`${deviceControlSummary.currentDevice} · ${deviceControlSummary.locationControlled} location-controlled` },
+        { no:30, name:'Business Health Score', status:'Polished', value:`${healthScore}/100 · ${businessHealthGrade}` },
       ]
 
       const loadedAt = new Date().toISOString()
@@ -6483,14 +6992,15 @@ This will create one approved expense record using the total payroll earnings.`)
         collectedInvoices, totalReturnsAmount, totalReturnsQty, returnsRate, returnsQtyRate, totalDeliveredQty, returnsAnalysis, returnsActionPlan, returnRecords, returnResellerRows, returnProductRows, returnDailyRows, returnsTrend, highReturnInvoices, totalCOGS, grossProfit, operatingProfitBeforePayroll, netProfit,
         foodCostPct, foodCost, foodCostTrend, foodCostActionPlan, productionCostRows, productCOGSRows, salaryToSalesRatio, salaryRatio, salaryRatioPeriodRows, salaryRatioEmployeeRows, salaryRatioTrend, salaryRatioActionPlan, operatingExpenseRatio, totalExpenseRatio, grossMarginPct, netMarginPct, nonPayrollExpenses, totalOperatingExpenses, totalExpenses, payrollExpense,
         payrollExpensePosted, payrollExpenseSource, payrollGross, payrollNet, expenseByCategory, payrollAnalysis, cashIn, cashOut,
-        netCashFlow, cashFlow, cashFlowTrend, cashFlowActionPlan, cashVarianceTotal, expectedCashTotal, actualCashTotal, totalAR, arAging, receivableRows, receivablePriorityRows, receivableStatus, receivableSummary, receivableActionPlan, overdueAR, criticalAR, arOverduePct, collectionRate, resellerRanking, resellerPerformanceRows, resellerPerformanceActionPlan, productProfitability, productionForecast, productionForecastRows, productionForecastActionPlan, outletForecastRows, dailyClosingRows, dailyClosingActionPlan, deliveryRoute, deliveryRouteRows, deliveryRouteActionPlan, inventoryControl, inventoryReorderRows, inventoryReorderActionPlan, batchCosting, batchCostRows, batchCostingActionPlan, actualVsStandard, actualVsStandardRows, actualVsStandardActionPlan, inventoryUsageRows, yieldMonitoring, productionYieldRows, productionYieldActionPlan, missingClosingDays, cashVarianceDays, lowStockItems, inventoryValue,
+        netCashFlow, cashFlow, cashFlowTrend, cashFlowActionPlan, cashVarianceTotal, expectedCashTotal, actualCashTotal, totalAR, arAging, receivableRows, receivablePriorityRows, receivableStatus, receivableSummary, receivableActionPlan, overdueAR, criticalAR, arOverduePct, collectionRate, resellerRanking, resellerPerformanceRows, resellerPerformanceActionPlan, productProfitability, productProfitabilityRows, productProfitabilitySummary, productProfitabilityActionPlan, productionForecast, productionForecastRows, productionForecastActionPlan, outletForecastRows, dailyClosingRows, dailyClosingActionPlan, deliveryRoute, deliveryRouteRows, deliveryRouteActionPlan, inventoryControl, inventoryReorderRows, inventoryReorderActionPlan, batchCosting, batchCostRows, batchCostingActionPlan, actualVsStandard, actualVsStandardRows, actualVsStandardActionPlan, inventoryUsageRows, yieldMonitoring, productionYieldRows, productionYieldActionPlan, wastageReport, wastageActionPlan, wastageDetailRows, wastageItemRows, wastageReasonRows, wastageEmployeeRows, wastageDailyRows, wastageTrend, missingClosingDays, cashVarianceDays, lowStockItems, inventoryValue,
         stockInMovement, stockOutMovement, productionLogsCount:productionLogsRows.length, productionReportsCount:productionReportsRows.length,
         expectedOutput, actualOutput, yieldVariance, yieldPct, wastageCost, wastageByReason, closingDays, salesDays,
         closingCoveragePct, invoicesCount:invoices.length, pendingDeliveries:invoices.filter(i=>!['paid','delivered'].includes(String(i.status || '').toLowerCase())).length,
         bankDepositsTotal, employeePerformance,
         employeesMissingContracts, expiredContracts, finalPayReady, pendingApprovals, totalPendingApprovals,
+        employeeDocumentSummary, employeeDocumentRows, employeeDocumentActionPlan, approvalWorkflowSummary, approvalRows, approvalWorkflowActionPlan, rolePermissionSummary, rolePermissionRows, roleRiskRows, rolePermissionActionPlan, auditReviewSummary, auditActionRows, auditSecurityRows, auditReviewActionPlan, testDataRows, dataExportSummary, deviceControlSummary, deviceControlRows, deviceControlActionPlan, businessHealthGrade, businessHealthRows, businessHealthActionPlan,
         auditRedFlags, testDataCandidates, healthChecks, healthScore, recommendations, moduleChecklist,
-        rows:{ activeEmployees, attendance, dailySalesRows, invoices, returnRows, expenses, payrollRecords, productionLogsRows, productionReportsRows, trendProductionLogRows, inventoryRows, inventoryTxRows, wastageRows, contracts, auditRows, cashReconRows, resellersRows, stockAdjustmentsRows }
+        rows:{ activeEmployees, attendance, dailySalesRows, invoices, returnRows, expenses, payrollRecords, productionLogsRows, productionReportsRows, trendProductionLogRows, trendWastageRows, inventoryRows, inventoryTxRows, wastageRows, contracts, auditRows, cashReconRows, resellersRows, stockAdjustmentsRows }
       })
       setFoundationLastUpdated(loadedAt)
     } catch(e) {
@@ -6533,8 +7043,22 @@ This will create one approved expense record using the total payroll earnings.`)
     setTimeout(()=>checkTuesdayDepositReminder(), 2000)
   }
   async function loadDashboard() {
+    const yesterday = getDateOffsetString(-1)
+    const now = new Date()
+
     const { data:emps } = await supabase.from('employees').select('*').eq('is_active', true)
-    const { data:todayLogs } = await supabase.from('attendance_logs').select('*').eq('attendance_date', today)
+
+    // Night-shift-safe dashboard: include open logs from yesterday because
+    // production shifts can start before midnight and time out after 12AM.
+    const { data:recentLogs } = await supabase.from('attendance_logs')
+      .select('*')
+      .gte('attendance_date', yesterday)
+      .lte('attendance_date', today)
+
+    const todayLogs = (recentLogs || []).filter(l => String(l.attendance_date || '').slice(0, 10) === today)
+    const onDutyLogs = (recentLogs || []).filter(l => isOpenAttendanceLogInDutyWindow(l, now, 36))
+    const timedOutTodayLogs = (recentLogs || []).filter(l => isTimedOutOnDate(l, today))
+
     const { data:pendingLeave } = await supabase.from('leave_requests').select('id').eq('status', 'pending')
     const { data:pendingCA } = await supabase.from('cash_advance_requests').select('id').eq('status', 'pending')
     const { data:pendingOT } = await supabase.from('time_adjustment_requests').select('id').eq('status', 'pending')
@@ -6553,8 +7077,8 @@ This will create one approved expense record using the total payroll earnings.`)
     const anniversaries = (emps||[]).filter(e => e.hire_date && thisWeek.includes(e.hire_date.slice(5)) && e.hire_date.slice(0,4) !== today.slice(0,4))
     setDashboardData({
       totalEmployees: emps?.length||0,
-      timedIn: todayLogs?.filter(l=>l.time_in&&!l.time_out).length||0,
-      timedOut: todayLogs?.filter(l=>l.time_out).length||0,
+      timedIn: onDutyLogs.length,
+      timedOut: timedOutTodayLogs.length,
       absent: todayLogs?.filter(l=>l.status==='Absent').length||0,
       pendingLeave: pendingLeave?.length||0,
       pendingCA: pendingCA?.length||0,
@@ -6564,13 +7088,18 @@ This will create one approved expense record using the total payroll earnings.`)
     })
   }
   async function loadTimedInEmployees() {
+    const yesterday = getDateOffsetString(-1)
+    const now = new Date()
     const { data } = await supabase.from('attendance_logs')
       .select('*, employees(full_name, position, department, profile_photo_url)')
-      .eq('attendance_date', today)
+      .gte('attendance_date', yesterday)
+      .lte('attendance_date', today)
       .not('time_in', 'is', null)
       .is('time_out', null)
+      .order('attendance_date', { ascending: true })
       .order('time_in', { ascending: true })
-    setTimedInList(data || [])
+
+    setTimedInList((data || []).filter(l => isOpenAttendanceLogInDutyWindow(l, now, 36)))
     setShowTimedInModal(true)
   }
   async function loadEmployees() {
@@ -8173,7 +8702,7 @@ This will create one approved expense record using the total payroll earnings.`)
                       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
                         <div>
                           <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'16px', margin:'0 0 2px' }}>🟢 Currently On Duty</p>
-                          <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{today} · {timedInList.length} employee{timedInList.length!==1?'s':''} on duty</p>
+                          <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{today} · includes open night-shift logs from yesterday · {timedInList.length} employee{timedInList.length!==1?'s':''} on duty</p>
                         </div>
                         <button onClick={()=>setShowTimedInModal(false)} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Close</button>
                       </div>
@@ -8187,10 +8716,8 @@ This will create one approved expense record using the total payroll earnings.`)
                         <div>
                           {timedInList.map((log, i) => {
                             const emp = log.employees || {}
-                            const now = new Date()
-                            const [h, m] = (log.time_in||'00:00').split(':').map(Number)
-                            const timeInDate = new Date(); timeInDate.setHours(h, m, 0)
-                            const hoursOnDuty = ((now.getTime() - timeInDate.getTime()) / (1000*60*60)).toFixed(1)
+                            const hoursOnDuty = getOpenShiftHours(log).toFixed(1)
+                            const shiftBadge = String(log.attendance_date || '').slice(0,10) !== today ? ' · Night shift from ' + String(log.attendance_date || '').slice(0,10) : ''
                             return (
                               <div key={log.id} style={{ display:'flex', alignItems:'center', gap:'12px', padding:'12px', background:i%2===0?'white':'#f8f9fa', borderRadius:'10px', marginBottom:'6px', border:'1px solid #eee' }}>
                                 {emp.profile_photo_url ? (
@@ -8200,7 +8727,7 @@ This will create one approved expense record using the total payroll earnings.`)
                                 )}
                                 <div style={{ flex:1, minWidth:0 }}>
                                   <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{emp.full_name || log.employee_name}</p>
-                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{emp.position || '—'} {emp.department?`· ${emp.department}`:''}</p>
+                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{emp.position || '—'} {emp.department?`· ${emp.department}`:''}{shiftBadge}</p>
                                 </div>
                                 <div style={{ textAlign:'right', flexShrink:0 }}>
                                   <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 2px' }}>{log.time_in}</p>
@@ -14319,6 +14846,261 @@ This will create one approved expense record using the total payroll earnings.`)
                         <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px' }}>
                           <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>📈 Yield Action Plan</p>
                           {(foundationData.productionYieldActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Wastage Cost & Product Profitability Command Centers */}
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>🗑️ Wastage Cost & Product Profitability Package</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>
+                            Tracks where production money is lost and which products truly contribute profit after estimated COGS and returns.
+                          </p>
+                        </div>
+                        <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportWastageCostCSV}>⬇️ WASTAGE</button>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportProductProfitabilityCSV}>⬇️ PROFITABILITY</button>
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Wastage Cost', php(foundationData.wastageReport?.cost || 0), foundationData.wastageReport?.color || '#777', foundationData.wastageReport?.status || 'NO DATA'],
+                          ['Wastage % COGS', `${safeNum(foundationData.wastageReport?.pctOfCOGS,0).toFixed(1)}%`, foundationData.wastageReport?.color || '#777', 'Target ≤5%'],
+                          ['Avoidable Loss', php(foundationData.wastageReport?.avoidableLossVs5Pct || 0), (foundationData.wastageReport?.avoidableLossVs5Pct || 0)>0?'#ca1b1b':'#2d8a4e', 'Above 5% target'],
+                          ['Product Margin', `${safeNum(foundationData.productProfitabilitySummary?.avgMarginPct,0).toFixed(1)}%`, safeNum(foundationData.productProfitabilitySummary?.avgMarginPct,0)>=30?'#2d8a4e':safeNum(foundationData.productProfitabilitySummary?.avgMarginPct,0)>=15?'#f5a623':'#ca1b1b', 'Estimated gross margin'],
+                          ['Low-Margin Items', `${safeNum(foundationData.productProfitabilitySummary?.lowMarginCount,0)} product(s)`, safeNum(foundationData.productProfitabilitySummary?.lowMarginCount,0)>0?'#f5a623':'#2d8a4e', 'Below 20% margin'],
+                          ['Most Profitable', foundationData.productProfitabilitySummary?.mostProfitable?.name || 'No data', '#1a1a2e', php(foundationData.productProfitabilitySummary?.mostProfitable?.grossProfit || 0)],
+                        ].map(([l,v,c,sub])=>(
+                          <div key={l} style={{ background:'#fffdf6', border:`1px solid ${c}33`, borderRadius:'14px', padding:'14px' }}>
+                            <p style={{ margin:'0 0 5px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{l}</p>
+                            <p style={{ margin:0, color:c, fontWeight:'900', fontSize:isMobile?'16px':'18px', overflowWrap:'anywhere' }}>{v}</p>
+                            <p style={{ margin:'5px 0 0', color:'#888', fontSize:'10px' }}>{sub}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🗑️ Wastage Action Plan</p>
+                          {(foundationData.wastageActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                        </div>
+                        <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🍩 Product Profitability Action Plan</p>
+                          {(foundationData.productProfitabilityActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🗑️ Wastage by Item</p>
+                          {(foundationData.wastageItemRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No wastage records found for this month.</p>
+                          ) : foundationData.wastageItemRows.slice(0,10).map(row=>(
+                            <div key={row.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.name}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:'#ca1b1b' }}>{php(row.cost)}</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>
+                                Qty {safeNum(row.qty,0)} · {safeNum(row.sharePct,0).toFixed(1)}% of wastage · Top reason: {row.topReason || 'N/A'}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📌 Wastage by Reason</p>
+                          {(foundationData.wastageReasonRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No wastage reasons recorded.</p>
+                          ) : foundationData.wastageReasonRows.slice(0,10).map(row=>(
+                            <div key={row.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.name}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:'#ca1b1b' }}>{php(row.total)}</span>
+                              </div>
+                              <div style={{ height:'7px', borderRadius:'99px', background:'#eee', overflow:'hidden', marginTop:'5px' }}>
+                                <div style={{ width:`${Math.min(100, safeNum(row.sharePct,0))}%`, height:'100%', background:'#ca1b1b' }} />
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>{safeNum(row.sharePct,0).toFixed(1)}% of total wastage</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📈 6-Month Wastage Trend</p>
+                          {(foundationData.wastageTrend || []).map(row=>(
+                            <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.label}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:row.color }}>{safeNum(row.ratio,0).toFixed(1)}%</span>
+                              </div>
+                              <div style={{ height:'6px', borderRadius:'99px', background:'#eee', marginTop:'5px', overflow:'hidden' }}>
+                                <div style={{ width:`${Math.min(100, safeNum(row.ratio,0) * 10)}%`, height:'100%', background:row.color }} />
+                              </div>
+                              <p style={{ margin:'3px 0 0', color:'#888', fontSize:'10px' }}>Cost {php(row.cost)} · Qty {safeNum(row.qty,0)} · {row.status}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>👤 Employee / Logger Watch</p>
+                          {(foundationData.wastageEmployeeRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No employee-linked wastage rows detected.</p>
+                          ) : foundationData.wastageEmployeeRows.slice(0,8).map(row=>(
+                            <div key={row.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.name}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:'#f5a623' }}>{php(row.total)}</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>Verify responsibility before charging. Use this for review and coaching.</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🍩 Product Profitability Ranking</p>
+                        {(foundationData.productProfitabilityRows || []).length===0 ? (
+                          <p style={{ color:'#aaa', fontSize:'12px' }}>No product-level sales found. Encode delivery invoice items or product-level sales entries.</p>
+                        ) : (
+                          <div style={{ maxHeight:'420px', overflowY:'auto' }}>
+                            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'11px' }}>
+                              <thead><tr style={{ background:'#ca1b1b', color:'white' }}><th style={{ padding:'8px', textAlign:'left' }}>Product</th><th style={{ padding:'8px', textAlign:'right' }}>Net Sales</th><th style={{ padding:'8px', textAlign:'right' }}>Est. COGS</th><th style={{ padding:'8px', textAlign:'right' }}>Gross Profit</th><th style={{ padding:'8px', textAlign:'right' }}>Margin</th><th style={{ padding:'8px', textAlign:'left' }}>Status</th></tr></thead>
+                              <tbody>{foundationData.productProfitabilityRows.slice(0,16).map(row=>(
+                                <tr key={row.name} style={{ borderBottom:'1px solid #eee' }}>
+                                  <td style={{ padding:'7px', fontWeight:'bold' }}>{row.name}<br/><span style={{ color:'#888', fontSize:'10px' }}>Qty {safeNum(row.qty,0)} · Returns {php(row.returnsAmount)}</span></td>
+                                  <td style={{ padding:'7px', textAlign:'right' }}>{php(row.netRevenueAfterReturns)}</td>
+                                  <td style={{ padding:'7px', textAlign:'right' }}>{php(row.estimatedCOGS)}</td>
+                                  <td style={{ padding:'7px', textAlign:'right', color:row.grossProfit>=0?'#2d8a4e':'#ca1b1b', fontWeight:'bold' }}>{php(row.grossProfit)}</td>
+                                  <td style={{ padding:'7px', textAlign:'right', color:row.color, fontWeight:'bold' }}>{safeNum(row.marginPct,0).toFixed(1)}%</td>
+                                  <td style={{ padding:'7px', color:row.color, fontWeight:'bold' }}>{row.status}</td>
+                                </tr>
+                              ))}</tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+
+                    {/* HR Documents + System Control Command Centers */}
+                    <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', margin:'0 0 4px' }}>🛡️ HR Compliance + System Control Command Center</p>
+                          <p style={{ margin:0, color:'#777', fontSize:'11px' }}>Employee documents, approvals, roles, audit logs, safe cleanup, backups, device control, and full business health.</p>
+                        </div>
+                        <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportCompleteDataPackage}>📦 COMPLETE EXPORT</button>
+                          <button style={{ ...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportFoundationBackup}>💾 BACKUP</button>
+                          <button style={{ ...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportBusinessHealthCSV}>⬇️ HEALTH CSV</button>
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+                        {[
+                          ['Business Health', `${safeNum(foundationData.healthScore,0)}/100`, getBusinessHealthColor(foundationData.healthScore || 0), foundationData.businessHealthGrade || 'No grade'],
+                          ['Employee Docs', `${safeNum(foundationData.employeeDocumentSummary?.completionPct,0).toFixed(0)}%`, foundationData.employeeDocumentSummary?.color || '#777', foundationData.employeeDocumentSummary?.status || 'No data'],
+                          ['Pending Approvals', `${safeNum(foundationData.approvalWorkflowSummary?.total,0)}`, foundationData.approvalWorkflowSummary?.color || '#777', foundationData.approvalWorkflowSummary?.status || 'Clear'],
+                          ['Audit Risk', `${safeNum(foundationData.auditReviewSummary?.high,0)} high`, foundationData.auditReviewSummary?.color || '#777', foundationData.auditReviewSummary?.status || 'Monitoring'],
+                        ].map(([l,v,c,n])=>(
+                          <div key={l} style={{ border:`1px solid ${c}33`, background:'#fff', borderRadius:'12px', padding:'12px' }}>
+                            <p style={{ color:'#777', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase' }}>{l}</p>
+                            <p style={{ color:c, fontWeight:'800', fontSize:'19px', margin:0 }}>{v}</p>
+                            <p style={{ color:'#777', fontSize:'10px', margin:'4px 0 0' }}>{n}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', marginBottom:'8px' }}>
+                            <p style={{ margin:0, fontWeight:'bold', color:'#333', fontSize:'13px' }}>📁 Employee Document Tracker</p>
+                            <button style={{ ...btnYellow, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'10px' }} onClick={exportEmployeeDocumentsCSV}>⬇️ EXPORT</button>
+                          </div>
+                          {(foundationData.employeeDocumentActionPlan || []).map((r,i)=><p key={i} style={{ margin:'4px 0', color:'#555', fontSize:'11px' }}>• {r}</p>)}
+                          <div style={{ marginTop:'8px', maxHeight:'230px', overflowY:'auto' }}>
+                            {(foundationData.employeeDocumentRows || []).slice(0,10).map(row=>(
+                              <div key={row.id} style={{ display:'flex', justifyContent:'space-between', gap:'8px', borderTop:'1px solid #f0f0f0', padding:'7px 0' }}>
+                                <div>
+                                  <p style={{ margin:0, fontWeight:'bold', fontSize:'11px', color:'#333' }}>{row.employee}</p>
+                                  <p style={{ margin:'2px 0 0', color:'#777', fontSize:'10px' }}>{row.employeeCode} · Missing: {row.missing}</p>
+                                </div>
+                                <span style={{ color:row.color, fontWeight:'bold', fontSize:'10px', whiteSpace:'nowrap' }}>{row.status} · {row.completeness}%</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', marginBottom:'8px' }}>
+                            <p style={{ margin:0, fontWeight:'bold', color:'#333', fontSize:'13px' }}>✅ Approval Workflow</p>
+                            <button style={{ ...btnYellow, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'10px' }} onClick={exportApprovalWorkflowCSV}>⬇️ EXPORT</button>
+                          </div>
+                          {(foundationData.approvalWorkflowActionPlan || []).map((r,i)=><p key={i} style={{ margin:'4px 0', color:'#555', fontSize:'11px' }}>• {r}</p>)}
+                          <div style={{ marginTop:'8px', maxHeight:'230px', overflowY:'auto' }}>
+                            {(foundationData.approvalRows || []).length===0 ? <p style={{ color:'#2d8a4e', fontSize:'12px', fontWeight:'bold' }}>✅ No pending approvals.</p> : foundationData.approvalRows.slice(0,10).map(row=>(
+                              <div key={`${row.type}-${row.id}`} style={{ display:'flex', justifyContent:'space-between', gap:'8px', borderTop:'1px solid #f0f0f0', padding:'7px 0' }}>
+                                <div>
+                                  <p style={{ margin:0, fontWeight:'bold', fontSize:'11px', color:'#333' }}>{row.type} · {row.employee || 'No name'}</p>
+                                  <p style={{ margin:'2px 0 0', color:'#777', fontSize:'10px' }}>{safeNum(row.ageDays,0)} day(s) old · {row.amount?php(row.amount):'No amount'}</p>
+                                </div>
+                                <span style={{ color:row.color, fontWeight:'bold', fontSize:'10px', whiteSpace:'nowrap' }}>{row.priority}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}>
+                            <p style={{ margin:0, fontWeight:'bold', fontSize:'13px' }}>🔐 Role-Based Permissions</p>
+                            <button style={{ ...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'10px' }} onClick={exportRolePermissionsCSV}>⬇️</button>
+                          </div>
+                          {(foundationData.rolePermissionActionPlan || []).slice(0,3).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'11px' }}>• {r}</p>)}
+                          {(foundationData.roleRiskRows || []).slice(0,6).map(row=><div key={`${row.code}-${row.role}`} style={{ borderTop:'1px solid #f0f0f0', padding:'6px 0', display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'10px', color:'#555' }}>{row.employee}<br/><small>{row.role}</small></span><b style={{ color:row.color, fontSize:'10px' }}>{row.risk}</b></div>)}
+                        </div>
+                        <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}>
+                            <p style={{ margin:0, fontWeight:'bold', fontSize:'13px' }}>🔎 Audit Log Review</p>
+                            <button style={{ ...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'10px' }} onClick={exportAuditReviewCSV}>⬇️</button>
+                          </div>
+                          {(foundationData.auditReviewActionPlan || []).slice(0,3).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'11px' }}>• {r}</p>)}
+                          {(foundationData.auditSecurityRows || []).slice(0,6).map(row=><div key={`${row.id || row.date}-${row.action}`} style={{ borderTop:'1px solid #f0f0f0', padding:'6px 0', display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'10px', color:'#555' }}>{row.action || 'Action'}<br/><small>{row.date}</small></span><b style={{ color:row.color, fontSize:'10px' }}>{row.severity}</b></div>)}
+                        </div>
+                        <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}>
+                            <p style={{ margin:0, fontWeight:'bold', fontSize:'13px' }}>📱 Employee Device Control</p>
+                            <button style={{ ...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'10px' }} onClick={exportDeviceControlCSV}>⬇️</button>
+                          </div>
+                          {(foundationData.deviceControlActionPlan || []).slice(0,3).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'11px' }}>• {r}</p>)}
+                          {(foundationData.deviceControlRows || []).slice(0,6).map(row=><div key={`${row.code}-${row.department}`} style={{ borderTop:'1px solid #f0f0f0', padding:'6px 0', display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'10px', color:'#555' }}>{row.employee}<br/><small>{row.department || 'No department'} · {row.workLocation}</small></span><b style={{ color:row.color, fontSize:'10px' }}>{row.status}</b></div>)}
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
+                        <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:'#fffef7' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center' }}>
+                            <p style={{ margin:0, fontWeight:'bold', color:'#333', fontSize:'13px' }}>🧹 Safe Test Data Cleaner</p>
+                            <div style={{ display:'flex', gap:'6px' }}>
+                              <button style={{ ...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'10px' }} onClick={exportTestDataCandidatesCSV}>⬇️ CANDIDATES</button>
+                              <button style={{ ...btnBlack, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'10px' }} onClick={exportSafeTestDataCleanerSQL}>SQL</button>
+                            </div>
+                          </div>
+                          <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0' }}>Detected {safeNum(foundationData.testDataRows?.length,0)} possible test/demo/sample record(s). Export candidates first, then use the SQL template only after backup and manual review.</p>
+                        </div>
+                        <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:'#f8fff8' }}>
+                          <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>🏥 Full Business Health Score</p>
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'6px' }}>
+                            {(foundationData.businessHealthRows || []).map(row=><div key={row.name} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #eee', padding:'5px 0', gap:'8px' }}><span style={{ fontSize:'10px', color:'#555' }}>{row.name}<br/><small>{row.target}</small></span><b style={{ color:row.color, fontSize:'10px' }}>{row.status} · {row.value}</b></div>)}
+                          </div>
+                          {(foundationData.businessHealthActionPlan || []).map((r,i)=><p key={i} style={{ margin:'6px 0 0', color:'#555', fontSize:'11px' }}>• {r}</p>)}
                         </div>
                       </div>
                     </div>
