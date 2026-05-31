@@ -604,6 +604,11 @@ export default function App() {
   const [loginType, setLoginType] = useState('employee')
   const [passkeySupported, setPasskeySupported] = useState(false)
   const [passkeyLoading, setPasskeyLoading] = useState(false)
+  const [passkeyAdminEmployeeId, setPasskeyAdminEmployeeId] = useState('')
+  const [passkeyAdminStatus, setPasskeyAdminStatus] = useState(null)
+  const [passkeyAdminLoading, setPasskeyAdminLoading] = useState(false)
+  const [businessKpis, setBusinessKpis] = useState(null)
+  const [businessKpisLoading, setBusinessKpisLoading] = useState(false)
   // Franchise
   const [franchises, setFranchises] = useState([])
   const [showFranchiseForm, setShowFranchiseForm] = useState(false)
@@ -966,6 +971,31 @@ export default function App() {
     setTimeout(() => setToast(null), 3000)
   }
 
+  async function getReadableAppError(err, fallback = 'Something went wrong.') {
+    try {
+      if (err?.context && typeof err.context.clone === 'function') {
+        const cloned = err.context.clone()
+        try {
+          const body = await cloned.json()
+          if (body?.error) return body.error
+          if (body?.message) return body.message
+        } catch(e) {
+          try {
+            const txt = await err.context.clone().text()
+            if (txt) return txt.slice(0, 300)
+          } catch(e2) {}
+        }
+      }
+      if (err?.message) return err.message
+      if (typeof err === 'string') return err
+    } catch(e) {}
+    return fallback
+  }
+
+  function getAdminName() {
+    return adminEmployee?.full_name || adminRole || 'Admin'
+  }
+
   // ── Camera ────────────────────────────────────────────────────────────────
   async function startCamera() {
     try {
@@ -1130,9 +1160,11 @@ export default function App() {
       await openEmployeeAfterAuthentication(verifyData.employee)
     } catch (err) {
       console.error('Passkey login error:', err)
-      showToast('❌ ' + (err?.message || 'Fingerprint login failed.'), 'red')
+      const msg = await getReadableAppError(err, 'Fingerprint login failed.')
+      showToast('❌ ' + msg, 'red')
+    } finally {
+      setPasskeyLoading(false)
     }
-    setPasskeyLoading(false)
   }
 
   async function registerPasskeyForEmployee() {
@@ -1186,9 +1218,11 @@ export default function App() {
       showToast('✅ Fingerprint login is now set up on this device!')
     } catch (err) {
       console.error('Passkey register error:', err)
-      showToast('❌ ' + (err?.message || 'Fingerprint setup failed.'), 'red')
+      const msg = await getReadableAppError(err, 'Fingerprint setup failed.')
+      showToast('❌ ' + msg, 'red')
+    } finally {
+      setPasskeyLoading(false)
     }
-    setPasskeyLoading(false)
   }
 
   async function removeMyPasskeys() {
@@ -1213,10 +1247,119 @@ export default function App() {
       showToast('✅ Fingerprint login removed.')
     } catch (err) {
       console.error('Passkey delete error:', err)
-      showToast('❌ ' + (err?.message || 'Failed to remove fingerprint login.'), 'red')
+      const msg = await getReadableAppError(err, 'Failed to remove fingerprint login.')
+      showToast('❌ ' + msg, 'red')
+    } finally {
+      setPasskeyLoading(false)
     }
-    setPasskeyLoading(false)
   }
+
+  async function loadEmployeePasskeyStatus(empId = passkeyAdminEmployeeId) {
+    if (!empId) {
+      setPasskeyAdminStatus(null)
+      return null
+    }
+
+    setPasskeyAdminLoading(true)
+    try {
+      const emp = employees.find(e => String(e.id) === String(empId))
+      const { data, error } = await supabase
+        .from('employee_passkeys')
+        .select('id, employee_id, employee_code, employee_name, credential_id, device_type, origin, is_active, last_used_at, created_at, updated_at')
+        .eq('employee_id', String(empId))
+        .order('created_at', { ascending:false })
+
+      if (error) throw error
+
+      const passkeys = data || []
+      const status = {
+        employee: emp || null,
+        total: passkeys.length,
+        active: passkeys.filter(p => p.is_active !== false).length,
+        inactive: passkeys.filter(p => p.is_active === false).length,
+        passkeys
+      }
+      setPasskeyAdminStatus(status)
+      return status
+    } catch(err) {
+      const msg = await getReadableAppError(err, 'Could not load fingerprint/passkey status.')
+      showToast('❌ ' + msg, 'red')
+      setPasskeyAdminStatus(null)
+      return null
+    } finally {
+      setPasskeyAdminLoading(false)
+    }
+  }
+
+  async function resetEmployeePasskeys(empId = passkeyAdminEmployeeId) {
+    if (!empId) {
+      showToast('Please select an employee first.', 'red')
+      return
+    }
+
+    const emp = employees.find(e => String(e.id) === String(empId))
+    if (!emp) {
+      showToast('Employee not found.', 'red')
+      return
+    }
+
+    if (!['owner','manager','hr'].includes(adminRole || '')) {
+      showToast('Only Owner, Manager, or HR can reset employee fingerprint access.', 'red')
+      return
+    }
+
+    const confirmText = `Reset fingerprint/passkey login for ${emp.full_name}?\n\nThis will disable all registered passkeys for this employee. The employee can still login using Employee ID + PIN, then register fingerprint again.`
+    if (!window.confirm(confirmText)) return
+
+    setPasskeyAdminLoading(true)
+    try {
+      const { data:activeKeys, error:checkError } = await supabase
+        .from('employee_passkeys')
+        .select('id')
+        .eq('employee_id', String(empId))
+        .eq('is_active', true)
+
+      if (checkError) throw checkError
+
+      if (!activeKeys || activeKeys.length === 0) {
+        showToast('No active fingerprint/passkey found for this employee.', 'red')
+        await loadEmployeePasskeyStatus(empId)
+        return
+      }
+
+      const { error } = await supabase
+        .from('employee_passkeys')
+        .update({ is_active:false, updated_at:new Date().toISOString() })
+        .eq('employee_id', String(empId))
+        .eq('is_active', true)
+
+      if (error) throw error
+
+      await logAudit(
+        'EMPLOYEE PASSKEY RESET',
+        getAdminName(),
+        emp.full_name || emp.employee_code || '',
+        `Disabled ${activeKeys.length} active fingerprint/passkey record(s). Employee may register again after Employee ID + PIN login.`
+      )
+
+      await createNotification(
+        emp.id,
+        emp.full_name || '',
+        'security',
+        '🔐 Fingerprint Login Reset',
+        'Your fingerprint/passkey login was reset by admin. Please login using Employee ID + PIN and set up fingerprint again if needed.'
+      )
+
+      showToast(`✅ Fingerprint/passkey reset for ${emp.full_name}.`)
+      await loadEmployeePasskeyStatus(empId)
+    } catch(err) {
+      const msg = await getReadableAppError(err, 'Failed to reset employee fingerprint/passkey login.')
+      showToast('❌ ' + msg, 'red')
+    } finally {
+      setPasskeyAdminLoading(false)
+    }
+  }
+
 
   function logout() {
     setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
@@ -4173,7 +4316,7 @@ export default function App() {
   function canAccess(tab) {
     if (adminRole === 'owner') return true
     if (adminRole === 'manager') return true // Manager = full access same as owner
-    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sales'].includes(tab)
+    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sales','passkeySecurity'].includes(tab)
     if (adminRole === 'payroll') return ['dashboard','payroll','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
     if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
     if (adminRole === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
@@ -4502,13 +4645,22 @@ export default function App() {
 
     const { data: records } = await supabase
       .from('payroll_records')
-      .select('id')
+      .select('id,payroll_approved,approved_at,approved_by')
       .eq('payroll_start', start)
       .eq('payroll_end', end)
-      .limit(1)
 
     if (!records || records.length === 0) {
       showToast('No payroll records found for this period. Compute payroll first.', 'red')
+      return
+    }
+
+    if (records.some(r => r.payroll_approved === true)) {
+      const expenseResult = await postPayrollToExpenses(start, end, { auto:true, silent:true })
+      if (expenseResult.posted) {
+        showToast(`Payroll was already released. Missing expense was auto-posted: ${php(expenseResult.amount)}.`)
+      } else {
+        showToast('🔒 This payroll period is already approved/released.', 'red')
+      }
       return
     }
 
@@ -4522,8 +4674,8 @@ export default function App() {
 
     setPayrollApproved(true)
     await logAudit(
-      'PAYROLL APPROVED',
-      'Admin',
+      'PAYROLL APPROVED / LOCKED',
+      getAdminName(),
       'ALL',
       `Period: ${start} to ${end} | SIL cashouts auto-released: ${releasedSILCount} | Expense: ${expenseResult.posted ? 'posted ' + php(expenseResult.amount) : expenseResult.existing ? 'already posted' : 'not posted'}`
     )
@@ -4707,7 +4859,7 @@ This will create one approved expense record using the total payroll earnings.`)
     setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
-    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{})
+    loadDepartmentLocations(); loadDashboardCharts(); loadBusinessKpis(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{})
     requestPushPermission()
     // Check Tuesday deposit reminder
     setTimeout(()=>checkTuesdayDepositReminder(), 2000)
@@ -4743,6 +4895,108 @@ This will create one approved expense record using the total payroll earnings.`)
       probDue, birthdays, anniversaries
     })
   }
+
+  async function loadBusinessKpis() {
+    setBusinessKpisLoading(true)
+    try {
+      const month = today.slice(0, 7)
+      const monthStart = `${month}-01`
+      const monthEnd = new Date(Number(month.slice(0,4)), Number(month.slice(5,7)), 0).toISOString().slice(0,10)
+
+      const [salesRes, invoicesRes, payrollRes, expensesRes, attendanceRes, empsRes] = await Promise.all([
+        supabase.from('daily_sales').select('*').gte('sale_date', monthStart).lte('sale_date', monthEnd),
+        supabase.from('delivery_invoices').select('*').gte('delivery_date', monthStart).lte('delivery_date', monthEnd),
+        supabase.from('payroll_records').select('*').gte('payroll_start', monthStart).lte('payroll_end', monthEnd),
+        supabase.from('daily_expenses').select('*').gte('expense_date', monthStart).lte('expense_date', monthEnd),
+        supabase.from('attendance_logs').select('*').gte('attendance_date', monthStart).lte('attendance_date', monthEnd),
+        supabase.from('employees').select('id, full_name, employee_code, department, position').eq('is_active', true),
+      ])
+
+      const sales = salesRes.data || []
+      const invoices = invoicesRes.data || []
+      const payroll = payrollRes.data || []
+      const expenses = expensesRes.data || []
+      const attendance = attendanceRes.data || []
+      const emps = empsRes.data || []
+
+      const employeeById = {}
+      emps.forEach(e => { employeeById[String(e.id)] = e })
+
+      const walkinMessengerSales = sales.reduce((s,d)=>s+safeNum(d.total_revenue,0),0)
+      const resellerSales = invoices.reduce((s,i)=>s+safeNum(i.total_amount,0),0)
+      const totalSales = walkinMessengerSales + resellerSales
+
+      const payrollGross = payroll.reduce((s,p)=>s+safeNum(p.total_earnings,0),0)
+      const payrollNet = payroll.reduce((s,p)=>s+safeNum(p.net_pay,0),0)
+      const payrollExpensePosted = expenses
+        .filter(e => e.category === 'Payroll Expense')
+        .reduce((s,e)=>s+safeNum(e.amount,0),0)
+
+      const absentCount = attendance.filter(a => a.status === 'Absent').length
+      const lateCount = attendance.filter(a => safeNum(a.late_minutes,0) > 0 || a.status === 'Late').length
+      const undertimeCount = attendance.filter(a => safeNum(a.undertime_minutes,0) > 0).length
+      const timedInCount = attendance.filter(a => a.time_in).length
+
+      const deptMap = {}
+      attendance.forEach(a => {
+        const emp = employeeById[String(a.employee_id)] || {}
+        const dept = emp.department || a.department || 'Unassigned'
+        if (!deptMap[dept]) deptMap[dept] = { department:dept, present:0, absent:0, late:0, undertime:0, total:0 }
+        deptMap[dept].total += 1
+        if (a.status === 'Absent') deptMap[dept].absent += 1
+        if (a.time_in) deptMap[dept].present += 1
+        if (safeNum(a.late_minutes,0) > 0 || a.status === 'Late') deptMap[dept].late += 1
+        if (safeNum(a.undertime_minutes,0) > 0) deptMap[dept].undertime += 1
+      })
+
+      const daily = {}
+      sales.forEach(sale => {
+        const d = sale.sale_date
+        if (!daily[d]) daily[d] = { date:d, sales:0, labor:0 }
+        daily[d].sales += safeNum(sale.total_revenue,0)
+      })
+      invoices.forEach(inv => {
+        const d = inv.delivery_date
+        if (!daily[d]) daily[d] = { date:d, sales:0, labor:0 }
+        daily[d].sales += safeNum(inv.total_amount,0)
+      })
+      expenses.filter(e => e.category === 'Payroll Expense').forEach(exp => {
+        const d = exp.expense_date
+        if (!daily[d]) daily[d] = { date:d, sales:0, labor:0 }
+        daily[d].labor += safeNum(exp.amount,0)
+      })
+
+      const dailyLaborVsSales = Object.values(daily)
+        .sort((a,b)=>String(b.date||'').localeCompare(String(a.date||'')))
+        .slice(0, 10)
+        .map(d => ({ ...d, laborPct:d.sales>0 ? (d.labor / d.sales) * 100 : 0 }))
+
+      setBusinessKpis({
+        month,
+        monthStart,
+        monthEnd,
+        totalSales,
+        walkinMessengerSales,
+        resellerSales,
+        payrollGross,
+        payrollNet,
+        payrollExpensePosted,
+        laborToSalesPct: totalSales > 0 ? (payrollGross / totalSales) * 100 : 0,
+        absentCount,
+        lateCount,
+        undertimeCount,
+        timedInCount,
+        departmentPerformance: Object.values(deptMap).sort((a,b)=>b.total-a.total).slice(0, 8),
+        dailyLaborVsSales
+      })
+    } catch(e) {
+      console.warn('loadBusinessKpis:', e)
+      setBusinessKpis(null)
+    } finally {
+      setBusinessKpisLoading(false)
+    }
+  }
+
   async function loadTimedInEmployees() {
     const { data } = await supabase.from('attendance_logs')
       .select('*, employees(full_name, position, department, profile_photo_url)')
@@ -5714,8 +5968,15 @@ This will create one approved expense record using the total payroll earnings.`)
   }
 
   async function computePayroll() {
-    const { data:existing } = await supabase.from('payroll_records').select('id,employee_acknowledgement').eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd)
+    const { data:existing } = await supabase.from('payroll_records').select('id,employee_acknowledgement,payroll_approved,approved_at,approved_by').eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd)
     if (existing&&existing.length>0) {
+      const approvedRecord = existing.find(r => r.payroll_approved === true)
+      if (approvedRecord) {
+        showToast('🔒 This payroll period is locked because it is already approved/released. Create a correction adjustment instead of recomputing it.', 'red')
+        await logAudit('PAYROLL RECOMPUTE BLOCKED', getAdminName(), 'ALL', `${payrollStart} to ${payrollEnd} is already approved/released`)
+        return
+      }
+
       // Check if locked (all agreed or any agreed)
       const hasAgreed = existing.some(r=>r.employee_acknowledgement==='agreed')
       const allDone = existing.every(r=>r.employee_acknowledgement==='agreed'||r.employee_acknowledgement==='disputed')
@@ -5953,7 +6214,7 @@ This will create one approved expense record using the total payroll earnings.`)
         tabs:[{key:'dashboard',label:'Overview'}],
         roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
       { key:'hr', icon:'👥', label:'HR & Attendance',
-        tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
+        tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'passkeySecurity',label:'Security'},{key:'auditTrail',label:'Audit Trail'}],
         roles:['owner','manager','hr','supervisor','asst_supervisor'] },
       { key:'payroll', icon:'💰', label:'Payroll',
         tabs:[{key:'payroll',label:'Payroll'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'announcements',label:'Announcements'},{key:'leaveRequests',label:'Leave 🔔'},{key:'cashRequests',label:'Cash Adv 🔔'},{key:'disputes',label:'Disputes 🔔'},{key:'contracts',label:'Contracts'}],
@@ -5988,8 +6249,9 @@ This will create one approved expense record using the total payroll earnings.`)
       if(key==='overtime') loadTimeAdjRequests()
       if(key==='holidays') loadHolidays()
       if(key==='announcements') loadAnnouncements()
-      if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }
+      if(key==='dashboard') { loadDashboard(); loadDashboardCharts(); loadBusinessKpis() }
       if(key==='auditTrail') loadAuditTrail()
+      if(key==='passkeySecurity') { loadEmployees(); if (passkeyAdminEmployeeId) loadEmployeePasskeyStatus(passkeyAdminEmployeeId) }
       if(key==='payrollHistory') loadPayrollHistory()
       if(key==='adjustment') loadSILCashouts()
       if(key==='remittance') loadPayrollHistory()
@@ -6234,9 +6496,102 @@ This will create one approved expense record using the total payroll earnings.`)
                     ))}
                   </div>
                 )}
+                {businessKpisLoading && (
+                  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', marginBottom:'18px', color:'#888', fontSize:'13px' }}>
+                    ⏳ Loading business performance dashboard...
+                  </div>
+                )}
+
+                {businessKpis && (
+                  <div style={{ background:'white', border:'2px solid #1a1a2e', borderRadius:'16px', padding:'18px', marginBottom:'20px', boxShadow:'0 2px 10px rgba(0,0,0,0.05)' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                      <div>
+                        <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'16px' }}>📊 Business Performance Control Panel</h3>
+                        <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Current month: {businessKpis.monthStart} to {businessKpis.monthEnd}. Payroll uses gross earnings so SIL and unused SIL conversion are included.</p>
+                      </div>
+                      <button style={{ ...btnBlack, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={loadBusinessKpis}>🔄 REFRESH KPI</button>
+                    </div>
+
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+                      {[
+                        ['Total Sales', php(businessKpis.totalSales), '#2d8a4e'],
+                        ['Gross Payroll Cost', php(businessKpis.payrollGross), '#ca1b1b'],
+                        ['Payroll-to-Sales %', `${businessKpis.laborToSalesPct.toFixed(1)}%`, businessKpis.laborToSalesPct > 30 ? '#ca1b1b' : '#2d8a4e'],
+                        ['Payroll Posted to Expenses', php(businessKpis.payrollExpensePosted), '#f5a623'],
+                        ['Absences', businessKpis.absentCount, '#ca1b1b'],
+                        ['Late Records', businessKpis.lateCount, '#f5a623'],
+                        ['Undertime Records', businessKpis.undertimeCount, '#8b5cf6'],
+                        ['Attendance Logs', businessKpis.timedInCount, '#4a90d9'],
+                      ].map(([label,value,color])=>(
+                        <div key={label} style={{ background:'#fafafa', border:`1px solid ${color}`, borderRadius:'12px', padding:'12px' }}>
+                          <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>{label}</p>
+                          <p style={{ color, fontWeight:'bold', fontSize:'18px', margin:0 }}>{value}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'12px' }}>
+                      <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:'#fff' }}>
+                        <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>🏭 Department Attendance Performance</p>
+                        {businessKpis.departmentPerformance.length === 0 ? (
+                          <p style={{ color:'#aaa', fontSize:'12px', margin:0 }}>No department attendance data yet this month.</p>
+                        ) : (
+                          <div style={{ overflowX:'auto' }}>
+                            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+                              <thead>
+                                <tr style={{ background:'#f8f8f8' }}>
+                                  {['Department','Present','Absent','Late','UT'].map(h=><th key={h} style={{ textAlign:'left', padding:'7px', borderBottom:'1px solid #eee', color:'#555' }}>{h}</th>)}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {businessKpis.departmentPerformance.map(row=>(
+                                  <tr key={row.department}>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', fontWeight:'bold' }}>{row.department}</td>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', color:'#2d8a4e' }}>{row.present}</td>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', color:'#ca1b1b' }}>{row.absent}</td>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', color:'#f5a623' }}>{row.late}</td>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0' }}>{row.undertime}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:'#fff' }}>
+                        <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>💼 Daily Sales vs Payroll Expense</p>
+                        {businessKpis.dailyLaborVsSales.length === 0 ? (
+                          <p style={{ color:'#aaa', fontSize:'12px', margin:0 }}>No posted payroll expense/sales comparison yet.</p>
+                        ) : (
+                          <div style={{ overflowX:'auto' }}>
+                            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+                              <thead>
+                                <tr style={{ background:'#f8f8f8' }}>
+                                  {['Date','Sales','Payroll Exp.','%'].map(h=><th key={h} style={{ textAlign:'left', padding:'7px', borderBottom:'1px solid #eee', color:'#555' }}>{h}</th>)}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {businessKpis.dailyLaborVsSales.map(row=>(
+                                  <tr key={row.date}>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', fontWeight:'bold' }}>{row.date}</td>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', color:'#2d8a4e' }}>{php(row.sales)}</td>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', color:'#ca1b1b' }}>{php(row.labor)}</td>
+                                    <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', color:row.laborPct>30?'#ca1b1b':'#2d8a4e', fontWeight:'bold' }}>{row.laborPct.toFixed(1)}%</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div>
                   <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'12px' }}>
-                    <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
+                    <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadBusinessKpis(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
                     {(adminRole==='owner'||adminRole==='hr') && (
                       <button style={{ ...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={autoApplySIL}>🌿 AUTO-APPLY SIL</button>
                     )}
@@ -6372,6 +6727,90 @@ This will create one approved expense record using the total payroll earnings.`)
                       <p style={{ margin:'2px 0' }}>📍 Lat: {storeLocation.lat} | Lng: {storeLocation.lng}</p>
                       <p style={{ margin:'2px 0' }}>📏 Radius: {storeLocation.radius} meters</p>
                       <p style={{ margin:'8px 0 0', color:'#aaa', fontSize:'11px' }}>💡 Tip: Use Google Maps to find exact coordinates. Right-click your store → Copy coordinates.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* SECURITY / PASSKEY ADMIN */}
+            {activeTab==='passkeySecurity' && (
+              <div>
+                <h2 style={h2s}>🔐 Security — Fingerprint / Passkey Control</h2>
+                <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+                  <p style={{ color:'#ca1b1b', fontWeight:'bold', margin:'0 0 6px', fontSize:'14px' }}>Admin Reset Fingerprint Login</p>
+                  <p style={{ color:'#666', fontSize:'13px', margin:0, lineHeight:1.5 }}>
+                    Use this when an employee changes phone, loses device, registers the wrong device, resigns, or cannot access fingerprint login. This does not delete Employee ID + PIN login.
+                  </p>
+                </div>
+
+                <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                  <label style={lblS}>Select Employee</label>
+                  <EmployeeSelect
+                    value={passkeyAdminEmployeeId}
+                    onChange={async val => {
+                      setPasskeyAdminEmployeeId(val)
+                      await loadEmployeePasskeyStatus(val)
+                    }}
+                    employees={employees}
+                  />
+                  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap' }}>
+                    <button style={{ ...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>loadEmployeePasskeyStatus(passkeyAdminEmployeeId)} disabled={!passkeyAdminEmployeeId || passkeyAdminLoading}>
+                      {passkeyAdminLoading ? '⏳ CHECKING...' : '🔎 CHECK FINGERPRINT STATUS'}
+                    </button>
+                    <button style={{ ...btnRed, width:'auto', padding:'10px 18px', marginTop:0, opacity:!passkeyAdminEmployeeId?0.5:1 }} onClick={()=>resetEmployeePasskeys(passkeyAdminEmployeeId)} disabled={!passkeyAdminEmployeeId || passkeyAdminLoading}>
+                      🔐 RESET EMPLOYEE FINGERPRINT LOGIN
+                    </button>
+                  </div>
+                </div>
+
+                {passkeyAdminStatus && (
+                  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', flexWrap:'wrap', alignItems:'center', marginBottom:'12px' }}>
+                      <div>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'15px', margin:'0 0 2px' }}>{passkeyAdminStatus.employee?.full_name || 'Selected Employee'}</p>
+                        <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{passkeyAdminStatus.employee?.employee_code || ''} · {passkeyAdminStatus.employee?.position || ''}</p>
+                      </div>
+                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                        <Badge label={`Active: ${passkeyAdminStatus.active}`} color={passkeyAdminStatus.active>0?'green':'gray'} />
+                        <Badge label={`Inactive: ${passkeyAdminStatus.inactive}`} color="gray" />
+                        <Badge label={`Total: ${passkeyAdminStatus.total}`} color="blue" />
+                      </div>
+                    </div>
+
+                    {passkeyAdminStatus.passkeys.length === 0 ? (
+                      <div style={{ background:'#f8f8f8', borderRadius:'10px', padding:'16px', color:'#888', fontSize:'13px' }}>
+                        No fingerprint/passkey has been registered for this employee yet.
+                      </div>
+                    ) : (
+                      <div style={{ overflowX:'auto' }}>
+                        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+                          <thead>
+                            <tr style={{ background:'#ca1b1b', color:'white' }}>
+                              {['Status','Origin','Device Type','Created','Last Used'].map(h=><th key={h} style={{ padding:'8px', textAlign:'left' }}>{h}</th>)}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {passkeyAdminStatus.passkeys.map(pk=>(
+                              <tr key={pk.id} style={{ background:pk.is_active!==false?'#f0fff0':'#fafafa' }}>
+                                <td style={{ padding:'8px', borderBottom:'1px solid #eee' }}>
+                                  <Badge label={pk.is_active!==false?'ACTIVE':'DISABLED'} color={pk.is_active!==false?'green':'gray'} />
+                                </td>
+                                <td style={{ padding:'8px', borderBottom:'1px solid #eee', maxWidth:'260px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{pk.origin || '—'}</td>
+                                <td style={{ padding:'8px', borderBottom:'1px solid #eee' }}>{pk.device_type || 'passkey'}</td>
+                                <td style={{ padding:'8px', borderBottom:'1px solid #eee' }}>{pk.created_at ? new Date(pk.created_at).toLocaleString() : '—'}</td>
+                                <td style={{ padding:'8px', borderBottom:'1px solid #eee' }}>{pk.last_used_at ? new Date(pk.last_used_at).toLocaleString() : 'Never'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', borderRadius:'10px', padding:'12px', marginTop:'14px' }}>
+                      <p style={{ color:'#ca1b1b', fontSize:'12px', margin:0, lineHeight:1.5 }}>
+                        ⚠️ After reset, the employee must login using Employee ID + PIN and set up fingerprint/passkey again on the correct device.
+                      </p>
                     </div>
                   </div>
                 )}
@@ -6802,15 +7241,22 @@ This will create one approved expense record using the total payroll earnings.`)
                           <p style={{ fontWeight:'bold', fontSize:'14px', margin:0, color:isCompanyDevice?'#4ade80':'#f87171' }}>{isCompanyDevice?'✅ Registered as Company Device':'❌ Not a Company Device'}</p>
                         </div>
                         {isCompanyDevice && (
-                          <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'8px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ localStorage.removeItem('roma_company_device'); setIsCompanyDevice(false); showToast('✅ Device unregistered.') }}>🔓 Unregister This Device</button>
+                          <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'8px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={async()=>{ 
+                            if (!window.confirm('Unregister this browser/device as the company production tablet?')) return
+                            localStorage.removeItem('roma_company_device')
+                            setIsCompanyDevice(false)
+                            await logAudit('COMPANY DEVICE UNREGISTERED', getAdminName(), 'Company Device', `Origin: ${window.location.origin}`)
+                            showToast('✅ Device unregistered.')
+                          }}>🔓 Unregister This Device</button>
                         )}
                       </div>
                     </div>
                     {!isCompanyDevice && (
-                      <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', letterSpacing:'0.5px' }} onClick={()=>{
+                      <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', letterSpacing:'0.5px' }} onClick={async()=>{
                         if (window.confirm('Register THIS device as the company production tablet?\n\nOnly do this on the physical tablet in your production area.')) {
                           localStorage.setItem('roma_company_device','true')
                           setIsCompanyDevice(true)
+                          await logAudit('COMPANY DEVICE REGISTERED', getAdminName(), 'Company Device', `Origin: ${window.location.origin} | User agent: ${navigator.userAgent.slice(0,120)}`)
                           showToast('✅ This device is now the company tablet! Production staff can Time In/Out here.')
                         }
                       }}>📱 REGISTER THIS DEVICE AS COMPANY TABLET</button>
