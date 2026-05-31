@@ -758,6 +758,13 @@ export default function App() {
   const [financialMonth, setFinancialMonth] = useState(today.slice(0,7))
   const [financialData, setFinancialData] = useState(null)
   const [financialLoading, setFinancialLoading] = useState(false)
+  // Foundation Control Center
+  const [foundationMonth, setFoundationMonth] = useState(today.slice(0,7))
+  const [foundationData, setFoundationData] = useState(null)
+  const [foundationLoading, setFoundationLoading] = useState(false)
+  const [foundationAutoRefresh, setFoundationAutoRefresh] = useState(true)
+  const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)
+  const FOUNDATION_REFRESH_SECONDS = 60
   const EXPENSE_CATEGORIES = ['Payroll Expense','Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Miscellaneous']
   const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
   const SALES_CHANNELS = [{ value:'walkin', label:'🏪 Walk-in' }, { value:'messenger', label:'💬 Messenger' }]
@@ -859,6 +866,21 @@ export default function App() {
   useEffect(() => {
     setPasskeySupported(browserSupportsPasskeys())
   }, [])
+
+  useEffect(() => {
+    const canViewFoundation = activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')
+    if (!canViewFoundation || !foundationAutoRefresh) return
+
+    if (!foundationData && !foundationLoading) {
+      loadFoundationData(foundationMonth, { silent:true, showLoading:true })
+    }
+
+    const timer = window.setInterval(() => {
+      loadFoundationData(foundationMonth, { silent:true, showLoading:false, auto:true })
+    }, FOUNDATION_REFRESH_SECONDS * 1000)
+
+    return () => window.clearInterval(timer)
+  }, [activeTab, adminRole, foundationMonth, foundationAutoRefresh])
 
   useEffect(() => {
     if (!employee?.id) return
@@ -2725,6 +2747,7 @@ export default function App() {
     setPaymentAmount(p=>({...p,[invoice.id]:''}))
     setPaymentMethod(p=>({...p,[invoice.id]:'Cash'}))
     loadDeliveryInvoices()
+    refreshFoundationAfterDataChange('reseller-payment-recorded')
   }
   function printDeliveryInvoice(invoice) {
     const items = invoice.delivery_invoice_items || []
@@ -2872,6 +2895,7 @@ export default function App() {
       showToast(`✅ Sales for ${salesDate} saved! Total: ${php(totalRevenue)}`)
       setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setSalesNotes('')
       loadDailySales()
+      refreshFoundationAfterDataChange('daily-sales-saved')
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingSales(false)
   }
@@ -2915,7 +2939,7 @@ export default function App() {
     showToast(variance===0?'✅ Deposit recorded — fully balanced!':Math.abs(variance)<50?`✅ Deposit recorded — minor variance: ${php(variance)}`:`⚠️ Deposit recorded — variance: ${php(variance)}`)
     setShowDepositForm(false)
     setDepositForm({ deposit_date:today, deposit_slip_number:'', bank_name:'BDO', amount:'', notes:'' })
-    loadBankDeposits(); loadCashReconciliations(); setSavingDeposit(false)
+    loadBankDeposits(); loadCashReconciliations(); refreshFoundationAfterDataChange('bank-deposit-saved'); setSavingDeposit(false)
   }
   function checkTuesdayDepositReminder() {
     const dayOfWeek = new Date().getDay() // 0=Sun, 2=Tue
@@ -3095,7 +3119,7 @@ export default function App() {
       } else { showToast(`✅ Returns saved! Credit: ${php(totalCredit)}`) }
       await logAudit('DRIVER RETURNS', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${validItems.length} variants, credit: ${php(totalCredit)}`)
       setShowDriverReturnForm(null); setDriverReturnItems([])
-      loadDeliveryInvoices()
+      loadDeliveryInvoices(); refreshFoundationAfterDataChange('driver-return-saved')
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingDriverReturn(false)
   }
@@ -3232,6 +3256,7 @@ export default function App() {
     setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
     setPaymentAmount(p=>({...p,[inv.id]:''}))
     loadDeliveryInvoices()
+    refreshFoundationAfterDataChange('reseller-payment-recorded')
   }
 
   async function loadCashReconciliations() {
@@ -3255,7 +3280,7 @@ export default function App() {
     if (error) { showToast('❌ Failed: '+error.message,'red'); setSavingReconciliation(false); return }
     await logAudit('CASH RECONCILIATION', adminRole, 'Finance', `${reconciliationDate} — Expected: ${php(expected)}, Actual: ${php(actual)}, Variance: ${php(variance)}`)
     showToast(variance===0?'✅ Balanced! No variance.':variance>0?`✅ Saved — Overage: ${php(Math.abs(variance))}`:`⚠️ Saved — Shortage: ${php(Math.abs(variance))}`)
-    setActualCash(''); setReconciliationNotes(''); loadCashReconciliations()
+    setActualCash(''); setReconciliationNotes(''); loadCashReconciliations(); refreshFoundationAfterDataChange('cash-reconciliation-saved')
     setSavingReconciliation(false)
   }
 
@@ -3319,6 +3344,7 @@ export default function App() {
     setPaymentAmount(p=>({...p,[inv.id]:''}))
     setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
     loadDeliveryInvoices()
+    refreshFoundationAfterDataChange('invoice-payment-recorded')
     // Check suspicious pattern
     setTimeout(()=>checkSuspiciousPatterns(),1000)
   }
@@ -3490,7 +3516,7 @@ export default function App() {
       await crossCheckReturns({...invoice, total_amount:newTotal})
       showToast(`✅ Returns saved! ${totalReturned} pcs. Credit: ${php(totalCredit)} deducted.`)
       setShowReturnForm(p=>({...p,[invoice.id]:false}))
-      loadDeliveryInvoices()
+      loadDeliveryInvoices(); refreshFoundationAfterDataChange('returns-saved')
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSavingReturn(false)
   }
@@ -3717,21 +3743,21 @@ export default function App() {
     if (error) { showToast('❌ Failed: '+error.message,'red'); setSavingExpense(false); return }
     showToast(status==='pending'?`✅ Expense submitted — awaiting Owner approval (₱${amt} ≥ ₱500)`:`✅ Expense of ${php(amt)} recorded!`)
     setExpenseForm({ expense_date:today, category:'Transportation/Fuel', amount:'', description:'' })
-    loadDailyExpenses(); setSavingExpense(false)
+    loadDailyExpenses(); refreshFoundationAfterDataChange('expense-saved'); setSavingExpense(false)
   }
   async function approveExpense(id) {
     await supabase.from('daily_expenses').update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString() }).eq('id', id)
-    showToast('✅ Expense approved!'); loadDailyExpenses()
+    showToast('✅ Expense approved!'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-approved')
   }
   async function rejectExpense(id) {
     if (!rejectExpenseReason.trim()) { showToast('❌ Please enter a rejection reason.','red'); return }
     await supabase.from('daily_expenses').update({ status:'rejected', approved_by:adminRole, approved_at:new Date().toISOString(), rejection_reason:rejectExpenseReason }).eq('id', id)
-    showToast('✅ Expense rejected.'); setRejectingExpenseId(null); setRejectExpenseReason(''); loadDailyExpenses()
+    showToast('✅ Expense rejected.'); setRejectingExpenseId(null); setRejectExpenseReason(''); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-rejected')
   }
   async function deleteExpense(id) {
     if (!window.confirm('Delete this expense?')) return
     await supabase.from('daily_expenses').delete().eq('id', id)
-    showToast('✅ Expense deleted.'); loadDailyExpenses()
+    showToast('✅ Expense deleted.'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-deleted')
   }
   // ── Financial Dashboard ───────────────────────────────────────────────────
   async function loadFinancialData() {
@@ -4541,6 +4567,7 @@ export default function App() {
     showToast(messages.join(' '), expenseResult.error ? 'red' : 'green')
     loadSILCashouts({ skipAuto:true })
     loadDailyExpenses()
+    refreshFoundationAfterDataChange('payroll-approved')
   }
 
   function buildPayrollExpenseTag(start, end) {
@@ -4640,6 +4667,7 @@ export default function App() {
     if (!options.silent) showToast(`✅ Payroll expense posted: ${php(amount)}`)
     loadDailyExpenses()
     if (financialMonth === String(end).slice(0,7)) loadFinancialData()
+    refreshFoundationAfterDataChange('payroll-expense-posted')
     return { posted:true, amount, record:data, summary }
   }
 
@@ -4685,6 +4713,1794 @@ This will create one approved expense record using the total payroll earnings.`)
     if (result.existing) showToast('Payroll expense is already posted for this period.', 'red')
   }
 
+
+
+  // ── Foundation Control Center ─────────────────────────────────────────────
+  function getMonthRange(monthValue) {
+    const [year, month] = String(monthValue || today.slice(0,7)).split('-').map(Number)
+    const start = `${year}-${String(month).padStart(2,'0')}-01`
+    const end = new Date(year, month, 0).toISOString().slice(0,10)
+    return { start, end, year, month }
+  }
+
+  function daysBetweenLocal(start, end = today) {
+    const s = parseLocalDate(start)
+    const e = parseLocalDate(end)
+    if (!s || !e) return 0
+    return Math.max(0, Math.floor((e - s) / (1000 * 60 * 60 * 24)))
+  }
+
+  async function foundationSelect(table, select = '*', buildQuery) {
+    try {
+      let query = supabase.from(table).select(select)
+      if (typeof buildQuery === 'function') query = buildQuery(query)
+      const { data, error } = await query
+      if (error) return { data:[], error:`${table}: ${error.message}` }
+      return { data:data || [], error:null }
+    } catch(e) {
+      return { data:[], error:`${table}: ${e.message}` }
+    }
+  }
+
+  function groupSum(rows, keyFn, valueFn) {
+    const map = {}
+    ;(rows || []).forEach(row => {
+      const key = keyFn(row) || 'Unassigned'
+      if (!map[key]) map[key] = 0
+      map[key] += safeNum(valueFn(row), 0)
+    })
+    return Object.entries(map).map(([name, total]) => ({ name, total })).sort((a,b)=>b.total-a.total)
+  }
+
+  function downloadTextFile(filename, content, mime = 'text/plain') {
+    const blob = new Blob([content], { type:mime })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  function rowsToCSV(rows) {
+    if (!rows || rows.length === 0) return ''
+    const headers = Array.from(rows.reduce((set, row)=>{ Object.keys(row || {}).forEach(k=>set.add(k)); return set }, new Set()))
+    const escape = value => `"${String(value ?? '').replace(/"/g, '""')}"`
+    return [headers.join(','), ...rows.map(row => headers.map(h => escape(row[h])).join(','))].join('\n')
+  }
+
+  function getBusinessHealthColor(score) {
+    if (score >= 80) return '#2d8a4e'
+    if (score >= 60) return '#f5a623'
+    return '#ca1b1b'
+  }
+
+  function getRecentFoundationMonths(monthValue, count = 6) {
+    const [year, month] = String(monthValue || today.slice(0,7)).split('-').map(Number)
+    const months = []
+    for (let i = count - 1; i >= 0; i--) {
+      const d = new Date(year, (month || 1) - 1 - i, 1)
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      months.push({
+        key,
+        label: d.toLocaleString('en-PH', { month:'short', year:'2-digit' }),
+        ...getMonthRange(key)
+      })
+    }
+    return months
+  }
+
+  function getSalaryRatioStatus(ratio, sales = 0, payroll = 0) {
+    if (safeNum(payroll, 0) <= 0) {
+      return { label:'NO PAYROLL DATA', color:'#777', level:'none', message:'Release or post payroll to calculate salary ratio.' }
+    }
+    if (safeNum(sales, 0) <= 0) {
+      return { label:'NO SALES DATA', color:'#ca1b1b', level:'alert', message:'Payroll exists but sales are missing for this period.' }
+    }
+    if (ratio <= 20) return { label:'GOOD', color:'#2d8a4e', level:'good', message:'Payroll is controlled against sales.' }
+    if (ratio <= 25) return { label:'HEALTHY', color:'#2d8a4e', level:'good', message:'Payroll is still inside the target range.' }
+    if (ratio <= 30) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Payroll is slightly high. Review scheduling and overtime.' }
+    return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Payroll is eating too much of sales. Immediate review is needed.' }
+  }
+
+  function getFoodCostStatus(ratio, sales = 0, cogs = 0) {
+    if (safeNum(cogs, 0) <= 0) {
+      return { label:'NO COGS DATA', color:'#777', level:'none', message:'Encode production costs or production logs to calculate food cost accurately.' }
+    }
+    if (safeNum(sales, 0) <= 0) {
+      return { label:'NO SALES DATA', color:'#ca1b1b', level:'alert', message:'COGS exists but sales are missing for this period.' }
+    }
+    if (ratio < 25) return { label:'LOW / CHECK DATA', color:'#4a90d9', level:'check', message:'Food cost is unusually low. Confirm that all production costs were encoded.' }
+    if (ratio <= 35) return { label:'GOOD', color:'#2d8a4e', level:'good', message:'Food cost is controlled and leaves room for payroll and profit.' }
+    if (ratio <= 40) return { label:'HEALTHY', color:'#2d8a4e', level:'good', message:'Food cost is inside the upper healthy range.' }
+    if (ratio <= 50) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Food cost is high. Check ingredient prices, wastage, yield, and selling prices.' }
+    return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Food cost is too high and may destroy profitability. Immediate action is needed.' }
+  }
+
+  function getReturnsStatus(ratio, qty = 0, amount = 0, grossSalesValue = 0) {
+    if (safeNum(qty, 0) <= 0 && safeNum(amount, 0) <= 0) {
+      return { label:'NO RETURNS', color:'#2d8a4e', level:'good', message:'No returns or unsold donut loss recorded for this period.' }
+    }
+    if (safeNum(grossSalesValue, 0) <= 0) {
+      return { label:'CHECK SALES DATA', color:'#f5a623', level:'watch', message:'Returns exist, but gross sales are missing. Confirm sales and invoice encoding.' }
+    }
+    if (ratio <= 3) return { label:'EXCELLENT', color:'#2d8a4e', level:'good', message:'Returns are very controlled. Maintain current forecasting and ordering discipline.' }
+    if (ratio <= 5) return { label:'GOOD', color:'#2d8a4e', level:'good', message:'Returns are within the healthy control target.' }
+    if (ratio <= 10) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Returns are above ideal. Review forecasting, delivery quantities, and slow-moving outlets.' }
+    return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Returns are too high. Immediate action is needed to protect cash flow and profit.' }
+  }
+
+
+
+  function getReceivableStatus(totalARValue, overdueValue, salesValue) {
+    const ar = safeNum(totalARValue, 0)
+    const overdue = safeNum(overdueValue, 0)
+    const sales = safeNum(salesValue, 0)
+    if (ar <= 0) return { label:'CLEAR', color:'#2d8a4e', level:'good', message:'No unpaid reseller receivables detected for this period.' }
+    const arPct = sales > 0 ? (ar / sales) * 100 : 0
+    const overduePct = ar > 0 ? (overdue / ar) * 100 : 0
+    if (arPct <= 10 && overduePct <= 20) return { label:'GOOD', color:'#2d8a4e', level:'good', message:'Receivables are controlled. Continue regular collection discipline.' }
+    if (arPct <= 20 && overduePct <= 40) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Receivables are rising. Follow up accounts before they become collection problems.' }
+    return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Receivables are high. Prioritize collections before releasing more credit.' }
+  }
+
+  function getCashFlowStatus(netCash, cashInValue, cashOutValue) {
+    const net = safeNum(netCash, 0)
+    const inflow = safeNum(cashInValue, 0)
+    const outflow = safeNum(cashOutValue, 0)
+    if (inflow <= 0 && outflow <= 0) return { label:'NO CASH DATA', color:'#777', level:'none', message:'Encode sales, collections, expenses, and deposits to read cash flow.' }
+    if (net > 0 && inflow >= outflow * 1.1) return { label:'HEALTHY', color:'#2d8a4e', level:'good', message:'Cash inflow is stronger than outflow for this period.' }
+    if (net >= 0) return { label:'STABLE', color:'#2d8a4e', level:'good', message:'Cash flow is positive, but keep monitoring expenses and receivables.' }
+    if (Math.abs(net) <= outflow * 0.15) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Cash flow is slightly negative. Review collections and spending.' }
+    return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Cash outflow is materially higher than inflow. Immediate cash control is needed.' }
+  }
+
+  function getPerformanceStatus(score) {
+    const s = safeNum(score, 0)
+    if (s >= 85) return { label:'EXCELLENT', color:'#2d8a4e' }
+    if (s >= 70) return { label:'GOOD', color:'#2d8a4e' }
+    if (s >= 50) return { label:'WATCH', color:'#f5a623' }
+    return { label:'CRITICAL', color:'#ca1b1b' }
+  }
+
+
+  function getInventoryRiskStatus(current, minimum) {
+    const cur = safeNum(current, 0)
+    const min = safeNum(minimum, 0)
+    if (min <= 0) return { label:'NO MINIMUM SET', color:'#777', level:'none', message:'Set minimum stock to activate reorder control.' }
+    if (cur <= 0) return { label:'STOCKOUT', color:'#ca1b1b', level:'critical', message:'Item is out of stock. Reorder immediately.' }
+    if (cur <= min * 0.50) return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Stock is critically below minimum. Reorder immediately.' }
+    if (cur <= min) return { label:'REORDER NOW', color:'#f5a623', level:'watch', message:'Stock reached reorder point.' }
+    if (cur <= min * 1.50) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Stock is close to reorder point.' }
+    return { label:'HEALTHY', color:'#2d8a4e', level:'good', message:'Stock is above reorder level.' }
+  }
+
+  function getYieldStatus(yieldPctValue, expectedValue = 0, actualValue = 0) {
+    const expected = safeNum(expectedValue, 0)
+    const actual = safeNum(actualValue, 0)
+    const pct = safeNum(yieldPctValue, 0)
+    if (expected <= 0 && actual <= 0) return { label:'NO PRODUCTION DATA', color:'#777', level:'none', message:'Encode production reports or production logs to monitor yield.' }
+    if (expected <= 0) return { label:'NO STANDARD YET', color:'#4a90d9', level:'check', message:'Actual output exists, but expected/standard output is not yet encoded.' }
+    if (pct >= 98) return { label:'EXCELLENT', color:'#2d8a4e', level:'good', message:'Production yield is very close to expected output.' }
+    if (pct >= 95) return { label:'GOOD', color:'#2d8a4e', level:'good', message:'Production yield is within the healthy control range.' }
+    if (pct >= 90) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Yield is below target. Review rejects, proofing, scaling, frying, and handling losses.' }
+    return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Yield loss is high. Immediate production audit is needed.' }
+  }
+
+  function getRouteStatus(invoiceStatus, returnRate = 0, balance = 0) {
+    const status = String(invoiceStatus || '').toLowerCase()
+    if (balance > 0 && (status.includes('unpaid') || status.includes('partial'))) return { label:'DELIVERED / UNCOLLECTED', color:'#f5a623', level:'watch' }
+    if (safeNum(returnRate, 0) > 10) return { label:'HIGH RETURNS', color:'#ca1b1b', level:'critical' }
+    if (safeNum(returnRate, 0) > 5) return { label:'RETURN WATCH', color:'#f5a623', level:'watch' }
+    if (status.includes('paid') || status.includes('delivered') || status.includes('partial')) return { label:'COMPLETED', color:'#2d8a4e', level:'good' }
+    return { label:'PENDING / CHECK', color:'#777', level:'none' }
+  }
+  function buildFoundationExportRows(data) {
+    if (!data) return []
+    return [
+      { metric:'Gross Sales', value:data.grossSales },
+      { metric:'Less Returns', value:data.salesReturns },
+      { metric:'Net Sales', value:data.netSales ?? data.totalSales },
+      { metric:'Total COGS', value:data.totalCOGS },
+      { metric:'Gross Profit', value:data.grossProfit },
+      { metric:'Non-Payroll Operating Expenses', value:data.nonPayrollExpenses },
+      { metric:'Payroll Expense', value:data.payrollExpense },
+      { metric:'Total Operating Expenses', value:data.totalOperatingExpenses ?? data.totalExpenses },
+      { metric:'Net Profit', value:data.netProfit },
+      { metric:'Salary-to-Sales Ratio %', value:data.salaryToSalesRatio },
+      { metric:'Salary Ratio Status', value:data.salaryRatio?.status || '' },
+      { metric:'Payroll Target at 20% Sales', value:data.salaryRatio?.maxPayrollAt20 || 0 },
+      { metric:'Payroll Target at 25% Sales', value:data.salaryRatio?.maxPayrollAt25 || 0 },
+      { metric:'Payroll Excess vs 25% Target', value:data.salaryRatio?.excessPayrollVs25 || 0 },
+      { metric:'Additional Sales Needed to Reach 25%', value:data.salaryRatio?.additionalSalesNeededAt25 || 0 },
+      { metric:'Food Cost %', value:data.foodCostPct },
+      { metric:'Food Cost Status', value:data.foodCost?.status || '' },
+      { metric:'COGS Source', value:data.foodCost?.source || '' },
+      { metric:'Max COGS at 40% Sales', value:data.foodCost?.maxCOGSAt40 || 0 },
+      { metric:'COGS Gap vs 40% Target', value:data.foodCost?.excessCOGSVs40 || 0 },
+      { metric:'Additional Sales Needed at 40% Food Cost', value:data.foodCost?.additionalSalesNeededAt40 || 0 },
+      { metric:'Cost Per Produced Piece', value:data.foodCost?.costPerPiece || 0 },
+      { metric:'Wastage Impact % of COGS', value:data.foodCost?.wastageImpactPct || 0 },
+      { metric:'Operating Expense Ratio %', value:data.operatingExpenseRatio },
+      { metric:'Total Expense Ratio %', value:data.totalExpenseRatio },
+      { metric:'Cash In', value:data.cashIn },
+      { metric:'Cash Out', value:data.cashOut },
+      { metric:'Net Cash Flow', value:data.netCashFlow },
+      { metric:'Accounts Receivable', value:data.totalAR },
+      { metric:'AR Overdue', value:data.overdueAR || 0 },
+      { metric:'AR Critical 31+ Days', value:data.criticalAR || 0 },
+      { metric:'AR Status', value:data.receivableStatus?.label || '' },
+      { metric:'Collection Rate %', value:data.receivableSummary?.collectionRate || 0 },
+      { metric:'Cash Flow Status', value:data.cashFlow?.status || '' },
+      { metric:'Deposit Coverage %', value:data.cashFlow?.depositCoveragePct || 0 },
+      { metric:'Missing Closing Days', value:data.missingClosingDays || 0 },
+      { metric:'Suggested Production Qty', value:data.productionForecast?.suggestedProductionQty || 0 },
+      { metric:'Forecast Basis Days', value:data.productionForecast?.basisDays || 0 },
+      { metric:'Returns Amount', value:data.totalReturnsAmount },
+      { metric:'Returns Qty', value:data.totalReturnsQty },
+      { metric:'Returns Rate %', value:data.returnsRate },
+      { metric:'Returns Status', value:data.returnsAnalysis?.status || '' },
+      { metric:'Delivered Qty', value:data.returnsAnalysis?.deliveredQty || 0 },
+      { metric:'Return Qty Rate %', value:data.returnsAnalysis?.qtyRate || 0 },
+      { metric:'Avoidable Loss vs 5% Target', value:data.returnsAnalysis?.avoidableLossVs5 || 0 },
+      { metric:'Low Stock Items', value:data.lowStockItems.length },
+      { metric:'Critical Stock Items', value:data.inventoryControl?.criticalItems || 0 },
+      { metric:'Suggested Reorder Value', value:data.inventoryControl?.suggestedReorderValue || 0 },
+      { metric:'Delivery Completion %', value:data.deliveryRoute?.completionPct || 0 },
+      { metric:'Pending Delivery Check', value:data.deliveryRoute?.pendingCount || 0 },
+      { metric:'Average Batch Cost Per Piece', value:data.batchCosting?.avgCostPerPiece || 0 },
+      { metric:'Batch Cost Status', value:data.batchCosting?.status || '' },
+      { metric:'Actual vs Standard Variance Qty', value:data.actualVsStandard?.totalVarianceQty || 0 },
+      { metric:'Actual vs Standard Variance Value', value:data.actualVsStandard?.varianceValue || 0 },
+      { metric:'Production Yield %', value:data.yieldMonitoring?.yieldPct || 0 },
+      { metric:'Yield Status', value:data.yieldMonitoring?.status || '' },
+      { metric:'Pending Approvals', value:data.totalPendingApprovals },
+      { metric:'Business Health Score', value:data.healthScore },
+    ]
+  }
+
+  function exportFoundationCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    downloadTextFile(`romas-foundation-summary-${foundationMonth}.csv`, rowsToCSV(buildFoundationExportRows(foundationData)), 'text/csv')
+  }
+
+  function exportProfitLossCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const rows = [
+      { line:'Gross Sales', amount:d.grossSales, percent:'' },
+      { line:'Less: Returns / Unsold', amount:-safeNum(d.salesReturns,0), percent:d.grossSales>0?`${safeNum(d.returnsRate,0).toFixed(2)}% of gross sales`:'' },
+      { line:'Net Sales', amount:d.netSales ?? d.totalSales, percent:'100.00%' },
+      { line:'Less: COGS / Production Cost', amount:-safeNum(d.totalCOGS,0), percent:d.totalSales>0?`${safeNum(d.foodCostPct,0).toFixed(2)}%`:'' },
+      { line:'Gross Profit', amount:d.grossProfit, percent:d.totalSales>0?`${safeNum(d.grossMarginPct,0).toFixed(2)}%`:'' },
+      { line:'Less: Non-Payroll Operating Expenses', amount:-safeNum(d.nonPayrollExpenses,0), percent:d.totalSales>0?`${safeNum(d.operatingExpenseRatio,0).toFixed(2)}%`:'' },
+      { line:'Less: Payroll Expense', amount:-safeNum(d.payrollExpense,0), percent:d.totalSales>0?`${safeNum(d.salaryToSalesRatio,0).toFixed(2)}%`:'' },
+      { line:'Net Profit', amount:d.netProfit, percent:d.totalSales>0?`${safeNum(d.netMarginPct,0).toFixed(2)}%`:'' },
+    ]
+    downloadTextFile(`romas-profit-loss-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportSalaryRatioCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const summaryRows = [
+      { section:'Summary', metric:'Net Sales', value:safeNum(d.netSales ?? d.totalSales,0), note:'Basis for salary ratio' },
+      { section:'Summary', metric:'Payroll Expense', value:safeNum(d.payrollExpense,0), note:d.payrollExpenseSource || '' },
+      { section:'Summary', metric:'Salary-to-Sales Ratio %', value:safeNum(d.salaryToSalesRatio,0).toFixed(2), note:d.salaryRatio?.status || '' },
+      { section:'Target', metric:'Max Payroll at 20%', value:safeNum(d.salaryRatio?.maxPayrollAt20,0), note:'Ideal control target' },
+      { section:'Target', metric:'Max Payroll at 25%', value:safeNum(d.salaryRatio?.maxPayrollAt25,0), note:'Upper healthy target' },
+      { section:'Action', metric:'Excess Payroll vs 25%', value:safeNum(d.salaryRatio?.excessPayrollVs25,0), note:d.salaryRatio?.message || '' },
+      { section:'Action', metric:'Additional Sales Needed at 25%', value:safeNum(d.salaryRatio?.additionalSalesNeededAt25,0), note:'Sales needed if payroll stays the same' },
+    ]
+
+    const periodRows = (d.salaryRatioPeriodRows || []).map(r => ({
+      section:'Payroll Period',
+      metric:`${r.start} to ${r.end}`,
+      value:safeNum(r.ratio,0).toFixed(2) + '%',
+      note:`Sales ${php(r.sales)} | Payroll ${php(r.payroll)} | ${r.status}`
+    }))
+
+    const employeeRows = (d.salaryRatioEmployeeRows || []).map(r => ({
+      section:'Employee Payroll',
+      metric:r.employee,
+      value:php(r.payroll),
+      note:`${safeNum(r.payrollPct,0).toFixed(1)}% of payroll | ${safeNum(r.salesPct,0).toFixed(1)}% of sales`
+    }))
+
+    const trendRows = (d.salaryRatioTrend || []).map(r => ({
+      section:'Monthly Trend',
+      metric:r.label,
+      value:safeNum(r.ratio,0).toFixed(2) + '%',
+      note:`Sales ${php(r.sales)} | Payroll ${php(r.payroll)} | ${r.status}`
+    }))
+
+    downloadTextFile(`romas-salary-to-sales-ratio-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...periodRows, ...employeeRows, ...trendRows]), 'text/csv')
+  }
+
+  function exportFoodCostCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const summaryRows = [
+      { section:'Summary', metric:'Net Sales', value:safeNum(d.netSales ?? d.totalSales,0), note:'Basis for food cost ratio' },
+      { section:'Summary', metric:'COGS / Production Cost', value:safeNum(d.totalCOGS,0), note:d.foodCost?.source || '' },
+      { section:'Summary', metric:'Food Cost %', value:safeNum(d.foodCostPct,0).toFixed(2) + '%', note:d.foodCost?.status || '' },
+      { section:'Target', metric:'Ideal COGS at 30%', value:safeNum(d.foodCost?.idealCOGSAt30,0), note:'Lower healthy target' },
+      { section:'Target', metric:'Max COGS at 40%', value:safeNum(d.foodCost?.maxCOGSAt40,0), note:'Upper healthy limit' },
+      { section:'Action', metric:'Excess COGS vs 40%', value:safeNum(d.foodCost?.excessCOGSVs40,0), note:d.foodCost?.message || '' },
+      { section:'Action', metric:'Additional Sales Needed at 40%', value:safeNum(d.foodCost?.additionalSalesNeededAt40,0), note:'Sales needed if COGS stays the same' },
+      { section:'Production', metric:'Produced Pieces', value:safeNum(d.foodCost?.actualOutput,0), note:`Cost per piece: ${php(d.foodCost?.costPerPiece || 0)}` },
+      { section:'Wastage', metric:'Wastage Cost', value:safeNum(d.wastageCost,0), note:`${safeNum(d.foodCost?.wastageImpactPct,0).toFixed(2)}% of COGS` },
+    ]
+
+    const productionRows = (d.productionCostRows || []).map(r => ({
+      section:'Production Batch',
+      metric:r.label,
+      value:php(r.cost),
+      note:`${r.pieces} pcs | ${php(r.costPerPiece)} per pc | ${r.date}`
+    }))
+
+    const productRows = (d.productCOGSRows || []).map(r => ({
+      section:'Product Estimate',
+      metric:r.name,
+      value:php(r.estimatedCOGS),
+      note:`Sales ${php(r.revenue)} | Est. gross profit ${php(r.estimatedGrossProfit)} | Food cost ${safeNum(r.foodCostPct,0).toFixed(1)}%`
+    }))
+
+    const trendRows = (d.foodCostTrend || []).map(r => ({
+      section:'Monthly Trend',
+      metric:r.label,
+      value:safeNum(r.ratio,0).toFixed(2) + '%',
+      note:`Sales ${php(r.sales)} | COGS ${php(r.cogs)} | ${r.status}`
+    }))
+
+    downloadTextFile(`romas-food-cost-cogs-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...productionRows, ...productRows, ...trendRows]), 'text/csv')
+  }
+
+  function exportReturnsAnalysisCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const summaryRows = [
+      { section:'Summary', metric:'Gross Sales Before Returns', value:safeNum(d.grossSales,0), note:'Sales before returns/unsold deduction' },
+      { section:'Summary', metric:'Net Sales After Returns', value:safeNum(d.netSales ?? d.totalSales,0), note:'Sales after returns/unsold deduction' },
+      { section:'Summary', metric:'Returns Amount', value:safeNum(d.totalReturnsAmount,0), note:d.returnsAnalysis?.status || '' },
+      { section:'Summary', metric:'Returns Quantity', value:safeNum(d.totalReturnsQty,0), note:'Returned/unsold pieces recorded' },
+      { section:'Summary', metric:'Returns Rate %', value:safeNum(d.returnsRate,0).toFixed(2) + '%', note:d.returnsAnalysis?.message || '' },
+      { section:'Target', metric:'Ideal Returns at 3%', value:safeNum(d.returnsAnalysis?.idealReturnsAt3,0), note:'Excellent control target' },
+      { section:'Target', metric:'Max Returns at 5%', value:safeNum(d.returnsAnalysis?.maxReturnsAt5,0), note:'Upper healthy target' },
+      { section:'Action', metric:'Avoidable Loss vs 5% Target', value:safeNum(d.returnsAnalysis?.avoidableLossVs5,0), note:'Peso amount above the 5% target' },
+    ]
+
+    const resellerRows = (d.returnResellerRows || []).map(r => ({
+      section:'Outlet / Reseller Returns',
+      metric:r.name,
+      value:php(r.returnsAmount),
+      note:`${safeNum(r.returnsQty,0)} pcs | ${safeNum(r.returnRatePct,0).toFixed(2)}% return rate | Net sales ${php(r.netSales)}`
+    }))
+
+    const productRows = (d.returnProductRows || []).map(r => ({
+      section:'Product Returns',
+      metric:r.name,
+      value:php(r.amount),
+      note:`${safeNum(r.qty,0)} pcs | Avg credit ${php(r.avgCredit)} | ${safeNum(r.sharePct,0).toFixed(1)}% of returns`
+    }))
+
+    const invoiceRows = (d.highReturnInvoices || []).map(r => ({
+      section:'High Return Invoice',
+      metric:`${r.invoiceNumber} — ${r.reseller}`,
+      value:php(r.returnAmount),
+      note:`${safeNum(r.returnQty,0)} pcs | ${safeNum(r.returnRatePct,0).toFixed(2)}% return rate | ${r.date}`
+    }))
+
+    const trendRows = (d.returnsTrend || []).map(r => ({
+      section:'Monthly Trend',
+      metric:r.label,
+      value:safeNum(r.returnRate,0).toFixed(2) + '%',
+      note:`Gross ${php(r.grossSales)} | Returns ${php(r.returnsAmount)} | ${safeNum(r.returnsQty,0)} pcs | ${r.status}`
+    }))
+
+    downloadTextFile(`romas-returns-unsold-analysis-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...resellerRows, ...productRows, ...invoiceRows, ...trendRows]), 'text/csv')
+  }
+
+
+
+  function exportReceivableAgingCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const summaryRows = [
+      { section:'Summary', metric:'Total Accounts Receivable', value:safeNum(d.totalAR,0), note:d.receivableStatus?.status || d.receivableStatus?.label || '' },
+      { section:'Summary', metric:'Overdue AR', value:safeNum(d.overdueAR,0), note:`${safeNum(d.arOverduePct,0).toFixed(2)}% of AR` },
+      { section:'Summary', metric:'31+ Days Critical AR', value:safeNum(d.criticalAR,0), note:'Immediate collection priority' },
+      { section:'Summary', metric:'Collection Rate %', value:safeNum(d.receivableSummary?.collectionRate,0).toFixed(2) + '%', note:'Collected reseller payments ÷ reseller net sales' },
+    ]
+    const agingRows = (d.arAging || []).map(r => ({ section:'Aging Bucket', metric:r.label, value:r.total, note:`${r.count} invoice(s)` }))
+    const priorityRows = (d.receivablePriorityRows || []).map(r => ({ section:'Collection Priority', metric:`${r.reseller} — ${r.invoiceNumber}`, value:r.balance, note:`${r.age} day(s) | ${r.status} | Due ${r.dueDate || r.deliveryDate || ''}` }))
+    downloadTextFile(`romas-reseller-receivable-aging-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...agingRows, ...priorityRows]), 'text/csv')
+  }
+
+  function exportCashFlowCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const summaryRows = [
+      { section:'Summary', metric:'Cash In', value:safeNum(d.cashIn,0), note:'Walk-in/messenger sales + collected reseller payments' },
+      { section:'Summary', metric:'Cash Out', value:safeNum(d.cashOut,0), note:'Payroll + non-payroll operating expenses' },
+      { section:'Summary', metric:'Net Cash Flow', value:safeNum(d.netCashFlow,0), note:d.cashFlow?.status || '' },
+      { section:'Summary', metric:'Bank Deposits', value:safeNum(d.bankDepositsTotal,0), note:`Deposit coverage ${safeNum(d.cashFlow?.depositCoveragePct,0).toFixed(2)}%` },
+      { section:'Summary', metric:'Cash Variance', value:safeNum(d.cashVarianceTotal,0), note:'Actual closing cash vs expected cash when encoded' },
+    ]
+    const trendRows = (d.cashFlowTrend || []).map(r => ({ section:'Trend', metric:r.label, value:r.netCashFlow, note:`Cash in ${php(r.cashIn)} | Cash out ${php(r.cashOut)} | ${r.status}` }))
+    const dailyRows = (d.dailyClosingRows || []).map(r => ({ section:'Daily Closing', metric:r.date, value:r.variance, note:`Expected ${php(r.expectedCash)} | Actual ${php(r.actualCash)} | ${r.status}` }))
+    downloadTextFile(`romas-cash-flow-dashboard-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...trendRows, ...dailyRows]), 'text/csv')
+  }
+
+  function exportProductionForecastCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const summaryRows = [
+      { section:'Summary', metric:'Average Daily Sales', value:safeNum(d.productionForecast?.avgDailySales,0), note:`Based on ${safeNum(d.productionForecast?.basisDays,0)} active day(s)` },
+      { section:'Summary', metric:'Average Daily Delivered Qty', value:safeNum(d.productionForecast?.avgDailyDeliveredQty,0).toFixed(0), note:'Based on delivered reseller invoice pieces' },
+      { section:'Summary', metric:'Suggested Production Qty', value:safeNum(d.productionForecast?.suggestedProductionQty,0), note:d.productionForecast?.status || '' },
+      { section:'Summary', metric:'Return Adjustment Qty', value:safeNum(d.productionForecast?.returnAdjustmentQty,0), note:'Quantity reduced based on returns/unsold pattern' },
+    ]
+    const productRows = (d.productionForecastRows || []).map(r => ({ section:'Product Forecast', metric:r.name, value:r.recommendedNext7Days, note:`Avg/day ${safeNum(r.avgDailyQty,0).toFixed(1)} | Sold ${safeNum(r.soldQty,0)} | Returned ${safeNum(r.returnedQty,0)} | Status ${r.status}` }))
+    const outletRows = (d.outletForecastRows || []).map(r => ({ section:'Outlet Forecast', metric:r.name, value:r.recommendedSalesNext7Days, note:`Daily sales ${php(r.avgDailySales)} | Returns ${safeNum(r.returnRatePct,0).toFixed(1)}% | ${r.recommendation}` }))
+    downloadTextFile(`romas-production-forecast-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...productRows, ...outletRows]), 'text/csv')
+  }
+
+  function exportResellerPerformanceCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.resellerPerformanceRows || []).map((r, index) => ({
+      rank:index + 1,
+      reseller:r.name,
+      score:safeNum(r.score,0).toFixed(1),
+      status:r.status,
+      net_sales:r.sales,
+      collected:r.paid,
+      unpaid:r.unpaid,
+      collection_rate:safeNum(r.collectionRate,0).toFixed(2) + '%',
+      returns_amount:r.returns,
+      return_rate:safeNum(r.returnRatePct,0).toFixed(2) + '%',
+      invoices:r.invoices,
+      recommendation:r.recommendation
+    }))
+    downloadTextFile(`romas-outlet-reseller-performance-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportDailyClosingCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.dailyClosingRows || []).map(r => ({
+      date:r.date,
+      sales:r.sales,
+      collected:r.collected,
+      returns:r.returnsAmount,
+      expected_cash:r.expectedCash,
+      actual_cash:r.actualCash,
+      deposits:r.deposits,
+      variance:r.variance,
+      status:r.status,
+      notes:r.notes
+    }))
+    downloadTextFile(`romas-branch-outlet-daily-closing-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+
+  function exportDeliveryRouteCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.deliveryRouteRows || []).map(r => ({
+      date:r.date,
+      invoice:r.invoiceNumber,
+      reseller:r.reseller,
+      status:r.rawStatus,
+      route_status:r.status,
+      delivered_qty:r.deliveredQty,
+      returned_qty:r.returnQty,
+      return_rate:safeNum(r.returnRatePct,0).toFixed(2) + '%',
+      net_sales:r.netSales,
+      paid:r.paid,
+      balance:r.balance,
+      crates:r.crates,
+      prepared_by:r.preparedBy,
+      dispatched_by:r.dispatchedBy,
+      recommendation:r.recommendation
+    }))
+    downloadTextFile(`romas-delivery-route-monitoring-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportInventoryReorderCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const rows = (foundationData.inventoryReorderRows || []).map(r => ({
+      item:r.name,
+      category:r.category,
+      unit:r.unit,
+      current_stock:r.currentStock,
+      min_stock:r.minStock,
+      suggested_reorder_qty:r.suggestedReorderQty,
+      estimated_reorder_value:r.reorderValue,
+      monthly_usage:r.monthlyUsage,
+      estimated_days_cover:r.daysCover,
+      status:r.status,
+      recommendation:r.recommendation
+    }))
+    downloadTextFile(`romas-inventory-reorder-alerts-${foundationMonth}.csv`, rowsToCSV(rows), 'text/csv')
+  }
+
+  function exportBatchProductionCostingCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const summaryRows = [
+      { section:'Summary', metric:'Total Batch Cost', value:safeNum(foundationData.batchCosting?.totalCost,0), note:foundationData.batchCosting?.status || '' },
+      { section:'Summary', metric:'Produced Pieces', value:safeNum(foundationData.batchCosting?.totalPieces,0), note:'From production logs / production reports' },
+      { section:'Summary', metric:'Average Cost Per Piece', value:safeNum(foundationData.batchCosting?.avgCostPerPiece,0), note:'Total batch cost ÷ produced pieces' },
+      { section:'Summary', metric:'Estimated Gross Profit', value:safeNum(foundationData.batchCosting?.estimatedGrossProfit,0), note:'Net sales less batch cost' },
+    ]
+    const batchRows = (foundationData.batchCostRows || []).map(r => ({ section:'Batch', metric:r.label, value:r.cost, note:`${r.date} | ${safeNum(r.pieces,0)} pcs | ${php(r.costPerPiece)} per pc | ${r.status}` }))
+    downloadTextFile(`romas-batch-production-costing-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...batchRows]), 'text/csv')
+  }
+
+  function exportActualVsStandardUsageCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const summaryRows = [
+      { section:'Summary', metric:'Standard / Expected Qty', value:safeNum(foundationData.actualVsStandard?.standardQty,0), note:'Expected output/standard quantity encoded' },
+      { section:'Summary', metric:'Actual Qty', value:safeNum(foundationData.actualVsStandard?.actualQty,0), note:'Actual production/report quantity encoded' },
+      { section:'Summary', metric:'Variance Qty', value:safeNum(foundationData.actualVsStandard?.totalVarianceQty,0), note:foundationData.actualVsStandard?.status || '' },
+      { section:'Summary', metric:'Variance Value', value:safeNum(foundationData.actualVsStandard?.varianceValue,0), note:'Estimated value using average cost per piece' },
+    ]
+    const usageRows = (foundationData.actualVsStandardRows || []).map(r => ({ section:r.source, metric:r.name, value:r.varianceQty, note:`Expected ${r.standardQty} | Actual ${r.actualQty} | ${r.status}` }))
+    const movementRows = (foundationData.inventoryUsageRows || []).map(r => ({ section:'Inventory Movement', metric:r.name, value:r.netUsage, note:`Out ${r.stockOut} | In ${r.stockIn} | Adjust ${r.adjustments} | ${r.status}` }))
+    downloadTextFile(`romas-actual-vs-standard-usage-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...usageRows, ...movementRows]), 'text/csv')
+  }
+
+  function exportProductionYieldCSV() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const summaryRows = [
+      { section:'Summary', metric:'Expected Output', value:safeNum(foundationData.yieldMonitoring?.expectedOutput,0), note:'Standard/expected quantity' },
+      { section:'Summary', metric:'Actual Output', value:safeNum(foundationData.yieldMonitoring?.actualOutput,0), note:'Actual produced/reported quantity' },
+      { section:'Summary', metric:'Yield %', value:safeNum(foundationData.yieldMonitoring?.yieldPct,0).toFixed(2) + '%', note:foundationData.yieldMonitoring?.status || '' },
+      { section:'Summary', metric:'Yield Variance', value:safeNum(foundationData.yieldMonitoring?.yieldVariance,0), note:'Actual less expected' },
+      { section:'Summary', metric:'Wastage Cost', value:safeNum(foundationData.wastageCost,0), note:'Recorded wastage impact' },
+    ]
+    const yieldRows = (foundationData.productionYieldRows || []).map(r => ({ section:r.source, metric:r.name, value:safeNum(r.yieldPct,0).toFixed(2) + '%', note:`Expected ${r.expectedQty} | Actual ${r.actualQty} | Variance ${r.varianceQty} | ${r.status}` }))
+    downloadTextFile(`romas-production-yield-monitoring-${foundationMonth}.csv`, rowsToCSV([...summaryRows, ...yieldRows]), 'text/csv')
+  }
+  function exportFoundationBackup() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const backup = {
+      generated_at:new Date().toISOString(),
+      month:foundationMonth,
+      summary:foundationData,
+      note:'Business foundation backup snapshot. This does not delete or modify database records.'
+    }
+    downloadTextFile(`romas-foundation-backup-${foundationMonth}.json`, JSON.stringify(backup, null, 2), 'application/json')
+  }
+
+  function exportSafeTestDataCleanerSQL() {
+    const sql = `-- Roma's Donuts SAFE TEST DATA CLEANER TEMPLATE\n-- Review carefully before running. This file intentionally does not run automatically.\n-- Replace sample filters only after you confirm the records are truly test data.\n\n-- Example: find possible test employees\nselect id, employee_code, full_name from employees\nwhere lower(full_name) like '%test%' or lower(employee_code) like '%test%';\n\n-- Example: find possible test sales/expenses/payroll by notes or description\nselect * from daily_sales where lower(coalesce(notes,'')) like '%test%';\nselect * from daily_expenses where lower(coalesce(description,'')) like '%test%';\nselect * from payroll_records where lower(coalesce(employee_name,'')) like '%test%';\n\n-- IMPORTANT: Do not uncomment deletes unless you already exported a backup.\n-- delete from daily_sales where lower(coalesce(notes,'')) like '%test%';\n-- delete from daily_expenses where lower(coalesce(description,'')) like '%test%';\n`
+    downloadTextFile('romas-safe-test-data-cleaner-template.sql', sql, 'text/sql')
+  }
+
+  function printFoundationReport() {
+    if (!foundationData) { showToast('Load Foundation data first.', 'red'); return }
+    const d = foundationData
+    const pw = window.open('', '_blank', 'width=1000,height=720')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Foundation Report ${foundationMonth}</title>
+      <style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;padding:18mm;color:#111;font-size:11px}h1{color:#ca1b1b;margin:0 0 4px}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.card{border:1px solid #ddd;border-radius:8px;padding:10px}.label{font-size:9px;color:#777;text-transform:uppercase}.value{font-size:16px;font-weight:bold;color:#ca1b1b;margin-top:4px}table{width:100%;border-collapse:collapse;margin:12px 0}th{background:#ca1b1b;color:white;text-align:left}td,th{padding:6px;border:1px solid #eee}.good{color:#2d8a4e}.warn{color:#f5a623}.bad{color:#ca1b1b}@media print{@page{size:A4;margin:12mm}.no-print{display:none}}</style>
+      </head><body>
+      <h1>Roma's Donuts — Business Foundation Report</h1><div>Month: ${foundationMonth} | Generated: ${new Date().toLocaleString('en-PH')}</div>
+      <div class="grid">
+        <div class="card"><div class="label">Total Sales</div><div class="value">${php(d.totalSales)}</div></div>
+        <div class="card"><div class="label">Net Profit</div><div class="value">${php(d.netProfit)}</div></div>
+        <div class="card"><div class="label">Salary-to-Sales</div><div class="value">${d.salaryToSalesRatio.toFixed(1)}%</div></div>
+        <div class="card"><div class="label">Food Cost</div><div class="value">${safeNum(d.foodCostPct,0).toFixed(1)}%</div></div>
+        <div class="card"><div class="label">Health Score</div><div class="value">${d.healthScore}/100</div></div>
+      </div>
+      <table><tr><th>Metric</th><th>Value</th></tr>${buildFoundationExportRows(d).map(r=>`<tr><td>${r.metric}</td><td>${typeof r.value === 'number' ? (r.metric.includes('%')||r.metric.includes('Score') ? safeNum(r.value).toFixed(2) : php(r.value)) : r.value}</td></tr>`).join('')}</table>
+      <h3>Salary-to-Sales Ratio Detail</h3>
+      <table><tr><th>Period</th><th>Net Sales</th><th>Payroll</th><th>Ratio</th><th>Status</th></tr>${(d.salaryRatioPeriodRows||[]).map(r=>`<tr><td>${r.start} to ${r.end}</td><td>${php(r.sales)}</td><td>${php(r.payroll)}</td><td>${safeNum(r.ratio,0).toFixed(1)}%</td><td>${r.status}</td></tr>`).join('')}</table>
+      <h3>Top Payroll Contributors</h3>
+      <table><tr><th>Employee</th><th>Payroll</th><th>% of Payroll</th><th>% of Sales</th></tr>${(d.salaryRatioEmployeeRows||[]).slice(0,10).map(r=>`<tr><td>${r.employee}</td><td>${php(r.payroll)}</td><td>${safeNum(r.payrollPct,0).toFixed(1)}%</td><td>${safeNum(r.salesPct,0).toFixed(1)}%</td></tr>`).join('')}</table>
+      <h3>Food Cost / COGS Detail</h3>
+      <table><tr><th>Metric</th><th>Value</th><th>Note</th></tr>
+        <tr><td>Net Sales</td><td>${php(d.netSales ?? d.totalSales)}</td><td>Food cost basis after returns</td></tr>
+        <tr><td>COGS / Production Cost</td><td>${php(d.totalCOGS)}</td><td>${d.foodCost?.source || ''}</td></tr>
+        <tr><td>Food Cost %</td><td>${safeNum(d.foodCostPct,0).toFixed(1)}%</td><td>${d.foodCost?.status || ''}</td></tr>
+        <tr><td>Max COGS @ 40%</td><td>${php(d.foodCost?.maxCOGSAt40 || 0)}</td><td>Upper healthy limit</td></tr>
+        <tr><td>Gap vs 40%</td><td>${php(d.foodCost?.excessCOGSVs40 || 0)}</td><td>${d.foodCost?.message || ''}</td></tr>
+        <tr><td>Cost per Produced Piece</td><td>${php(d.foodCost?.costPerPiece || 0)}</td><td>${safeNum(d.foodCost?.actualOutput,0)} pcs produced/reported</td></tr>
+      </table>
+      <h3>6-Month Food Cost Trend</h3>
+      <table><tr><th>Month</th><th>Net Sales</th><th>COGS</th><th>Food Cost %</th><th>Status</th></tr>${(d.foodCostTrend||[]).map(r=>`<tr><td>${r.label}</td><td>${php(r.sales)}</td><td>${php(r.cogs)}</td><td>${safeNum(r.ratio,0).toFixed(1)}%</td><td>${r.status}</td></tr>`).join('')}</table>
+      <h3>Top Resellers</h3><table><tr><th>Reseller</th><th>Sales</th><th>Unpaid</th><th>Returns</th></tr>${d.resellerRanking.slice(0,10).map(r=>`<tr><td>${r.name}</td><td>${php(r.sales)}</td><td>${php(r.unpaid)}</td><td>${php(r.returns)}</td></tr>`).join('')}</table>
+      <h3>Receivable Aging</h3><table><tr><th>Bucket</th><th>Count</th><th>Amount</th></tr>${(d.arAging||[]).map(r=>`<tr><td>${r.label}</td><td>${r.count}</td><td>${php(r.total)}</td></tr>`).join('')}</table>
+      <h3>Cash Flow Detail</h3><table><tr><th>Metric</th><th>Value</th></tr><tr><td>Cash In</td><td>${php(d.cashIn)}</td></tr><tr><td>Cash Out</td><td>${php(d.cashOut)}</td></tr><tr><td>Net Cash Flow</td><td>${php(d.netCashFlow)}</td></tr><tr><td>Bank Deposits</td><td>${php(d.bankDepositsTotal)}</td></tr></table>
+      <h3>Production Forecast</h3><table><tr><th>Product</th><th>Sold Qty</th><th>Returned Qty</th><th>Recommended Next 7 Days</th><th>Status</th></tr>${(d.productionForecastRows||[]).slice(0,10).map(r=>`<tr><td>${r.name}</td><td>${safeNum(r.soldQty,0)}</td><td>${safeNum(r.returnedQty,0)}</td><td>${safeNum(r.recommendedNext7Days,0)}</td><td>${r.status}</td></tr>`).join('')}</table>
+      <h3>Outlet / Reseller Performance</h3><table><tr><th>Reseller</th><th>Score</th><th>Sales</th><th>Unpaid</th><th>Return Rate</th></tr>${(d.resellerPerformanceRows||[]).slice(0,10).map(r=>`<tr><td>${r.name}</td><td>${safeNum(r.score,0).toFixed(0)}/100</td><td>${php(r.sales)}</td><td>${php(r.unpaid)}</td><td>${safeNum(r.returnRatePct,0).toFixed(1)}%</td></tr>`).join('')}</table>
+      <h3>Production & Inventory Control</h3>
+      <table><tr><th>Metric</th><th>Value</th><th>Status</th></tr>
+        <tr><td>Delivery Completion</td><td>${safeNum(d.deliveryRoute?.completionPct,0).toFixed(1)}%</td><td>${d.deliveryRoute?.status || ''}</td></tr>
+        <tr><td>Inventory Reorder Items</td><td>${safeNum(d.inventoryControl?.reorderNowItems,0)}</td><td>${d.inventoryControl?.status || ''}</td></tr>
+        <tr><td>Average Batch Cost / Piece</td><td>${php(d.batchCosting?.avgCostPerPiece || 0)}</td><td>${d.batchCosting?.status || ''}</td></tr>
+        <tr><td>Actual vs Standard Variance</td><td>${safeNum(d.actualVsStandard?.totalVarianceQty,0)} pcs</td><td>${d.actualVsStandard?.status || ''}</td></tr>
+        <tr><td>Production Yield</td><td>${safeNum(d.yieldMonitoring?.yieldPct,0).toFixed(1)}%</td><td>${d.yieldMonitoring?.status || ''}</td></tr>
+      </table>
+      <h3>Recommended Actions</h3><ul>${[...(d.deliveryRouteActionPlan||[]), ...(d.inventoryReorderActionPlan||[]), ...(d.batchCostingActionPlan||[]), ...(d.actualVsStandardActionPlan||[]), ...(d.productionYieldActionPlan||[]), ...(d.receivableActionPlan||[]), ...(d.cashFlowActionPlan||[]), ...(d.productionForecastActionPlan||[]), ...(d.resellerPerformanceActionPlan||[]), ...(d.dailyClosingActionPlan||[]), ...(d.salaryRatioActionPlan||[]), ...(d.foodCostActionPlan||[]), ...d.recommendations].map(r=>`<li>${r}</li>`).join('')}</ul>
+      <button class="no-print" onclick="window.print()" style="padding:10px 20px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-weight:bold">Print Report</button>
+      </body></html>`)
+    pw.document.close()
+  }
+
+  function formatFoundationLastUpdated(value) {
+    if (!value) return 'Not loaded yet'
+    try {
+      return new Date(value).toLocaleString('en-PH', {
+        month:'short', day:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'
+      })
+    } catch(e) {
+      return String(value)
+    }
+  }
+
+  function refreshFoundationAfterDataChange(reason = '') {
+    const canRefresh = foundationData || activeTab === 'foundation'
+    if (!canRefresh) return
+    loadFoundationData(foundationMonth, { silent:true, showLoading:false, reason })
+  }
+
+  async function loadFoundationData(monthValue = foundationMonth, options = {}) {
+    const showLoading = options.showLoading === true || (options.showLoading !== false && options.silent !== true)
+    if (showLoading) setFoundationLoading(true)
+    try {
+      const { start, end } = getMonthRange(monthValue)
+      const trendMonths = getRecentFoundationMonths(monthValue, 6)
+      const trendStart = trendMonths[0]?.start || start
+      const todayDate = today
+      const [
+        employeesRes, attendanceRes, dailySalesRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes,
+        productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes,
+        contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes,
+        bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes,
+        trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes
+      ] = await Promise.all([
+        foundationSelect('employees', '*', q=>q.eq('is_active', true)),
+        foundationSelect('attendance_logs', '*', q=>q.gte('attendance_date', start).lte('attendance_date', end)),
+        foundationSelect('daily_sales', '*', q=>q.gte('sale_date', start).lte('sale_date', end)),
+        foundationSelect('delivery_invoices', '*, delivery_invoice_items(*)', q=>q.gte('delivery_date', start).lte('delivery_date', end)),
+        foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', start).lte('return_date', end)),
+        foundationSelect('daily_expenses', '*', q=>q.gte('expense_date', start).lte('expense_date', end)),
+        foundationSelect('payroll_records', '*', q=>q.gte('payroll_start', start).lte('payroll_end', end)),
+        foundationSelect('production_logs', '*', q=>q.gte('production_date', start).lte('production_date', end)),
+        foundationSelect('production_reports', '*, production_report_items(*)', q=>q.gte('report_date', start).lte('report_date', end)),
+        foundationSelect('inventory_items', '*'),
+        foundationSelect('inventory_transactions', '*', q=>q.gte('transaction_date', start).lte('transaction_date', end)),
+        foundationSelect('wastage_logs', '*', q=>q.gte('wastage_date', start).lte('wastage_date', end)),
+        foundationSelect('employee_contracts', '*'),
+        foundationSelect('leave_requests', '*', q=>q.gte('leave_start', start).lte('leave_end', end)),
+        foundationSelect('cash_advance_requests', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
+        foundationSelect('time_adjustment_requests', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
+        foundationSelect('payslip_disputes', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
+        foundationSelect('audit_logs', '*', q=>q.order('created_at', { ascending:false }).limit(120)),
+        foundationSelect('cash_reconciliations', '*', q=>q.gte('reconciliation_date', start).lte('reconciliation_date', end)),
+        foundationSelect('bank_deposits', '*', q=>q.gte('deposit_date', start).lte('deposit_date', end)),
+        foundationSelect('reseller_disputes', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
+        foundationSelect('stock_adjustments', '*', q=>q.gte('adjustment_date', start).lte('adjustment_date', end)),
+        foundationSelect('resellers', '*'),
+        foundationSelect('daily_sales', '*', q=>q.gte('sale_date', trendStart).lte('sale_date', end)),
+        foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', trendStart).lte('delivery_date', end)),
+        foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', trendStart).lte('return_date', end)),
+        foundationSelect('payroll_records', '*', q=>q.gte('payroll_start', trendStart).lte('payroll_end', end)),
+        foundationSelect('production_logs', '*', q=>q.gte('production_date', trendStart).lte('production_date', end))
+      ])
+
+      let invoices = invoicesWithItemsRes.data || []
+      const errors = [employeesRes, attendanceRes, dailySalesRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes].map(r=>r.error).filter(Boolean)
+      if (invoicesWithItemsRes.error) {
+        const fallbackInv = await foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', start).lte('delivery_date', end))
+        invoices = fallbackInv.data || []
+        if (fallbackInv.error) errors.push(fallbackInv.error)
+      }
+
+      const activeEmployees = employeesRes.data || []
+      const attendance = attendanceRes.data || []
+      const dailySalesRows = dailySalesRes.data || []
+      const returnRows = returnsRes.data || []
+      const expenses = expensesRes.data || []
+      const payrollRecords = payrollRes.data || []
+      const productionLogsRows = productionLogsRes.data || []
+      const productionReportsRows = productionReportsRes.data || []
+      const inventoryRows = inventoryRes.data || []
+      const inventoryTxRows = inventoryTxRes.data || []
+      const wastageRows = wastageRes.data || []
+      const contracts = contractsRes.data || []
+      const leaves = leaveRes.data || []
+      const caRequestsRows = caRes.data || []
+      const otRequestsRows = otRes.data || []
+      const disputesRows = disputesRes.data || []
+      const auditRows = auditRes.data || []
+      const cashReconRows = cashReconRes.data || []
+      const bankDepositsRows = bankDepositsRes.data || []
+      const resellerDisputesRows = resellerDisputesRes.data || []
+      const stockAdjustmentsRows = stockAdjustmentsRes.data || []
+      const resellersRows = resellersRes.data || []
+      const trendDailySalesRows = trendDailySalesRes.data || []
+      const trendInvoiceRows = trendInvoicesRes.data || []
+      const trendReturnRows = trendReturnsRes.data || []
+      const trendPayrollRows = trendPayrollRes.data || []
+      const trendProductionLogRows = trendProductionLogsRes.data || []
+
+      const walkinMessengerSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_revenue ?? r.total_amount,0),0)
+      const walkinSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_walkin,0),0)
+      const messengerSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_messenger,0),0)
+
+      const invoiceReturnMap = {}
+      const returnItemMap = {}
+      const ensureReturnRecord = (key, seed = {}) => {
+        if (!invoiceReturnMap[key]) {
+          invoiceReturnMap[key] = {
+            key,
+            invoiceId:seed.invoiceId || '',
+            invoiceNumber:seed.invoiceNumber || '',
+            reseller:seed.reseller || 'Unassigned',
+            date:seed.date || '',
+            amount:0,
+            qty:0,
+            sourceSet:new Set(),
+            recordCount:0,
+            grossSales:0,
+            netSales:0,
+            paid:0
+          }
+        }
+        return invoiceReturnMap[key]
+      }
+
+      returnRows.forEach((ret, idx) => {
+        const items = ret.reseller_return_items || []
+        const itemQty = items.reduce((sum, item)=>sum+safeNum(item.returned_quantity ?? item.returned_qty,0),0)
+        const itemAmount = items.reduce((sum, item)=>sum+safeNum(item.total_credit ?? item.total_amount, safeNum(item.returned_quantity ?? item.returned_qty,0) * safeNum(item.reseller_price ?? item.unit_price,0)),0)
+        const amount = safeNum(ret.total_returned_amount ?? ret.returns_amount ?? ret.amount, itemAmount)
+        const key = ret.invoice_id ? String(ret.invoice_id) : `return-${ret.id || idx}`
+        const rec = ensureReturnRecord(key, {
+          invoiceId:ret.invoice_id || '',
+          invoiceNumber:ret.invoice_number || '',
+          reseller:ret.reseller_name || 'Unassigned',
+          date:ret.return_date || String(ret.created_at || '').slice(0,10)
+        })
+        rec.amount += amount
+        rec.qty += itemQty
+        rec.recordCount += 1
+        rec.sourceSet.add(ret.recorded_by || ret.source || 'Returns Table')
+        if (!rec.date) rec.date = ret.return_date || String(ret.created_at || '').slice(0,10)
+        if (ret.reseller_name) rec.reseller = ret.reseller_name
+        items.forEach(item => {
+          const name = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+          if (!returnItemMap[name]) returnItemMap[name] = { name, qty:0, amount:0, invoices:new Set(), resellers:new Set() }
+          const qty = safeNum(item.returned_quantity ?? item.returned_qty,0)
+          const credit = safeNum(item.total_credit ?? item.total_amount, qty * safeNum(item.reseller_price ?? item.unit_price,0))
+          returnItemMap[name].qty += qty
+          returnItemMap[name].amount += credit
+          if (ret.invoice_id) returnItemMap[name].invoices.add(String(ret.invoice_id))
+          if (ret.reseller_name) returnItemMap[name].resellers.add(ret.reseller_name)
+        })
+      })
+
+      invoices.forEach(inv => {
+        const invoiceReturnAmount = safeNum(inv.returns_amount,0)
+        const invoiceReturnQty = safeNum(inv.returns_qty,0)
+        const key = String(inv.id || inv.invoice_number || '')
+        if (invoiceReturnAmount > 0 || invoiceReturnQty > 0 || invoiceReturnMap[key]) {
+          const rec = ensureReturnRecord(key, {
+            invoiceId:inv.id || '',
+            invoiceNumber:inv.invoice_number || '',
+            reseller:inv.reseller_name || 'Unassigned',
+            date:inv.delivery_date
+          })
+          rec.invoiceId = rec.invoiceId || inv.id || ''
+          rec.invoiceNumber = rec.invoiceNumber || inv.invoice_number || ''
+          rec.reseller = inv.reseller_name || rec.reseller
+          rec.date = rec.date || inv.delivery_date
+          rec.amount = Math.max(safeNum(rec.amount,0), invoiceReturnAmount)
+          rec.qty = Math.max(safeNum(rec.qty,0), invoiceReturnQty)
+          if (invoiceReturnAmount > 0 || invoiceReturnQty > 0) rec.sourceSet.add('Invoice Returns')
+          rec.netSales = safeNum(inv.total_amount,0)
+          rec.paid = safeNum(inv.paid_amount,0)
+        }
+      })
+
+      const returnRecords = Object.values(invoiceReturnMap)
+        .filter(r=>safeNum(r.amount,0)>0 || safeNum(r.qty,0)>0)
+
+      const returnLookup = returnRecords.reduce((map, r)=>{ if (r.invoiceId) map[String(r.invoiceId)] = r; return map }, {})
+      const getInvoiceNetAmount = inv => safeNum(inv.total_amount,0)
+      const getInvoiceReturnAmount = inv => safeNum(returnLookup[String(inv.id)]?.amount, safeNum(inv.returns_amount,0))
+      const getInvoiceReturnQty = inv => safeNum(returnLookup[String(inv.id)]?.qty, safeNum(inv.returns_qty,0))
+      const getInvoiceGrossAmount = inv => {
+        const explicitGross = safeNum(inv.original_amount ?? inv.gross_amount ?? inv.subtotal_amount, 0)
+        return explicitGross > 0 ? explicitGross : getInvoiceNetAmount(inv) + getInvoiceReturnAmount(inv)
+      }
+
+      invoices.forEach(inv => {
+        const key = String(inv.id || inv.invoice_number || '')
+        if (invoiceReturnMap[key]) {
+          invoiceReturnMap[key].grossSales = getInvoiceGrossAmount(inv)
+          invoiceReturnMap[key].netSales = getInvoiceNetAmount(inv)
+          invoiceReturnMap[key].paid = safeNum(inv.paid_amount,0)
+        }
+      })
+      returnRecords.forEach(r => {
+        r.source = Array.from(r.sourceSet || []).join(' + ') || 'Recorded Return'
+        r.returnRatePct = safeNum(r.grossSales,0) > 0 ? (safeNum(r.amount,0) / safeNum(r.grossSales,0)) * 100 : 0
+      })
+
+      const resellerGrossSales = invoices.reduce((s,i)=>s+getInvoiceGrossAmount(i),0)
+      const resellerSales = invoices.reduce((s,i)=>s+getInvoiceNetAmount(i),0)
+      const grossSales = walkinMessengerSales + resellerGrossSales
+      const collectedInvoices = invoices.reduce((s,i)=>s+safeNum(i.paid_amount,0),0)
+      const totalReturnsAmount = returnRecords.reduce((s,r)=>s+safeNum(r.amount,0),0)
+      const totalReturnsQty = returnRecords.reduce((s,r)=>s+safeNum(r.qty,0),0)
+      const totalDeliveredQty = invoices.reduce((sum, inv)=>(sum + (inv.delivery_invoice_items || []).reduce((a,item)=>a+safeNum(item.quantity,0),0)), 0)
+      const salesReturns = totalReturnsAmount
+      const netSales = Math.max(0, grossSales - salesReturns)
+      const totalSales = netSales
+      const returnsRate = grossSales > 0 ? (totalReturnsAmount / grossSales) * 100 : 0
+      const returnsQtyRate = totalDeliveredQty > 0 ? (totalReturnsQty / totalDeliveredQty) * 100 : 0
+
+      const totalCOGS = productionLogsRows.reduce((s,l)=>s+safeNum(l.total_cost,0),0)
+      const totalPiecesProduced = productionLogsRows.reduce((s,l)=>s+safeNum(l.total_pieces ?? l.pieces_produced ?? l.quantity,0),0)
+      const totalProductionReportPieces = productionReportsRows.reduce((s,r)=>s+(r.production_report_items||[]).reduce((a,it)=>a+safeNum(it.quantity ?? it.pieces ?? it.produced_qty,0),0),0)
+      const expectedOutput = productionReportsRows.reduce((s,r)=>s+(r.production_report_items||[]).reduce((a,it)=>a+safeNum(it.expected_quantity ?? it.default_quantity,0),0),0)
+      const actualOutput = totalProductionReportPieces || totalPiecesProduced
+      const yieldVariance = expectedOutput > 0 ? actualOutput - expectedOutput : 0
+      const yieldPct = expectedOutput > 0 ? (actualOutput / expectedOutput) * 100 : 0
+
+      const approvedExpenses = expenses.filter(e=>e.status !== 'rejected')
+      const payrollExpensePosted = approvedExpenses.filter(e=>e.category === 'Payroll Expense').reduce((s,e)=>s+safeNum(e.amount,0),0)
+      const nonPayrollExpenses = approvedExpenses.filter(e=>e.category !== 'Payroll Expense').reduce((s,e)=>s+safeNum(e.amount,0),0)
+      const payrollGross = payrollRecords.reduce((s,p)=>s+safeNum(p.total_earnings,0),0)
+      const payrollNet = payrollRecords.reduce((s,p)=>s+safeNum(p.net_pay,0),0)
+      const payrollExpense = payrollGross > 0 ? payrollGross : payrollExpensePosted
+      const payrollExpenseSource = payrollGross > 0 ? 'Payroll records' : (payrollExpensePosted > 0 ? 'Posted payroll expense' : 'No payroll data yet')
+      const totalOperatingExpenses = nonPayrollExpenses + payrollExpense
+      const totalExpenses = totalOperatingExpenses
+      const grossProfit = totalSales - totalCOGS
+      const operatingProfitBeforePayroll = grossProfit - nonPayrollExpenses
+      const netProfit = grossProfit - totalOperatingExpenses
+      const foodCostPct = totalSales > 0 ? (totalCOGS / totalSales) * 100 : 0
+      const salaryToSalesRatio = totalSales > 0 ? (payrollExpense / totalSales) * 100 : 0
+      const operatingExpenseRatio = totalSales > 0 ? (nonPayrollExpenses / totalSales) * 100 : 0
+      const totalExpenseRatio = totalSales > 0 ? (totalOperatingExpenses / totalSales) * 100 : 0
+      const grossMarginPct = totalSales > 0 ? (grossProfit / totalSales) * 100 : 0
+      const netMarginPct = totalSales > 0 ? (netProfit / totalSales) * 100 : 0
+
+      const totalAR = invoices.filter(i=>i.status === 'unpaid' || i.status === 'partial').reduce((s,i)=>s+Math.max(0, safeNum(i.total_amount,0)-safeNum(i.paid_amount,0)),0)
+      const arAging = [
+        { label:'0–7 days', min:0, max:7, total:0, count:0 },
+        { label:'8–15 days', min:8, max:15, total:0, count:0 },
+        { label:'16–30 days', min:16, max:30, total:0, count:0 },
+        { label:'31+ days', min:31, max:99999, total:0, count:0 },
+      ]
+      invoices.filter(i=>i.status === 'unpaid' || i.status === 'partial').forEach(inv => {
+        const balance = Math.max(0, safeNum(inv.total_amount,0)-safeNum(inv.paid_amount,0))
+        const age = daysBetweenLocal(inv.due_date || inv.delivery_date, todayDate)
+        const bucket = arAging.find(b=>age >= b.min && age <= b.max) || arAging[arAging.length-1]
+        bucket.total += balance; bucket.count += 1
+      })
+
+      const resellerMap = {}
+      invoices.forEach(inv => {
+        const key = inv.reseller_name || 'Unassigned'
+        if (!resellerMap[key]) resellerMap[key] = { name:key, sales:0, grossSales:0, paid:0, unpaid:0, returns:0, returnQty:0, invoices:0 }
+        resellerMap[key].sales += getInvoiceNetAmount(inv)
+        resellerMap[key].grossSales += getInvoiceGrossAmount(inv)
+        resellerMap[key].paid += safeNum(inv.paid_amount,0)
+        resellerMap[key].unpaid += Math.max(0, getInvoiceNetAmount(inv)-safeNum(inv.paid_amount,0))
+        resellerMap[key].returns += getInvoiceReturnAmount(inv)
+        resellerMap[key].returnQty += getInvoiceReturnQty(inv)
+        resellerMap[key].invoices += 1
+      })
+      const resellerRanking = Object.values(resellerMap).map(r=>({ ...r, returnRatePct:r.grossSales>0?(r.returns/r.grossSales)*100:0 })).sort((a,b)=>b.sales-a.sales)
+
+      const returnStatus = getReturnsStatus(returnsRate, totalReturnsQty, totalReturnsAmount, grossSales)
+      const returnProductRows = Object.values(returnItemMap).map(r => ({
+        ...r,
+        invoices:r.invoices?.size || 0,
+        resellers:r.resellers?.size || 0,
+        avgCredit:safeNum(r.qty,0) > 0 ? safeNum(r.amount,0) / safeNum(r.qty,0) : 0,
+        sharePct:totalReturnsAmount > 0 ? (safeNum(r.amount,0) / totalReturnsAmount) * 100 : 0
+      })).sort((a,b)=>b.amount-a.amount).slice(0,12)
+      const returnResellerRows = Object.values(resellerMap).map(r => ({
+        name:r.name,
+        grossSales:r.grossSales,
+        netSales:r.sales,
+        returnsAmount:r.returns,
+        returnsQty:r.returnQty,
+        invoices:r.invoices,
+        paid:r.paid,
+        unpaid:r.unpaid,
+        returnRatePct:r.grossSales>0?(r.returns/r.grossSales)*100:0
+      })).sort((a,b)=>b.returnsAmount-a.returnsAmount).slice(0,12)
+      const returnDailyMap = {}
+      returnRecords.forEach(r => {
+        const key = r.date || 'No Date'
+        if (!returnDailyMap[key]) returnDailyMap[key] = { date:key, amount:0, qty:0, records:0 }
+        returnDailyMap[key].amount += safeNum(r.amount,0)
+        returnDailyMap[key].qty += safeNum(r.qty,0)
+        returnDailyMap[key].records += 1
+      })
+      const returnDailyRows = Object.values(returnDailyMap).sort((a,b)=>String(b.date).localeCompare(String(a.date))).slice(0,14)
+      const highReturnInvoices = returnRecords
+        .filter(r=>safeNum(r.amount,0)>0 || safeNum(r.qty,0)>0)
+        .map(r=>({
+          invoiceId:r.invoiceId,
+          invoiceNumber:r.invoiceNumber || r.invoiceId || 'Unnumbered',
+          reseller:r.reseller || 'Unassigned',
+          date:r.date,
+          returnAmount:safeNum(r.amount,0),
+          returnQty:safeNum(r.qty,0),
+          grossSales:safeNum(r.grossSales,0),
+          netSales:safeNum(r.netSales,0),
+          returnRatePct:safeNum(r.grossSales,0)>0?(safeNum(r.amount,0)/safeNum(r.grossSales,0))*100:0,
+          source:r.source || 'Recorded Return'
+        }))
+        .sort((a,b)=>b.returnRatePct-a.returnRatePct || b.returnAmount-a.returnAmount)
+        .slice(0,12)
+
+      const returnsTrend = trendMonths.map(m => {
+        const monthDaily = trendDailySalesRows
+          .filter(r => String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end)
+          .reduce((sum,r)=>sum+safeNum(r.total_revenue ?? r.total_amount,0),0)
+        const monthInvoices = trendInvoiceRows.filter(i => String(i.delivery_date || '').slice(0,10) >= m.start && String(i.delivery_date || '').slice(0,10) <= m.end)
+        const monthReturnRows = trendReturnRows.filter(r => String(r.return_date || r.created_at || '').slice(0,10) >= m.start && String(r.return_date || r.created_at || '').slice(0,10) <= m.end)
+        const tableReturns = monthReturnRows.reduce((sum,r)=>sum+safeNum(r.total_returned_amount ?? r.returns_amount ?? r.amount, (r.reseller_return_items || []).reduce((a,it)=>a+safeNum(it.total_credit ?? it.total_amount, safeNum(it.returned_quantity ?? it.returned_qty,0)*safeNum(it.reseller_price ?? it.unit_price,0)),0)),0)
+        const invoiceReturns = monthInvoices.reduce((sum,i)=>sum+safeNum(i.returns_amount,0),0)
+        const returnsAmount = Math.max(tableReturns, invoiceReturns)
+        const returnsQty = Math.max(
+          monthReturnRows.reduce((sum,r)=>sum+(r.reseller_return_items || []).reduce((a,it)=>a+safeNum(it.returned_quantity ?? it.returned_qty,0),0),0),
+          monthInvoices.reduce((sum,i)=>sum+safeNum(i.returns_qty,0),0)
+        )
+        const invoiceGross = monthInvoices.reduce((sum,i)=>sum+(safeNum(i.original_amount ?? i.gross_amount ?? i.subtotal_amount,0) || safeNum(i.total_amount,0)+safeNum(i.returns_amount,0)),0)
+        const monthGrossSales = monthDaily + invoiceGross
+        const rate = monthGrossSales > 0 ? (returnsAmount / monthGrossSales) * 100 : 0
+        const status = getReturnsStatus(rate, returnsQty, returnsAmount, monthGrossSales)
+        return { month:m.key, label:m.label, start:m.start, end:m.end, grossSales:monthGrossSales, returnsAmount, returnsQty, returnRate:rate, status:status.label, color:status.color }
+      })
+
+      const returnsAnalysis = {
+        amount:totalReturnsAmount,
+        qty:totalReturnsQty,
+        grossSales,
+        netSales:totalSales,
+        deliveredQty:totalDeliveredQty,
+        rate:returnsRate,
+        qtyRate:returnsQtyRate,
+        status:returnStatus.label,
+        color:returnStatus.color,
+        message:returnStatus.message,
+        idealReturnsAt3:grossSales * 0.03,
+        maxReturnsAt5:grossSales * 0.05,
+        avoidableLossVs5:Math.max(0, totalReturnsAmount - grossSales * 0.05),
+        salesRecoveredByReducingTo5:Math.max(0, totalReturnsAmount - grossSales * 0.05),
+        worstReseller:returnResellerRows[0] || null,
+        worstProduct:returnProductRows[0] || null,
+        worstInvoice:highReturnInvoices[0] || null,
+        source:returnRows.length > 0 ? `Returns table (${returnRows.length} record${returnRows.length===1?'':'s'})` : 'Invoice return fields'
+      }
+      const returnsActionPlan = []
+      if (totalReturnsAmount <= 0 && totalReturnsQty <= 0) returnsActionPlan.push('No returns/unsold donuts recorded this month. Continue daily return monitoring to keep the data reliable.')
+      else if (returnsRate <= 5) returnsActionPlan.push('Returns are within the healthy control target. Keep forecasting by outlet, day of week, weather, and event schedule.')
+      else if (returnsRate <= 10) returnsActionPlan.push(`Returns are on watch at ${returnsRate.toFixed(1)}%. Reduce production or delivery allocation for slow-moving outlets and review product mix.`)
+      else returnsActionPlan.push(`Returns are critical at ${returnsRate.toFixed(1)}%. Immediate production forecasting and outlet allocation review is needed.`)
+      if (returnsAnalysis.avoidableLossVs5 > 0) returnsActionPlan.push(`Potential avoidable loss above 5% target: ${php(returnsAnalysis.avoidableLossVs5)}. Treat this as recoverable sales/profit leakage.`)
+      if (returnResellerRows[0]?.returnsAmount > 0) returnsActionPlan.push(`${returnResellerRows[0].name} has the highest return value: ${php(returnResellerRows[0].returnsAmount)} (${returnResellerRows[0].returnRatePct.toFixed(1)}%). Review delivery quantity and selling location.`)
+      if (returnProductRows[0]?.amount > 0) returnsActionPlan.push(`${returnProductRows[0].name} is the highest returned product: ${safeNum(returnProductRows[0].qty,0)} pcs / ${php(returnProductRows[0].amount)}. Check demand, topping stability, and pricing.`)
+      if (highReturnInvoices.some(i=>i.returnRatePct > 20)) returnsActionPlan.push('At least one invoice has returns above 20%. Review that outlet/reseller before sending the same quantity again.')
+
+      const productMap = {}
+      invoices.forEach(inv => {
+        ;(inv.delivery_invoice_items || []).forEach(item => {
+          const key = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+          if (!productMap[key]) productMap[key] = { name:key, qty:0, revenue:0, avgPrice:0, estProfit:0 }
+          const qty = safeNum(item.quantity,0)
+          const revenue = safeNum(item.total_amount ?? item.subtotal, safeNum(item.unit_price,0)*qty)
+          productMap[key].qty += qty
+          productMap[key].revenue += revenue
+        })
+      })
+      const productProfitability = Object.values(productMap).map(p=>({ ...p, avgPrice:p.qty>0?p.revenue/p.qty:0, estProfit:p.revenue })).sort((a,b)=>b.revenue-a.revenue)
+
+      const nonPayrollExpenseByCategory = groupSum(approvedExpenses.filter(e=>e.category !== 'Payroll Expense'), e=>e.category || 'Uncategorized', e=>e.amount)
+      const expenseByCategory = payrollExpense > 0
+        ? [...nonPayrollExpenseByCategory, { name:'Payroll Expense', total:payrollExpense }].sort((a,b)=>b.total-a.total)
+        : nonPayrollExpenseByCategory
+      const payrollAnalysis = {
+        employeeCount:new Set(payrollRecords.map(p=>p.employee_id || p.employee_name)).size,
+        gross:payrollGross,
+        net:payrollNet,
+        basic:payrollRecords.reduce((s,p)=>s+safeNum(p.basic_pay,0),0),
+        overtime:payrollRecords.reduce((s,p)=>s+safeNum(p.overtime_pay,0),0),
+        nightDiff:payrollRecords.reduce((s,p)=>s+safeNum(p.night_diff_pay,0),0),
+        holiday:payrollRecords.reduce((s,p)=>s+safeNum(p.holiday_pay,0),0),
+        deductions:payrollRecords.reduce((s,p)=>s+safeNum(p.total_deductions,0),0),
+        sss:payrollRecords.reduce((s,p)=>s+safeNum(p.sss_deduction,0),0),
+        pagibig:payrollRecords.reduce((s,p)=>s+safeNum(p.pagibig_deduction,0),0),
+        philhealth:payrollRecords.reduce((s,p)=>s+safeNum(p.philhealth_deduction,0),0),
+      }
+      payrollAnalysis.govTotal = payrollAnalysis.sss + payrollAnalysis.pagibig + payrollAnalysis.philhealth
+
+      const salarySalesRows = [
+        ...dailySalesRows.map(r => ({
+          date:r.sale_date,
+          amount:safeNum(r.total_revenue ?? r.total_amount,0),
+          source:'Walk-in / Messenger'
+        })),
+        ...invoices.map(i => ({
+          date:i.delivery_date,
+          amount:safeNum(i.total_amount,0),
+          source:'Reseller Invoice'
+        }))
+      ].filter(r=>r.date)
+
+      const salesBetweenDates = (from, to, rows = salarySalesRows) => {
+        const f = parseLocalDate(from)
+        const t = parseLocalDate(to)
+        if (!f || !t) return 0
+        return rows.reduce((sum, row) => {
+          const d = parseLocalDate(row.date)
+          return d && d >= f && d <= t ? sum + safeNum(row.amount,0) : sum
+        }, 0)
+      }
+
+      const payrollPeriodMap = {}
+      payrollRecords.forEach(p => {
+        const pStart = p.payroll_start || start
+        const pEnd = p.payroll_end || end
+        const key = `${pStart}|${pEnd}`
+        if (!payrollPeriodMap[key]) {
+          payrollPeriodMap[key] = {
+            start:pStart,
+            end:pEnd,
+            payroll:0,
+            netPayroll:0,
+            basic:0,
+            overtime:0,
+            nightDiff:0,
+            holiday:0,
+            employees:new Set()
+          }
+        }
+        payrollPeriodMap[key].payroll += safeNum(p.total_earnings,0)
+        payrollPeriodMap[key].netPayroll += safeNum(p.net_pay,0)
+        payrollPeriodMap[key].basic += safeNum(p.basic_pay,0)
+        payrollPeriodMap[key].overtime += safeNum(p.overtime_pay,0)
+        payrollPeriodMap[key].nightDiff += safeNum(p.night_diff_pay,0)
+        payrollPeriodMap[key].holiday += safeNum(p.holiday_pay,0)
+        payrollPeriodMap[key].employees.add(String(p.employee_id || p.employee_name || 'unknown'))
+      })
+
+      const salaryRatioPeriodRows = Object.values(payrollPeriodMap).map(row => {
+        const sales = salesBetweenDates(row.start, row.end)
+        const ratio = sales > 0 ? (row.payroll / sales) * 100 : 0
+        const status = getSalaryRatioStatus(ratio, sales, row.payroll)
+        return {
+          start:row.start,
+          end:row.end,
+          sales,
+          payroll:row.payroll,
+          netPayroll:row.netPayroll,
+          ratio,
+          status:status.label,
+          color:status.color,
+          employees:row.employees.size,
+          basic:row.basic,
+          overtime:row.overtime,
+          nightDiff:row.nightDiff,
+          holiday:row.holiday
+        }
+      }).sort((a,b)=>String(b.start).localeCompare(String(a.start)))
+
+      const salaryEmployeeMap = {}
+      payrollRecords.forEach(p => {
+        const key = p.employee_id || p.employee_name || 'Unknown'
+        if (!salaryEmployeeMap[key]) {
+          salaryEmployeeMap[key] = {
+            employee:p.employee_name || 'Unknown',
+            employeeCode:p.employee_code || '',
+            payroll:0,
+            netPay:0,
+            basic:0,
+            overtime:0,
+            nightDiff:0,
+            holiday:0,
+            records:0
+          }
+        }
+        salaryEmployeeMap[key].payroll += safeNum(p.total_earnings,0)
+        salaryEmployeeMap[key].netPay += safeNum(p.net_pay,0)
+        salaryEmployeeMap[key].basic += safeNum(p.basic_pay,0)
+        salaryEmployeeMap[key].overtime += safeNum(p.overtime_pay,0)
+        salaryEmployeeMap[key].nightDiff += safeNum(p.night_diff_pay,0)
+        salaryEmployeeMap[key].holiday += safeNum(p.holiday_pay,0)
+        salaryEmployeeMap[key].records += 1
+      })
+
+      const salaryRatioEmployeeRows = Object.values(salaryEmployeeMap).map(r => ({
+        ...r,
+        payrollPct:payrollExpense > 0 ? (r.payroll / payrollExpense) * 100 : 0,
+        salesPct:totalSales > 0 ? (r.payroll / totalSales) * 100 : 0
+      })).sort((a,b)=>b.payroll-a.payroll).slice(0,12)
+
+      const trendSalesRows = [
+        ...trendDailySalesRows.map(r => ({
+          date:r.sale_date,
+          amount:safeNum(r.total_revenue ?? r.total_amount,0)
+        })),
+        ...trendInvoiceRows.map(i => ({
+          date:i.delivery_date,
+          amount:safeNum(i.total_amount,0)
+        }))
+      ].filter(r=>r.date)
+
+      const salaryRatioTrend = trendMonths.map(m => {
+        const sales = salesBetweenDates(m.start, m.end, trendSalesRows)
+        const payroll = trendPayrollRows
+          .filter(p => String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start)
+          .reduce((sum,p)=>sum+safeNum(p.total_earnings,0),0)
+        const ratio = sales > 0 ? (payroll / sales) * 100 : 0
+        const status = getSalaryRatioStatus(ratio, sales, payroll)
+        return {
+          month:m.key,
+          label:m.label,
+          start:m.start,
+          end:m.end,
+          sales,
+          payroll,
+          ratio,
+          status:status.label,
+          color:status.color
+        }
+      })
+
+      const salaryStatus = getSalaryRatioStatus(salaryToSalesRatio, totalSales, payrollExpense)
+      const salaryRatio = {
+        sales:totalSales,
+        payroll:payrollExpense,
+        ratio:salaryToSalesRatio,
+        status:salaryStatus.label,
+        color:salaryStatus.color,
+        message:salaryStatus.message,
+        source:payrollExpenseSource,
+        maxPayrollAt20:totalSales * 0.20,
+        maxPayrollAt25:totalSales * 0.25,
+        excessPayrollVs25:Math.max(0, payrollExpense - (totalSales * 0.25)),
+        payrollSpaceVs25:Math.max(0, (totalSales * 0.25) - payrollExpense),
+        salesNeededAt25:payrollExpense > 0 ? payrollExpense / 0.25 : 0,
+        additionalSalesNeededAt25:Math.max(0, (payrollExpense > 0 ? payrollExpense / 0.25 : 0) - totalSales),
+        payrollPerPesoSales:totalSales > 0 ? payrollExpense / totalSales : 0,
+        employeeCount:payrollAnalysis.employeeCount,
+        bestMonth:salaryRatioTrend.filter(t=>t.payroll>0 && t.sales>0).sort((a,b)=>a.ratio-b.ratio)[0] || null,
+        worstMonth:salaryRatioTrend.filter(t=>t.payroll>0 && t.sales>0).sort((a,b)=>b.ratio-a.ratio)[0] || null,
+      }
+
+      const salaryRatioActionPlan = []
+      if (payrollExpense <= 0) salaryRatioActionPlan.push('No payroll expense detected. Compute/release payroll or post payroll expense first.')
+      else if (totalSales <= 0) salaryRatioActionPlan.push('Payroll exists but no sales were detected. Check if sales or delivery invoices were encoded for the selected month.')
+      else if (salaryToSalesRatio <= 20) salaryRatioActionPlan.push('Salary-to-sales ratio is strong. Maintain current manpower discipline and monitor overtime.')
+      else if (salaryToSalesRatio <= 25) salaryRatioActionPlan.push('Salary-to-sales ratio is healthy but close to the upper target. Monitor overtime and slow sales days.')
+      else if (salaryToSalesRatio <= 30) salaryRatioActionPlan.push(`Salary-to-sales ratio is on watch. Reduce payroll by ${php(salaryRatio.excessPayrollVs25)} or increase net sales by ${php(salaryRatio.additionalSalesNeededAt25)} to return to 25%.`)
+      else salaryRatioActionPlan.push(`Salary-to-sales ratio is critical. Review staffing schedules, overtime, low-performing shifts, and reseller/outlet sales immediately. Gap vs 25% target: ${php(salaryRatio.excessPayrollVs25)}.`)
+      if (salaryRatioPeriodRows.some(r=>r.status==='CRITICAL')) salaryRatioActionPlan.push('At least one payroll period is critical. Open the period breakdown and check manpower scheduling per cutoff.')
+      if (salaryRatioEmployeeRows.length > 0 && salaryRatioEmployeeRows[0].payrollPct > 20) salaryRatioActionPlan.push(`${salaryRatioEmployeeRows[0].employee} has the highest payroll share this month at ${salaryRatioEmployeeRows[0].payrollPct.toFixed(1)}% of payroll. Review role, hours, and overtime if needed.`)
+
+      const bankDepositsTotal = bankDepositsRows.reduce((s,b)=>s+safeNum(b.amount,0),0)
+      const cashIn = walkinMessengerSales + collectedInvoices
+      const cashOut = totalOperatingExpenses
+      const netCashFlow = cashIn - cashOut
+
+      const unpaidInvoices = invoices.filter(i=>['unpaid','partial'].includes(String(i.status || '').toLowerCase()) || Math.max(0, getInvoiceNetAmount(i)-safeNum(i.paid_amount,0)) > 0)
+      const receivableRows = unpaidInvoices.map((inv, idx) => {
+        const balance = Math.max(0, getInvoiceNetAmount(inv) - safeNum(inv.paid_amount,0))
+        const deliveryDate = String(inv.delivery_date || inv.created_at || '').slice(0,10)
+        const dueDate = String(inv.due_date || deliveryDate || '').slice(0,10)
+        const age = daysBetweenLocal(dueDate || deliveryDate, todayDate)
+        const paidPct = getInvoiceNetAmount(inv) > 0 ? (safeNum(inv.paid_amount,0) / getInvoiceNetAmount(inv)) * 100 : 0
+        const bucket = age <= 7 ? '0–7 days' : age <= 15 ? '8–15 days' : age <= 30 ? '16–30 days' : '31+ days'
+        const status = age <= 7 ? 'Current' : age <= 15 ? 'Watch' : age <= 30 ? 'Overdue' : 'Critical'
+        const color = age <= 7 ? '#2d8a4e' : age <= 15 ? '#f5a623' : '#ca1b1b'
+        return {
+          id:inv.id || idx,
+          invoiceNumber:inv.invoice_number || inv.id || `Invoice ${idx + 1}`,
+          reseller:inv.reseller_name || 'Unassigned',
+          deliveryDate,
+          dueDate,
+          age,
+          balance,
+          total:getInvoiceNetAmount(inv),
+          paid:safeNum(inv.paid_amount,0),
+          paidPct,
+          bucket,
+          status,
+          color
+        }
+      }).filter(r=>r.balance > 0).sort((a,b)=>b.age-a.age || b.balance-a.balance)
+      const overdueAR = receivableRows.filter(r=>r.age > 7).reduce((s,r)=>s+safeNum(r.balance,0),0)
+      const criticalAR = receivableRows.filter(r=>r.age >= 31).reduce((s,r)=>s+safeNum(r.balance,0),0)
+      const arOverduePct = totalAR > 0 ? (overdueAR / totalAR) * 100 : 0
+      const receivableStatus = getReceivableStatus(totalAR, overdueAR, totalSales)
+      const collectionRate = resellerSales > 0 ? (collectedInvoices / resellerSales) * 100 : 0
+      const receivablePriorityRows = receivableRows.slice(0,15)
+      const receivableSummary = {
+        totalAR,
+        overdueAR,
+        criticalAR,
+        arOverduePct,
+        collectionRate,
+        unpaidInvoices:receivableRows.length,
+        worstInvoice:receivableRows[0] || null,
+        status:receivableStatus.label,
+        color:receivableStatus.color,
+        message:receivableStatus.message
+      }
+      const receivableActionPlan = []
+      if (totalAR <= 0) receivableActionPlan.push('No unpaid reseller receivables detected. Continue collecting before or upon delivery whenever possible.')
+      else if (receivableStatus.level === 'good') receivableActionPlan.push(`Receivables are controlled at ${php(totalAR)}. Keep daily collection follow-up and avoid increasing credit limits unnecessarily.`)
+      else if (receivableStatus.level === 'watch') receivableActionPlan.push(`Receivables need attention. Collect at least ${php(overdueAR)} overdue balance before releasing larger orders.`)
+      else receivableActionPlan.push(`Receivables are critical. Prioritize the ${receivablePriorityRows[0]?.reseller || 'highest overdue account'} account and pause or reduce credit exposure until payment improves.`)
+      if (criticalAR > 0) receivableActionPlan.push(`${php(criticalAR)} is already 31+ days old. Treat this as high-risk cash and follow up immediately.`)
+      if (collectionRate < 80 && resellerSales > 0) receivableActionPlan.push(`Collection rate is only ${collectionRate.toFixed(1)}%. Target at least 90–95% collected sales.`)
+
+      const cashStatus = getCashFlowStatus(netCashFlow, cashIn, cashOut)
+      const actualCashTotal = cashReconRows.reduce((s,r)=>s+safeNum(r.actual_cash ?? r.cash_on_hand ?? r.actual_amount,0),0)
+      const expectedCashTotal = cashIn
+      const cashVarianceTotal = actualCashTotal > 0 ? actualCashTotal - expectedCashTotal : 0
+      const depositCoveragePct = cashIn > 0 ? (bankDepositsTotal / cashIn) * 100 : 0
+      const cashCollectionEfficiencyPct = (walkinMessengerSales + resellerSales) > 0 ? (cashIn / (walkinMessengerSales + resellerSales)) * 100 : 0
+      const cashFlowTrend = trendMonths.map(m => {
+        const mDaily = trendDailySalesRows.filter(r=>String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end).reduce((sum,r)=>sum+safeNum(r.total_revenue ?? r.total_amount,0),0)
+        const mInvoices = trendInvoiceRows.filter(i=>String(i.delivery_date || '').slice(0,10) >= m.start && String(i.delivery_date || '').slice(0,10) <= m.end)
+        const mCollected = mInvoices.reduce((sum,i)=>sum+safeNum(i.paid_amount,0),0)
+        const mPayroll = trendPayrollRows.filter(p=>String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start).reduce((sum,p)=>sum+safeNum(p.total_earnings,0),0)
+        const mCOGS = trendProductionLogRows.filter(p=>String(p.production_date || '').slice(0,10) >= m.start && String(p.production_date || '').slice(0,10) <= m.end).reduce((sum,p)=>sum+safeNum(p.total_cost,0),0)
+        const mCashIn = mDaily + mCollected
+        const mCashOut = mPayroll + mCOGS
+        const mNet = mCashIn - mCashOut
+        const st = getCashFlowStatus(mNet, mCashIn, mCashOut)
+        return { month:m.key, label:m.label, cashIn:mCashIn, cashOut:mCashOut, netCashFlow:mNet, status:st.label, color:st.color }
+      })
+      const cashFlow = {
+        cashIn,
+        cashOut,
+        netCashFlow,
+        bankDepositsTotal,
+        actualCashTotal,
+        expectedCashTotal,
+        cashVarianceTotal,
+        depositCoveragePct,
+        cashCollectionEfficiencyPct,
+        status:cashStatus.label,
+        color:cashStatus.color,
+        message:cashStatus.message,
+        cashBurnCoverageDays:cashOut > 0 ? (Math.max(0, cashIn - cashOut) / (cashOut / Math.max(1, daysInclusive(start, end)))) : 0
+      }
+      const cashFlowActionPlan = []
+      if (cashStatus.level === 'good') cashFlowActionPlan.push('Cash flow is positive. Maintain daily closing, deposit discipline, and receivable collection follow-up.')
+      else if (cashStatus.level === 'watch') cashFlowActionPlan.push('Cash flow needs monitoring. Delay non-essential expenses and accelerate reseller collections.')
+      else cashFlowActionPlan.push('Cash flow is negative. Review payroll, food cost, returns, and unpaid reseller balances before increasing production or expenses.')
+      if (depositCoveragePct < 80 && cashIn > 0) cashFlowActionPlan.push(`Only ${depositCoveragePct.toFixed(1)}% of cash inflow is reflected in bank deposits. Confirm cash-on-hand and deposit records.`)
+      if (totalAR > 0) cashFlowActionPlan.push(`Uncollected reseller balance is ${php(totalAR)}. Collection directly improves cash flow without increasing production cost.`)
+
+      const salesActivityDates = new Set([...dailySalesRows.map(r=>r.sale_date), ...invoices.map(i=>i.delivery_date)].filter(Boolean))
+      const activeSalesDays = Math.max(1, salesActivityDates.size)
+      const invoiceActivityDays = Math.max(1, new Set(invoices.map(i=>i.delivery_date).filter(Boolean)).size)
+      const avgDailySales = totalSales / activeSalesDays
+      const avgDailyDeliveredQty = totalDeliveredQty / invoiceActivityDays
+      const returnAdjustmentQty = totalDeliveredQty > 0 ? totalReturnsQty / invoiceActivityDays : 0
+      const suggestedProductionQty = Math.max(0, Math.ceil((avgDailyDeliveredQty - returnAdjustmentQty) * 1.05))
+      const productionForecastStatus = totalDeliveredQty <= 0 ? 'Needs sales/invoice quantity data' : returnsQtyRate > 10 ? 'Reduce production allocation' : returnsQtyRate > 5 ? 'Controlled adjustment needed' : 'Stable forecast'
+      const productionForecast = {
+        basisDays:activeSalesDays,
+        avgDailySales,
+        avgDailyDeliveredQty,
+        returnAdjustmentQty,
+        suggestedProductionQty,
+        returnsQtyRate,
+        status:productionForecastStatus,
+        next7DaySalesTarget:avgDailySales * 7,
+        next7DayQtyTarget:suggestedProductionQty * 7
+      }
+      const productionForecastRows = productProfitability.map(p => {
+        const returned = returnProductRows.find(r=>r.name === p.name)
+        const returnedQty = safeNum(returned?.qty,0)
+        const soldQty = safeNum(p.qty,0)
+        const netDemandQty = Math.max(0, soldQty - returnedQty)
+        const avgDailyQty = netDemandQty / activeSalesDays
+        const productReturnRate = soldQty > 0 ? (returnedQty / soldQty) * 100 : 0
+        const recommendedNext7Days = Math.max(0, Math.ceil(avgDailyQty * 7 * (productReturnRate > 10 ? 0.90 : productReturnRate > 5 ? 0.97 : 1.05)))
+        const status = productReturnRate > 10 ? 'Reduce / Review' : productReturnRate > 5 ? 'Watch' : 'Maintain / Grow'
+        return { name:p.name, soldQty, returnedQty, netDemandQty, avgDailyQty, productReturnRate, recommendedNext7Days, revenue:p.revenue, status }
+      }).sort((a,b)=>b.recommendedNext7Days-a.recommendedNext7Days).slice(0,12)
+      const outletForecastRows = resellerRanking.map(r => {
+        const avgDailyOutletSales = safeNum(r.sales,0) / activeSalesDays
+        const recommendedSalesNext7Days = Math.max(0, avgDailyOutletSales * 7 * (safeNum(r.returnRatePct,0) > 10 ? 0.85 : safeNum(r.returnRatePct,0) > 5 ? 0.95 : 1.05))
+        const recommendation = safeNum(r.returnRatePct,0) > 10 ? 'Reduce allocation and review location' : safeNum(r.returnRatePct,0) > 5 ? 'Maintain carefully / monitor returns' : 'Can maintain or increase gradually'
+        return { name:r.name, avgDailySales:avgDailyOutletSales, recommendedSalesNext7Days, returnRatePct:r.returnRatePct, unpaid:r.unpaid, recommendation }
+      }).sort((a,b)=>b.recommendedSalesNext7Days-a.recommendedSalesNext7Days).slice(0,12)
+      const productionForecastActionPlan = []
+      if (totalDeliveredQty <= 0) productionForecastActionPlan.push('No delivered quantity basis detected. Ensure delivery invoice items include quantities to make forecasting accurate.')
+      else productionForecastActionPlan.push(`Recommended next production baseline is about ${suggestedProductionQty} pcs/day or ${suggestedProductionQty * 7} pcs for 7 days, adjusted for returns.`)
+      if (returnsQtyRate > 5) productionForecastActionPlan.push(`Returns quantity rate is ${returnsQtyRate.toFixed(1)}%. Reduce allocation to high-return outlets/products before increasing production.`)
+      if (productionForecastRows[0]) productionForecastActionPlan.push(`${productionForecastRows[0].name} has the highest demand forecast: ${productionForecastRows[0].recommendedNext7Days} pcs for the next 7 days.`)
+
+      const resellerPerformanceRows = resellerRanking.map(r => {
+        const collectionRateRow = safeNum(r.sales,0) > 0 ? (safeNum(r.paid,0) / safeNum(r.sales,0)) * 100 : 0
+        const arPct = safeNum(r.sales,0) > 0 ? (safeNum(r.unpaid,0) / safeNum(r.sales,0)) * 100 : 0
+        const returnRate = safeNum(r.returnRatePct,0)
+        const score = Math.max(0, Math.min(100, 100 - Math.max(0, returnRate - 5) * 3 - Math.max(0, arPct - 10) * 1.25 - Math.max(0, 90 - collectionRateRow) * 0.5))
+        const status = getPerformanceStatus(score)
+        const recommendation = score >= 85 ? 'Strong outlet/reseller. Maintain supply and relationship.' : score >= 70 ? 'Good, but monitor receivables and returns.' : score >= 50 ? 'Watch closely. Improve collection and adjust allocation.' : 'Critical. Review credit terms, location, quantity, and collection before more deliveries.'
+        return { ...r, collectionRate:collectionRateRow, arPct, score, status:status.label, color:status.color, recommendation }
+      }).sort((a,b)=>b.score-a.score || b.sales-a.sales)
+      const resellerPerformanceActionPlan = []
+      if (resellerPerformanceRows.length === 0) resellerPerformanceActionPlan.push('No reseller performance data detected for this month.')
+      else {
+        const best = resellerPerformanceRows[0]
+        const worst = [...resellerPerformanceRows].sort((a,b)=>a.score-b.score)[0]
+        if (best) resellerPerformanceActionPlan.push(`${best.name} is the strongest performer with score ${best.score.toFixed(0)}/100 and ${php(best.sales)} net sales.`)
+        if (worst && worst.score < 70) resellerPerformanceActionPlan.push(`${worst.name} needs review: score ${worst.score.toFixed(0)}/100, unpaid ${php(worst.unpaid)}, returns ${safeNum(worst.returnRatePct,0).toFixed(1)}%.`)
+      }
+
+      const closingEnd = parseLocalDate(end) > parseLocalDate(todayDate) ? todayDate : end
+      const monthDayList = []
+      for (let d = parseLocalDate(start); d && parseLocalDate(closingEnd) && d <= parseLocalDate(closingEnd); d.setDate(d.getDate() + 1)) {
+        monthDayList.push(formatDateLocal(d))
+      }
+      const dailyClosingRows = monthDayList.map(date => {
+        const dailySalesAmt = dailySalesRows.filter(r=>String(r.sale_date || '').slice(0,10) === date).reduce((sum,r)=>sum+safeNum(r.total_revenue ?? r.total_amount,0),0)
+        const invoiceSalesAmt = invoices.filter(i=>String(i.delivery_date || '').slice(0,10) === date).reduce((sum,i)=>sum+getInvoiceNetAmount(i),0)
+        const collectedToday = invoices.filter(i=>String(i.paid_date || i.delivery_date || '').slice(0,10) === date).reduce((sum,i)=>sum+safeNum(i.paid_amount,0),0)
+        const returnsToday = returnRecords.filter(r=>String(r.date || '').slice(0,10) === date).reduce((sum,r)=>sum+safeNum(r.amount,0),0)
+        const recon = cashReconRows.find(r=>String(r.reconciliation_date || '').slice(0,10) === date)
+        const actualCash = safeNum(recon?.actual_cash ?? recon?.cash_on_hand ?? recon?.actual_amount,0)
+        const deposits = bankDepositsRows.filter(b=>String(b.deposit_date || '').slice(0,10) === date).reduce((sum,b)=>sum+safeNum(b.amount,0),0)
+        const expectedCash = dailySalesAmt + collectedToday
+        const variance = recon ? actualCash - expectedCash : 0
+        const hasActivity = dailySalesAmt > 0 || invoiceSalesAmt > 0 || collectedToday > 0 || returnsToday > 0
+        const status = recon ? (Math.abs(variance) <= 50 ? 'Closed / Matched' : 'Closed / Variance') : (hasActivity ? 'Missing Closing' : 'No Activity')
+        const color = status === 'Closed / Matched' ? '#2d8a4e' : status === 'Closed / Variance' ? '#f5a623' : status === 'Missing Closing' ? '#ca1b1b' : '#777'
+        return { date, sales:dailySalesAmt + invoiceSalesAmt, collected:collectedToday, returnsAmount:returnsToday, expectedCash, actualCash, deposits, variance, status, color, notes:recon?.notes || '' }
+      }).sort((a,b)=>String(b.date).localeCompare(String(a.date)))
+      const missingClosingDays = dailyClosingRows.filter(r=>r.status === 'Missing Closing').length
+      const cashVarianceDays = dailyClosingRows.filter(r=>r.status === 'Closed / Variance').length
+      const dailyClosingActionPlan = []
+      if (missingClosingDays === 0 && cashVarianceDays === 0) dailyClosingActionPlan.push('Daily closing records look complete for days with activity. Continue same end-of-day discipline.')
+      if (missingClosingDays > 0) dailyClosingActionPlan.push(`${missingClosingDays} day(s) with activity have no closing record. Require daily closing before the next selling day.`)
+      if (cashVarianceDays > 0) dailyClosingActionPlan.push(`${cashVarianceDays} closing day(s) have cash variance. Review cash count, deposits, and unrecorded expenses/payments.`)
+      const closingDays = new Set(cashReconRows.map(r=>r.reconciliation_date)).size
+      const salesDays = new Set(dailySalesRows.map(r=>r.sale_date)).size
+      const closingCoveragePct = salesDays > 0 ? (closingDays / salesDays) * 100 : 0
+
+      const lowStockItems = inventoryRows.filter(i=>safeNum(i.current_stock,0) <= safeNum(i.min_stock,0))
+      const inventoryValue = inventoryRows.reduce((s,i)=>s+(safeNum(i.current_stock,0)*safeNum(i.cost_per_unit,0)),0)
+      const stockOutMovement = inventoryTxRows.filter(t=>String(t.transaction_type || t.type || '').toLowerCase().includes('out')).reduce((s,t)=>s+safeNum(t.quantity,0),0)
+      const stockInMovement = inventoryTxRows.filter(t=>String(t.transaction_type || t.type || '').toLowerCase().includes('in')).reduce((s,t)=>s+safeNum(t.quantity,0),0)
+      const wastageCost = wastageRows.reduce((s,w)=>s+safeNum(w.total_cost ?? w.amount ?? w.charge_amount, safeNum(w.quantity,0)*safeNum(w.unit_cost,0)),0)
+      const wastageByReason = groupSum(wastageRows, w=>w.reason || w.wastage_reason || 'Unspecified', w=>w.total_cost ?? w.amount ?? w.charge_amount ?? 0)
+
+
+      const invoiceQty = inv => (inv.delivery_invoice_items || []).reduce((sum,item)=>sum+safeNum(item.quantity ?? item.qty ?? item.delivered_qty,0),0)
+      const routeStatusCounts = { total:invoices.length, completed:0, pending:0, returnWatch:0, uncollected:0 }
+      const deliveryRouteRows = invoices.map((inv, idx) => {
+        const deliveredQty = invoiceQty(inv)
+        const returnQty = getInvoiceReturnQty(inv)
+        const returnRatePct = deliveredQty > 0 ? (returnQty / deliveredQty) * 100 : 0
+        const netAmount = getInvoiceNetAmount(inv)
+        const paid = safeNum(inv.paid_amount,0)
+        const balance = Math.max(0, netAmount - paid)
+        const st = getRouteStatus(inv.status, returnRatePct, balance)
+        if (st.level === 'good') routeStatusCounts.completed += 1
+        if (st.level === 'none') routeStatusCounts.pending += 1
+        if (st.level === 'critical' || st.label.includes('RETURN')) routeStatusCounts.returnWatch += 1
+        if (balance > 0) routeStatusCounts.uncollected += 1
+        const recommendation = st.label === 'HIGH RETURNS'
+          ? 'Reduce next allocation and review selling location/product mix.'
+          : balance > 0
+            ? 'Follow up collection before increasing credit exposure.'
+            : st.label === 'PENDING / CHECK'
+              ? 'Confirm delivery status, crates, returns, and payment.'
+              : 'Route looks controlled.'
+        return {
+          id:inv.id || idx,
+          invoiceNumber:inv.invoice_number || inv.id || `Invoice ${idx + 1}`,
+          date:String(inv.delivery_date || inv.created_at || '').slice(0,10),
+          reseller:inv.reseller_name || inv.branch_name || inv.customer_name || 'Unassigned',
+          rawStatus:inv.status || 'unconfirmed',
+          status:st.label,
+          color:st.color,
+          deliveredQty,
+          returnQty,
+          returnRatePct,
+          netSales:netAmount,
+          paid,
+          balance,
+          crates:safeNum(inv.crates ?? inv.crate_count ?? inv.total_crates,0),
+          preparedBy:inv.prepared_by || '',
+          dispatchedBy:inv.dispatched_by || inv.driver_name || '',
+          recommendation
+        }
+      }).sort((a,b)=>String(b.date).localeCompare(String(a.date)) || safeNum(b.balance,0)-safeNum(a.balance,0))
+      const deliveryCompletionPct = invoices.length > 0 ? (routeStatusCounts.completed / invoices.length) * 100 : 0
+      const deliveryRoute = {
+        totalRoutes:invoices.length,
+        completedCount:routeStatusCounts.completed,
+        pendingCount:routeStatusCounts.pending,
+        returnWatchCount:routeStatusCounts.returnWatch,
+        uncollectedCount:routeStatusCounts.uncollected,
+        completionPct:deliveryCompletionPct,
+        status:invoices.length === 0 ? 'NO DELIVERY DATA' : deliveryCompletionPct >= 90 && routeStatusCounts.returnWatch === 0 ? 'CONTROLLED' : routeStatusCounts.returnWatch > 0 || routeStatusCounts.uncollected > 0 ? 'NEEDS REVIEW' : 'MONITOR',
+        color:invoices.length === 0 ? '#777' : deliveryCompletionPct >= 90 && routeStatusCounts.returnWatch === 0 ? '#2d8a4e' : '#f5a623'
+      }
+      const deliveryRouteActionPlan = []
+      if (invoices.length === 0) deliveryRouteActionPlan.push('No delivery invoices found for this month. Encode delivery invoices to activate route monitoring.')
+      else if (deliveryRoute.status === 'CONTROLLED') deliveryRouteActionPlan.push('Delivery routes look controlled. Continue checking delivered quantity, returns, crates, and collections daily.')
+      else deliveryRouteActionPlan.push('Some delivery routes need review. Prioritize invoices with high returns, pending status, or unpaid balances.')
+      if (routeStatusCounts.uncollected > 0) deliveryRouteActionPlan.push(`${routeStatusCounts.uncollected} delivered invoice(s) still have uncollected balance. Coordinate collection before the next large release.`)
+      if (routeStatusCounts.returnWatch > 0) deliveryRouteActionPlan.push(`${routeStatusCounts.returnWatch} route(s)/invoice(s) have return risk. Reduce next delivery quantity for those outlets until sales improve.`)
+
+      const itemUsageMap = {}
+      inventoryTxRows.forEach(t => {
+        const id = String(t.item_id || t.inventory_item_id || t.item_name || t.name || 'Unknown')
+        if (!itemUsageMap[id]) itemUsageMap[id] = { id, name:t.item_name || t.name || 'Unknown Item', stockIn:0, stockOut:0, adjustments:0 }
+        const qty = safeNum(t.quantity ?? t.qty,0)
+        const kind = String(t.transaction_type || t.type || '').toLowerCase()
+        if (kind.includes('in')) itemUsageMap[id].stockIn += qty
+        else if (kind.includes('out')) itemUsageMap[id].stockOut += qty
+        else itemUsageMap[id].adjustments += qty
+      })
+      stockAdjustmentsRows.forEach(a => {
+        const id = String(a.item_id || a.inventory_item_id || a.item_name || a.name || 'Unknown')
+        if (!itemUsageMap[id]) itemUsageMap[id] = { id, name:a.item_name || a.name || 'Unknown Item', stockIn:0, stockOut:0, adjustments:0 }
+        itemUsageMap[id].adjustments += safeNum(a.adjustment_qty ?? a.quantity ?? a.qty,0)
+      })
+      const inventoryUsageRows = Object.values(itemUsageMap).map(row => {
+        const invItem = inventoryRows.find(i=>String(i.id) === String(row.id) || i.name === row.name || i.item_name === row.name)
+        const netUsage = safeNum(row.stockOut,0) - safeNum(row.stockIn,0) + Math.max(0, safeNum(row.adjustments,0))
+        const daysCover = netUsage > 0 ? safeNum(invItem?.current_stock,0) / (netUsage / Math.max(1, daysInclusive(start, end))) : 999
+        const st = daysCover < 3 ? { label:'CRITICAL USAGE', color:'#ca1b1b' } : daysCover < 7 ? { label:'WATCH USAGE', color:'#f5a623' } : { label:'NORMAL', color:'#2d8a4e' }
+        return { ...row, name:invItem?.name || invItem?.item_name || row.name, currentStock:safeNum(invItem?.current_stock,0), minStock:safeNum(invItem?.min_stock,0), costPerUnit:safeNum(invItem?.cost_per_unit,0), netUsage, daysCover, status:st.label, color:st.color }
+      }).sort((a,b)=>safeNum(b.netUsage,0)-safeNum(a.netUsage,0)).slice(0,15)
+      const inventoryReorderRows = inventoryRows.map(i => {
+        const cur = safeNum(i.current_stock,0)
+        const min = safeNum(i.min_stock,0)
+        const unitCost = safeNum(i.cost_per_unit,0)
+        const usage = inventoryUsageRows.find(u=>String(u.id) === String(i.id) || u.name === (i.name || i.item_name))
+        const monthlyUsage = safeNum(usage?.stockOut,0)
+        const avgDailyUsage = monthlyUsage / Math.max(1, daysInclusive(start, end))
+        const suggestedReorderQty = Math.max(0, Math.ceil((min * 2) - cur + (avgDailyUsage * 7)))
+        const daysCover = avgDailyUsage > 0 ? cur / avgDailyUsage : 999
+        const st = getInventoryRiskStatus(cur, min)
+        return {
+          id:i.id,
+          name:i.name || i.item_name || 'Unnamed Item',
+          category:i.category || 'Uncategorized',
+          unit:i.unit || '',
+          currentStock:cur,
+          minStock:min,
+          monthlyUsage,
+          avgDailyUsage,
+          daysCover,
+          suggestedReorderQty,
+          reorderValue:suggestedReorderQty * unitCost,
+          status:st.label,
+          color:st.color,
+          level:st.level,
+          recommendation:st.message
+        }
+      }).sort((a,b)=>{
+        const rank = { critical:0, watch:1, none:2, good:3 }
+        return (rank[a.level] ?? 9) - (rank[b.level] ?? 9) || safeNum(a.daysCover,999)-safeNum(b.daysCover,999)
+      })
+      const criticalStockItems = inventoryReorderRows.filter(r=>['STOCKOUT','CRITICAL'].includes(r.status)).length
+      const reorderNowItems = inventoryReorderRows.filter(r=>['STOCKOUT','CRITICAL','REORDER NOW'].includes(r.status)).length
+      const suggestedReorderValue = inventoryReorderRows.reduce((s,r)=>s+safeNum(r.reorderValue,0),0)
+      const inventoryControl = {
+        totalItems:inventoryRows.length,
+        lowItems:lowStockItems.length,
+        criticalItems:criticalStockItems,
+        reorderNowItems,
+        suggestedReorderValue,
+        inventoryValue,
+        status:criticalStockItems>0?'CRITICAL':reorderNowItems>0?'REORDER NEEDED':'CONTROLLED',
+        color:criticalStockItems>0?'#ca1b1b':reorderNowItems>0?'#f5a623':'#2d8a4e'
+      }
+      const inventoryReorderActionPlan = []
+      if (inventoryRows.length === 0) inventoryReorderActionPlan.push('No inventory items found. Encode inventory master list with current stock, minimum stock, unit, and cost per unit.')
+      else if (criticalStockItems > 0) inventoryReorderActionPlan.push(`${criticalStockItems} item(s) are critical or out of stock. Create purchase orders immediately.`)
+      else if (reorderNowItems > 0) inventoryReorderActionPlan.push(`${reorderNowItems} item(s) reached reorder level. Prepare replenishment before production is affected.`)
+      else inventoryReorderActionPlan.push('Inventory level looks controlled. Continue updating stock-in, stock-out, and adjustments daily.')
+      if (suggestedReorderValue > 0) inventoryReorderActionPlan.push(`Estimated reorder budget based on current minimum stock logic: ${php(suggestedReorderValue)}.`)
+
+      const productionCostPerPieceBase = actualOutput > 0 ? totalCOGS / actualOutput : 0
+      const batchCostRows = productionLogsRows.map((l, idx) => {
+        const pieces = safeNum(l.total_pieces ?? l.pieces_produced ?? l.quantity,0)
+        const cost = safeNum(l.total_cost,0)
+        const costPerPiece = pieces > 0 ? cost / pieces : 0
+        const date = String(l.production_date || l.created_at || '').slice(0,10)
+        const label = l.batch_no || l.batch_number || l.variant_name || l.product_name || `Batch ${idx + 1}`
+        const status = costPerPiece <= 0 ? 'CHECK COST' : productionCostPerPieceBase > 0 && costPerPiece > productionCostPerPieceBase * 1.20 ? 'HIGH COST' : 'NORMAL'
+        const color = status === 'HIGH COST' ? '#f5a623' : status === 'CHECK COST' ? '#777' : '#2d8a4e'
+        return { id:l.id || idx, date, label, pieces, cost, costPerPiece, status, color, notes:l.notes || '' }
+      }).sort((a,b)=>safeNum(b.costPerPiece,0)-safeNum(a.costPerPiece,0))
+      const avgBatchCostPerPiece = actualOutput > 0 ? totalCOGS / actualOutput : 0
+      const batchCostingStatus = totalCOGS <= 0 ? 'NO BATCH COST DATA' : avgBatchCostPerPiece > 20 ? 'CHECK COST / HIGH' : 'CONTROLLED'
+      const batchCosting = {
+        batchCount:productionLogsRows.length,
+        totalCost:totalCOGS,
+        totalPieces:actualOutput,
+        avgCostPerPiece:avgBatchCostPerPiece,
+        highestCostBatch:batchCostRows[0] || null,
+        estimatedRevenue:totalSales,
+        estimatedGrossProfit:grossProfit,
+        status:batchCostingStatus,
+        color:batchCostingStatus === 'CONTROLLED' ? '#2d8a4e' : batchCostingStatus === 'NO BATCH COST DATA' ? '#777' : '#f5a623'
+      }
+      const batchCostingActionPlan = []
+      if (totalCOGS <= 0) batchCostingActionPlan.push('No batch cost data detected. Encode total cost and total pieces per production log to calculate cost per piece.')
+      else batchCostingActionPlan.push(`Average batch cost is ${php(avgBatchCostPerPiece)} per produced piece. Compare this with your target cost per donut/bite.`)
+      if (batchCostRows[0]?.status === 'HIGH COST') batchCostingActionPlan.push(`${batchCostRows[0].label} has high cost per piece at ${php(batchCostRows[0].costPerPiece)}. Check ingredients, yield, and rejected pieces.`)
+
+      const actualVsStandardRows = []
+      productionReportsRows.forEach((report, reportIdx) => {
+        ;(report.production_report_items || []).forEach((it, idx) => {
+          const standardQty = safeNum(it.expected_quantity ?? it.default_quantity ?? it.standard_quantity,0)
+          const actualQty = safeNum(it.quantity ?? it.pieces ?? it.produced_qty ?? it.actual_quantity,0)
+          const varianceQty = actualQty - standardQty
+          const pct = standardQty > 0 ? (actualQty / standardQty) * 100 : 0
+          const st = standardQty <= 0 ? { label:'NO STANDARD', color:'#777' } : pct >= 95 ? { label:'ON STANDARD', color:'#2d8a4e' } : pct >= 90 ? { label:'WATCH', color:'#f5a623' } : { label:'UNDER STANDARD', color:'#ca1b1b' }
+          actualVsStandardRows.push({ id:`${report.id || reportIdx}-${idx}`, source:'Production Report', name:it.variant_name || it.product_name || it.item_name || `Item ${idx + 1}`, standardQty, actualQty, varianceQty, variancePct:pct, status:st.label, color:st.color })
+        })
+      })
+      const actualVsStandardSummaryStandard = actualVsStandardRows.reduce((s,r)=>s+safeNum(r.standardQty,0),0) || expectedOutput
+      const actualVsStandardSummaryActual = actualVsStandardRows.reduce((s,r)=>s+safeNum(r.actualQty,0),0) || actualOutput
+      const totalVarianceQty = actualVsStandardSummaryActual - actualVsStandardSummaryStandard
+      const avgCostForVariance = avgBatchCostPerPiece || productionCostPerPieceBase || 0
+      const actualVsStandard = {
+        standardQty:actualVsStandardSummaryStandard,
+        actualQty:actualVsStandardSummaryActual,
+        totalVarianceQty,
+        variancePct:actualVsStandardSummaryStandard > 0 ? (actualVsStandardSummaryActual / actualVsStandardSummaryStandard) * 100 : 0,
+        varianceValue:Math.abs(totalVarianceQty) * avgCostForVariance,
+        overuseItems:actualVsStandardRows.filter(r=>safeNum(r.varianceQty,0) < 0).length,
+        status:actualVsStandardSummaryStandard <= 0 ? 'NO STANDARD DATA' : totalVarianceQty >= 0 ? 'ON / ABOVE STANDARD' : Math.abs(totalVarianceQty) <= actualVsStandardSummaryStandard * 0.05 ? 'MINOR VARIANCE' : 'UNDER STANDARD',
+        color:actualVsStandardSummaryStandard <= 0 ? '#777' : totalVarianceQty >= 0 ? '#2d8a4e' : Math.abs(totalVarianceQty) <= actualVsStandardSummaryStandard * 0.05 ? '#f5a623' : '#ca1b1b'
+      }
+      const actualVsStandardActionPlan = []
+      if (actualVsStandardSummaryStandard <= 0) actualVsStandardActionPlan.push('No standard/expected output detected. Set expected quantities in production reports to activate variance control.')
+      else if (actualVsStandard.totalVarianceQty >= 0) actualVsStandardActionPlan.push('Actual output is meeting or exceeding expected standard. Continue monitoring per product/batch variance.')
+      else actualVsStandardActionPlan.push(`Actual output is short by ${Math.abs(actualVsStandard.totalVarianceQty)} pcs, with estimated variance value of ${php(actualVsStandard.varianceValue)}.`)
+      if (inventoryUsageRows.length > 0) actualVsStandardActionPlan.push('Review top inventory usage rows to detect abnormal stock-out, missing stock-in, or unexplained adjustments.')
+
+      const yieldStatus = getYieldStatus(yieldPct, expectedOutput, actualOutput)
+      const productionYieldRows = actualVsStandardRows.length > 0
+        ? actualVsStandardRows.map(r => ({ ...r, expectedQty:r.standardQty, actualQty:r.actualQty, yieldPct:r.standardQty>0?(r.actualQty/r.standardQty)*100:0 }))
+        : batchCostRows.map(r => ({ id:r.id, source:'Production Log', name:r.label, expectedQty:0, actualQty:r.pieces, varianceQty:r.pieces, yieldPct:0, status:'NO STANDARD', color:'#777' }))
+      const yieldMonitoring = {
+        expectedOutput,
+        actualOutput,
+        yieldVariance,
+        yieldPct,
+        status:yieldStatus.label,
+        color:yieldStatus.color,
+        message:yieldStatus.message,
+        wastageCost,
+        wastageQty:wastageRows.reduce((s,w)=>s+safeNum(w.quantity ?? w.qty,0),0),
+        rejectCostPct:totalCOGS > 0 ? (wastageCost / totalCOGS) * 100 : 0,
+        worstYieldItem:productionYieldRows.filter(r=>safeNum(r.expectedQty,0)>0).sort((a,b)=>safeNum(a.yieldPct,0)-safeNum(b.yieldPct,0))[0] || null
+      }
+      const productionYieldActionPlan = []
+      if (yieldStatus.level === 'none' || yieldStatus.level === 'check') productionYieldActionPlan.push(yieldStatus.message)
+      else if (yieldStatus.level === 'good') productionYieldActionPlan.push('Production yield is within healthy range. Maintain weighing, proofing, frying, and counting discipline.')
+      else productionYieldActionPlan.push(`Production yield is ${yieldPct.toFixed(1)}%. Investigate rejects, undersized pieces, proofing collapse, oil/frying problems, and handling losses.`)
+      if (yieldMonitoring.wastageQty > 0 || wastageCost > 0) productionYieldActionPlan.push(`Recorded wastage is ${yieldMonitoring.wastageQty} unit(s) / ${php(wastageCost)}. Review wastage reasons and employee charge logs where applicable.`)
+
+      const foodCostStatus = getFoodCostStatus(foodCostPct, totalSales, totalCOGS)
+      const foodCostSource = productionLogsRows.length > 0
+        ? `Production logs (${productionLogsRows.length} record${productionLogsRows.length === 1 ? '' : 's'})`
+        : 'No COGS data yet'
+      const productionCostPerPiece = actualOutput > 0 ? totalCOGS / actualOutput : 0
+      const foodCost = {
+        sales:totalSales,
+        cogs:totalCOGS,
+        ratio:foodCostPct,
+        status:foodCostStatus.label,
+        color:foodCostStatus.color,
+        message:foodCostStatus.message,
+        source:foodCostSource,
+        idealCOGSAt30:totalSales * 0.30,
+        maxCOGSAt40:totalSales * 0.40,
+        excessCOGSVs40:Math.max(0, totalCOGS - (totalSales * 0.40)),
+        cogsSpaceVs40:Math.max(0, (totalSales * 0.40) - totalCOGS),
+        salesNeededAt40:totalCOGS > 0 ? totalCOGS / 0.40 : 0,
+        additionalSalesNeededAt40:Math.max(0, (totalCOGS > 0 ? totalCOGS / 0.40 : 0) - totalSales),
+        costPerPiece:productionCostPerPiece,
+        actualOutput,
+        expectedOutput,
+        yieldPct,
+        wastageCost,
+        wastageImpactPct:totalCOGS > 0 ? (wastageCost / totalCOGS) * 100 : 0,
+        grossProfitAfterCOGS:grossProfit,
+        grossMargin:grossMarginPct
+      }
+
+      const foodCostTrend = trendMonths.map(m => {
+        const sales = salesBetweenDates(m.start, m.end, trendSalesRows)
+        const cogs = trendProductionLogRows
+          .filter(l => String(l.production_date || '').slice(0,10) >= m.start && String(l.production_date || '').slice(0,10) <= m.end)
+          .reduce((sum,l)=>sum+safeNum(l.total_cost,0),0)
+        const ratio = sales > 0 ? (cogs / sales) * 100 : 0
+        const status = getFoodCostStatus(ratio, sales, cogs)
+        return {
+          month:m.key,
+          label:m.label,
+          start:m.start,
+          end:m.end,
+          sales,
+          cogs,
+          ratio,
+          status:status.label,
+          color:status.color
+        }
+      })
+
+      const productionCostRows = productionLogsRows.map((l, idx) => {
+        const pieces = safeNum(l.total_pieces ?? l.pieces_produced ?? l.quantity, 0)
+        const cost = safeNum(l.total_cost, 0)
+        return {
+          id:l.id || idx,
+          date:l.production_date || l.created_at || '',
+          label:l.batch_no || l.batch_number || l.variant_name || l.product_name || `Production log ${idx + 1}`,
+          pieces,
+          cost,
+          costPerPiece:pieces > 0 ? cost / pieces : 0,
+          notes:l.notes || ''
+        }
+      }).sort((a,b)=>b.cost-a.cost).slice(0,10)
+
+      const totalProductRevenue = productProfitability.reduce((s,p)=>s+safeNum(p.revenue,0),0)
+      const productCOGSRows = productProfitability.map(p => {
+        const share = totalProductRevenue > 0 ? safeNum(p.revenue,0) / totalProductRevenue : 0
+        const estimatedCOGS = totalCOGS * share
+        const estimatedGrossProfit = safeNum(p.revenue,0) - estimatedCOGS
+        return {
+          ...p,
+          revenueShare:share * 100,
+          estimatedCOGS,
+          estimatedGrossProfit,
+          foodCostPct:safeNum(p.revenue,0) > 0 ? (estimatedCOGS / safeNum(p.revenue,0)) * 100 : 0,
+          grossMarginPct:safeNum(p.revenue,0) > 0 ? (estimatedGrossProfit / safeNum(p.revenue,0)) * 100 : 0
+        }
+      }).sort((a,b)=>b.estimatedCOGS-a.estimatedCOGS).slice(0,12)
+
+      const foodCostActionPlan = []
+      if (totalCOGS <= 0) foodCostActionPlan.push('No COGS/production cost detected. Encode production logs with total cost so food cost percentage becomes reliable.')
+      else if (totalSales <= 0) foodCostActionPlan.push('COGS exists but no sales were detected. Confirm sales entries and delivery invoices for this month.')
+      else if (foodCostPct < 25) foodCostActionPlan.push('Food cost is unusually low. Audit whether all premix, toppings, fillings, oil, packaging, and production costs were encoded.')
+      else if (foodCostPct <= 35) foodCostActionPlan.push('Food cost is strong. Maintain ingredient controls, standard yields, and purchasing discipline.')
+      else if (foodCostPct <= 40) foodCostActionPlan.push('Food cost is within the upper healthy range. Watch supplier price increases, wastage, and low-margin products.')
+      else if (foodCostPct <= 50) foodCostActionPlan.push(`Food cost is on watch. Reduce COGS by ${php(foodCost.excessCOGSVs40)} or increase net sales by ${php(foodCost.additionalSalesNeededAt40)} to return to 40%.`)
+      else foodCostActionPlan.push(`Food cost is critical at ${foodCostPct.toFixed(1)}%. Review batch yield, returns, wastage, pricing, and supplier costs immediately.`)
+      if (productionCostPerPiece > 0) foodCostActionPlan.push(`Average production cost is ${php(productionCostPerPiece)} per produced piece. Compare this with your target cost per donut/bite.`)
+      if (foodCost.wastageImpactPct > 5) foodCostActionPlan.push(`Wastage is ${foodCost.wastageImpactPct.toFixed(1)}% of COGS. Investigate rejects, overproduction, and handling losses.`)
+      if (productCOGSRows.length > 0 && productCOGSRows[0].foodCostPct > 40) foodCostActionPlan.push(`${productCOGSRows[0].name} carries the highest estimated COGS impact. Review its price, toppings, filling cost, and portion control.`)
+
+      const attendanceByEmployee = {}
+      attendance.forEach(log => {
+        const key = log.employee_name || log.employee_code || log.employee_id || 'Unknown'
+        if (!attendanceByEmployee[key]) attendanceByEmployee[key] = { employee:key, present:0, late:0, undertime:0, absent:0 }
+        if (log.time_in) attendanceByEmployee[key].present += 1
+        if (safeNum(log.late_minutes,0) > 0) attendanceByEmployee[key].late += safeNum(log.late_minutes,0)
+        if (safeNum(log.undertime_minutes,0) > 0) attendanceByEmployee[key].undertime += safeNum(log.undertime_minutes,0)
+      })
+      const employeePerformance = Object.values(attendanceByEmployee).sort((a,b)=>b.late-a.late).slice(0,10)
+
+      const contractEmployeeIds = new Set(contracts.map(c=>String(c.employee_id)))
+      const employeesMissingContracts = activeEmployees.filter(e=>!contractEmployeeIds.has(String(e.id)))
+      const expiredContracts = contracts.filter(c=>c.end_date && c.end_date < todayDate && c.status !== 'terminated')
+      const finalPayReady = activeEmployees.filter(e=>String(e.employment_status || e.status || '').toLowerCase().includes('resign') || String(e.is_active) === 'false')
+
+      const pendingApprovals = [
+        { name:'Leave Requests', count:leaves.filter(r=>r.status==='pending').length },
+        { name:'Cash Advances', count:caRequestsRows.filter(r=>r.status==='pending').length },
+        { name:'OT/UT Requests', count:otRequestsRows.filter(r=>r.status==='pending').length },
+        { name:'Payslip Disputes', count:disputesRows.filter(r=>r.status==='pending').length },
+        { name:'Expenses', count:expenses.filter(r=>r.status==='pending').length },
+        { name:'Reseller Disputes', count:resellerDisputesRows.filter(r=>r.status==='pending').length },
+      ]
+      const totalPendingApprovals = pendingApprovals.reduce((s,p)=>s+p.count,0)
+      const auditRedFlags = auditRows.filter(a=>/delete|removed|deactivated|reset|override|manual|failed/i.test(`${a.action || ''} ${a.details || ''}`)).slice(0,12)
+      const testDataCandidates = activeEmployees.filter(e=>/test|sample|demo/i.test(`${e.full_name || ''} ${e.employee_code || ''}`)).length + dailySalesRows.filter(s=>/test|sample|demo/i.test(`${s.notes || ''}`)).length + expenses.filter(e=>/test|sample|demo/i.test(`${e.description || ''}`)).length
+
+      const healthChecks = [
+        { name:'Net Profit Margin', ok:netMarginPct >= 15, warn:netMarginPct >= 10 && netMarginPct < 15, value:`${netMarginPct.toFixed(1)}%`, target:'Target 15%+' },
+        { name:'Salary Ratio', ok:salaryToSalesRatio > 0 && salaryToSalesRatio <= 25, warn:salaryToSalesRatio > 25 && salaryToSalesRatio <= 35, value:`${salaryToSalesRatio.toFixed(1)}%`, target:'Target 20–25%' },
+        { name:'Food Cost', ok:foodCostPct > 0 && foodCostPct <= 40, warn:foodCostPct > 40 && foodCostPct <= 50, value:`${foodCostPct.toFixed(1)}%`, target:'Target 30–40%' },
+        { name:'Operating Expense Ratio', ok:operatingExpenseRatio <= 20, warn:operatingExpenseRatio > 20 && operatingExpenseRatio <= 30, value:`${operatingExpenseRatio.toFixed(1)}%`, target:'Target ≤20%' },
+        { name:'Returns', ok:returnsRate <= 5, warn:returnsRate > 5 && returnsRate <= 10, value:`${returnsRate.toFixed(1)}%`, target:'Target ≤5%' },
+        { name:'Receivables', ok:totalSales === 0 || totalAR <= totalSales * 0.15, warn:totalAR <= totalSales * 0.30, value:php(totalAR), target:'≤15% of sales' },
+        { name:'Low Stock', ok:lowStockItems.length === 0, warn:lowStockItems.length <= 3, value:String(lowStockItems.length), target:'0 critical items' },
+        { name:'Approvals', ok:totalPendingApprovals === 0, warn:totalPendingApprovals <= 5, value:String(totalPendingApprovals), target:'0 pending' },
+      ]
+      const healthScore = Math.round(healthChecks.reduce((s,c)=>s+(c.ok?12.5:c.warn?6:0),0))
+      const recommendations = []
+      if (totalSales === 0) recommendations.push('No net sales were detected for this month. Confirm sales encoding and delivery invoices before making decisions.')
+      if (payrollExpense === 0) recommendations.push('No payroll expense was detected. Release/post payroll so salary-to-sales and P&L become complete.')
+      if (totalCOGS === 0) recommendations.push('No production COGS was detected. Encode production logs/costing so gross profit and food cost percentage become reliable.')
+      if (netMarginPct < 10 && totalSales > 0) recommendations.push('Net profit margin is below 10%. Review pricing, food cost, payroll, and operating expenses immediately.')
+      if (salaryToSalesRatio > 30) recommendations.push(`Salary-to-sales ratio is critical at ${salaryToSalesRatio.toFixed(1)}%. Bring payroll closer to 20–25% of sales by improving sales or controlling manpower cost.`)
+      else if (salaryToSalesRatio > 25) recommendations.push('Salary-to-sales ratio is above 25%. Review scheduling, overtime, and manpower per outlet.')
+      if (foodCostPct > 40) recommendations.push('Food cost/COGS is above the ideal 30–40% control range. Check ingredient cost, wastage, standard yield, and pricing.')
+      if (operatingExpenseRatio > 20) recommendations.push('Non-payroll operating expenses are above 20% of sales. Review recurring expenses and remove non-essential spending.')
+      if (returnsRate > 5) recommendations.push('Returns are above ideal level. Review production forecast and outlet/reseller orders.')
+      if (totalAR > totalSales * 0.15) recommendations.push('Accounts receivable is high. Follow up overdue reseller balances.')
+      if (lowStockItems.length > 0) recommendations.push(`${lowStockItems.length} inventory item(s) are at or below minimum stock. Prepare purchase orders.`)
+      if (totalPendingApprovals > 0) recommendations.push(`${totalPendingApprovals} pending approval(s) need admin action.`)
+      if (recommendations.length === 0) recommendations.push('Business indicators are stable for this period. Continue monitoring daily sales, returns, and cash flow.')
+
+      const moduleChecklist = [
+        { no:1, name:'Owner KPI Dashboard', status:'Live', value:`Health ${healthScore}/100` },
+        { no:2, name:'Profit & Loss Dashboard', status:'Live', value:php(netProfit) },
+        { no:3, name:'Sales-to-Salary Ratio', status:'Live', value:`${salaryToSalesRatio.toFixed(1)}%` },
+        { no:4, name:'Food Cost / COGS Percentage', status:totalCOGS>0?'Live':'Needs production logs', value:`${foodCostPct.toFixed(1)}%` },
+        { no:5, name:'Cash Flow Dashboard', status:'Polished', value:`${cashFlow.status} · ${php(netCashFlow)}` },
+        { no:6, name:'Payroll Expense Analysis', status:payrollRecords.length?'Live':'Needs payroll records', value:php(payrollExpense) },
+        { no:7, name:'Returns / Unsold Donut Analysis', status:'Live', value:`${totalReturnsQty} pcs / ${php(totalReturnsAmount)}` },
+        { no:8, name:'Outlet / Reseller Performance Ranking', status:'Polished', value:`${resellerPerformanceRows.length} reseller(s)` },
+        { no:9, name:'Accounts Receivable Aging', status:'Polished', value:`${receivableStatus.label} · ${php(totalAR)}` },
+        { no:10, name:'Branch / Outlet Daily Closing Report', status:'Polished', value:`${closingCoveragePct.toFixed(0)}% coverage · ${missingClosingDays} missing` },
+        { no:11, name:'Delivery Route Monitoring', status:'Polished', value:`${deliveryRoute.status} · ${invoices.length} invoice(s)` },
+        { no:12, name:'Inventory Reorder Alerts', status:'Polished', value:`${inventoryControl.status} · ${reorderNowItems} reorder` },
+        { no:13, name:'Batch Production Costing / Forecasting', status:productionLogsRows.length?'Polished':'Needs production logs', value:`${php(totalCOGS)} · ${php(avgBatchCostPerPiece)}/pc` },
+        { no:14, name:'Actual vs Standard Usage', status:(actualVsStandardRows.length || inventoryUsageRows.length)?'Polished':'Needs standard/usage data', value:`Variance ${actualVsStandard.totalVarianceQty} pcs` },
+        { no:15, name:'Production Yield Monitoring', status:expectedOutput>0?'Polished':'Needs expected output', value:expectedOutput>0?`${yieldPct.toFixed(1)}% · ${yieldMonitoring.status}`:'No standard yet' },
+        { no:16, name:'Wastage Cost Report', status:'Live', value:php(wastageCost) },
+        { no:17, name:'Product Profitability Report', status:productProfitability.length?'Live':'Needs invoice items', value:`${productProfitability.length} product(s)` },
+        { no:18, name:'Automated 13th Month Pay Report', status:'Live', value:`${payrollAnalysis.employeeCount} employee(s)` },
+        { no:19, name:'Government Contribution Reports', status:'Live', value:php(payrollAnalysis.govTotal) },
+        { no:20, name:'Employee Performance Record', status:'Live', value:`${employeePerformance.length} monitored` },
+        { no:21, name:'Employee Document Tracker', status:'Live', value:`${employeesMissingContracts.length} missing contract(s)` },
+        { no:22, name:'Final Pay Workflow', status:'Live', value:`${finalPayReady.length} ready/check` },
+        { no:23, name:'Approval Workflow', status:'Live', value:`${totalPendingApprovals} pending` },
+        { no:24, name:'Role-Based Permissions', status:'Live', value:'Owner/Manager/HR/Payroll/Supervisor' },
+        { no:25, name:'Audit Log Review Page', status:'Live', value:`${auditRedFlags.length} flagged` },
+        { no:26, name:'Data Export Buttons', status:'Live', value:'CSV / JSON / Print' },
+        { no:27, name:'Test Data Cleaner', status:'Safe template', value:`${testDataCandidates} candidate(s)` },
+        { no:28, name:'Backup Before Major Update', status:'Live', value:'JSON snapshot' },
+        { no:29, name:'Employee Device Control', status:'Basic', value:isCompanyDevice?'Company device':'Personal device' },
+        { no:30, name:'Business Health Score', status:'Live', value:`${healthScore}/100` },
+      ]
+
+      const loadedAt = new Date().toISOString()
+
+      setFoundationData({
+        loadedAt,
+        start, end, errors, grossSales, salesReturns, netSales, totalSales, walkinMessengerSales, walkinSales, messengerSales, resellerSales,
+        collectedInvoices, totalReturnsAmount, totalReturnsQty, returnsRate, returnsQtyRate, totalDeliveredQty, returnsAnalysis, returnsActionPlan, returnRecords, returnResellerRows, returnProductRows, returnDailyRows, returnsTrend, highReturnInvoices, totalCOGS, grossProfit, operatingProfitBeforePayroll, netProfit,
+        foodCostPct, foodCost, foodCostTrend, foodCostActionPlan, productionCostRows, productCOGSRows, salaryToSalesRatio, salaryRatio, salaryRatioPeriodRows, salaryRatioEmployeeRows, salaryRatioTrend, salaryRatioActionPlan, operatingExpenseRatio, totalExpenseRatio, grossMarginPct, netMarginPct, nonPayrollExpenses, totalOperatingExpenses, totalExpenses, payrollExpense,
+        payrollExpensePosted, payrollExpenseSource, payrollGross, payrollNet, expenseByCategory, payrollAnalysis, cashIn, cashOut,
+        netCashFlow, cashFlow, cashFlowTrend, cashFlowActionPlan, cashVarianceTotal, expectedCashTotal, actualCashTotal, totalAR, arAging, receivableRows, receivablePriorityRows, receivableStatus, receivableSummary, receivableActionPlan, overdueAR, criticalAR, arOverduePct, collectionRate, resellerRanking, resellerPerformanceRows, resellerPerformanceActionPlan, productProfitability, productionForecast, productionForecastRows, productionForecastActionPlan, outletForecastRows, dailyClosingRows, dailyClosingActionPlan, deliveryRoute, deliveryRouteRows, deliveryRouteActionPlan, inventoryControl, inventoryReorderRows, inventoryReorderActionPlan, batchCosting, batchCostRows, batchCostingActionPlan, actualVsStandard, actualVsStandardRows, actualVsStandardActionPlan, inventoryUsageRows, yieldMonitoring, productionYieldRows, productionYieldActionPlan, missingClosingDays, cashVarianceDays, lowStockItems, inventoryValue,
+        stockInMovement, stockOutMovement, productionLogsCount:productionLogsRows.length, productionReportsCount:productionReportsRows.length,
+        expectedOutput, actualOutput, yieldVariance, yieldPct, wastageCost, wastageByReason, closingDays, salesDays,
+        closingCoveragePct, invoicesCount:invoices.length, pendingDeliveries:invoices.filter(i=>!['paid','delivered'].includes(String(i.status || '').toLowerCase())).length,
+        bankDepositsTotal, employeePerformance,
+        employeesMissingContracts, expiredContracts, finalPayReady, pendingApprovals, totalPendingApprovals,
+        auditRedFlags, testDataCandidates, healthChecks, healthScore, recommendations, moduleChecklist,
+        rows:{ activeEmployees, attendance, dailySalesRows, invoices, returnRows, expenses, payrollRecords, productionLogsRows, productionReportsRows, trendProductionLogRows, inventoryRows, inventoryTxRows, wastageRows, contracts, auditRows, cashReconRows, resellersRows, stockAdjustmentsRows }
+      })
+      setFoundationLastUpdated(loadedAt)
+    } catch(e) {
+      console.error('Foundation data failed:', e)
+      if (!options.silent) showToast('Foundation dashboard failed to load: ' + e.message, 'red')
+    } finally {
+      if (showLoading) setFoundationLoading(false)
+    }
+  }
+
   async function detectStoreLocation() {
     setLocationStatus('Detecting location...')
     if (!navigator.geolocation) { setLocationStatus('GPS not available on this device.'); return }
@@ -4711,7 +6527,7 @@ This will create one approved expense record using the total payroll earnings.`)
     setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
-    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{})
+    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if ((role||'owner')==='owner' || (role||'owner')==='manager') loadFoundationData().catch(()=>{})
     requestPushPermission()
     // Check Tuesday deposit reminder
     setTimeout(()=>checkTuesdayDepositReminder(), 2000)
@@ -6145,6 +7961,9 @@ This will create one approved expense record using the total payroll earnings.`)
       { key:'analytics', icon:'📊', label:'Analytics',
         tabs:[{key:'analytics',label:'Analytics'}],
         roles:['owner'] },
+      { key:'foundation', icon:'🧱', label:'Foundation',
+        tabs:[{key:'foundation',label:'Foundation'}],
+        roles:['owner','manager'] },
       { key:'franchise', icon:'🏪', label:'Franchise',
         tabs:[{key:'franchise',label:'Franchise'}],
         roles:['owner'] },
@@ -6185,6 +8004,7 @@ This will create one approved expense record using the total payroll earnings.`)
       if(key==='schedule') { loadExistingSchedules() }
       if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
       if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadFinancialData() }
+      if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
       if(key==='franchise') { loadFranchises() }
     }
 
@@ -11582,6 +13402,964 @@ This will create one approved expense record using the total payroll earnings.`)
                         <p style={{ fontSize:'12px' }}>Add your 16 resellers above.</p>
                       </div>
                     )}
+                  </div>
+                )}
+              </div>
+            )}
+
+
+            {/* FOUNDATION CONTROL CENTER — Owner / Manager */}
+            {activeTab==='foundation' && (adminRole==='owner' || adminRole==='manager') && (
+              <div>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'16px' }}>
+                  <div>
+                    <h2 style={h2s}>🧱 Business Foundation Control Center</h2>
+                    <p style={{ color:'#666', fontSize:'13px', margin:'-8px 0 0' }}>One owner view for profitability, payroll ratio, inventory, production, receivables, approvals, and business health.</p>
+                  </div>
+                  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+                    <input type="month" value={foundationMonth} onChange={e=>setFoundationMonth(e.target.value)} style={{ ...inputStyle, width:'160px', marginBottom:0 }} />
+                    <button style={{ ...btnGreen, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={()=>loadFoundationData(foundationMonth, { silent:false, showLoading:true })} disabled={foundationLoading}>{foundationLoading?'⏳ Loading...':'🔄 LOAD / REFRESH'}</button>
+                    <button style={{ ...btnGray, width:'auto', marginTop:0, padding:'10px 16px', background:foundationAutoRefresh?'#e8f5e9':'#fff5f5', color:foundationAutoRefresh?'#2d8a4e':'#ca1b1b', border:`1px solid ${foundationAutoRefresh?'#2d8a4e':'#ca1b1b'}` }} onClick={()=>setFoundationAutoRefresh(v=>!v)}>
+                      {foundationAutoRefresh ? `🟢 AUTO ${FOUNDATION_REFRESH_SECONDS}s` : '🔴 AUTO OFF'}
+                    </button>
+                    <button style={{ ...btnBlack, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={printFoundationReport}>🖨️ PRINT</button>
+                    <button style={{ ...btnYellow, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={exportFoundationCSV}>⬇️ CSV</button>
+                    <button style={{ ...btnGray, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={exportFoundationBackup}>💾 BACKUP</button>
+                  </div>
+                </div>
+
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', background:'#f8f8f8', border:'1px solid #eee', borderRadius:'12px', padding:'10px 12px', marginBottom:'14px' }}>
+                  <p style={{ margin:0, color:'#555', fontSize:'12px' }}>
+                    ⏱️ Last updated: <strong>{formatFoundationLastUpdated(foundationLastUpdated || foundationData?.loadedAt)}</strong>
+                  </p>
+                  <p style={{ margin:0, color:foundationAutoRefresh?'#2d8a4e':'#ca1b1b', fontSize:'12px', fontWeight:'bold' }}>
+                    {foundationAutoRefresh ? `Auto-refresh is ON. Dashboard reloads every ${FOUNDATION_REFRESH_SECONDS} seconds while this module is open.` : 'Auto-refresh is OFF. Use LOAD / REFRESH manually.'}
+                  </p>
+                </div>
+
+                {foundationLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading business foundation data...</p>}
+                {!foundationData && !foundationLoading && (
+                  <div style={{ background:'white', borderRadius:'14px', padding:'24px', textAlign:'center', border:'1px solid #eee' }}>
+                    <p style={{ fontSize:'32px', margin:'0 0 8px' }}>🧱</p>
+                    <p style={{ fontWeight:'bold', color:'#333', margin:'0 0 4px' }}>Foundation dashboard is ready.</p>
+                    <p style={{ color:'#777', fontSize:'13px', margin:'0 0 14px' }}>Choose a month and click Load / Refresh.</p>
+                    <button style={{ ...btnRed, width:'auto', padding:'10px 24px' }} onClick={()=>loadFoundationData(foundationMonth, { silent:false, showLoading:true })}>LOAD FOUNDATION DATA</button>
+                  </div>
+                )}
+
+                {foundationData && !foundationLoading && (
+                  <div>
+                    {foundationData.errors?.length > 0 && (
+                      <div style={{ background:'#fff8dc', border:'1px solid #f5a623', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}>
+                        <p style={{ fontWeight:'bold', color:'#f5a623', fontSize:'12px', margin:'0 0 6px' }}>⚠️ Some optional tables/relations were not available. The dashboard still loaded using available data.</p>
+                        <details><summary style={{ cursor:'pointer', fontSize:'11px', color:'#555' }}>Show technical notes</summary><ul style={{ margin:'8px 0 0 18px', color:'#777', fontSize:'11px' }}>{foundationData.errors.slice(0,8).map((err,i)=><li key={i}>{err}</li>)}</ul></details>
+                      </div>
+                    )}
+
+                    {/* Owner Financial Command Center */}
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'12px', marginBottom:'16px' }}>
+                      {[
+                        ['Business Health', `${foundationData.healthScore}/100`, getBusinessHealthColor(foundationData.healthScore), '🏥', 'Overall control score'],
+                        ['Gross Sales', php(foundationData.grossSales), '#ca1b1b', '📈', 'Before returns'],
+                        ['Net Sales', php(foundationData.netSales ?? foundationData.totalSales), '#1a1a2e', '🧾', 'After returns'],
+                        ['Net Profit', php(foundationData.netProfit), foundationData.netProfit>=0?'#2d8a4e':'#ca1b1b', '💰', `${foundationData.netMarginPct.toFixed(1)}% margin`],
+                        ['Salary Ratio', `${foundationData.salaryToSalesRatio.toFixed(1)}%`, foundationData.salaryToSalesRatio<=25?'#2d8a4e':foundationData.salaryToSalesRatio<=35?'#f5a623':'#ca1b1b', '👥', 'Target 20–25%'],
+                        ['Food Cost', `${foundationData.foodCostPct.toFixed(1)}%`, foundationData.foodCostPct<=40?'#2d8a4e':foundationData.foodCostPct<=50?'#f5a623':'#ca1b1b', '🍩', 'Target 30–40%'],
+                        ['Returns', `${foundationData.returnsRate.toFixed(1)}%`, foundationData.returnsAnalysis?.color || (foundationData.returnsRate<=5?'#2d8a4e':foundationData.returnsRate<=10?'#f5a623':'#ca1b1b'), '↩️', `${safeNum(foundationData.totalReturnsQty,0)} pcs`],
+                      ].map(([l,v,c,icon,sub])=>(
+                        <div key={l} style={{ background:'white', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)', border:`1px solid ${c}33` }}>
+                          <p style={{ color:'#777', fontSize:'10px', margin:'0 0 5px', textTransform:'uppercase', fontWeight:'bold' }}>{icon} {l}</p>
+                          <p style={{ fontWeight:'900', color:c, fontSize:isMobile?'18px':'21px', margin:0 }}>{v}</p>
+                          <p style={{ color:'#888', fontSize:'10px', margin:'5px 0 0' }}>{sub}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Professional Warning / Action Priorities */}
+                    <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)', border:'1px solid #eee' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', flexWrap:'wrap', alignItems:'center', marginBottom:'10px' }}>
+                        <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:0 }}>🎯 Owner Action Priorities</p>
+                        <span style={{ background:getBusinessHealthColor(foundationData.healthScore), color:'white', borderRadius:'20px', padding:'4px 10px', fontSize:'11px', fontWeight:'bold' }}>
+                          {foundationData.healthScore >= 80 ? 'HEALTHY' : foundationData.healthScore >= 60 ? 'WATCH' : 'NEEDS ATTENTION'}
+                        </span>
+                      </div>
+                      {foundationData.recommendations.map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'13px' }}>• {r}</p>)}
+                    </div>
+
+                    {/* Professional P&L Command Center */}
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>📊 Owner Profit & Loss Command Center</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Month: {foundationData.start} to {foundationData.end} · Payroll source: {foundationData.payrollExpenseSource}</p>
+                        </div>
+                        <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportProfitLossCSV}>⬇️ EXPORT P&L</button>
+                          <button style={{ ...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={printFoundationReport}>🖨️ PRINT REPORT</button>
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.25fr 0.75fr', gap:'16px' }}>
+                        <div>
+                          {[
+                            ['Gross Sales', foundationData.grossSales, '', '#333', true],
+                            ['Less: Returns / Unsold', -safeNum(foundationData.salesReturns,0), `${foundationData.returnsRate.toFixed(1)}% of gross sales`, '#ca1b1b', false],
+                            ['Net Sales', foundationData.netSales ?? foundationData.totalSales, 'Basis for ratios', '#1a1a2e', true],
+                            ['Less: COGS / Production Cost', -safeNum(foundationData.totalCOGS,0), `${foundationData.foodCostPct.toFixed(1)}% of net sales`, foundationData.foodCostPct<=40?'#2d8a4e':foundationData.foodCostPct<=50?'#f5a623':'#ca1b1b', false],
+                            ['Gross Profit', foundationData.grossProfit, `${foundationData.grossMarginPct.toFixed(1)}% gross margin`, foundationData.grossProfit>=0?'#2d8a4e':'#ca1b1b', true],
+                            ['Less: Non-Payroll Operating Expenses', -safeNum(foundationData.nonPayrollExpenses,0), `${foundationData.operatingExpenseRatio.toFixed(1)}% of net sales`, foundationData.operatingExpenseRatio<=20?'#2d8a4e':foundationData.operatingExpenseRatio<=30?'#f5a623':'#ca1b1b', false],
+                            ['Less: Payroll Expense', -safeNum(foundationData.payrollExpense,0), `${foundationData.salaryToSalesRatio.toFixed(1)}% of net sales`, foundationData.salaryToSalesRatio<=25?'#2d8a4e':foundationData.salaryToSalesRatio<=35?'#f5a623':'#ca1b1b', false],
+                            ['Net Profit', foundationData.netProfit, `${foundationData.netMarginPct.toFixed(1)}% net margin`, foundationData.netProfit>=0?'#2d8a4e':'#ca1b1b', true],
+                          ].map(([label, amount, note, color, strong])=>(
+                            <div key={label} style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:'12px', alignItems:'center', borderBottom:'1px solid #f0f0f0', padding:strong?'9px 0':'7px 0', background:label==='Net Profit'?'#fff8dc':'transparent' }}>
+                              <div>
+                                <p style={{ margin:0, fontWeight:strong?'800':'500', color:'#333', fontSize:'12px' }}>{label}</p>
+                                {note && <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>{note}</p>}
+                              </div>
+                              <p style={{ margin:0, fontWeight:'900', color, fontSize:strong?'14px':'12px' }}>{php(amount)}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ margin:'0 0 10px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>🚦 Ratio Health Check</p>
+                          {foundationData.healthChecks.map(c=>(
+                            <div key={c.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{c.name}</span>
+                                <span style={{ fontSize:'11px', fontWeight:'bold', color:c.ok?'#2d8a4e':c.warn?'#f5a623':'#ca1b1b' }}>{c.ok?'GOOD':c.warn?'WATCH':'ALERT'}</span>
+                              </div>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginTop:'2px' }}>
+                                <span style={{ fontSize:'10px', color:'#999' }}>{c.target}</span>
+                                <span style={{ fontSize:'10px', color:'#555' }}>{c.value}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Sales-to-Salary Ratio Command Center */}
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>👥 Sales-to-Salary Ratio Command Center</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>
+                            Payroll ÷ Net Sales × 100 · Target: Good ≤20%, Healthy 21–25%, Watch 26–30%, Critical &gt;30%
+                          </p>
+                        </div>
+                        <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportSalaryRatioCSV}>⬇️ EXPORT SALARY RATIO</button>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Current Ratio', `${safeNum(foundationData.salaryRatio?.ratio,0).toFixed(1)}%`, foundationData.salaryRatio?.color || '#777', foundationData.salaryRatio?.status || 'NO DATA'],
+                          ['Payroll Expense', php(foundationData.salaryRatio?.payroll || 0), '#ca1b1b', foundationData.salaryRatio?.source || 'Payroll source'],
+                          ['Net Sales Basis', php(foundationData.salaryRatio?.sales || 0), '#1a1a2e', 'After returns'],
+                          ['Max Payroll @ 25%', php(foundationData.salaryRatio?.maxPayrollAt25 || 0), '#2d8a4e', 'Upper healthy limit'],
+                          ['Gap vs 25%', php(foundationData.salaryRatio?.excessPayrollVs25 || 0), (foundationData.salaryRatio?.excessPayrollVs25 || 0)>0?'#ca1b1b':'#2d8a4e', (foundationData.salaryRatio?.excessPayrollVs25 || 0)>0?'Needs action':'Within target'],
+                        ].map(([label,value,color,note])=>(
+                          <div key={label} style={{ border:`1px solid ${color}33`, borderRadius:'12px', padding:'12px', background:'#fff' }}>
+                            <p style={{ margin:'0 0 4px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{label}</p>
+                            <p style={{ margin:0, color, fontWeight:'900', fontSize:isMobile?'16px':'19px' }}>{value}</p>
+                            <p style={{ margin:'4px 0 0', color:'#888', fontSize:'10px' }}>{note}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🎯 Owner Salary Ratio Action Plan</p>
+                          {(foundationData.salaryRatioActionPlan || []).map((action,i)=>(
+                            <p key={i} style={{ margin:'6px 0', color:'#555', fontSize:'12px', lineHeight:1.45 }}>• {action}</p>
+                          ))}
+                          <div style={{ marginTop:'10px', padding:'10px', borderRadius:'10px', background:'#fff8dc', border:'1px solid #FDD412' }}>
+                            <p style={{ margin:0, color:'#555', fontSize:'11px' }}>
+                              To keep payroll at 25%, current sales can support up to <strong>{php(foundationData.salaryRatio?.maxPayrollAt25 || 0)}</strong>. 
+                              {(foundationData.salaryRatio?.additionalSalesNeededAt25 || 0)>0
+                                ? ` If payroll stays the same, you need about ${php(foundationData.salaryRatio?.additionalSalesNeededAt25 || 0)} more net sales this month.`
+                                : ' Current payroll is within the 25% control ceiling.'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📈 6-Month Salary Ratio Trend</p>
+                          {(foundationData.salaryRatioTrend || []).map(row=>(
+                            <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.label}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:row.color }}>{safeNum(row.ratio,0).toFixed(1)}%</span>
+                              </div>
+                              <div style={{ height:'6px', borderRadius:'99px', background:'#eee', marginTop:'5px', overflow:'hidden' }}>
+                                <div style={{ width:`${Math.min(100, safeNum(row.ratio,0) * 2)}%`, height:'100%', background:row.color }} />
+                              </div>
+                              <p style={{ margin:'3px 0 0', color:'#888', fontSize:'10px' }}>Sales {php(row.sales)} · Payroll {php(row.payroll)} · {row.status}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🗓️ Per Payroll Period Ratio</p>
+                          {(foundationData.salaryRatioPeriodRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No payroll period records detected for this month.</p>
+                          ) : foundationData.salaryRatioPeriodRows.map(row=>(
+                            <div key={`${row.start}-${row.end}`} style={{ borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.start} to {row.end}</span>
+                                <span style={{ color:row.color, fontSize:'12px', fontWeight:'900' }}>{safeNum(row.ratio,0).toFixed(1)}%</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>
+                                Sales {php(row.sales)} · Payroll {php(row.payroll)} · {row.employees} employee(s) · {row.status}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>👤 Top Payroll Cost Contributors</p>
+                          {(foundationData.salaryRatioEmployeeRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No employee payroll details detected for this month.</p>
+                          ) : foundationData.salaryRatioEmployeeRows.slice(0,8).map(row=>(
+                            <div key={`${row.employeeCode}-${row.employee}`} style={{ borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.employee}</span>
+                                <span style={{ color:'#ca1b1b', fontSize:'12px', fontWeight:'900' }}>{php(row.payroll)}</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>
+                                {safeNum(row.payrollPct,0).toFixed(1)}% of payroll · {safeNum(row.salesPct,0).toFixed(1)}% of sales · Basic {php(row.basic)}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Food Cost / COGS Command Center */}
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>🍩 Food Cost / COGS Command Center</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>
+                            COGS ÷ Net Sales × 100 · Target: Good 25–35%, Healthy 36–40%, Watch 41–50%, Critical &gt;50%
+                          </p>
+                        </div>
+                        <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportFoodCostCSV}>⬇️ EXPORT FOOD COST</button>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Food Cost %', `${safeNum(foundationData.foodCost?.ratio,0).toFixed(1)}%`, foundationData.foodCost?.color || '#777', foundationData.foodCost?.status || 'NO DATA'],
+                          ['COGS / Production Cost', php(foundationData.foodCost?.cogs || 0), '#ca1b1b', foundationData.foodCost?.source || 'Production logs'],
+                          ['Net Sales Basis', php(foundationData.foodCost?.sales || 0), '#1a1a2e', 'After returns'],
+                          ['Max COGS @ 40%', php(foundationData.foodCost?.maxCOGSAt40 || 0), '#2d8a4e', 'Upper healthy limit'],
+                          ['Gap vs 40%', php(foundationData.foodCost?.excessCOGSVs40 || 0), (foundationData.foodCost?.excessCOGSVs40 || 0)>0?'#ca1b1b':'#2d8a4e', (foundationData.foodCost?.excessCOGSVs40 || 0)>0?'Needs action':'Within target'],
+                        ].map(([label,value,color,note])=>(
+                          <div key={label} style={{ border:`1px solid ${color}33`, borderRadius:'12px', padding:'12px', background:'#fff' }}>
+                            <p style={{ margin:'0 0 4px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{label}</p>
+                            <p style={{ margin:0, color, fontWeight:'900', fontSize:isMobile?'16px':'19px' }}>{value}</p>
+                            <p style={{ margin:'4px 0 0', color:'#888', fontSize:'10px' }}>{note}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🎯 Owner Food Cost Action Plan</p>
+                          {(foundationData.foodCostActionPlan || []).map((action,i)=>(
+                            <p key={i} style={{ margin:'6px 0', color:'#555', fontSize:'12px', lineHeight:1.45 }}>• {action}</p>
+                          ))}
+                          <div style={{ marginTop:'10px', padding:'10px', borderRadius:'10px', background:'#fff8dc', border:'1px solid #FDD412' }}>
+                            <p style={{ margin:0, color:'#555', fontSize:'11px' }}>
+                              Current net sales can support up to <strong>{php(foundationData.foodCost?.maxCOGSAt40 || 0)}</strong> COGS at the 40% ceiling. 
+                              {(foundationData.foodCost?.additionalSalesNeededAt40 || 0)>0
+                                ? ` If COGS stays the same, you need about ${php(foundationData.foodCost?.additionalSalesNeededAt40 || 0)} more net sales this month.`
+                                : ' Current COGS is within the 40% control ceiling.'}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📈 6-Month Food Cost Trend</p>
+                          {(foundationData.foodCostTrend || []).map(row=>(
+                            <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.label}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:row.color }}>{safeNum(row.ratio,0).toFixed(1)}%</span>
+                              </div>
+                              <div style={{ height:'6px', borderRadius:'99px', background:'#eee', marginTop:'5px', overflow:'hidden' }}>
+                                <div style={{ width:`${Math.min(100, safeNum(row.ratio,0) * 2)}%`, height:'100%', background:row.color }} />
+                              </div>
+                              <p style={{ margin:'3px 0 0', color:'#888', fontSize:'10px' }}>Sales {php(row.sales)} · COGS {php(row.cogs)} · {row.status}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'14px' }}>
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🏭 Production Cost Drivers</p>
+                          {(foundationData.productionCostRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No production cost logs detected this month.</p>
+                          ) : foundationData.productionCostRows.slice(0,8).map(row=>(
+                            <div key={`${row.id}-${row.label}`} style={{ borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.label}</span>
+                                <span style={{ color:'#ca1b1b', fontSize:'12px', fontWeight:'900' }}>{php(row.cost)}</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>{row.pieces} pcs · {php(row.costPerPiece)} per pc · {String(row.date).slice(0,10)}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🍩 Product COGS Estimate</p>
+                          {(foundationData.productCOGSRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No invoice item details detected for product allocation.</p>
+                          ) : foundationData.productCOGSRows.slice(0,8).map(row=>(
+                            <div key={row.name} style={{ borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.name}</span>
+                                <span style={{ color:row.foodCostPct>40?'#ca1b1b':'#2d8a4e', fontSize:'12px', fontWeight:'900' }}>{safeNum(row.foodCostPct,0).toFixed(1)}%</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>Sales {php(row.revenue)} · Est. COGS {php(row.estimatedCOGS)} · GP {php(row.estimatedGrossProfit)}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>⚠️ Wastage Impact</p>
+                          {[
+                            ['Wastage Cost', php(foundationData.wastageCost), foundationData.wastageCost>0?'#ca1b1b':'#2d8a4e'],
+                            ['% of COGS', `${safeNum(foundationData.foodCost?.wastageImpactPct,0).toFixed(1)}%`, (foundationData.foodCost?.wastageImpactPct||0)>5?'#ca1b1b':'#2d8a4e'],
+                            ['Produced Pieces', `${safeNum(foundationData.foodCost?.actualOutput,0)} pcs`, '#1a1a2e'],
+                            ['Cost per Piece', php(foundationData.foodCost?.costPerPiece || 0), '#1a1a2e'],
+                            ['Yield', foundationData.expectedOutput>0?`${foundationData.yieldPct.toFixed(1)}%`:'No standard yet', foundationData.expectedOutput>0 && foundationData.yieldPct<95?'#f5a623':'#2d8a4e'],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <span style={{ fontSize:'12px', color:'#555' }}>{l}</span><span style={{ fontSize:'12px', color:c, fontWeight:'bold' }}>{v}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Returns & Unsold Donut Analysis Command Center */}
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>↩️ Returns & Unsold Donut Analysis</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>
+                            Tracks returned/unsold pieces, peso loss, reseller/outlet risk, product return ranking, and avoidable loss vs 5% target.
+                          </p>
+                        </div>
+                        <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportReturnsAnalysisCSV}>⬇️ EXPORT RETURNS</button>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Return Rate', `${safeNum(foundationData.returnsAnalysis?.rate,0).toFixed(1)}%`, foundationData.returnsAnalysis?.color || '#777', foundationData.returnsAnalysis?.status || 'NO DATA'],
+                          ['Returned / Unsold', `${safeNum(foundationData.totalReturnsQty,0)} pcs`, '#ca1b1b', php(foundationData.totalReturnsAmount)],
+                          ['Gross Sales Basis', php(foundationData.grossSales), '#1a1a2e', 'Before returns'],
+                          ['Max Loss at 5%', php(foundationData.returnsAnalysis?.maxReturnsAt5 || 0), '#2d8a4e', 'Healthy upper limit'],
+                          ['Avoidable Loss', php(foundationData.returnsAnalysis?.avoidableLossVs5 || 0), (foundationData.returnsAnalysis?.avoidableLossVs5||0)>0?'#ca1b1b':'#2d8a4e', 'Above 5% target'],
+                        ].map(([l,v,c,sub])=>(
+                          <div key={l} style={{ background:'#fffdf6', border:`1px solid ${c}33`, borderRadius:'14px', padding:'14px' }}>
+                            <p style={{ margin:'0 0 5px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{l}</p>
+                            <p style={{ margin:0, color:c, fontWeight:'900', fontSize:isMobile?'17px':'20px' }}>{v}</p>
+                            <p style={{ margin:'5px 0 0', color:'#888', fontSize:'10px' }}>{sub}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+                        <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🎯 Returns Action Plan</p>
+                        {(foundationData.returnsActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📈 6-Month Returns Trend</p>
+                          {(foundationData.returnsTrend || []).map(row=>(
+                            <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.label}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:row.color }}>{safeNum(row.returnRate,0).toFixed(1)}%</span>
+                              </div>
+                              <div style={{ height:'7px', borderRadius:'99px', background:'#eee', overflow:'hidden', marginTop:'5px' }}>
+                                <div style={{ width:`${Math.min(100, safeNum(row.returnRate,0) * 6)}%`, height:'100%', background:row.color }} />
+                              </div>
+                              <p style={{ margin:'3px 0 0', color:'#888', fontSize:'10px' }}>Returns {php(row.returnsAmount)} · {safeNum(row.returnsQty,0)} pcs · Gross {php(row.grossSales)} · {row.status}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🚨 High-Return Invoice Watchlist</p>
+                          {(foundationData.highReturnInvoices || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No high-return invoices detected this month.</p>
+                          ) : foundationData.highReturnInvoices.slice(0,8).map(row=>(
+                            <div key={`${row.invoiceNumber}-${row.date}`} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.invoiceNumber}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:row.returnRatePct>10?'#ca1b1b':row.returnRatePct>5?'#f5a623':'#2d8a4e' }}>{safeNum(row.returnRatePct,0).toFixed(1)}%</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>{row.reseller} · {row.date} · {safeNum(row.returnQty,0)} pcs · {php(row.returnAmount)} · {row.source}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'14px' }}>
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🏪 Outlet / Reseller Return Ranking</p>
+                          {(foundationData.returnResellerRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No reseller returns detected.</p>
+                          ) : foundationData.returnResellerRows.slice(0,8).map((row,i)=>(
+                            <div key={row.name} style={{ borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{i+1}. {row.name}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:row.returnRatePct>10?'#ca1b1b':row.returnRatePct>5?'#f5a623':'#2d8a4e' }}>{safeNum(row.returnRatePct,0).toFixed(1)}%</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>Returns {php(row.returnsAmount)} / {safeNum(row.returnsQty,0)} pcs · Net sales {php(row.netSales)} · {row.invoices} invoice(s)</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🍩 Product Return Ranking</p>
+                          {(foundationData.returnProductRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No product-level return details detected yet.</p>
+                          ) : foundationData.returnProductRows.slice(0,8).map(row=>(
+                            <div key={row.name} style={{ borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.name}</span>
+                                <span style={{ fontSize:'12px', fontWeight:'900', color:'#ca1b1b' }}>{safeNum(row.qty,0)} pcs</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>{php(row.amount)} · Avg credit {php(row.avgCredit)} · {safeNum(row.sharePct,0).toFixed(1)}% of return value</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📅 Daily Return Pattern</p>
+                          {(foundationData.returnDailyRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No daily return pattern yet.</p>
+                          ) : foundationData.returnDailyRows.slice(0,8).map(row=>(
+                            <div key={row.date} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <span style={{ fontSize:'12px', color:'#555' }}>{row.date} <small>({row.records})</small></span>
+                              <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>{safeNum(row.qty,0)} pcs · {php(row.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Cash Flow / Expense Breakdown */}
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'16px', marginBottom:'16px' }}>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'14px', margin:'0 0 12px' }}>💵 Cash Flow View</p>
+                        {[
+                          ['Cash Sales / Walk-in / Messenger', php(foundationData.walkinMessengerSales), '#2d8a4e'],
+                          ['Collected Reseller Payments', php(foundationData.collectedInvoices), '#2d8a4e'],
+                          ['Cash In', php(foundationData.cashIn), '#2d8a4e'],
+                          ['Cash Out / Operating Cost', php(foundationData.cashOut), '#ca1b1b'],
+                          ['Net Cash Flow', php(foundationData.netCashFlow), foundationData.netCashFlow>=0?'#2d8a4e':'#ca1b1b'],
+                          ['Bank Deposits Recorded', php(foundationData.bankDepositsTotal), '#4a90d9'],
+                        ].map(([l,v,c])=>(
+                          <div key={l} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                            <span style={{ fontSize:'12px', color:'#555' }}>{l}</span><span style={{ fontSize:'12px', color:c, fontWeight:'bold' }}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'14px', margin:'0 0 12px' }}>🧾 Expense Breakdown</p>
+                        {foundationData.expenseByCategory.length===0 ? <p style={{ color:'#aaa', fontSize:'12px' }}>No approved expenses detected this month.</p> : foundationData.expenseByCategory.slice(0,8).map(cat=>(
+                          <div key={cat.name} style={{ borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                              <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{cat.name}</span>
+                              <span style={{ fontSize:'12px', color:cat.name==='Payroll Expense'?'#ca1b1b':'#333', fontWeight:'bold' }}>{php(cat.total)}</span>
+                            </div>
+                            <div style={{ height:'6px', borderRadius:'99px', background:'#eee', marginTop:'6px', overflow:'hidden' }}>
+                              <div style={{ width:`${Math.min(100, foundationData.totalOperatingExpenses>0?(cat.total/foundationData.totalOperatingExpenses)*100:0)}%`, height:'100%', background:cat.name==='Payroll Expense'?'#ca1b1b':'#FDD412' }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Operational tables */}
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'16px', marginBottom:'16px' }}>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🏪 Reseller Ranking</p>
+                        {foundationData.resellerRanking.slice(0,6).length===0?<p style={{ color:'#aaa', fontSize:'12px' }}>No reseller sales this month.</p>:foundationData.resellerRanking.slice(0,6).map((r,i)=>(
+                          <div key={r.name} style={{ borderBottom:'1px solid #f0f0f0', padding:'6px 0' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'12px', fontWeight:'bold' }}>{i+1}. {r.name}</span><span style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{php(r.sales)}</span></div>
+                            <p style={{ color:'#888', margin:'2px 0 0', fontSize:'10px' }}>Unpaid {php(r.unpaid)} · Returns {php(r.returns)}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>⏳ AR Aging</p>
+                        {foundationData.arAging.map(b=>(
+                          <div key={b.label} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                            <span style={{ fontSize:'12px', color:'#555' }}>{b.label} <small>({b.count})</small></span><span style={{ fontSize:'12px', fontWeight:'bold', color:b.total>0?'#ca1b1b':'#2d8a4e' }}>{php(b.total)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📦 Inventory Alerts</p>
+                        {foundationData.lowStockItems.length===0?<p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>✅ No low-stock items.</p>:foundationData.lowStockItems.slice(0,8).map(item=>(
+                          <div key={item.id||item.name} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #f0f0f0', padding:'6px 0' }}>
+                            <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.name}</span><span style={{ color:'#ca1b1b', fontSize:'12px' }}>{safeNum(item.current_stock,0)} / min {safeNum(item.min_stock,0)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'16px', marginBottom:'16px' }}>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🏭 Production & Yield</p>
+                        {[
+                          ['Production Cost', php(foundationData.totalCOGS)],
+                          ['Expected Output', `${foundationData.expectedOutput} pcs`],
+                          ['Actual Output', `${foundationData.actualOutput} pcs`],
+                          ['Yield %', foundationData.expectedOutput>0?`${foundationData.yieldPct.toFixed(1)}%`:'No standard yet'],
+                          ['Wastage Cost', php(foundationData.wastageCost)],
+                        ].map(([l,v])=><div key={l} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #eee', padding:'6px 0' }}><span style={{ fontSize:'12px', color:'#555' }}>{l}</span><b style={{ fontSize:'12px' }}>{v}</b></div>)}
+                      </div>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>💰 Payroll & Compliance</p>
+                        {[
+                          ['Gross Payroll', php(foundationData.payrollAnalysis.gross)],
+                          ['Net Payroll', php(foundationData.payrollAnalysis.net)],
+                          ['Basic Pay', php(foundationData.payrollAnalysis.basic)],
+                          ['OT + ND + Holiday', php(foundationData.payrollAnalysis.overtime + foundationData.payrollAnalysis.nightDiff + foundationData.payrollAnalysis.holiday)],
+                          ['Gov Contributions', php(foundationData.payrollAnalysis.govTotal)],
+                          ['13th Month Basis', php(foundationData.payrollAnalysis.basic / 12)],
+                        ].map(([l,v])=><div key={l} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #eee', padding:'6px 0' }}><span style={{ fontSize:'12px', color:'#555' }}>{l}</span><b style={{ fontSize:'12px' }}>{v}</b></div>)}
+                      </div>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>✅ Approval & Control</p>
+                        {foundationData.pendingApprovals.map(p=><div key={p.name} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #eee', padding:'6px 0' }}><span style={{ fontSize:'12px', color:'#555' }}>{p.name}</span><b style={{ color:p.count>0?'#f5a623':'#2d8a4e', fontSize:'12px' }}>{p.count}</b></div>)}
+                        <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'10px' }}>
+                          <button style={{ ...btnGray, width:'auto', padding:'7px 10px', marginTop:0, fontSize:'11px' }} onClick={exportSafeTestDataCleanerSQL}>🧹 SAFE CLEANER SQL</button>
+                          <button style={{ ...btnBlack, width:'auto', padding:'7px 10px', marginTop:0, fontSize:'11px' }} onClick={exportFoundationBackup}>💾 BACKUP SNAPSHOT</button>
+                        </div>
+                      </div>
+                    </div>
+
+
+                    {/* Receivables, Cash Flow, Forecasting, Performance, and Daily Closing */}
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>💳 Reseller Receivable Aging</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Tracks unpaid reseller balances, aging buckets, overdue risk, and collection priority.</p>
+                        </div>
+                        <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportReceivableAgingCSV}>⬇️ EXPORT AR</button>
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Total AR', php(foundationData.totalAR), foundationData.receivableStatus?.color || '#777', foundationData.receivableStatus?.label || 'NO DATA'],
+                          ['Overdue AR', php(foundationData.overdueAR || 0), (foundationData.overdueAR||0)>0?'#ca1b1b':'#2d8a4e', `${safeNum(foundationData.arOverduePct,0).toFixed(1)}% of AR`],
+                          ['31+ Days', php(foundationData.criticalAR || 0), (foundationData.criticalAR||0)>0?'#ca1b1b':'#2d8a4e', 'Critical collection'],
+                          ['Collection Rate', `${safeNum(foundationData.receivableSummary?.collectionRate,0).toFixed(1)}%`, (foundationData.receivableSummary?.collectionRate||0)>=90?'#2d8a4e':'#f5a623', 'Collected ÷ reseller sales'],
+                          ['Unpaid Invoices', `${safeNum(foundationData.receivableSummary?.unpaidInvoices,0)}`, '#1a1a2e', 'Open balances'],
+                        ].map(([l,v,c,sub])=>(
+                          <div key={l} style={{ background:'#fffdf6', border:`1px solid ${c}33`, borderRadius:'14px', padding:'14px' }}>
+                            <p style={{ margin:'0 0 5px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{l}</p>
+                            <p style={{ margin:0, color:c, fontWeight:'900', fontSize:isMobile?'17px':'20px' }}>{v}</p>
+                            <p style={{ margin:'5px 0 0', color:'#888', fontSize:'10px' }}>{sub}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+                        <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🎯 Collection Action Plan</p>
+                        {(foundationData.receivableActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📊 Aging Buckets</p>
+                          {(foundationData.arAging || []).map(row=>(
+                            <div key={row.label} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.label}</span><span style={{ fontSize:'12px', fontWeight:'900', color:row.label==='31+ days'&&row.total>0?'#ca1b1b':'#1a1a2e' }}>{php(row.total)}</span></div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>{row.count} invoice(s)</p>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🚨 Collection Priority List</p>
+                          {(foundationData.receivablePriorityRows || []).length===0 ? <p style={{ color:'#aaa', fontSize:'12px' }}>No open receivables detected.</p> : foundationData.receivablePriorityRows.slice(0,8).map(row=>(
+                            <div key={`${row.invoiceNumber}-${row.reseller}`} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.reseller}</span><span style={{ fontSize:'12px', fontWeight:'900', color:row.color }}>{php(row.balance)}</span></div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>{row.invoiceNumber} · {row.age} day(s) · {row.status} · Paid {safeNum(row.paidPct,0).toFixed(0)}%</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>💵 Cash Flow Command Center</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Tracks cash in, cash out, bank deposits, collection efficiency, and daily closing variance.</p>
+                        </div>
+                        <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportCashFlowCSV}>⬇️ EXPORT CASH FLOW</button>
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Cash In', php(foundationData.cashIn), '#2d8a4e', 'Sales + collections'],
+                          ['Cash Out', php(foundationData.cashOut), '#ca1b1b', 'Payroll + expenses'],
+                          ['Net Cash Flow', php(foundationData.netCashFlow), foundationData.netCashFlow>=0?'#2d8a4e':'#ca1b1b', foundationData.cashFlow?.status || 'Status'],
+                          ['Bank Deposits', php(foundationData.bankDepositsTotal), '#1a1a2e', `${safeNum(foundationData.cashFlow?.depositCoveragePct,0).toFixed(1)}% coverage`],
+                          ['Cash Variance', php(foundationData.cashVarianceTotal || 0), Math.abs(foundationData.cashVarianceTotal||0)>50?'#f5a623':'#2d8a4e', 'Closing variance'],
+                        ].map(([l,v,c,sub])=>(
+                          <div key={l} style={{ background:'#fffdf6', border:`1px solid ${c}33`, borderRadius:'14px', padding:'14px' }}>
+                            <p style={{ margin:'0 0 5px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{l}</p>
+                            <p style={{ margin:0, color:c, fontWeight:'900', fontSize:isMobile?'17px':'20px' }}>{v}</p>
+                            <p style={{ margin:'5px 0 0', color:'#888', fontSize:'10px' }}>{sub}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+                        <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🎯 Cash Flow Action Plan</p>
+                        {(foundationData.cashFlowActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📈 6-Month Cash Flow Trend</p>
+                          {(foundationData.cashFlowTrend || []).map(row=>(
+                            <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.label}</span><span style={{ fontSize:'12px', fontWeight:'900', color:row.color }}>{php(row.netCashFlow)}</span></div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>In {php(row.cashIn)} · Out {php(row.cashOut)} · {row.status}</p>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📊 Daily Closing Snapshot</p>
+                          {(foundationData.dailyClosingRows || []).slice(0,8).map(row=>(
+                            <div key={row.date} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.date}</span><span style={{ fontSize:'12px', fontWeight:'900', color:row.color }}>{row.status}</span></div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>Expected {php(row.expectedCash)} · Actual {php(row.actualCash)} · Variance {php(row.variance)}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>📦 Production Forecasting Command Center</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Uses sales, delivery quantities, returns, and product demand to recommend production direction.</p>
+                        </div>
+                        <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportProductionForecastCSV}>⬇️ EXPORT FORECAST</button>
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Suggested Daily Qty', `${safeNum(foundationData.productionForecast?.suggestedProductionQty,0)} pcs`, '#ca1b1b', foundationData.productionForecast?.status || 'Forecast'],
+                          ['Next 7-Day Qty', `${safeNum(foundationData.productionForecast?.next7DayQtyTarget,0)} pcs`, '#1a1a2e', 'Suggested baseline'],
+                          ['Avg Daily Sales', php(foundationData.productionForecast?.avgDailySales || 0), '#2d8a4e', `${safeNum(foundationData.productionForecast?.basisDays,0)} active day(s)`],
+                          ['Return Adjustment', `${safeNum(foundationData.productionForecast?.returnAdjustmentQty,0).toFixed(0)} pcs/day`, (foundationData.productionForecast?.returnAdjustmentQty||0)>0?'#f5a623':'#2d8a4e', 'Based on returns'],
+                        ].map(([l,v,c,sub])=>(
+                          <div key={l} style={{ background:'#fffdf6', border:`1px solid ${c}33`, borderRadius:'14px', padding:'14px' }}>
+                            <p style={{ margin:'0 0 5px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{l}</p>
+                            <p style={{ margin:0, color:c, fontWeight:'900', fontSize:isMobile?'17px':'20px' }}>{v}</p>
+                            <p style={{ margin:'5px 0 0', color:'#888', fontSize:'10px' }}>{sub}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+                        <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🎯 Forecast Action Plan</p>
+                        {(foundationData.productionForecastActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🍩 Product Forecast</p>
+                          {(foundationData.productionForecastRows || []).length===0 ? <p style={{ color:'#aaa', fontSize:'12px' }}>No product-level forecast yet.</p> : foundationData.productionForecastRows.slice(0,8).map(row=>(
+                            <div key={row.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.name}</span><span style={{ fontSize:'12px', fontWeight:'900', color:row.status.includes('Reduce')?'#ca1b1b':'#2d8a4e' }}>{row.recommendedNext7Days} pcs</span></div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>Avg/day {safeNum(row.avgDailyQty,0).toFixed(1)} · Returned {safeNum(row.returnedQty,0)} pcs · {row.status}</p>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🏪 Outlet Forecast</p>
+                          {(foundationData.outletForecastRows || []).length===0 ? <p style={{ color:'#aaa', fontSize:'12px' }}>No outlet forecast yet.</p> : foundationData.outletForecastRows.slice(0,8).map(row=>(
+                            <div key={row.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.name}</span><span style={{ fontSize:'12px', fontWeight:'900', color:'#1a1a2e' }}>{php(row.recommendedSalesNext7Days)}</span></div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>Return {safeNum(row.returnRatePct,0).toFixed(1)}% · {row.recommendation}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>🏪 Outlet / Reseller Performance Ranking</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Ranks resellers using sales, collection rate, unpaid balance, return rate, and risk score.</p>
+                        </div>
+                        <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportResellerPerformanceCSV}>⬇️ EXPORT PERFORMANCE</button>
+                      </div>
+                      <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+                        <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🎯 Performance Action Plan</p>
+                        {(foundationData.resellerPerformanceActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                      </div>
+                      {(foundationData.resellerPerformanceRows || []).length===0 ? <p style={{ color:'#aaa', fontSize:'12px' }}>No reseller performance records yet.</p> : (
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
+                          {(foundationData.resellerPerformanceRows || []).slice(0,10).map((row,i)=>(
+                            <div key={row.name} style={{ background:'#fafafa', border:`1px solid ${row.color}33`, borderRadius:'14px', padding:'14px' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'flex-start' }}>
+                                <div><p style={{ margin:'0 0 2px', fontSize:'13px', fontWeight:'900', color:'#333' }}>{i+1}. {row.name}</p><p style={{ margin:0, color:'#888', fontSize:'10px' }}>{row.recommendation}</p></div>
+                                <span style={{ background:row.color, color:'white', borderRadius:'16px', padding:'3px 8px', fontWeight:'bold', fontSize:'10px' }}>{safeNum(row.score,0).toFixed(0)}/100</span>
+                              </div>
+                              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px', marginTop:'10px' }}>
+                                <p style={{ margin:0, fontSize:'11px', color:'#555' }}>Sales: <b>{php(row.sales)}</b></p>
+                                <p style={{ margin:0, fontSize:'11px', color:'#555' }}>Collected: <b>{safeNum(row.collectionRate,0).toFixed(0)}%</b></p>
+                                <p style={{ margin:0, fontSize:'11px', color:'#555' }}>Unpaid: <b>{php(row.unpaid)}</b></p>
+                                <p style={{ margin:0, fontSize:'11px', color:'#555' }}>Returns: <b>{safeNum(row.returnRatePct,0).toFixed(1)}%</b></p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>📋 Branch / Outlet Daily Closing Report</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Checks daily sales activity against closing cash, deposits, returns, and missing closing records.</p>
+                        </div>
+                        <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportDailyClosingCSV}>⬇️ EXPORT CLOSING</button>
+                      </div>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Closing Coverage', `${safeNum(foundationData.closingCoveragePct,0).toFixed(0)}%`, foundationData.closingCoveragePct>=90?'#2d8a4e':'#f5a623', `${safeNum(foundationData.closingDays,0)} closing day(s)`],
+                          ['Missing Closing', `${safeNum(foundationData.missingClosingDays,0)}`, (foundationData.missingClosingDays||0)>0?'#ca1b1b':'#2d8a4e', 'Days with activity'],
+                          ['Variance Days', `${safeNum(foundationData.cashVarianceDays,0)}`, (foundationData.cashVarianceDays||0)>0?'#f5a623':'#2d8a4e', 'Need review'],
+                          ['Total Variance', php(foundationData.cashVarianceTotal || 0), Math.abs(foundationData.cashVarianceTotal||0)>50?'#f5a623':'#2d8a4e', 'Actual vs expected'],
+                        ].map(([l,v,c,sub])=>(
+                          <div key={l} style={{ background:'#fffdf6', border:`1px solid ${c}33`, borderRadius:'14px', padding:'14px' }}>
+                            <p style={{ margin:'0 0 5px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{l}</p>
+                            <p style={{ margin:0, color:c, fontWeight:'900', fontSize:isMobile?'17px':'20px' }}>{v}</p>
+                            <p style={{ margin:'5px 0 0', color:'#888', fontSize:'10px' }}>{sub}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+                        <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🎯 Daily Closing Action Plan</p>
+                        {(foundationData.dailyClosingActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                      </div>
+                      <div style={{ maxHeight:'360px', overflowY:'auto', border:'1px solid #eee', borderRadius:'14px' }}>
+                        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'11px' }}>
+                          <thead><tr style={{ background:'#ca1b1b', color:'white' }}><th style={{ padding:'8px', textAlign:'left' }}>Date</th><th style={{ padding:'8px', textAlign:'right' }}>Sales</th><th style={{ padding:'8px', textAlign:'right' }}>Expected</th><th style={{ padding:'8px', textAlign:'right' }}>Actual</th><th style={{ padding:'8px', textAlign:'right' }}>Variance</th><th style={{ padding:'8px', textAlign:'left' }}>Status</th></tr></thead>
+                          <tbody>{(foundationData.dailyClosingRows || []).slice(0,16).map(row=>(
+                            <tr key={row.date} style={{ borderBottom:'1px solid #eee' }}><td style={{ padding:'7px' }}>{row.date}</td><td style={{ padding:'7px', textAlign:'right' }}>{php(row.sales)}</td><td style={{ padding:'7px', textAlign:'right' }}>{php(row.expectedCash)}</td><td style={{ padding:'7px', textAlign:'right' }}>{php(row.actualCash)}</td><td style={{ padding:'7px', textAlign:'right', color:row.color, fontWeight:'bold' }}>{php(row.variance)}</td><td style={{ padding:'7px', color:row.color, fontWeight:'bold' }}>{row.status}</td></tr>
+                          ))}</tbody>
+                        </table>
+                      </div>
+                    </div>
+
+
+                    {/* Production & Inventory Control Command Centers */}
+                    <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 12px rgba(0,0,0,0.07)', border:'1px solid #eee', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'14px' }}>
+                        <div>
+                          <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'16px', margin:'0 0 3px' }}>🏭 Production & Inventory Control Package</p>
+                          <p style={{ color:'#777', fontSize:'12px', margin:0 }}>
+                            Controls delivery route risk, reorder alerts, batch cost, actual vs standard output, and production yield from existing sales, inventory, and production data.
+                          </p>
+                        </div>
+                        <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportDeliveryRouteCSV}>⬇️ ROUTES</button>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportInventoryReorderCSV}>⬇️ REORDER</button>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportBatchProductionCostingCSV}>⬇️ BATCH</button>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportActualVsStandardUsageCSV}>⬇️ USAGE</button>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={exportProductionYieldCSV}>⬇️ YIELD</button>
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'14px' }}>
+                        {[
+                          ['Delivery Completion', `${safeNum(foundationData.deliveryRoute?.completionPct,0).toFixed(0)}%`, foundationData.deliveryRoute?.color || '#777', foundationData.deliveryRoute?.status || 'NO DATA'],
+                          ['Reorder Needed', `${safeNum(foundationData.inventoryControl?.reorderNowItems,0)} item(s)`, foundationData.inventoryControl?.color || '#777', `Critical: ${safeNum(foundationData.inventoryControl?.criticalItems,0)}`],
+                          ['Avg Batch Cost', php(foundationData.batchCosting?.avgCostPerPiece || 0), foundationData.batchCosting?.color || '#777', 'Cost per produced piece'],
+                          ['Std Variance', `${safeNum(foundationData.actualVsStandard?.totalVarianceQty,0)} pcs`, foundationData.actualVsStandard?.color || '#777', foundationData.actualVsStandard?.status || 'NO STANDARD'],
+                          ['Yield', foundationData.expectedOutput>0?`${safeNum(foundationData.yieldMonitoring?.yieldPct,0).toFixed(1)}%`:'No standard', foundationData.yieldMonitoring?.color || '#777', foundationData.yieldMonitoring?.status || 'NO DATA'],
+                        ].map(([l,v,c,sub])=>(
+                          <div key={l} style={{ background:'#fffdf6', border:`1px solid ${c}33`, borderRadius:'14px', padding:'14px' }}>
+                            <p style={{ margin:'0 0 5px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'bold' }}>{l}</p>
+                            <p style={{ margin:0, color:c, fontWeight:'900', fontSize:isMobile?'17px':'20px' }}>{v}</p>
+                            <p style={{ margin:'5px 0 0', color:'#888', fontSize:'10px' }}>{sub}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🚚 Delivery Route Action Plan</p>
+                          {(foundationData.deliveryRouteActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                        </div>
+                        <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>📦 Inventory Reorder Action Plan</p>
+                          {(foundationData.inventoryReorderActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🚚 Delivery Route Monitoring</p>
+                          {(foundationData.deliveryRouteRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No delivery invoices found for this month.</p>
+                          ) : foundationData.deliveryRouteRows.slice(0,10).map(row=>(
+                            <div key={`${row.invoiceNumber}-${row.date}`} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.invoiceNumber} · {row.reseller}</span>
+                                <span style={{ fontSize:'11px', fontWeight:'900', color:row.color }}>{row.status}</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>
+                                {row.date} · Delivered {safeNum(row.deliveredQty,0)} pcs · Returned {safeNum(row.returnQty,0)} pcs · Balance {php(row.balance)} · Crates {safeNum(row.crates,0)}
+                              </p>
+                              <p style={{ margin:'2px 0 0', color:'#777', fontSize:'10px' }}>{row.recommendation}</p>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📦 Inventory Reorder Alerts</p>
+                          {(foundationData.inventoryReorderRows || []).length===0 ? (
+                            <p style={{ color:'#aaa', fontSize:'12px' }}>No inventory items found.</p>
+                          ) : foundationData.inventoryReorderRows.slice(0,10).map(row=>(
+                            <div key={row.id || row.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+                                <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{row.name}</span>
+                                <span style={{ fontSize:'11px', fontWeight:'900', color:row.color }}>{row.status}</span>
+                              </div>
+                              <p style={{ margin:'2px 0 0', color:'#888', fontSize:'10px' }}>
+                                Stock {safeNum(row.currentStock,0)} {row.unit} · Min {safeNum(row.minStock,0)} · Reorder {safeNum(row.suggestedReorderQty,0)} {row.unit} · Est. {php(row.reorderValue)}
+                              </p>
+                              <div style={{ height:'7px', borderRadius:'99px', background:'#eee', overflow:'hidden', marginTop:'5px' }}>
+                                <div style={{ width:`${Math.min(100, safeNum(row.minStock,0)>0 ? (safeNum(row.currentStock,0)/safeNum(row.minStock,1))*50 : 100)}%`, height:'100%', background:row.color }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'14px' }}>
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🥣 Batch Production Costing</p>
+                          {[
+                            ['Total Batch Cost', php(foundationData.batchCosting?.totalCost || 0), foundationData.batchCosting?.color || '#777'],
+                            ['Produced Pieces', `${safeNum(foundationData.batchCosting?.totalPieces,0)} pcs`, '#1a1a2e'],
+                            ['Avg Cost / Piece', php(foundationData.batchCosting?.avgCostPerPiece || 0), foundationData.batchCosting?.color || '#777'],
+                            ['Est. Gross Profit', php(foundationData.batchCosting?.estimatedGrossProfit || 0), (foundationData.batchCosting?.estimatedGrossProfit||0)>=0?'#2d8a4e':'#ca1b1b'],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <span style={{ fontSize:'12px', color:'#555' }}>{l}</span><span style={{ fontSize:'12px', color:c, fontWeight:'bold' }}>{v}</span>
+                            </div>
+                          ))}
+                          <div style={{ marginTop:'10px' }}>
+                            {(foundationData.batchCostRows || []).slice(0,4).map(row=>(
+                              <p key={row.id} style={{ margin:'4px 0', fontSize:'10px', color:'#777' }}>• {row.label}: {php(row.costPerPiece)}/pc · {row.status}</p>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>⚖️ Actual vs Standard Usage</p>
+                          {[
+                            ['Expected / Standard', `${safeNum(foundationData.actualVsStandard?.standardQty,0)} pcs`, '#1a1a2e'],
+                            ['Actual Output', `${safeNum(foundationData.actualVsStandard?.actualQty,0)} pcs`, '#1a1a2e'],
+                            ['Variance', `${safeNum(foundationData.actualVsStandard?.totalVarianceQty,0)} pcs`, foundationData.actualVsStandard?.color || '#777'],
+                            ['Est. Variance Value', php(foundationData.actualVsStandard?.varianceValue || 0), foundationData.actualVsStandard?.color || '#777'],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <span style={{ fontSize:'12px', color:'#555' }}>{l}</span><span style={{ fontSize:'12px', color:c, fontWeight:'bold' }}>{v}</span>
+                            </div>
+                          ))}
+                          <div style={{ marginTop:'10px' }}>
+                            {((foundationData.actualVsStandardRows||[]).length ? foundationData.actualVsStandardRows : (foundationData.inventoryUsageRows||[])).slice(0,4).map(row=>(
+                              <p key={row.id || row.name} style={{ margin:'4px 0', fontSize:'10px', color:'#777' }}>• {row.name}: variance {safeNum(row.varianceQty ?? row.netUsage,0)} · {row.status}</p>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📈 Production Yield Monitoring</p>
+                          {[
+                            ['Expected Output', `${safeNum(foundationData.yieldMonitoring?.expectedOutput,0)} pcs`, '#1a1a2e'],
+                            ['Actual Output', `${safeNum(foundationData.yieldMonitoring?.actualOutput,0)} pcs`, '#1a1a2e'],
+                            ['Yield %', foundationData.expectedOutput>0?`${safeNum(foundationData.yieldMonitoring?.yieldPct,0).toFixed(1)}%`:'No standard', foundationData.yieldMonitoring?.color || '#777'],
+                            ['Wastage Impact', php(foundationData.yieldMonitoring?.wastageCost || 0), (foundationData.yieldMonitoring?.wastageCost||0)>0?'#ca1b1b':'#2d8a4e'],
+                          ].map(([l,v,c])=>(
+                            <div key={l} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #f0f0f0', padding:'7px 0' }}>
+                              <span style={{ fontSize:'12px', color:'#555' }}>{l}</span><span style={{ fontSize:'12px', color:c, fontWeight:'bold' }}>{v}</span>
+                            </div>
+                          ))}
+                          <div style={{ marginTop:'10px' }}>
+                            {(foundationData.productionYieldActionPlan || []).slice(0,3).map((r,i)=><p key={i} style={{ margin:'4px 0', fontSize:'10px', color:'#777' }}>• {r}</p>)}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginTop:'14px' }}>
+                        <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>🥣 Batch / Usage Action Plan</p>
+                          {[...(foundationData.batchCostingActionPlan || []), ...(foundationData.actualVsStandardActionPlan || [])].slice(0,6).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                        </div>
+                        <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px' }}>
+                          <p style={{ margin:'0 0 8px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>📈 Yield Action Plan</p>
+                          {(foundationData.productionYieldActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}>• {r}</p>)}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 30 Foundation Modules */}
+                    <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)', marginBottom:'16px' }}>
+                      <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 12px' }}>🧱 30-Point Foundation Checklist</p>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'8px' }}>
+                        {foundationData.moduleChecklist.map(m=>(
+                          <div key={m.no} style={{ border:'1px solid #eee', borderRadius:'10px', padding:'9px', background:m.status==='Live'?'#f8fff8':m.status==='Basic'?'#fff8dc':'#fafafa' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', gap:'6px', alignItems:'flex-start' }}>
+                              <p style={{ margin:0, fontWeight:'bold', color:'#333', fontSize:'11px' }}>{m.no}. {m.name}</p>
+                              <span style={{ fontSize:'9px', borderRadius:'10px', padding:'2px 6px', background:m.status==='Live'?'#e8f5e9':m.status==='Safe template'?'#e3f2fd':'#fff3cd', color:m.status==='Live'?'#2d8a4e':m.status==='Safe template'?'#4a90d9':'#856404', fontWeight:'bold', whiteSpace:'nowrap' }}>{m.status}</span>
+                            </div>
+                            <p style={{ margin:'4px 0 0', color:'#777', fontSize:'10px' }}>{m.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Data quality and security */}
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'16px' }}>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>📋 Document / Final Pay / Device Control</p>
+                        {[
+                          ['Missing employee contracts', foundationData.employeesMissingContracts.length],
+                          ['Expired contracts', foundationData.expiredContracts.length],
+                          ['Final pay review candidates', foundationData.finalPayReady.length],
+                          ['Current device mode', isCompanyDevice?'Company device':'Personal / unknown device'],
+                        ].map(([l,v])=><div key={l} style={{ display:'flex', justifyContent:'space-between', borderBottom:'1px solid #eee', padding:'6px 0' }}><span style={{ fontSize:'12px', color:'#555' }}>{l}</span><b style={{ fontSize:'12px' }}>{v}</b></div>)}
+                      </div>
+                      <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.06)' }}>
+                        <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}>🔎 Audit Review Flags</p>
+                        {foundationData.auditRedFlags.length===0?<p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>✅ No obvious audit red flags in latest logs.</p>:foundationData.auditRedFlags.slice(0,6).map(a=>(
+                          <div key={a.id||a.created_at} style={{ borderBottom:'1px solid #eee', padding:'6px 0' }}>
+                            <p style={{ margin:0, fontWeight:'bold', color:'#ca1b1b', fontSize:'11px' }}>{a.action}</p>
+                            <p style={{ margin:'2px 0 0', color:'#777', fontSize:'10px' }}>{a.performed_by || 'System'} · {String(a.created_at || '').slice(0,19).replace('T',' ')}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
