@@ -108,6 +108,200 @@ function getDistanceMeters(la1,lo1,la2,lo2) {
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a))
 }
 
+function parseLocalDate(value) {
+  if (!value) return null
+  const clean = String(value).slice(0, 10)
+  const [y, m, d] = clean.split('-').map(Number)
+  if (!y || !m || !d) return null
+  const date = new Date(y, m - 1, d)
+  date.setHours(0, 0, 0, 0)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function formatDateLocal(date) {
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+  d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
+  return d.toISOString().slice(0, 10)
+}
+
+function addYearsLocal(date, years) {
+  const d = new Date(date)
+  const originalMonth = d.getMonth()
+  d.setFullYear(d.getFullYear() + years)
+  // Keep leap-day hires stable by moving overflowed dates to the last day of the target month.
+  if (d.getMonth() !== originalMonth) d.setDate(0)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function daysInclusive(startDate, endDate) {
+  const start = parseLocalDate(startDate)
+  const end = parseLocalDate(endDate)
+  if (!start || !end || end < start) return 0
+  return Math.floor((end - start) / (1000 * 60 * 60 * 24)) + 1
+}
+
+function getLeaveOverlapDays(leave, periodStart, periodEnd) {
+  const start = parseLocalDate(leave?.leave_start)
+  const end = parseLocalDate(leave?.leave_end)
+  const pStart = parseLocalDate(periodStart)
+  const pEnd = parseLocalDate(periodEnd)
+  if (!start || !end || !pStart || !pEnd) return 0
+  const overlapStart = start > pStart ? start : pStart
+  const overlapEnd = end < pEnd ? end : pEnd
+  if (overlapEnd < overlapStart) return 0
+  return daysInclusive(formatDateLocal(overlapStart), formatDateLocal(overlapEnd))
+}
+
+function getCurrentSILCycle(hireDate, asOf = new Date()) {
+  const hire = parseLocalDate(hireDate)
+  const todayDate = parseLocalDate(formatDateLocal(asOf))
+  if (!hire || !todayDate) return null
+
+  let years = todayDate.getFullYear() - hire.getFullYear()
+  let anniversary = addYearsLocal(hire, years)
+
+  if (anniversary > todayDate) {
+    years -= 1
+    anniversary = addYearsLocal(hire, years)
+  }
+
+  if (years < 1) return null
+
+  const cycleEnd = addYearsLocal(anniversary, 1)
+  cycleEnd.setDate(cycleEnd.getDate() - 1)
+
+  return {
+    years,
+    start: formatDateLocal(anniversary),
+    end: formatDateLocal(cycleEnd)
+  }
+}
+
+function getPreviousSILCycle(cycle) {
+  if (!cycle || safeNum(cycle.years, 0) <= 1) return null
+  const currentStart = parseLocalDate(cycle.start)
+  if (!currentStart) return null
+
+  const previousStart = addYearsLocal(currentStart, -1)
+  const previousEnd = new Date(currentStart)
+  previousEnd.setDate(previousEnd.getDate() - 1)
+
+  return {
+    years: safeNum(cycle.years, 0) - 1,
+    start: formatDateLocal(previousStart),
+    end: formatDateLocal(previousEnd)
+  }
+}
+
+function hasOneYearService(hireDate, asOf = new Date()) {
+  return !!getCurrentSILCycle(hireDate, asOf)
+}
+
+function normalizeLeaveType(type) {
+  const t = String(type || '').trim().toLowerCase()
+  if (t === 'sil' || t.includes('service incentive')) return 'SIL'
+  if (t.includes('unpaid') || t.includes('without pay') || t.includes('lwop')) return 'Unpaid Leave'
+  return type || 'Unpaid Leave'
+}
+
+function isPaidLeaveRecord(leave) {
+  return leave?.is_paid === true || normalizeLeaveType(leave?.leave_type) === 'SIL'
+}
+
+function getLeaveDisplayName(type) {
+  return normalizeLeaveType(type) === 'SIL' ? 'Service Incentive Leave (SIL)' : 'Unpaid Leave / Leave Without Pay'
+}
+
+function getEmployeeLeaveInfo(emp) {
+  const eligible = hasOneYearService(emp?.hire_date)
+  const silBalance = safeNum(emp?.sil_balance, 0)
+  const canFileSIL = eligible && silBalance > 0
+
+  return {
+    eligible,
+    silBalance,
+    type: canFileSIL ? 'SIL' : 'Unpaid Leave',
+    isPaid: canFileSIL,
+    buttonLabel: canFileSIL ? 'File SIL' : 'File Leave',
+    title: canFileSIL ? 'File SIL Request' : 'File Leave Request',
+    label: canFileSIL ? 'Service Incentive Leave (SIL) — Paid' : 'Unpaid Leave / Leave Without Pay',
+    note: canFileSIL
+      ? `Remaining SIL: ${silBalance} day(s). Approved SIL is paid.`
+      : eligible
+        ? 'You are SIL-qualified, but you have no SIL balance left. This request will be unpaid.'
+        : 'SIL becomes available after 1 year of service. This request will be unpaid.'
+  }
+}
+
+
+// ── Passkey / Fingerprint Login Helpers ─────────────────────────────────────
+// Uses WebAuthn. The app never receives or stores the actual fingerprint.
+function browserSupportsPasskeys() {
+  return typeof window !== 'undefined' && !!window.PublicKeyCredential && !!navigator.credentials
+}
+
+function bufferToBase64URL(buffer) {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
+  let binary = ''
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function base64URLToBuffer(base64url) {
+  const base64 = String(base64url || '').replace(/-/g, '+').replace(/_/g, '/')
+  const pad = '='.repeat((4 - (base64.length % 4)) % 4)
+  const binary = atob(base64 + pad)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes.buffer
+}
+
+function preparePublicKeyCreationOptions(options) {
+  const publicKey = { ...options }
+  publicKey.challenge = base64URLToBuffer(publicKey.challenge)
+  if (publicKey.user?.id) publicKey.user = { ...publicKey.user, id: base64URLToBuffer(publicKey.user.id) }
+  if (Array.isArray(publicKey.excludeCredentials)) {
+    publicKey.excludeCredentials = publicKey.excludeCredentials.map(c => ({ ...c, id: base64URLToBuffer(c.id) }))
+  }
+  return publicKey
+}
+
+function preparePublicKeyRequestOptions(options) {
+  const publicKey = { ...options }
+  publicKey.challenge = base64URLToBuffer(publicKey.challenge)
+  if (Array.isArray(publicKey.allowCredentials)) {
+    publicKey.allowCredentials = publicKey.allowCredentials.map(c => ({ ...c, id: base64URLToBuffer(c.id) }))
+  }
+  return publicKey
+}
+
+function publicKeyCredentialToJSON(credential) {
+  if (!credential) return null
+  const response = credential.response || {}
+  const json = {
+    id: credential.id,
+    rawId: bufferToBase64URL(credential.rawId),
+    type: credential.type,
+    clientExtensionResults: credential.getClientExtensionResults ? credential.getClientExtensionResults() : {},
+    authenticatorAttachment: credential.authenticatorAttachment || undefined,
+    response: {}
+  }
+
+  if (response.clientDataJSON) json.response.clientDataJSON = bufferToBase64URL(response.clientDataJSON)
+  if (response.attestationObject) json.response.attestationObject = bufferToBase64URL(response.attestationObject)
+  if (response.authenticatorData) json.response.authenticatorData = bufferToBase64URL(response.authenticatorData)
+  if (response.signature) json.response.signature = bufferToBase64URL(response.signature)
+  if (response.userHandle) json.response.userHandle = bufferToBase64URL(response.userHandle)
+
+  const transports = typeof response.getTransports === 'function' ? response.getTransports() : undefined
+  if (transports) json.response.transports = transports
+
+  return json
+}
+
+
 function Badge({ label, color }) {
   const colors = { green:'#2d8a4e', orange:'#f5a623', red:'#ca1b1b', blue:'#4a90d9', gray:'#777', yellow:'#f5c518' }
   return <span style={{ background:colors[color]||colors.gray, color:color==='yellow'?'#333':'white', padding:'3px 10px', borderRadius:'20px', fontSize:'12px', fontWeight:'bold' }}>{label}</span>
@@ -145,12 +339,12 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
             <th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th>
           </tr>
           <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
-          <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${Math.round((pay.totalWorkedMinutes||0)/60*10)/10} hrs)</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(pay.basicPay)}</td></tr>
+          <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${Math.round((pay.totalWorkedMinutes||0)/60*10)/10} worked hrs)</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(pay.workedBasicPay ?? pay.basicPay)}</td></tr>
           ${(pay.birthdayPay||0)>0?`<tr style="background:#fff8dc;"><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">🎂 Birthday Pay (200%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.birthdayPay)}</td></tr>`:''}
           ${pay.overtimePay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay (${pay.overtimeMinutes} min × 1.25x)</td><td style="padding:3px 8px;text-align:right;">${php(pay.overtimePay)}</td></tr>`:''}
           ${pay.nightDiffPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential (10%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.nightDiffPay)}</td></tr>`:''}
           ${pay.holidayPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;">${php(pay.holidayPay)}</td></tr>`:''}
-          ${(pay.paidLeaveDays||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Paid Leave (${pay.paidLeaveDays} day(s))</td><td style="padding:3px 8px;text-align:right;">${php((pay.paidLeaveDays||0)*((pay.basicPay||0)/Math.max(1,pay.workedDays+(pay.paidLeaveDays||0))))}</td></tr>`:''}
+          ${(pay.paidLeaveDays||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Paid SIL Leave (${pay.paidLeaveDays} day(s))</td><td style="padding:3px 8px;text-align:right;">${php(pay.paidLeavePay||0)}</td></tr>`:''}
           ${pay.adjustmentEarnings>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Bonus / Other Earnings</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentEarnings)}</td></tr>`:''}
           <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Earnings</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalEarnings)}</td></tr>
           <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
@@ -217,7 +411,7 @@ export default function App() {
   const [myActiveCAs, setMyActiveCAs] = useState([])
   const [myCAHistory, setMyCAHistory] = useState([])
   const [showCAHistory, setShowCAHistory] = useState(false)
-  const [myLeaveBalance, setMyLeaveBalance] = useState({ sick:5, vacation:5 })
+  const [myLeaveBalance, setMyLeaveBalance] = useState({ sil:0, usedSIL:0, unpaidApproved:0, eligible:false, type:'Unpaid Leave' })
   const [showLeaveRequest, setShowLeaveRequest] = useState(false)
   const [showMyLeaves, setShowMyLeaves] = useState(false)
   const [myLeaves, setMyLeaves] = useState([])
@@ -342,6 +536,8 @@ export default function App() {
   const [adjustmentCategory, setAdjustmentCategory] = useState('')
   const [adjustmentAmount, setAdjustmentAmount] = useState('')
   const [adjustmentNotes, setAdjustmentNotes] = useState('')
+  const [silCashouts, setSilCashouts] = useState([])
+  const [silCashoutsLoading, setSilCashoutsLoading] = useState(false)
   // Contracts module
   const [contracts, setContracts] = useState([])
   const [contractsLoading, setContractsLoading] = useState(false)
@@ -406,6 +602,8 @@ export default function App() {
   const [showOrdersPanel, setShowOrdersPanel] = useState(false)
   // Login type
   const [loginType, setLoginType] = useState('employee')
+  const [passkeySupported, setPasskeySupported] = useState(false)
+  const [passkeyLoading, setPasskeyLoading] = useState(false)
   // Franchise
   const [franchises, setFranchises] = useState([])
   const [showFranchiseForm, setShowFranchiseForm] = useState(false)
@@ -560,7 +758,7 @@ export default function App() {
   const [financialMonth, setFinancialMonth] = useState(today.slice(0,7))
   const [financialData, setFinancialData] = useState(null)
   const [financialLoading, setFinancialLoading] = useState(false)
-  const EXPENSE_CATEGORIES = ['Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Miscellaneous']
+  const EXPENSE_CATEGORIES = ['Payroll Expense','Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Miscellaneous']
   const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
   const SALES_CHANNELS = [{ value:'walkin', label:'🏪 Walk-in' }, { value:'messenger', label:'💬 Messenger' }]
   const [inventorySearch, setInventorySearch] = useState('')
@@ -655,13 +853,33 @@ export default function App() {
   const showPayrollReminder = currentDay === 11 || currentDay === 26
 
   useEffect(() => {
-    if (employee) {
-      loadTodayLog(employee); loadTodaySchedule(employee)
-      loadMyPayslips(employee); loadMyCashAdvances(employee)
-      loadMyAttendanceHistory(employee); loadMyLeaveBalance(employee)
-      checkAnnouncements(employee); loadMyCharges(employee)
+    setPasskeySupported(browserSupportsPasskeys())
+  }, [])
+
+  useEffect(() => {
+    if (!employee?.id) return
+
+    let cancelled = false
+
+    async function loadEmployeePortalData() {
+      const syncResult = await syncEmployeeSIL(employee, { silent:true })
+      const activeEmployee = syncResult?.employee || employee
+
+      if (!cancelled && syncResult?.employee) {
+        setEmployee(syncResult.employee)
+        if (syncResult.employee.profile_photo_url) setProfilePhotoUrl(syncResult.employee.profile_photo_url)
+      }
+
+      loadTodayLog(activeEmployee); loadTodaySchedule(activeEmployee)
+      loadMyPayslips(activeEmployee); loadMyCashAdvances(activeEmployee)
+      loadMyAttendanceHistory(activeEmployee); loadMyLeaveBalance(activeEmployee)
+      checkAnnouncements(activeEmployee); loadMyCharges(activeEmployee)
     }
-  }, [employee])
+
+    loadEmployeePortalData()
+
+    return () => { cancelled = true }
+  }, [employee?.id])
 
   useEffect(() => {
     if (cameraMode && videoRef.current) startCamera()
@@ -818,8 +1036,12 @@ export default function App() {
     const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
     setLoading(false)
     if (error || !data) { alert('Invalid Employee ID or PIN'); return }
-    setEmployee(data)
-    if (data.profile_photo_url) setProfilePhotoUrl(data.profile_photo_url)
+
+    const syncResult = await syncEmployeeSIL(data, { silent:true })
+    const activeEmployee = syncResult?.employee || data
+
+    setEmployee(activeEmployee)
+    if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
   }
 
   // ── Smart Login: checks master creds first, then employee DB role ─────────
@@ -828,23 +1050,174 @@ export default function App() {
     // 1. Check master hardcoded credentials (owner only emergency access)
     const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
     if (adminMatch) { setLoading(false); openAdmin(adminMatch.role); return }
+
     // 2. Check employee database — look up by code + PIN
     const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
     setLoading(false)
     if (error || !data) { alert('Invalid Employee ID or PIN. Please try again.'); return }
+
+    const syncResult = await syncEmployeeSIL(data, { silent:true })
+    const activeEmployee = syncResult?.employee || data
+
     // 3. If employee has an admin_role assigned, open admin panel with that role
-    if (data.admin_role && ['owner','manager','hr','payroll','supervisor','asst_supervisor'].includes(data.admin_role)) {
+    if (activeEmployee.admin_role && ['owner','manager','hr','payroll','supervisor','asst_supervisor'].includes(activeEmployee.admin_role)) {
       // Build list of all roles this employee can access (primary + extra roles)
-      const extraRoles = data.extra_roles ? data.extra_roles.split(',').filter(r=>r.trim()) : []
-      const allRoles = [data.admin_role, ...extraRoles].filter((r,i,a)=>a.indexOf(r)===i)
+      const extraRoles = activeEmployee.extra_roles ? activeEmployee.extra_roles.split(',').filter(r=>r.trim()) : []
+      const allRoles = [activeEmployee.admin_role, ...extraRoles].filter((r,i,a)=>a.indexOf(r)===i)
       setAvailableRoles(allRoles)
-      openAdmin(data.admin_role, data)
+      openAdmin(activeEmployee.admin_role, activeEmployee)
       return
     }
+
     // 4. Regular employee — load portal
-    setEmployee(data)
-    if (data.profile_photo_url) setProfilePhotoUrl(data.profile_photo_url)
+    setEmployee(activeEmployee)
+    if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
   }
+  async function openEmployeeAfterAuthentication(empData) {
+    if (!empData) return
+    const syncResult = await syncEmployeeSIL(empData, { silent:true })
+    const activeEmployee = syncResult?.employee || empData
+
+    if (activeEmployee.admin_role && ['owner','manager','hr','payroll','supervisor','asst_supervisor'].includes(activeEmployee.admin_role)) {
+      const extraRoles = activeEmployee.extra_roles ? activeEmployee.extra_roles.split(',').filter(r=>r.trim()) : []
+      const allRoles = [activeEmployee.admin_role, ...extraRoles].filter((r,i,a)=>a.indexOf(r)===i)
+      setAvailableRoles(allRoles)
+      openAdmin(activeEmployee.admin_role, activeEmployee)
+      return
+    }
+
+    setEmployee(activeEmployee)
+    if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
+  }
+
+  async function loginWithPasskey() {
+    if (!browserSupportsPasskeys()) {
+      alert('Fingerprint/passkey login is not supported on this browser or device.')
+      return
+    }
+
+    setPasskeyLoading(true)
+    try {
+      const { data: optionsData, error: optionsError } = await supabase.functions.invoke('employee-passkey', {
+        body: {
+          action: 'login-options',
+          origin: window.location.origin
+        }
+      })
+
+      if (optionsError) throw optionsError
+      if (!optionsData?.options) throw new Error(optionsData?.error || 'Could not start fingerprint login.')
+
+      const credential = await navigator.credentials.get({
+        publicKey: preparePublicKeyRequestOptions(optionsData.options)
+      })
+
+      if (!credential) throw new Error('Fingerprint login was cancelled.')
+
+      const { data: verifyData, error: verifyError } = await supabase.functions.invoke('employee-passkey', {
+        body: {
+          action: 'login-verify',
+          origin: window.location.origin,
+          challenge_id: optionsData.challenge_id,
+          credential: publicKeyCredentialToJSON(credential)
+        }
+      })
+
+      if (verifyError) throw verifyError
+      if (!verifyData?.verified || !verifyData?.employee) throw new Error(verifyData?.error || 'Fingerprint login failed.')
+
+      showToast('✅ Fingerprint login successful!')
+      await openEmployeeAfterAuthentication(verifyData.employee)
+    } catch (err) {
+      console.error('Passkey login error:', err)
+      showToast('❌ ' + (err?.message || 'Fingerprint login failed.'), 'red')
+    }
+    setPasskeyLoading(false)
+  }
+
+  async function registerPasskeyForEmployee() {
+    if (!employee?.id) {
+      alert('Please log in with Employee ID and PIN first.')
+      return
+    }
+    if (!browserSupportsPasskeys()) {
+      alert('Fingerprint/passkey setup is not supported on this browser or device.')
+      return
+    }
+
+    const registrationPin = pin || window.prompt('For security, enter your current PIN to set up fingerprint login:')
+    if (!registrationPin) return
+
+    setPasskeyLoading(true)
+    try {
+      const { data: optionsData, error: optionsError } = await supabase.functions.invoke('employee-passkey', {
+        body: {
+          action: 'register-options',
+          origin: window.location.origin,
+          employee_code: employee.employee_code,
+          pin: registrationPin
+        }
+      })
+
+      if (optionsError) throw optionsError
+      if (!optionsData?.options) throw new Error(optionsData?.error || 'Could not start fingerprint setup.')
+
+      const credential = await navigator.credentials.create({
+        publicKey: preparePublicKeyCreationOptions(optionsData.options)
+      })
+
+      if (!credential) throw new Error('Fingerprint setup was cancelled.')
+
+      const { data: verifyData, error: verifyError } = await supabase.functions.invoke('employee-passkey', {
+        body: {
+          action: 'register-verify',
+          origin: window.location.origin,
+          employee_code: employee.employee_code,
+          pin: registrationPin,
+          challenge_id: optionsData.challenge_id,
+          credential: publicKeyCredentialToJSON(credential)
+        }
+      })
+
+      if (verifyError) throw verifyError
+      if (!verifyData?.verified) throw new Error(verifyData?.error || 'Fingerprint setup failed.')
+
+      await logAudit('PASSKEY REGISTERED', employee.full_name || 'Employee', employee.full_name || '', 'Employee enabled fingerprint/passkey login')
+      showToast('✅ Fingerprint login is now set up on this device!')
+    } catch (err) {
+      console.error('Passkey register error:', err)
+      showToast('❌ ' + (err?.message || 'Fingerprint setup failed.'), 'red')
+    }
+    setPasskeyLoading(false)
+  }
+
+  async function removeMyPasskeys() {
+    if (!employee?.id) return
+    const currentPin = pin || window.prompt('Enter your current PIN to remove fingerprint login:')
+    if (!currentPin) return
+    if (!window.confirm('Remove fingerprint/passkey login for your employee account?')) return
+
+    setPasskeyLoading(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('employee-passkey', {
+        body: {
+          action: 'delete-my-passkeys',
+          origin: window.location.origin,
+          employee_code: employee.employee_code,
+          pin: currentPin
+        }
+      })
+      if (error) throw error
+      if (!data?.success) throw new Error(data?.error || 'Could not remove fingerprint login.')
+      await logAudit('PASSKEY REMOVED', employee.full_name || 'Employee', employee.full_name || '', 'Employee removed fingerprint/passkey login')
+      showToast('✅ Fingerprint login removed.')
+    } catch (err) {
+      console.error('Passkey delete error:', err)
+      showToast('❌ ' + (err?.message || 'Failed to remove fingerprint login.'), 'red')
+    }
+    setPasskeyLoading(false)
+  }
+
   function logout() {
     setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
     setTodaySchedule(null); setMyPayslips([]); setCameraMode(null)
@@ -3513,11 +3886,36 @@ export default function App() {
     setMyAttendance(data || [])
   }
   async function loadMyLeaveBalance(emp) {
-    const yearStart = `${today.slice(0,4)}-01-01`
-    const { data } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').gte('leave_start', yearStart)
-    const usedS = data?.filter(l=>l.leave_type==='Sick Leave').reduce((s,l)=>s+Number(l.duration_days||1),0)||0
-    const usedV = data?.filter(l=>l.leave_type==='Vacation Leave').reduce((s,l)=>s+Number(l.duration_days||1),0)||0
-    setMyLeaveBalance({ sick:Math.max(0,(emp.sick_leave_balance??5)-usedS), vacation:Math.max(0,(emp.vacation_leave_balance??5)-usedV) })
+    if (!emp?.id) return
+
+    const activeEmp = emp
+    const cycle = getCurrentSILCycle(activeEmp.hire_date)
+    const cycleStart = cycle?.start || `${today.slice(0,4)}-01-01`
+
+    const { data } = await supabase
+      .from('leave_requests')
+      .select('*')
+      .eq('employee_id', activeEmp.id)
+      .eq('status', 'approved')
+      .gte('leave_start', cycleStart)
+
+    const usedSIL = data
+      ?.filter(l => normalizeLeaveType(l.leave_type) === 'SIL')
+      .reduce((s, l) => s + safeNum(l.duration_days, 1), 0) || 0
+
+    const unpaidApproved = data
+      ?.filter(l => normalizeLeaveType(l.leave_type) !== 'SIL')
+      .reduce((s, l) => s + safeNum(l.duration_days, 1), 0) || 0
+
+    const info = getEmployeeLeaveInfo(activeEmp)
+
+    setMyLeaveBalance({
+      sil: info.silBalance,
+      usedSIL,
+      unpaidApproved,
+      eligible: info.eligible,
+      type: info.type
+    })
   }
   async function loadMyLeaves() {
     setMyLeavesLoading(true)
@@ -3688,16 +4086,66 @@ export default function App() {
     setOtRequestReason(''); setOtRequestReasonPreset(''); setOtRequestMinutes(''); setShowOTRequest(false)
   }
   async function submitLeaveRequest() {
-    if (!leaveStartDate||!leaveEndDate||!leaveType||!leaveReason) { alert('Please complete all fields'); return }
-    const todayMid=new Date(); todayMid.setHours(0,0,0,0)
-    const startD=new Date(leaveStartDate); startD.setHours(0,0,0,0)
-    if ((startD.getTime()-todayMid.getTime())/(1000*60*60*24)<2) { alert('Must be filed at least 3 days in advance.'); return }
-    const dur=Math.ceil((new Date(leaveEndDate).getTime()-new Date(leaveStartDate).getTime())/(1000*60*60*24))+1
-    if (leaveType==='Sick Leave'&&dur>myLeaveBalance.sick) { alert(`Only ${myLeaveBalance.sick} Sick Leave days remaining.`); return }
-    if (leaveType==='Vacation Leave'&&dur>myLeaveBalance.vacation) { alert(`Only ${myLeaveBalance.vacation} Vacation Leave days remaining.`); return }
-    const { error } = await supabase.from('leave_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, leave_start:leaveStartDate, leave_end:leaveEndDate, duration_days:dur, leave_type:leaveType, reason:leaveReason, status:'pending' })
-    if (error) { alert(error.message); return }
-    alert('Leave request submitted!'); setLeaveStartDate(''); setLeaveEndDate(''); setLeaveType(''); setLeaveReason(''); setShowLeaveRequest(false); loadMyLeaveBalance(employee)
+    if (!leaveStartDate || !leaveEndDate || !leaveReason) {
+      alert('Please complete all fields')
+      return
+    }
+
+    const todayMid = parseLocalDate(today)
+    const startD = parseLocalDate(leaveStartDate)
+
+    if (!startD || !todayMid) {
+      alert('Invalid leave start date.')
+      return
+    }
+
+    if ((startD.getTime() - todayMid.getTime()) / (1000 * 60 * 60 * 24) < 2) {
+      alert('Must be filed at least 3 days in advance.')
+      return
+    }
+
+    const dur = daysInclusive(leaveStartDate, leaveEndDate)
+    if (dur <= 0) {
+      alert('Invalid leave date range.')
+      return
+    }
+
+    const syncResult = await syncEmployeeSIL(employee, { silent:true })
+    const activeEmployee = syncResult?.employee || employee
+    const leaveInfo = getEmployeeLeaveInfo(activeEmployee)
+
+    if (leaveInfo.type === 'SIL' && dur > leaveInfo.silBalance) {
+      alert(`Only ${leaveInfo.silBalance} SIL day(s) remaining. Please adjust the dates or file unpaid leave after your SIL is fully used.`)
+      return
+    }
+
+    const { error } = await supabase.from('leave_requests').insert({
+      employee_id: activeEmployee.id,
+      employee_code: activeEmployee.employee_code,
+      employee_name: activeEmployee.full_name,
+      leave_start: leaveStartDate,
+      leave_end: leaveEndDate,
+      duration_days: dur,
+      leave_type: leaveInfo.type,
+      reason: leaveReason,
+      status: 'pending',
+      is_paid: leaveInfo.isPaid
+    })
+
+    if (error) {
+      alert(error.message)
+      return
+    }
+
+    alert(leaveInfo.isPaid ? 'SIL request submitted! Waiting for admin approval.' : 'Unpaid leave request submitted! Waiting for admin approval.')
+
+    setEmployee(activeEmployee)
+    setLeaveStartDate('')
+    setLeaveEndDate('')
+    setLeaveType('')
+    setLeaveReason('')
+    setShowLeaveRequest(false)
+    loadMyLeaveBalance(activeEmployee)
   }
   async function submitCashAdvanceRequest() {
     if (!requestCashAmount||!requestCashReason) { alert('Please enter amount and reason.'); return }
@@ -3737,24 +4185,185 @@ export default function App() {
   }
 
   // ── SIL Automation ────────────────────────────────────────────────────────
-  async function autoApplySIL() {
-    const { data:emps } = await supabase.from('employees').select('*').eq('is_active', true)
-    let entitled=0, zeroed=0
-    for (const emp of emps||[]) {
-      if (!emp.hire_date) continue
-      const yearsOfService=(Date.now()-new Date(emp.hire_date).getTime())/(1000*60*60*24*365)
-      if (yearsOfService>=1) {
-        // Entitled to 5 SIL days — only set if not already manually adjusted above 0
-        await supabase.from('employees').update({ sil_balance:5 }).eq('id', emp.id)
-        entitled++
-      } else {
-        // Not yet entitled — zero out
-        await supabase.from('employees').update({ sil_balance:0 }).eq('id', emp.id)
-        zeroed++
+  async function silAuditMarkerExists(emp, action, cycleStart) {
+    try {
+      const { data } = await supabase
+        .from('audit_logs')
+        .select('id')
+        .eq('action', action)
+        .eq('target_employee', emp.full_name || '')
+        .ilike('details', `%${cycleStart}%`)
+        .limit(1)
+
+      return (data || []).length > 0
+    } catch(e) {
+      console.warn('SIL audit marker check skipped:', e)
+      return false
+    }
+  }
+
+  async function createUnusedSILCashoutIfNeeded(emp, previousCycle, payoutDate) {
+    const unusedDays = Math.max(0, safeNum(emp?.sil_balance, 0))
+    if (!emp?.id || !previousCycle || unusedDays <= 0) return false
+
+    const amount = unusedDays * safeNum(emp.daily_rate, 0)
+    if (amount <= 0) return false
+
+    try {
+      const { data:existing } = await supabase
+        .from('payroll_adjustments')
+        .select('id')
+        .eq('employee_id', emp.id)
+        .eq('category', 'Unused SIL Conversion')
+        .ilike('notes', `%${previousCycle.start}%`)
+        .limit(1)
+
+      if ((existing || []).length > 0) return false
+
+      const { error } = await supabase.from('payroll_adjustments').insert({
+        employee_id: emp.id,
+        employee_code: emp.employee_code || '',
+        employee_name: emp.full_name || '',
+        adjustment_date: payoutDate || today,
+        adjustment_type: 'addition',
+        category: 'Unused SIL Conversion',
+        amount,
+        notes: `Unused SIL cash conversion: ${unusedDays} day(s) from ${previousCycle.start} to ${previousCycle.end}`
+      })
+
+      if (error) {
+        console.error('Unused SIL cashout failed:', error)
+        return false
+      }
+
+      await logAudit(
+        'SIL CASHOUT CREATED',
+        'System',
+        emp.full_name || '',
+        `${emp.id} | ${previousCycle.start} to ${previousCycle.end} | ${unusedDays} day(s) | ${php(amount)}`
+      )
+
+      return true
+    } catch(e) {
+      console.error('Unused SIL cashout failed:', e)
+      return false
+    }
+  }
+
+  async function syncEmployeeSIL(emp, options = {}) {
+    if (!emp?.id) return { eligible:false, credited:false, employee:emp }
+
+    const cycle = getCurrentSILCycle(emp.hire_date)
+    const baseReset = {
+      sick_leave_balance: 0,
+      vacation_leave_balance: 0
+    }
+
+    if (!cycle) {
+      const { error } = await supabase
+        .from('employees')
+        .update({ ...baseReset, sil_balance:0 })
+        .eq('id', emp.id)
+
+      if (error && !options.silent) showToast('Failed to sync SIL: ' + error.message, 'red')
+
+      return {
+        eligible:false,
+        credited:false,
+        employee:{ ...emp, sick_leave_balance:0, vacation_leave_balance:0, sil_balance:0 }
       }
     }
-    await logAudit('SIL AUTO-APPLIED','Admin','ALL',`Entitled: ${entitled} | Zeroed: ${zeroed}`)
-    showToast(`✅ SIL updated — ${entitled} entitled, ${zeroed} not yet entitled`)
+
+    let credited = false
+    let cashoutCreated = false
+
+    const creditExists = await silAuditMarkerExists(emp, 'SIL CREDITED', cycle.start)
+
+    if (!creditExists) {
+      const previousCycle = getPreviousSILCycle(cycle)
+
+      if (previousCycle) {
+        const previousCreditExists = await silAuditMarkerExists(emp, 'SIL CREDITED', previousCycle.start)
+        if (previousCreditExists) {
+          cashoutCreated = await createUnusedSILCashoutIfNeeded(emp, previousCycle, cycle.start)
+        }
+      }
+
+      const { error } = await supabase
+        .from('employees')
+        .update({ ...baseReset, sil_balance:5 })
+        .eq('id', emp.id)
+
+      if (error) {
+        if (!options.silent) showToast('Failed to credit SIL: ' + error.message, 'red')
+        return { eligible:true, credited:false, employee:emp, cashoutCreated:false }
+      }
+
+      await logAudit(
+        'SIL CREDITED',
+        'System',
+        emp.full_name || '',
+        `${emp.id} | ${emp.employee_code || ''} | SIL cycle ${cycle.start} to ${cycle.end} | 5 day(s) credited`
+      )
+
+      credited = true
+    } else if (safeNum(emp.sick_leave_balance, 0) !== 0 || safeNum(emp.vacation_leave_balance, 0) !== 0) {
+      await supabase
+        .from('employees')
+        .update(baseReset)
+        .eq('id', emp.id)
+    }
+
+    const { data:freshEmp } = await supabase
+      .from('employees')
+      .select('*')
+      .eq('id', emp.id)
+      .maybeSingle()
+
+    return {
+      eligible:true,
+      credited,
+      cashoutCreated,
+      employee:freshEmp || {
+        ...emp,
+        sick_leave_balance:0,
+        vacation_leave_balance:0,
+        sil_balance: credited ? 5 : safeNum(emp.sil_balance, 0)
+      }
+    }
+  }
+
+  async function autoApplySIL() {
+    const { data:emps, error } = await supabase.from('employees').select('*').eq('is_active', true)
+
+    if (error) {
+      showToast('Failed to check SIL: ' + error.message, 'red')
+      return
+    }
+
+    let entitled = 0
+    let notEntitled = 0
+    let credited = 0
+    let cashouts = 0
+
+    for (const emp of emps || []) {
+      const result = await syncEmployeeSIL(emp, { silent:true })
+
+      if (result.eligible) entitled++
+      else notEntitled++
+
+      if (result.credited) credited++
+      if (result.cashoutCreated) cashouts++
+    }
+
+    await logAudit(
+      'SIL AUTO-APPLIED',
+      'Admin',
+      'ALL',
+      `Entitled: ${entitled} | Not entitled: ${notEntitled} | Newly credited: ${credited} | Cashouts created: ${cashouts}`
+    )
+
+    showToast(`✅ SIL checked. Entitled: ${entitled}, Not entitled: ${notEntitled}, Newly credited: ${credited}, Cashouts: ${cashouts}`)
     loadEmployees()
   }
 
@@ -3889,14 +4498,189 @@ export default function App() {
 
   // ── Payroll Approval Workflow ─────────────────────────────────────────────
   async function approvePayroll(start, end) {
+    if (!start || !end) { showToast('Please select payroll start and end dates.', 'red'); return }
+
+    const { data: records } = await supabase
+      .from('payroll_records')
+      .select('id')
+      .eq('payroll_start', start)
+      .eq('payroll_end', end)
+      .limit(1)
+
+    if (!records || records.length === 0) {
+      showToast('No payroll records found for this period. Compute payroll first.', 'red')
+      return
+    }
+
     const { error } = await supabase.from('payroll_records')
       .update({ payroll_approved: true, approved_by: 'Admin', approved_at: new Date().toISOString() })
       .eq('payroll_start', start).eq('payroll_end', end)
     if (error) { showToast('Failed: '+error.message,'red'); return }
+
+    const releasedSILCount = await markSILCashoutsReleasedForPayrollPeriod(start, end, { auto:true, silent:true })
+    const expenseResult = await postPayrollToExpenses(start, end, { auto:true, silent:true })
+
     setPayrollApproved(true)
-    await logAudit('PAYROLL APPROVED','Admin','ALL',`Period: ${start} to ${end}`)
-    showToast('✅ Payroll approved and released!')
+    await logAudit(
+      'PAYROLL APPROVED',
+      'Admin',
+      'ALL',
+      `Period: ${start} to ${end} | SIL cashouts auto-released: ${releasedSILCount} | Expense: ${expenseResult.posted ? 'posted ' + php(expenseResult.amount) : expenseResult.existing ? 'already posted' : 'not posted'}`
+    )
+
+    const messages = ['✅ Payroll approved and released!']
+    if (releasedSILCount > 0) messages.push(`${releasedSILCount} SIL cashout(s) marked paid.`)
+    if (expenseResult.posted) messages.push(`Payroll expense posted: ${php(expenseResult.amount)}.`)
+    else if (expenseResult.existing) messages.push('Payroll expense was already posted.')
+    else if (expenseResult.error) messages.push(`Payroll expense not posted: ${expenseResult.error}`)
+
+    showToast(messages.join(' '), expenseResult.error ? 'red' : 'green')
+    loadSILCashouts({ skipAuto:true })
+    loadDailyExpenses()
   }
+
+  function buildPayrollExpenseTag(start, end) {
+    return `PAYROLL:${start}|${end}`
+  }
+
+  function getPayrollExpenseDescription(start, end, summary) {
+    const tag = buildPayrollExpenseTag(start, end)
+    return `${tag} | Payroll expense for ${start} to ${end} | Employees: ${summary.employeeCount} | Gross earnings: ${php(summary.grossEarnings)} | Net pay: ${php(summary.netPay)} | Includes basic salary, overtime, night differential, holiday pay, paid SIL, unused SIL conversion, and payroll additions.`
+  }
+
+  async function payrollExpenseAlreadyPosted(start, end) {
+    const tag = buildPayrollExpenseTag(start, end)
+    const { data, error } = await supabase
+      .from('daily_expenses')
+      .select('id, amount, status, expense_date, description')
+      .eq('category', 'Payroll Expense')
+      .ilike('description', `%${tag}%`)
+      .limit(1)
+
+    if (error) return { exists:false, error:error.message }
+    return { exists:(data || []).length > 0, record:(data || [])[0] || null }
+  }
+
+  async function getPayrollExpenseSummary(start, end) {
+    const { data, error } = await supabase
+      .from('payroll_records')
+      .select('id,total_earnings,net_pay,basic_pay,birthday_pay,overtime_pay,night_diff_pay,holiday_pay,other_earnings,total_deductions')
+      .eq('payroll_start', start)
+      .eq('payroll_end', end)
+
+    if (error) return { error:error.message }
+    const records = data || []
+    if (records.length === 0) return { error:'No payroll records found. Compute payroll first.' }
+
+    return {
+      employeeCount: records.length,
+      grossEarnings: records.reduce((s,r)=>s+safeNum(r.total_earnings,0),0),
+      netPay: records.reduce((s,r)=>s+safeNum(r.net_pay,0),0),
+      basicPay: records.reduce((s,r)=>s+safeNum(r.basic_pay,0),0),
+      birthdayPay: records.reduce((s,r)=>s+safeNum(r.birthday_pay,0),0),
+      overtimePay: records.reduce((s,r)=>s+safeNum(r.overtime_pay,0),0),
+      nightDiffPay: records.reduce((s,r)=>s+safeNum(r.night_diff_pay,0),0),
+      holidayPay: records.reduce((s,r)=>s+safeNum(r.holiday_pay,0),0),
+      otherEarnings: records.reduce((s,r)=>s+safeNum(r.other_earnings,0),0),
+      totalDeductions: records.reduce((s,r)=>s+safeNum(r.total_deductions,0),0)
+    }
+  }
+
+  async function postPayrollToExpenses(start, end, options = {}) {
+    if (!start || !end) return { posted:false, error:'Missing payroll period.' }
+
+    const existing = await payrollExpenseAlreadyPosted(start, end)
+    if (existing.exists) {
+      if (!options.silent) showToast('Payroll expense is already posted for this period.', 'red')
+      return { posted:false, existing:true, record:existing.record, amount:safeNum(existing.record?.amount,0) }
+    }
+    if (existing.error && !options.silent) console.warn('Payroll expense duplicate check:', existing.error)
+
+    const summary = await getPayrollExpenseSummary(start, end)
+    if (summary.error) {
+      if (!options.silent) showToast(summary.error, 'red')
+      return { posted:false, error:summary.error }
+    }
+
+    const amount = safeNum(summary.grossEarnings, 0)
+    if (amount <= 0) {
+      const msg = 'Payroll total earnings is zero. Nothing to post to expenses.'
+      if (!options.silent) showToast(msg, 'red')
+      return { posted:false, error:msg }
+    }
+
+    const payload = {
+      expense_date: end,
+      category: 'Payroll Expense',
+      amount,
+      description: getPayrollExpenseDescription(start, end, summary),
+      status: 'approved',
+      encoded_by: options.auto ? 'System Auto' : (adminRole || 'Admin'),
+      approved_by: options.auto ? 'System Auto' : (adminRole || 'Admin'),
+      approved_at: new Date().toISOString()
+    }
+
+    const { data, error } = await supabase.from('daily_expenses').insert(payload).select().single()
+    if (error) {
+      if (!options.silent) showToast('Failed to post payroll expense: ' + error.message, 'red')
+      return { posted:false, error:error.message }
+    }
+
+    await logAudit(
+      options.auto ? 'PAYROLL EXPENSE AUTO-POSTED' : 'PAYROLL EXPENSE POSTED',
+      options.auto ? 'System Auto' : 'Admin',
+      'ALL',
+      `Period: ${start} to ${end} | Gross payroll expense: ${php(amount)} | Net pay: ${php(summary.netPay)} | Expense ID: ${data?.id || ''}`
+    )
+
+    if (!options.silent) showToast(`✅ Payroll expense posted: ${php(amount)}`)
+    loadDailyExpenses()
+    if (financialMonth === String(end).slice(0,7)) loadFinancialData()
+    return { posted:true, amount, record:data, summary }
+  }
+
+  async function autoPostApprovedPayrollExpenses(options = {}) {
+    try {
+      const { data, error } = await supabase
+        .from('payroll_records')
+        .select('payroll_start,payroll_end,payroll_approved')
+        .eq('payroll_approved', true)
+        .order('payroll_start', { ascending:false })
+        .limit(300)
+
+      if (error) return 0
+
+      const periods = {}
+      ;(data || []).forEach(r => {
+        if (r.payroll_start && r.payroll_end) periods[`${r.payroll_start}|${r.payroll_end}`] = { start:r.payroll_start, end:r.payroll_end }
+      })
+
+      let posted = 0
+      for (const p of Object.values(periods)) {
+        const result = await postPayrollToExpenses(p.start, p.end, { auto:true, silent:true })
+        if (result.posted) posted++
+      }
+
+      if (posted > 0) {
+        await logAudit('PAYROLL EXPENSE AUTO-POST CHECK', 'System Auto', 'ALL', `${posted} approved payroll period(s) auto-posted to expenses`)
+        if (!options.silent) showToast(`✅ ${posted} payroll expense record(s) auto-posted.`)
+      }
+      return posted
+    } catch(e) {
+      console.warn('Auto payroll expense post skipped:', e)
+      return 0
+    }
+  }
+
+  async function handleManualPayrollExpensePost(start, end) {
+    if (!start || !end) { showToast('Please select a payroll period.', 'red'); return }
+    if (!window.confirm(`Post payroll to Expenses for ${start} to ${end}?
+
+This will create one approved expense record using the total payroll earnings.`)) return
+    const result = await postPayrollToExpenses(start, end, { auto:false })
+    if (result.existing) showToast('Payroll expense is already posted for this period.', 'red')
+  }
+
   async function detectStoreLocation() {
     setLocationStatus('Detecting location...')
     if (!navigator.geolocation) { setLocationStatus('GPS not available on this device.'); return }
@@ -3921,9 +4705,9 @@ export default function App() {
     }
     const defaultTab = role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'
     setActiveTab(defaultTab)
-    loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests()
+    loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
-    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{})
+    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{})
     requestPushPermission()
     // Check Tuesday deposit reminder
     setTimeout(()=>checkTuesdayDepositReminder(), 2000)
@@ -4050,29 +4834,113 @@ export default function App() {
     setResolvedLeaves(data || [])
   }
   async function updateLeaveStatus(id, status, reason) {
-    const req = leaveRequests.find(r=>r.id===id)
-    const dur = req ? Number(req.duration_days || 1) : 0
-    const { error } = await supabase.from('leave_requests').update({ status, admin_reason:reason||null }).eq('id', id)
-    if (error) { showToast('Failed: '+error.message,'red'); return }
-    // Deduct leave balance when approved
-    if (status==='approved' && req) {
-      const emp = employees.find(e=>e.id===req.employee_id)
-      if (emp) {
-        if (req.leave_type==='Sick Leave') {
-          const newBal = Math.max(0, Number(emp.sick_leave_balance||0) - dur)
-          await supabase.from('employees').update({ sick_leave_balance:newBal }).eq('id', emp.id)
-        } else if (req.leave_type==='Vacation Leave') {
-          const newBal = Math.max(0, Number(emp.vacation_leave_balance||0) - dur)
-          await supabase.from('employees').update({ vacation_leave_balance:newBal }).eq('id', emp.id)
-        }
-        await loadEmployees()
-      }
-      await createNotification(req.employee_id, req.employee_name, 'leave', '🏖️ Leave Approved', `Your ${req.leave_type} request for ${dur} day(s) has been approved.`)
-    } else if ((status==='disapproved' || status==='rejected') && req) {
-      await createNotification(req.employee_id, req.employee_name, 'leave', '❌ Leave Disapproved', `Your ${req.leave_type} request has been disapproved.${reason?' Reason: '+reason:''}`)
+    const req = leaveRequests.find(r => r.id === id)
+    const dur = req ? safeNum(req.duration_days, 1) : 0
+
+    if (!req) {
+      showToast('Leave request not found.', 'red')
+      return
     }
-    await logAudit(`LEAVE ${status.toUpperCase()}`,'Admin',req?.employee_name||'',`Leave ID ${id} — ${dur||0} day(s)`)
-    setLeaveRequests(prev=>prev.filter(r=>r.id!==id))
+
+    if (status === 'approved') {
+      const emp = employees.find(e => e.id === req.employee_id)
+
+      if (!emp) {
+        showToast('Employee not found.', 'red')
+        return
+      }
+
+      const requestedType = normalizeLeaveType(req.leave_type)
+      const isSIL = requestedType === 'SIL'
+
+      if (isSIL) {
+        const syncResult = await syncEmployeeSIL(emp, { silent:true })
+        const activeEmp = syncResult?.employee || emp
+
+        if (!hasOneYearService(activeEmp.hire_date)) {
+          showToast('Cannot approve SIL: employee is not yet qualified.', 'red')
+          return
+        }
+
+        const currentSIL = safeNum(activeEmp.sil_balance, 0)
+
+        if (dur > currentSIL) {
+          showToast(`Cannot approve SIL: only ${currentSIL} SIL day(s) remaining.`, 'red')
+          return
+        }
+
+        const { error:balError } = await supabase
+          .from('employees')
+          .update({
+            sick_leave_balance:0,
+            vacation_leave_balance:0,
+            sil_balance: currentSIL - dur
+          })
+          .eq('id', activeEmp.id)
+
+        if (balError) {
+          showToast('Failed to deduct SIL: ' + balError.message, 'red')
+          return
+        }
+      }
+
+      const { error } = await supabase
+        .from('leave_requests')
+        .update({
+          status:'approved',
+          admin_reason:reason || null,
+          leave_type:isSIL ? 'SIL' : 'Unpaid Leave',
+          is_paid:isSIL
+        })
+        .eq('id', id)
+
+      if (error) {
+        showToast('Failed: ' + error.message, 'red')
+        return
+      }
+
+      await createNotification(
+        req.employee_id,
+        req.employee_name,
+        'leave',
+        isSIL ? '✅ SIL Approved' : '✅ Unpaid Leave Approved',
+        isSIL
+          ? `Your paid SIL request for ${dur} day(s) has been approved.`
+          : `Your unpaid leave request for ${dur} day(s) has been approved.`
+      )
+
+      await loadEmployees()
+    } else {
+      const { error } = await supabase
+        .from('leave_requests')
+        .update({
+          status:'disapproved',
+          admin_reason:reason || null
+        })
+        .eq('id', id)
+
+      if (error) {
+        showToast('Failed: ' + error.message, 'red')
+        return
+      }
+
+      await createNotification(
+        req.employee_id,
+        req.employee_name,
+        'leave',
+        '❌ Leave Disapproved',
+        `Your ${getLeaveDisplayName(req.leave_type)} request has been disapproved.${reason ? ' Reason: ' + reason : ''}`
+      )
+    }
+
+    await logAudit(
+      `LEAVE ${status.toUpperCase()}`,
+      'Admin',
+      req.employee_name || '',
+      `Leave ID ${id} — ${getLeaveDisplayName(req.leave_type)} — ${dur || 0} day(s)`
+    )
+
+    setLeaveRequests(prev => prev.filter(r => r.id !== id))
     showToast(`✅ Leave ${status} successfully!`)
   }
   async function loadHolidays() {
@@ -4123,9 +4991,46 @@ export default function App() {
   }
   async function saveEmployeeChanges() {
     setSaveEmployeeLoading(true)
-    const { error } = await supabase.from('employees').update({ employee_code:editFields.code, full_name:editFields.name, position:editFields.position, pin:editFields.pin, daily_rate:Number(editFields.rate||0), has_sss:editFields.hasSss, has_pagibig:editFields.hasPagibig, has_philhealth:editFields.hasPhilhealth, hire_date:editFields.hireDate, sick_leave_balance:Number(editFields.sick||5), vacation_leave_balance:Number(editFields.vacation||5), sil_balance:Number(editFields.sil||5), pay_type:editFields.payType||'daily', hourly_rate:Number(editFields.hourlyRate||0), grace_period_minutes:Number(editFields.gracePeriod||10), date_of_birth:editFields.dob||null, gender:editFields.gender||'', civil_status:editFields.civil_status||'', home_address:editFields.address||'', contact_number:editFields.contact||'', emergency_contact_name:editFields.emergency_name||'', emergency_contact_number:editFields.emergency_contact||'', employment_type:editFields.employment_type||'regular', department:editFields.department||'', admin_role:editFields.admin_role||null, extra_roles:editFields.extra_roles||null }).eq('id', editingEmployeeId)
+
+    const eligible = hasOneYearService(editFields.hireDate)
+    const currentSIL = eligible ? Math.max(0, safeNum(editFields.sil, 0)) : 0
+
+    const { error } = await supabase.from('employees').update({
+      employee_code:editFields.code,
+      full_name:editFields.name,
+      position:editFields.position,
+      pin:editFields.pin,
+      daily_rate:Number(editFields.rate||0),
+      has_sss:editFields.hasSss,
+      has_pagibig:editFields.hasPagibig,
+      has_philhealth:editFields.hasPhilhealth,
+      hire_date:editFields.hireDate,
+      sick_leave_balance:0,
+      vacation_leave_balance:0,
+      sil_balance:currentSIL,
+      pay_type:editFields.payType||'daily',
+      hourly_rate:Number(editFields.hourlyRate||0),
+      grace_period_minutes:Number(editFields.gracePeriod||10),
+      date_of_birth:editFields.dob||null,
+      gender:editFields.gender||'',
+      civil_status:editFields.civil_status||'',
+      home_address:editFields.address||'',
+      contact_number:editFields.contact||'',
+      emergency_contact_name:editFields.emergency_name||'',
+      emergency_contact_number:editFields.emergency_contact||'',
+      employment_type:editFields.employment_type||'regular',
+      department:editFields.department||'',
+      admin_role:editFields.admin_role||null,
+      extra_roles:editFields.extra_roles||null
+    }).eq('id', editingEmployeeId)
+
     setSaveEmployeeLoading(false)
-    if (error) { showToast('❌ Failed to save: '+error.message,'red'); return }
+
+    if (error) {
+      showToast('❌ Failed to save: '+error.message,'red')
+      return
+    }
+
     await logAudit('EMPLOYEE UPDATED','Admin',editFields.name,'Employee details updated')
     setSaveSuccess(editingEmployeeId)
     await loadEmployees()
@@ -4134,11 +5039,55 @@ export default function App() {
   async function addEmployee() {
     const f = newEmpFields
     if (!f.code||!f.name||!f.position||!f.pin) { showToast('Please complete all required fields','red'); return }
-    const { error } = await supabase.from('employees').insert({ employee_code:f.code.toUpperCase(), full_name:f.name, position:f.position, pin:f.pin, daily_rate:Number(f.rate||0), is_active:true, has_sss:f.hasSss, has_pagibig:f.hasPagibig, has_philhealth:f.hasPhilhealth, hire_date:f.hire_date, sick_leave_balance:Number(f.sick||5), vacation_leave_balance:Number(f.vacation||5), sil_balance:Number(f.sil||5), pay_type:f.payType||'daily', hourly_rate:Number(f.hourlyRate||0), grace_period_minutes:Number(f.gracePeriod||10), date_of_birth:f.dob||null, gender:f.gender||'', civil_status:f.civil_status||'', home_address:f.address||'', contact_number:f.contact||'', emergency_contact_name:f.emergency_name||'', emergency_contact_number:f.emergency_contact||'', employment_type:f.employment_type||'regular', department:f.department||'' })
+
+    const eligible = hasOneYearService(f.hire_date)
+    const startingSIL = eligible ? 5 : 0
+
+    const { error } = await supabase.from('employees').insert({
+      employee_code:f.code.toUpperCase(),
+      full_name:f.name,
+      position:f.position,
+      pin:f.pin,
+      daily_rate:Number(f.rate||0),
+      is_active:true,
+      has_sss:f.hasSss,
+      has_pagibig:f.hasPagibig,
+      has_philhealth:f.hasPhilhealth,
+      hire_date:f.hire_date,
+      sick_leave_balance:0,
+      vacation_leave_balance:0,
+      sil_balance:startingSIL,
+      pay_type:f.payType||'daily',
+      hourly_rate:Number(f.hourlyRate||0),
+      grace_period_minutes:Number(f.gracePeriod||10),
+      date_of_birth:f.dob||null,
+      gender:f.gender||'',
+      civil_status:f.civil_status||'',
+      home_address:f.address||'',
+      contact_number:f.contact||'',
+      emergency_contact_name:f.emergency_name||'',
+      emergency_contact_number:f.emergency_contact||'',
+      employment_type:f.employment_type||'regular',
+      department:f.department||'',
+      sss_no:f.sss_no||'',
+      pagibig_no:f.pagibig_no||'',
+      philhealth_no:f.philhealth_no||'',
+      tin_no:f.tin_no||'',
+      work_location:f.work_location||'',
+      location_lat:f.location_lat?Number(f.location_lat):null,
+      location_lng:f.location_lng?Number(f.location_lng):null,
+      location_radius:f.location_radius?Number(f.location_radius):null,
+      bank_name:f.bank_name||'',
+      bank_account_number:f.bank_account_number||'',
+      bank_account_name:f.bank_account_name||''
+    })
+
     if (error) { showToast('Failed: '+error.message,'red'); return }
-    await logAudit('EMPLOYEE ADDED','Admin',f.name,'New employee added')
+
+    await logAudit('EMPLOYEE ADDED','Admin',f.name,`New employee ${f.code}`)
     showToast('✅ Employee added successfully!')
-    setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'' })
+
+    setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'' })
     loadEmployees()
   }
   async function deactivateEmployee(empId, empName) {
@@ -4220,7 +5169,178 @@ export default function App() {
     await logAudit('ADJUSTMENT ADDED','Admin',emp.full_name,`${adjustmentType}: ${php(adjustmentAmount)} — ${adjustmentCategory}`)
     showToast(`✅ ${adjustmentType==='addition'?'Bonus':'Deduction'} of ${php(adjustmentAmount)} saved for ${emp.full_name}!`)
     setAdjustmentEmployeeId(''); setAdjustmentCategory(''); setAdjustmentAmount(''); setAdjustmentNotes('')
+    if (adjustmentCategory.trim() === 'Unused SIL Conversion') loadSILCashouts()
   }
+  async function silReleaseMarkerExists(adjustmentId) {
+    if (!adjustmentId) return false
+    try {
+      const { data } = await supabase
+        .from('audit_logs')
+        .select('id')
+        .eq('action', 'SIL RELEASED/PAID')
+        .ilike('details', `%ADJ:${adjustmentId}%`)
+        .limit(1)
+      return (data || []).length > 0
+    } catch(e) {
+      console.warn('SIL release marker check skipped:', e)
+      return false
+    }
+  }
+
+  async function markSILCashoutReleased(adj, options = {}) {
+    if (!adj?.id) return false
+
+    const exists = await silReleaseMarkerExists(adj.id)
+    if (exists) return false
+
+    const by = options.auto ? 'System Auto' : 'Admin'
+    const details = `ADJ:${adj.id} | EMP:${adj.employee_id} | ${adj.employee_code || ''} | ${adj.adjustment_date} | ${php(adj.amount)} | ${adj.notes || ''}`
+
+    const { error } = await supabase.from('audit_logs').insert({
+      action: 'SIL RELEASED/PAID',
+      performed_by: by,
+      target_employee: adj.employee_name || '',
+      details
+    })
+
+    if (error) {
+      if (!options.silent) showToast('Failed to mark SIL as released: ' + error.message, 'red')
+      return false
+    }
+
+    return true
+  }
+
+  async function markSILCashoutsReleasedForPayrollPeriod(start, end, options = {}) {
+    if (!start || !end) return 0
+
+    const { data: cashouts, error } = await supabase
+      .from('payroll_adjustments')
+      .select('*')
+      .eq('category', 'Unused SIL Conversion')
+      .gte('adjustment_date', start)
+      .lte('adjustment_date', end)
+
+    if (error) {
+      if (!options.silent) showToast('Failed to check SIL releases: ' + error.message, 'red')
+      return 0
+    }
+
+    let released = 0
+    for (const adj of cashouts || []) {
+      const marked = await markSILCashoutReleased(adj, { ...options, silent:true })
+      if (marked) released++
+    }
+
+    if (released > 0) {
+      await logAudit(
+        'SIL AUTO RELEASE CHECK',
+        options.auto ? 'System Auto' : 'Admin',
+        'ALL',
+        `Payroll period ${start} to ${end} | ${released} SIL cashout(s) marked released/paid`
+      )
+    }
+
+    return released
+  }
+
+  async function autoReleasePaidSILCashouts() {
+    try {
+      const { data: cashouts, error } = await supabase
+        .from('payroll_adjustments')
+        .select('*')
+        .eq('category', 'Unused SIL Conversion')
+        .order('adjustment_date', { ascending:false })
+
+      if (error) return 0
+
+      let released = 0
+      for (const adj of cashouts || []) {
+        const alreadyReleased = await silReleaseMarkerExists(adj.id)
+        if (alreadyReleased) continue
+
+        const { data: approvedPeriods } = await supabase
+          .from('payroll_records')
+          .select('id,payroll_start,payroll_end')
+          .eq('employee_id', adj.employee_id)
+          .eq('payroll_approved', true)
+          .lte('payroll_start', adj.adjustment_date)
+          .gte('payroll_end', adj.adjustment_date)
+          .limit(1)
+
+        if ((approvedPeriods || []).length > 0) {
+          const marked = await markSILCashoutReleased(adj, { auto:true, silent:true })
+          if (marked) released++
+        }
+      }
+
+      if (released > 0) {
+        await logAudit('SIL AUTO RELEASE CHECK', 'System Auto', 'ALL', `${released} SIL cashout(s) auto-marked as released/paid from approved payroll records`)
+      }
+
+      return released
+    } catch(e) {
+      console.warn('Auto SIL release check skipped:', e)
+      return 0
+    }
+  }
+
+  async function loadSILCashouts(options = {}) {
+    setSilCashoutsLoading(true)
+
+    if (!options.skipAuto) await autoReleasePaidSILCashouts()
+
+    const { data: cashouts, error } = await supabase
+      .from('payroll_adjustments')
+      .select('*')
+      .eq('category', 'Unused SIL Conversion')
+      .order('adjustment_date', { ascending:false })
+
+    if (error) {
+      setSilCashoutsLoading(false)
+      showToast('Failed to load SIL cashouts: ' + error.message, 'red')
+      return
+    }
+
+    const { data: releases } = await supabase
+      .from('audit_logs')
+      .select('details,created_at,performed_by,target_employee')
+      .eq('action', 'SIL RELEASED/PAID')
+      .order('created_at', { ascending:false })
+
+    const releaseMap = {}
+    ;(releases || []).forEach(log => {
+      const match = String(log.details || '').match(/ADJ:([^\s|]+)/)
+      if (match && !releaseMap[match[1]]) releaseMap[match[1]] = log
+    })
+
+    const rows = (cashouts || []).map(adj => {
+      const log = releaseMap[String(adj.id)]
+      return {
+        ...adj,
+        isReleased: !!log,
+        releasedAt: log?.created_at || null,
+        releasedBy: log?.performed_by || null
+      }
+    })
+
+    setSilCashouts(rows)
+    setSilCashoutsLoading(false)
+  }
+
+  async function handleManualSILRelease(adj) {
+    if (!window.confirm(`Mark unused SIL conversion for ${adj.employee_name} as RELEASED/PAID?\n\nAmount: ${php(adj.amount)}\nDate: ${adj.adjustment_date}`)) return
+
+    const marked = await markSILCashoutReleased(adj, { auto:false })
+    if (marked) {
+      showToast('✅ SIL marked as released/paid!')
+      loadSILCashouts({ skipAuto:true })
+    } else {
+      showToast('This SIL cashout is already marked as released/paid.', 'red')
+      loadSILCashouts({ skipAuto:true })
+    }
+  }
+
   async function saveSchedule() {
     if (!selectedEmployeeId||!scheduleDate||!shiftStart||!shiftEnd) { showToast('Complete all fields.','red'); return }
     const { error } = await supabase.from('daily_schedules').upsert({ employee_id:selectedEmployeeId, schedule_date:scheduleDate, shift_start:shiftStart, shift_end:shiftEnd }, { onConflict:'employee_id,schedule_date' })
@@ -4272,35 +5392,63 @@ export default function App() {
   }
   async function computeFinalPay() {
     if (!finalPayEmployeeId||!finalPayLastDate) { showToast('Please select employee and last working date.','red'); return }
-    const emp = employees.find(e=>e.id===finalPayEmployeeId); if (!emp) return
+
+    const emp = employees.find(e=>e.id===finalPayEmployeeId)
+    if (!emp) return
+
+    const syncResult = await syncEmployeeSIL(emp, { silent:true })
+    const activeEmp = syncResult?.employee || emp
+
     const { data:allLogs } = await supabase.from('attendance_logs').select('*').eq('employee_id', finalPayEmployeeId).lte('attendance_date', finalPayLastDate).order('attendance_date', { ascending:false }).limit(60)
     const { data:lastPay } = await supabase.from('payroll_records').select('payroll_end').eq('employee_id', finalPayEmployeeId).order('payroll_end', { ascending:false }).limit(1)
     const lastPayEnd = lastPay?.[0]?.payroll_end || '2000-01-01'
     const unpaidDays = (allLogs?.filter(l=>l.time_in&&l.attendance_date>lastPayEnd)||[]).length
+
     const yearStart = `${finalPayLastDate.slice(0,4)}-01-01`
     const { data:yearPays } = await supabase.from('payroll_records').select('basic_pay').eq('employee_id', finalPayEmployeeId).gte('payroll_start', yearStart).lte('payroll_end', finalPayLastDate)
     const totalBasic = yearPays?.reduce((s,p)=>s+Number(p.basic_pay||0),0)||0
     const proRated13th = totalBasic/12
-    const { data:leaves } = await supabase.from('leave_requests').select('*').eq('employee_id', finalPayEmployeeId).eq('status', 'approved').gte('leave_start', yearStart)
-    const usedS=leaves?.filter(l=>l.leave_type==='Sick Leave').reduce((s,l)=>s+Number(l.duration_days||1),0)||0
-    const usedV=leaves?.filter(l=>l.leave_type==='Vacation Leave').reduce((s,l)=>s+Number(l.duration_days||1),0)||0
-    const unusedSIL=Math.max(0,(emp.sick_leave_balance||5)+(emp.vacation_leave_balance||5)-usedS-usedV)
-    const silPay=unusedSIL*Number(emp.daily_rate||0)
-    const hireDate=emp.hire_date?new Date(emp.hire_date):new Date(finalPayLastDate)
+
+    const unusedSIL = hasOneYearService(activeEmp.hire_date, parseLocalDate(finalPayLastDate))
+      ? Math.max(0, safeNum(activeEmp.sil_balance, 0))
+      : 0
+    const silPay = unusedSIL * Number(activeEmp.daily_rate || 0)
+
+    const hireDate=activeEmp.hire_date?new Date(activeEmp.hire_date):new Date(finalPayLastDate)
     const yearsOfService=Math.max(0,Math.floor((new Date(finalPayLastDate).getTime()-hireDate.getTime())/(1000*60*60*24*365)))
+
     let separationPay=0
-    if (finalPayReason==='redundancy'||finalPayReason==='retrenchment') separationPay=Number(emp.daily_rate||0)*26*yearsOfService
-    else if (finalPayReason==='authorized') separationPay=Number(emp.daily_rate||0)*13*yearsOfService
-    else if (finalPayReason==='retirement') separationPay=Number(emp.daily_rate||0)*22.5*yearsOfService
+    if (finalPayReason==='redundancy'||finalPayReason==='retrenchment') separationPay=Number(activeEmp.daily_rate||0)*26*yearsOfService
+    else if (finalPayReason==='authorized') separationPay=Number(activeEmp.daily_rate||0)*13*yearsOfService
+    else if (finalPayReason==='retirement') separationPay=Number(activeEmp.daily_rate||0)*22.5*yearsOfService
+
     const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', finalPayEmployeeId).eq('status', 'Unpaid')
     const totalCA=cas?.reduce((s,c)=>s+Number(c.balance||0),0)||0
-    const lastSalary=unpaidDays*Number(emp.daily_rate||0)
-    setFinalPayResult({ employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position, hireDate:emp.hire_date||'N/A', lastDate:finalPayLastDate, yearsOfService, reason:finalPayReason, dailyRate:Number(emp.daily_rate||0), unpaidDays, lastSalary, proRated13th, unusedSIL, silPay, separationPay, totalCA, totalFinalPay:lastSalary+proRated13th+silPay+separationPay-totalCA })
+    const lastSalary=unpaidDays*Number(activeEmp.daily_rate||0)
+
+    setFinalPayResult({
+      employeeName:activeEmp.full_name,
+      employeeCode:activeEmp.employee_code,
+      position:activeEmp.position,
+      hireDate:activeEmp.hire_date||'N/A',
+      lastDate:finalPayLastDate,
+      yearsOfService,
+      reason:finalPayReason,
+      dailyRate:Number(activeEmp.daily_rate||0),
+      unpaidDays,
+      lastSalary,
+      proRated13th,
+      unusedSIL,
+      silPay,
+      separationPay,
+      totalCA,
+      totalFinalPay:lastSalary+proRated13th+silPay+separationPay-totalCA
+    })
   }
   async function processFinalPay() {
     if (!finalPayResult) return
     if (!window.confirm(`Process final pay for ${finalPayResult.employeeName} and deactivate?`)) return
-    await supabase.from('employees').update({ is_active:false }).eq('id', finalPayEmployeeId)
+    await supabase.from('employees').update({ is_active:false, sil_balance:0, sick_leave_balance:0, vacation_leave_balance:0 }).eq('id', finalPayEmployeeId)
     try { await supabase.from('final_pay_records').insert({ employee_id:finalPayEmployeeId, employee_name:finalPayResult.employeeName, employee_code:finalPayResult.employeeCode, separation_reason:finalPayReason, last_working_date:finalPayLastDate, last_salary:finalPayResult.lastSalary, pro_rated_13th:finalPayResult.proRated13th, sil_pay:finalPayResult.silPay, separation_pay:finalPayResult.separationPay, cash_advance_deduction:finalPayResult.totalCA, total_final_pay:finalPayResult.totalFinalPay }) } catch(e) {}
     await logAudit('FINAL PAY PROCESSED','Admin',finalPayResult.employeeName,`Total: ${php(finalPayResult.totalFinalPay)}`)
     showToast(`✅ Final pay processed. ${finalPayResult.employeeName} deactivated.`)
@@ -4590,19 +5738,20 @@ export default function App() {
     const isFirstCutoff = startDay>=11&&startDay<=25
     for (const emp of empList||[]) {
       const { data:logs } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', payrollStart).lte('attendance_date', payrollEnd)
-      const { data:leaves } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').gte('leave_start', payrollStart).lte('leave_end', payrollEnd)
+      const { data:leaves } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', payrollEnd).gte('leave_end', payrollStart)
       const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).eq('status', 'Unpaid')
       const { data:adjs } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
       const workedDays=logs?.filter(l=>l.time_in).length||0
       const absentDays=logs?.filter(l=>l.status==='Absent').length||0
-      const paidLeaveDays=leaves?.filter(l=>l.is_paid).length||0
+      const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
+      const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
       const dailyRate=Number(emp.daily_rate||0)
       const hourlyRate=dailyRate/8
       const minuteRate=hourlyRate/60
 
       // ── Hourly-based Basic Pay (computed from actual clock-in/out) ──────────
       const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
-      let basicPay=0, totalWorkedMinutes=0
+      let workedBasicPay=0, basicPay=0, totalWorkedMinutes=0
       for (const log of workedLogs) {
         const inM=minutesFromTime(log.time_in)
         const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
@@ -4615,10 +5764,12 @@ export default function App() {
           : (rawMins >= 9*60 ? ALLOWED_BREAK_MINUTES : 0)
         const actualMins=Math.max(0,rawMins-effectiveBreak)
         totalWorkedMinutes+=actualMins
+        workedBasicPay+=actualMins*minuteRate
         basicPay+=actualMins*minuteRate
       }
-      // Add paid leave days at full daily rate
-      basicPay+=paidLeaveDays*dailyRate
+      // Add approved SIL as paid leave at full daily rate. Unpaid leave is not added to earnings.
+      const paidLeavePay=paidLeaveDays*dailyRate
+      basicPay+=paidLeavePay
 
       // ── Birthday Pay ────────────────────────────────────────────────────────
       let birthdayPay=0
@@ -4677,7 +5828,7 @@ export default function App() {
       const totalDeductions=caDeduction+sssDeduction+pagibigDeduction+philhealthDeduction+adjDeductions
       const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
       const undertimeMinutesInfo=logs?.reduce((s,l)=>s+Number(l.undertime_minutes||0),0)||0
-      results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
+      results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
     } // end for emp
     for (const pay of results) {
       const { data:empCAs } = await supabase.from('cash_advances').select('*').eq('employee_id', pay.employeeId).eq('status', 'Unpaid')
@@ -4840,6 +5991,7 @@ export default function App() {
       if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }
       if(key==='auditTrail') loadAuditTrail()
       if(key==='payrollHistory') loadPayrollHistory()
+      if(key==='adjustment') loadSILCashouts()
       if(key==='remittance') loadPayrollHistory()
       if(key==='dtr') loadEmployees()
       if(key==='contracts') { loadContracts(); loadEmployees() }
@@ -5322,7 +6474,7 @@ export default function App() {
                         <p style={cps}>{php(emp.daily_rate)}/day | {emp.gender||'—'} | {emp.civil_status||'—'}</p>
                         <p style={cps}>📞 {emp.contact_number||'—'} | 🏠 {emp.home_address||'—'}</p>
                         <p style={cps}>🚨 {emp.emergency_contact_name||'—'} — {emp.emergency_contact_number||'—'}</p>
-                        <p style={cps}>SL: {emp.sick_leave_balance||5}d | VL: {emp.vacation_leave_balance||5}d | SIL: {emp.sil_balance||5}d</p>
+                        <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
                         <p style={cps}>{emp.has_sss?'✅':'❌'} SSS &nbsp;{emp.has_pagibig?'✅':'❌'} Pag-IBIG &nbsp;{emp.has_philhealth?'✅':'❌'} PhilHealth</p>
                       </div>
                     </div>
@@ -5387,12 +6539,15 @@ export default function App() {
                   <label style={lblS}>Grace Period (minutes):</label>
                   <input type="number" value={newEmpFields.gracePeriod} onChange={e=>setNewEmpFields(p=>({...p,gracePeriod:e.target.value}))} style={inputStyle} />
                   <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 8px', borderBottom:'1px solid #eee', paddingBottom:'6px' }}>📅 Leave & Benefits</p>
-                  <div style={{ display:'flex', gap:'10px' }}>
-                    <div style={{ flex:1 }}><label style={lblS}>Sick Leave (days/yr):</label><input type="number" value={newEmpFields.sick} onChange={e=>setNewEmpFields(p=>({...p,sick:e.target.value}))} style={inputStyle} /></div>
-                    <div style={{ flex:1 }}><label style={lblS}>Vacation Leave (days/yr):</label><input type="number" value={newEmpFields.vacation} onChange={e=>setNewEmpFields(p=>({...p,vacation:e.target.value}))} style={inputStyle} /></div>
+                  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+                    <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Service Incentive Leave only</p>
+                    <p style={{ margin:'0', color:'#555', fontSize:'12px' }}>
+                      Sick Leave and Vacation Leave are removed. SIL is automatically credited as 5 paid days after 1 year of service. Employees below 1 year can still file unpaid leave.
+                    </p>
+                    <p style={{ margin:'8px 0 0', color:'#333', fontSize:'12px', fontWeight:'bold' }}>
+                      Starting SIL: {hasOneYearService(newEmpFields.hire_date) ? '5 days' : '0 days'}
+                    </p>
                   </div>
-                  <label style={lblS}>Service Incentive Leave (days/yr):</label>
-                  <input type="number" value={newEmpFields.sil} onChange={e=>setNewEmpFields(p=>({...p,sil:e.target.value}))} style={inputStyle} />
                   <div style={{ background:'white', borderRadius:'10px', padding:'12px', border:'1px solid #eee' }}>
                     <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>🏛️ Government Contributions & IDs</p>
                     <label style={lblS}><input type="checkbox" checked={newEmpFields.hasSss} onChange={e=>setNewEmpFields(p=>({...p,hasSss:e.target.checked}))} style={{ marginRight:'8px' }} />SSS — PHP 375 (11–25 cutoff)</label>
@@ -5429,12 +6584,12 @@ export default function App() {
                             <p style={cps}>👤 {emp.gender||'—'} | {emp.civil_status||'—'} | DOB: {emp.date_of_birth||'—'}</p>
                             <p style={cps}>📞 {emp.contact_number||'—'} | 🏠 {emp.home_address||'—'}</p>
                             <p style={cps}>🚨 {emp.emergency_contact_name||'—'} — {emp.emergency_contact_number||'—'}</p>
-                            <p style={cps}>SL: {emp.sick_leave_balance||5}d | VL: {emp.vacation_leave_balance||5}d | SIL: {emp.sil_balance||5}d</p>
+                            <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
                             <p style={cps}>{emp.has_sss?'✅':'❌'} SSS &nbsp;{emp.has_pagibig?'✅':'❌'} Pag-IBIG &nbsp;{emp.has_philhealth?'✅':'❌'} PhilHealth</p>
                           </div>
                         </div>
                         <div style={{ display:'flex', gap:'5px', flexShrink:0 }}>
-                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:emp.sick_leave_balance||5, vacation:emp.vacation_leave_balance||5, sil:emp.sil_balance||5, payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}>✏ EDIT</button>
+                          <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}>✏ EDIT</button>
                           <button style={{ ...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}>🚫</button>
                         </div>
                       </div>
@@ -5505,12 +6660,15 @@ export default function App() {
                           <label style={lblS}>Grace Period (minutes):</label>
                           <input type="number" value={editFields.gracePeriod||10} onChange={e=>setEditFields(p=>({...p,gracePeriod:e.target.value}))} style={inputStyle} />
                           <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 8px' }}>📅 Leave & Benefits</p>
-                          <div style={{ display:'flex', gap:'10px' }}>
-                            <div style={{ flex:1 }}><label style={lblS}>Sick Leave:</label><input type="number" value={editFields.sick||5} onChange={e=>setEditFields(p=>({...p,sick:e.target.value}))} style={inputStyle} /></div>
-                            <div style={{ flex:1 }}><label style={lblS}>Vacation Leave:</label><input type="number" value={editFields.vacation||5} onChange={e=>setEditFields(p=>({...p,vacation:e.target.value}))} style={inputStyle} /></div>
+                          <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+                            <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>SIL / Unpaid Leave Rules</p>
+                            <p style={{ margin:'0 0 8px', color:'#555', fontSize:'12px' }}>
+                              Sick Leave and Vacation Leave are disabled. Qualified employees may use paid SIL. Non-qualified employees may file unpaid leave.
+                            </p>
+                            <label style={lblS}>Current SIL Balance:</label>
+                            <input type="number" min="0" max="5" value={editFields.sil||0} onChange={e=>setEditFields(p=>({...p,sil:e.target.value}))} style={inputStyle} disabled={!hasOneYearService(editFields.hireDate)} />
+                            {!hasOneYearService(editFields.hireDate) && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'-6px 0 0' }}>Not yet qualified — SIL balance will be saved as 0.</p>}
                           </div>
-                          <label style={lblS}>SIL (days/yr):</label>
-                          <input type="number" value={editFields.sil||5} onChange={e=>setEditFields(p=>({...p,sil:e.target.value}))} style={inputStyle} />
                           <div style={{ background:'white', borderRadius:'10px', padding:'12px', border:'1px solid #eee', marginBottom:'12px' }}>
                             <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>🏛️ Government Contributions & IDs</p>
                             <label style={lblS}><input type="checkbox" checked={editFields.hasSss||false} onChange={e=>setEditFields(p=>({...p,hasSss:e.target.checked}))} style={{ marginRight:'8px' }} />SSS</label>
@@ -5969,6 +7127,41 @@ export default function App() {
                 <input type="number" placeholder="Amount (PHP)" value={adjustmentAmount} onChange={e=>setAdjustmentAmount(e.target.value)} style={inputStyle} />
                 <input placeholder="Notes (optional)" value={adjustmentNotes} onChange={e=>setAdjustmentNotes(e.target.value)} style={inputStyle} />
                 <button style={btnGreen} onClick={saveAdjustment}>💾 SAVE ADJUSTMENT</button>
+
+                <div style={{ marginTop:'24px', padding:'16px', background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+                    <div>
+                      <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>SIL Release / Payment Status</h3>
+                      <p style={{ margin:0, color:'#666', fontSize:'12px' }}>Use this after paying unused SIL cash conversion. If the payroll period is already approved, the system marks it automatically.</p>
+                    </div>
+                    <button style={{ ...btnBlack, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>loadSILCashouts()}>🔄 REFRESH SIL RELEASES</button>
+                  </div>
+
+                  {silCashoutsLoading && <p style={{ color:'#888', fontSize:'13px' }}>Loading SIL cashouts...</p>}
+
+                  {!silCashoutsLoading && silCashouts.length===0 && (
+                    <p style={{ color:'#888', fontSize:'13px', margin:'10px 0 0' }}>No unused SIL conversion records yet.</p>
+                  )}
+
+                  {!silCashoutsLoading && silCashouts.map(adj => (
+                    <div key={adj.id} style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'12px', marginTop:'10px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+                      <div style={{ flex:1, minWidth:'230px' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                          <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>{adj.employee_name}</strong>
+                          <Badge label={adj.isReleased ? 'SIL RELEASED/PAID' : 'PENDING RELEASE'} color={adj.isReleased ? 'green' : 'orange'} />
+                        </div>
+                        <p style={cps}>Date: {adj.adjustment_date} | Amount: <strong>{php(adj.amount)}</strong></p>
+                        <p style={cps}>{adj.notes || 'Unused SIL conversion'}</p>
+                        {adj.isReleased && <p style={{ ...cps, color:'#2d8a4e', fontWeight:'bold' }}>Released/Paid: {new Date(adj.releasedAt).toLocaleString()} {adj.releasedBy ? `by ${adj.releasedBy}` : ''}</p>}
+                      </div>
+                      {adj.isReleased ? (
+                        <button style={{ ...btnGray, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px', cursor:'default' }} disabled>✅ PAID</button>
+                      ) : (
+                        <button style={{ ...btnGreen, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>handleManualSILRelease(adj)}>✅ SIL RELEASED/PAID</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -5992,6 +7185,8 @@ export default function App() {
                   <button style={{ ...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?'⏳ COMPUTING...':'🧮 COMPUTE PAYROLL'}</button>
                   <button style={{ ...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}>🖨 PRINT ALL</button>
                   <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}>📊 EXPORT CSV</button>
+                  <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}>✅ RELEASE PAYROLL</button>
+                  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}>💸 POST PAYROLL TO EXPENSES</button>
                 </div>
                 {payrollSummary && (
                   <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'22px' }}>
@@ -6134,6 +7329,10 @@ export default function App() {
                       <button style={{ ...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }}
                         onClick={()=>exportPayrollToCSV(historyRecords, selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
                         📊 EXPORT TO CSV
+                      </button>
+                      <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'10px 18px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }}
+                        onClick={()=>handleManualPayrollExpensePost(selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
+                        💸 POST TO EXPENSES
                       </button>
                       <button style={{ background:'#8b5cf6', color:'white', padding:'10px 18px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }}
                         onClick={async()=>{
@@ -10484,15 +11683,15 @@ export default function App() {
 
           <div style={{ background:'#f8f9fa', borderRadius:'12px', padding:'12px 14px', marginBottom:'14px', border:'1px solid #eee', display:'flex', gap:'12px', justifyContent:'center' }}>
             <div style={{ textAlign:'center', flex:1 }}>
-              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Sick Leave</p>
-              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'22px', margin:0, lineHeight:1 }}>{myLeaveBalance.sick}</p>
-              <p style={{ fontSize:'10px', color:'#aaa', margin:'2px 0 0' }}>days left</p>
+              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>SIL Balance</p>
+              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'22px', margin:0, lineHeight:1 }}>{myLeaveBalance.sil}</p>
+              <p style={{ fontSize:'10px', color:'#aaa', margin:'2px 0 0' }}>paid day(s)</p>
             </div>
             <div style={{ width:'1px', background:'#eee' }} />
             <div style={{ textAlign:'center', flex:1 }}>
-              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Vacation Leave</p>
-              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'22px', margin:0, lineHeight:1 }}>{myLeaveBalance.vacation}</p>
-              <p style={{ fontSize:'10px', color:'#aaa', margin:'2px 0 0' }}>days left</p>
+              <p style={{ fontSize:'10px', color:'#888', margin:'0 0 3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>Leave Status</p>
+              <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:0, lineHeight:1.2 }}>{getEmployeeLeaveInfo(employee).eligible ? 'SIL Qualified' : 'Unpaid Only'}</p>
+              <p style={{ fontSize:'10px', color:'#aaa', margin:'2px 0 0' }}>{getEmployeeLeaveInfo(employee).buttonLabel}</p>
             </div>
           </div>
 
@@ -10533,10 +11732,11 @@ export default function App() {
             <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px' }}>
               {[
                 { label:'OT / UT', icon:'📝', action:()=>{ closeAllPanels(); setShowOTRequest(!showOTRequest) }, disabled:!todayLog||!todayLog?.time_out },
-                { label:'File Leave', icon:'🏖️', action:()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }, disabled:false },
+                { label:getEmployeeLeaveInfo(employee).buttonLabel, icon:'🏖️', action:()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }, disabled:false },
                 { label:'Cash Advance', icon:'💵', action:()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }, disabled:false },
                 { label:'My Payslips', icon:'💰', action:()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }, disabled:false },
                 { label:'Attendance', icon:'📋', action:()=>{ closeAllPanels(); setShowMyAttendance(!showMyAttendance) }, disabled:false },
+                { label:'Fingerprint', icon:'🔐', action:()=>registerPasskeyForEmployee(), disabled:!passkeySupported||passkeyLoading },
                 { label:'My Profile', icon:'👤', action:()=>setShowMyProfile(!showMyProfile), disabled:false },
               ].map(btn=>(
                 <button key={btn.label} onClick={btn.action} disabled={btn.disabled} style={{ background:btn.disabled?'#f8f8f8':'white', color:btn.disabled?'#ccc':'#333', border:`1px solid ${btn.disabled?'#f0f0f0':'#e0e0e0'}`, borderRadius:'10px', padding:'10px 6px', cursor:btn.disabled?'not-allowed':'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:'4px', transition:'all 0.15s' }}>
@@ -10606,15 +11806,18 @@ export default function App() {
           {showLeaveRequest && (
             <div style={{ background:'#f8f9fa', padding:'14px', borderRadius:'12px', border:'1px solid #eee', marginTop:'8px' }}>
               <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px' }}>
-                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:0 }}>🏖️ File Leave Request</p>
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:0 }}>🏖️ {getEmployeeLeaveInfo(employee).title}</p>
                 <button style={{ background:'#f0f0f0', border:'none', borderRadius:'6px', padding:'5px 10px', cursor:'pointer', fontSize:'11px', color:'#555' }} onClick={()=>setShowLeaveRequest(false)}>✕ Close</button>
+              </div>
+              <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
+                <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Leave Type: {getEmployeeLeaveInfo(employee).label}</p>
+                <p style={{ margin:0, color:'#666', fontSize:'12px' }}>{getEmployeeLeaveInfo(employee).note}</p>
               </div>
               <input type="date" value={leaveStartDate} min={new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
               <input type="date" value={leaveEndDate} onChange={e=>setLeaveEndDate(e.target.value)} style={inputStyle} />
-              {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {Math.ceil((new Date(leaveEndDate).getTime()-new Date(leaveStartDate).getTime())/(1000*60*60*24))+1} day(s)</p>}
-              <select value={leaveType} onChange={e=>setLeaveType(e.target.value)} style={inputStyle}><option value="">Select Leave Type</option><option value="Sick Leave">Sick Leave ({myLeaveBalance.sick} days left)</option><option value="Vacation Leave">Vacation Leave ({myLeaveBalance.vacation} days left)</option><option value="Emergency Leave">Emergency Leave</option></select>
+              {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {daysInclusive(leaveStartDate, leaveEndDate)} day(s)</p>}
               <textarea placeholder="Reason for leave..." value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{ ...inputStyle, minHeight:'70px', resize:'none' }} />
-              <button style={{ ...btnRed }} onClick={submitLeaveRequest}>SUBMIT LEAVE REQUEST</button>
+              <button style={{ ...btnRed }} onClick={submitLeaveRequest}>{getEmployeeLeaveInfo(employee).type==='SIL'?'SUBMIT SIL REQUEST':'SUBMIT LEAVE REQUEST'}</button>
             </div>
           )}
 
@@ -10635,21 +11838,21 @@ export default function App() {
                 <div>
                   {/* Leave Balance Summary */}
                   <div style={{ background:'#e8f5e9', borderRadius:'12px', padding:'14px', marginBottom:'12px', border:'1px solid #c8e6c9' }}>
-                    <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 10px' }}>📊 This Year's Leave Balance</p>
+                    <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 10px' }}>📊 Leave Summary</p>
                     <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
                       <div style={{ background:'white', borderRadius:'8px', padding:'10px', textAlign:'center' }}>
-                        <p style={{ fontSize:'11px', color:'#888', margin:'0 0 4px' }}>Sick Leave Used</p>
+                        <p style={{ fontSize:'11px', color:'#888', margin:'0 0 4px' }}>SIL Used</p>
                         <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'18px', margin:'0 0 2px' }}>
-                          {myLeaves.filter(l=>l.leave_type==='Sick Leave'&&l.status==='approved').reduce((s,l)=>s+Number(l.duration_days||1),0)}d
+                          {myLeaves.filter(l=>normalizeLeaveType(l.leave_type)==='SIL'&&l.status==='approved').reduce((s,l)=>s+Number(l.duration_days||1),0)}d
                         </p>
-                        <p style={{ fontSize:'11px', color:'#888', margin:0 }}>{myLeaveBalance.sick}d remaining</p>
+                        <p style={{ fontSize:'11px', color:'#888', margin:0 }}>{myLeaveBalance.sil}d remaining</p>
                       </div>
                       <div style={{ background:'white', borderRadius:'8px', padding:'10px', textAlign:'center' }}>
-                        <p style={{ fontSize:'11px', color:'#888', margin:'0 0 4px' }}>Vacation Leave Used</p>
+                        <p style={{ fontSize:'11px', color:'#888', margin:'0 0 4px' }}>Unpaid Leave Approved</p>
                         <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'18px', margin:'0 0 2px' }}>
-                          {myLeaves.filter(l=>l.leave_type==='Vacation Leave'&&l.status==='approved').reduce((s,l)=>s+Number(l.duration_days||1),0)}d
+                          {myLeaves.filter(l=>normalizeLeaveType(l.leave_type)!=='SIL'&&l.status==='approved').reduce((s,l)=>s+Number(l.duration_days||1),0)}d
                         </p>
-                        <p style={{ fontSize:'11px', color:'#888', margin:0 }}>{myLeaveBalance.vacation}d remaining</p>
+                        <p style={{ fontSize:'11px', color:'#888', margin:0 }}>Not paid in payroll</p>
                       </div>
                     </div>
                   </div>
@@ -10662,7 +11865,7 @@ export default function App() {
                         <div key={leave.id} style={{ ...cardS, border:'1px solid #f5a623', background:'#fffbf0' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'6px' }}>
                             <div>
-                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{leave.leave_type}</p>
+                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{getLeaveDisplayName(leave.leave_type)} {isPaidLeaveRecord(leave)?'— Paid':'— Unpaid'}</p>
                               <p style={cps}>{leave.leave_start} to {leave.leave_end} ({leave.duration_days} day(s))</p>
                               <p style={cps}>Reason: {leave.reason}</p>
                               <p style={{ ...cps, color:'#aaa' }}>Filed: {new Date(leave.created_at).toLocaleDateString()}</p>
@@ -10682,7 +11885,7 @@ export default function App() {
                         <div key={leave.id} style={{ ...cardS, border:'1px solid #c8e6c9', background:'#f0fff0' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'6px' }}>
                             <div>
-                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{leave.leave_type}</p>
+                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{getLeaveDisplayName(leave.leave_type)} {isPaidLeaveRecord(leave)?'— Paid':'— Unpaid'}</p>
                               <p style={cps}>{leave.leave_start} to {leave.leave_end} ({leave.duration_days} day(s))</p>
                               <p style={cps}>Reason: {leave.reason}</p>
                               <p style={{ ...cps, color:'#aaa' }}>Filed: {new Date(leave.created_at).toLocaleDateString()}</p>
@@ -10702,7 +11905,7 @@ export default function App() {
                         <div key={leave.id} style={{ ...cardS, border:'1px solid #ffcdd2', background:'#fff5f5' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'6px' }}>
                             <div>
-                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{leave.leave_type}</p>
+                              <p style={{ margin:'0 0 2px', fontWeight:'bold', color:'#333', fontSize:'13px' }}>{getLeaveDisplayName(leave.leave_type)} {isPaidLeaveRecord(leave)?'— Paid':'— Unpaid'}</p>
                               <p style={cps}>{leave.leave_start} to {leave.leave_end} ({leave.duration_days} day(s))</p>
                               <p style={cps}>Reason: {leave.reason}</p>
                               {leave.admin_reason && <p style={{ ...cps, color:'#ca1b1b' }}>Admin Reason: <em>"{leave.admin_reason}"</em></p>}
@@ -11052,9 +12255,22 @@ export default function App() {
                 {employee.tin_no && <p style={cps}>📋 TIN: {employee.tin_no}</p>}
               </div>
               <div style={{ marginTop:'8px', background:'#e8f5e9', borderRadius:'10px', padding:'10px', border:'1px solid #c8e6c9' }}>
-                <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'12px', margin:'0 0 6px' }}>📅 Leave Balances</p>
-                <p style={cps}>Sick Leave: {myLeaveBalance.sick} day(s) remaining</p>
-                <p style={cps}>Vacation Leave: {myLeaveBalance.vacation} day(s) remaining</p>
+                <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'12px', margin:'0 0 6px' }}>📅 Leave Balance</p>
+                <p style={cps}>SIL: {myLeaveBalance.sil} paid day(s) remaining</p>
+                <p style={cps}>{getEmployeeLeaveInfo(employee).eligible ? 'Qualified for SIL' : 'Not yet qualified — leave requests are unpaid'}</p>
+              </div>
+              <div style={{ marginTop:'8px', background:'#fff8dc', borderRadius:'10px', padding:'10px', border:'1px solid #FDD412' }}>
+                <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'12px', margin:'0 0 6px' }}>🔐 Fingerprint / Passkey Login</p>
+                <p style={{ ...cps, fontSize:'11px' }}>Use your device fingerprint, face unlock, Windows Hello, or device PIN for faster login. Employee ID + PIN remains as backup.</p>
+                {!passkeySupported && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'6px 0' }}>This browser/device does not support passkey login.</p>}
+                <div style={{ display:'flex', gap:'8px', marginTop:'8px', flexWrap:'wrap' }}>
+                  <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'9px', padding:'9px 12px', cursor:(!passkeySupported||passkeyLoading)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'11px', opacity:(!passkeySupported||passkeyLoading)?0.6:1 }} disabled={!passkeySupported||passkeyLoading} onClick={registerPasskeyForEmployee}>
+                    {passkeyLoading ? '⏳ PLEASE WAIT...' : 'SET UP FINGERPRINT LOGIN'}
+                  </button>
+                  <button style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'9px', padding:'9px 12px', cursor:passkeyLoading?'not-allowed':'pointer', fontWeight:'bold', fontSize:'11px', opacity:passkeyLoading?0.6:1 }} disabled={passkeyLoading} onClick={removeMyPasskeys}>
+                    REMOVE
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -11282,6 +12498,11 @@ export default function App() {
             <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
             <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
             <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
+            <button type="button" style={{ ...btnBlack, width:'100%', padding:'14px', fontSize:'14px', borderRadius:'12px', letterSpacing:'0.5px', marginTop:'10px', opacity:(!passkeySupported||passkeyLoading)?0.55:1, cursor:(!passkeySupported||passkeyLoading)?'not-allowed':'pointer' }} onClick={loginWithPasskey} disabled={!passkeySupported||passkeyLoading}>
+              {passkeyLoading ? '⏳ VERIFYING...' : '🔐 LOGIN WITH FINGERPRINT'}
+            </button>
+            {!passkeySupported && <p style={{ color:'#ca1b1b', fontSize:'11px', textAlign:'center', margin:'8px 0 0' }}>Fingerprint login is not supported on this browser/device.</p>}
+            <p style={{ color:'#888', fontSize:'10px', textAlign:'center', margin:'8px 0 0' }}>Set this up first from My Profile after logging in with Employee ID + PIN.</p>
           </form>
         ) : (
           <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
