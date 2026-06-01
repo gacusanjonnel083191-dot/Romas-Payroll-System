@@ -712,7 +712,7 @@ export default function App() {
   const [resellersLoading, setResellersLoading] = useState(false)
   const [showResellerForm, setShowResellerForm] = useState(false)
   const [editingResellerId, setEditingResellerId] = useState(null)
-  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'' })
+  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' })
   const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1)
   const tomorrowStr = tomorrow.toISOString().slice(0,10)
@@ -2553,135 +2553,6 @@ export default function App() {
     setEditingResellerId(null); setShowResellerForm(false)
     setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'' })
     loadResellers()
-  }
-
-  function sanitizeCredentialCode(value) {
-    return String(value || '')
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '')
-      .slice(0, 24)
-  }
-
-  function generateResellerPortalPin(length = 4) {
-    const min = Math.pow(10, Math.max(1, length - 1))
-    const max = Math.pow(10, Math.max(1, length)) - 1
-    return String(Math.floor(min + Math.random() * (max - min + 1))).padStart(length, '0')
-  }
-
-  function getNextResellerPortalCode(existingCodes = new Set()) {
-    for (let i = 1; i <= 9999; i++) {
-      const code = `RSL${String(i).padStart(3, '0')}`
-      if (!existingCodes.has(code)) {
-        existingCodes.add(code)
-        return code
-      }
-    }
-    return `RSL${Date.now().toString().slice(-6)}`
-  }
-
-  function isResellerPortalReady(r) {
-    return !!String(r?.access_code || '').trim() && !!String(r?.access_pin || '').trim()
-  }
-
-  function getResellerCredentialMessage(r) {
-    const link = typeof window !== 'undefined' ? window.location.origin : 'Your Roma’s Donuts app link'
-    return `Hello ${r?.contact_person || r?.name || 'Reseller'}, this is your Roma’s Donuts Reseller Portal access:\n\nLink: ${link}\nPortal Access Code: ${r?.access_code || ''}\nPortal PIN: ${r?.access_pin || ''}\n\nPlease keep your PIN private. Use the Reseller login option only.`
-  }
-
-  async function copyResellerCredentials(r) {
-    if (!isResellerPortalReady(r)) {
-      showToast('❌ This reseller still has missing portal credentials.', 'red')
-      return
-    }
-    const message = getResellerCredentialMessage(r)
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(message)
-        showToast('✅ Credential message copied.')
-      } else {
-        window.prompt('Copy reseller credentials:', message)
-      }
-    } catch(err) {
-      window.prompt('Copy reseller credentials:', message)
-    }
-  }
-
-  async function generateCredentialsForReseller(r) {
-    if (!r?.id) return
-    const usedCodes = new Set((resellers || []).filter(x => x.id !== r.id).map(x => sanitizeCredentialCode(x.access_code)).filter(Boolean))
-    const access_code = sanitizeCredentialCode(r.access_code) || getNextResellerPortalCode(usedCodes)
-    const access_pin = generateResellerPortalPin()
-    const { error } = await supabase
-      .from('resellers')
-      .update({ access_code, access_pin, is_active:true })
-      .eq('id', r.id)
-    if (error) {
-      showToast('❌ Failed: ' + error.message, 'red')
-      return
-    }
-    await logAudit('Generated reseller portal credentials', 'resellers', r.id, `${r.name} (${access_code})`)
-    showToast(`✅ Portal credentials ready for ${r.name}.`)
-    loadResellers()
-  }
-
-  async function resetResellerPortalPin(r) {
-    if (!r?.id) return
-    if (!window.confirm(`Reset portal PIN for ${r.name}? The old PIN will stop working.`)) return
-    const access_pin = generateResellerPortalPin()
-    const payload = { access_pin }
-    if (!sanitizeCredentialCode(r.access_code)) {
-      const usedCodes = new Set((resellers || []).filter(x => x.id !== r.id).map(x => sanitizeCredentialCode(x.access_code)).filter(Boolean))
-      payload.access_code = getNextResellerPortalCode(usedCodes)
-    }
-    const { error } = await supabase.from('resellers').update(payload).eq('id', r.id)
-    if (error) {
-      showToast('❌ Failed: ' + error.message, 'red')
-      return
-    }
-    await logAudit('Reset reseller portal PIN', 'resellers', r.id, r.name)
-    showToast(`✅ New PIN generated for ${r.name}.`)
-    loadResellers()
-  }
-
-  async function generateMissingResellerCredentials() {
-    const missing = (resellers || []).filter(r => !isResellerPortalReady(r))
-    if (!missing.length) {
-      showToast('✅ All active resellers already have portal credentials.')
-      return
-    }
-    if (!window.confirm(`Generate portal credentials for ${missing.length} reseller(s) with missing code/PIN?`)) return
-
-    const usedCodes = new Set((resellers || []).map(r => sanitizeCredentialCode(r.access_code)).filter(Boolean))
-    let updated = 0
-    for (const r of missing) {
-      const access_code = sanitizeCredentialCode(r.access_code) || getNextResellerPortalCode(usedCodes)
-      const access_pin = String(r.access_pin || '').trim() || generateResellerPortalPin()
-      const { error } = await supabase
-        .from('resellers')
-        .update({ access_code, access_pin, is_active:true })
-        .eq('id', r.id)
-      if (!error) updated++
-    }
-
-    await logAudit('Generated missing reseller portal credentials', 'resellers', null, `${updated} reseller(s) updated`)
-    showToast(`✅ Generated credentials for ${updated} reseller(s).`)
-    loadResellers()
-  }
-
-  function exportResellerCredentialsCSV() {
-    const rows = (resellers || []).map((r, i) => ({
-      no: i + 1,
-      reseller_name: r.name || '',
-      area: r.area || '',
-      contact_person: r.contact_person || '',
-      phone: r.phone || '',
-      portal_status: isResellerPortalReady(r) ? 'Ready' : 'Missing',
-      portal_access_code: r.access_code || '',
-      portal_pin: r.access_pin || '',
-      app_link: typeof window !== 'undefined' ? window.location.origin : ''
-    }))
-    downloadTextFile(`romas-reseller-portal-credentials-${getTodayDate()}.csv`, rowsToCSV(rows), 'text/csv')
-    showToast('✅ Reseller credentials CSV exported.')
   }
   async function deleteReseller(r) {
     if (!window.confirm(`Deactivate reseller "${r.name}"?`)) return
@@ -8997,6 +8868,121 @@ This will create one approved expense record using the total payroll earnings.`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },800)
   }
 
+  function escapePrintHTML(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  }
+
+  function getSILClaimPrintDetails(adj) {
+    const notes = String(adj?.notes || '')
+    const daysMatch = notes.match(/([0-9]+(?:\.[0-9]+)?)\s*day/i)
+    const periodMatch = notes.match(/from\s+(\d{4}-\d{2}-\d{2})\s+to\s+(\d{4}-\d{2}-\d{2})/i)
+    const amount = safeNum(adj?.amount, 0)
+    const unusedDays = daysMatch ? safeNum(daysMatch[1], 0) : 0
+    const estimatedDailyRate = unusedDays > 0 ? amount / unusedDays : 0
+
+    return {
+      claimNo: `SIL-${String(adj?.adjustment_date || today).replace(/-/g, '')}-${String(adj?.employee_code || adj?.id || '').slice(0, 8).toUpperCase()}`,
+      employeeName: adj?.employee_name || 'Employee',
+      employeeCode: adj?.employee_code || '',
+      claimDate: adj?.adjustment_date || today,
+      coveredPeriod: periodMatch ? `${periodMatch[1]} to ${periodMatch[2]}` : 'Based on unused SIL conversion record',
+      unusedDays: unusedDays > 0 ? unusedDays : '—',
+      dailyRate: estimatedDailyRate > 0 ? estimatedDailyRate : null,
+      amount,
+      notes: notes || 'Unused SIL cash conversion',
+      status: adj?.isReleased ? 'RELEASED / PAID' : 'PENDING RELEASE / PAYMENT',
+      releasedAt: adj?.releasedAt ? new Date(adj.releasedAt).toLocaleString() : '',
+      releasedBy: adj?.releasedBy || ''
+    }
+  }
+
+  function printSILClaim(adj) {
+    const claim = getSILClaimPrintDetails(adj)
+    const pw = window.open('', '_blank', 'width=900,height=700')
+    if (!pw) {
+      alert('Pop-up blocked. Please allow pop-ups to print the SIL claim form.')
+      return
+    }
+
+    pw.document.write(`<!DOCTYPE html><html><head><title>SIL Claim - ${escapePrintHTML(claim.employeeName)}</title>
+      <style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{font-family:Arial,sans-serif;padding:15mm;font-size:12px;color:#000;background:white;}
+        .header{text-align:center;margin-bottom:16px;border-bottom:3px solid #ca1b1b;padding-bottom:10px;}
+        .brand{font-size:23px;font-weight:800;color:#ca1b1b;letter-spacing:.3px;}
+        .sub{font-size:10px;color:#666;margin-top:2px;}
+        .title{font-size:16px;font-weight:800;margin-top:8px;text-transform:uppercase;}
+        .box{border:2px solid #ca1b1b;border-radius:8px;padding:12px;margin-bottom:12px;background:#fff8dc;}
+        .row{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px;}
+        .field{flex:1;border:1px solid #eee;padding:8px 10px;min-height:42px;}
+        .label{font-size:10px;color:#666;text-transform:uppercase;font-weight:700;margin-bottom:3px;}
+        .value{font-size:13px;font-weight:700;color:#222;}
+        table{width:100%;border-collapse:collapse;margin:10px 0 14px;}
+        th{background:#ca1b1b;color:white;text-align:left;padding:8px;border:1px solid #ca1b1b;font-size:11px;}
+        td{padding:8px;border:1px solid #ddd;font-size:12px;}
+        .total{background:#ca1b1b;color:white;padding:12px 14px;border-radius:8px;display:flex;justify-content:space-between;align-items:center;margin-top:12px;}
+        .status{display:inline-block;padding:5px 10px;border-radius:20px;font-size:11px;font-weight:800;background:${claim.status.includes('RELEASED') ? '#2d8a4e' : '#f5a623'};color:${claim.status.includes('RELEASED') ? 'white' : '#1a1a2e'};}
+        .note{font-size:11px;color:#555;line-height:1.5;margin-top:10px;border:1px dashed #bbb;padding:10px;border-radius:8px;background:#fafafa;}
+        .signatures{display:flex;justify-content:space-between;gap:30px;margin-top:45px;}
+        .sig{text-align:center;flex:1;}
+        .line{border-top:1px solid #000;padding-top:5px;font-size:10px;}
+        @media print{@page{size:A4;margin:12mm;}body{padding:0;}.no-print{display:none;}}
+      </style></head><body>
+        <div class="header">
+          <div class="brand">Roma's Donuts</div>
+          <div class="sub">Payroll &amp; Attendance System</div>
+          <div class="title">Service Incentive Leave (SIL) Claim Form</div>
+        </div>
+
+        <div class="box">
+          <div class="row">
+            <div class="field"><div class="label">Claim No.</div><div class="value">${escapePrintHTML(claim.claimNo)}</div></div>
+            <div class="field"><div class="label">Claim Date</div><div class="value">${escapePrintHTML(claim.claimDate)}</div></div>
+            <div class="field"><div class="label">Status</div><div class="value"><span class="status">${escapePrintHTML(claim.status)}</span></div></div>
+          </div>
+          <div class="row">
+            <div class="field"><div class="label">Employee Name</div><div class="value">${escapePrintHTML(claim.employeeName)}</div></div>
+            <div class="field"><div class="label">Employee Code</div><div class="value">${escapePrintHTML(claim.employeeCode || '—')}</div></div>
+          </div>
+          <div class="field"><div class="label">Covered SIL Cycle / Basis</div><div class="value">${escapePrintHTML(claim.coveredPeriod)}</div></div>
+        </div>
+
+        <table>
+          <thead><tr><th>Description</th><th style="text-align:right;">Details</th></tr></thead>
+          <tbody>
+            <tr><td>Unused SIL Days Claimed</td><td style="text-align:right;font-weight:bold;">${escapePrintHTML(claim.unusedDays)}</td></tr>
+            <tr><td>Estimated Daily Rate</td><td style="text-align:right;font-weight:bold;">${claim.dailyRate ? php(claim.dailyRate) : '—'}</td></tr>
+            <tr><td>Claim Type</td><td style="text-align:right;font-weight:bold;">Unused SIL Cash Conversion</td></tr>
+            ${claim.releasedAt ? `<tr><td>Released / Paid</td><td style="text-align:right;font-weight:bold;">${escapePrintHTML(claim.releasedAt)} ${claim.releasedBy ? 'by ' + escapePrintHTML(claim.releasedBy) : ''}</td></tr>` : ''}
+          </tbody>
+        </table>
+
+        <div class="total">
+          <span style="font-weight:800;font-size:14px;">TOTAL SIL CLAIM AMOUNT</span>
+          <span style="font-weight:900;font-size:22px;">${php(claim.amount)}</span>
+        </div>
+
+        <div class="note">
+          <strong>Record notes:</strong><br/>${escapePrintHTML(claim.notes)}<br/><br/>
+          This form is for SIL claim documentation only. It does not print full payroll details, payslip earnings, deductions, or final pay computation.
+        </div>
+
+        <div class="signatures">
+          <div class="sig"><div class="line">Employee Signature / Claimant</div></div>
+          <div class="sig"><div class="line">Prepared By</div></div>
+          <div class="sig"><div class="line">Approved / Released By</div></div>
+        </div>
+      </body></html>`)
+    pw.document.close()
+    setTimeout(()=>{ pw.focus(); pw.print() }, 800)
+  }
+
+
   // ── Camera Screen ─────────────────────────────────────────────────────────
   if (cameraMode) {
     return (
@@ -10294,11 +10280,14 @@ This will create one approved expense record using the total payroll earnings.`)
                         <p style={cps}>{adj.notes || 'Unused SIL conversion'}</p>
                         {adj.isReleased && <p style={{ ...cps, color:'#2d8a4e', fontWeight:'bold' }}>Released/Paid: {new Date(adj.releasedAt).toLocaleString()} {adj.releasedBy ? `by ${adj.releasedBy}` : ''}</p>}
                       </div>
-                      {adj.isReleased ? (
-                        <button style={{ ...btnGray, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px', cursor:'default' }} disabled>✅ PAID</button>
-                      ) : (
-                        <button style={{ ...btnGreen, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>handleManualSILRelease(adj)}>✅ SIL RELEASED/PAID</button>
-                      )}
+                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', justifyContent:'flex-end' }}>
+                        <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'10px', padding:'9px 14px', marginTop:0, fontSize:'12px', fontWeight:'bold', cursor:'pointer' }} onClick={()=>printSILClaim(adj)}>🖨 PRINT SIL CLAIM</button>
+                        {adj.isReleased ? (
+                          <button style={{ ...btnGray, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px', cursor:'default' }} disabled>✅ PAID</button>
+                        ) : (
+                          <button style={{ ...btnGreen, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>handleManualSILRelease(adj)}>✅ SIL RELEASED/PAID</button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -14450,25 +14439,9 @@ This will create one approved expense record using the total payroll earnings.`)
                   <div>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
                       <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🏪 Reseller Management ({resellers.length})</h3>
-                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={generateMissingResellerCredentials}>🔐 GENERATE MISSING CREDENTIALS</button>
-                        <button style={{ ...btnGray, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={exportResellerCredentialsCSV}>⬇️ EXPORT CREDENTIALS</button>
-                        <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'' }) }}>
-                          {showResellerForm?'✕ CANCEL':'+ ADD RESELLER'}
-                        </button>
-                      </div>
-                    </div>
-                    <div style={{ background:'#f7fbff', border:'1px solid #d8eaff', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}>
-                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
-                        <div>
-                          <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#1a1a2e', fontSize:'13px' }}>🔐 Reseller Portal Credential Manager</p>
-                          <p style={{ margin:0, color:'#666', fontSize:'12px' }}>Generate login codes/PINs, reset PINs, copy reseller access messages, and export credentials for onboarding.</p>
-                        </div>
-                        <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-                          <Badge label={`Ready: ${resellers.filter(r=>isResellerPortalReady(r)).length}`} color="green" />
-                          <Badge label={`Missing: ${resellers.filter(r=>!isResellerPortalReady(r)).length}`} color={resellers.some(r=>!isResellerPortalReady(r))?'red':'green'} />
-                        </div>
-                      </div>
+                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' }) }}>
+                        {showResellerForm?'✕ CANCEL':'+ ADD RESELLER'}
+                      </button>
                     </div>
                     {showResellerForm && (
                       <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
@@ -14508,19 +14481,6 @@ This will create one approved expense record using the total payroll earnings.`)
                             <div style={{ textAlign:'right' }}>
                               {rAR > 0 && <div style={{ marginBottom:'4px' }}><Badge label={`AR: ${php(rAR)}`} color="yellow" /></div>}
                               <Badge label={`${rInvoices.length} invoice(s)`} color="gray" />
-                            </div>
-                          </div>
-                          <div style={{ background:isResellerPortalReady(r)?'#f0fff4':'#fff5f5', border:`1px solid ${isResellerPortalReady(r)?'#b7ebc6':'#ffd0d0'}`, borderRadius:'10px', padding:'10px', marginBottom:'8px' }}>
-                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
-                              <div>
-                                <p style={{ margin:'0 0 3px', fontSize:'12px', fontWeight:'bold', color:isResellerPortalReady(r)?'#2d8a4e':'#ca1b1b' }}>🔐 Portal Access: {isResellerPortalReady(r)?'READY':'MISSING'}</p>
-                                <p style={{ margin:0, fontSize:'11px', color:'#555' }}>Code: <strong>{r.access_code || '—'}</strong> | PIN: <strong>{r.access_pin || '—'}</strong></p>
-                              </div>
-                              <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-                                {!isResellerPortalReady(r) && <button style={{ ...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>generateCredentialsForReseller(r)}>GENERATE</button>}
-                                {isResellerPortalReady(r) && <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>copyResellerCredentials(r)}>COPY MESSAGE</button>}
-                                <button style={{ ...btnGray, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>resetResellerPortalPin(r)}>RESET PIN</button>
-                              </div>
                             </div>
                           </div>
                           {/* Default order */}
@@ -14595,7 +14555,7 @@ This will create one approved expense record using the total payroll earnings.`)
                           </div>
                           <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                             <button style={{ ...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setInvoiceResellerId(r.id); buildInvoiceFromReseller(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>🚚 CREATE DELIVERY</button>
-                            <button style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingResellerId(r.id); setResellerForm({ name:r.name, area:r.area||'', contact_person:r.contact_person||'', phone:r.phone||'', address:r.address||'', delivery_day:r.delivery_day||'Monday', access_code:r.access_code||'', access_pin:r.access_pin||'' }); setShowResellerForm(true) }}>✏️ EDIT</button>
+                            <button style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingResellerId(r.id); setResellerForm({ name:r.name, area:r.area||'', contact_person:r.contact_person||'', phone:r.phone||'', address:r.address||'', delivery_day:r.delivery_day||'Monday' }); setShowResellerForm(true) }}>✏️ EDIT</button>
                             <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>deleteReseller(r)}>🗑️</button>
                           </div>
                         </div>
