@@ -17282,4 +17282,3 @@ This will create one approved expense record using the total payroll earnings.`)
     </div>
   )
 }
-s
