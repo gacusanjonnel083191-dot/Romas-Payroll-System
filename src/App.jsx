@@ -712,7 +712,7 @@ export default function App() {
   const [resellersLoading, setResellersLoading] = useState(false)
   const [showResellerForm, setShowResellerForm] = useState(false)
   const [editingResellerId, setEditingResellerId] = useState(null)
-  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' })
+  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'' })
   const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1)
   const tomorrowStr = tomorrow.toISOString().slice(0,10)
@@ -2553,6 +2553,135 @@ export default function App() {
     setEditingResellerId(null); setShowResellerForm(false)
     setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'' })
     loadResellers()
+  }
+
+  function sanitizeCredentialCode(value) {
+    return String(value || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')
+      .slice(0, 24)
+  }
+
+  function generateResellerPortalPin(length = 4) {
+    const min = Math.pow(10, Math.max(1, length - 1))
+    const max = Math.pow(10, Math.max(1, length)) - 1
+    return String(Math.floor(min + Math.random() * (max - min + 1))).padStart(length, '0')
+  }
+
+  function getNextResellerPortalCode(existingCodes = new Set()) {
+    for (let i = 1; i <= 9999; i++) {
+      const code = `RSL${String(i).padStart(3, '0')}`
+      if (!existingCodes.has(code)) {
+        existingCodes.add(code)
+        return code
+      }
+    }
+    return `RSL${Date.now().toString().slice(-6)}`
+  }
+
+  function isResellerPortalReady(r) {
+    return !!String(r?.access_code || '').trim() && !!String(r?.access_pin || '').trim()
+  }
+
+  function getResellerCredentialMessage(r) {
+    const link = typeof window !== 'undefined' ? window.location.origin : 'Your Roma’s Donuts app link'
+    return `Hello ${r?.contact_person || r?.name || 'Reseller'}, this is your Roma’s Donuts Reseller Portal access:\n\nLink: ${link}\nPortal Access Code: ${r?.access_code || ''}\nPortal PIN: ${r?.access_pin || ''}\n\nPlease keep your PIN private. Use the Reseller login option only.`
+  }
+
+  async function copyResellerCredentials(r) {
+    if (!isResellerPortalReady(r)) {
+      showToast('❌ This reseller still has missing portal credentials.', 'red')
+      return
+    }
+    const message = getResellerCredentialMessage(r)
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(message)
+        showToast('✅ Credential message copied.')
+      } else {
+        window.prompt('Copy reseller credentials:', message)
+      }
+    } catch(err) {
+      window.prompt('Copy reseller credentials:', message)
+    }
+  }
+
+  async function generateCredentialsForReseller(r) {
+    if (!r?.id) return
+    const usedCodes = new Set((resellers || []).filter(x => x.id !== r.id).map(x => sanitizeCredentialCode(x.access_code)).filter(Boolean))
+    const access_code = sanitizeCredentialCode(r.access_code) || getNextResellerPortalCode(usedCodes)
+    const access_pin = generateResellerPortalPin()
+    const { error } = await supabase
+      .from('resellers')
+      .update({ access_code, access_pin, is_active:true })
+      .eq('id', r.id)
+    if (error) {
+      showToast('❌ Failed: ' + error.message, 'red')
+      return
+    }
+    await logAudit('Generated reseller portal credentials', 'resellers', r.id, `${r.name} (${access_code})`)
+    showToast(`✅ Portal credentials ready for ${r.name}.`)
+    loadResellers()
+  }
+
+  async function resetResellerPortalPin(r) {
+    if (!r?.id) return
+    if (!window.confirm(`Reset portal PIN for ${r.name}? The old PIN will stop working.`)) return
+    const access_pin = generateResellerPortalPin()
+    const payload = { access_pin }
+    if (!sanitizeCredentialCode(r.access_code)) {
+      const usedCodes = new Set((resellers || []).filter(x => x.id !== r.id).map(x => sanitizeCredentialCode(x.access_code)).filter(Boolean))
+      payload.access_code = getNextResellerPortalCode(usedCodes)
+    }
+    const { error } = await supabase.from('resellers').update(payload).eq('id', r.id)
+    if (error) {
+      showToast('❌ Failed: ' + error.message, 'red')
+      return
+    }
+    await logAudit('Reset reseller portal PIN', 'resellers', r.id, r.name)
+    showToast(`✅ New PIN generated for ${r.name}.`)
+    loadResellers()
+  }
+
+  async function generateMissingResellerCredentials() {
+    const missing = (resellers || []).filter(r => !isResellerPortalReady(r))
+    if (!missing.length) {
+      showToast('✅ All active resellers already have portal credentials.')
+      return
+    }
+    if (!window.confirm(`Generate portal credentials for ${missing.length} reseller(s) with missing code/PIN?`)) return
+
+    const usedCodes = new Set((resellers || []).map(r => sanitizeCredentialCode(r.access_code)).filter(Boolean))
+    let updated = 0
+    for (const r of missing) {
+      const access_code = sanitizeCredentialCode(r.access_code) || getNextResellerPortalCode(usedCodes)
+      const access_pin = String(r.access_pin || '').trim() || generateResellerPortalPin()
+      const { error } = await supabase
+        .from('resellers')
+        .update({ access_code, access_pin, is_active:true })
+        .eq('id', r.id)
+      if (!error) updated++
+    }
+
+    await logAudit('Generated missing reseller portal credentials', 'resellers', null, `${updated} reseller(s) updated`)
+    showToast(`✅ Generated credentials for ${updated} reseller(s).`)
+    loadResellers()
+  }
+
+  function exportResellerCredentialsCSV() {
+    const rows = (resellers || []).map((r, i) => ({
+      no: i + 1,
+      reseller_name: r.name || '',
+      area: r.area || '',
+      contact_person: r.contact_person || '',
+      phone: r.phone || '',
+      portal_status: isResellerPortalReady(r) ? 'Ready' : 'Missing',
+      portal_access_code: r.access_code || '',
+      portal_pin: r.access_pin || '',
+      app_link: typeof window !== 'undefined' ? window.location.origin : ''
+    }))
+    downloadTextFile(`romas-reseller-portal-credentials-${getTodayDate()}.csv`, rowsToCSV(rows), 'text/csv')
+    showToast('✅ Reseller credentials CSV exported.')
   }
   async function deleteReseller(r) {
     if (!window.confirm(`Deactivate reseller "${r.name}"?`)) return
@@ -14321,9 +14450,25 @@ This will create one approved expense record using the total payroll earnings.`)
                   <div>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
                       <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🏪 Reseller Management ({resellers.length})</h3>
-                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' }) }}>
-                        {showResellerForm?'✕ CANCEL':'+ ADD RESELLER'}
-                      </button>
+                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={generateMissingResellerCredentials}>🔐 GENERATE MISSING CREDENTIALS</button>
+                        <button style={{ ...btnGray, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={exportResellerCredentialsCSV}>⬇️ EXPORT CREDENTIALS</button>
+                        <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'' }) }}>
+                          {showResellerForm?'✕ CANCEL':'+ ADD RESELLER'}
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ background:'#f7fbff', border:'1px solid #d8eaff', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+                        <div>
+                          <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#1a1a2e', fontSize:'13px' }}>🔐 Reseller Portal Credential Manager</p>
+                          <p style={{ margin:0, color:'#666', fontSize:'12px' }}>Generate login codes/PINs, reset PINs, copy reseller access messages, and export credentials for onboarding.</p>
+                        </div>
+                        <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                          <Badge label={`Ready: ${resellers.filter(r=>isResellerPortalReady(r)).length}`} color="green" />
+                          <Badge label={`Missing: ${resellers.filter(r=>!isResellerPortalReady(r)).length}`} color={resellers.some(r=>!isResellerPortalReady(r))?'red':'green'} />
+                        </div>
+                      </div>
                     </div>
                     {showResellerForm && (
                       <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
@@ -14363,6 +14508,19 @@ This will create one approved expense record using the total payroll earnings.`)
                             <div style={{ textAlign:'right' }}>
                               {rAR > 0 && <div style={{ marginBottom:'4px' }}><Badge label={`AR: ${php(rAR)}`} color="yellow" /></div>}
                               <Badge label={`${rInvoices.length} invoice(s)`} color="gray" />
+                            </div>
+                          </div>
+                          <div style={{ background:isResellerPortalReady(r)?'#f0fff4':'#fff5f5', border:`1px solid ${isResellerPortalReady(r)?'#b7ebc6':'#ffd0d0'}`, borderRadius:'10px', padding:'10px', marginBottom:'8px' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                              <div>
+                                <p style={{ margin:'0 0 3px', fontSize:'12px', fontWeight:'bold', color:isResellerPortalReady(r)?'#2d8a4e':'#ca1b1b' }}>🔐 Portal Access: {isResellerPortalReady(r)?'READY':'MISSING'}</p>
+                                <p style={{ margin:0, fontSize:'11px', color:'#555' }}>Code: <strong>{r.access_code || '—'}</strong> | PIN: <strong>{r.access_pin || '—'}</strong></p>
+                              </div>
+                              <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                                {!isResellerPortalReady(r) && <button style={{ ...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>generateCredentialsForReseller(r)}>GENERATE</button>}
+                                {isResellerPortalReady(r) && <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>copyResellerCredentials(r)}>COPY MESSAGE</button>}
+                                <button style={{ ...btnGray, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>resetResellerPortalPin(r)}>RESET PIN</button>
+                              </div>
                             </div>
                           </div>
                           {/* Default order */}
@@ -14437,7 +14595,7 @@ This will create one approved expense record using the total payroll earnings.`)
                           </div>
                           <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                             <button style={{ ...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setInvoiceResellerId(r.id); buildInvoiceFromReseller(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>🚚 CREATE DELIVERY</button>
-                            <button style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingResellerId(r.id); setResellerForm({ name:r.name, area:r.area||'', contact_person:r.contact_person||'', phone:r.phone||'', address:r.address||'', delivery_day:r.delivery_day||'Monday' }); setShowResellerForm(true) }}>✏️ EDIT</button>
+                            <button style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingResellerId(r.id); setResellerForm({ name:r.name, area:r.area||'', contact_person:r.contact_person||'', phone:r.phone||'', address:r.address||'', delivery_day:r.delivery_day||'Monday', access_code:r.access_code||'', access_pin:r.access_pin||'' }); setShowResellerForm(true) }}>✏️ EDIT</button>
                             <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>deleteReseller(r)}>🗑️</button>
                           </div>
                         </div>
@@ -17124,3 +17282,4 @@ This will create one approved expense record using the total payroll earnings.`)
     </div>
   )
 }
+s
