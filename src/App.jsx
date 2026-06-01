@@ -903,6 +903,8 @@ export default function App() {
   const [dashboardData, setDashboardData] = useState(null)
   const [showTimedInModal, setShowTimedInModal] = useState(false)
   const [timedInList, setTimedInList] = useState([])
+  const [showTimedOutModal, setShowTimedOutModal] = useState(false)
+  const [timedOutList, setTimedOutList] = useState([])
   const [storeLocation, setStoreLocation] = useState({ lat: STORE_LAT, lng: STORE_LNG, radius: STORE_RADIUS_METERS })
   const [isCompanyDevice, setIsCompanyDevice] = useState(()=>localStorage.getItem('roma_company_device')==='true')
   const DEVICE_RESTRICTED_DEPTS = ['Production']
@@ -7513,6 +7515,21 @@ This will create one approved expense record using the total payroll earnings.`)
     setTimedInList((data || []).filter(l => isOpenAttendanceLogInDutyWindow(l, now, 36)))
     setShowTimedInModal(true)
   }
+  async function loadTimedOutEmployees() {
+    const yesterday = getDateOffsetString(-1)
+    const { data } = await supabase.from('attendance_logs')
+      .select('*, employees(full_name, position, department, profile_photo_url)')
+      .gte('attendance_date', yesterday)
+      .lte('attendance_date', today)
+      .not('time_in', 'is', null)
+      .not('time_out', 'is', null)
+      .order('attendance_date', { ascending: false })
+      .order('time_out', { ascending: false })
+
+    const timedOutToday = (data || []).filter(l => isTimedOutOnDate(l, today))
+    setTimedOutList(timedOutToday)
+    setShowTimedOutModal(true)
+  }
   async function loadEmployees() {
     const { data } = await supabase.from('employees').select('*').eq('is_active', true).order('full_name')
     setEmployees(data || [])
@@ -9156,13 +9173,64 @@ This will create one approved expense record using the total payroll earnings.`)
                     </div>
                   </div>
                 )}
+
+                {/* TIMED OUT MODAL */}
+                {showTimedOutModal && (
+                  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setShowTimedOutModal(false)}>
+                    <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'560px', width:'100%', maxHeight:'85vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px' }}>
+                        <div>
+                          <p style={{ fontWeight:'bold', color:'#555', fontSize:'16px', margin:'0 0 2px' }}>✅ Timed Out Today</p>
+                          <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{today} · includes overnight shifts that timed out after midnight · {timedOutList.length} employee{timedOutList.length!==1?'s':''}</p>
+                        </div>
+                        <button onClick={()=>setShowTimedOutModal(false)} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Close</button>
+                      </div>
+                      {timedOutList.length === 0 ? (
+                        <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
+                          <p style={{ fontSize:'32px', margin:'0 0 10px' }}>🕒</p>
+                          <p style={{ fontWeight:'bold', fontSize:'14px' }}>No timed-out records yet</p>
+                          <p style={{ fontSize:'12px' }}>Employees will appear here once they time out.</p>
+                        </div>
+                      ) : (
+                        <div>
+                          {timedOutList.map((log, i) => {
+                            const emp = log.employees || {}
+                            const workedHours = (diffMinutesAcrossMidnight(log.time_in, log.time_out) / 60).toFixed(1)
+                            const shiftBadge = String(log.attendance_date || '').slice(0,10) !== today ? ' · Night shift from ' + String(log.attendance_date || '').slice(0,10) : ''
+                            return (
+                              <div key={log.id} style={{ display:'flex', alignItems:'center', gap:'12px', padding:'12px', background:i%2===0?'white':'#f8f9fa', borderRadius:'10px', marginBottom:'6px', border:'1px solid #eee' }}>
+                                {emp.profile_photo_url ? (
+                                  <img src={emp.profile_photo_url} alt="" style={{ width:'44px', height:'44px', borderRadius:'50%', objectFit:'cover', border:'2px solid #777', flexShrink:0 }} />
+                                ) : (
+                                  <div style={{ width:'44px', height:'44px', borderRadius:'50%', background:'#777', color:'white', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px', flexShrink:0 }}>👤</div>
+                                )}
+                                <div style={{ flex:1, minWidth:0 }}>
+                                  <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{emp.full_name || log.employee_name}</p>
+                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{emp.position || '—'} {emp.department?`· ${emp.department}`:''}{shiftBadge}</p>
+                                </div>
+                                <div style={{ textAlign:'right', flexShrink:0 }}>
+                                  <p style={{ fontWeight:'bold', color:'#555', fontSize:'13px', margin:'0 0 2px' }}>{log.time_in} → {log.time_out}</p>
+                                  <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{workedHours}h worked</p>
+                                </div>
+                              </div>
+                            )
+                          }) }
+                          <div style={{ background:'#f0f0f0', borderRadius:'10px', padding:'10px 14px', marginTop:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                            <span style={{ fontWeight:'bold', color:'#555', fontSize:'13px' }}>Total Timed Out</span>
+                            <span style={{ fontWeight:'bold', color:'#555', fontSize:'20px' }}>{timedOutList.length}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {!dashboardData && <p style={{ color:'#888' }}>Loading...</p>}
                 {dashboardData && (
                   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'24px' }}>
                     {[
                       ['👥 Total Employees', dashboardData.totalEmployees, 'blue', 'employees', null],
                       ['🟢 Timed In', dashboardData.timedIn, 'green', 'attendance', loadTimedInEmployees],
-                      ['✅ Timed Out', dashboardData.timedOut, 'gray', 'attendance', null],
+                      ['✅ Timed Out', dashboardData.timedOut, 'gray', 'attendance', loadTimedOutEmployees],
                       ['🔴 Absent Today', dashboardData.absent, 'red', 'attendance', null],
                       ['🏖️ Pending Leave', dashboardData.pendingLeave, dashboardData.pendingLeave>0?'orange':'gray', 'leaveRequests', null],
                       ['💵 Pending CA', dashboardData.pendingCA, dashboardData.pendingCA>0?'orange':'gray', 'cashRequests', null],
