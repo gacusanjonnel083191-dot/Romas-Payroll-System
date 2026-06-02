@@ -3073,6 +3073,10 @@ export default function App() {
   }
   async function deleteInvoice(invoice) {
     if (!invoice?.id) { showToast('❌ Invalid invoice selected.', 'red'); return }
+    if (adminRole !== 'owner') {
+      showToast('❌ Owner permission required. Switch to Owner account to force delete invoices.', 'red')
+      return
+    }
 
     const paidAmount = safeNum(invoice.paid_amount, 0)
     const status = String(invoice.status || '').toLowerCase()
@@ -3114,6 +3118,22 @@ This will remove the invoice and its line items.`
     }
 
     try {
+      // Owner force delete: unlink reseller orders that were converted into this invoice first.
+      // This prevents the reseller_orders.invoice_id foreign-key from blocking invoice deletion.
+      const { error:orderUnlinkErr } = await supabase
+        .from('reseller_orders')
+        .update({ invoice_id:null, status:'pending' })
+        .eq('invoice_id', invoice.id)
+
+      if (orderUnlinkErr) {
+        const msg = String(orderUnlinkErr.message || '').toLowerCase()
+        if (msg.includes('column') || msg.includes('status')) {
+          await runRequired('Unlink linked reseller orders', supabase.from('reseller_orders').update({ invoice_id:null }).eq('invoice_id', invoice.id))
+        } else if (!isMissingOptionalTableError(orderUnlinkErr)) {
+          throw new Error(`Unlink linked reseller orders: ${orderUnlinkErr.message}`)
+        }
+      }
+
       // Delete dependent return rows first so foreign-key relationships do not block invoice deletion.
       const { data:returnRows, error:returnLoadErr } = await supabase
         .from('reseller_returns')
@@ -3137,7 +3157,7 @@ This will remove the invoice and its line items.`
       await runRequired('Delete invoice items', supabase.from('delivery_invoice_items').delete().eq('invoice_id', invoice.id))
       await runRequired('Delete invoice header', supabase.from('delivery_invoices').delete().eq('id', invoice.id))
 
-      await logAudit('INVOICE DELETED', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${php(invoice.total_amount)}${hasFinancialMovement ? ' — with linked movement removed' : ''}`)
+      await logAudit('OWNER FORCE DELETED INVOICE', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${php(invoice.total_amount)}${hasFinancialMovement ? ' — with linked movement removed' : ''} — linked orders unlinked first`)
       showToast(`✅ Invoice ${invoice.invoice_number} deleted.`)
 
       setShowPaymentFormMap(p => ({ ...p, [invoice.id]: false }))
@@ -14668,8 +14688,8 @@ This will create one approved expense record using the total payroll earnings.`)
                             {inv.status!=='unpaid' && (
                               <button style={{ ...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv,[])}>🖨️ RETURN FORM</button>
                             )}
-                            {['owner','manager','payroll','hr'].includes(adminRole) && (
-                              <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:processingItems[`delete_invoice_${inv.id}`]?'not-allowed':'pointer', opacity:processingItems[`delete_invoice_${inv.id}`]?0.65:1, fontWeight:'bold', fontSize:'11px' }} disabled={processingItems[`delete_invoice_${inv.id}`]} onClick={()=>deleteInvoice(inv)}>{processingItems[`delete_invoice_${inv.id}`]?'⏳ DELETING...':'🗑️ DELETE'}</button>
+                            {adminRole==='owner' && (
+                              <button title="Owner-only force delete" style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:processingItems[`delete_invoice_${inv.id}`]?'not-allowed':'pointer', opacity:processingItems[`delete_invoice_${inv.id}`]?0.65:1, fontWeight:'bold', fontSize:'11px' }} disabled={processingItems[`delete_invoice_${inv.id}`]} onClick={()=>deleteInvoice(inv)}>{processingItems[`delete_invoice_${inv.id}`]?'⏳ DELETING...':'🗑️ OWNER DELETE'}</button>
                             )}
                           </div>
                           {/* Info banner — payment in Receivables */}
