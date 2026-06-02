@@ -2870,6 +2870,47 @@ export default function App() {
     return status || 'unpaid'
   }
 
+
+  function getInvoicePaymentStatus(inv) {
+    const status = String(inv?.status || 'unpaid').toLowerCase()
+    if (status === 'cancelled') return 'cancelled'
+    const total = moneyRound(inv?.total_amount || 0)
+    const paid = moneyRound(inv?.paid_amount || 0)
+    const balance = getInvoiceBalance(inv)
+
+    // Payment classification must be based on money, not only the saved status label.
+    // This prevents fully paid invoices from staying in Partial and prevents unpaid/partial
+    // invoices from appearing inside the Paid tab.
+    if (total > 0 && balance <= 0) return 'paid'
+    if (paid > 0 && balance > 0) return 'partial'
+    if (balance > 0) return 'unpaid'
+    return status === 'paid' ? 'paid' : 'unpaid'
+  }
+
+  function invoiceMatchesFilter(inv, filter) {
+    const paymentStatus = getInvoicePaymentStatus(inv)
+    const savedStatus = String(inv?.status || 'unpaid').toLowerCase()
+    const t2 = new Date(); t2.setDate(t2.getDate() + 1); const tS = t2.toISOString().slice(0, 10)
+
+    if (filter === 'today') return inv.delivery_date === today
+    if (filter === 'tomorrow') return inv.delivery_date === tS
+    if (filter === 'upcoming') return inv.delivery_date > tS
+    if (filter === 'all') return true
+
+    if (filter === 'paid') return paymentStatus === 'paid'
+    if (filter === 'partial') return paymentStatus === 'partial'
+    if (filter === 'unpaid') return paymentStatus === 'unpaid'
+
+    // Delivered tab remains a logistics/delivery view, but excludes fully paid invoices
+    // so paid invoices only live in the Paid tab for collection review.
+    if (filter === 'delivered') return savedStatus === 'delivered' && paymentStatus !== 'paid'
+
+    // Active means invoices still needing action/collection.
+    if (filter === 'active') return paymentStatus !== 'paid' && savedStatus !== 'cancelled'
+
+    return paymentStatus !== 'paid' && savedStatus !== 'cancelled'
+  }
+
   async function normalizePaidInvoiceRows(rows = []) {
     const normalized = (rows || []).map(inv => {
       const status = getNormalizedInvoiceStatus(inv)
@@ -5649,6 +5690,99 @@ This will remove the invoice and its line items.`
   }
 
   // ── Payroll Approval Workflow ─────────────────────────────────────────────
+  function getCashAdvancePayrollDeduction(ca) {
+    const balance = Math.max(0, safeNum(ca?.balance, 0))
+    if (balance <= 0) return 0
+    const scheduled = safeNum(ca?.per_payroll_deduction, 0) > 0 ? safeNum(ca?.per_payroll_deduction, 0) : balance
+    return Math.min(balance, scheduled)
+  }
+
+  function buildCADeductionTag(start, end) {
+    return `CA_PAYROLL:${start}|${end}`
+  }
+
+  async function caPayrollDeductionsAlreadyApplied(start, end) {
+    const tag = buildCADeductionTag(start, end)
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('id, details')
+      .eq('action', 'CA PAYROLL DEDUCTIONS APPLIED')
+      .ilike('details', `%${tag}%`)
+      .limit(1)
+
+    if (error) return { exists:false, error:error.message }
+    return { exists:(data || []).length > 0, record:(data || [])[0] || null }
+  }
+
+  async function applyCashAdvanceDeductionsForPayrollPeriod(start, end, options = {}) {
+    if (!start || !end) return { applied:false, amount:0, error:'Missing payroll period.' }
+
+    const existing = await caPayrollDeductionsAlreadyApplied(start, end)
+    if (existing.exists) return { applied:false, existing:true, amount:0 }
+
+    const { data:records, error:payrollError } = await supabase
+      .from('payroll_records')
+      .select('id, employee_id, employee_code, employee_name, cash_advance_deduction')
+      .eq('payroll_start', start)
+      .eq('payroll_end', end)
+
+    if (payrollError) return { applied:false, amount:0, error:payrollError.message }
+
+    const rows = (records || []).filter(r => safeNum(r.cash_advance_deduction, 0) > 0)
+    if (rows.length === 0) return { applied:false, amount:0, none:true }
+
+    let totalApplied = 0
+    const warnings = []
+
+    for (const row of rows) {
+      let remaining = safeNum(row.cash_advance_deduction, 0)
+      if (remaining <= 0) continue
+
+      const { data:cas, error:caError } = await supabase
+        .from('cash_advances')
+        .select('*')
+        .eq('employee_id', row.employee_id)
+        .eq('status', 'Unpaid')
+        .order('advance_date', { ascending:true })
+
+      if (caError) return { applied:false, amount:totalApplied, error:caError.message }
+
+      for (const ca of cas || []) {
+        if (remaining <= 0) break
+        const balance = Math.max(0, safeNum(ca.balance, 0))
+        if (balance <= 0) continue
+
+        const deduction = Math.min(balance, remaining)
+        const newPaid = safeNum(ca.amount_paid, 0) + deduction
+        const newBal = Math.max(0, balance - deduction)
+        const newRem = Math.max(0, safeNum(ca.installments_remaining, 1) - 1)
+
+        const { error:updateError } = await supabase.from('cash_advances').update({
+          amount_paid:newPaid,
+          balance:newBal,
+          installments_remaining:newRem,
+          status:newBal <= 0 ? 'Paid' : 'Unpaid'
+        }).eq('id', ca.id)
+
+        if (updateError) return { applied:false, amount:totalApplied, error:updateError.message }
+
+        totalApplied += deduction
+        remaining = Math.max(0, remaining - deduction)
+      }
+
+      if (remaining > 0.009) warnings.push(`${row.employee_name || row.employee_code}: ${php(remaining)} payroll CA deduction had no matching unpaid CA balance`)
+    }
+
+    await logAudit(
+      'CA PAYROLL DEDUCTIONS APPLIED',
+      options.auto ? 'System Auto' : 'Admin',
+      'ALL',
+      `${buildCADeductionTag(start, end)} | Applied: ${php(totalApplied)} | Employees: ${rows.length}${warnings.length ? ' | Warnings: ' + warnings.join('; ') : ''}`
+    )
+
+    return { applied:true, amount:totalApplied, warnings }
+  }
+
   async function approvePayroll(start, end) {
     if (!start || !end) { showToast('Please select payroll start and end dates.', 'red'); return }
 
@@ -5670,6 +5804,7 @@ This will remove the invoice and its line items.`
     if (error) { showToast('Failed: '+error.message,'red'); return }
 
     const releasedSILCount = await markSILCashoutsReleasedForPayrollPeriod(start, end, { auto:true, silent:true })
+    const caDeductionResult = await applyCashAdvanceDeductionsForPayrollPeriod(start, end, { auto:true, silent:true })
     const expenseResult = await postPayrollToExpenses(start, end, { auto:true, silent:true })
 
     setPayrollApproved(true)
@@ -5677,16 +5812,19 @@ This will remove the invoice and its line items.`
       'PAYROLL APPROVED',
       'Admin',
       'ALL',
-      `Period: ${start} to ${end} | SIL cashouts auto-released: ${releasedSILCount} | Expense: ${expenseResult.posted ? 'posted ' + php(expenseResult.amount) : expenseResult.existing ? 'already posted' : 'not posted'}`
+      `Period: ${start} to ${end} | SIL cashouts auto-released: ${releasedSILCount} | CA deductions: ${caDeductionResult.applied ? 'applied ' + php(caDeductionResult.amount) : caDeductionResult.existing ? 'already applied' : caDeductionResult.none ? 'none' : 'not applied'} | Expense: ${expenseResult.posted ? 'posted ' + php(expenseResult.amount) : expenseResult.existing ? 'already posted' : 'not posted'}`
     )
 
     const messages = ['✅ Payroll approved and released!']
     if (releasedSILCount > 0) messages.push(`${releasedSILCount} SIL cashout(s) marked paid.`)
+    if (caDeductionResult.applied) messages.push(`CA deductions applied: ${php(caDeductionResult.amount)}.`)
+    else if (caDeductionResult.existing) messages.push('CA deductions were already applied for this payroll period.')
+    else if (caDeductionResult.error) messages.push(`CA deductions not applied: ${caDeductionResult.error}`)
     if (expenseResult.posted) messages.push(`Payroll expense posted: ${php(expenseResult.amount)}.`)
     else if (expenseResult.existing) messages.push('Payroll expense was already posted.')
     else if (expenseResult.error) messages.push(`Payroll expense not posted: ${expenseResult.error}`)
 
-    showToast(messages.join(' '), expenseResult.error ? 'red' : 'green')
+    showToast(messages.join(' '), (expenseResult.error || caDeductionResult.error) ? 'red' : 'green')
     loadSILCashouts({ skipAuto:true })
     loadDailyExpenses()
     refreshFoundationAfterDataChange('payroll-approved')
@@ -8714,25 +8852,63 @@ This will create one approved expense record using the total payroll earnings.`)
   }
   async function updateCashAdvanceStatus(id, newStatus) {
     const req = cashAdvanceRequests.find(r=>r.id===id); if (!req) return
-    if (newStatus==='disapproved') {
-      const reason = caDisapproveReason[id]
-      if (!reason?.trim()) { showToast('Please enter a reason for disapproval.','red'); return }
-      const { error } = await supabase.from('cash_advance_requests').update({ status:'disapproved', admin_reason:reason }).eq('id', id)
-      if (error) { showToast('Failed: '+error.message,'red'); return }
-      await logAudit('CA DISAPPROVED','Admin',req.employee_name,`Reason: ${reason}`)
-      await createNotification(req.employee_id, req.employee_name, 'cash_advance', '❌ Cash Advance Disapproved', `Your cash advance request of ${php(req.amount)} was disapproved. Reason: ${reason}`)
+
+    if (processingItems[`ca_${id}`]) return
+    setProcessingItems(prev=>({ ...prev, [`ca_${id}`]:true }))
+
+    try {
+      if (newStatus==='disapproved') {
+        const reason = caDisapproveReason[id]
+        if (!reason?.trim()) { showToast('Please enter a reason for disapproval.','red'); return }
+        const { error } = await supabase.from('cash_advance_requests').update({ status:'disapproved', admin_reason:reason }).eq('id', id)
+        if (error) { showToast('Failed: '+error.message,'red'); return }
+        await logAudit('CA DISAPPROVED','Admin',req.employee_name,`Reason: ${reason}`)
+        await createNotification(req.employee_id, req.employee_name, 'cash_advance', '❌ Cash Advance Disapproved', `Your cash advance request of ${php(req.amount)} was disapproved. Reason: ${reason}`)
+        setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
+        showToast('✅ Cash advance disapproved.','red'); return
+      }
+
+      const totalAmount = Math.max(0, Number(req.amount || 0))
+      if (!totalAmount) { showToast('Invalid cash advance amount.', 'red'); return }
+
+      const installments = Math.max(1, Number(installmentCounts[id] || 1))
+      const perPayroll = Math.ceil((totalAmount / installments) * 100) / 100
+      const caPayload = {
+        employee_id:req.employee_id,
+        employee_code:req.employee_code,
+        employee_name:req.employee_name,
+        advance_date:today,
+        amount:totalAmount,
+        amount_paid:0,
+        balance:totalAmount,
+        per_payroll_deduction:perPayroll,
+        installments_total:installments,
+        installments_remaining:installments,
+        notes:`AUTO-RECORDED FROM CA REQUEST ${id} | ${req.reason || ''}`,
+        status:'Unpaid'
+      }
+
+      // Important: create the actual cash advance record first.
+      // This prevents a request from becoming approved without a collectible CA ledger record.
+      const { data:createdCA, error:insertError } = await supabase.from('cash_advances').insert(caPayload).select().single()
+      if (insertError) { showToast('Failed to record cash advance: '+insertError.message,'red'); return }
+
+      const { error:updateError } = await supabase.from('cash_advance_requests').update({ status:'approved' }).eq('id', id)
+      if (updateError) {
+        // Roll back the ledger record where possible so request and CA ledger do not mismatch.
+        if (createdCA?.id) await supabase.from('cash_advances').delete().eq('id', createdCA.id)
+        showToast('Failed to approve CA request: '+updateError.message,'red')
+        return
+      }
+
+      await logAudit('CA APPROVED AND AUTO-RECORDED','Admin',req.employee_name,`${php(totalAmount)} in ${installments} installment(s) | ${php(perPayroll)} per payroll | CA ID: ${createdCA?.id || ''}`)
+      await createNotification(req.employee_id, req.employee_name, 'cash_advance', '💵 Cash Advance Approved', `Your cash advance of ${php(totalAmount)} has been approved and recorded. ${php(perPayroll)} will be automatically deducted per payroll for ${installments} payroll(s).`)
       setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
-      showToast('✅ Cash advance disapproved.','red'); return
+      loadResolvedCARequests()
+      showToast(`✅ CA approved, recorded, and scheduled for payroll deduction: ${php(perPayroll)} × ${installments} payroll(s).`)
+    } finally {
+      setProcessingItems(prev=>{ const copy={...prev}; delete copy[`ca_${id}`]; return copy })
     }
-    const { error } = await supabase.from('cash_advance_requests').update({ status:'approved' }).eq('id', id)
-    if (error) { showToast('Failed: '+error.message,'red'); return }
-    const totalAmount=Number(req.amount), installments=Math.max(1,Number(installmentCounts[id]||1))
-    const perPayroll=Math.ceil((totalAmount/installments)*100)/100
-    await supabase.from('cash_advances').insert({ employee_id:req.employee_id, employee_code:req.employee_code, employee_name:req.employee_name, advance_date:today, amount:totalAmount, amount_paid:0, balance:totalAmount, per_payroll_deduction:perPayroll, installments_total:installments, installments_remaining:installments, notes:req.reason, status:'Unpaid' })
-    await logAudit('CA APPROVED','Admin',req.employee_name,`${php(totalAmount)} in ${installments} installments`)
-    await createNotification(req.employee_id, req.employee_name, 'cash_advance', '💵 Cash Advance Approved', `Your cash advance of ${php(totalAmount)} has been approved. ${php(perPayroll)} will be deducted per payroll for ${installments} payroll(s).`)
-    setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
-    showToast(`✅ Approved! ${php(perPayroll)} × ${installments} payroll(s).`)
   }
   async function loadPayslipDisputes() {
     const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'pending').order('created_at', { ascending:false })
@@ -9561,7 +9737,7 @@ This will create one approved expense record using the total payroll earnings.`)
 
       // ── Cash Advance, Adjustments, Government Contributions ───────────────────
       let caDeduction=0
-      for (const ca of cas||[]) caDeduction+=ca.per_payroll_deduction?Number(ca.per_payroll_deduction):Number(ca.balance||0)
+      for (const ca of cas||[]) caDeduction += getCashAdvancePayrollDeduction(ca)
       let adjEarnings=0,adjDeductions=0
       for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
       const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
@@ -9574,12 +9750,6 @@ This will create one approved expense record using the total payroll earnings.`)
       results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
     } // end for emp
     for (const pay of results) {
-      const { data:empCAs } = await supabase.from('cash_advances').select('*').eq('employee_id', pay.employeeId).eq('status', 'Unpaid')
-      for (const ca of empCAs||[]) {
-        const ded=ca.per_payroll_deduction?Number(ca.per_payroll_deduction):Number(ca.balance||0)
-        const newBal=Math.max(0,Number(ca.balance||0)-ded), newRem=Math.max(0,Number(ca.installments_remaining||1)-1)
-        await supabase.from('cash_advances').update({ amount_paid:Number(ca.amount_paid||0)+ded, balance:newBal, installments_remaining:newRem, status:newBal<=0||newRem<=0?'Paid':'Unpaid' }).eq('id', ca.id)
-      }
       await supabase.from('payroll_records').insert([{ employee_id:pay.employeeId, employee_code:pay.employeeCode, employee_name:pay.employeeName, payroll_start:payrollStart, payroll_end:payrollEnd, worked_days:pay.workedDays, basic_pay:pay.basicPay, birthday_pay:pay.birthdayPay||0, overtime_pay:pay.overtimePay, night_diff_pay:pay.nightDiffPay, holiday_pay:pay.holidayPay, other_earnings:pay.adjustmentEarnings, total_earnings:pay.totalEarnings, late_minutes:pay.lateMinutes||0, undertime_minutes:pay.undertimeMinutes||0, cash_advance_deduction:pay.cashAdvanceDeduction, sss_deduction:pay.sssDeduction, pagibig_deduction:pay.pagibigDeduction, philhealth_deduction:pay.philhealthDeduction, other_deductions:pay.adjustmentDeductions, total_deductions:pay.totalDeductions, net_pay:pay.netPay, employee_acknowledgement:'pending', payslip_serial:genSerial(payrollStart,results.indexOf(pay)), bank_name:pay.bankName, bank_account:pay.bankAccount, bank_account_name:pay.bankAccountName }])
     }
     const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
@@ -14670,22 +14840,11 @@ This will create one approved expense record using the total payroll earnings.`)
                       </div>
                     )}
                     {/* Filter: hide paid by default */}
-                    {deliveryInvoices.filter(i=>{
-                      const t2=new Date();t2.setDate(t2.getDate()+1);const tS=t2.toISOString().slice(0,10)
-                      const status = getNormalizedInvoiceStatus(i)
-                      if(invoiceFilter==='today') return i.delivery_date===today
-                      if(invoiceFilter==='tomorrow') return i.delivery_date===tS
-                      if(invoiceFilter==='upcoming') return i.delivery_date>tS
-                      if(invoiceFilter==='all') return true
-                      if(invoiceFilter==='paid') return status==='paid'
-                      if(invoiceFilter==='unpaid') return status==='unpaid' && getInvoiceBalance(i)>0
-                      if(invoiceFilter==='delivered') return status==='delivered'
-                      if(invoiceFilter==='partial') return status==='partial' && getInvoiceBalance(i)>0
-                      return i.status!=='paid'
-                    }).map(inv=>{
-                      const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
-                      const isOverdue = inv.status!=='paid' && inv.due_date < today
-                      const statusColor = inv.status==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':'#f57c00'
+                    {deliveryInvoices.filter(i=>invoiceMatchesFilter(i, invoiceFilter)).map(inv=>{
+                      const balance = getInvoiceBalance(inv)
+                      const displayStatus = getInvoicePaymentStatus(inv)
+                      const isOverdue = displayStatus!=='paid' && balance > 0 && inv.due_date < today
+                      const statusColor = displayStatus==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':'#f57c00'
                       return (
                         <div key={inv.id} style={{ ...cardS, border:`2px solid ${statusColor}44`, marginBottom:'12px' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
@@ -14696,8 +14855,8 @@ This will create one approved expense record using the total payroll earnings.`)
                             </div>
                             <div style={{ textAlign:'right' }}>
                               <p style={{ fontWeight:'bold', fontSize:'18px', color:'#333', margin:'0 0 2px' }}>{php(inv.total_amount)}</p>
-                              <Badge label={isOverdue?'⚠️ OVERDUE':inv.status?.toUpperCase()} color={inv.status==='paid'?'green':isOverdue?'red':'yellow'} />
-                              {balance > 0 && balance < Number(inv.total_amount) && <p style={{ color:'#f57c00', fontSize:'11px', margin:'4px 0 0' }}>Balance: {php(balance)}</p>}
+                              <Badge label={isOverdue?'⚠️ OVERDUE':displayStatus.toUpperCase()} color={displayStatus==='paid'?'green':displayStatus==='partial'?'yellow':isOverdue?'red':'yellow'} />
+                              {balance > 0 && displayStatus==='partial' && <p style={{ color:'#f57c00', fontSize:'11px', margin:'4px 0 0' }}>Balance: {php(balance)}</p>}
                             </div>
                           </div>
                           {/* Items preview */}
@@ -15030,12 +15189,8 @@ This will create one approved expense record using the total payroll earnings.`)
                     </div>
                     {/* Invoice List */}
                     {(()=>{
-                      let filtered = deliveryInvoices
-                      if (invoiceFilter==='delivered') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)==='delivered')
-                      else if (invoiceFilter==='partial') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)==='partial' && getInvoiceBalance(i)>0)
-                      else if (invoiceFilter==='overdue') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today)
-                      else if (invoiceFilter==='paid') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)==='paid')
-                      else if (invoiceFilter==='unpaid') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)==='unpaid' && getInvoiceBalance(i)>0)
+                      let filtered = deliveryInvoices.filter(i=>invoiceMatchesFilter(i, invoiceFilter))
+                      if (invoiceFilter==='overdue') filtered = deliveryInvoices.filter(i=>getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today)
                       if (filtered.length===0) return (
                         <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
                           <p style={{ fontSize:'32px', margin:'0 0 8px' }}>{invoiceFilter==='delivered'?'🚚':invoiceFilter==='paid'?'✅':'💵'}</p>
@@ -17041,9 +17196,9 @@ This will create one approved expense record using the total payroll earnings.`)
                         <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>📋 Invoice Status Breakdown</p>
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'10px' }}>
                           {[
-                            ['Paid',allInvoices.filter(i=>i.status==='paid').length,'#2d8a4e'],
-                            ['Partial',allInvoices.filter(i=>i.status==='partial').length,'#f5a623'],
-                            ['Unpaid',allInvoices.filter(i=>i.status==='unpaid').length,'#ca1b1b'],
+                            ['Paid',allInvoices.filter(i=>getInvoicePaymentStatus(i)==='paid').length,'#2d8a4e'],
+                            ['Partial',allInvoices.filter(i=>getInvoicePaymentStatus(i)==='partial').length,'#f5a623'],
+                            ['Unpaid',allInvoices.filter(i=>getInvoicePaymentStatus(i)==='unpaid').length,'#ca1b1b'],
                           ].map(([l,v,c])=>(
                             <div key={l} style={{ background:`${c}11`, borderRadius:'10px', padding:'12px', textAlign:'center', border:`1px solid ${c}33` }}>
                               <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase' }}>{l}</p>
