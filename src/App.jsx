@@ -11,6 +11,9 @@ const STORE_LNG = 120.5963
 const STORE_RADIUS_METERS = 200
 const ALLOWED_BREAK_MINUTES = 60
 const RESELLER_CREDIT_GRACE_DAYS = 7
+const ORDER_CUTOFF_TIME = '15:00'
+const ORDER_CUTOFF_LABEL = '3:00 PM'
+const PH_TIME_ZONE = 'Asia/Manila'
 
 // ── Design System ─────────────────────────────────────────────────────────────
 // Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
@@ -69,6 +72,46 @@ function getTodayDate() {
 }
 function nowTime() { return new Date().toLocaleTimeString('en-GB', { hour12: false }) }
 function minutesFromTime(t) { const [h, m] = String(t||'00:00').split(':').map(Number); return (Number(h)||0) * 60 + (Number(m)||0) }
+
+function getPHDateTimeParts(asOf = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: PH_TIME_ZONE,
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false
+  }).formatToParts(asOf).reduce((acc, part) => {
+    if (part.type !== 'literal') acc[part.type] = part.value
+    return acc
+  }, {})
+
+  const hour = Number(parts.hour) === 24 ? 0 : Number(parts.hour || 0)
+  const minute = Number(parts.minute || 0)
+  const second = Number(parts.second || 0)
+
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}:${String(second).padStart(2,'0')}`,
+    hour,
+    minute,
+    second,
+    totalMinutes: hour * 60 + minute
+  }
+}
+
+function getOrderCutoffStatus(asOf = new Date()) {
+  const ph = getPHDateTimeParts(asOf)
+  const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
+  const locked = ph.totalMinutes >= cutoffMinutes
+  return {
+    locked,
+    date: ph.date,
+    time: ph.time,
+    cutoffTime: ORDER_CUTOFF_TIME,
+    cutoffLabel: ORDER_CUTOFF_LABEL,
+    message: locked
+      ? `Order cut-off reached. Changing, editing, or submitting orders is locked after ${ORDER_CUTOFF_LABEL} PH time.`
+      : `Order changes are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
+  }
+}
 function diffMinutesAcrossMidnight(startTime, endTime) {
   const start = minutesFromTime(startTime)
   let end = minutesFromTime(endTime)
@@ -931,9 +974,16 @@ export default function App() {
 
   const currentDay = new Date().getDate()
   const showPayrollReminder = currentDay === 11 || currentDay === 26
+  const [orderCutoffTick, setOrderCutoffTick] = useState(Date.now())
+  const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
 
   useEffect(() => {
     setPasskeySupported(browserSupportsPasskeys())
+  }, [])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setOrderCutoffTick(Date.now()), 30 * 1000)
+    return () => window.clearInterval(timer)
   }, [])
 
   useEffect(() => {
@@ -2784,13 +2834,14 @@ export default function App() {
     } catch(err) { showToast('❌ Error: '+err.message,'red') }
   }
   // ── Invoice Functions ─────────────────────────────────────────────────────
-  function buildInvoiceFromReseller(resellerId) {
-    const defaults = resellerDefaultOrders[resellerId] || []
-    if (defaults.length > 0) {
-      setInvoiceItems(defaults.map(d => ({ variant_id:d.variant_id, variant_name:d.variant_name, quantity:d.default_quantity, retail_price:0, reseller_price:0 })))
-    } else {
-      setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])
+  async function buildInvoiceFromReseller(resellerId) {
+    if (!resellerId) {
+      setInvoiceItems([])
+      return
     }
+    const defaults = resellerDefaultOrders[resellerId] || []
+    const rows = await getAllOrderVariantRows(defaults)
+    setInvoiceItems(rows)
   }
 
 
@@ -2920,6 +2971,12 @@ export default function App() {
   async function createDeliveryInvoice() {
     if (!invoiceResellerId) { showToast('❌ Please select a reseller.','red'); return }
     if (!invoiceDate) { showToast('❌ Please select a delivery date.','red'); return }
+    const cutoffStatus = getOrderCutoffStatus()
+    if (cutoffStatus.locked) {
+      showToast(`🔒 Invoice creation is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      await logAudit('INVOICE BLOCKED - ORDER CUT-OFF', adminRole, invoiceResellerId, cutoffStatus.message)
+      return
+    }
     const validItems = invoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
     if (validItems.length === 0) { showToast('❌ Please add at least one item with quantity.','red'); return }
     const visibleCreditStatus = getResellerCreditBlockInfo(invoiceResellerId)
@@ -2969,6 +3026,12 @@ export default function App() {
   }
   async function saveInvoiceEdit() {
     if (!editingInvoice) return
+    const cutoffStatus = getOrderCutoffStatus()
+    if (cutoffStatus.locked) {
+      showToast(`🔒 Invoice editing is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      await logAudit('INVOICE EDIT BLOCKED - ORDER CUT-OFF', adminRole, editingInvoice.reseller_name || '', `${editingInvoice.invoice_number || ''} — ${cutoffStatus.message}`)
+      return
+    }
     const validItems = editInvoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
     if (validItems.length === 0) { showToast('❌ Please add at least one item.','red'); return }
     setSavingEditInvoice(true)
@@ -4059,25 +4122,79 @@ export default function App() {
     setLoading(false)
   }
 
-  async function loadResellerOrderItems(resellerId = null) {
-    const templateSourceId = resellerId || currentReseller?.id || null
-    if (templateSourceId) {
-      const applied = await applyTemplateFromReseller(templateSourceId, 'portal', { silent:true })
-      if (applied) return
+  async function getAllOrderVariantRows(defaultRows = []) {
+    let variants = Array.isArray(donutVariants) ? donutVariants : []
+
+    if (!variants || variants.length === 0) {
+      const { data, error } = await supabase
+        .from('donut_variants')
+        .select('*')
+        .eq('is_active', true)
+        .order('category')
+        .order('name')
+
+      if (!error && data && data.length > 0) {
+        variants = data
+        setDonutVariants(data)
+      }
     }
 
-    const { data:variants, error } = await supabase.from('donut_variants').select('*').eq('is_active',true).order('name')
-    const source = (!error && variants && variants.length > 0)
-      ? variants
-      : DONUT_VARIANTS_DEFAULT.map((v, idx)=>({ id:`default-${idx}`, name:v.name, selling_price:v.selling_price }))
+    if (!variants || variants.length === 0) {
+      variants = DONUT_VARIANTS_DEFAULT.map((v, idx) => ({
+        id:`default-${idx}`,
+        name:v.name,
+        category:v.category,
+        selling_price:v.selling_price
+      }))
+    }
 
-    setResellerOrderItems(source.map(v=>({
-      variant_id:v.id,
-      variant_name:v.name,
-      quantity:'',
-      retail_price:safeNum(v.selling_price, 0),
-      reseller_price:Math.round(safeNum(v.selling_price, 0)*0.80*100)/100
-    })))
+    const defaultMap = new Map((defaultRows || []).map(row => [String(row.variant_id), row]))
+    const rows = variants.map(v => {
+      const saved = defaultMap.get(String(v.id))
+      const retail = safeNum(v.selling_price, safeNum(saved?.retail_price, 0))
+      return {
+        variant_id:v.id,
+        variant_name:v.name || saved?.variant_name || 'Product',
+        quantity:saved?.default_quantity ? String(saved.default_quantity) : '',
+        retail_price:retail,
+        reseller_price:Math.round(retail * 0.80 * 100) / 100
+      }
+    })
+
+    // Safety: if old saved template rows reference variants that are no longer in the active variant list,
+    // still show them so old templates are not silently lost.
+    ;(defaultRows || []).forEach(saved => {
+      if (!rows.some(row => String(row.variant_id) === String(saved.variant_id))) {
+        const retail = safeNum(saved.retail_price, 0)
+        rows.push({
+          variant_id:saved.variant_id,
+          variant_name:saved.variant_name || 'Archived Product',
+          quantity:saved?.default_quantity ? String(saved.default_quantity) : '',
+          retail_price:retail,
+          reseller_price:Math.round(retail * 0.80 * 100) / 100
+        })
+      }
+    })
+
+    return rows
+  }
+
+  async function loadResellerOrderItems(resellerId = null) {
+    const templateSourceId = resellerId || currentReseller?.id || null
+    let defaultRows = []
+
+    if (templateSourceId) {
+      const { data, error } = await supabase
+        .from('reseller_default_orders')
+        .select('*')
+        .eq('reseller_id', templateSourceId)
+
+      if (error) console.warn('Unable to load reseller default order template:', error)
+      defaultRows = data || []
+    }
+
+    const allRows = await getAllOrderVariantRows(defaultRows)
+    setResellerOrderItems(allRows)
   }
 
   async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', options = {}) {
@@ -4090,32 +4207,18 @@ export default function App() {
       if (!options.silent) showToast('❌ Failed to load branch template: ' + error.message, 'red')
       return false
     }
-    if (!data || data.length === 0) {
-      if (!options.silent) showToast('⚠️ No default order template found for selected branch.', 'red')
-      return false
-    }
-    let variants = donutVariants
-    if (!variants || variants.length === 0) {
-      const { data:vd } = await supabase.from('donut_variants').select('*')
-      variants = vd || []
-      if (variants.length > 0) setDonutVariants(variants)
-    }
-    const items = data.map(d => {
-      const v = variants.find(vv => vv.id === d.variant_id)
-      const retail = safeNum(v?.selling_price, safeNum(d.retail_price, 0))
-      return {
-        variant_id:d.variant_id,
-        variant_name:d.variant_name || v?.name || '',
-        quantity:d.default_quantity,
-        retail_price:retail,
-        reseller_price:Math.round(retail * 0.80 * 100) / 100
-      }
-    })
+
+    const items = await getAllOrderVariantRows(data || [])
     if (target === 'portal') setResellerOrderItems(items)
     else setInvoiceItems(items)
+
     if (!options.silent) {
       const branch = resellers.find(r => String(r.id) === String(sourceResellerId)) || resellerPortalBranches.find(r => String(r.id) === String(sourceResellerId))
-      showToast(`✅ Copied ${items.length} item(s) from ${branch?.name || 'branch'} template.`)
+      const savedCount = (data || []).filter(i => safeNum(i.default_quantity, 0) > 0).length
+      const message = savedCount > 0
+        ? `✅ Loaded all variants and copied ${savedCount} saved quantity/quantities from ${branch?.name || 'branch'} template.`
+        : `✅ Loaded all variants. No saved quantities yet for ${branch?.name || 'this branch'}, so quantities are blank.`
+      showToast(message)
     }
     return true
   }
@@ -4307,6 +4410,12 @@ export default function App() {
   }
 
   async function submitResellerOrder() {
+    const cutoffStatus = getOrderCutoffStatus()
+    if (cutoffStatus.locked) {
+      showToast(`🔒 Order cut-off reached. Changes are locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      await logAudit('RESELLER ORDER BLOCKED - ORDER CUT-OFF', 'Reseller Portal', currentReseller?.name || '', cutoffStatus.message)
+      return
+    }
     const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
     if (validItems.length===0) { showToast('❌ Enter at least one quantity.','red'); return }
     if (!resellerOrderDeliveryDate) { showToast('❌ Select delivery date.','red'); return }
@@ -4348,6 +4457,12 @@ export default function App() {
     setPendingResellerOrders(data||[])
   }
   async function approveResellerOrder(order, customItems) {
+    const cutoffStatus = getOrderCutoffStatus()
+    if (cutoffStatus.locked) {
+      showToast(`🔒 Order approval/invoice conversion is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      await logAudit('ORDER APPROVAL BLOCKED - ORDER CUT-OFF', adminRole, order?.reseller_name || '', cutoffStatus.message)
+      return
+    }
     const items = customItems || order.reseller_order_items || []
     const validItems = items.filter(i=>Number(i.quantity)>0)
     if (validItems.length===0) { showToast('❌ No items to invoice.','red'); return }
@@ -14011,6 +14126,13 @@ This will create one approved expense record using the total payroll earnings.`)
                       })()}
                     </div>
 
+                    {orderCutoffStatus.locked && (
+                      <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 12px rgba(202,27,27,0.10)' }}>
+                        <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'13px' }}>🔒 ORDER CUT-OFF REACHED — {ORDER_CUTOFF_LABEL} PH TIME</h4>
+                        <p style={{ color:'#7a1a1a', margin:0, fontSize:'12px', lineHeight:1.5, fontWeight:'700' }}>Creating invoices, approving reseller orders into invoices, and editing invoice/order quantities are locked for production control. Use tomorrow's cycle or owner-approved manual process for urgent changes.</p>
+                      </div>
+                    )}
+
                     {/* Pending Orders Panel */}
                     {showOrdersPanel && pendingResellerOrders.length > 0 && (
                       <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
@@ -14032,10 +14154,10 @@ This will create one approved expense record using the total payroll earnings.`)
                               </div>
                               <div style={{ display:'flex', gap:'6px' }}>
                                 <button
-                                  style={{ ...btnGreen, background:credit.blocked?'#999':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:credit.blocked?'not-allowed':'pointer' }}
-                                  disabled={credit.blocked}
+                                  style={{ ...btnGreen, background:(credit.blocked || orderCutoffStatus.locked)?'#999':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:(credit.blocked || orderCutoffStatus.locked)?'not-allowed':'pointer' }}
+                                  disabled={credit.blocked || orderCutoffStatus.locked}
                                   onClick={()=>approveResellerOrder(order)}
-                                >{credit.blocked?'🚫 HOLD':'✅ APPROVE'}</button>
+                                >{credit.blocked?'🚫 HOLD':orderCutoffStatus.locked?'🔒 CUT-OFF':'✅ APPROVE'}</button>
                                 <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>rejectResellerOrder(order.id, order.reseller_name)}>❌ REJECT</button>
                               </div>
                             </div>
@@ -14057,7 +14179,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
                           <div>
                             <label style={lblS}>Reseller:</label>
-                            <select value={invoiceResellerId} onChange={e=>{ setInvoiceResellerId(e.target.value); setInvoiceCopyFromResellerId(e.target.value); buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
+                            <select value={invoiceResellerId} onChange={async e=>{ setInvoiceResellerId(e.target.value); setInvoiceCopyFromResellerId(e.target.value); await buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
                               <option value="">— Select reseller —</option>
                               {resellers.map(r=>{
                                 const credit = getResellerCreditBlockInfo(r.id)
@@ -14184,14 +14306,14 @@ This will create one approved expense record using the total payroll earnings.`)
                         <input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
                         {(()=>{
                           const credit = getResellerCreditBlockInfo(invoiceResellerId)
-                          const disabled = savingInvoice || credit.blocked
+                          const disabled = savingInvoice || credit.blocked || orderCutoffStatus.locked
                           return (
                             <button
-                              style={{ ...btnGreen, background:credit.blocked?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
+                              style={{ ...btnGreen, background:(credit.blocked || orderCutoffStatus.locked)?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
                               disabled={disabled}
                               onClick={createDeliveryInvoice}
                             >
-                              {credit.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : savingInvoice ? '⏳ Creating...' : '✅ CREATE & SAVE INVOICE'}
+                              {credit.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : orderCutoffStatus.locked ? '🔒 ORDER CUT-OFF REACHED' : savingInvoice ? '⏳ Creating...' : '✅ CREATE & SAVE INVOICE'}
                             </button>
                           )
                         })()}
@@ -14322,6 +14444,12 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                         <button onClick={()=>{ setEditingInvoice(null); setEditInvoiceItems([]) }} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Cancel</button>
                       </div>
+                      {orderCutoffStatus.locked && (
+                        <div style={{ background:'#fff5f5', border:'1.5px solid #ca1b1b', borderRadius:'10px', padding:'10px 12px', marginBottom:'12px' }}>
+                          <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>🔒 ORDER CUT-OFF REACHED</p>
+                          <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>Saving invoice quantity/order changes is locked after {ORDER_CUTOFF_LABEL} PH time for production control.</p>
+                        </div>
+                      )}
                       {/* Invoice details editable */}
                       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'12px' }}>
                         <div><label style={lblS}>Prepared by:</label><input value={editingInvoice.prepared_by||''} onChange={e=>setEditingInvoice(p=>({...p,prepared_by:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
@@ -14361,7 +14489,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                       )}
                       <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setEditInvoiceItems([...editInvoiceItems,{variant_id:'',variant_name:'',quantity:'',retail_price:0,reseller_price:0}])}>+ ADD ITEM</button>
-                      <button style={{ ...btnGreen, opacity:savingEditInvoice?0.6:1 }} disabled={savingEditInvoice} onClick={saveInvoiceEdit}>{savingEditInvoice?'⏳ Saving...':'💾 SAVE CHANGES'}</button>
+                      <button style={{ ...btnGreen, background:orderCutoffStatus.locked?'#999':'#2d8a4e', opacity:(savingEditInvoice||orderCutoffStatus.locked)?0.65:1 }} disabled={savingEditInvoice || orderCutoffStatus.locked} onClick={saveInvoiceEdit}>{orderCutoffStatus.locked?'🔒 CUT-OFF LOCKED':savingEditInvoice?'⏳ Saving...':'💾 SAVE CHANGES'}</button>
                     </div>
                   </div>
                 )}
@@ -14974,7 +15102,7 @@ This will create one approved expense record using the total payroll earnings.`)
                             {isEditingOrder ? (
                               <div>
                                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}>
-                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Set default qty per variant. Leave 0 to exclude.</p>
+                                  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>All active variants are listed automatically. Set default qty per variant; leave 0/blank to exclude.</p>
                                   <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'6px', padding:'4px 10px', cursor:'pointer', fontSize:'10px', fontWeight:'bold' }} onClick={async ()=>{
                                     let variants = donutVariants
                                     if (!variants || variants.length === 0) {
@@ -15025,7 +15153,7 @@ This will create one approved expense record using the total payroll earnings.`)
                             </select>
                           </div>
                           <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-                            <button style={{ ...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setInvoiceResellerId(r.id); buildInvoiceFromReseller(r.id); setInvoiceCopyFromResellerId(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>🚚 CREATE DELIVERY</button>
+                            <button style={{ ...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={async ()=>{ setInvoiceResellerId(r.id); await buildInvoiceFromReseller(r.id); setInvoiceCopyFromResellerId(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>🚚 CREATE DELIVERY</button>
                             <button type="button" style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); startEditReseller(r) }}>✏️ EDIT</button>
                             <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>deleteReseller(r)}>🗑️</button>
                           </div>
@@ -17439,6 +17567,13 @@ This will create one approved expense record using the total payroll earnings.`)
             ))}
           </div>
 
+          {orderCutoffStatus.locked && (
+            <div style={{ position:'sticky', top:'0px', zIndex:49, background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 16px rgba(202,27,27,0.16)' }}>
+              <h3 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'15px' }}>🔒 ORDER CUT-OFF REACHED</h3>
+              <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5, fontWeight:'700' }}>Changing, editing, or submitting orders is no longer allowed after {ORDER_CUTOFF_LABEL} PH time. Please contact Roma’s Donuts admin for urgent concerns or submit in the next order cycle.</p>
+            </div>
+          )}
+
           {resellerPortalView==='dashboard' && (
             <div>
               <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'16px' }}>
@@ -17557,10 +17692,10 @@ This will create one approved expense record using the total payroll earnings.`)
           {resellerPortalView==='place_order' && (
             <div>
               <h2 style={h2s}>🛒 Place Order</h2>
-              {creditStatus.blocked ? (
+              {(creditStatus.blocked || orderCutoffStatus.locked) ? (
                 <div style={{ ...portalCard, border:'2px solid #ca1b1b', background:'#fff5f5' }}>
-                  <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}>🚫 Order Request Blocked</h3>
-                  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px' }}>{creditStatus.message}</p>
+                  <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}>{creditStatus.blocked ? '🚫 Order Request Blocked' : '🔒 Order Cut-Off Reached'}</h3>
+                  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5 }}>{creditStatus.blocked ? creditStatus.message : `Changing or submitting orders is locked after ${ORDER_CUTOFF_LABEL} PH time. Please submit in the next order cycle or contact Roma’s Donuts admin for urgent concerns.`}</p>
                 </div>
               ) : (
                 <>
@@ -17583,7 +17718,11 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                       </div>
                     )}
-                    <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>Enter quantities for {currentReseller.name}</p>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
+                      <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:0 }}>Enter quantities for {currentReseller.name}</p>
+                      <button style={{ ...btnGray, width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>loadResellerOrderItems(currentReseller.id)}>🔄 SHOW ALL VARIANTS</button>
+                    </div>
+                    <p style={{ color:'#777', fontSize:'11px', margin:'-4px 0 10px' }}>All active variants are listed automatically. Leave quantity blank or 0 for items not needed.</p>
                     <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', padding:'7px 10px', background:'#ca1b1b', borderRadius:'9px' }}>
                       {['Variant','Price','Qty'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
                     </div>
