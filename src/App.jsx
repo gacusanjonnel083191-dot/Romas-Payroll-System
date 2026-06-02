@@ -10,6 +10,7 @@ const STORE_LAT = 15.4755
 const STORE_LNG = 120.5963
 const STORE_RADIUS_METERS = 200
 const ALLOWED_BREAK_MINUTES = 60
+const RESELLER_CREDIT_GRACE_DAYS = 7
 
 // ── Design System ─────────────────────────────────────────────────────────────
 // Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
@@ -580,6 +581,12 @@ export default function App() {
   const [adjustmentNotes, setAdjustmentNotes] = useState('')
   const [silCashouts, setSilCashouts] = useState([])
   const [silCashoutsLoading, setSilCashoutsLoading] = useState(false)
+  const [manualSILClaimEmployeeId, setManualSILClaimEmployeeId] = useState('')
+  const [manualSILClaimDate, setManualSILClaimDate] = useState(today)
+  const [manualSILClaimDays, setManualSILClaimDays] = useState('')
+  const [manualSILClaimAmount, setManualSILClaimAmount] = useState('')
+  const [manualSILClaimPeriodStart, setManualSILClaimPeriodStart] = useState('')
+  const [manualSILClaimPeriodEnd, setManualSILClaimPeriodEnd] = useState('')
   // Contracts module
   const [contracts, setContracts] = useState([])
   const [contractsLoading, setContractsLoading] = useState(false)
@@ -712,7 +719,18 @@ export default function App() {
   const [resellersLoading, setResellersLoading] = useState(false)
   const [showResellerForm, setShowResellerForm] = useState(false)
   const [editingResellerId, setEditingResellerId] = useState(null)
-  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' })
+  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' })
+  // Multi-branch reseller accounts: one owner login can manage multiple branch/outlet records.
+  const [resellerAccounts, setResellerAccounts] = useState([])
+  const [resellerAccountsLoading, setResellerAccountsLoading] = useState(false)
+  const [showResellerAccountForm, setShowResellerAccountForm] = useState(false)
+  const [editingResellerAccountId, setEditingResellerAccountId] = useState(null)
+  const [resellerAccountForm, setResellerAccountForm] = useState({ account_name:'', owner_name:'', phone:'', access_code:'', access_pin:'', notes:'' })
+  const [resellerPortalAccount, setResellerPortalAccount] = useState(null)
+  const [resellerPortalBranches, setResellerPortalBranches] = useState([])
+  const [selectedResellerBranchId, setSelectedResellerBranchId] = useState('')
+  const [invoiceCopyFromResellerId, setInvoiceCopyFromResellerId] = useState('')
+  const [resellerOrderTemplateSourceId, setResellerOrderTemplateSourceId] = useState('')
   const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
   const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1)
   const tomorrowStr = tomorrow.toISOString().slice(0,10)
@@ -2534,13 +2552,119 @@ export default function App() {
   // ── Phase 3: Reseller Functions ───────────────────────────────────────────
   async function loadResellers() {
     setResellersLoading(true)
-    const { data } = await supabase.from('resellers').select('*').eq('is_active', true).order('name')
-    setResellers(data || [])
+    const { data, error } = await supabase.from('resellers').select('*').eq('is_active', true).order('name')
+    if (error) {
+      console.warn('loadResellers:', error)
+      setResellers([])
+    } else {
+      setResellers(data || [])
+    }
     setResellersLoading(false)
+    loadResellerAccounts({ silent:true })
+  }
+
+  async function loadResellerAccounts(options = {}) {
+    if (!options.silent) setResellerAccountsLoading(true)
+    try {
+      const { data, error } = await supabase.from('reseller_accounts').select('*').eq('is_active', true).order('account_name')
+      if (error) {
+        console.warn('loadResellerAccounts:', error)
+        setResellerAccounts([])
+      } else {
+        setResellerAccounts(data || [])
+      }
+    } catch (err) {
+      console.warn('loadResellerAccounts:', err)
+      setResellerAccounts([])
+    }
+    if (!options.silent) setResellerAccountsLoading(false)
+  }
+
+  function getResellerAccountName(accountId) {
+    const account = resellerAccounts.find(a => String(a.id) === String(accountId))
+    return account?.account_name || account?.owner_name || ''
+  }
+
+  function getBranchesForAccount(accountId) {
+    if (!accountId) return []
+    return resellers.filter(r => String(r.reseller_account_id || '') === String(accountId))
+  }
+
+  function getResellerBranchIds(resellerId) {
+    if (!resellerId) return []
+    const branchFromState = resellers.find(r => String(r.id) === String(resellerId)) || resellerPortalBranches.find(r => String(r.id) === String(resellerId))
+    const accountId = branchFromState?.reseller_account_id || resellerPortalAccount?.id || null
+    let branches = []
+    if (accountId) {
+      branches = [
+        ...resellers.filter(r => String(r.reseller_account_id || '') === String(accountId)),
+        ...resellerPortalBranches.filter(r => String(r.reseller_account_id || '') === String(accountId))
+      ]
+    }
+    const unique = Array.from(new Map(branches.map(r => [String(r.id), r])).values())
+    return unique.length > 0 ? unique.map(r => r.id) : [resellerId]
+  }
+
+  function resetResellerAccountForm() {
+    setEditingResellerAccountId(null)
+    setResellerAccountForm({ account_name:'', owner_name:'', phone:'', access_code:'', access_pin:'', notes:'' })
+  }
+
+  async function saveResellerAccount() {
+    if (!resellerAccountForm.account_name.trim()) { showToast('❌ Account name is required.','red'); return }
+    const payload = {
+      account_name:resellerAccountForm.account_name.trim(),
+      owner_name:resellerAccountForm.owner_name.trim() || null,
+      phone:resellerAccountForm.phone.trim() || null,
+      access_code:resellerAccountForm.access_code.trim().toUpperCase() || null,
+      access_pin:resellerAccountForm.access_pin.trim() || null,
+      notes:resellerAccountForm.notes.trim() || null,
+      is_active:true
+    }
+    try {
+      if (editingResellerAccountId) {
+        const { error } = await supabase.from('reseller_accounts').update(payload).eq('id', editingResellerAccountId)
+        if (error) throw error
+        showToast('✅ Reseller account updated!')
+      } else {
+        const { error } = await supabase.from('reseller_accounts').insert(payload)
+        if (error) throw error
+        showToast('✅ Reseller account created!')
+      }
+      resetResellerAccountForm()
+      setShowResellerAccountForm(false)
+      loadResellerAccounts()
+    } catch (err) {
+      showToast('❌ Failed to save reseller account: ' + (err?.message || err), 'red')
+    }
+  }
+
+  function startEditResellerAccount(account) {
+    setEditingResellerAccountId(account.id)
+    setResellerAccountForm({
+      account_name:account.account_name || '',
+      owner_name:account.owner_name || '',
+      phone:account.phone || '',
+      access_code:account.access_code || '',
+      access_pin:account.access_pin || '',
+      notes:account.notes || ''
+    })
+    setShowResellerAccountForm(true)
+  }
+
+  async function linkBranchToAccount(branchId, accountId) {
+    try {
+      const { error } = await supabase.from('resellers').update({ reseller_account_id:accountId || null }).eq('id', branchId)
+      if (error) throw error
+      showToast(accountId ? '✅ Branch linked to reseller account.' : '✅ Branch unlinked from account.')
+      loadResellers()
+    } catch (err) {
+      showToast('❌ Failed to link branch: ' + (err?.message || err), 'red')
+    }
   }
   async function saveReseller() {
     if (!resellerForm.name.trim()) { showToast('❌ Reseller name is required.','red'); return }
-    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day, access_code:resellerForm.access_code||null, access_pin:resellerForm.access_pin||null }
+    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day, access_code:resellerForm.access_code||null, access_pin:resellerForm.access_pin||null, reseller_account_id:resellerForm.reseller_account_id||null }
     if (editingResellerId) {
       const { error } = await supabase.from('resellers').update(payload).eq('id', editingResellerId)
       if (error) { showToast('❌ Failed: '+error.message,'red'); return }
@@ -2551,7 +2675,7 @@ export default function App() {
       showToast('✅ Reseller added!')
     }
     setEditingResellerId(null); setShowResellerForm(false)
-    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'' })
+    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' })
     loadResellers()
   }
   async function deleteReseller(r) {
@@ -2567,6 +2691,78 @@ export default function App() {
       grouped[item.reseller_id].push(item)
     }
     setResellerDefaultOrders(grouped)
+  }
+
+  function startEditReseller(r) {
+    if (!r?.id) return
+    setEditingDefaultOrder(null)
+    setDefaultOrderItems([])
+    setEditingResellerId(r.id)
+    setResellerForm({
+      name: r.name || '',
+      area: r.area || '',
+      contact_person: r.contact_person || '',
+      phone: r.phone || '',
+      address: r.address || '',
+      delivery_day: r.delivery_day || 'Monday',
+      access_code: r.access_code || '',
+      access_pin: r.access_pin || '',
+      reseller_account_id: r.reseller_account_id || ''
+    })
+    setShowResellerForm(true)
+    setTimeout(() => {
+      const panel = document.getElementById('reseller-form-panel')
+      if (panel) panel.scrollIntoView({ behavior:'smooth', block:'start' })
+    }, 80)
+  }
+
+  async function startEditDefaultOrder(resellerId) {
+    if (!resellerId) return
+    try {
+      setShowResellerForm(false)
+      setEditingResellerId(null)
+      setEditingDefaultOrder(resellerId)
+
+      let variants = Array.isArray(donutVariants) ? donutVariants : []
+      if (variants.length === 0) {
+        const { data, error } = await supabase.from('donut_variants').select('*').order('category').order('name')
+        if (error) {
+          console.warn('Unable to load donut variants for default order editor:', error)
+        }
+        variants = data || []
+        if (variants.length > 0) setDonutVariants(variants)
+      }
+
+      const existing = resellerDefaultOrders[resellerId] || []
+      let allItems = []
+
+      if (variants.length > 0) {
+        allItems = variants.map(v => {
+          const found = existing.find(e => e.variant_id === v.id)
+          return {
+            variant_id: v.id,
+            variant_name: v.name,
+            default_quantity: found?.default_quantity || ''
+          }
+        })
+      } else {
+        allItems = existing.map(e => ({
+          variant_id: e.variant_id || '',
+          variant_name: e.variant_name || 'Product',
+          default_quantity: e.default_quantity || ''
+        }))
+      }
+
+      setDefaultOrderItems(allItems)
+      if (allItems.length === 0) {
+        showToast('⚠️ No donut variants found. Open Costing → Variants or click LOAD ALL VARIANTS after variants are available.', 'red')
+      }
+    } catch (err) {
+      console.error('Default order edit failed:', err)
+      setEditingDefaultOrder(null)
+      setDefaultOrderItems([])
+      showToast('❌ Could not open default order editor: ' + (err?.message || err), 'red')
+    }
   }
   async function saveDefaultOrder(resellerId) {
     try {
@@ -2599,8 +2795,8 @@ export default function App() {
 
 
   // ── Reseller Credit Hold / Delivery Resume Guard ─────────────────────────
-  // Rule: if a reseller has an unpaid/partial invoice that reaches the 8th day
-  // after delivery (7-day grace), new invoice creation is blocked until settled.
+  // Rule: if a reseller has an unpaid/partial invoice after the 7-day grace period,
+  // the 8th day blocks new invoice/order creation until the account is settled.
   function getInvoiceBalance(inv) {
     return Math.max(0, safeNum(inv?.total_amount, 0) - safeNum(inv?.paid_amount, 0))
   }
@@ -2609,7 +2805,7 @@ export default function App() {
     if (inv?.due_date) return String(inv.due_date).slice(0, 10)
     const deliveryDate = parseLocalDate(inv?.delivery_date)
     if (!deliveryDate) return ''
-    deliveryDate.setDate(deliveryDate.getDate() + 7)
+    deliveryDate.setDate(deliveryDate.getDate() + RESELLER_CREDIT_GRACE_DAYS)
     return formatDateLocal(deliveryDate)
   }
 
@@ -2630,7 +2826,8 @@ export default function App() {
   }
 
   function buildResellerCreditStatus(resellerId, invoiceRows = deliveryInvoices, asOfDate = today) {
-    const related = (invoiceRows || []).filter(inv => String(inv.reseller_id || '') === String(resellerId || ''))
+    const relatedIds = getResellerBranchIds(resellerId).map(String)
+    const related = (invoiceRows || []).filter(inv => relatedIds.includes(String(inv.reseller_id || '')))
     const outstanding = related
       .filter(inv => getInvoiceBalance(inv) > 0 && !['paid','cancelled'].includes(String(inv.status || '').toLowerCase()))
       .map(inv => ({
@@ -2656,9 +2853,9 @@ export default function App() {
       blockedBalance,
       oldest,
       message: blockedInvoices.length > 0
-        ? `Delivery hold: ${blockedInvoices.length} invoice(s) unpaid for 7+ days. Settle ${php(blockedBalance)} before creating a new invoice.`
+        ? `Delivery hold: ${blockedInvoices.length} invoice(s) unpaid beyond the ${RESELLER_CREDIT_GRACE_DAYS}-day grace period. Settle ${php(blockedBalance)} before creating a new invoice or delivery order.`
         : outstanding.length > 0
-          ? `Open balance: ${php(totalBalance)}. Delivery is still allowed until the 7-day grace period ends.`
+          ? `Open balance: ${php(totalBalance)}. Please settle within ${RESELLER_CREDIT_GRACE_DAYS} days after delivery to keep continuous delivery active.`
           : 'Clear account — delivery allowed.'
     }
   }
@@ -2669,11 +2866,14 @@ export default function App() {
 
   async function checkResellerCreditBlockFresh(resellerId) {
     if (!resellerId) return buildResellerCreditStatus('', [], today)
-    const { data, error } = await supabase
+    const branchIds = getResellerBranchIds(resellerId)
+    let query = supabase
       .from('delivery_invoices')
       .select('id, invoice_number, reseller_id, reseller_name, delivery_date, due_date, total_amount, paid_amount, status')
-      .eq('reseller_id', resellerId)
       .order('delivery_date', { ascending:true })
+
+    query = branchIds.length > 1 ? query.in('reseller_id', branchIds) : query.eq('reseller_id', resellerId)
+    const { data, error } = await query
 
     if (error) {
       console.warn('checkResellerCreditBlockFresh:', error)
@@ -2739,7 +2939,7 @@ export default function App() {
         return
       }
       const invoiceNum = `INV-${invoiceDate.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
-      const dueDate = new Date(invoiceDate); dueDate.setDate(dueDate.getDate() + 7)
+      const dueDate = new Date(invoiceDate); dueDate.setDate(dueDate.getDate() + RESELLER_CREDIT_GRACE_DAYS)
       const dueDateStr = dueDate.toISOString().slice(0,10)
       const lineItems = validItems.map(i => {
         const variant = donutVariants.find(v => v.id === i.variant_id)
@@ -3782,17 +3982,68 @@ export default function App() {
     if (!resellerLoginCode || !resellerLoginPin) { showToast('❌ Enter code and PIN.','red'); return }
     setLoading(true)
     try {
+      const code = resellerLoginCode.trim().toUpperCase()
+      const pinValue = resellerLoginPin.trim()
+
+      // New professional login: main reseller account can own multiple branch/outlet records.
+      let account = null
+      try {
+        const accountRes = await supabase
+          .from('reseller_accounts')
+          .select('*')
+          .ilike('access_code', code)
+          .eq('access_pin', pinValue)
+          .eq('is_active', true)
+          .maybeSingle()
+        if (accountRes.error) console.warn('reseller account login fallback:', accountRes.error)
+        account = accountRes.data || null
+      } catch (err) {
+        console.warn('reseller_accounts login not available yet:', err)
+      }
+
+      if (account?.id) {
+        const { data:branches, error:branchErr } = await supabase
+          .from('resellers')
+          .select('*')
+          .eq('reseller_account_id', account.id)
+          .eq('is_active', true)
+          .order('name')
+        if (branchErr) throw branchErr
+        if (!branches || branches.length === 0) {
+          showToast('❌ This reseller account has no linked branches yet. Link branches in Admin → Sales & Resellers → Resellers.', 'red')
+          setLoading(false)
+          return
+        }
+        setResellerPortalAccount(account)
+        setResellerPortalBranches(branches)
+        setCurrentReseller(branches[0])
+        setSelectedResellerBranchId(branches[0].id)
+        setResellerMode(true)
+        setResellerPortalView('dashboard')
+        await loadResellerPortalData(branches[0].id)
+        const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
+        setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
+        await loadResellerOrderItems(branches[0].id)
+        showToast(`✅ Welcome, ${account.account_name || account.owner_name || 'Reseller'}!`)
+        setLoading(false)
+        return
+      }
+
+      // Backward-compatible legacy login for existing single-branch accounts.
       const { data, error } = await supabase
         .from('resellers')
         .select('*')
-        .ilike('access_code', resellerLoginCode.trim())
-        .eq('access_pin', resellerLoginPin.trim())
+        .ilike('access_code', code)
+        .eq('access_pin', pinValue)
         .eq('is_active', true)
         .maybeSingle()
 
       if (error) throw error
       if (!data) { showToast('❌ Invalid code/PIN or inactive reseller account.','red'); setLoading(false); return }
 
+      setResellerPortalAccount(null)
+      setResellerPortalBranches([data])
+      setSelectedResellerBranchId(data.id)
       setCurrentReseller(data)
       setResellerMode(true)
       setResellerPortalView('dashboard')
@@ -3800,7 +4051,7 @@ export default function App() {
 
       const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
       setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
-      await loadResellerOrderItems()
+      await loadResellerOrderItems(data.id)
       showToast(`✅ Welcome, ${data.name}!`)
     } catch(err) {
       showToast('❌ Reseller login failed: ' + (err?.message || err), 'red')
@@ -3808,7 +4059,13 @@ export default function App() {
     setLoading(false)
   }
 
-  async function loadResellerOrderItems() {
+  async function loadResellerOrderItems(resellerId = null) {
+    const templateSourceId = resellerId || currentReseller?.id || null
+    if (templateSourceId) {
+      const applied = await applyTemplateFromReseller(templateSourceId, 'portal', { silent:true })
+      if (applied) return
+    }
+
     const { data:variants, error } = await supabase.from('donut_variants').select('*').eq('is_active',true).order('name')
     const source = (!error && variants && variants.length > 0)
       ? variants
@@ -3821,6 +4078,57 @@ export default function App() {
       retail_price:safeNum(v.selling_price, 0),
       reseller_price:Math.round(safeNum(v.selling_price, 0)*0.80*100)/100
     })))
+  }
+
+  async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', options = {}) {
+    if (!sourceResellerId) {
+      if (!options.silent) showToast('❌ Select a branch template first.', 'red')
+      return false
+    }
+    const { data, error } = await supabase.from('reseller_default_orders').select('*').eq('reseller_id', sourceResellerId)
+    if (error) {
+      if (!options.silent) showToast('❌ Failed to load branch template: ' + error.message, 'red')
+      return false
+    }
+    if (!data || data.length === 0) {
+      if (!options.silent) showToast('⚠️ No default order template found for selected branch.', 'red')
+      return false
+    }
+    let variants = donutVariants
+    if (!variants || variants.length === 0) {
+      const { data:vd } = await supabase.from('donut_variants').select('*')
+      variants = vd || []
+      if (variants.length > 0) setDonutVariants(variants)
+    }
+    const items = data.map(d => {
+      const v = variants.find(vv => vv.id === d.variant_id)
+      const retail = safeNum(v?.selling_price, safeNum(d.retail_price, 0))
+      return {
+        variant_id:d.variant_id,
+        variant_name:d.variant_name || v?.name || '',
+        quantity:d.default_quantity,
+        retail_price:retail,
+        reseller_price:Math.round(retail * 0.80 * 100) / 100
+      }
+    })
+    if (target === 'portal') setResellerOrderItems(items)
+    else setInvoiceItems(items)
+    if (!options.silent) {
+      const branch = resellers.find(r => String(r.id) === String(sourceResellerId)) || resellerPortalBranches.find(r => String(r.id) === String(sourceResellerId))
+      showToast(`✅ Copied ${items.length} item(s) from ${branch?.name || 'branch'} template.`)
+    }
+    return true
+  }
+
+  async function switchResellerPortalBranch(branchId) {
+    const branch = resellerPortalBranches.find(b => String(b.id) === String(branchId))
+    if (!branch) return
+    setCurrentReseller(branch)
+    setSelectedResellerBranchId(branch.id)
+    setResellerPortalView('dashboard')
+    await loadResellerPortalData(branch.id)
+    await loadResellerOrderItems(branch.id)
+    showToast(`✅ Switched to ${branch.name}`)
   }
 
   async function loadResellerPortalData(resellerId) {
@@ -3839,27 +4147,27 @@ export default function App() {
     const { data:pays, error:payErr } = await supabase
       .from('reseller_payments')
       .select('*')
-      .eq('reseller_id', resellerId)
+      .in('reseller_id', branchIds)
       .order('payment_date',{ascending:false})
-      .limit(80)
+      .limit(120)
     if (!payErr) setResellerPaymentHistory(pays||[])
     else console.warn('Reseller payments load error:', payErr)
 
     const { data:orders, error:ordErr } = await supabase
       .from('reseller_orders')
       .select('*, reseller_order_items(*)')
-      .eq('reseller_id', resellerId)
+      .in('reseller_id', branchIds)
       .order('created_at',{ascending:false})
-      .limit(40)
+      .limit(80)
     if (!ordErr) setResellerOrders(orders||[])
     else console.warn('Reseller orders load error:', ordErr)
 
     const { data:returns, error:returnErr } = await supabase
       .from('reseller_returns')
       .select('*, reseller_return_items(*)')
-      .eq('reseller_id', resellerId)
+      .in('reseller_id', branchIds)
       .order('return_date',{ascending:false})
-      .limit(50)
+      .limit(100)
     if (!returnErr) setResellerReturns(returns||[])
     else console.warn('Reseller returns load error:', returnErr)
 
@@ -3880,6 +4188,9 @@ export default function App() {
 
   function resellerLogout() {
     setCurrentReseller(null)
+    setResellerPortalAccount(null)
+    setResellerPortalBranches([])
+    setSelectedResellerBranchId('')
     setResellerMode(false)
     setResellerLoginCode('')
     setResellerLoginPin('')
@@ -3992,8 +4303,9 @@ export default function App() {
         order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
         quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
       })))
-      await createNotification(null,'System','order',`📦 New Order: ${currentReseller.name}`,`${currentReseller.name} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.`)
-      await logAudit('RESELLER ORDER SUBMITTED', 'Reseller Portal', currentReseller.name, `${resellerOrderDeliveryDate} — ${totalQty} pcs — ${php(total)}`)
+      const accountLabel = resellerPortalAccount?.account_name ? `${resellerPortalAccount.account_name} / ${currentReseller.name}` : currentReseller.name
+      await createNotification(null,'System','order',`📦 New Order: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.`)
+      await logAudit('RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} — ${totalQty} pcs — ${php(total)}`)
       showToast('✅ Order submitted! Waiting for admin approval.')
       setResellerOrderNotes('')
       setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
@@ -4021,7 +4333,7 @@ export default function App() {
     // Create invoice automatically
     const reseller = resellers.find(r=>r.id===order.reseller_id)
     const invoiceNum = `INV-${order.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
-    const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+7)
+    const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
     const lineItems = validItems.map(i=>{ const rp=Math.round((i.retail_price||0)*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
     const subtotal = lineItems.reduce((s,i)=>s+i.total_price,0)
     const { data:inv, error } = await supabase.from('delivery_invoices').insert({
@@ -8983,6 +9295,47 @@ This will create one approved expense record using the total payroll earnings.`)
   }
 
 
+  function printManualSILClaim() {
+    const emp = employees.find(e => String(e.id) === String(manualSILClaimEmployeeId))
+    if (!emp) {
+      alert('Please select an employee for the manual SIL claim form.')
+      return
+    }
+
+    const fallbackCycle = getCurrentSILCycle(emp.hire_date)
+    const defaultDays = safeNum(emp.sil_balance, 0) > 0 ? safeNum(emp.sil_balance, 0) : 5
+    const days = safeNum(manualSILClaimDays, defaultDays)
+    if (days <= 0) {
+      alert('Please enter valid SIL days to claim.')
+      return
+    }
+
+    const dailyRate = safeNum(emp.daily_rate, 0)
+    const amount = safeNum(manualSILClaimAmount, days * dailyRate)
+    if (amount <= 0) {
+      alert('Please enter a valid SIL claim amount or make sure the employee has a daily rate.')
+      return
+    }
+
+    const claimDate = manualSILClaimDate || today
+    const periodStart = manualSILClaimPeriodStart || fallbackCycle?.start || emp.hire_date || claimDate
+    const periodEnd = manualSILClaimPeriodEnd || fallbackCycle?.end || claimDate
+
+    printSILClaim({
+      id: `MANUAL-${emp.id}-${Date.now()}`,
+      employee_id: emp.id,
+      employee_code: emp.employee_code || '',
+      employee_name: emp.full_name || 'Employee',
+      adjustment_date: claimDate,
+      amount,
+      notes: `Manual SIL claim print: ${days} day(s) from ${periodStart} to ${periodEnd}`,
+      isReleased: false,
+      releasedAt: null,
+      releasedBy: ''
+    })
+  }
+
+
   // ── Camera Screen ─────────────────────────────────────────────────────────
   if (cameraMode) {
     return (
@@ -9074,7 +9427,7 @@ This will create one approved expense record using the total payroll earnings.`)
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
       if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
       if(key==='schedule') { loadExistingSchedules() }
-      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
       if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadFinancialData() }
       if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
       if(key==='franchise') { loadFranchises() }
@@ -10261,6 +10614,44 @@ This will create one approved expense record using the total payroll earnings.`)
                       <p style={{ margin:0, color:'#666', fontSize:'12px' }}>Use this after paying unused SIL cash conversion. If the payroll period is already approved, the system marks it automatically.</p>
                     </div>
                     <button style={{ ...btnBlack, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>loadSILCashouts()}>🔄 REFRESH SIL RELEASES</button>
+                  </div>
+
+                  <div style={{ background:'white', border:'1px solid #f3e0a0', borderRadius:'12px', padding:'14px', marginTop:'12px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+                      <div>
+                        <h4 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'14px' }}>🖨 Manual SIL Claim Print</h4>
+                        <p style={{ margin:0, color:'#777', fontSize:'12px' }}>Use this when no automatic unused SIL conversion record has been generated yet. This only prints the claim form and does not create payroll/payment records.</p>
+                      </div>
+                    </div>
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr 1fr', gap:'10px', alignItems:'end' }}>
+                      <div>
+                        <label style={lblS}>Employee</label>
+                        <EmployeeSelect value={manualSILClaimEmployeeId} onChange={setManualSILClaimEmployeeId} employees={employees} />
+                      </div>
+                      <div>
+                        <label style={lblS}>Claim Date</label>
+                        <input type="date" value={manualSILClaimDate} onChange={e=>setManualSILClaimDate(e.target.value)} style={inputStyle} />
+                      </div>
+                      <div>
+                        <label style={lblS}>Unused SIL Days</label>
+                        <input type="number" min="0" step="0.5" placeholder="e.g. 5" value={manualSILClaimDays} onChange={e=>setManualSILClaimDays(e.target.value)} style={inputStyle} />
+                      </div>
+                      <div>
+                        <label style={lblS}>Amount Override</label>
+                        <input type="number" min="0" step="0.01" placeholder="Auto if blank" value={manualSILClaimAmount} onChange={e=>setManualSILClaimAmount(e.target.value)} style={inputStyle} />
+                      </div>
+                    </div>
+                    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr auto', gap:'10px', alignItems:'end', marginTop:'4px' }}>
+                      <div>
+                        <label style={lblS}>Covered Period From</label>
+                        <input type="date" value={manualSILClaimPeriodStart} onChange={e=>setManualSILClaimPeriodStart(e.target.value)} style={inputStyle} />
+                      </div>
+                      <div>
+                        <label style={lblS}>Covered Period To</label>
+                        <input type="date" value={manualSILClaimPeriodEnd} onChange={e=>setManualSILClaimPeriodEnd(e.target.value)} style={inputStyle} />
+                      </div>
+                      <button style={{ ...btnBlack, width:isMobile?'100%':'auto', padding:'11px 16px', marginTop:0, marginBottom:'12px', fontSize:'12px' }} onClick={printManualSILClaim}>🖨 PRINT MANUAL SIL CLAIM</button>
+                    </div>
                   </div>
 
                   {silCashoutsLoading && <p style={{ color:'#888', fontSize:'13px' }}>Loading SIL cashouts...</p>}
@@ -13639,7 +14030,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
                           <div>
                             <label style={lblS}>Reseller:</label>
-                            <select value={invoiceResellerId} onChange={e=>{ setInvoiceResellerId(e.target.value); buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
+                            <select value={invoiceResellerId} onChange={e=>{ setInvoiceResellerId(e.target.value); setInvoiceCopyFromResellerId(e.target.value); buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
                               <option value="">— Select reseller —</option>
                               {resellers.map(r=>{
                                 const credit = getResellerCreditBlockInfo(r.id)
@@ -13680,6 +14071,17 @@ This will create one approved expense record using the total payroll earnings.`)
                           </div>
                         </div>
                         {/* Invoice items */}
+                        <div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
+                          <label style={lblS}>Copy order quantities from another branch/template:</label>
+                          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+                            <select value={invoiceCopyFromResellerId} onChange={e=>setInvoiceCopyFromResellerId(e.target.value)} style={{ ...inputStyle, marginBottom:0, flex:'1 1 240px' }}>
+                              <option value="">— Select branch template —</option>
+                              {resellers.map(r=><option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{r.reseller_account_id ? ` — ${getResellerAccountName(r.reseller_account_id)}` : ''}</option>)}
+                            </select>
+                            <button style={{ ...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(invoiceCopyFromResellerId || invoiceResellerId, 'invoice')}>📋 COPY TEMPLATE</button>
+                          </div>
+                          <p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>Use this when one branch will receive the same quantities/variants as another branch. You can still edit quantities before saving.</p>
+                        </div>
                         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
                           <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:0 }}>Items:</p>
                           <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
@@ -14439,12 +14841,51 @@ This will create one approved expense record using the total payroll earnings.`)
                   <div>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
                       <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🏪 Reseller Management ({resellers.length})</h3>
-                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday' }) }}>
+                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' }) }}>
                         {showResellerForm?'✕ CANCEL':'+ ADD RESELLER'}
                       </button>
                     </div>
+                    <div style={{ background:'#f8fbff', border:'2px solid #4a90d9', borderRadius:'14px', padding:'14px', marginBottom:'16px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'10px' }}>
+                        <div>
+                          <h4 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'13px' }}>👤 Main Reseller Accounts / Multi-Branch Owners</h4>
+                          <p style={{ color:'#666', margin:0, fontSize:'12px' }}>Create one owner login, then link multiple existing reseller branches under it. Do not delete old branch records.</p>
+                        </div>
+                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>{ resetResellerAccountForm(); setShowResellerAccountForm(!showResellerAccountForm) }}>{showResellerAccountForm?'✕ CLOSE':'+ ADD MAIN ACCOUNT'}</button>
+                      </div>
+                      {showResellerAccountForm && (
+                        <div style={{ background:'white', borderRadius:'12px', padding:'12px', border:'1px solid #dbeafe', marginBottom:'10px' }}>
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px' }}>
+                            <div><label style={lblS}>Account Name *</label><input value={resellerAccountForm.account_name} onChange={e=>setResellerAccountForm(p=>({...p,account_name:e.target.value}))} style={inputStyle} placeholder="e.g. Maria Santos Group" /></div>
+                            <div><label style={lblS}>Owner Name</label><input value={resellerAccountForm.owner_name} onChange={e=>setResellerAccountForm(p=>({...p,owner_name:e.target.value}))} style={inputStyle} placeholder="e.g. Maria Santos" /></div>
+                            <div><label style={lblS}>Phone</label><input value={resellerAccountForm.phone} onChange={e=>setResellerAccountForm(p=>({...p,phone:e.target.value}))} style={inputStyle} placeholder="09XX-XXX-XXXX" /></div>
+                            <div><label style={lblS}>Portal Code</label><input value={resellerAccountForm.access_code} onChange={e=>setResellerAccountForm(p=>({...p,access_code:e.target.value.toUpperCase()}))} style={inputStyle} placeholder="e.g. MARIA001" /></div>
+                            <div><label style={lblS}>Portal PIN</label><input value={resellerAccountForm.access_pin} onChange={e=>setResellerAccountForm(p=>({...p,access_pin:e.target.value}))} style={inputStyle} placeholder="e.g. 4821" /></div>
+                            <div><label style={lblS}>Notes</label><input value={resellerAccountForm.notes} onChange={e=>setResellerAccountForm(p=>({...p,notes:e.target.value}))} style={inputStyle} placeholder="Optional" /></div>
+                          </div>
+                          <button style={{ ...btnGreen, width:'auto', padding:'9px 16px', marginTop:'6px', fontSize:'12px' }} onClick={saveResellerAccount}>💾 {editingResellerAccountId?'UPDATE MAIN ACCOUNT':'SAVE MAIN ACCOUNT'}</button>
+                        </div>
+                      )}
+                      {resellerAccountsLoading ? <p style={{ color:'#888', fontSize:'12px' }}>Loading accounts...</p> : resellerAccounts.length===0 ? <p style={{ color:'#888', fontSize:'12px', margin:0 }}>No main reseller accounts yet. You can add one above, then link existing branch records.</p> : resellerAccounts.map(a=>{
+                        const branches = getBranchesForAccount(a.id)
+                        return (
+                          <div key={a.id} style={{ background:'white', border:'1px solid #e0ecff', borderRadius:'10px', padding:'10px', marginBottom:'8px' }}>
+                            <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
+                              <div>
+                                <strong style={{ color:'#1a1a2e', fontSize:'13px' }}>{a.account_name || a.owner_name}</strong>
+                                <p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>Owner: {a.owner_name || '—'} · Code: {a.access_code || '—'} · Branches: {branches.length}</p>
+                              </div>
+                              <button style={{ ...btnYellow, padding:'6px 12px', fontSize:'11px' }} onClick={()=>startEditResellerAccount(a)}>✏️ EDIT ACCOUNT</button>
+                            </div>
+                            <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
+                              {branches.length===0 ? <span style={{ color:'#aaa', fontSize:'11px' }}>No linked branches yet.</span> : branches.map(b=><span key={b.id} style={{ background:'#eef6ff', border:'1px solid #b7d6ff', borderRadius:'999px', padding:'3px 8px', fontSize:'11px', color:'#1a4b7a' }}>{b.name}</span>)}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
                     {showResellerForm && (
-                      <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+                      <div id="reseller-form-panel" style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
                         <h4 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'13px' }}>{editingResellerId?'✏️ Edit Reseller':'➕ Add New Reseller'}</h4>
                         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
                           <div><label style={lblS}>Reseller Name: *</label><input value={resellerForm.name} onChange={e=>setResellerForm(p=>({...p,name:e.target.value}))} style={inputStyle} placeholder="e.g. Aling Rosa's Store" /></div>
@@ -14459,7 +14900,13 @@ This will create one approved expense record using the total payroll earnings.`)
                               <option value="As needed">As needed</option>
                             </select>
                           </div>
-                          <div><label style={lblS}>🔑 Portal Access Code:</label><input value={resellerForm.access_code||''} onChange={e=>setResellerForm(p=>({...p,access_code:e.target.value.toUpperCase()}))} style={inputStyle} placeholder="e.g. CATABLAN" /></div>
+                          <div><label style={lblS}>Main Reseller Account / Owner:</label>
+                            <select value={resellerForm.reseller_account_id||''} onChange={e=>setResellerForm(p=>({...p,reseller_account_id:e.target.value}))} style={inputStyle}>
+                              <option value="">— No parent account / single branch —</option>
+                              {resellerAccounts.map(a=><option key={a.id} value={a.id}>{a.account_name || a.owner_name}</option>)}
+                            </select>
+                          </div>
+                          <div><label style={lblS}>🔑 Branch Portal Access Code:</label><input value={resellerForm.access_code||''} onChange={e=>setResellerForm(p=>({...p,access_code:e.target.value.toUpperCase()}))} style={inputStyle} placeholder="Legacy single-branch login only" /></div>
                           <div><label style={lblS}>🔑 Portal PIN:</label><input value={resellerForm.access_pin||''} onChange={e=>setResellerForm(p=>({...p,access_pin:e.target.value}))} style={inputStyle} placeholder="e.g. 1234" /></div>
                         </div>
                         <button style={{ ...btnRed, width:'auto', padding:'10px 20px', marginTop:'8px' }} onClick={saveReseller}>💾 {editingResellerId?'UPDATE RESELLER':'SAVE RESELLER'}</button>
@@ -14476,7 +14923,8 @@ This will create one approved expense record using the total payroll earnings.`)
                             <div>
                               <p style={{ fontWeight:'bold', fontSize:'15px', color:'#ca1b1b', margin:'0 0 2px' }}>{r.name}</p>
                               <p style={{ color:'#888', fontSize:'12px', margin:'0 0 2px' }}>📍 {r.area||'—'} | 📅 Delivery: {r.delivery_day}</p>
-                              <p style={{ color:'#888', fontSize:'12px', margin:0 }}>👤 {r.contact_person||'—'} | 📞 {r.phone||'—'}</p>
+                              <p style={{ color:'#888', fontSize:'12px', margin:'0 0 2px' }}>👤 {r.contact_person||'—'} | 📞 {r.phone||'—'}</p>
+                              {r.reseller_account_id && <p style={{ color:'#4a90d9', fontSize:'11px', margin:0, fontWeight:'bold' }}>Main Account: {getResellerAccountName(r.reseller_account_id)}</p>}
                             </div>
                             <div style={{ textAlign:'right' }}>
                               {rAR > 0 && <div style={{ marginBottom:'4px' }}><Badge label={`AR: ${php(rAR)}`} color="yellow" /></div>}
@@ -14488,21 +14936,7 @@ This will create one approved expense record using the total payroll earnings.`)
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
                               <span style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>📋 Default Order Template</span>
                               {!isEditingOrder ? (
-                                <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={async ()=>{
-                                  setEditingDefaultOrder(r.id)
-                                  // Make sure variants are loaded first
-                                  let variants = donutVariants
-                                  if (!variants || variants.length === 0) {
-                                    const { data } = await supabase.from('donut_variants').select('*').order('category').order('name')
-                                    variants = data || []
-                                  }
-                                  const existing = resellerDefaultOrders[r.id] || []
-                                  const allItems = variants.map(v => {
-                                    const found = existing.find(e=>e.variant_id===v.id)
-                                    return { variant_id:v.id, variant_name:v.name, default_quantity: found?.default_quantity||'' }
-                                  })
-                                  setDefaultOrderItems(allItems)
-                                }}>✏️ EDIT</button>
+                                <button type="button" style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); startEditDefaultOrder(r.id) }}>✏️ EDIT</button>
                               ) : (
                                 <div style={{ display:'flex', gap:'6px' }}>
                                   <button style={{ ...btnGreen, width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>saveDefaultOrder(r.id)}>💾 SAVE</button>
@@ -14517,11 +14951,14 @@ This will create one approved expense record using the total payroll earnings.`)
                                   <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'6px', padding:'4px 10px', cursor:'pointer', fontSize:'10px', fontWeight:'bold' }} onClick={async ()=>{
                                     let variants = donutVariants
                                     if (!variants || variants.length === 0) {
-                                      const { data } = await supabase.from('donut_variants').select('*').order('category').order('name')
+                                      const { data, error } = await supabase.from('donut_variants').select('*').order('category').order('name')
+                                      if (error) console.warn('Unable to load donut variants:', error)
                                       variants = data || []
+                                      if (variants.length > 0) setDonutVariants(variants)
                                     }
                                     const all = variants.map(v => { const existing = defaultOrderItems.find(i=>i.variant_id===v.id); return { variant_id:v.id, variant_name:v.name, default_quantity: existing?.default_quantity||'' } })
                                     setDefaultOrderItems(all)
+                                    if (all.length === 0) showToast('⚠️ No donut variants found to load.', 'red')
                                   }}>📋 LOAD ALL VARIANTS</button>
                                 </div>
                                 <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr', gap:'4px', marginBottom:'4px', padding:'4px 6px', background:'#ca1b1b', borderRadius:'6px' }}>
@@ -14553,9 +14990,16 @@ This will create one approved expense record using the total payroll earnings.`)
                               <p style={{ color:'#aaa', fontSize:'11px', fontStyle:'italic', margin:0 }}>No default order set. Click Edit to define.</p>
                             )}
                           </div>
+                          <div style={{ background:'#fafafa', border:'1px dashed #d0d0d0', borderRadius:'8px', padding:'8px', marginBottom:'8px' }}>
+                            <label style={{ ...lblS, marginBottom:'4px' }}>Link this branch to main account:</label>
+                            <select value={r.reseller_account_id||''} onChange={e=>linkBranchToAccount(r.id, e.target.value)} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                              <option value="">— No main account —</option>
+                              {resellerAccounts.map(a=><option key={a.id} value={a.id}>{a.account_name || a.owner_name}</option>)}
+                            </select>
+                          </div>
                           <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-                            <button style={{ ...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setInvoiceResellerId(r.id); buildInvoiceFromReseller(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>🚚 CREATE DELIVERY</button>
-                            <button style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingResellerId(r.id); setResellerForm({ name:r.name, area:r.area||'', contact_person:r.contact_person||'', phone:r.phone||'', address:r.address||'', delivery_day:r.delivery_day||'Monday' }); setShowResellerForm(true) }}>✏️ EDIT</button>
+                            <button style={{ ...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setInvoiceResellerId(r.id); buildInvoiceFromReseller(r.id); setInvoiceCopyFromResellerId(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>🚚 CREATE DELIVERY</button>
+                            <button type="button" style={{ ...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); startEditReseller(r) }}>✏️ EDIT</button>
                             <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>deleteReseller(r)}>🗑️</button>
                           </div>
                         </div>
@@ -16938,15 +17382,27 @@ This will create one approved expense record using the total payroll earnings.`)
         </div>
 
         <div style={{ maxWidth:'1180px', margin:'0 auto', padding:isMobile?'14px':'20px' }}>
-          {creditStatus.blocked ? (
-            <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 12px rgba(202,27,27,0.12)' }}>
-              <h3 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'16px' }}>🚫 DELIVERY HOLD — SETTLE FIRST</h3>
-              <p style={{ color:'#7a1a1a', margin:'0 0 8px', fontSize:'13px', lineHeight:1.5 }}>{creditStatus.message}</p>
-              <p style={{ color:'#555', margin:0, fontSize:'12px' }}>New order requests are disabled until overdue invoice balance is settled with admin.</p>
+          {(creditStatus.blocked || creditStatus.totalBalance > 0) ? (
+            <div style={{
+              position:'sticky', top:'0px', zIndex:50,
+              background:creditStatus.blocked?'#fff5f5':'#fff9e6',
+              border:`2px solid ${creditStatus.blocked?'#ca1b1b':'#FDD412'}`,
+              borderRadius:'16px', padding:'16px', marginBottom:'16px',
+              boxShadow:creditStatus.blocked?'0 4px 16px rgba(202,27,27,0.18)':'0 4px 16px rgba(253,212,18,0.22)'
+            }}>
+              <h3 style={{ color:creditStatus.blocked?'#ca1b1b':'#8a5a00', margin:'0 0 6px', fontSize:'16px' }}>
+                {creditStatus.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : '⚠️ PAYMENT REMINDER — KEEP DELIVERY ACTIVE'}
+              </h3>
+              <p style={{ color:creditStatus.blocked?'#7a1a1a':'#6f5200', margin:'0 0 8px', fontSize:'13px', lineHeight:1.5, fontWeight:'700' }}>{creditStatus.message}</p>
+              <p style={{ color:'#555', margin:0, fontSize:'12px', lineHeight:1.5 }}>
+                {creditStatus.blocked
+                  ? 'New order requests and deliveries are disabled. Please settle the overdue balance first before delivery can resume.'
+                  : `Please settle payment within ${RESELLER_CREDIT_GRACE_DAYS} days after delivery. On the day after the grace period, new order requests and invoice creation will be blocked until settled.`}
+              </p>
             </div>
           ) : (
             <div style={{ background:'#f0fff4', border:'1.5px solid #2d8a4e', borderRadius:'14px', padding:'12px 14px', marginBottom:'16px' }}>
-              <p style={{ color:'#2d8a4e', margin:0, fontSize:'13px', fontWeight:'bold' }}>✅ Account Status: {creditStatus.message}</p>
+              <p style={{ color:'#2d8a4e', margin:0, fontSize:'13px', fontWeight:'bold' }}>✅ Account Status: Clear account — delivery allowed.</p>
             </div>
           )}
 
@@ -17007,7 +17463,7 @@ This will create one approved expense record using the total payroll earnings.`)
                   <div key={inv.id} style={{ ...portalCard, marginBottom:'12px', border:`1.5px solid ${blocked?'#ca1b1b':balance>0?'#f5a623':'#2d8a4e'}` }}>
                     <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', marginBottom:'8px' }}>
                       <div>
-                        <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'15px', margin:'0 0 2px' }}>{inv.invoice_number}</p>
+                        <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'15px', margin:'0 0 2px' }}>{inv.invoice_number}</p><p style={{ color:'#4a90d9', fontSize:'11px', margin:'0 0 2px', fontWeight:'bold' }}>{resellers.find(r=>String(r.id)===String(inv.reseller_id))?.name || inv.reseller_name}</p>
                         <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Delivery: {inv.delivery_date} · Due/Hold Date: {getInvoiceCreditHoldDate(inv)||'—'}</p>
                       </div>
                       <Badge label={balance<=0?'PAID':blocked?'DELIVERY HOLD':String(inv.status||'OPEN').toUpperCase()} color={balance<=0?'green':blocked?'red':'orange'} />
@@ -17088,7 +17544,19 @@ This will create one approved expense record using the total payroll earnings.`)
                     <input type="text" value={resellerOrderNotes} onChange={e=>setResellerOrderNotes(e.target.value)} placeholder="Optional notes..." style={inputStyle} />
                   </div>
                   <div style={{ ...portalCard, marginTop:'12px' }}>
-                    <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>Enter quantities</p>
+                    {resellerPortalBranches.length > 1 && (
+                      <div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'12px' }}>
+                        <label style={lblS}>Copy quantities from branch:</label>
+                        <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                          <select value={resellerOrderTemplateSourceId} onChange={e=>setResellerOrderTemplateSourceId(e.target.value)} style={{ ...inputStyle, marginBottom:0, flex:'1 1 220px' }}>
+                            <option value="">— Select branch template —</option>
+                            {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?`— ${b.area}`:''}</option>)}
+                          </select>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(resellerOrderTemplateSourceId || currentReseller.id, 'portal')}>📋 COPY</button>
+                        </div>
+                      </div>
+                    )}
+                    <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}>Enter quantities for {currentReseller.name}</p>
                     <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', padding:'7px 10px', background:'#ca1b1b', borderRadius:'9px' }}>
                       {['Variant','Price','Qty'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
                     </div>
