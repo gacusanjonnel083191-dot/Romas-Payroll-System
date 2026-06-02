@@ -11,8 +11,8 @@ const STORE_LNG = 120.5963
 const STORE_RADIUS_METERS = 200
 const ALLOWED_BREAK_MINUTES = 60
 const RESELLER_CREDIT_GRACE_DAYS = 7
-const ORDER_CUTOFF_TIME = '15:00'
-const ORDER_CUTOFF_LABEL = '3:00 PM'
+const ORDER_CUTOFF_TIME = '12:00'
+const ORDER_CUTOFF_LABEL = '12:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
 
 // ── Design System ─────────────────────────────────────────────────────────────
@@ -108,8 +108,8 @@ function getOrderCutoffStatus(asOf = new Date()) {
     cutoffTime: ORDER_CUTOFF_TIME,
     cutoffLabel: ORDER_CUTOFF_LABEL,
     message: locked
-      ? `Order cut-off reached. Changing, editing, or submitting orders is locked after ${ORDER_CUTOFF_LABEL} PH time.`
-      : `Order changes are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
+      ? `Order cut-off reached. Creating, changing, editing, approving, or submitting orders/invoices is locked after ${ORDER_CUTOFF_LABEL} PH time.`
+      : `Order and invoice creation/editing are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
   }
 }
 function diffMinutesAcrossMidnight(startTime, endTime) {
@@ -801,6 +801,11 @@ export default function App() {
   const [editingInvoice, setEditingInvoice] = useState(null)
   const [editInvoiceItems, setEditInvoiceItems] = useState([])
   const [savingEditInvoice, setSavingEditInvoice] = useState(false)
+  // Invoice / delivery quantity adjustments
+  const [adjustmentInvoiceId, setAdjustmentInvoiceId] = useState('')
+  const [adjustmentRows, setAdjustmentRows] = useState([])
+  const [adjustmentReason, setAdjustmentReason] = useState('')
+  const [adjustmentSaving, setAdjustmentSaving] = useState(false)
   const PAYMENT_METHODS = ['Cash','GCash','Bank Transfer']
   const [arFilter, setArFilter] = useState('all')
   const [dailySales, setDailySales] = useState([])
@@ -3224,26 +3229,30 @@ export default function App() {
       <div class="divider"></div>
       <!-- Items Table -->
       <table>
-        <tr><th>Variant</th><th style="text-align:right;">Retail</th><th style="text-align:right;">Price</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Unsold</th></tr>
+        <tr><th>Variant</th><th style="text-align:right;">Price</th><th style="text-align:right;">Inv Qty</th><th style="text-align:center;">Adjust +/-</th><th style="text-align:center;">Actual Qty</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Unsold</th></tr>
         ${items.map(i=>`<tr>
           <td>${i.variant_name}</td>
-          <td style="text-align:right;">${php(i.retail_price)}</td>
           <td style="text-align:right;">${php(i.reseller_price)}</td>
           <td style="text-align:right;font-weight:bold;">${Number(i.quantity).toLocaleString()}</td>
+          <td style="text-align:center;border:1px solid #ddd;min-width:24px;">&nbsp;</td>
+          <td style="text-align:center;border:1px solid #ddd;min-width:24px;">&nbsp;</td>
           <td style="text-align:right;font-weight:bold;">${php(i.total_price)}</td>
-          <td style="text-align:center;border:1px solid #ddd;min-width:28px;">&nbsp;</td>
+          <td style="text-align:center;border:1px solid #ddd;min-width:24px;">&nbsp;</td>
         </tr>`).join('')}
         <tr class="total-row">
-          <td colspan="3" style="text-align:right;">Total (${totalPieces.toLocaleString()} pcs):</td>
+          <td colspan="2" style="text-align:right;">Total (${totalPieces.toLocaleString()} pcs):</td>
+          <td></td>
+          <td></td>
           <td></td>
           <td style="text-align:right;color:#ca1b1b;font-size:9px;">${php(invoice.total_amount)}</td>
           <td></td>
         </tr>
         ${invoice.paid_amount>0?`
-        <tr><td colspan="4" style="text-align:right;">Paid:</td><td style="text-align:right;color:#2d8a4e;">${php(invoice.paid_amount)}</td><td></td></tr>
-        <tr class="total-row"><td colspan="4" style="text-align:right;">Balance:</td><td style="text-align:right;color:#ca1b1b;">${php(Number(invoice.total_amount)-(Number(invoice.paid_amount)||0))}</td><td></td></tr>`:''}
+        <tr><td colspan="5" style="text-align:right;">Paid:</td><td style="text-align:right;color:#2d8a4e;">${php(invoice.paid_amount)}</td><td></td></tr>
+        <tr class="total-row"><td colspan="5" style="text-align:right;">Balance:</td><td style="text-align:right;color:#ca1b1b;">${php(Number(invoice.total_amount)-(Number(invoice.paid_amount)||0))}</td><td></td></tr>`:''}
       </table>
       <div class="divider" style="margin-top:6px;"></div>
+      <div style="font-size:6.5px;color:#666;margin-top:4px;border:1px dashed #ccc;padding:3px;">Dispatcher note: Write adjustment +/- and actual delivered quantity only when physical count differs from invoice quantity. Admin must encode final adjustment in Sales & Resellers → Adjustments so billable sales and receivables match actual delivery.</div>
       <!-- Bottom fields -->
       <div style="margin-top:8px;">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -3275,6 +3284,156 @@ export default function App() {
     </div></body></html>`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
   }
+  function buildInvoiceAdjustmentRows(invoice) {
+    if (!invoice) return []
+    const existingItems = invoice.delivery_invoice_items || []
+    const rowsByKey = {}
+
+    existingItems.forEach(item => {
+      const key = String(item.variant_id || item.variant_name || Math.random())
+      const originalQty = safeNum(item.quantity, 0)
+      rowsByKey[key] = {
+        item_id: item.id || null,
+        variant_id: item.variant_id || '',
+        variant_name: item.variant_name || 'Unknown Variant',
+        retail_price: safeNum(item.retail_price, 0),
+        reseller_price: safeNum(item.reseller_price, 0),
+        original_quantity: originalQty,
+        actual_quantity: originalQty,
+        adjustment_type: 'Actual Delivered',
+        adjustment_note: ''
+      }
+    })
+
+    ;(donutVariants || []).forEach(v => {
+      const key = String(v.id || v.name)
+      if (!rowsByKey[key]) {
+        const retailPrice = safeNum(v.selling_price, 0)
+        rowsByKey[key] = {
+          item_id: null,
+          variant_id: v.id || '',
+          variant_name: v.name || 'Variant',
+          retail_price: retailPrice,
+          reseller_price: Math.round(retailPrice * 0.80 * 100) / 100,
+          original_quantity: 0,
+          actual_quantity: 0,
+          adjustment_type: 'Additional / Overproduced',
+          adjustment_note: ''
+        }
+      }
+    })
+
+    return Object.values(rowsByKey).sort((a,b)=>String(a.variant_name).localeCompare(String(b.variant_name)))
+  }
+
+  function startInvoiceAdjustment(invoice) {
+    if (!invoice) return
+    setAdjustmentInvoiceId(invoice.id)
+    setAdjustmentRows(buildInvoiceAdjustmentRows(invoice))
+    setAdjustmentReason('')
+    setSalesView('adjustments')
+    setTimeout(() => document.getElementById('invoice-adjustments-panel')?.scrollIntoView({ behavior:'smooth', block:'start' }), 100)
+  }
+
+  function updateAdjustmentRow(index, field, value) {
+    setAdjustmentRows(rows => rows.map((row, i) => i === index ? { ...row, [field]: value } : row))
+  }
+
+  function getAdjustmentSummary(rows = adjustmentRows) {
+    return rows.reduce((acc, row) => {
+      const originalQty = safeNum(row.original_quantity, 0)
+      const actualQty = Math.max(0, safeNum(row.actual_quantity, 0))
+      const adjQty = actualQty - originalQty
+      const amount = actualQty * safeNum(row.reseller_price, 0)
+      acc.originalQty += originalQty
+      acc.actualQty += actualQty
+      acc.adjustmentQty += adjQty
+      acc.totalAmount += amount
+      if (adjQty > 0) acc.increaseQty += adjQty
+      if (adjQty < 0) acc.reductionQty += Math.abs(adjQty)
+      return acc
+    }, { originalQty:0, actualQty:0, adjustmentQty:0, increaseQty:0, reductionQty:0, totalAmount:0 })
+  }
+
+  async function saveInvoiceAdjustments() {
+    const invoice = deliveryInvoices.find(inv => String(inv.id) === String(adjustmentInvoiceId))
+    if (!invoice) { showToast('❌ Please select an invoice to adjust.', 'red'); return }
+    if (!adjustmentReason.trim()) { showToast('❌ Please enter an adjustment reason or dispatcher note.', 'red'); return }
+
+    const normalizedRows = adjustmentRows.map(row => {
+      const actualQty = Math.max(0, safeNum(row.actual_quantity, 0))
+      const originalQty = safeNum(row.original_quantity, 0)
+      const resellerPrice = safeNum(row.reseller_price, 0)
+      return { ...row, original_quantity: originalQty, actual_quantity: actualQty, adjustment_quantity: actualQty - originalQty, total_price: actualQty * resellerPrice }
+    })
+    const finalRows = normalizedRows.filter(row => row.actual_quantity > 0)
+    if (finalRows.length === 0) { showToast('❌ Actual delivered quantity cannot be zero for all items.', 'red'); return }
+
+    const summary = getAdjustmentSummary(normalizedRows)
+    const confirmMsg = `Apply invoice adjustment to ${invoice.invoice_number}?\n\nOriginal Qty: ${summary.originalQty}\nActual Delivered Qty: ${summary.actualQty}\nIncrease: +${summary.increaseQty}\nReduction: -${summary.reductionQty}\nNew Total: ${php(summary.totalAmount)}\n\nThis will update the billable invoice total based on actual delivered quantity.`
+    if (!window.confirm(confirmMsg)) return
+
+    setAdjustmentSaving(true)
+    try {
+      const paidAmount = safeNum(invoice.paid_amount, 0)
+      const newStatus = paidAmount >= summary.totalAmount ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid'
+      const adjustmentLines = normalizedRows
+        .filter(row => safeNum(row.adjustment_quantity, 0) !== 0)
+        .map(row => `${row.variant_name}: ${safeNum(row.original_quantity,0)} → ${safeNum(row.actual_quantity,0)} (${safeNum(row.adjustment_quantity,0) > 0 ? '+' : ''}${safeNum(row.adjustment_quantity,0)})${row.adjustment_note ? ' — ' + row.adjustment_note : ''}`)
+      const adjustmentNote = `[ADJUSTMENT ${new Date().toLocaleString('en-PH')}] ${adjustmentReason.trim()}${adjustmentLines.length ? ' | ' + adjustmentLines.join('; ') : ''}`
+      const nextNotes = [invoice.notes, adjustmentNote].filter(Boolean).join('\n')
+
+      const { error: invErr } = await supabase.from('delivery_invoices').update({ subtotal: summary.totalAmount, total_amount: summary.totalAmount, status: newStatus, notes: nextNotes }).eq('id', invoice.id)
+      if (invErr) throw invErr
+
+      const { error: deleteErr } = await supabase.from('delivery_invoice_items').delete().eq('invoice_id', invoice.id)
+      if (deleteErr) throw deleteErr
+
+      const itemRows = finalRows.map(row => ({
+        invoice_id: invoice.id,
+        variant_id: row.variant_id || null,
+        variant_name: row.variant_name,
+        retail_price: safeNum(row.retail_price, 0),
+        reseller_price: safeNum(row.reseller_price, 0),
+        quantity: safeNum(row.actual_quantity, 0),
+        total_price: safeNum(row.actual_quantity, 0) * safeNum(row.reseller_price, 0)
+      }))
+      const { error: itemErr } = await supabase.from('delivery_invoice_items').insert(itemRows)
+      if (itemErr) throw itemErr
+
+      await logAudit('INVOICE DELIVERY ADJUSTMENT', adminRole, invoice.reseller_name || '', `${invoice.invoice_number} — Original ${summary.originalQty} pcs, Actual ${summary.actualQty} pcs, Net adjustment ${summary.adjustmentQty > 0 ? '+' : ''}${summary.adjustmentQty} pcs, New total ${php(summary.totalAmount)} — ${adjustmentReason.trim()}`)
+      showToast(`✅ Invoice adjusted. New billable total: ${php(summary.totalAmount)}`)
+      setAdjustmentInvoiceId('')
+      setAdjustmentRows([])
+      setAdjustmentReason('')
+      loadDeliveryInvoices()
+      loadDailySales()
+      refreshFoundationAfterDataChange('invoice-delivery-adjustment')
+    } catch (err) {
+      showToast('❌ Failed to save adjustment: ' + err.message, 'red')
+      console.error('Invoice adjustment error:', err)
+    }
+    setAdjustmentSaving(false)
+  }
+
+  function printAdjustmentWorksheet(invoice) {
+    if (!invoice) { showToast('❌ Select an invoice first.', 'red'); return }
+    const rows = buildInvoiceAdjustmentRows(invoice).filter(r => safeNum(r.original_quantity,0) > 0 || safeNum(r.actual_quantity,0) > 0)
+    const pw = window.open('', '_blank', 'width=700,height=900')
+    pw.document.write(`<!DOCTYPE html><html><head><title>Adjustment Worksheet ${invoice.invoice_number}</title>
+      <style>*{box-sizing:border-box;}body{font-family:Arial,sans-serif;font-size:10px;padding:8mm;color:#111;}@media print{@page{size:A4 portrait;margin:8mm}.no-print{display:none!important}}h1{color:#ca1b1b;font-size:18px;margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:10px}th{background:#ca1b1b;color:white;padding:6px;text-align:left;font-size:9px}td{border:1px solid #ddd;padding:6px;font-size:9px}.box{height:18px;border:1px solid #333;background:white}.sig{border-top:1px solid #333;text-align:center;padding-top:4px;margin-top:26px;font-size:9px}</style></head><body>
+      <div class="no-print" style="text-align:center;margin-bottom:12px"><button onclick="window.print()" style="background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 20px;font-weight:bold;cursor:pointer">🖨️ PRINT ADJUSTMENT WORKSHEET</button></div>
+      <h1>Roma's Donuts — Delivery Adjustment Worksheet</h1>
+      <div>Invoice: <strong>${invoice.invoice_number}</strong> | Reseller: <strong>${invoice.reseller_name}</strong> | Delivery Date: <strong>${invoice.delivery_date}</strong></div>
+      <div style="margin-top:4px;color:#666">Dispatcher should write actual produced/delivered quantity and reason for any increase, reduction, overproduction, or underproduction.</div>
+      <table><tr><th>Variant</th><th style="text-align:right">Invoice Qty</th><th>Adjustment +/-</th><th>Actual Delivered</th><th>Reason / Remarks</th></tr>
+      ${rows.map(row=>`<tr><td>${row.variant_name}</td><td style="text-align:right;font-weight:bold">${safeNum(row.original_quantity,0).toLocaleString()}</td><td><div class="box"></div></td><td><div class="box"></div></td><td><div class="box"></div></td></tr>`).join('')}
+      </table>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:28px"><div class="sig">Dispatcher</div><div class="sig">Production Lead</div><div class="sig">Admin/Approver</div></div>
+      </body></html>`)
+    pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
+  }
+
   // ── Daily Sales Functions ─────────────────────────────────────────────────
   async function loadDailySales() {
     setDailySalesLoading(true)
@@ -13693,7 +13852,7 @@ This will create one approved expense record using the total payroll earnings.`)
 
                 {/* Sub-navigation */}
                 <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].map(([v,l])=>(
+                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['adjustments','🧾 Adjustments'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].map(([v,l])=>(
                     <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
                   ))}
                 </div>
@@ -14370,6 +14529,7 @@ This will create one approved expense record using the total payroll earnings.`)
                           )}
                           <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
                             <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}>🖨️ PRINT</button>
+                            <button style={{ ...btnYellow, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>startInvoiceAdjustment(inv)}>🧾 ADJUST</button>
                             <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setViewingInvoice(inv)}>👁️ VIEW</button>
                             {inv.status==='unpaid' && (
                               <button style={{ ...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#4a90d9' }} onClick={()=>markAsDelivered(inv)} disabled={markingDelivered[inv.id]}>🚚 {markingDelivered[inv.id]?'Saving...':'MARK DELIVERED'}</button>
@@ -14432,6 +14592,92 @@ This will create one approved expense record using the total payroll earnings.`)
                   </div>
                 )}
 
+                {/* ── ADJUSTMENTS VIEW ── */}
+                {salesView==='adjustments' && (
+                  <div id="invoice-adjustments-panel">
+                    <div style={{ background:'#fff9e6', border:'2px solid #f5a623', borderRadius:'14px', padding:'14px', marginBottom:'16px' }}>
+                      <h3 style={{ color:'#b36b00', margin:'0 0 6px', fontSize:'15px' }}>🧾 Invoice / Delivery Adjustments</h3>
+                      <p style={{ color:'#7a4a00', margin:0, fontSize:'12px', lineHeight:1.5 }}>Use this when actual produced or delivered quantity is different from the printed invoice. The adjusted actual delivered quantity becomes the billable reseller sales total.</p>
+                    </div>
+
+                    <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr', gap:'10px', alignItems:'end' }}>
+                        <div>
+                          <label style={lblS}>Select Invoice / Delivery Receipt</label>
+                          <select value={adjustmentInvoiceId} onChange={e=>{
+                            const id = e.target.value
+                            setAdjustmentInvoiceId(id)
+                            const inv = deliveryInvoices.find(i=>String(i.id)===String(id))
+                            setAdjustmentRows(inv ? buildInvoiceAdjustmentRows(inv) : [])
+                            setAdjustmentReason('')
+                          }} style={inputStyle}>
+                            <option value="">Select invoice to adjust</option>
+                            {deliveryInvoices.map(inv=><option key={inv.id} value={inv.id}>{inv.delivery_date} — {inv.invoice_number} — {inv.reseller_name} — {php(inv.total_amount)}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <button style={{ ...btnBlack, marginTop:0, opacity:adjustmentInvoiceId?1:0.5 }} disabled={!adjustmentInvoiceId} onClick={()=>printAdjustmentWorksheet(deliveryInvoices.find(i=>String(i.id)===String(adjustmentInvoiceId)))}>🖨️ PRINT WORKSHEET</button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {adjustmentInvoiceId && (()=>{
+                      const inv = deliveryInvoices.find(i=>String(i.id)===String(adjustmentInvoiceId))
+                      const summary = getAdjustmentSummary(adjustmentRows)
+                      return (
+                        <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+                            <div>
+                              <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>{inv?.invoice_number} — {inv?.reseller_name}</h3>
+                              <p style={{ ...cps, margin:0 }}>Delivery Date: {inv?.delivery_date} | Status: {inv?.status}</p>
+                            </div>
+                            <div style={{ textAlign:isMobile?'left':'right' }}>
+                              <p style={{ color:'#888', fontSize:'11px', margin:'0 0 2px' }}>New Billable Total</p>
+                              <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'20px', margin:0 }}>{php(summary.totalAmount)}</p>
+                            </div>
+                          </div>
+
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'8px', marginBottom:'12px' }}>
+                            <div style={{ background:'#f9f9f9', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Invoice Qty</p><p style={{ color:'#333', fontWeight:'bold', fontSize:'16px', margin:0 }}>{summary.originalQty.toLocaleString()}</p></div>
+                            <div style={{ background:'#f0fff4', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#2d8a4e', fontSize:'10px', margin:0 }}>Actual Delivered</p><p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'16px', margin:0 }}>{summary.actualQty.toLocaleString()}</p></div>
+                            <div style={{ background:'#fff9e6', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#b36b00', fontSize:'10px', margin:0 }}>Increase</p><p style={{ color:'#b36b00', fontWeight:'bold', fontSize:'16px', margin:0 }}>+{summary.increaseQty.toLocaleString()}</p></div>
+                            <div style={{ background:'#fff5f5', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#ca1b1b', fontSize:'10px', margin:0 }}>Reduction / Shortage</p><p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'16px', margin:0 }}>-{summary.reductionQty.toLocaleString()}</p></div>
+                          </div>
+
+                          <div style={{ overflowX:'auto', marginBottom:'12px' }}>
+                            <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+                              <thead><tr style={{ background:'#ca1b1b', color:'white' }}><th style={{ padding:'8px', textAlign:'left' }}>Variant</th><th style={{ padding:'8px', textAlign:'right' }}>Invoice Qty</th><th style={{ padding:'8px', textAlign:'right' }}>Actual Delivered</th><th style={{ padding:'8px', textAlign:'right' }}>Adjustment</th><th style={{ padding:'8px', textAlign:'right' }}>Amount</th><th style={{ padding:'8px', textAlign:'left' }}>Reason / Note</th></tr></thead>
+                              <tbody>
+                                {adjustmentRows.map((row, idx)=>{
+                                  const originalQty = safeNum(row.original_quantity,0)
+                                  const actualQty = Math.max(0, safeNum(row.actual_quantity,0))
+                                  const adjQty = actualQty - originalQty
+                                  const amount = actualQty * safeNum(row.reseller_price,0)
+                                  return (
+                                    <tr key={`${row.variant_id || row.variant_name}-${idx}`} style={{ borderBottom:'1px solid #eee', background:adjQty<0?'#fff5f5':adjQty>0?'#f0fff4':'white' }}>
+                                      <td style={{ padding:'7px', fontWeight:'700', color:'#333' }}>{row.variant_name}<br/><span style={{ color:'#888', fontSize:'10px' }}>{php(row.reseller_price)} / pc</span></td>
+                                      <td style={{ padding:'7px', textAlign:'right', fontWeight:'700' }}>{originalQty.toLocaleString()}</td>
+                                      <td style={{ padding:'7px', textAlign:'right' }}><input type="number" min="0" value={row.actual_quantity} onChange={e=>updateAdjustmentRow(idx, 'actual_quantity', e.target.value)} style={{ ...inputStyle, width:'100px', textAlign:'right', marginBottom:0 }} /></td>
+                                      <td style={{ padding:'7px', textAlign:'right', fontWeight:'900', color:adjQty<0?'#ca1b1b':adjQty>0?'#2d8a4e':'#777' }}>{adjQty>0?'+':''}{adjQty.toLocaleString()}</td>
+                                      <td style={{ padding:'7px', textAlign:'right', fontWeight:'700' }}>{php(amount)}</td>
+                                      <td style={{ padding:'7px' }}><input value={row.adjustment_note||''} onChange={e=>updateAdjustmentRow(idx, 'adjustment_note', e.target.value)} placeholder="Optional item note" style={{ ...inputStyle, minWidth:'160px', marginBottom:0 }} /></td>
+                                    </tr>
+                                  )
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          <label style={lblS}>Overall Adjustment Reason / Dispatcher Note</label>
+                          <textarea value={adjustmentReason} onChange={e=>setAdjustmentReason(e.target.value)} placeholder="Example: Actual production shortage; dispatcher delivered actual count only; reseller acknowledged final quantity." style={{ ...inputStyle, minHeight:'70px', resize:'vertical' }} />
+                          <button style={{ ...btnGreen, opacity:adjustmentSaving?0.6:1 }} disabled={adjustmentSaving} onClick={saveInvoiceAdjustments}>{adjustmentSaving?'⏳ SAVING ADJUSTMENT...':'💾 SAVE ADJUSTMENT & UPDATE BILLABLE SALES'}</button>
+                          <p style={{ color:'#888', fontSize:'11px', lineHeight:1.5 }}>This updates the invoice total using actual delivered quantity. Use returns only for products already delivered and later returned/unsold.</p>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
+
                 {/* ── RECEIVABLES VIEW ── */}
                 {/* EDIT INVOICE MODAL */}
                 {editingInvoice && (
@@ -14447,7 +14693,7 @@ This will create one approved expense record using the total payroll earnings.`)
                       {orderCutoffStatus.locked && (
                         <div style={{ background:'#fff5f5', border:'1.5px solid #ca1b1b', borderRadius:'10px', padding:'10px 12px', marginBottom:'12px' }}>
                           <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>🔒 ORDER CUT-OFF REACHED</p>
-                          <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>Saving invoice quantity/order changes is locked after {ORDER_CUTOFF_LABEL} PH time for production control.</p>
+                          <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>Creating and saving invoice/order changes is locked after {ORDER_CUTOFF_LABEL} PH time for production control.</p>
                         </div>
                       )}
                       {/* Invoice details editable */}
@@ -17570,7 +17816,7 @@ This will create one approved expense record using the total payroll earnings.`)
           {orderCutoffStatus.locked && (
             <div style={{ position:'sticky', top:'0px', zIndex:49, background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 16px rgba(202,27,27,0.16)' }}>
               <h3 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'15px' }}>🔒 ORDER CUT-OFF REACHED</h3>
-              <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5, fontWeight:'700' }}>Changing, editing, or submitting orders is no longer allowed after {ORDER_CUTOFF_LABEL} PH time. Please contact Roma’s Donuts admin for urgent concerns or submit in the next order cycle.</p>
+              <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5, fontWeight:'700' }}>Creating, changing, editing, approving, or submitting orders/invoices is no longer allowed after {ORDER_CUTOFF_LABEL} PH time. Please contact Roma’s Donuts admin for urgent concerns or submit in the next order cycle.</p>
             </div>
           )}
 
