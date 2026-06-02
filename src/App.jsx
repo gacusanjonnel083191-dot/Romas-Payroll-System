@@ -145,6 +145,8 @@ function positiveNum(value, fallback = 1) {
   return n > 0 ? n : fallback
 }
 function php(a) { return `PHP ${safeNum(a).toFixed(2)}` }
+function moneyRound(value) { return Math.round((safeNum(value, 0) + Number.EPSILON) * 100) / 100 }
+function isMoneySettled(balance) { return moneyRound(balance) <= 0.01 }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
 function getDistanceMeters(la1,lo1,la2,lo2) {
   const R=6371000,dL=(la2-la1)*Math.PI/180,dO=(lo2-lo1)*Math.PI/180
@@ -2854,7 +2856,39 @@ export default function App() {
   // Rule: if a reseller has an unpaid/partial invoice after the 7-day grace period,
   // the 8th day blocks new invoice/order creation until the account is settled.
   function getInvoiceBalance(inv) {
-    return Math.max(0, safeNum(inv?.total_amount, 0) - safeNum(inv?.paid_amount, 0))
+    const balance = moneyRound(safeNum(inv?.total_amount, 0) - safeNum(inv?.paid_amount, 0))
+    return isMoneySettled(balance) ? 0 : Math.max(0, balance)
+  }
+
+  function getNormalizedInvoiceStatus(inv) {
+    const status = String(inv?.status || 'unpaid').toLowerCase()
+    if (status === 'cancelled') return status
+    const balance = getInvoiceBalance(inv)
+    const paid = moneyRound(inv?.paid_amount || 0)
+    if (paid > 0 && balance <= 0) return 'paid'
+    if (paid > 0 && balance > 0) return 'partial'
+    return status || 'unpaid'
+  }
+
+  async function normalizePaidInvoiceRows(rows = []) {
+    const normalized = (rows || []).map(inv => {
+      const status = getNormalizedInvoiceStatus(inv)
+      const paidDate = status === 'paid' ? (inv.paid_date || today) : inv.paid_date
+      return status !== inv.status || paidDate !== inv.paid_date ? { ...inv, status, paid_date:paidDate } : inv
+    })
+
+    const stalePaid = normalized.filter(inv => String(inv.status || '').toLowerCase() === 'paid' && getInvoiceBalance(inv) <= 0)
+    for (const inv of stalePaid) {
+      const original = (rows || []).find(r => r.id === inv.id)
+      if (!original || (String(original.status || '').toLowerCase() === 'paid' && original.paid_date)) continue
+      const { error } = await supabase
+        .from('delivery_invoices')
+        .update({ status:'paid', paid_date:inv.paid_date || today, paid_amount:moneyRound(inv.paid_amount || inv.total_amount || 0) })
+        .eq('id', inv.id)
+      if (error) console.warn('normalizePaidInvoiceRows:', error)
+    }
+
+    return normalized
   }
 
   function getInvoiceCreditHoldDate(inv) {
@@ -2955,7 +2989,7 @@ export default function App() {
       await autoMarkTodayDelivered()
       const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(100)
       if (!withItems.error) {
-        setDeliveryInvoices(withItems.data || [])
+        setDeliveryInvoices(await normalizePaidInvoiceRows(withItems.data || []))
         return
       }
       console.warn('delivery_invoices with items failed, trying basic invoice list:', withItems.error)
@@ -2965,7 +2999,7 @@ export default function App() {
         setDeliveryInvoices([])
         return
       }
-      setDeliveryInvoices(basic.data || [])
+      setDeliveryInvoices(await normalizePaidInvoiceRows(basic.data || []))
     } catch(e) {
       console.warn('loadDeliveryInvoices:', e)
       setDeliveryInvoices([])
@@ -3908,22 +3942,22 @@ This will remove the invoice and its line items.`
 
   // ── Record Payment with Partial Support ───────────────────────────────────
   async function recordPaymentNew(inv) {
-    const amount = Number(paymentAmount[inv.id]||0)
+    const amount = moneyRound(paymentAmount[inv.id]||0)
     if (!amount || amount<=0) { showToast('❌ Enter payment amount.','red'); return }
 
     const method = paymentMethod[inv.id]||'Cash'
     const notes = paymentNotes[inv.id]||''
-    const totalDue = Number(inv.total_amount||0)
-    const alreadyPaid = Number(inv.paid_amount||0)
-    const currentBalance = Math.max(0, totalDue - alreadyPaid)
+    const totalDue = moneyRound(inv.total_amount||0)
+    const alreadyPaid = moneyRound(inv.paid_amount||0)
+    const currentBalance = getInvoiceBalance(inv)
 
-    if (amount > currentBalance) {
+    if (amount - currentBalance > 0.01) {
       showToast(`❌ Amount exceeds balance. Balance is only ${php(currentBalance)}.`, 'red')
       return
     }
 
-    const newPaidTotal = Math.min(totalDue, alreadyPaid + amount)
-    const balance = Math.max(0, totalDue - newPaidTotal)
+    const newPaidTotal = moneyRound(Math.min(totalDue, alreadyPaid + amount))
+    const balance = getInvoiceBalance({ total_amount:totalDue, paid_amount:newPaidTotal })
     const newStatus = balance<=0?'paid':'partial'
 
     // Save a payment ledger entry first. If the invoice update fails, rollback this entry.
@@ -4047,19 +4081,22 @@ This will remove the invoice and its line items.`
 
   // ── Record Payment (with partial support) ────────────────────────────────
   async function recordInvoicePayment(inv) {
-    const amt = Number(paymentAmount[inv.id]||0)
+    const amt = moneyRound(paymentAmount[inv.id]||0)
     if (!amt || amt<=0) { showToast('❌ Enter payment amount.','red'); return }
-    const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
-    if (amt > balance) { showToast(`❌ Amount exceeds balance of ${php(balance)}.`,'red'); return }
-    const newPaid = Number(inv.paid_amount||0) + amt
-    const newStatus = newPaid >= Number(inv.total_amount||0) ? 'paid' : 'partial'
+    const balance = getInvoiceBalance(inv)
+    if (amt - balance > 0.01) { showToast(`❌ Amount exceeds balance of ${php(balance)}.`,'red'); return }
+    const newPaid = moneyRound(Math.min(moneyRound(inv.total_amount||0), moneyRound(inv.paid_amount||0) + amt))
+    const newBalance = getInvoiceBalance({ total_amount:inv.total_amount, paid_amount:newPaid })
+    const newStatus = newBalance <= 0 ? 'paid' : 'partial'
     const { error } = await supabase.from('delivery_invoices').update({ paid_amount:newPaid, status:newStatus, paid_date:newStatus==='paid'?today:inv.paid_date }).eq('id', inv.id)
     if (error) { showToast('❌ Failed: '+error.message,'red'); return }
     await supabase.from('reseller_payments').insert({ reseller_id:inv.reseller_id, reseller_name:inv.reseller_name, invoice_id:inv.id, amount:amt, payment_date:today, payment_method:paymentMethod[inv.id]||'Cash', notes:paymentNotes[inv.id]||null, recorded_by:adminRole })
     await logAudit('PAYMENT RECORDED', adminRole, inv.reseller_name, `${inv.invoice_number} — ${php(amt)} via ${paymentMethod[inv.id]||'Cash'} — Status: ${newStatus}`)
-    showToast(newStatus==='paid'?`✅ ${inv.reseller_name} — FULLY PAID!`:`✅ Partial payment recorded. Balance: ${php(Number(inv.total_amount||0)-newPaid)}`)
+    showToast(newStatus==='paid'?`✅ ${inv.reseller_name} — FULLY PAID!`:`✅ Partial payment recorded. Balance: ${php(newBalance)}`)
     setPaymentAmount(p=>({...p,[inv.id]:''}))
     setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
+    if (newStatus === 'paid') setInvoiceFilter('paid')
+    else setInvoiceFilter('partial')
     loadDeliveryInvoices()
     refreshFoundationAfterDataChange('invoice-payment-recorded')
     // Check suspicious pattern
@@ -14635,14 +14672,15 @@ This will create one approved expense record using the total payroll earnings.`)
                     {/* Filter: hide paid by default */}
                     {deliveryInvoices.filter(i=>{
                       const t2=new Date();t2.setDate(t2.getDate()+1);const tS=t2.toISOString().slice(0,10)
+                      const status = getNormalizedInvoiceStatus(i)
                       if(invoiceFilter==='today') return i.delivery_date===today
                       if(invoiceFilter==='tomorrow') return i.delivery_date===tS
                       if(invoiceFilter==='upcoming') return i.delivery_date>tS
                       if(invoiceFilter==='all') return true
-                      if(invoiceFilter==='paid') return i.status==='paid'
-                      if(invoiceFilter==='unpaid') return i.status==='unpaid'
-                      if(invoiceFilter==='delivered') return i.status==='delivered'
-                      if(invoiceFilter==='partial') return i.status==='partial'
+                      if(invoiceFilter==='paid') return status==='paid'
+                      if(invoiceFilter==='unpaid') return status==='unpaid' && getInvoiceBalance(i)>0
+                      if(invoiceFilter==='delivered') return status==='delivered'
+                      if(invoiceFilter==='partial') return status==='partial' && getInvoiceBalance(i)>0
                       return i.status!=='paid'
                     }).map(inv=>{
                       const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
@@ -14959,12 +14997,12 @@ This will create one approved expense record using the total payroll earnings.`)
                     </div>
                     {/* AR Summary Cards */}
                     {(()=>{
-                      const outstanding = deliveryInvoices.filter(i=>i.status!=='paid')
-                      const totalAR = outstanding.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+                      const outstanding = deliveryInvoices.filter(i=>getNormalizedInvoiceStatus(i)!=='paid' && getInvoiceBalance(i)>0)
+                      const totalAR = outstanding.reduce((s,i)=>s+getInvoiceBalance(i),0)
                       const overdue = outstanding.filter(i=>i.due_date<today)
-                      const overdueAR = overdue.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
-                      const collectedToday = deliveryInvoices.reduce((s,i)=>s+(i.paid_date===today||i.status==='partial'?Number(i.paid_amount||0):i.status==='paid'&&i.paid_date===today?Number(i.total_amount||0):0),0)
-                      const collectedMonth = deliveryInvoices.filter(i=>i.paid_date?.startsWith(today.slice(0,7))).reduce((s,i)=>s+Number(i.paid_amount||0),0)
+                      const overdueAR = overdue.reduce((s,i)=>s+getInvoiceBalance(i),0)
+                      const collectedToday = deliveryInvoices.filter(i=>i.paid_date===today).reduce((s,i)=>s+moneyRound(i.paid_amount||0),0)
+                      const collectedMonth = deliveryInvoices.filter(i=>i.paid_date?.startsWith(today.slice(0,7))).reduce((s,i)=>s+moneyRound(i.paid_amount||0),0)
                       return (
                         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
                           {[
@@ -14993,10 +15031,11 @@ This will create one approved expense record using the total payroll earnings.`)
                     {/* Invoice List */}
                     {(()=>{
                       let filtered = deliveryInvoices
-                      if (invoiceFilter==='delivered') filtered = filtered.filter(i=>i.status==='delivered')
-                      else if (invoiceFilter==='partial') filtered = filtered.filter(i=>i.status==='partial')
-                      else if (invoiceFilter==='overdue') filtered = filtered.filter(i=>i.status!=='paid'&&i.due_date<today)
-                      else if (invoiceFilter==='paid') filtered = filtered.filter(i=>i.status==='paid'&&i.paid_date===today)
+                      if (invoiceFilter==='delivered') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)==='delivered')
+                      else if (invoiceFilter==='partial') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)==='partial' && getInvoiceBalance(i)>0)
+                      else if (invoiceFilter==='overdue') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today)
+                      else if (invoiceFilter==='paid') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)==='paid')
+                      else if (invoiceFilter==='unpaid') filtered = filtered.filter(i=>getNormalizedInvoiceStatus(i)==='unpaid' && getInvoiceBalance(i)>0)
                       if (filtered.length===0) return (
                         <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
                           <p style={{ fontSize:'32px', margin:'0 0 8px' }}>{invoiceFilter==='delivered'?'🚚':invoiceFilter==='paid'?'✅':'💵'}</p>
@@ -15005,11 +15044,12 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                       )
                       return filtered.map(inv=>{
-                        const balance = Number(inv.total_amount||0) - Number(inv.paid_amount||0)
-                        const isOverdue = inv.status!=='paid' && inv.due_date < today
+                        const balance = getInvoiceBalance(inv)
+                        const displayStatus = getNormalizedInvoiceStatus(inv)
+                        const isOverdue = displayStatus!=='paid' && balance>0 && inv.due_date < today
                         const daysOverdue = isOverdue ? Math.floor((new Date(today).getTime()-new Date(inv.due_date).getTime())/(1000*60*60*24)) : 0
                         return (
-                          <div key={inv.id} style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'10px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`2px solid ${isOverdue?'#ca1b1b33':inv.status==='paid'?'#2d8a4e33':inv.status==='delivered'?'#4a90d933':'#f5a62333'}` }}>
+                          <div key={inv.id} style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'10px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`2px solid ${isOverdue?'#ca1b1b33':displayStatus==='paid'?'#2d8a4e33':displayStatus==='delivered'?'#4a90d933':'#f5a62333'}` }}>
                             {/* Invoice Header */}
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'10px' }}>
                               <div>
@@ -15018,7 +15058,7 @@ This will create one approved expense record using the total payroll earnings.`)
                                 {isOverdue && <p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'bold', margin:0 }}>🔴 {daysOverdue} day(s) overdue</p>}
                               </div>
                               <div style={{ textAlign:'right' }}>
-                                <span style={{ background:inv.status==='paid'?'#e8f5e9':isOverdue?'#fff5f5':inv.status==='delivered'?'#e8f0fe':'#fff3cd', color:inv.status==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':inv.status==='delivered'?'#4a90d9':'#856404', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>{isOverdue&&inv.status!=='paid'?'OVERDUE':inv.status?.toUpperCase()}</span>
+                                <span style={{ background:displayStatus==='paid'?'#e8f5e9':isOverdue?'#fff5f5':displayStatus==='delivered'?'#e8f0fe':'#fff3cd', color:displayStatus==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':displayStatus==='delivered'?'#4a90d9':'#856404', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>{isOverdue&&displayStatus!=='paid'?'OVERDUE':displayStatus.toUpperCase()}</span>
                               </div>
                             </div>
                             {/* Amount Summary */}
