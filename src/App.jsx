@@ -14,9 +14,6 @@ const RESELLER_CREDIT_GRACE_DAYS = 7
 const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
-// Temporary launch/testing bypass: cut-off is disabled only on this PH date.
-// Tomorrow, the 12:00 PM cut-off automatically becomes active again.
-const TEMPORARY_ORDER_CUTOFF_BYPASS_DATES = ['2026-06-02']
 
 // ── Design System ─────────────────────────────────────────────────────────────
 // Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
@@ -103,20 +100,16 @@ function getPHDateTimeParts(asOf = new Date()) {
 function getOrderCutoffStatus(asOf = new Date()) {
   const ph = getPHDateTimeParts(asOf)
   const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
-  const temporaryBypass = TEMPORARY_ORDER_CUTOFF_BYPASS_DATES.includes(ph.date)
-  const locked = !temporaryBypass && ph.totalMinutes >= cutoffMinutes
+  const locked = ph.totalMinutes >= cutoffMinutes
   return {
     locked,
-    temporaryBypass,
     date: ph.date,
     time: ph.time,
     cutoffTime: ORDER_CUTOFF_TIME,
     cutoffLabel: ORDER_CUTOFF_LABEL,
-    message: temporaryBypass
-      ? `Temporary cut-off bypass is active today only. Order and invoice creation/editing are allowed today; the ${ORDER_CUTOFF_LABEL} PH cut-off automatically resumes tomorrow.`
-      : locked
-        ? `Order cut-off reached. Creating, changing, editing, approving, or submitting orders/invoices is locked after ${ORDER_CUTOFF_LABEL} PH time.`
-        : `Order and invoice creation/editing are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
+    message: locked
+      ? `Order cut-off reached. Creating, changing, editing, approving, or submitting orders/invoices is locked after ${ORDER_CUTOFF_LABEL} PH time.`
+      : `Order and invoice creation/editing are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
   }
 }
 function diffMinutesAcrossMidnight(startTime, endTime) {
@@ -3079,13 +3072,89 @@ export default function App() {
     setSavingEditInvoice(false)
   }
   async function deleteInvoice(invoice) {
-    if (!window.confirm(`Delete invoice ${invoice.invoice_number} for ${invoice.reseller_name}?\nThis cannot be undone.`)) return
-    await supabase.from('delivery_invoice_items').delete().eq('invoice_id', invoice.id)
-    await supabase.from('reseller_payments').delete().eq('invoice_id', invoice.id)
-    await supabase.from('delivery_invoices').delete().eq('id', invoice.id)
-    await logAudit('INVOICE DELETED', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${php(invoice.total_amount)}`)
-    showToast(`✅ Invoice ${invoice.invoice_number} deleted.`)
-    loadDeliveryInvoices()
+    if (!invoice?.id) { showToast('❌ Invalid invoice selected.', 'red'); return }
+
+    const paidAmount = safeNum(invoice.paid_amount, 0)
+    const status = String(invoice.status || '').toLowerCase()
+    const hasFinancialMovement = paidAmount > 0 || ['paid', 'partial', 'delivered'].includes(status)
+    const warning = hasFinancialMovement
+      ? `WARNING: This invoice already has movement/status (${status.toUpperCase() || 'UNKNOWN'}${paidAmount > 0 ? `, paid ${php(paidAmount)}` : ''}).
+
+For audit safety, deleting it will also remove linked payment/return records if they exist.
+
+Delete invoice ${invoice.invoice_number} for ${invoice.reseller_name}?`
+      : `Delete invoice ${invoice.invoice_number} for ${invoice.reseller_name}?
+
+This will remove the invoice and its line items.`
+
+    if (!window.confirm(warning)) return
+
+    const key = `delete_invoice_${invoice.id}`
+    setProcessingItems(p => ({ ...p, [key]: true }))
+
+    const isMissingOptionalTableError = (error) => {
+      const msg = String(error?.message || '').toLowerCase()
+      return msg.includes('does not exist') || msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')
+    }
+
+    const runRequired = async (label, query) => {
+      const { error } = await query
+      if (error) throw new Error(`${label}: ${error.message}`)
+    }
+
+    const runOptional = async (label, query) => {
+      const { error } = await query
+      if (error) {
+        if (isMissingOptionalTableError(error)) {
+          console.warn(`${label} skipped:`, error)
+          return
+        }
+        throw new Error(`${label}: ${error.message}`)
+      }
+    }
+
+    try {
+      // Delete dependent return rows first so foreign-key relationships do not block invoice deletion.
+      const { data:returnRows, error:returnLoadErr } = await supabase
+        .from('reseller_returns')
+        .select('id')
+        .eq('invoice_id', invoice.id)
+
+      if (returnLoadErr && !isMissingOptionalTableError(returnLoadErr)) {
+        throw new Error(`Load linked returns: ${returnLoadErr.message}`)
+      }
+
+      const returnIds = (returnRows || []).map(r => r.id).filter(Boolean)
+      if (returnIds.length > 0) {
+        await runRequired('Delete linked return items', supabase.from('reseller_return_items').delete().in('return_id', returnIds))
+        await runRequired('Delete linked returns', supabase.from('reseller_returns').delete().in('id', returnIds))
+      }
+
+      // Optional modules may or may not exist depending on which SQL packages have been installed.
+      await runOptional('Delete linked reseller disputes', supabase.from('reseller_disputes').delete().eq('invoice_id', invoice.id))
+
+      await runRequired('Delete linked payments', supabase.from('reseller_payments').delete().eq('invoice_id', invoice.id))
+      await runRequired('Delete invoice items', supabase.from('delivery_invoice_items').delete().eq('invoice_id', invoice.id))
+      await runRequired('Delete invoice header', supabase.from('delivery_invoices').delete().eq('id', invoice.id))
+
+      await logAudit('INVOICE DELETED', adminRole, invoice.reseller_name, `${invoice.invoice_number} — ${php(invoice.total_amount)}${hasFinancialMovement ? ' — with linked movement removed' : ''}`)
+      showToast(`✅ Invoice ${invoice.invoice_number} deleted.`)
+
+      setShowPaymentFormMap(p => ({ ...p, [invoice.id]: false }))
+      setPaymentAmount(p => ({ ...p, [invoice.id]: '' }))
+      setPaymentNotes(p => ({ ...p, [invoice.id]: '' }))
+      setPaymentMethod(p => ({ ...p, [invoice.id]: 'Cash' }))
+      if (viewingInvoice?.id === invoice.id) setViewingInvoice(null)
+      if (editingInvoice?.id === invoice.id) setEditingInvoice(null)
+
+      await loadDeliveryInvoices()
+      refreshFoundationAfterDataChange('invoice-deleted')
+    } catch (err) {
+      console.error('Delete invoice failed:', err)
+      showToast('❌ Delete failed: ' + (err?.message || err), 'red')
+    } finally {
+      setProcessingItems(p => ({ ...p, [key]: false }))
+    }
   }
   function printAllDailyInvoices(date) {
     const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
@@ -3821,20 +3890,69 @@ export default function App() {
   async function recordPaymentNew(inv) {
     const amount = Number(paymentAmount[inv.id]||0)
     if (!amount || amount<=0) { showToast('❌ Enter payment amount.','red'); return }
+
     const method = paymentMethod[inv.id]||'Cash'
     const notes = paymentNotes[inv.id]||''
     const totalDue = Number(inv.total_amount||0)
     const alreadyPaid = Number(inv.paid_amount||0)
-    const newPaidTotal = alreadyPaid + amount
-    const balance = totalDue - newPaidTotal
+    const currentBalance = Math.max(0, totalDue - alreadyPaid)
+
+    if (amount > currentBalance) {
+      showToast(`❌ Amount exceeds balance. Balance is only ${php(currentBalance)}.`, 'red')
+      return
+    }
+
+    const newPaidTotal = Math.min(totalDue, alreadyPaid + amount)
+    const balance = Math.max(0, totalDue - newPaidTotal)
     const newStatus = balance<=0?'paid':'partial'
-    await supabase.from('reseller_payments').insert({ reseller_id:inv.reseller_id, reseller_name:inv.reseller_name, invoice_id:inv.id, amount, payment_date:today, payment_method:method, notes:notes||null, recorded_by:adminRole })
-    await supabase.from('delivery_invoices').update({ paid_amount:newPaidTotal, paid_date:newStatus==='paid'?today:null, status:newStatus, payment_method:method }).eq('id',inv.id)
-    await logAudit('PAYMENT RECORDED', adminRole, inv.reseller_name, `${inv.invoice_number} — ${php(amount)} via ${method}. Status: ${newStatus}. Balance: ${php(Math.max(0,balance))}`)
-    showToast(newStatus==='paid'?`✅ ${inv.reseller_name} — Fully paid! ${php(newPaidTotal)}`:`💰 ${php(amount)} recorded. Outstanding balance: ${php(Math.max(0,balance))}`)
+
+    // Save a payment ledger entry first. If the invoice update fails, rollback this entry.
+    const { data:paymentRows, error:paymentError } = await supabase
+      .from('reseller_payments')
+      .insert({
+        reseller_id:inv.reseller_id,
+        reseller_name:inv.reseller_name,
+        invoice_id:inv.id,
+        amount,
+        payment_date:today,
+        payment_method:method,
+        notes:notes||null,
+        recorded_by:adminRole
+      })
+      .select('id')
+
+    if (paymentError) {
+      showToast('❌ Payment was not saved: '+paymentError.message, 'red')
+      return
+    }
+
+    // IMPORTANT: Do not update delivery_invoices.payment_method here.
+    // Some databases do not have that column. Payment method belongs in reseller_payments.
+    const { error:invoiceError } = await supabase
+      .from('delivery_invoices')
+      .update({
+        paid_amount:newPaidTotal,
+        paid_date:newStatus==='paid'?today:null,
+        status:newStatus
+      })
+      .eq('id',inv.id)
+
+    if (invoiceError) {
+      const paymentId = Array.isArray(paymentRows) ? paymentRows[0]?.id : paymentRows?.id
+      if (paymentId) await supabase.from('reseller_payments').delete().eq('id', paymentId)
+      showToast('❌ Invoice payment status was not updated: '+invoiceError.message, 'red')
+      return
+    }
+
+    await logAudit('PAYMENT RECORDED', adminRole, inv.reseller_name, `${inv.invoice_number} — ${php(amount)} via ${method}. Status: ${newStatus}. Balance: ${php(balance)}`)
+    showToast(newStatus==='paid'?`✅ ${inv.reseller_name} — Fully paid! ${php(newPaidTotal)}`:`💰 ${php(amount)} recorded. Outstanding balance: ${php(balance)}`)
     setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
     setPaymentAmount(p=>({...p,[inv.id]:''}))
-    loadDeliveryInvoices()
+    setPaymentMethod(p=>({...p,[inv.id]:'Cash'}))
+    setPaymentNotes(p=>({...p,[inv.id]:''}))
+    if (newStatus === 'paid') setInvoiceFilter('paid')
+    else setInvoiceFilter('partial')
+    await loadDeliveryInvoices()
     refreshFoundationAfterDataChange('reseller-payment-recorded')
   }
 
@@ -14551,7 +14669,7 @@ This will create one approved expense record using the total payroll earnings.`)
                               <button style={{ ...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv,[])}>🖨️ RETURN FORM</button>
                             )}
                             {['owner','manager','payroll','hr'].includes(adminRole) && (
-                              <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>deleteInvoice(inv)}>🗑️ DELETE</button>
+                              <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:processingItems[`delete_invoice_${inv.id}`]?'not-allowed':'pointer', opacity:processingItems[`delete_invoice_${inv.id}`]?0.65:1, fontWeight:'bold', fontSize:'11px' }} disabled={processingItems[`delete_invoice_${inv.id}`]} onClick={()=>deleteInvoice(inv)}>{processingItems[`delete_invoice_${inv.id}`]?'⏳ DELETING...':'🗑️ DELETE'}</button>
                             )}
                           </div>
                           {/* Info banner — payment in Receivables */}
