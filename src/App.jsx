@@ -14,6 +14,9 @@ const RESELLER_CREDIT_GRACE_DAYS = 7
 const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
+// Temporary launch/testing bypass: cut-off is disabled only on this PH date.
+// Tomorrow, the 12:00 PM cut-off automatically becomes active again.
+const TEMPORARY_ORDER_CUTOFF_BYPASS_DATES = ['2026-06-02']
 
 // ── Design System ─────────────────────────────────────────────────────────────
 // Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
@@ -100,16 +103,20 @@ function getPHDateTimeParts(asOf = new Date()) {
 function getOrderCutoffStatus(asOf = new Date()) {
   const ph = getPHDateTimeParts(asOf)
   const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
-  const locked = ph.totalMinutes >= cutoffMinutes
+  const temporaryBypass = TEMPORARY_ORDER_CUTOFF_BYPASS_DATES.includes(ph.date)
+  const locked = !temporaryBypass && ph.totalMinutes >= cutoffMinutes
   return {
     locked,
+    temporaryBypass,
     date: ph.date,
     time: ph.time,
     cutoffTime: ORDER_CUTOFF_TIME,
     cutoffLabel: ORDER_CUTOFF_LABEL,
-    message: locked
-      ? `Order cut-off reached. Creating, changing, editing, approving, or submitting orders/invoices is locked after ${ORDER_CUTOFF_LABEL} PH time.`
-      : `Order and invoice creation/editing are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
+    message: temporaryBypass
+      ? `Temporary cut-off bypass is active today only. Order and invoice creation/editing are allowed today; the ${ORDER_CUTOFF_LABEL} PH cut-off automatically resumes tomorrow.`
+      : locked
+        ? `Order cut-off reached. Creating, changing, editing, approving, or submitting orders/invoices is locked after ${ORDER_CUTOFF_LABEL} PH time.`
+        : `Order and invoice creation/editing are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
   }
 }
 function diffMinutesAcrossMidnight(startTime, endTime) {
