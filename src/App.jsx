@@ -4134,56 +4134,83 @@ export default function App() {
   async function loadResellerPortalData(resellerId) {
     if (!resellerId) return
     setResellerPortalLoading(true)
+    try {
+      const branchIds = getResellerBranchIds(resellerId).filter(Boolean)
+      const activeBranchIds = branchIds.length > 0 ? branchIds : [resellerId]
 
-    const { data:invs, error:invErr } = await supabase
-      .from('delivery_invoices')
-      .select('*, delivery_invoice_items(*)')
-      .eq('reseller_id', resellerId)
-      .order('delivery_date',{ascending:false})
-      .limit(80)
-    if (!invErr) setResellerInvoices(invs||[])
-    else console.warn('Reseller invoices load error:', invErr)
+      const { data:invs, error:invErr } = await supabase
+        .from('delivery_invoices')
+        .select('*, delivery_invoice_items(*)')
+        .eq('reseller_id', resellerId)
+        .order('delivery_date',{ascending:false})
+        .limit(80)
+      if (!invErr) setResellerInvoices(invs||[])
+      else {
+        console.warn('Reseller invoices load error:', invErr)
+        setResellerInvoices([])
+      }
 
-    const { data:pays, error:payErr } = await supabase
-      .from('reseller_payments')
-      .select('*')
-      .in('reseller_id', branchIds)
-      .order('payment_date',{ascending:false})
-      .limit(120)
-    if (!payErr) setResellerPaymentHistory(pays||[])
-    else console.warn('Reseller payments load error:', payErr)
+      const { data:pays, error:payErr } = await supabase
+        .from('reseller_payments')
+        .select('*')
+        .in('reseller_id', activeBranchIds)
+        .order('payment_date',{ascending:false})
+        .limit(120)
+      if (!payErr) setResellerPaymentHistory(pays||[])
+      else {
+        console.warn('Reseller payments load error:', payErr)
+        setResellerPaymentHistory([])
+      }
 
-    const { data:orders, error:ordErr } = await supabase
-      .from('reseller_orders')
-      .select('*, reseller_order_items(*)')
-      .in('reseller_id', branchIds)
-      .order('created_at',{ascending:false})
-      .limit(80)
-    if (!ordErr) setResellerOrders(orders||[])
-    else console.warn('Reseller orders load error:', ordErr)
+      const { data:orders, error:ordErr } = await supabase
+        .from('reseller_orders')
+        .select('*, reseller_order_items(*)')
+        .in('reseller_id', activeBranchIds)
+        .order('created_at',{ascending:false})
+        .limit(80)
+      if (!ordErr) setResellerOrders(orders||[])
+      else {
+        console.warn('Reseller orders load error:', ordErr)
+        setResellerOrders([])
+      }
 
-    const { data:returns, error:returnErr } = await supabase
-      .from('reseller_returns')
-      .select('*, reseller_return_items(*)')
-      .in('reseller_id', branchIds)
-      .order('return_date',{ascending:false})
-      .limit(100)
-    if (!returnErr) setResellerReturns(returns||[])
-    else console.warn('Reseller returns load error:', returnErr)
+      const { data:returns, error:returnErr } = await supabase
+        .from('reseller_returns')
+        .select('*, reseller_return_items(*)')
+        .in('reseller_id', activeBranchIds)
+        .order('return_date',{ascending:false})
+        .limit(100)
+      if (!returnErr) setResellerReturns(returns||[])
+      else {
+        console.warn('Reseller returns load error:', returnErr)
+        setResellerReturns([])
+      }
 
-    const { data:notices, error:noticeErr } = await supabase
-      .from('reseller_notices')
-      .select('*')
-      .or(`reseller_id.eq.${resellerId},reseller_id.is.null`)
-      .order('created_at',{ascending:false})
-      .limit(20)
-    if (!noticeErr) setResellerNotices((notices||[]).filter(n=>String(n.status||'active').toLowerCase() !== 'archived'))
-    else {
-      console.warn('Reseller notices load error:', noticeErr)
+      const noticeFilter = activeBranchIds.length > 0
+        ? `reseller_id.in.(${activeBranchIds.join(',')}),reseller_id.is.null`
+        : `reseller_id.eq.${resellerId},reseller_id.is.null`
+      const { data:notices, error:noticeErr } = await supabase
+        .from('reseller_notices')
+        .select('*')
+        .or(noticeFilter)
+        .order('created_at',{ascending:false})
+        .limit(30)
+      if (!noticeErr) setResellerNotices((notices||[]).filter(n=>String(n.status||'active').toLowerCase() !== 'archived'))
+      else {
+        console.warn('Reseller notices load error:', noticeErr)
+        setResellerNotices([])
+      }
+    } catch (err) {
+      console.warn('loadResellerPortalData failed:', err)
+      setResellerInvoices([])
+      setResellerPaymentHistory([])
+      setResellerOrders([])
+      setResellerReturns([])
       setResellerNotices([])
+      showToast('⚠️ Reseller portal data could not fully load. Please refresh or check Supabase setup.', 'red')
+    } finally {
+      setResellerPortalLoading(false)
     }
-
-    setResellerPortalLoading(false)
   }
 
   function resellerLogout() {
