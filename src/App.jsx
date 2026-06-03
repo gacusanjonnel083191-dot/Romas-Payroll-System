@@ -3315,40 +3315,41 @@ This will remove the invoice and its line items.`
       <style>
         *{margin:0;padding:0;box-sizing:border-box;}
         html,body{background:#e5e5e5;}
-        body{font-family:Arial,sans-serif;color:#111;line-height:1.24;padding:8px;}
+        body{font-family:Arial,sans-serif;color:#111;line-height:1.22;padding:8px;}
         .no-print{max-width:145mm;margin:0 auto 10px;text-align:center;}
         .invoice-page{
           width:145mm;
           max-width:145mm;
-          margin:10px auto;
+          margin:8px auto;
           background:white;
-          padding:6mm 7mm 5mm;
+          padding:7mm 8mm 6mm;
+          min-height:92mm;
           box-shadow:0 2px 10px rgba(0,0,0,0.18);
           overflow:hidden;
           break-inside:avoid;
           page-break-inside:avoid;
         }
-        .invoice-header{display:grid;grid-template-columns:1.05fr .95fr;gap:8px;align-items:start;border-bottom:2px solid #ca1b1b;padding-bottom:5px;margin-bottom:6px;}
-        .brand-title{font-size:16px;color:#ca1b1b;font-weight:900;margin:0;line-height:1.05;}
-        .invoice-title{font-size:12px;font-weight:900;color:#ca1b1b;letter-spacing:.35px;text-align:right;}
-        .invoice-no{font-size:9.5px;font-weight:900;color:#111;text-align:right;margin-top:2px;}
-        .header-line{font-size:8.3px;color:#333;line-height:1.25;}
+        .invoice-header{display:grid;grid-template-columns:1.05fr .95fr;gap:8px;align-items:start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:7px;}
+        .brand-title{font-size:18px;color:#ca1b1b;font-weight:900;margin:0;line-height:1.05;}
+        .invoice-title{font-size:13px;font-weight:900;color:#ca1b1b;letter-spacing:.35px;text-align:right;}
+        .invoice-no{font-size:10.2px;font-weight:900;color:#111;text-align:right;margin-top:2px;}
+        .header-line{font-size:8.8px;color:#333;line-height:1.25;}
         .header-label{font-weight:900;color:#ca1b1b;text-transform:uppercase;}
-        .top-details{display:grid;grid-template-columns:1.1fr .9fr;gap:6px;margin:6px 0 6px;}
-        .detail-box{border:1px solid #e1e1e1;border-radius:5px;padding:4px 5px;min-height:34px;}
-        .label{font-size:7.4px;color:#ca1b1b;font-weight:900;text-transform:uppercase;letter-spacing:.25px;margin-bottom:2px;}
-        .info-text{font-size:8.2px;line-height:1.22;color:#111;}
-        .info-strong{font-size:9px;font-weight:900;color:#111;line-height:1.18;}
-        table{width:100%;border-collapse:collapse;margin:5px 0 5px;table-layout:fixed;}
-        th{background:#ca1b1b;color:white;padding:3px 3px;font-size:7.2px;text-align:left;line-height:1.12;}
-        td{padding:2.4px 3px;border-bottom:1px solid #e8e8e8;font-size:7.5px;line-height:1.12;word-break:break-word;vertical-align:middle;}
-        .write-cell{border:1px solid #cfcfcf!important;min-height:11px;background:white;}
+        .top-details{display:grid;grid-template-columns:1.1fr .9fr;gap:6px;margin:7px 0 7px;}
+        .detail-box{border:1px solid #d6d6d6;border-radius:5px;padding:5px 6px;min-height:38px;}
+        .label{font-size:8px;color:#ca1b1b;font-weight:900;text-transform:uppercase;letter-spacing:.25px;margin-bottom:2px;}
+        .info-text{font-size:9px;line-height:1.22;color:#111;}
+        .info-strong{font-size:10px;font-weight:900;color:#111;line-height:1.18;}
+        table{width:100%;border-collapse:collapse;margin:6px 0 6px;table-layout:fixed;}
+        th{background:#ca1b1b;color:white;padding:3.4px 3px;font-size:7.8px;text-align:left;line-height:1.12;}
+        td{padding:2.8px 3px;border-bottom:1px solid #e8e8e8;font-size:8.2px;line-height:1.14;word-break:break-word;vertical-align:middle;}
+        .write-cell{border:1px solid #cfcfcf!important;min-height:13px;background:white;}
         .total-row{background:#fff9e6;font-weight:900;}
-        .bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;}
-        .bottom-box{border:1px solid #d9d9d9;border-radius:5px;padding:4px 5px;min-height:30px;}
-        .bottom-label{font-size:7.3px;font-weight:900;color:#ca1b1b;text-transform:uppercase;margin-bottom:3px;}
-        .bottom-value{font-size:8.4px;font-weight:800;color:#111;min-height:10px;}
-        .write-line{border-bottom:1px solid #333;height:12px;margin-top:1px;}
+        .bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;}
+        .bottom-box{border:1px solid #d9d9d9;border-radius:5px;padding:5px 6px;min-height:34px;}
+        .bottom-label{font-size:8px;font-weight:900;color:#ca1b1b;text-transform:uppercase;margin-bottom:3px;}
+        .bottom-value{font-size:9.2px;font-weight:800;color:#111;min-height:11px;}
+        .write-line{border-bottom:1px solid #333;height:14px;margin-top:1px;}
         .force-break{break-after:page;page-break-after:always;}
         @page invoicePage{size:145mm 210mm;margin:0;}
         @page{size:145mm 210mm;margin:0;}
@@ -3374,7 +3375,8 @@ This will remove the invoice and its line items.`
             min-height:0!important;
             max-height:210mm!important;
             margin:0 auto!important;
-            padding:6mm 7mm 5mm!important;
+            padding:7mm 8mm 6mm!important;
+            min-height:92mm!important;
             box-shadow:none!important;
             border:none!important;
             overflow:hidden!important;
@@ -3508,7 +3510,7 @@ This will remove the invoice and its line items.`
       <div class="no-print">
         <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT ALL</button>
         <p style="font-size:11px;color:#888;margin-top:6px;">${dayInvoices.length} invoice(s) — Total: ${php(grandTotal)}</p>
-        <p style="font-size:10px;color:#888;margin-top:3px;">Use 145mm × 210mm paper size when available. Set scale to 100% and turn off headers/footers.</p>
+        <p style="font-size:10px;color:#888;margin-top:3px;">Use 145mm × 210mm paper size, scale 100%, and turn off headers/footers. The invoice content is fitted to the printed area.</p>
       </div>
       ${dayInvoices.map((inv,idx)=>buildDeliveryInvoicePrintPage(inv, idx < dayInvoices.length-1 ? 'force-break' : '')).join('')}
     </body></html>`)
@@ -3540,7 +3542,7 @@ This will remove the invoice and its line items.`
     </head><body class="single-invoice-print">
       <div class="no-print">
         <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT INVOICE</button>
-        <p style="font-size:10px;color:#888;margin-top:5px;">Use 145mm × 210mm paper size when available. Set scale to 100% and turn off headers/footers.</p>
+        <p style="font-size:10px;color:#888;margin-top:5px;">Use 145mm × 210mm paper size, scale 100%, and turn off headers/footers. The invoice content is fitted to the printed area.</p>
       </div>
       ${buildDeliveryInvoicePrintPage(invoice)}
     </body></html>`)
