@@ -242,6 +242,17 @@ function addYearsLocal(date, years) {
   return d
 }
 
+function addMonthsLocal(date, months) {
+  const d = new Date(date)
+  const originalDate = d.getDate()
+  d.setDate(1)
+  d.setMonth(d.getMonth() + safeNum(months, 0))
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
+  d.setDate(Math.min(originalDate, lastDay))
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
 function daysInclusive(startDate, endDate) {
   const start = parseLocalDate(startDate)
   const end = parseLocalDate(endDate)
@@ -882,6 +893,7 @@ export default function App() {
   const [companyPayables, setCompanyPayables] = useState([])
   const [companyPayablesLoading, setCompanyPayablesLoading] = useState(false)
   const [companyPayablesError, setCompanyPayablesError] = useState('')
+  const [payablesMonthFilter, setPayablesMonthFilter] = useState(today.slice(0,7))
   const [showPayableForm, setShowPayableForm] = useState(false)
   const [payableForm, setPayableForm] = useState({
     payable_date:today,
@@ -16209,6 +16221,26 @@ This will create one approved expense record using the total payroll earnings.`)
                       </div>
                     </div>
 
+                    {(()=>{
+                      const monthLabels = ['January','February','March','April','May','June','July','August','September','October','November','December']
+                      const monthSet = new Set([payablesMonthFilter, today.slice(0,7)])
+                      const baseMonth = parseLocalDate(`${today.slice(0,7)}-01`) || new Date()
+                      for (let i=-1; i<=18; i++) monthSet.add(formatDateLocal(addMonthsLocal(baseMonth, i)).slice(0,7))
+                      ;(companyPayables || []).forEach(p=>{ const m = String(p?.due_date || p?.check_date || p?.payable_date || '').slice(0,7); if (m) monthSet.add(m) })
+                      const monthOptions = Array.from(monthSet).filter(Boolean).sort()
+                      return (
+                        <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'12px', padding:'12px 14px', marginBottom:'14px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+                          <div>
+                            <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'13px', margin:'0 0 2px' }}>📆 Monthly Payables View</p>
+                            <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Only payables due in the selected month are shown below, so the list stays clean and organized.</p>
+                          </div>
+                          <select value={payablesMonthFilter} onChange={e=>setPayablesMonthFilter(e.target.value)} style={{ ...inputStyle, marginBottom:0, width:isMobile?'100%':'240px', border:'2px solid #FDD412', fontWeight:'bold' }}>
+                            {monthOptions.map(m=>{ const [yy, mm] = String(m).split('-'); const label = `${monthLabels[(Number(mm)||1)-1] || mm} ${yy}`; return <option key={m} value={m}>{label}</option> })}
+                          </select>
+                        </div>
+                      )
+                    })()}
+
                     {companyPayablesError && (
                       <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
                         <p style={{ color:'#ca1b1b', fontWeight:'bold', margin:'0 0 6px' }}>⚠️ Payables database table is not ready</p>
@@ -16241,27 +16273,46 @@ This will create one approved expense record using the total payroll earnings.`)
                     )}
 
                     {(()=>{
-                      const alertData = getOwnerPaymentDeadlineAlerts()
-                      const openPayables = alertData.openRows
-                      const paidPayables = (companyPayables || []).filter(p=>String(p.status||'').toLowerCase()==='paid')
+                      const allAlertData = getOwnerPaymentDeadlineAlerts()
+                      const selectedMonth = payablesMonthFilter || today.slice(0,7)
+                      const openPayables = allAlertData.openRows.filter(row => String(row.due_date_effective || row.due_date || '').slice(0,7) === selectedMonth)
+                      const paidPayablesForMonth = (companyPayables || []).filter(p=>String(p.status||'').toLowerCase()==='paid' && String(p.due_date || p.check_date || p.payable_date || '').slice(0,7)===selectedMonth)
+                      const selectedMonthRows = (companyPayables || []).filter(p=>!['cancelled','void','rejected'].includes(String(p.status||'scheduled').toLowerCase()) && String(p.due_date || p.check_date || p.payable_date || '').slice(0,7)===selectedMonth)
+                      const selectedMonthOpenRows = selectedMonthRows.filter(p=>String(p.status||'scheduled').toLowerCase() !== 'paid')
+                      const monthTotal = selectedMonthRows.reduce((sum, p)=>sum + safeNum(p.amount, 0), 0)
+                      const monthOpenTotal = openPayables.reduce((sum, p)=>sum + safeNum(p.balance_amount, 0), 0)
+                      const monthPaidTotal = paidPayablesForMonth.reduce((sum, p)=>sum + safeNum(p.amount, 0), 0)
+                      const methodText = (row)=>`${row?.payment_method || ''} ${row?.payment_type || ''}`.toLowerCase()
+                      const pdcTotal = selectedMonthOpenRows.filter(p=>methodText(p).includes('pdc')).reduce((sum,p)=>sum+safeNum(p.amount,0),0)
+                      const checkTotal = selectedMonthOpenRows.filter(p=>!methodText(p).includes('pdc') && (methodText(p).includes('check') || p?.check_number)).reduce((sum,p)=>sum+safeNum(p.amount,0),0)
+                      const cashOrOnlineTotal = selectedMonthOpenRows.filter(p=>!methodText(p).includes('pdc') && !methodText(p).includes('check') && !p?.check_number).reduce((sum,p)=>sum+safeNum(p.amount,0),0)
                       return (
                         <>
-                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'10px', marginBottom:'16px' }}>
                             {[
-                              ['Open Payables', php(alertData.totalOpenBalance), '#ca1b1b'],
-                              ['Due within 3 Days', php(alertData.warningBalance), '#f57c00'],
-                              ['Overdue', `${alertData.overdueRows.length} item(s)`, '#ca1b1b'],
-                              ['Paid Records', paidPayables.length, '#2d8a4e'],
+                              ['Selected Month Total', php(monthTotal), '#ca1b1b'],
+                              ['Open This Month', php(monthOpenTotal), '#f57c00'],
+                              ['Paid This Month', php(monthPaidTotal), '#2d8a4e'],
+                              ['Cash / Online / Bank To Pay', php(cashOrOnlineTotal), '#1a1a2e'],
+                              ['Checks To Pay', php(checkTotal), '#4a90d9'],
+                              ['PDC To Pay', php(pdcTotal), '#8e44ad'],
                             ].map(([label,value,color])=>(
                               <div key={label} style={{ background:'white', border:`1px solid ${color}33`, borderRadius:'12px', padding:'14px', textAlign:'center' }}>
                                 <p style={{ color:'#888', fontSize:'10px', fontWeight:'bold', margin:'0 0 5px', textTransform:'uppercase' }}>{label}</p>
-                                <p style={{ color, fontWeight:'900', fontSize:'17px', margin:0 }}>{value}</p>
+                                <p style={{ color, fontWeight:'900', fontSize:'15px', margin:0 }}>{value}</p>
                               </div>
                             ))}
                           </div>
 
+                          {allAlertData.warningRows.length > 0 && (
+                            <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'12px 14px', marginBottom:'14px' }}>
+                              <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'13px', margin:'0 0 4px' }}>⚠️ Company Payables Warning</p>
+                              <p style={{ color:'#555', fontSize:'11px', margin:0 }}>{allAlertData.overdueRows.length} overdue · {allAlertData.dueTodayRows.length} due today · {allAlertData.approachingRows.length} due within 3 days · Total warning amount {php(allAlertData.warningBalance)}</p>
+                            </div>
+                          )}
+
                           {companyPayablesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading payables...</p>}
-                          {!companyPayablesLoading && openPayables.length===0 && !companyPayablesError && <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No open company payables or PDCs recorded yet.</p>}
+                          {!companyPayablesLoading && openPayables.length===0 && paidPayablesForMonth.length===0 && !companyPayablesError && <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No company payables or PDCs recorded for the selected month.</p>}
 
                           {openPayables.length > 0 && (
                             <div style={{ background:'white', borderRadius:'14px', overflow:'hidden', border:'1px solid #eee', marginBottom:'16px' }}>
@@ -16284,10 +16335,10 @@ This will create one approved expense record using the total payroll earnings.`)
                             </div>
                           )}
 
-                          {paidPayables.length > 0 && (
+                          {paidPayablesForMonth.length > 0 && (
                             <div style={{ background:'white', borderRadius:'14px', padding:'14px', border:'1px solid #eee' }}>
-                              <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 10px' }}>✅ Recently Paid Payables</p>
-                              {paidPayables.slice(0,10).map(row=>(
+                              <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 10px' }}>✅ Paid Payables for Selected Month</p>
+                              {paidPayablesForMonth.slice(0,20).map(row=>(
                                 <div key={row.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', borderTop:'1px solid #f5f5f5', padding:'8px 0' }}>
                                   <div><p style={{ fontWeight:'bold', fontSize:'12px', color:'#333', margin:'0 0 2px' }}>{row.payee_name}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.category} · Due {row.due_date}</p></div>
                                   <div style={{ display:'flex', alignItems:'center', gap:'8px' }}><p style={{ fontWeight:'bold', color:'#2d8a4e', margin:0 }}>{php(row.amount)}</p><span style={{ background:'#f8f8f8', color:'#777', border:'1px solid #ddd', borderRadius:'8px', padding:'6px 8px', fontSize:'10px', fontWeight:'bold' }}>AUDIT LOCKED</span></div>
