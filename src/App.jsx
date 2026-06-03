@@ -178,7 +178,7 @@ function positiveNum(value, fallback = 1) {
   const n = safeNum(value, fallback)
   return n > 0 ? n : fallback
 }
-function php(a) { return `PHP ${safeNum(a).toFixed(2)}` }
+function php(a) { return `PHP ${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })}` }
 function moneyRound(value) { return Math.round((safeNum(value, 0) + Number.EPSILON) * 100) / 100 }
 function isMoneySettled(balance) { return moneyRound(balance) <= 0.01 }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
@@ -5305,7 +5305,7 @@ This will remove the invoice and its line items.`
     const status = amt >= EXPENSE_APPROVAL_THRESHOLD ? 'pending' : 'approved'
     const { error } = await supabase.from('daily_expenses').insert({ ...expenseForm, expense_date:expenseForm.expense_date || today, amount:amt, status, encoded_by:adminRole })
     if (error) { showToast('❌ Failed: '+error.message,'red'); setSavingExpense(false); return }
-    showToast(status==='pending'?`✅ Expense submitted — awaiting Owner approval (₱${amt} ≥ ₱500)`:`✅ Expense of ${php(amt)} recorded!`)
+    showToast(status==='pending'?`✅ Expense submitted — awaiting Owner approval (${php(amt)} ≥ PHP 500.00)`:`✅ Expense of ${php(amt)} recorded!`)
     setExpenseForm({ expense_date:today, category:'Transportation/Fuel', amount:'', description:'' })
     loadDailyExpenses(); refreshFoundationAfterDataChange('expense-saved'); setSavingExpense(false)
   }
@@ -5430,12 +5430,92 @@ This will remove the invoice and its line items.`
   async function markCompanyPayablePaid(row) {
     if (!requireOwnerAction('mark company payable as paid')) return
     if (!row?.id) return
-    if (!window.confirm(`Mark ${row.payee_name || 'this payable'} as PAID?`)) return
-    const { error } = await supabase.from('company_payables').update({ status:'paid', paid_at:new Date().toISOString(), paid_by:currentAdminLabel }).eq('id', row.id)
-    if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
-    await logAudit('COMPANY PAYABLE PAID', currentAdminLabel, row.payee_name || '', `${row.category || ''} | ${php(row.amount)} | Due: ${row.due_date || ''}`)
-    showToast('✅ Payable marked paid.')
-    loadCompanyPayables()
+
+    const actionKey = `payable-paid-${row.id}`
+    if (processingItems[actionKey]) return
+
+    const payableAmount = moneyRound(row.amount)
+    if (payableAmount <= 0) { showToast('❌ Payable amount must be greater than zero.', 'red'); return }
+    if (String(row.status || '').toLowerCase() === 'paid') { showToast('ℹ️ This payable is already marked paid.'); return }
+
+    if (!window.confirm(`Mark ${row.payee_name || 'this payable'} as PAID and automatically post ${php(payableAmount)} to Expenses as owner-approved?`)) return
+
+    setProcessingItems(prev => ({ ...prev, [actionKey]:true }))
+    try {
+      const { data:latestPayable, error:payableReadError } = await supabase
+        .from('company_payables')
+        .select('id,status,amount,payee_name,category,due_date,payment_type,payment_method,bank_name,check_number,notes')
+        .eq('id', row.id)
+        .single()
+
+      if (payableReadError) { showToast('❌ Failed to verify payable: ' + payableReadError.message, 'red'); return }
+      if (String(latestPayable?.status || '').toLowerCase() === 'paid') { showToast('ℹ️ This payable is already marked paid.'); loadCompanyPayables(); return }
+
+      const amount = moneyRound(latestPayable?.amount ?? payableAmount)
+      if (amount <= 0) { showToast('❌ Payable amount must be greater than zero.', 'red'); return }
+
+      const expenseDescription = [
+        `Auto-posted from Payables/PDC: ${latestPayable?.payee_name || row.payee_name || 'Company payable'}`,
+        `Payable ID: ${row.id}`,
+        latestPayable?.payment_type ? `Payment Type: ${latestPayable.payment_type}` : '',
+        latestPayable?.payment_method ? `Method: ${latestPayable.payment_method}` : '',
+        latestPayable?.bank_name ? `Bank: ${latestPayable.bank_name}` : '',
+        latestPayable?.check_number ? `Check #: ${latestPayable.check_number}` : '',
+        latestPayable?.due_date ? `Due: ${latestPayable.due_date}` : '',
+        latestPayable?.notes ? `Notes: ${latestPayable.notes}` : ''
+      ].filter(Boolean).join(' | ')
+
+      const { data:existingExpense, error:existingExpenseError } = await supabase
+        .from('daily_expenses')
+        .select('id,status')
+        .ilike('description', `%Payable ID: ${row.id}%`)
+        .limit(1)
+
+      if (existingExpenseError) { showToast('❌ Failed checking duplicate expense: ' + existingExpenseError.message, 'red'); return }
+
+      let expenseRecord = existingExpense?.[0] || null
+      if (!expenseRecord) {
+        const { data:insertedExpense, error:expenseError } = await supabase
+          .from('daily_expenses')
+          .insert({
+            expense_date: today,
+            category: latestPayable?.category || row.category || 'Supplier Payment',
+            amount,
+            description: expenseDescription,
+            status:'approved',
+            encoded_by:currentAdminLabel || 'Owner',
+            approved_by:currentAdminLabel || 'Owner',
+            approved_at:new Date().toISOString()
+          })
+          .select()
+          .single()
+
+        if (expenseError) { showToast('❌ Payable was not marked paid because expense posting failed: ' + expenseError.message, 'red'); return }
+        expenseRecord = insertedExpense
+      }
+
+      const { error:payableUpdateError } = await supabase
+        .from('company_payables')
+        .update({ status:'paid', paid_at:new Date().toISOString(), paid_by:currentAdminLabel })
+        .eq('id', row.id)
+
+      if (payableUpdateError) {
+        if (expenseRecord?.id) {
+          await supabase.from('daily_expenses').update({ status:'voided', approved_by:currentAdminLabel, approved_at:new Date().toISOString() }).eq('id', expenseRecord.id)
+        }
+        showToast('❌ Expense was reversed because payable update failed: ' + payableUpdateError.message, 'red')
+        return
+      }
+
+      await logAudit('COMPANY PAYABLE PAID + EXPENSE POSTED', currentAdminLabel, latestPayable?.payee_name || row.payee_name || '', `${latestPayable?.category || row.category || ''} | ${php(amount)} | Due: ${latestPayable?.due_date || row.due_date || ''} | Expense ID: ${expenseRecord?.id || ''}`)
+      showToast(`✅ Payable marked paid and posted to Expenses as approved: ${php(amount)}`)
+      loadCompanyPayables()
+      loadDailyExpenses()
+      if (financialMonth === today.slice(0,7)) loadFinancialData()
+      refreshFoundationAfterDataChange('payable-paid-expense-posted')
+    } finally {
+      setProcessingItems(prev => ({ ...prev, [actionKey]:false }))
+    }
   }
 
   async function cancelCompanyPayable(row) {
@@ -16196,7 +16276,7 @@ This will create one approved expense record using the total payroll earnings.`)
                                   <p style={{ fontWeight:'900', color:'#ca1b1b', fontSize:'13px', margin:0 }}>{php(row.balance_amount)}</p>
                                   <div><p style={{ fontWeight:'bold', color:'#555', fontSize:'11px', margin:'0 0 2px' }}>{row.payment_type || row.payment_method || '—'}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.check_number ? `Check #${row.check_number}` : row.bank_name || '—'}</p></div>
                                   <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-                                    {row.source==='company_payables' ? <button onClick={()=>markCompanyPayablePaid(row)} style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>PAID</button> : <button onClick={()=>setSalesView('expenses')} style={{ background:'#f5c518', color:'#333', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>REVIEW</button>}
+                                    {row.source==='company_payables' ? <button disabled={!!processingItems[`payable-paid-${row.id}`]} onClick={()=>markCompanyPayablePaid(row)} style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:processingItems[`payable-paid-${row.id}`]?'not-allowed':'pointer', opacity:processingItems[`payable-paid-${row.id}`]?0.65:1 }}>{processingItems[`payable-paid-${row.id}`]?'POSTING...':'PAID + EXPENSE'}</button> : <button onClick={()=>setSalesView('expenses')} style={{ background:'#f5c518', color:'#333', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>REVIEW</button>}
                                     {row.source==='company_payables' && <button onClick={()=>cancelCompanyPayable(row)} style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>CANCEL</button>}
                                   </div>
                                 </div>
