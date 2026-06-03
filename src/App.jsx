@@ -205,6 +205,33 @@ function formatDateLocal(date) {
   return d.toISOString().slice(0, 10)
 }
 
+function addMonthsClampedDateString(dateStr, monthOffset = 0) {
+  const start = parseLocalDate(dateStr)
+  if (!start) return ''
+  const targetYear = start.getFullYear()
+  const targetMonth = start.getMonth() + Number(monthOffset || 0)
+  const dueDay = start.getDate()
+  const lastDayOfTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate()
+  const out = new Date(targetYear, targetMonth, Math.min(dueDay, lastDayOfTargetMonth))
+  out.setHours(0, 0, 0, 0)
+  return formatDateLocal(out)
+}
+
+function getMonthlyPayableDueDates(startDueDate, repeatUntilDate, maxMonths = 60) {
+  const start = parseLocalDate(startDueDate)
+  const end = parseLocalDate(repeatUntilDate)
+  if (!start || !end || end < start) return []
+
+  const dates = []
+  for (let i = 0; i < maxMonths; i++) {
+    const dueDate = addMonthsClampedDateString(startDueDate, i)
+    const due = parseLocalDate(dueDate)
+    if (!due || due > end) break
+    dates.push(dueDate)
+  }
+  return dates
+}
+
 function addYearsLocal(date, years) {
   const d = new Date(date)
   const originalMonth = d.getMonth()
@@ -868,6 +895,8 @@ export default function App() {
     bank_name:'',
     check_number:'',
     check_date:'',
+    repeat_monthly:false,
+    repeat_until:'',
     notes:''
   })
   const [cashReconciliations, setCashReconciliations] = useState([])
@@ -5341,33 +5370,59 @@ This will remove the invoice and its line items.`
     const amount = safeNum(payableForm.amount, 0)
     if (amount <= 0) { showToast('❌ Please enter a valid amount.', 'red'); return }
 
-    const payload = {
-      payable_date: payableForm.payable_date || today,
-      due_date: payableForm.due_date,
-      payee_type: payableForm.payee_type || 'Supplier',
-      payee_name: payableForm.payee_name.trim(),
-      category: payableForm.category || 'Supplier Payment',
-      amount,
-      payment_type: payableForm.payment_type || 'Accounts Payable',
-      payment_method: payableForm.payment_method || 'Cash',
-      bank_name: payableForm.bank_name || '',
-      check_number: payableForm.check_number || '',
-      check_date: payableForm.check_date || null,
-      notes: payableForm.notes || '',
-      status: 'scheduled',
-      created_by: currentAdminLabel
+    const isMonthlyRecurring = payableForm.repeat_monthly === true
+    let monthlyDueDates = [payableForm.due_date]
+
+    if (isMonthlyRecurring) {
+      if (!payableForm.repeat_until) { showToast('❌ Please select when this monthly payment should end.', 'red'); return }
+      monthlyDueDates = getMonthlyPayableDueDates(payableForm.due_date, payableForm.repeat_until, 60)
+      if (monthlyDueDates.length === 0) { showToast('❌ Monthly end date must be the same as or later than the first due date.', 'red'); return }
+      if (monthlyDueDates.length > 48 && !window.confirm(`This will create ${monthlyDueDates.length} monthly payable records. Continue?`)) return
     }
 
-    const { error } = await supabase.from('company_payables').insert(payload)
+    const baseNotes = String(payableForm.notes || '').trim()
+    const recurringSeriesCode = isMonthlyRecurring
+      ? `RMP-${Date.now().toString(36).toUpperCase()}`
+      : ''
+
+    const payloads = monthlyDueDates.map((dueDate, idx) => {
+      const recurringNote = isMonthlyRecurring
+        ? `Monthly recurring payable ${idx + 1}/${monthlyDueDates.length}; Series ${recurringSeriesCode}; Starts ${payableForm.due_date}; Ends ${payableForm.repeat_until}. ${payableForm.check_number ? 'Review/update actual check number if each monthly PDC uses a different check.' : ''}`
+        : ''
+      return {
+        payable_date: idx === 0 ? (payableForm.payable_date || today) : dueDate,
+        due_date: dueDate,
+        payee_type: payableForm.payee_type || 'Supplier',
+        payee_name: payableForm.payee_name.trim(),
+        category: payableForm.category || 'Supplier Payment',
+        amount,
+        payment_type: payableForm.payment_type || 'Accounts Payable',
+        payment_method: payableForm.payment_method || 'Cash',
+        bank_name: payableForm.bank_name || '',
+        check_number: payableForm.check_number || '',
+        check_date: payableForm.check_date ? addMonthsClampedDateString(payableForm.check_date, idx) : null,
+        notes: [baseNotes, recurringNote].filter(Boolean).join(' | '),
+        status: 'scheduled',
+        created_by: currentAdminLabel
+      }
+    })
+
+    const { error } = await supabase.from('company_payables').insert(payloads)
     if (error) {
       showToast('❌ Failed to save payable/PDC: ' + error.message, 'red')
       setCompanyPayablesError(error.message)
       return
     }
 
-    await logAudit('COMPANY PAYABLE ADDED', currentAdminLabel, payload.payee_name, `${payload.category} | Due: ${payload.due_date} | ${php(payload.amount)} | ${payload.payment_type}`)
-    showToast('✅ Payable / PDC saved.')
-    setPayableForm({ payable_date:today, due_date:today, payee_type:'Supplier', payee_name:'', category:'Supplier Payment', amount:'', payment_type:'Accounts Payable', payment_method:'Cash', bank_name:'', check_number:'', check_date:'', notes:'' })
+    if (isMonthlyRecurring) {
+      await logAudit('MONTHLY COMPANY PAYABLES GENERATED', currentAdminLabel, payableForm.payee_name.trim(), `${payloads.length} records | ${payableForm.category} | ${php(amount)} monthly | From ${monthlyDueDates[0]} to ${monthlyDueDates[monthlyDueDates.length - 1]} | ${payableForm.payment_type}`)
+      showToast(`✅ ${payloads.length} monthly payable records created.`)
+    } else {
+      await logAudit('COMPANY PAYABLE ADDED', currentAdminLabel, payloads[0].payee_name, `${payloads[0].category} | Due: ${payloads[0].due_date} | ${php(payloads[0].amount)} | ${payloads[0].payment_type}`)
+      showToast('✅ Payable / PDC saved.')
+    }
+
+    setPayableForm({ payable_date:today, due_date:today, payee_type:'Supplier', payee_name:'', category:'Supplier Payment', amount:'', payment_type:'Accounts Payable', payment_method:'Cash', bank_name:'', check_number:'', check_date:'', repeat_monthly:false, repeat_until:'', notes:'' })
     setShowPayableForm(false)
     loadCompanyPayables()
   }
@@ -16068,7 +16123,10 @@ This will create one approved expense record using the total payroll earnings.`)
                         <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>📅 Company Payables / PDC Tracker</h3>
                         <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Track supplier due dates, post-dated checks, payroll payables, government remittances, rent, utilities, loans, and upcoming company expenses. Owner warning starts 3 days before due date.</p>
                       </div>
-                      <button style={{ ...btnYellow, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>setShowPayableForm(!showPayableForm)}>{showPayableForm ? '✕ CANCEL' : '➕ ADD PDC / PAYABLE'}</button>
+                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                        <button style={{ ...btnYellow, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>setShowPayableForm(!showPayableForm)}>{showPayableForm ? '✕ CANCEL' : '➕ ADD PDC / PAYABLE'}</button>
+                        <button style={{ ...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{ setShowPayableForm(true); setPayableForm(p=>({...p, repeat_monthly:true, repeat_until:p.repeat_until || p.due_date || today })) }}>🔁 ADD MONTHLY PAYMENT</button>
+                      </div>
                     </div>
 
                     {companyPayablesError && (
@@ -16093,9 +16151,12 @@ This will create one approved expense record using the total payroll earnings.`)
                           <div><label style={lblS}>Bank Name:</label><input value={payableForm.bank_name} onChange={e=>setPayableForm(p=>({...p,bank_name:e.target.value}))} placeholder="e.g. BDO / Metrobank" style={inputStyle} /></div>
                           <div><label style={lblS}>Check Number:</label><input value={payableForm.check_number} onChange={e=>setPayableForm(p=>({...p,check_number:e.target.value}))} placeholder="For PDC/check payments" style={inputStyle} /></div>
                           <div><label style={lblS}>Check Date:</label><input type="date" value={payableForm.check_date} onChange={e=>setPayableForm(p=>({...p,check_date:e.target.value}))} style={inputStyle} /></div>
+                          <div><label style={lblS}>Repeat Monthly?</label><select value={payableForm.repeat_monthly ? 'yes' : 'no'} onChange={e=>setPayableForm(p=>({...p,repeat_monthly:e.target.value==='yes', repeat_until:e.target.value==='yes' ? (p.repeat_until || p.due_date || today) : ''}))} style={{ ...inputStyle, border:payableForm.repeat_monthly?'2px solid #2d8a4e':'1.5px solid #e8e8e8', fontWeight:payableForm.repeat_monthly?'bold':'normal' }}><option value="no">No — one-time payable</option><option value="yes">Yes — create every month</option></select></div>
+                          {payableForm.repeat_monthly && <div><label style={lblS}>Monthly Payment Ends On:</label><input type="date" value={payableForm.repeat_until} min={payableForm.due_date || today} onChange={e=>setPayableForm(p=>({...p,repeat_until:e.target.value}))} style={{ ...inputStyle, border:'2px solid #2d8a4e', fontWeight:'bold' }} /></div>}
                           <div><label style={lblS}>Notes:</label><input value={payableForm.notes} onChange={e=>setPayableForm(p=>({...p,notes:e.target.value}))} placeholder="Invoice no., billing period, remarks..." style={inputStyle} /></div>
                         </div>
-                        <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:'4px' }} onClick={saveCompanyPayable}>💾 SAVE PAYABLE / PDC</button>
+                        {payableForm.repeat_monthly && (()=>{ const monthlyDates = getMonthlyPayableDueDates(payableForm.due_date, payableForm.repeat_until, 60); return <div style={{ background:'#f0fff4', border:'1px solid #b7ebc6', borderRadius:'10px', padding:'10px 12px', margin:'8px 0 12px' }}><p style={{ color:'#2d8a4e', fontSize:'12px', fontWeight:'bold', margin:'0 0 4px' }}>🔁 Monthly payment schedule preview</p><p style={{ color:'#555', fontSize:'11px', margin:0 }}>{monthlyDates.length > 0 ? `This will create ${monthlyDates.length} payable record(s), from ${monthlyDates[0]} to ${monthlyDates[monthlyDates.length - 1]}. Each record will keep the same payee, amount, category, and payment type.` : 'Select a valid due date and monthly end date to preview the schedule.'}</p></div> })()}
+                        <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:'4px' }} onClick={saveCompanyPayable}>{payableForm.repeat_monthly ? '🔁 SAVE MONTHLY PAYABLES' : '💾 SAVE PAYABLE / PDC'}</button>
                       </div>
                     )}
 
@@ -16130,7 +16191,7 @@ This will create one approved expense record using the total payroll earnings.`)
                               {openPayables.map(row => (
                                 <div key={`${row.source}-${row.id}`} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.8fr 0.8fr 0.9fr 1fr', gap:'8px', padding:'10px 12px', borderTop:'1px solid #f0f0f0', alignItems:'center', background:row.urgency==='overdue'?'#fff5f5':row.urgency==='due_today'?'#fff4e5':row.urgency==='approaching'?'#fffdf0':'white' }}>
                                   <div><p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.display_payee}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.payee_type || row.source}</p></div>
-                                  <div><p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.display_category}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.notes || row.description || '—'}</p></div>
+                                  <div><p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.display_category} {String(row.notes||'').includes('Monthly recurring payable') && <span style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #b7ebc6', borderRadius:'999px', padding:'2px 6px', fontSize:'9px', marginLeft:'4px' }}>MONTHLY</span>}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.notes || row.description || '—'}</p></div>
                                   <div><p style={{ fontWeight:'900', color:row.urgency==='overdue'?'#ca1b1b':row.urgency==='due_today'?'#f57c00':'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.due_date_effective}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{getPaymentDeadlineLabel(row)}</p></div>
                                   <p style={{ fontWeight:'900', color:'#ca1b1b', fontSize:'13px', margin:0 }}>{php(row.balance_amount)}</p>
                                   <div><p style={{ fontWeight:'bold', color:'#555', fontSize:'11px', margin:'0 0 2px' }}>{row.payment_type || row.payment_method || '—'}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.check_number ? `Check #${row.check_number}` : row.bank_name || '—'}</p></div>
