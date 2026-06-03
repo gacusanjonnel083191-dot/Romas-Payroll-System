@@ -828,6 +828,7 @@ export default function App() {
   const [returnItems, setReturnItems] = useState({})
   const [savingReturn, setSavingReturn] = useState(false)
   const [invoiceFilter, setInvoiceFilter] = useState('active')
+  const [invoiceMonthFilter, setInvoiceMonthFilter] = useState(today.slice(0,7))
   const [markingDelivered, setMarkingDelivered] = useState({})
   const [showPaymentFormMap, setShowPaymentFormMap] = useState({})
   const [paymentNotes, setPaymentNotes] = useState({})
@@ -2887,6 +2888,60 @@ export default function App() {
     return status === 'paid' ? 'paid' : 'unpaid'
   }
 
+
+  function getInvoiceDateKey(inv) {
+    return String(inv?.delivery_date || inv?.invoice_date || inv?.created_at || '').slice(0, 10)
+  }
+
+  function getInvoiceMonthKey(inv) {
+    return getInvoiceDateKey(inv).slice(0, 7)
+  }
+
+  function invoiceMatchesMonth(inv, monthFilter = invoiceMonthFilter) {
+    if (!monthFilter || monthFilter === 'all') return true
+    return getInvoiceMonthKey(inv) === monthFilter
+  }
+
+  function getSortedInvoices(rows = []) {
+    return [...(rows || [])].sort((a, b) => {
+      const ad = getInvoiceDateKey(a)
+      const bd = getInvoiceDateKey(b)
+      if (ad !== bd) return bd.localeCompare(ad)
+
+      const an = String(a?.invoice_number || '')
+      const bn = String(b?.invoice_number || '')
+      if (an !== bn) return bn.localeCompare(an)
+
+      return String(b?.created_at || b?.id || '').localeCompare(String(a?.created_at || a?.id || ''))
+    })
+  }
+
+  function getMonthFilteredInvoices(rows = []) {
+    return getSortedInvoices(rows).filter(inv => invoiceMatchesMonth(inv))
+  }
+
+  function getInvoiceMonthOptions(rows = []) {
+    const monthSet = new Set((rows || [])
+      .map(inv => getInvoiceMonthKey(inv))
+      .filter(m => /^\d{4}-\d{2}$/.test(m)))
+
+    const base = parseLocalDate(`${today.slice(0,7)}-01`) || new Date()
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(base)
+      d.setMonth(base.getMonth() - i)
+      monthSet.add(formatDateLocal(d).slice(0, 7))
+    }
+
+    return [...monthSet].sort((a, b) => b.localeCompare(a))
+  }
+
+  function formatInvoiceMonthLabel(monthKey) {
+    if (monthKey === 'all') return 'All invoice months'
+    const d = parseLocalDate(`${monthKey}-01`)
+    if (!d) return monthKey
+    return d.toLocaleDateString('en-PH', { month:'long', year:'numeric' })
+  }
+
   function invoiceMatchesFilter(inv, filter) {
     const paymentStatus = getInvoicePaymentStatus(inv)
     const savedStatus = String(inv?.status || 'unpaid').toLowerCase()
@@ -3028,13 +3083,13 @@ export default function App() {
     setInvoicesLoading(true)
     try {
       await autoMarkTodayDelivered()
-      const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(100)
+      const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).order('invoice_number', { ascending:false }).limit(500)
       if (!withItems.error) {
         setDeliveryInvoices(await normalizePaidInvoiceRows(withItems.data || []))
         return
       }
       console.warn('delivery_invoices with items failed, trying basic invoice list:', withItems.error)
-      const basic = await supabase.from('delivery_invoices').select('*').order('delivery_date', { ascending:false }).limit(100)
+      const basic = await supabase.from('delivery_invoices').select('*').order('delivery_date', { ascending:false }).order('invoice_number', { ascending:false }).limit(500)
       if (basic.error) {
         console.warn('delivery_invoices basic query failed:', basic.error)
         setDeliveryInvoices([])
@@ -14678,14 +14733,28 @@ This will create one approved expense record using the total payroll earnings.`)
                         </button>
                       </div>
                     </div>
-                    {/* Delivery Filter Tabs */}
+                    {/* Delivery Month + Filter Tabs */}
+                    <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'12px', flexWrap:'wrap' }}>
+                      <label style={{ ...lblS, marginBottom:0 }}>Invoice Month:</label>
+                      <select value={invoiceMonthFilter} onChange={e=>setInvoiceMonthFilter(e.target.value)} style={{ ...inputStyle, width:isMobile?'100%':'220px', marginBottom:0, padding:'8px 12px', fontSize:'12px', fontWeight:'700' }}>
+                        {getInvoiceMonthOptions(deliveryInvoices).map(monthKey => (
+                          <option key={monthKey} value={monthKey}>{formatInvoiceMonthLabel(monthKey)}</option>
+                        ))}
+                        <option value="all">All invoice months</option>
+                      </select>
+                      <span style={{ background:'#fff8dc', color:'#7a5a00', border:'1px solid #FDD412', borderRadius:'20px', padding:'7px 12px', fontSize:'11px', fontWeight:'700' }}>
+                        Showing {getMonthFilteredInvoices(deliveryInvoices).length} invoice(s)
+                      </span>
+                    </div>
+
                     <div style={{ display:'flex', gap:'6px', marginBottom:'12px', flexWrap:'wrap' }}>
                       {(()=>{
+                        const monthInvoices = getMonthFilteredInvoices(deliveryInvoices)
                         const tom2 = new Date(); tom2.setDate(tom2.getDate()+1)
                         const tomS = tom2.toISOString().slice(0,10)
-                        const todayCount = deliveryInvoices.filter(i=>i.delivery_date===today).length
-                        const tomorrowCount = deliveryInvoices.filter(i=>i.delivery_date===tomS).length
-                        const upcomingCount = deliveryInvoices.filter(i=>i.delivery_date>tomS).length
+                        const todayCount = monthInvoices.filter(i=>getInvoiceDateKey(i)===today).length
+                        const tomorrowCount = monthInvoices.filter(i=>getInvoiceDateKey(i)===tomS).length
+                        const upcomingCount = monthInvoices.filter(i=>getInvoiceDateKey(i)>tomS).length
                         return [
                           ['today', `📦 Today (${todayCount})`],
                           ['tomorrow', `🚚 Tomorrow (${tomorrowCount})`],
@@ -14896,7 +14965,7 @@ This will create one approved expense record using the total payroll earnings.`)
                     )}
 
                     {invoicesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading invoices...</p>}
-                    {!invoicesLoading && deliveryInvoices.length===0 && (
+                    {!invoicesLoading && getMonthFilteredInvoices(deliveryInvoices).length===0 && (
                       <div style={{ textAlign:'center', padding:'30px', color:'#888' }}>
                         <p style={{ fontSize:'28px', margin:'0 0 10px' }}>🧾</p>
                         <p style={{ fontWeight:'bold', fontSize:'14px' }}>No invoices yet</p>
@@ -14904,7 +14973,7 @@ This will create one approved expense record using the total payroll earnings.`)
                       </div>
                     )}
                     {/* Filter: hide paid by default */}
-                    {deliveryInvoices.filter(i=>invoiceMatchesFilter(i, invoiceFilter)).map(inv=>{
+                    {getMonthFilteredInvoices(deliveryInvoices).filter(i=>invoiceMatchesFilter(i, invoiceFilter)).map(inv=>{
                       const balance = getInvoiceBalance(inv)
                       const displayStatus = getInvoicePaymentStatus(inv)
                       const isOverdue = displayStatus!=='paid' && balance > 0 && inv.due_date < today
