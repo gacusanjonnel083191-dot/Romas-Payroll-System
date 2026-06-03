@@ -185,7 +185,7 @@ function daysInclusive(startDate, endDate) {
   const start = parseLocalDate(startDate)
   const end = parseLocalDate(endDate)
   if (!start || !end || end < start) return 0
-  return Math.floor((end - start) / (1000 * 60 * 60 * 24)) + 1
+  return Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1
 }
 
 function getLeaveOverlapDays(leave, periodStart, periodEnd) {
@@ -3003,7 +3003,7 @@ export default function App() {
     const delivered = parseLocalDate(inv?.delivery_date)
     const asOf = parseLocalDate(asOfDate)
     if (!delivered || !asOf) return 0
-    return Math.max(0, Math.floor((asOf - delivered) / (1000 * 60 * 60 * 24)))
+    return Math.max(0, Math.floor((asOf.getTime() - delivered.getTime()) / (1000 * 60 * 60 * 24)))
   }
 
   function isInvoiceCreditBlocked(inv, asOfDate = today) {
@@ -5157,15 +5157,34 @@ This will remove the invoice and its line items.`
     setMyPayslips(data || [])
   }
   async function loadMyCashAdvances(emp) {
+    if (!emp?.id) return
+
     // Load requests (pending/approved/disapproved)
-    const { data: requests } = await supabase.from('cash_advance_requests').select('*').eq('employee_id', emp.id).order('created_at', { ascending:false })
-    setMyCashAdvances(requests || [])
-    // Load active unpaid balances
-    const { data: active } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).eq('status', 'Unpaid').order('advance_date', { ascending:false })
-    setMyActiveCAs(active || [])
-    // Load paid history
-    const { data: history } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).eq('status', 'Paid').order('advance_date', { ascending:false })
-    setMyCAHistory(history || [])
+    const { data: requests, error:requestError } = await supabase
+      .from('cash_advance_requests')
+      .select('*')
+      .eq('employee_id', emp.id)
+      .order('created_at', { ascending:false })
+    if (!requestError) setMyCashAdvances(requests || [])
+
+    // Load the full CA ledger and classify locally by remaining balance.
+    // This protects the employee view if an old record was accidentally marked Paid
+    // while it still has a positive balance.
+    const { data: ledger, error:ledgerError } = await supabase
+      .from('cash_advances')
+      .select('*')
+      .eq('employee_id', emp.id)
+      .order('advance_date', { ascending:false })
+
+    if (ledgerError) {
+      setMyActiveCAs([])
+      setMyCAHistory([])
+      return
+    }
+
+    const ledgerRows = ledger || []
+    setMyActiveCAs(ledgerRows.filter(isOutstandingCashAdvance))
+    setMyCAHistory(ledgerRows.filter(ca => !isOutstandingCashAdvance(ca)))
   }
   async function loadMyAttendanceHistory(emp) {
     const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
@@ -5783,9 +5802,16 @@ This will remove the invoice and its line items.`
   }
 
   // ── Payroll Approval Workflow ─────────────────────────────────────────────
-  function getCashAdvancePayrollDeduction(ca) {
+  function isOutstandingCashAdvance(ca) {
     const balance = Math.max(0, safeNum(ca?.balance, 0))
-    if (balance <= 0) return 0
+    const status = String(ca?.status || '').trim().toLowerCase()
+    if (status === 'cancelled' || status === 'void') return false
+    return balance > 0.009
+  }
+
+  function getCashAdvancePayrollDeduction(ca) {
+    if (!isOutstandingCashAdvance(ca)) return 0
+    const balance = Math.max(0, safeNum(ca?.balance, 0))
     const scheduled = safeNum(ca?.per_payroll_deduction, 0) > 0 ? safeNum(ca?.per_payroll_deduction, 0) : balance
     return Math.min(balance, scheduled)
   }
@@ -5835,26 +5861,26 @@ This will remove the invoice and its line items.`
         .from('cash_advances')
         .select('*')
         .eq('employee_id', row.employee_id)
-        .eq('status', 'Unpaid')
         .order('advance_date', { ascending:true })
 
       if (caError) return { applied:false, amount:totalApplied, error:caError.message }
 
-      for (const ca of cas || []) {
+      const openCAs = (cas || []).filter(isOutstandingCashAdvance)
+      for (const ca of openCAs) {
         if (remaining <= 0) break
         const balance = Math.max(0, safeNum(ca.balance, 0))
         if (balance <= 0) continue
 
         const deduction = Math.min(balance, remaining)
-        const newPaid = safeNum(ca.amount_paid, 0) + deduction
-        const newBal = Math.max(0, balance - deduction)
+        const newPaid = moneyRound(safeNum(ca.amount_paid, 0) + deduction)
+        const newBal = moneyRound(Math.max(0, balance - deduction))
         const newRem = Math.max(0, safeNum(ca.installments_remaining, 1) - 1)
 
         const { error:updateError } = await supabase.from('cash_advances').update({
           amount_paid:newPaid,
           balance:newBal,
           installments_remaining:newRem,
-          status:newBal <= 0 ? 'Paid' : 'Unpaid'
+          status:isMoneySettled(newBal) ? 'Paid' : 'Unpaid'
         }).eq('id', ca.id)
 
         if (updateError) return { applied:false, amount:totalApplied, error:updateError.message }
@@ -6080,7 +6106,7 @@ This will create one approved expense record using the total payroll earnings.`)
     const s = parseLocalDate(start)
     const e = parseLocalDate(end)
     if (!s || !e) return 0
-    return Math.max(0, Math.floor((e - s) / (1000 * 60 * 60 * 24)))
+    return Math.max(0, Math.floor((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)))
   }
 
   async function foundationSelect(table, select = '*', buildQuery) {
@@ -9781,136 +9807,217 @@ This will create one approved expense record using the total payroll earnings.`)
   }
 
   async function computePayroll() {
-    const { data:existing } = await supabase.from('payroll_records').select('id,employee_acknowledgement').eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd)
-    if (existing&&existing.length>0) {
-      // Check if locked (all agreed or any agreed)
-      const hasAgreed = existing.some(r=>r.employee_acknowledgement==='agreed')
-      const allDone = existing.every(r=>r.employee_acknowledgement==='agreed'||r.employee_acknowledgement==='disputed')
-      if (allDone) {
-        showToast('🔒 This payroll period is locked — all employees have acknowledged.','red')
+    if (!payrollStart || !payrollEnd) { showToast('Please select payroll start and end dates.', 'red'); return }
+    if (parseLocalDate(payrollEnd) < parseLocalDate(payrollStart)) { showToast('Payroll end date must be after start date.', 'red'); return }
+
+    setPayrollComputing(true)
+    try {
+      const { data:existing, error:existingError } = await supabase
+        .from('payroll_records')
+        .select('id,employee_acknowledgement,payroll_approved,approved_at')
+        .eq('payroll_start', payrollStart)
+        .eq('payroll_end', payrollEnd)
+
+      if (existingError) throw existingError
+
+      if (existing && existing.length > 0) {
+        const alreadyApproved = existing.some(r => r.payroll_approved === true || !!r.approved_at)
+        if (alreadyApproved) {
+          showToast('🔒 This payroll period is already approved/released. It cannot be recomputed because CA deductions and payroll expenses may already be posted.', 'red')
+          return
+        }
+
+        // Check if locked (all agreed or any agreed)
+        const hasAgreed = existing.some(r => r.employee_acknowledgement === 'agreed')
+        const allDone = existing.every(r => r.employee_acknowledgement === 'agreed' || r.employee_acknowledgement === 'disputed')
+        if (allDone) {
+          showToast('🔒 This payroll period is locked — all employees have acknowledged.', 'red')
+          return
+        }
+        if (hasAgreed) {
+          if (!window.confirm('⚠️ WARNING: Some employees have already acknowledged this payroll. Overwriting will reset their acknowledgements. Are you sure?')) return
+        } else {
+          if (!window.confirm('Payroll for this period already exists. Overwrite?')) return
+        }
+
+        const { error:deleteError } = await supabase
+          .from('payroll_records')
+          .delete()
+          .eq('payroll_start', payrollStart)
+          .eq('payroll_end', payrollEnd)
+        if (deleteError) throw deleteError
+      }
+
+      const { data:empList, error:empError } = await supabase.from('employees').select('*').eq('is_active', true)
+      if (empError) throw empError
+      if (!empList || empList.length === 0) {
+        setPayrollResults([])
+        setPayrollSummary(null)
+        showToast('No active employees found for payroll.', 'red')
         return
       }
-      if (hasAgreed) {
-        if (!window.confirm('⚠️ WARNING: Some employees have already acknowledged this payroll. Overwriting will reset their acknowledgements. Are you sure?')) return
-      } else {
-        if (!window.confirm('Payroll for this period already exists. Overwrite?')) return
-      }
-      await supabase.from('payroll_records').delete().eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd)
-    }
-    setPayrollComputing(true)
-    const { data:empList } = await supabase.from('employees').select('*').eq('is_active', true)
-    const { data:holidayList } = await supabase.from('holidays').select('*').gte('holiday_date', payrollStart).lte('holiday_date', payrollEnd)
-    const results = []
-    const startDay = Number(payrollStart.split('-')[2])
-    const isFirstCutoff = startDay>=11&&startDay<=25
-    for (const emp of empList||[]) {
-      const { data:logs } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', payrollStart).lte('attendance_date', payrollEnd)
-      const { data:leaves } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', payrollEnd).gte('leave_end', payrollStart)
-      const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).eq('status', 'Unpaid')
-      const { data:adjs } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
-      const workedDays=logs?.filter(l=>l.time_in).length||0
-      const absentDays=logs?.filter(l=>l.status==='Absent').length||0
-      const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
-      const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
-      const dailyRate=Number(emp.daily_rate||0)
-      const hourlyRate=dailyRate/8
-      const minuteRate=hourlyRate/60
 
-      // ── Hourly-based Basic Pay (computed from actual clock-in/out) ──────────
-      const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
-      let workedBasicPay=0, basicPay=0, totalWorkedMinutes=0
-      for (const log of workedLogs) {
-        const inM=minutesFromTime(log.time_in)
-        const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
-        const rawMins=outM-inM
-        const recordedBreak=Number(log.total_break_minutes||0)
-        // If no break was recorded AND shift is 9+ hours → assume 1-hour break was taken
-        // Only exception: if OT is approved (employee worked through break intentionally)
-        const effectiveBreak = recordedBreak > 0
-          ? recordedBreak
-          : (rawMins >= 9*60 ? ALLOWED_BREAK_MINUTES : 0)
-        const actualMins=Math.max(0,rawMins-effectiveBreak)
-        totalWorkedMinutes+=actualMins
-        workedBasicPay+=actualMins*minuteRate
-        basicPay+=actualMins*minuteRate
-      }
-      // Add approved SIL as paid leave at full daily rate. Unpaid leave is not added to earnings.
-      const paidLeavePay=paidLeaveDays*dailyRate
-      basicPay+=paidLeavePay
+      const { data:holidayList, error:holidayError } = await supabase.from('holidays').select('*').gte('holiday_date', payrollStart).lte('holiday_date', payrollEnd)
+      if (holidayError) throw holidayError
 
-      // ── Birthday Pay ────────────────────────────────────────────────────────
-      let birthdayPay=0
-      if (emp.date_of_birth) {
-        const bdMMDD=emp.date_of_birth.slice(5) // MM-DD
-        // Check dates in both the payroll year and next year (for Jan cutoffs)
-        const years=[payrollStart.slice(0,4), String(Number(payrollStart.slice(0,4))+1)]
-        for (const yr of years) {
-          const bdFull=`${yr}-${bdMMDD}`
-          if (bdFull>=payrollStart&&bdFull<=payrollEnd) {
-            const workedLog=workedLogs.find(l=>l.attendance_date===bdFull)
-            if (workedLog) {
-              // Worked on birthday → 200% = base already counted above, add extra 100%
-              const inM=minutesFromTime(workedLog.time_in)
-              const outM=minutesFromTime(workedLog.time_out)+(minutesFromTime(workedLog.time_out)<minutesFromTime(workedLog.time_in)?24*60:0)
-              const brkMins=Number(workedLog.total_break_minutes||0)
-              const actualMins=Math.max(0,outM-inM-brkMins)
-              birthdayPay+=actualMins*minuteRate // extra 100% on top → total 200%
-            } else {
-              // Didn't work but birthday falls in period → give full day pay
-              birthdayPay+=dailyRate
+      const results = []
+      const startDay = Number(payrollStart.split('-')[2])
+      const isFirstCutoff = startDay>=11&&startDay<=25
+      for (const emp of empList||[]) {
+        const { data:logs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', payrollStart).lte('attendance_date', payrollEnd)
+        if (logsError) throw logsError
+        const { data:leaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', payrollEnd).gte('leave_end', payrollStart)
+        if (leavesError) throw leavesError
+        const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id)
+        if (caError) throw caError
+        const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
+        if (adjsError) throw adjsError
+
+        const workedDays=logs?.filter(l=>l.time_in).length||0
+        const absentDays=logs?.filter(l=>l.status==='Absent').length||0
+        const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
+        const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
+        const dailyRate=Number(emp.daily_rate||0)
+        const hourlyRate=dailyRate/8
+        const minuteRate=hourlyRate/60
+
+        // ── Hourly-based Basic Pay (computed from actual clock-in/out) ──────────
+        const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
+        let workedBasicPay=0, basicPay=0, totalWorkedMinutes=0
+        for (const log of workedLogs) {
+          const inM=minutesFromTime(log.time_in)
+          const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
+          const rawMins=outM-inM
+          const recordedBreak=Number(log.total_break_minutes||0)
+          // If no break was recorded AND shift is 9+ hours → assume 1-hour break was taken
+          // Only exception: if OT is approved (employee worked through break intentionally)
+          const effectiveBreak = recordedBreak > 0
+            ? recordedBreak
+            : (rawMins >= 9*60 ? ALLOWED_BREAK_MINUTES : 0)
+          const actualMins=Math.max(0,rawMins-effectiveBreak)
+          totalWorkedMinutes+=actualMins
+          workedBasicPay+=actualMins*minuteRate
+          basicPay+=actualMins*minuteRate
+        }
+        // Add approved SIL as paid leave at full daily rate. Unpaid leave is not added to earnings.
+        const paidLeavePay=paidLeaveDays*dailyRate
+        basicPay+=paidLeavePay
+
+        // ── Birthday Pay ────────────────────────────────────────────────────────
+        let birthdayPay=0
+        if (emp.date_of_birth) {
+          const bdMMDD=emp.date_of_birth.slice(5) // MM-DD
+          // Check dates in both the payroll year and next year (for Jan cutoffs)
+          const years=[payrollStart.slice(0,4), String(Number(payrollStart.slice(0,4))+1)]
+          for (const yr of years) {
+            const bdFull=`${yr}-${bdMMDD}`
+            if (bdFull>=payrollStart&&bdFull<=payrollEnd) {
+              const workedLog=workedLogs.find(l=>l.attendance_date===bdFull)
+              if (workedLog) {
+                // Worked on birthday → 200% = base already counted above, add extra 100%
+                const inM=minutesFromTime(workedLog.time_in)
+                const outM=minutesFromTime(workedLog.time_out)+(minutesFromTime(workedLog.time_out)<minutesFromTime(workedLog.time_in)?24*60:0)
+                const brkMins=Number(workedLog.total_break_minutes||0)
+                const actualMins=Math.max(0,outM-inM-brkMins)
+                birthdayPay+=actualMins*minuteRate // extra 100% on top → total 200%
+              } else {
+                // Didn't work but birthday falls in period → give full day pay
+                birthdayPay+=dailyRate
+              }
             }
           }
         }
+
+        // ── Overtime ─────────────────────────────────────────────────────────────
+        const overtimeMinutes=logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0
+        const overtimePay=overtimeMinutes*minuteRate*1.25
+
+        // ── Night Differential (10%) ──────────────────────────────────────────────
+        let nightDiffPay=0
+        for (const log of workedLogs) {
+          const inM=minutesFromTime(log.time_in),outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
+          const os=Math.max(inM,22*60),oe=Math.min(outM,30*60)
+          if (oe>os) nightDiffPay+=(oe-os)*minuteRate*0.10
+        }
+
+        // ── Holiday Pay ────────────────────────────────────────────────────────────
+        let holidayPay=0
+        for (const h of holidayList||[]) {
+          const worked=workedLogs.find(l=>l.attendance_date===h.holiday_date)
+          if (h.holiday_type==='regular') holidayPay+=worked?dailyRate:0   // extra 100% on top of hourly pay → 200% total
+          else if (h.holiday_type==='special') holidayPay+=worked?dailyRate*0.3:0  // 30% premium
+        }
+
+        // ── Cash Advance, Adjustments, Government Contributions ───────────────────
+        let adjEarnings=0,adjDeductions=0
+        for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
+        const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
+        const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
+        const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
+        const totalEarnings=basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings
+        const nonCADeductions=sssDeduction+pagibigDeduction+philhealthDeduction+adjDeductions
+        const availableForCA=Math.max(0, moneyRound(totalEarnings-nonCADeductions))
+        const rawCADeduction=(cas||[]).filter(isOutstandingCashAdvance).reduce((s,ca)=>s+getCashAdvancePayrollDeduction(ca),0)
+        const caDeduction=Math.min(moneyRound(rawCADeduction), availableForCA)
+        const totalDeductions=caDeduction+nonCADeductions
+        const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
+        const undertimeMinutesInfo=logs?.reduce((s,l)=>s+Number(l.undertime_minutes||0),0)||0
+        results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
+      } // end for emp
+
+      const payrollPayload = results.map((pay, idx) => ({
+        employee_id:pay.employeeId,
+        employee_code:pay.employeeCode,
+        employee_name:pay.employeeName,
+        payroll_start:payrollStart,
+        payroll_end:payrollEnd,
+        worked_days:pay.workedDays,
+        basic_pay:moneyRound(pay.basicPay),
+        birthday_pay:moneyRound(pay.birthdayPay||0),
+        overtime_pay:moneyRound(pay.overtimePay),
+        night_diff_pay:moneyRound(pay.nightDiffPay),
+        holiday_pay:moneyRound(pay.holidayPay),
+        other_earnings:moneyRound(pay.adjustmentEarnings),
+        total_earnings:moneyRound(pay.totalEarnings),
+        late_minutes:pay.lateMinutes||0,
+        undertime_minutes:pay.undertimeMinutes||0,
+        cash_advance_deduction:moneyRound(pay.cashAdvanceDeduction),
+        sss_deduction:moneyRound(pay.sssDeduction),
+        pagibig_deduction:moneyRound(pay.pagibigDeduction),
+        philhealth_deduction:moneyRound(pay.philhealthDeduction),
+        other_deductions:moneyRound(pay.adjustmentDeductions),
+        total_deductions:moneyRound(pay.totalDeductions),
+        net_pay:moneyRound(pay.netPay),
+        employee_acknowledgement:'pending',
+        payslip_serial:genSerial(payrollStart,idx),
+        bank_name:pay.bankName,
+        bank_account:pay.bankAccount,
+        bank_account_name:pay.bankAccountName
+      }))
+
+      if (payrollPayload.length > 0) {
+        const { error:insertError } = await supabase.from('payroll_records').insert(payrollPayload)
+        if (insertError) throw insertError
       }
 
-      // ── Overtime ─────────────────────────────────────────────────────────────
-      const overtimeMinutes=logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0
-      const overtimePay=overtimeMinutes*minuteRate*1.25
-
-      // ── Night Differential (10%) ──────────────────────────────────────────────
-      let nightDiffPay=0
-      for (const log of workedLogs) {
-        const inM=minutesFromTime(log.time_in),outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
-        const os=Math.max(inM,22*60),oe=Math.min(outM,30*60)
-        if (oe>os) nightDiffPay+=(oe-os)*minuteRate*0.10
-      }
-
-      // ── Holiday Pay ────────────────────────────────────────────────────────────
-      let holidayPay=0
-      for (const h of holidayList||[]) {
-        const worked=workedLogs.find(l=>l.attendance_date===h.holiday_date)
-        if (h.holiday_type==='regular') holidayPay+=worked?dailyRate:0   // extra 100% on top of hourly pay → 200% total
-        else if (h.holiday_type==='special') holidayPay+=worked?dailyRate*0.3:0  // 30% premium
-      }
-
-      // ── Cash Advance, Adjustments, Government Contributions ───────────────────
-      let caDeduction=0
-      for (const ca of cas||[]) caDeduction += getCashAdvancePayrollDeduction(ca)
-      let adjEarnings=0,adjDeductions=0
-      for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
-      const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
-      const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
-      const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
-      const totalEarnings=basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings
-      const totalDeductions=caDeduction+sssDeduction+pagibigDeduction+philhealthDeduction+adjDeductions
-      const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
-      const undertimeMinutesInfo=logs?.reduce((s,l)=>s+Number(l.undertime_minutes||0),0)||0
-      results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
-    } // end for emp
-    for (const pay of results) {
-      await supabase.from('payroll_records').insert([{ employee_id:pay.employeeId, employee_code:pay.employeeCode, employee_name:pay.employeeName, payroll_start:payrollStart, payroll_end:payrollEnd, worked_days:pay.workedDays, basic_pay:pay.basicPay, birthday_pay:pay.birthdayPay||0, overtime_pay:pay.overtimePay, night_diff_pay:pay.nightDiffPay, holiday_pay:pay.holidayPay, other_earnings:pay.adjustmentEarnings, total_earnings:pay.totalEarnings, late_minutes:pay.lateMinutes||0, undertime_minutes:pay.undertimeMinutes||0, cash_advance_deduction:pay.cashAdvanceDeduction, sss_deduction:pay.sssDeduction, pagibig_deduction:pay.pagibigDeduction, philhealth_deduction:pay.philhealthDeduction, other_deductions:pay.adjustmentDeductions, total_deductions:pay.totalDeductions, net_pay:pay.netPay, employee_acknowledgement:'pending', payslip_serial:genSerial(payrollStart,results.indexOf(pay)), bank_name:pay.bankName, bank_account:pay.bankAccount, bank_account_name:pay.bankAccountName }])
+      const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
+      setPayrollResults(results)
+      setPayrollSummary(s)
+      await logAudit('PAYROLL COMPUTED','Admin','ALL',`${payrollStart} to ${payrollEnd} — ${results.length} employees`)
+      showToast('✅ Payroll computed successfully!')
+      // Schedule auto-acknowledge after 5 days (stored in DB as a flag)
+      const deadline = new Date(); deadline.setDate(deadline.getDate()+5)
+      try { await supabase.from('payroll_periods').upsert({
+        payroll_start: payrollStart, payroll_end: payrollEnd,
+        acknowledge_deadline: deadline.toISOString().slice(0,10),
+        computed_at: new Date().toISOString()
+      }, { onConflict:'payroll_start,payroll_end' }) } catch(e) {}
+    } catch(err) {
+      console.error('Payroll computation failed:', err)
+      showToast('Payroll computation failed: ' + (err?.message || err), 'red')
+    } finally {
+      setPayrollComputing(false)
     }
-    const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
-    setPayrollResults(results); setPayrollSummary(s); setPayrollComputing(false)
-    await logAudit('PAYROLL COMPUTED','Admin','ALL',`${payrollStart} to ${payrollEnd} — ${results.length} employees`)
-    showToast('✅ Payroll computed successfully!')
-    // Schedule auto-acknowledge after 5 days (stored in DB as a flag)
-    const deadline = new Date(); deadline.setDate(deadline.getDate()+5)
-    try { await supabase.from('payroll_periods').upsert({
-      payroll_start: payrollStart, payroll_end: payrollEnd,
-      acknowledge_deadline: deadline.toISOString().slice(0,10),
-      computed_at: new Date().toISOString()
-    }, { onConflict:'payroll_start,payroll_end' }) } catch(e) {}
   }
 
   // Auto-acknowledge expired payslips (called on admin dashboard load)
