@@ -3315,54 +3315,79 @@ This will remove the invoice and its line items.`
       <style>
         *{margin:0;padding:0;box-sizing:border-box;}
         html,body{background:#e5e5e5;}
-        body{font-family:Arial,sans-serif;color:#111;line-height:1.28;padding:8px;}
+        body{font-family:Arial,sans-serif;color:#111;line-height:1.24;padding:8px;}
         .no-print{max-width:145mm;margin:0 auto 10px;text-align:center;}
         .invoice-page{
           width:145mm;
-          min-height:209mm;
+          max-width:145mm;
           margin:10px auto;
           background:white;
-          padding:8mm 8mm;
+          padding:6mm 7mm 5mm;
           box-shadow:0 2px 10px rgba(0,0,0,0.18);
-          overflow:visible;
+          overflow:hidden;
+          break-inside:avoid;
+          page-break-inside:avoid;
         }
-        .invoice-header{display:grid;grid-template-columns:1.05fr .95fr;gap:8px;align-items:start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:7px;}
+        .invoice-header{display:grid;grid-template-columns:1.05fr .95fr;gap:8px;align-items:start;border-bottom:2px solid #ca1b1b;padding-bottom:5px;margin-bottom:6px;}
         .brand-title{font-size:16px;color:#ca1b1b;font-weight:900;margin:0;line-height:1.05;}
         .invoice-title{font-size:12px;font-weight:900;color:#ca1b1b;letter-spacing:.35px;text-align:right;}
         .invoice-no{font-size:9.5px;font-weight:900;color:#111;text-align:right;margin-top:2px;}
-        .header-line{font-size:8.3px;color:#333;line-height:1.35;}
+        .header-line{font-size:8.3px;color:#333;line-height:1.25;}
         .header-label{font-weight:900;color:#ca1b1b;text-transform:uppercase;}
-        .top-details{display:grid;grid-template-columns:1.1fr .9fr;gap:7px;margin:7px 0 6px;}
-        .detail-box{border:1px solid #e1e1e1;border-radius:5px;padding:5px;min-height:42px;}
-        .label{font-size:7.4px;color:#ca1b1b;font-weight:900;text-transform:uppercase;letter-spacing:.25px;margin-bottom:3px;}
-        .info-text{font-size:8.2px;line-height:1.35;color:#111;}
-        .info-strong{font-size:9px;font-weight:900;color:#111;line-height:1.25;}
-        .notes-box{border:1px dashed #cfcfcf;border-radius:5px;padding:5px;margin:5px 0 7px;min-height:20px;}
-        table{width:100%;border-collapse:collapse;margin:5px 0 6px;table-layout:fixed;}
-        th{background:#ca1b1b;color:white;padding:4px 3px;font-size:7.2px;text-align:left;line-height:1.15;}
-        td{padding:3px 3px;border-bottom:1px solid #e8e8e8;font-size:7.5px;line-height:1.18;word-break:break-word;vertical-align:middle;}
-        .write-cell{border:1px solid #cfcfcf!important;min-height:13px;background:white;}
+        .top-details{display:grid;grid-template-columns:1.1fr .9fr;gap:6px;margin:6px 0 6px;}
+        .detail-box{border:1px solid #e1e1e1;border-radius:5px;padding:4px 5px;min-height:34px;}
+        .label{font-size:7.4px;color:#ca1b1b;font-weight:900;text-transform:uppercase;letter-spacing:.25px;margin-bottom:2px;}
+        .info-text{font-size:8.2px;line-height:1.22;color:#111;}
+        .info-strong{font-size:9px;font-weight:900;color:#111;line-height:1.18;}
+        table{width:100%;border-collapse:collapse;margin:5px 0 5px;table-layout:fixed;}
+        th{background:#ca1b1b;color:white;padding:3px 3px;font-size:7.2px;text-align:left;line-height:1.12;}
+        td{padding:2.4px 3px;border-bottom:1px solid #e8e8e8;font-size:7.5px;line-height:1.12;word-break:break-word;vertical-align:middle;}
+        .write-cell{border:1px solid #cfcfcf!important;min-height:11px;background:white;}
         .total-row{background:#fff9e6;font-weight:900;}
-        .bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px;}
-        .bottom-box{border:1px solid #d9d9d9;border-radius:5px;padding:5px;min-height:34px;}
-        .bottom-label{font-size:7.3px;font-weight:900;color:#ca1b1b;text-transform:uppercase;margin-bottom:4px;}
-        .bottom-value{font-size:8.4px;font-weight:800;color:#111;min-height:12px;}
-        .write-line{border-bottom:1px solid #333;height:14px;margin-top:2px;}
+        .bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;}
+        .bottom-box{border:1px solid #d9d9d9;border-radius:5px;padding:4px 5px;min-height:30px;}
+        .bottom-label{font-size:7.3px;font-weight:900;color:#ca1b1b;text-transform:uppercase;margin-bottom:3px;}
+        .bottom-value{font-size:8.4px;font-weight:800;color:#111;min-height:10px;}
+        .write-line{border-bottom:1px solid #333;height:12px;margin-top:1px;}
         .force-break{break-after:page;page-break-after:always;}
+        @page invoicePage{size:145mm 210mm;margin:0;}
+        @page{size:145mm 210mm;margin:0;}
         @media print{
-          @page{size:145mm 210mm;margin:0;}
-          html,body{background:white!important;margin:0!important;padding:0!important;}
-          .no-print{display:none!important;}
-          .invoice-page{
+          html,body{
             width:145mm!important;
-            min-height:209mm!important;
-            margin:0 auto!important;
-            padding:8mm 8mm!important;
-            box-shadow:none!important;
-            border:none!important;
+            min-width:145mm!important;
+            max-width:145mm!important;
+            height:auto!important;
+            min-height:0!important;
+            background:white!important;
+            margin:0!important;
+            padding:0!important;
             overflow:visible!important;
           }
-          .invoice-page:not(.force-break){break-after:auto;page-break-after:auto;}
+          body{font-family:Arial,sans-serif!important;color:#111!important;}
+          .no-print{display:none!important;}
+          .invoice-page{
+            page:invoicePage;
+            width:145mm!important;
+            max-width:145mm!important;
+            height:auto!important;
+            min-height:0!important;
+            max-height:210mm!important;
+            margin:0 auto!important;
+            padding:6mm 7mm 5mm!important;
+            box-shadow:none!important;
+            border:none!important;
+            overflow:hidden!important;
+            break-before:auto!important;
+            page-break-before:auto!important;
+            break-inside:avoid!important;
+            page-break-inside:avoid!important;
+            break-after:avoid!important;
+            page-break-after:avoid!important;
+          }
+          .print-all-invoices .invoice-page{break-after:page!important;page-break-after:always!important;}
+          .print-all-invoices .invoice-page:last-of-type{break-after:avoid!important;page-break-after:avoid!important;}
+          .single-invoice-print .invoice-page{break-after:avoid!important;page-break-after:avoid!important;}
           .force-break{break-after:page!important;page-break-after:always!important;}
         }
       </style>`
@@ -3479,7 +3504,7 @@ This will remove the invoice and its line items.`
     const grandTotal = dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
     pw.document.write(`<!DOCTYPE html><html><head><title>All Invoices — ${date}</title>
       ${buildDeliveryInvoicePrintCSS()}
-    </head><body>
+    </head><body class="print-all-invoices">
       <div class="no-print">
         <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT ALL</button>
         <p style="font-size:11px;color:#888;margin-top:6px;">${dayInvoices.length} invoice(s) — Total: ${php(grandTotal)}</p>
@@ -3512,7 +3537,7 @@ This will remove the invoice and its line items.`
     const pw = window.open('','_blank','width=650,height=900')
     pw.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoice_number}</title>
       ${buildDeliveryInvoicePrintCSS()}
-    </head><body>
+    </head><body class="single-invoice-print">
       <div class="no-print">
         <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT INVOICE</button>
         <p style="font-size:10px;color:#888;margin-top:5px;">Use 145mm × 210mm paper size when available. Set scale to 100% and turn off headers/footers.</p>
