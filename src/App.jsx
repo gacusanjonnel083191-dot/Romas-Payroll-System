@@ -1029,6 +1029,11 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
+    if (isOwnerSide) loadDeliveryInvoices()
+  }, [adminMode, adminRole])
+
+  useEffect(() => {
     const canViewFoundation = activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')
     if (!canViewFoundation || !foundationAutoRefresh) return
 
@@ -3105,6 +3110,141 @@ export default function App() {
     }
 
     return buildResellerCreditStatus(resellerId, data || [], today)
+  }
+
+  function getDaysUntilLocal(targetDate, asOfDate = today) {
+    const target = parseLocalDate(targetDate)
+    const asOf = parseLocalDate(asOfDate)
+    if (!target || !asOf) return null
+    return Math.floor((target.getTime() - asOf.getTime()) / (1000 * 60 * 60 * 24))
+  }
+
+  function getOwnerPaymentDeadlineAlerts(invoiceRows = deliveryInvoices, asOfDate = today) {
+    const openRows = (invoiceRows || [])
+      .filter(inv => getInvoiceBalance(inv) > 0)
+      .filter(inv => !['paid','cancelled'].includes(String(inv?.status || '').toLowerCase()))
+      .map(inv => {
+        const dueDate = getInvoiceCreditHoldDate(inv)
+        const daysUntilDue = getDaysUntilLocal(dueDate, asOfDate)
+        const balance = getInvoiceBalance(inv)
+        let urgency = 'open'
+        if (daysUntilDue !== null && daysUntilDue < 0) urgency = 'overdue'
+        else if (daysUntilDue === 0) urgency = 'due_today'
+        else if (daysUntilDue !== null && daysUntilDue <= 3) urgency = 'approaching'
+        return {
+          ...inv,
+          due_date_effective: dueDate,
+          days_until_due: daysUntilDue,
+          balance_amount: balance,
+          urgency
+        }
+      })
+      .sort((a, b) => {
+        const da = a.days_until_due ?? 99999
+        const db = b.days_until_due ?? 99999
+        if (da !== db) return da - db
+        return safeNum(b.balance_amount, 0) - safeNum(a.balance_amount, 0)
+      })
+
+    const warningRows = openRows.filter(r => ['overdue','due_today','approaching'].includes(r.urgency))
+    const overdueRows = warningRows.filter(r => r.urgency === 'overdue')
+    const dueTodayRows = warningRows.filter(r => r.urgency === 'due_today')
+    const approachingRows = warningRows.filter(r => r.urgency === 'approaching')
+    const totalOpenBalance = openRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0)
+    const warningBalance = warningRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0)
+
+    return {
+      openRows,
+      warningRows,
+      overdueRows,
+      dueTodayRows,
+      approachingRows,
+      totalOpenBalance,
+      warningBalance,
+      warningCount: warningRows.length,
+      overdueBalance: overdueRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0),
+      dueTodayBalance: dueTodayRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0),
+      approachingBalance: approachingRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0)
+    }
+  }
+
+  function getPaymentDeadlineLabel(row) {
+    if (row?.days_until_due === null || row?.days_until_due === undefined) return 'No due date'
+    if (row.days_until_due < 0) return `${Math.abs(row.days_until_due)} day(s) overdue`
+    if (row.days_until_due === 0) return 'Due today'
+    if (row.days_until_due === 1) return 'Due tomorrow'
+    return `Due in ${row.days_until_due} days`
+  }
+
+  function renderOwnerPaymentDeadlineWarning({ compact = false } = {}) {
+    const canSeeOwnerWarnings = ['owner','manager'].includes(String(adminRole || '').toLowerCase())
+    if (!canSeeOwnerWarnings) return null
+
+    const deadlineData = getOwnerPaymentDeadlineAlerts()
+    if (deadlineData.warningCount === 0) return null
+
+    const borderColor = deadlineData.overdueRows.length > 0 ? '#ca1b1b' : (deadlineData.dueTodayRows.length > 0 ? '#f57c00' : '#f5a623')
+    const bgColor = deadlineData.overdueRows.length > 0 ? '#fff5f5' : (deadlineData.dueTodayRows.length > 0 ? '#fff4e5' : '#fff8dc')
+    const title = deadlineData.overdueRows.length > 0
+      ? `🚨 Payment deadlines overdue — ${deadlineData.overdueRows.length} account/invoice${deadlineData.overdueRows.length === 1 ? '' : 's'}`
+      : deadlineData.dueTodayRows.length > 0
+        ? `⚠️ Payment due today — ${deadlineData.dueTodayRows.length} account/invoice${deadlineData.dueTodayRows.length === 1 ? '' : 's'}`
+        : `🔔 Payment deadlines approaching within 3 days — ${deadlineData.approachingRows.length} account/invoice${deadlineData.approachingRows.length === 1 ? '' : 's'}`
+
+    return (
+      <div style={{ position:'sticky', top:0, zIndex:80, background:bgColor, border:`2px solid ${borderColor}`, borderRadius:'14px', padding:compact?'12px':'14px', marginBottom:'16px', boxShadow:'0 6px 20px rgba(0,0,0,0.10)' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
+          <div>
+            <p style={{ color:borderColor, fontWeight:'900', fontSize:compact?'13px':'15px', margin:'0 0 5px', letterSpacing:'0.2px' }}>{title}</p>
+            <p style={{ color:'#7a1a1a', fontSize:'12px', lineHeight:1.5, margin:0 }}>
+              Owner collection warning: open reseller balances are monitored using invoice due dates. The warning appears 3 days before due date, on due date, and while overdue.
+            </p>
+          </div>
+          <button style={{ ...btnRed, width:'auto', marginTop:0, padding:'8px 14px', fontSize:'12px' }} onClick={()=>{ setActiveTab('sales'); setSalesView('receivables'); setInvoiceFilter(deadlineData.overdueRows.length > 0 ? 'overdue' : 'unpaid') }}>
+            💵 OPEN RECEIVABLES
+          </button>
+        </div>
+
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'10px' }}>
+          {[
+            ['Warning Balance', php(deadlineData.warningBalance), borderColor],
+            ['Overdue', `${deadlineData.overdueRows.length} · ${php(deadlineData.overdueBalance)}`, '#ca1b1b'],
+            ['Due Today', `${deadlineData.dueTodayRows.length} · ${php(deadlineData.dueTodayBalance)}`, '#f57c00'],
+            ['Due in 1–3 Days', `${deadlineData.approachingRows.length} · ${php(deadlineData.approachingBalance)}`, '#f5a623'],
+          ].map(([label, value, color]) => (
+            <div key={label} style={{ background:'white', border:'1px solid #f0e0c0', borderRadius:'10px', padding:'8px 10px' }}>
+              <p style={{ color:'#888', fontSize:'10px', fontWeight:'bold', margin:'0 0 3px', textTransform:'uppercase' }}>{label}</p>
+              <p style={{ color, fontSize:'13px', fontWeight:'900', margin:0 }}>{value}</p>
+            </div>
+          ))}
+        </div>
+
+        {!compact && (
+          <div style={{ marginTop:'10px', border:'1px solid #f0d6d6', borderRadius:'10px', overflow:'hidden', background:'white' }}>
+            <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 0.9fr 0.8fr', gap:'8px', background:'#ca1b1b', color:'white', padding:'8px 10px', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.3px' }}>
+              <span>RESELLER / ACCOUNT</span><span>INVOICE</span><span>DUE DATE</span><span>BALANCE</span>
+            </div>
+            {deadlineData.warningRows.slice(0, 8).map(row => (
+              <div key={row.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 0.9fr 0.8fr', gap:'8px', padding:'8px 10px', borderTop:'1px solid #f2f2f2', alignItems:'center' }}>
+                <div>
+                  <p style={{ fontSize:'12px', fontWeight:'bold', color:'#333', margin:'0 0 2px' }}>{row.reseller_name || 'Unassigned reseller'}</p>
+                  <p style={{ fontSize:'10px', color:'#888', margin:0 }}>Delivered: {row.delivery_date || '—'}</p>
+                </div>
+                <div>
+                  <p style={{ fontSize:'12px', fontWeight:'bold', color:'#333', margin:'0 0 2px' }}>{row.invoice_number || row.id}</p>
+                  <p style={{ fontSize:'10px', color:'#888', margin:0 }}>{getPaymentDeadlineLabel(row)}</p>
+                </div>
+                <span style={{ fontSize:'12px', fontWeight:'bold', color:row.urgency==='overdue'?'#ca1b1b':row.urgency==='due_today'?'#f57c00':'#b36b00' }}>{row.due_date_effective || '—'}</span>
+                <span style={{ fontSize:'12px', fontWeight:'900', color:'#ca1b1b' }}>{php(row.balance_amount)}</span>
+              </div>
+            ))}
+            {deadlineData.warningRows.length > 8 && (
+              <p style={{ padding:'8px 10px', margin:0, fontSize:'11px', color:'#888', background:'#fafafa' }}>+ {deadlineData.warningRows.length - 8} more warning account(s). Open Receivables to review all.</p>
+            )}
+          </div>
+        )}
+      </div>
+    )
   }
   async function autoMarkTodayDelivered() {
     try {
@@ -10341,6 +10481,7 @@ This will create one approved expense record using the total payroll earnings.`)
     const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
     const visibleSubTabs = currentSection.tabs.filter(t => canAccess(t.key))
     const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
+    const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
     const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
     const cashAdvanceCoveragePeriodOptions = (() => {
       const map = {}
@@ -10489,7 +10630,7 @@ This will create one approved expense record using the total payroll earnings.`)
                 {visibleSections.map(section => {
                   const isActive = currentSection.key === section.key
                   const hasBadge = (section.key==='payroll' && (leaveRequests.filter(r=>r.status==='pending').length>0||cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
-                                   (section.key==='sales' && pendingExpenses>0 && adminRole==='owner')
+                                   (section.key==='sales' && ((pendingExpenses>0 && adminRole==='owner') || ownerDeadlineSummary.warningCount>0))
                   return (
                     <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:isActive?'#ca1b1b':'transparent', color:isActive?'white':'rgba(255,255,255,0.65)', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
                       <span style={{ fontSize:'16px', flexShrink:0 }}>{section.icon}</span>
@@ -10534,6 +10675,7 @@ This will create one approved expense record using the total payroll earnings.`)
             {activeTab==='dashboard' && (
               <div>
                 <h2 style={h2s}>🏠 Dashboard — {today}</h2>
+                {renderOwnerPaymentDeadlineWarning()}
 
                 {/* TIMED IN MODAL */}
                 {showTimedInModal && (
@@ -10659,7 +10801,7 @@ This will create one approved expense record using the total payroll earnings.`)
                 )}
                 <div>
                   <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'12px' }}>
-                    <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
+                    <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
                     {(adminRole==='owner'||adminRole==='hr') && (
                       <button style={{ ...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={autoApplySIL}>🌿 AUTO-APPLY SIL</button>
                     )}
@@ -14501,6 +14643,7 @@ This will create one approved expense record using the total payroll earnings.`)
                   <h2 style={h2s}>📈 Sales & Resellers</h2>
                   {salesView==='financial' && financialData && <button style={{ ...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printPLReport}>🖨️ PRINT P&L</button>}
                 </div>
+                {renderOwnerPaymentDeadlineWarning({ compact:salesView!=='dashboard' })}
 
                 {/* Sub-navigation */}
                 <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
