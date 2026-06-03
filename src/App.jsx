@@ -8893,6 +8893,22 @@ This will create one approved expense record using the total payroll earnings.`)
       const { data:createdCA, error:insertError } = await supabase.from('cash_advances').insert(caPayload).select().single()
       if (insertError) { showToast('Failed to record cash advance: '+insertError.message,'red'); return }
 
+      // Hard safety: a newly approved cash advance must start ACTIVE/UNPAID.
+      // It must never be marked Paid until payroll is released or owner manually settles it.
+      const { error:normalizeInsertError } = await supabase.from('cash_advances').update({
+        amount_paid:0,
+        balance:totalAmount,
+        per_payroll_deduction:perPayroll,
+        installments_total:installments,
+        installments_remaining:installments,
+        status:'Unpaid'
+      }).eq('id', createdCA.id)
+      if (normalizeInsertError) {
+        await supabase.from('cash_advances').delete().eq('id', createdCA.id)
+        showToast('Failed to keep cash advance active: '+normalizeInsertError.message,'red')
+        return
+      }
+
       const { error:updateError } = await supabase.from('cash_advance_requests').update({ status:'approved' }).eq('id', id)
       if (updateError) {
         // Roll back the ledger record where possible so request and CA ledger do not mismatch.
@@ -8910,6 +8926,45 @@ This will create one approved expense record using the total payroll earnings.`)
       setProcessingItems(prev=>{ const copy={...prev}; delete copy[`ca_${id}`]; return copy })
     }
   }
+
+  async function reopenCashAdvanceForPayrollDeduction(ca) {
+    if (!ca?.id) return
+    if (adminRole !== 'owner') {
+      showToast('Owner access is required to reopen a cash advance balance.', 'red')
+      return
+    }
+
+    const amount = Math.max(0, safeNum(ca.amount, 0))
+    if (!amount) { showToast('Invalid cash advance amount.', 'red'); return }
+
+    const installments = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || 1))
+    const perPayroll = safeNum(ca.per_payroll_deduction, 0) > 0
+      ? safeNum(ca.per_payroll_deduction, 0)
+      : Math.ceil((amount / installments) * 100) / 100
+
+    if (!window.confirm(`Reopen this cash advance as ACTIVE/UNPAID?\n\nAmount: ${php(amount)}\nThis will set Paid/Deducted to PHP 0.00 and Balance to ${php(amount)} so it can be deducted in the next payroll release.`)) return
+
+    const existingNotes = String(ca.notes || '').trim()
+    const newNotes = `${existingNotes}${existingNotes ? ' | ' : ''}REOPENED AS ACTIVE CA BY OWNER ${new Date().toISOString().slice(0,10)}`
+
+    const { error } = await supabase.from('cash_advances').update({
+      amount_paid:0,
+      balance:amount,
+      per_payroll_deduction:perPayroll,
+      installments_total:installments,
+      installments_remaining:installments,
+      status:'Unpaid',
+      notes:newNotes
+    }).eq('id', ca.id)
+
+    if (error) { showToast('Failed to reopen cash advance: ' + error.message, 'red'); return }
+
+    await logAudit('CA REOPENED AS ACTIVE', adminRole, ca.employee_name || ca.employee_code || 'Employee', `${php(amount)} reopened for payroll deduction. CA ID: ${ca.id}`)
+    showToast('✅ Cash advance reopened as active/unpaid. It can now deduct in the next payroll release.')
+    await loadCashAdvanceCoverage(payrollStart, payrollEnd)
+    if (employee?.id) loadMyCashAdvances(employee)
+  }
+
   async function loadPayslipDisputes() {
     const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'pending').order('created_at', { ascending:false })
     setPayslipDisputes(data || [])
@@ -11543,7 +11598,16 @@ This will create one approved expense record using the total payroll earnings.`)
                                   <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount_paid)}</td>
                                   <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:safeNum(ca.balance,0)>0?'#ca1b1b':'#2d8a4e' }}>{php(ca.balance)}</td>
                                   <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>{ca.installments_remaining ?? '—'}</td>
-                                  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}><Badge label={String(ca.status||'Unknown')} color={String(ca.status||'').toLowerCase()==='paid'?'green':'orange'} /></td>
+                                  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>
+                                    <Badge label={String(ca.status||'Unknown')} color={String(ca.status||'').toLowerCase()==='paid'?'green':'orange'} />
+                                    {adminRole==='owner' && String(ca.status||'').toLowerCase()==='paid' && safeNum(ca.balance,0)<=0 && safeNum(ca.amount,0)>0 && safeNum(ca.amount_paid,0)>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
+                                      <button
+                                        style={{ background:'#fff8dc', color:'#ca1b1b', border:'1px solid #FDD412', borderRadius:'8px', padding:'5px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'10px', marginTop:'6px' }}
+                                        onClick={()=>reopenCashAdvanceForPayrollDeduction(ca)}
+                                        title="Owner correction: use only if this CA was wrongly marked paid before payroll deduction."
+                                      >↩ REOPEN</button>
+                                    )}
+                                  </td>
                                 </tr>
                               ))}
                             </tbody>
