@@ -852,6 +852,24 @@ export default function App() {
   const [salesNotes, setSalesNotes] = useState('')
   const [savingSales, setSavingSales] = useState(false)
   const [dailyExpenses, setDailyExpenses] = useState([])
+  const [companyPayables, setCompanyPayables] = useState([])
+  const [companyPayablesLoading, setCompanyPayablesLoading] = useState(false)
+  const [companyPayablesError, setCompanyPayablesError] = useState('')
+  const [showPayableForm, setShowPayableForm] = useState(false)
+  const [payableForm, setPayableForm] = useState({
+    payable_date:today,
+    due_date:today,
+    payee_type:'Supplier',
+    payee_name:'',
+    category:'Supplier Payment',
+    amount:'',
+    payment_type:'Accounts Payable',
+    payment_method:'Cash',
+    bank_name:'',
+    check_number:'',
+    check_date:'',
+    notes:''
+  })
   const [cashReconciliations, setCashReconciliations] = useState([])
   const [reconciliationDate, setReconciliationDate] = useState(today)
   const [actualCash, setActualCash] = useState('')
@@ -918,6 +936,10 @@ export default function App() {
   const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)
   const FOUNDATION_REFRESH_SECONDS = 60
   const EXPENSE_CATEGORIES = ['Payroll Expense','Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Miscellaneous']
+  const PAYABLE_TYPES = ['Supplier','Payroll','Government Contributions','Rent','Utilities','Loan','Equipment','Packaging Supplier','Raw Material Supplier','Other']
+  const PAYABLE_CATEGORIES = ['Supplier Payment','Payroll','SSS / PhilHealth / Pag-IBIG','Rent','Electricity','Water','Internet / Phone','Loan / Financing','Equipment Payable','Packaging Supplies','Raw Materials','Transportation/Fuel','Marketing/Promotion','Miscellaneous']
+  const PAYABLE_PAYMENT_TYPES = ['Accounts Payable','PDC','Scheduled Expense','Payroll Payable','Supplier Bill','Government Remittance','Loan Payment']
+  const PAYABLE_METHODS = ['Cash','GCash','Bank Transfer','Check','PDC','Online Banking','Other']
   const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
   const SALES_CHANNELS = [{ value:'walkin', label:'🏪 Walk-in' }, { value:'messenger', label:'💬 Messenger' }]
   const [inventorySearch, setInventorySearch] = useState('')
@@ -3119,32 +3141,78 @@ export default function App() {
     return Math.floor((target.getTime() - asOf.getTime()) / (1000 * 60 * 60 * 24))
   }
 
-  function getOwnerPaymentDeadlineAlerts(invoiceRows = deliveryInvoices, asOfDate = today) {
-    const openRows = (invoiceRows || [])
-      .filter(inv => getInvoiceBalance(inv) > 0)
-      .filter(inv => !['paid','cancelled'].includes(String(inv?.status || '').toLowerCase()))
-      .map(inv => {
-        const dueDate = getInvoiceCreditHoldDate(inv)
+  function getPayableDueDate(row) {
+    return row?.due_date || row?.check_date || row?.payable_date || row?.expense_date || today
+  }
+
+  function normalizeCompanyPayable(row) {
+    const dueDate = getPayableDueDate(row)
+    const daysUntilDue = getDaysUntilLocal(dueDate, today)
+    const amount = safeNum(row?.amount, 0)
+    const status = String(row?.status || 'scheduled').toLowerCase()
+    let urgency = 'open'
+    if (daysUntilDue !== null && daysUntilDue < 0) urgency = 'overdue'
+    else if (daysUntilDue === 0) urgency = 'due_today'
+    else if (daysUntilDue !== null && daysUntilDue <= 3) urgency = 'approaching'
+
+    return {
+      ...row,
+      source:'company_payables',
+      due_date_effective:dueDate,
+      days_until_due:daysUntilDue,
+      balance_amount:amount,
+      urgency,
+      status_normalized:status,
+      display_payee:row?.payee_name || row?.supplier_name || row?.category || 'Company payable',
+      display_category:row?.category || row?.payment_type || 'Payable'
+    }
+  }
+
+  function normalizePendingExpenseAsPayable(exp) {
+    const dueDate = exp?.expense_date || today
+    const daysUntilDue = getDaysUntilLocal(dueDate, today)
+    let urgency = 'open'
+    if (daysUntilDue !== null && daysUntilDue < 0) urgency = 'overdue'
+    else if (daysUntilDue === 0) urgency = 'due_today'
+    else if (daysUntilDue !== null && daysUntilDue <= 3) urgency = 'approaching'
+    return {
+      ...exp,
+      source:'daily_expenses',
+      due_date_effective:dueDate,
+      days_until_due:daysUntilDue,
+      balance_amount:safeNum(exp?.amount, 0),
+      urgency,
+      status_normalized:String(exp?.status || 'pending').toLowerCase(),
+      display_payee:exp?.description || exp?.category || 'Pending expense',
+      display_category:exp?.category || 'Expense Approval'
+    }
+  }
+
+  function getOwnerPaymentDeadlineAlerts(payableRows = companyPayables, expenseRows = dailyExpenses, asOfDate = today) {
+    const openCompanyPayables = (payableRows || [])
+      .filter(row => !['paid','cancelled','void','rejected'].includes(String(row?.status || 'scheduled').toLowerCase()))
+      .filter(row => safeNum(row?.amount, 0) > 0)
+      .map(row => {
+        const dueDate = getPayableDueDate(row)
         const daysUntilDue = getDaysUntilLocal(dueDate, asOfDate)
-        const balance = getInvoiceBalance(inv)
         let urgency = 'open'
         if (daysUntilDue !== null && daysUntilDue < 0) urgency = 'overdue'
         else if (daysUntilDue === 0) urgency = 'due_today'
         else if (daysUntilDue !== null && daysUntilDue <= 3) urgency = 'approaching'
-        return {
-          ...inv,
-          due_date_effective: dueDate,
-          days_until_due: daysUntilDue,
-          balance_amount: balance,
-          urgency
-        }
+        return { ...normalizeCompanyPayable(row), due_date_effective:dueDate, days_until_due:daysUntilDue, urgency }
       })
-      .sort((a, b) => {
-        const da = a.days_until_due ?? 99999
-        const db = b.days_until_due ?? 99999
-        if (da !== db) return da - db
-        return safeNum(b.balance_amount, 0) - safeNum(a.balance_amount, 0)
-      })
+
+    const pendingExpenseRows = (expenseRows || [])
+      .filter(exp => String(exp?.status || '').toLowerCase() === 'pending')
+      .filter(exp => safeNum(exp?.amount, 0) > 0)
+      .map(normalizePendingExpenseAsPayable)
+
+    const openRows = [...openCompanyPayables, ...pendingExpenseRows].sort((a, b) => {
+      const da = a.days_until_due ?? 99999
+      const db = b.days_until_due ?? 99999
+      if (da !== db) return da - db
+      return safeNum(b.balance_amount, 0) - safeNum(a.balance_amount, 0)
+    })
 
     const warningRows = openRows.filter(r => ['overdue','due_today','approaching'].includes(r.urgency))
     const overdueRows = warningRows.filter(r => r.urgency === 'overdue')
@@ -3186,10 +3254,10 @@ export default function App() {
     const borderColor = deadlineData.overdueRows.length > 0 ? '#ca1b1b' : (deadlineData.dueTodayRows.length > 0 ? '#f57c00' : '#f5a623')
     const bgColor = deadlineData.overdueRows.length > 0 ? '#fff5f5' : (deadlineData.dueTodayRows.length > 0 ? '#fff4e5' : '#fff8dc')
     const title = deadlineData.overdueRows.length > 0
-      ? `🚨 Payment deadlines overdue — ${deadlineData.overdueRows.length} account/invoice${deadlineData.overdueRows.length === 1 ? '' : 's'}`
+      ? `🚨 Company payables overdue — ${deadlineData.overdueRows.length} payable${deadlineData.overdueRows.length === 1 ? '' : 's'}`
       : deadlineData.dueTodayRows.length > 0
-        ? `⚠️ Payment due today — ${deadlineData.dueTodayRows.length} account/invoice${deadlineData.dueTodayRows.length === 1 ? '' : 's'}`
-        : `🔔 Payment deadlines approaching within 3 days — ${deadlineData.approachingRows.length} account/invoice${deadlineData.approachingRows.length === 1 ? '' : 's'}`
+        ? `⚠️ Company payments due today — ${deadlineData.dueTodayRows.length} payable${deadlineData.dueTodayRows.length === 1 ? '' : 's'}`
+        : `🔔 Company payables approaching within 3 days — ${deadlineData.approachingRows.length} payable${deadlineData.approachingRows.length === 1 ? '' : 's'}`
 
     return (
       <div style={{ position:'sticky', top:0, zIndex:80, background:bgColor, border:`2px solid ${borderColor}`, borderRadius:'14px', padding:compact?'12px':'14px', marginBottom:'16px', boxShadow:'0 6px 20px rgba(0,0,0,0.10)' }}>
@@ -3197,17 +3265,17 @@ export default function App() {
           <div>
             <p style={{ color:borderColor, fontWeight:'900', fontSize:compact?'13px':'15px', margin:'0 0 5px', letterSpacing:'0.2px' }}>{title}</p>
             <p style={{ color:'#7a1a1a', fontSize:'12px', lineHeight:1.5, margin:0 }}>
-              Owner collection warning: open reseller balances are monitored using invoice due dates. The warning appears 3 days before due date, on due date, and while overdue.
+              Owner payable warning: supplier bills, PDCs, payroll payables, government remittances, rent, utilities, loans, and scheduled company expenses are monitored by due date. Warning starts 3 days before due date.
             </p>
           </div>
-          <button style={{ ...btnRed, width:'auto', marginTop:0, padding:'8px 14px', fontSize:'12px' }} onClick={()=>{ setActiveTab('sales'); setSalesView('receivables'); setInvoiceFilter(deadlineData.overdueRows.length > 0 ? 'overdue' : 'unpaid') }}>
-            💵 OPEN RECEIVABLES
+          <button style={{ ...btnRed, width:'auto', marginTop:0, padding:'8px 14px', fontSize:'12px' }} onClick={()=>{ setActiveTab('sales'); setSalesView('payables') }}>
+            📅 OPEN PAYABLES / PDC
           </button>
         </div>
 
         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'10px' }}>
           {[
-            ['Warning Balance', php(deadlineData.warningBalance), borderColor],
+            ['Warning Amount', php(deadlineData.warningBalance), borderColor],
             ['Overdue', `${deadlineData.overdueRows.length} · ${php(deadlineData.overdueBalance)}`, '#ca1b1b'],
             ['Due Today', `${deadlineData.dueTodayRows.length} · ${php(deadlineData.dueTodayBalance)}`, '#f57c00'],
             ['Due in 1–3 Days', `${deadlineData.approachingRows.length} · ${php(deadlineData.approachingBalance)}`, '#f5a623'],
@@ -3221,17 +3289,17 @@ export default function App() {
 
         {!compact && (
           <div style={{ marginTop:'10px', border:'1px solid #f0d6d6', borderRadius:'10px', overflow:'hidden', background:'white' }}>
-            <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 0.9fr 0.8fr', gap:'8px', background:'#ca1b1b', color:'white', padding:'8px 10px', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.3px' }}>
-              <span>RESELLER / ACCOUNT</span><span>INVOICE</span><span>DUE DATE</span><span>BALANCE</span>
+            <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.9fr 0.8fr', gap:'8px', background:'#ca1b1b', color:'white', padding:'8px 10px', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.3px' }}>
+              <span>PAYEE / ACCOUNT</span><span>CATEGORY</span><span>DUE DATE</span><span>AMOUNT</span>
             </div>
             {deadlineData.warningRows.slice(0, 8).map(row => (
-              <div key={row.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 0.9fr 0.8fr', gap:'8px', padding:'8px 10px', borderTop:'1px solid #f2f2f2', alignItems:'center' }}>
+              <div key={`${row.source}-${row.id}`} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.9fr 0.8fr', gap:'8px', padding:'8px 10px', borderTop:'1px solid #f2f2f2', alignItems:'center' }}>
                 <div>
-                  <p style={{ fontSize:'12px', fontWeight:'bold', color:'#333', margin:'0 0 2px' }}>{row.reseller_name || 'Unassigned reseller'}</p>
-                  <p style={{ fontSize:'10px', color:'#888', margin:0 }}>Delivered: {row.delivery_date || '—'}</p>
+                  <p style={{ fontSize:'12px', fontWeight:'bold', color:'#333', margin:'0 0 2px' }}>{row.display_payee}</p>
+                  <p style={{ fontSize:'10px', color:'#888', margin:0 }}>{row.payment_type || row.payee_type || row.source}</p>
                 </div>
                 <div>
-                  <p style={{ fontSize:'12px', fontWeight:'bold', color:'#333', margin:'0 0 2px' }}>{row.invoice_number || row.id}</p>
+                  <p style={{ fontSize:'12px', fontWeight:'bold', color:'#333', margin:'0 0 2px' }}>{row.display_category}</p>
                   <p style={{ fontSize:'10px', color:'#888', margin:0 }}>{getPaymentDeadlineLabel(row)}</p>
                 </div>
                 <span style={{ fontSize:'12px', fontWeight:'bold', color:row.urgency==='overdue'?'#ca1b1b':row.urgency==='due_today'?'#f57c00':'#b36b00' }}>{row.due_date_effective || '—'}</span>
@@ -3239,7 +3307,7 @@ export default function App() {
               </div>
             ))}
             {deadlineData.warningRows.length > 8 && (
-              <p style={{ padding:'8px 10px', margin:0, fontSize:'11px', color:'#888', background:'#fafafa' }}>+ {deadlineData.warningRows.length - 8} more warning account(s). Open Receivables to review all.</p>
+              <p style={{ padding:'8px 10px', margin:0, fontSize:'11px', color:'#888', background:'#fafafa' }}>+ {deadlineData.warningRows.length - 8} more payable warning(s). Open Payables / PDC to review all.</p>
             )}
           </div>
         )}
@@ -5190,6 +5258,97 @@ This will remove the invoice and its line items.`
     if (!window.confirm('Delete this expense?')) return
     await supabase.from('daily_expenses').delete().eq('id', id)
     showToast('✅ Expense deleted.'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-deleted')
+  }
+
+  async function loadCompanyPayables() {
+    setCompanyPayablesLoading(true)
+    setCompanyPayablesError('')
+    try {
+      const { data, error } = await supabase
+        .from('company_payables')
+        .select('*')
+        .order('due_date', { ascending:true })
+        .limit(500)
+      if (error) {
+        console.warn('company_payables query failed:', error)
+        setCompanyPayables([])
+        setCompanyPayablesError(error.message || 'company_payables table is not ready yet.')
+        return
+      }
+      setCompanyPayables(data || [])
+    } catch(e) {
+      console.warn('loadCompanyPayables:', e)
+      setCompanyPayables([])
+      setCompanyPayablesError(String(e?.message || e || 'Unable to load company payables.'))
+    } finally {
+      setCompanyPayablesLoading(false)
+    }
+  }
+
+  async function saveCompanyPayable() {
+    if (!payableForm.payee_name.trim()) { showToast('❌ Please enter payee/supplier/account name.', 'red'); return }
+    if (!payableForm.due_date) { showToast('❌ Please select a due date.', 'red'); return }
+    const amount = safeNum(payableForm.amount, 0)
+    if (amount <= 0) { showToast('❌ Please enter a valid amount.', 'red'); return }
+
+    const payload = {
+      payable_date: payableForm.payable_date || today,
+      due_date: payableForm.due_date,
+      payee_type: payableForm.payee_type || 'Supplier',
+      payee_name: payableForm.payee_name.trim(),
+      category: payableForm.category || 'Supplier Payment',
+      amount,
+      payment_type: payableForm.payment_type || 'Accounts Payable',
+      payment_method: payableForm.payment_method || 'Cash',
+      bank_name: payableForm.bank_name || '',
+      check_number: payableForm.check_number || '',
+      check_date: payableForm.check_date || null,
+      notes: payableForm.notes || '',
+      status: 'scheduled',
+      created_by: adminRole || 'Admin'
+    }
+
+    const { error } = await supabase.from('company_payables').insert(payload)
+    if (error) {
+      showToast('❌ Failed to save payable/PDC: ' + error.message, 'red')
+      setCompanyPayablesError(error.message)
+      return
+    }
+
+    await logAudit('COMPANY PAYABLE ADDED', adminRole || 'Admin', payload.payee_name, `${payload.category} | Due: ${payload.due_date} | ${php(payload.amount)} | ${payload.payment_type}`)
+    showToast('✅ Payable / PDC saved.')
+    setPayableForm({ payable_date:today, due_date:today, payee_type:'Supplier', payee_name:'', category:'Supplier Payment', amount:'', payment_type:'Accounts Payable', payment_method:'Cash', bank_name:'', check_number:'', check_date:'', notes:'' })
+    setShowPayableForm(false)
+    loadCompanyPayables()
+  }
+
+  async function markCompanyPayablePaid(row) {
+    if (!row?.id) return
+    if (!window.confirm(`Mark ${row.payee_name || 'this payable'} as PAID?`)) return
+    const { error } = await supabase.from('company_payables').update({ status:'paid', paid_at:new Date().toISOString(), paid_by:adminRole || 'Admin' }).eq('id', row.id)
+    if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
+    await logAudit('COMPANY PAYABLE PAID', adminRole || 'Admin', row.payee_name || '', `${row.category || ''} | ${php(row.amount)} | Due: ${row.due_date || ''}`)
+    showToast('✅ Payable marked paid.')
+    loadCompanyPayables()
+  }
+
+  async function cancelCompanyPayable(row) {
+    if (!row?.id) return
+    if (!window.confirm(`Cancel ${row.payee_name || 'this payable'}?`)) return
+    const { error } = await supabase.from('company_payables').update({ status:'cancelled' }).eq('id', row.id)
+    if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
+    await logAudit('COMPANY PAYABLE CANCELLED', adminRole || 'Admin', row.payee_name || '', `${row.category || ''} | ${php(row.amount)}`)
+    showToast('✅ Payable cancelled.')
+    loadCompanyPayables()
+  }
+
+  async function deleteCompanyPayable(row) {
+    if (!row?.id) return
+    if (!window.confirm('Delete this payable/PDC permanently?')) return
+    const { error } = await supabase.from('company_payables').delete().eq('id', row.id)
+    if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
+    showToast('✅ Payable deleted.')
+    loadCompanyPayables()
   }
   // ── Financial Dashboard ───────────────────────────────────────────────────
   async function loadFinancialData() {
@@ -10512,9 +10671,9 @@ This will create one approved expense record using the total payroll earnings.`)
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
       if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
       if(key==='schedule') { loadExistingSchedules() }
-      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
-      if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadFinancialData() }
-      if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
+      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+      if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
+      if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
       if(key==='franchise') { loadFranchises() }
     }
 
@@ -14647,7 +14806,7 @@ This will create one approved expense record using the total payroll earnings.`)
 
                 {/* Sub-navigation */}
                 <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['adjustments','🧾 Adjustments'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].map(([v,l])=>(
+                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['adjustments','🧾 Adjustments'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['payables','📅 Payables / PDC'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].map(([v,l])=>(
                     <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
                   ))}
                 </div>
@@ -15835,6 +15994,105 @@ This will create one approved expense record using the total payroll earnings.`)
                 )}
 
                 {/* ── EXPENSES VIEW ── */}
+                {salesView==='payables' && (
+                  <div>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
+                      <div>
+                        <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>📅 Company Payables / PDC Tracker</h3>
+                        <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Track supplier due dates, post-dated checks, payroll payables, government remittances, rent, utilities, loans, and upcoming company expenses. Owner warning starts 3 days before due date.</p>
+                      </div>
+                      <button style={{ ...btnYellow, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>setShowPayableForm(!showPayableForm)}>{showPayableForm ? '✕ CANCEL' : '➕ ADD PDC / PAYABLE'}</button>
+                    </div>
+
+                    {companyPayablesError && (
+                      <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+                        <p style={{ color:'#ca1b1b', fontWeight:'bold', margin:'0 0 6px' }}>⚠️ Payables database table is not ready</p>
+                        <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Run the supplied Supabase SQL setup once, then refresh this page. Error: {companyPayablesError}</p>
+                      </div>
+                    )}
+
+                    {showPayableForm && (
+                      <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+                        <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>➕ Add Incoming Company Expense / PDC</h4>
+                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px' }}>
+                          <div><label style={lblS}>Payable Date:</label><input type="date" value={payableForm.payable_date} onChange={e=>setPayableForm(p=>({...p,payable_date:e.target.value}))} style={inputStyle} /></div>
+                          <div><label style={lblS}>Due Date:</label><input type="date" value={payableForm.due_date} onChange={e=>setPayableForm(p=>({...p,due_date:e.target.value}))} style={{ ...inputStyle, border:'2px solid #FDD412', fontWeight:'bold' }} /></div>
+                          <div><label style={lblS}>Payee Type:</label><select value={payableForm.payee_type} onChange={e=>setPayableForm(p=>({...p,payee_type:e.target.value}))} style={inputStyle}>{PAYABLE_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
+                          <div><label style={lblS}>Payee / Supplier / Account Name:</label><input value={payableForm.payee_name} onChange={e=>setPayableForm(p=>({...p,payee_name:e.target.value}))} placeholder="e.g. Flour supplier, SSS, Payroll, Landlord" style={inputStyle} /></div>
+                          <div><label style={lblS}>Category:</label><select value={payableForm.category} onChange={e=>setPayableForm(p=>({...p,category:e.target.value}))} style={inputStyle}>{PAYABLE_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
+                          <div><label style={lblS}>Amount (₱):</label><input type="number" value={payableForm.amount} onChange={e=>setPayableForm(p=>({...p,amount:e.target.value}))} placeholder="0.00" style={inputStyle} min="0" step="0.01" /></div>
+                          <div><label style={lblS}>Payment Type:</label><select value={payableForm.payment_type} onChange={e=>setPayableForm(p=>({...p,payment_type:e.target.value,payment_method:e.target.value==='PDC'?'PDC':p.payment_method}))} style={inputStyle}>{PAYABLE_PAYMENT_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
+                          <div><label style={lblS}>Payment Method:</label><select value={payableForm.payment_method} onChange={e=>setPayableForm(p=>({...p,payment_method:e.target.value}))} style={inputStyle}>{PAYABLE_METHODS.map(m=><option key={m}>{m}</option>)}</select></div>
+                          <div><label style={lblS}>Bank Name:</label><input value={payableForm.bank_name} onChange={e=>setPayableForm(p=>({...p,bank_name:e.target.value}))} placeholder="e.g. BDO / Metrobank" style={inputStyle} /></div>
+                          <div><label style={lblS}>Check Number:</label><input value={payableForm.check_number} onChange={e=>setPayableForm(p=>({...p,check_number:e.target.value}))} placeholder="For PDC/check payments" style={inputStyle} /></div>
+                          <div><label style={lblS}>Check Date:</label><input type="date" value={payableForm.check_date} onChange={e=>setPayableForm(p=>({...p,check_date:e.target.value}))} style={inputStyle} /></div>
+                          <div><label style={lblS}>Notes:</label><input value={payableForm.notes} onChange={e=>setPayableForm(p=>({...p,notes:e.target.value}))} placeholder="Invoice no., billing period, remarks..." style={inputStyle} /></div>
+                        </div>
+                        <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:'4px' }} onClick={saveCompanyPayable}>💾 SAVE PAYABLE / PDC</button>
+                      </div>
+                    )}
+
+                    {(()=>{
+                      const alertData = getOwnerPaymentDeadlineAlerts()
+                      const openPayables = alertData.openRows
+                      const paidPayables = (companyPayables || []).filter(p=>String(p.status||'').toLowerCase()==='paid')
+                      return (
+                        <>
+                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
+                            {[
+                              ['Open Payables', php(alertData.totalOpenBalance), '#ca1b1b'],
+                              ['Due within 3 Days', php(alertData.warningBalance), '#f57c00'],
+                              ['Overdue', `${alertData.overdueRows.length} item(s)`, '#ca1b1b'],
+                              ['Paid Records', paidPayables.length, '#2d8a4e'],
+                            ].map(([label,value,color])=>(
+                              <div key={label} style={{ background:'white', border:`1px solid ${color}33`, borderRadius:'12px', padding:'14px', textAlign:'center' }}>
+                                <p style={{ color:'#888', fontSize:'10px', fontWeight:'bold', margin:'0 0 5px', textTransform:'uppercase' }}>{label}</p>
+                                <p style={{ color, fontWeight:'900', fontSize:'17px', margin:0 }}>{value}</p>
+                              </div>
+                            ))}
+                          </div>
+
+                          {companyPayablesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading payables...</p>}
+                          {!companyPayablesLoading && openPayables.length===0 && !companyPayablesError && <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No open company payables or PDCs recorded yet.</p>}
+
+                          {openPayables.length > 0 && (
+                            <div style={{ background:'white', borderRadius:'14px', overflow:'hidden', border:'1px solid #eee', marginBottom:'16px' }}>
+                              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.8fr 0.8fr 0.9fr 1fr', gap:'8px', background:'#ca1b1b', color:'white', padding:'10px 12px', fontSize:'11px', fontWeight:'bold' }}>
+                                <span>PAYEE / ACCOUNT</span><span>CATEGORY</span><span>DUE DATE</span><span>AMOUNT</span><span>PAYMENT</span><span>ACTION</span>
+                              </div>
+                              {openPayables.map(row => (
+                                <div key={`${row.source}-${row.id}`} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.8fr 0.8fr 0.9fr 1fr', gap:'8px', padding:'10px 12px', borderTop:'1px solid #f0f0f0', alignItems:'center', background:row.urgency==='overdue'?'#fff5f5':row.urgency==='due_today'?'#fff4e5':row.urgency==='approaching'?'#fffdf0':'white' }}>
+                                  <div><p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.display_payee}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.payee_type || row.source}</p></div>
+                                  <div><p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.display_category}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.notes || row.description || '—'}</p></div>
+                                  <div><p style={{ fontWeight:'900', color:row.urgency==='overdue'?'#ca1b1b':row.urgency==='due_today'?'#f57c00':'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.due_date_effective}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{getPaymentDeadlineLabel(row)}</p></div>
+                                  <p style={{ fontWeight:'900', color:'#ca1b1b', fontSize:'13px', margin:0 }}>{php(row.balance_amount)}</p>
+                                  <div><p style={{ fontWeight:'bold', color:'#555', fontSize:'11px', margin:'0 0 2px' }}>{row.payment_type || row.payment_method || '—'}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.check_number ? `Check #${row.check_number}` : row.bank_name || '—'}</p></div>
+                                  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                                    {row.source==='company_payables' ? <button onClick={()=>markCompanyPayablePaid(row)} style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>PAID</button> : <button onClick={()=>setSalesView('expenses')} style={{ background:'#f5c518', color:'#333', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>REVIEW</button>}
+                                    {row.source==='company_payables' && <button onClick={()=>cancelCompanyPayable(row)} style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>CANCEL</button>}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {paidPayables.length > 0 && (
+                            <div style={{ background:'white', borderRadius:'14px', padding:'14px', border:'1px solid #eee' }}>
+                              <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 10px' }}>✅ Recently Paid Payables</p>
+                              {paidPayables.slice(0,10).map(row=>(
+                                <div key={row.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', borderTop:'1px solid #f5f5f5', padding:'8px 0' }}>
+                                  <div><p style={{ fontWeight:'bold', fontSize:'12px', color:'#333', margin:'0 0 2px' }}>{row.payee_name}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.category} · Due {row.due_date}</p></div>
+                                  <div style={{ display:'flex', alignItems:'center', gap:'8px' }}><p style={{ fontWeight:'bold', color:'#2d8a4e', margin:0 }}>{php(row.amount)}</p><button onClick={()=>deleteCompanyPayable(row)} style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ffd0d0', borderRadius:'8px', padding:'6px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>DELETE</button></div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      )
+                    })()}
+                  </div>
+                )}
+
                 {salesView==='expenses' && (
                   <div>
                     {/* CASH RECONCILIATION */}
