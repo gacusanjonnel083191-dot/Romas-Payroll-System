@@ -4730,12 +4730,13 @@ This will remove the invoice and its line items.`
     return true
   }
 
-  async function switchResellerPortalBranch(branchId) {
+  async function switchResellerPortalBranch(branchId, keepCurrentView = false) {
     const branch = resellerPortalBranches.find(b => String(b.id) === String(branchId))
     if (!branch) return
     setCurrentReseller(branch)
     setSelectedResellerBranchId(branch.id)
-    setResellerPortalView('dashboard')
+    setResellerOrderTemplateSourceId('')
+    if (!keepCurrentView) setResellerPortalView('dashboard')
     await loadResellerPortalData(branch.id)
     await loadResellerOrderItems(branch.id)
     showToast(`✅ Switched to ${branch.name}`)
@@ -4917,18 +4918,21 @@ This will remove the invoice and its line items.`
   }
 
   async function submitResellerOrder() {
+    const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
+    if (!orderBranch?.id) { showToast('❌ Select the branch/outlet for this order.','red'); return }
+
     const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
     if (validItems.length===0) { showToast('❌ Enter at least one quantity.','red'); return }
     if (!resellerOrderDeliveryDate) { showToast('❌ Select delivery date.','red'); return }
     const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
     if (cutoffStatus.locked) {
       showToast(`🔒 Order cut-off reached for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Please choose a later delivery date.`, 'red')
-      await logAudit('RESELLER ORDER BLOCKED - ORDER CUT-OFF', 'Reseller Portal', currentReseller?.name || '', cutoffStatus.message)
+      await logAudit('RESELLER ORDER BLOCKED - ORDER CUT-OFF', 'Reseller Portal', orderBranch?.name || '', cutoffStatus.message)
       return
     }
-    const creditStatus = await checkResellerCreditBlockFresh(currentReseller?.id)
+    const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
     if (creditStatus.blocked) {
-      showToast(`🚫 Order blocked. ${creditStatus.message}`, 'red')
+      showToast(`🚫 Order blocked for ${orderBranch.name}. ${creditStatus.message}`, 'red')
       return
     }
     setSubmittingOrder(true)
@@ -4936,7 +4940,7 @@ This will remove the invoice and its line items.`
       const total = validItems.reduce((s,i)=>s+Number(i.quantity)*i.reseller_price,0)
       const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
       const { data:order, error } = await supabase.from('reseller_orders').insert({
-        reseller_id:currentReseller.id, reseller_name:currentReseller.name,
+        reseller_id:orderBranch.id, reseller_name:orderBranch.name,
         order_date:today, delivery_date:resellerOrderDeliveryDate,
         total_qty:totalQty, estimated_amount:total,
         status:'pending', notes:resellerOrderNotes||null
@@ -4946,14 +4950,14 @@ This will remove the invoice and its line items.`
         order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
         quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
       })))
-      const accountLabel = resellerPortalAccount?.account_name ? `${resellerPortalAccount.account_name} / ${currentReseller.name}` : currentReseller.name
+      const accountLabel = resellerPortalAccount?.account_name ? `${resellerPortalAccount.account_name} / ${orderBranch.name}` : orderBranch.name
       await createNotification(null,'System','order',`📦 New Order: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.`)
       await logAudit('RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} — ${totalQty} pcs — ${php(total)}`)
-      showToast('✅ Order submitted! Waiting for admin approval.')
+      showToast(`✅ Order submitted for ${orderBranch.name}! Waiting for admin approval.`)
       setResellerOrderNotes('')
       setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
       setResellerPortalView('orders')
-      loadResellerPortalData(currentReseller.id)
+      loadResellerPortalData(orderBranch.id)
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSubmittingOrder(false)
   }
@@ -15053,7 +15057,7 @@ This will create one approved expense record using the total payroll earnings.`)
                           <label style={lblS}>Copy order quantities from another branch/template:</label>
                           <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
                             <select value={invoiceCopyFromResellerId} onChange={e=>setInvoiceCopyFromResellerId(e.target.value)} style={{ ...inputStyle, marginBottom:0, flex:'1 1 240px' }}>
-                              <option value="">— Select branch template —</option>
+                              <option value="">— Select branch template to copy —</option>
                               {resellers.map(r=><option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{r.reseller_account_id ? ` — ${getResellerAccountName(r.reseller_account_id)}` : ''}</option>)}
                             </select>
                             <button style={{ ...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(invoiceCopyFromResellerId || invoiceResellerId, 'invoice')}>📋 COPY TEMPLATE</button>
@@ -18446,7 +18450,16 @@ This will create one approved expense record using the total payroll earnings.`)
               <h1 style={{ margin:'0 0 4px', fontSize:isMobile?'21px':'28px', lineHeight:1.1 }}>{currentReseller.name}</h1>
               <p style={{ color:'rgba(255,255,255,0.78)', fontSize:'12px', margin:0 }}>{currentReseller.area || 'No area set'} · {currentReseller.contact_person || 'No contact person set'}</p>
             </div>
-            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+              {resellerPortalBranches.length > 1 && (
+                <select
+                  value={selectedResellerBranchId || currentReseller.id}
+                  onChange={e=>switchResellerPortalBranch(e.target.value)}
+                  style={{ background:'white', color:'#1a1a2e', border:'2px solid #FDD412', borderRadius:'10px', padding:'9px 12px', fontWeight:'900', fontSize:'12px', minWidth:isMobile?'100%':'220px' }}
+                >
+                  {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?`— ${b.area}`:''}</option>)}
+                </select>
+              )}
               <button style={{ ...btnYellow, padding:'9px 14px', fontSize:'12px' }} onClick={()=>loadResellerPortalData(currentReseller.id)} disabled={resellerPortalLoading}>{resellerPortalLoading?'⏳ Loading':'🔄 Refresh'}</button>
               <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.35)', borderRadius:'10px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={resellerLogout}>🚪 Logout</button>
             </div>
@@ -18612,6 +18625,19 @@ This will create one approved expense record using the total payroll earnings.`)
               ) : (
                 <>
                   <div style={portalCard}>
+                    {resellerPortalBranches.length > 1 && (
+                      <div style={{ background:'#fff9e6', border:'1.5px solid #FDD412', borderRadius:'12px', padding:'10px', marginBottom:'12px' }}>
+                        <label style={lblS}>Order for branch / outlet:</label>
+                        <select
+                          value={selectedResellerBranchId || currentReseller.id}
+                          onChange={e=>switchResellerPortalBranch(e.target.value, true)}
+                          style={{ ...inputStyle, marginBottom:'6px', border:'2px solid #FDD412', fontWeight:'900', color:'#1a1a2e' }}
+                        >
+                          {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?`— ${b.area}`:''}</option>)}
+                        </select>
+                        <p style={{ color:'#777', fontSize:'11px', margin:0 }}>This is the branch that will receive this order. Use the template section below only if you want to copy quantities from another branch.</p>
+                      </div>
+                    )}
                     <label style={lblS}>Delivery Date:</label>
                     <input type="date" value={resellerOrderDeliveryDate} onChange={e=>setResellerOrderDeliveryDate(e.target.value)} style={inputStyle} min={getDefaultResellerOrderDeliveryDate()} />
                     {selectedOrderCutoff.locked && (
@@ -18626,10 +18652,10 @@ This will create one approved expense record using the total payroll earnings.`)
                   <div style={{ ...portalCard, marginTop:'12px' }}>
                     {resellerPortalBranches.length > 1 && (
                       <div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'12px' }}>
-                        <label style={lblS}>Copy quantities from branch:</label>
+                        <label style={lblS}>Optional: copy quantities/template from another branch:</label>
                         <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                           <select value={resellerOrderTemplateSourceId} onChange={e=>setResellerOrderTemplateSourceId(e.target.value)} style={{ ...inputStyle, marginBottom:0, flex:'1 1 220px' }}>
-                            <option value="">— Select branch template —</option>
+                            <option value="">— Select branch template to copy —</option>
                             {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?`— ${b.area}`:''}</option>)}
                           </select>
                           <button style={{ ...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(resellerOrderTemplateSourceId || currentReseller.id, 'portal')}>📋 COPY</button>
