@@ -3316,13 +3316,26 @@ This will remove the invoice and its line items.`
     const pw = window.open('','_blank','width=900,height=700')
     const grandTotal = dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
     pw.document.write(`<!DOCTYPE html><html><head><title>All Invoices — ${date}</title>
-      <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:10mm;font-size:10px;}
-      @media print{@page{size:A5 portrait;margin:5mm;}.no-print{display:none;}.page-break{page-break-after:always;}}
-      h1{font-size:16px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin:8px 0;}
-      th{background:#ca1b1b;color:white;padding:5px 6px;font-size:9px;text-align:left;}
-      td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
+      <style>
+      *{margin:0;padding:0;box-sizing:border-box;}
+      html,body{background:#e5e5e5;}
+      body{font-family:Arial,sans-serif;font-size:9px;color:#111;line-height:1.25;padding:8px;}
+      .invoice-page{width:145mm;min-height:210mm;margin:10px auto;background:white;padding:7mm 8mm;box-shadow:0 2px 10px rgba(0,0,0,0.18);page-break-after:always;}
+      .invoice-page.last{page-break-after:auto;}
+      h1{font-size:15px;color:#ca1b1b;}
+      table{width:100%;border-collapse:collapse;margin:7px 0;table-layout:fixed;}
+      th{background:#ca1b1b;color:white;padding:4px 5px;font-size:8px;text-align:left;line-height:1.2;}
+      td{padding:3px 5px;border-bottom:1px solid #eee;font-size:8px;line-height:1.2;word-break:break-word;}
       .total{font-weight:bold;background:#fff9e6;}
-      .invoice-header{border-bottom:2px solid #ca1b1b;padding-bottom:8px;margin-bottom:10px;display:flex;justify-content:space-between;}
+      .invoice-header{border-bottom:2px solid #ca1b1b;padding-bottom:7px;margin-bottom:8px;display:flex;justify-content:space-between;gap:8px;}
+      .no-print{max-width:145mm;margin:0 auto 10px;}
+      @media print{
+        @page{size:145mm 210mm;margin:0;}
+        html,body{width:145mm;min-height:210mm;background:white;padding:0;margin:0 auto;}
+        .no-print{display:none!important;}
+        .invoice-page{width:145mm;min-height:210mm;margin:0 auto;padding:7mm 8mm;box-shadow:none;break-after:page;page-break-after:always;}
+        .invoice-page.last{break-after:auto;page-break-after:auto;}
+      }
       </style></head><body>
       <div class="no-print" style="text-align:center;margin-bottom:16px;">
         <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT ALL</button>
@@ -3332,7 +3345,7 @@ This will remove the invoice and its line items.`
         const items = inv.delivery_invoice_items || []
         const reseller = resellers.find(r=>r.id===inv.reseller_id)
         return `
-        <div class="${idx < dayInvoices.length-1 ? 'page-break' : ''}">
+        <div class="invoice-page ${idx < dayInvoices.length-1 ? '' : 'last'}">
           <div class="invoice-header">
             <div><h1>Roma's Donuts</h1><div style="font-size:9px;color:#888;">Every bite is a little piece of heaven</div></div>
             <div style="text-align:right;">
@@ -3357,7 +3370,7 @@ This will remove the invoice and its line items.`
             </div>
           </div>
           <table>
-            <tr><th>#</th><th>Variant</th><th style="text-align:right;">Retail</th><th style="text-align:right;">Reseller</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Unsold</th></tr>
+            <tr><th style="width:5%;">#</th><th style="width:31%;">Variant</th><th style="width:12%;text-align:right;">Retail</th><th style="width:13%;text-align:right;">Reseller</th><th style="width:10%;text-align:right;">Qty</th><th style="width:17%;text-align:right;">Amount</th><th style="width:12%;text-align:center;">Unsold</th></tr>
             ${items.map((it,n)=>`<tr>
               <td>${n+1}</td><td>${it.variant_name}</td>
               <td style="text-align:right;">${php(it.retail_price)}</td>
@@ -3401,26 +3414,28 @@ This will remove the invoice and its line items.`
     const items = invoice.delivery_invoice_items || []
     const reseller = resellers.find(r => r.id === invoice.reseller_id)
     const totalPieces = items.reduce((s,i)=>s+Number(i.quantity||0),0)
-    const pw = window.open('','_blank','width=500,height=750')
+    const pw = window.open('','_blank','width=650,height=900')
     pw.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoice_number}</title>
       <style>
         *{margin:0;padding:0;box-sizing:border-box;}
-        body{font-family:Arial,sans-serif;font-size:9px;width:105mm;background:white;}
+        html,body{background:#e5e5e5;}
+        body{font-family:Arial,sans-serif;font-size:8.5px;color:#111;line-height:1.25;padding:8px;}
+        .wrap{width:145mm;min-height:210mm;margin:0 auto;background:white;padding:7mm 8mm;box-shadow:0 2px 10px rgba(0,0,0,0.18);}
+        h1{font-size:15px;color:#ca1b1b;margin:0;}
+        .tagline{font-size:7.5px;color:#888;}
+        table{width:100%;border-collapse:collapse;margin:6px 0;table-layout:fixed;}
+        th{background:#ca1b1b;color:white;padding:4px 4px;font-size:7.5px;text-align:left;line-height:1.2;}
+        td{padding:3px 4px;border-bottom:1px solid #f0f0f0;font-size:7.5px;line-height:1.2;word-break:break-word;}
+        .total-row{background:#fff9e6;font-weight:bold;}
+        .divider{border-top:1.5px solid #ca1b1b;margin:6px 0;}
+        .label{font-size:6.5px;color:#ca1b1b;font-weight:bold;letter-spacing:0.5px;text-transform:uppercase;}
+        .sig{border-top:1px solid #333;width:80px;text-align:center;font-size:6px;padding-top:2px;margin-top:14px;}
         @media print{
-          @page{size:A5 portrait;margin:5mm;}
-          html,body{width:105mm;}
+          @page{size:145mm 210mm;margin:0;}
+          html,body{width:145mm;min-height:210mm;background:white;padding:0;margin:0 auto;}
+          .wrap{width:145mm;min-height:210mm;margin:0 auto;padding:7mm 8mm;box-shadow:none;}
           .no-print{display:none!important;}
         }
-        .wrap{padding:4mm 5mm;}
-        h1{font-size:13px;color:#ca1b1b;margin:0;}
-        .tagline{font-size:7px;color:#888;}
-        table{width:100%;border-collapse:collapse;margin:4px 0;}
-        th{background:#ca1b1b;color:white;padding:3px 4px;font-size:7px;text-align:left;}
-        td{padding:2px 4px;border-bottom:1px solid #f0f0f0;font-size:7px;}
-        .total-row{background:#fff9e6;font-weight:bold;}
-        .divider{border-top:1.5px solid #ca1b1b;margin:4px 0;}
-        .label{font-size:6px;color:#ca1b1b;font-weight:bold;letter-spacing:0.5px;text-transform:uppercase;}
-        .sig{border-top:1px solid #333;width:80px;text-align:center;font-size:6px;padding-top:2px;margin-top:14px;}
       </style></head>
     <body><div class="wrap">
       <!-- Header -->
@@ -3459,7 +3474,7 @@ This will remove the invoice and its line items.`
       <div class="divider"></div>
       <!-- Items Table -->
       <table>
-        <tr><th>Variant</th><th style="text-align:right;">Price</th><th style="text-align:right;">Inv Qty</th><th style="text-align:center;">Adjust +/-</th><th style="text-align:center;">Actual Qty</th><th style="text-align:right;">Amount</th><th style="text-align:center;">Unsold</th></tr>
+        <tr><th style="width:29%;">Variant</th><th style="width:12%;text-align:right;">Price</th><th style="width:11%;text-align:right;">Inv Qty</th><th style="width:12%;text-align:center;">Adjust +/-</th><th style="width:12%;text-align:center;">Actual Qty</th><th style="width:14%;text-align:right;">Amount</th><th style="width:10%;text-align:center;">Unsold</th></tr>
         ${items.map(i=>`<tr>
           <td>${i.variant_name}</td>
           <td style="text-align:right;">${php(i.reseller_price)}</td>
@@ -3508,8 +3523,8 @@ This will remove the invoice and its line items.`
         </div>
       </div>
       <div class="no-print" style="text-align:center;margin-top:12px;">
-        <button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;font-weight:bold;cursor:pointer;">🖨️ PRINT (A5 Half-A4)</button>
-        <p style="font-size:10px;color:#888;margin-top:4px;">Set paper to A5 or Half-Letter. Uncheck "Headers and footers".</p>
+        <button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;font-weight:bold;cursor:pointer;">🖨️ PRINT (145×210mm Half-A4)</button>
+        <p style="font-size:10px;color:#888;margin-top:4px;">Use custom paper size 145mm × 210mm. Set scale to 100% and turn off headers/footers.</p>
       </div>
     </div></body></html>`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
