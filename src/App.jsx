@@ -1041,6 +1041,38 @@ export default function App() {
   const [orderCutoffTick, setOrderCutoffTick] = useState(Date.now())
   const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
 
+  // ── Security & Owner Control Lockdown v1 helpers ──────────────────────────
+  const ADMIN_ROLE_VALUES = ['owner','manager','hr','payroll','supervisor','asst_supervisor']
+  const normalizedAdminRole = String(adminRole || '').trim().toLowerCase()
+  const isOwnerRole = normalizedAdminRole === 'owner'
+  const isPayrollRole = normalizedAdminRole === 'payroll'
+  const currentAdminLabel = adminEmployee?.full_name || (adminRole ? String(adminRole).toUpperCase() : 'Admin')
+
+  function normalizeAdminRole(role) {
+    const r = String(role || '').trim().toLowerCase()
+    return ADMIN_ROLE_VALUES.includes(r) ? r : ''
+  }
+
+  function getEmployeeAdminRoles(emp, fallbackRole = '') {
+    const primary = normalizeAdminRole(emp?.admin_role || fallbackRole)
+    const extras = String(emp?.extra_roles || '').split(',').map(normalizeAdminRole).filter(Boolean)
+    return [primary, ...extras].filter((role, idx, arr) => role && arr.indexOf(role) === idx)
+  }
+
+  function requireOwnerAction(actionName = 'this action') {
+    if (isOwnerRole) return true
+    showToast(`🔒 Owner-only control: ${actionName}. Please login as Owner.`, 'red')
+    logAudit('OWNER ACTION BLOCKED', currentAdminLabel, actionName, `Blocked role: ${adminRole || 'unknown'}`)
+    return false
+  }
+
+  function requireOwnerOrPayrollAction(actionName = 'this payroll action') {
+    if (isOwnerRole || isPayrollRole) return true
+    showToast(`🔒 Payroll control: ${actionName} is allowed only for Owner or Payroll Officer.`, 'red')
+    logAudit('PAYROLL ACTION BLOCKED', currentAdminLabel, actionName, `Blocked role: ${adminRole || 'unknown'}`)
+    return false
+  }
+
   useEffect(() => {
     setPasskeySupported(browserSupportsPasskeys())
   }, [])
@@ -1261,9 +1293,15 @@ export default function App() {
   // ── Smart Login: checks master creds first, then employee DB role ─────────
   async function handleLogin() {
     setLoading(true)
-    // 1. Check master hardcoded credentials (owner only emergency access)
+    // 1. Emergency master credentials remain for owner lockout recovery only.
+    // Professional security path is employee admin_role + Supabase RLS/Auth migration.
     const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
-    if (adminMatch) { setLoading(false); openAdmin(adminMatch.role); return }
+    if (adminMatch) {
+      setLoading(false)
+      openAdmin(normalizeAdminRole(adminMatch.role) || 'owner')
+      logAudit('EMERGENCY ADMIN LOGIN USED', adminMatch.role || 'owner', 'System Access', 'Hardcoded emergency credential was used. Replace with Supabase Auth/RLS as soon as possible.')
+      return
+    }
 
     // 2. Check employee database — look up by code + PIN
     const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
@@ -1274,12 +1312,10 @@ export default function App() {
     const activeEmployee = syncResult?.employee || data
 
     // 3. If employee has an admin_role assigned, open admin panel with that role
-    if (activeEmployee.admin_role && ['owner','manager','hr','payroll','supervisor','asst_supervisor'].includes(activeEmployee.admin_role)) {
-      // Build list of all roles this employee can access (primary + extra roles)
-      const extraRoles = activeEmployee.extra_roles ? activeEmployee.extra_roles.split(',').filter(r=>r.trim()) : []
-      const allRoles = [activeEmployee.admin_role, ...extraRoles].filter((r,i,a)=>a.indexOf(r)===i)
-      setAvailableRoles(allRoles)
-      openAdmin(activeEmployee.admin_role, activeEmployee)
+    const employeeRoles = getEmployeeAdminRoles(activeEmployee)
+    if (employeeRoles.length > 0) {
+      setAvailableRoles(employeeRoles)
+      openAdmin(employeeRoles[0], activeEmployee)
       return
     }
 
@@ -1292,11 +1328,10 @@ export default function App() {
     const syncResult = await syncEmployeeSIL(empData, { silent:true })
     const activeEmployee = syncResult?.employee || empData
 
-    if (activeEmployee.admin_role && ['owner','manager','hr','payroll','supervisor','asst_supervisor'].includes(activeEmployee.admin_role)) {
-      const extraRoles = activeEmployee.extra_roles ? activeEmployee.extra_roles.split(',').filter(r=>r.trim()) : []
-      const allRoles = [activeEmployee.admin_role, ...extraRoles].filter((r,i,a)=>a.indexOf(r)===i)
-      setAvailableRoles(allRoles)
-      openAdmin(activeEmployee.admin_role, activeEmployee)
+    const employeeRoles = getEmployeeAdminRoles(activeEmployee)
+    if (employeeRoles.length > 0) {
+      setAvailableRoles(employeeRoles)
+      openAdmin(employeeRoles[0], activeEmployee)
       return
     }
 
@@ -5246,21 +5281,35 @@ This will remove the invoice and its line items.`
     loadDailyExpenses(); refreshFoundationAfterDataChange('expense-saved'); setSavingExpense(false)
   }
   async function approveExpense(id) {
-    await supabase.from('daily_expenses').update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString() }).eq('id', id)
+    if (!requireOwnerAction('approve company expense')) return
+    const { error } = await supabase.from('daily_expenses').update({ status:'approved', approved_by:currentAdminLabel, approved_at:new Date().toISOString() }).eq('id', id)
+    if (error) { showToast('❌ Failed: '+error.message, 'red'); return }
+    await logAudit('EXPENSE APPROVED', currentAdminLabel, 'Expense', `Expense ID: ${id}`)
     showToast('✅ Expense approved!'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-approved')
   }
   async function rejectExpense(id) {
+    if (!requireOwnerAction('reject company expense')) return
     if (!rejectExpenseReason.trim()) { showToast('❌ Please enter a rejection reason.','red'); return }
-    await supabase.from('daily_expenses').update({ status:'rejected', approved_by:adminRole, approved_at:new Date().toISOString(), rejection_reason:rejectExpenseReason }).eq('id', id)
+    const { error } = await supabase.from('daily_expenses').update({ status:'rejected', approved_by:currentAdminLabel, approved_at:new Date().toISOString(), rejection_reason:rejectExpenseReason }).eq('id', id)
+    if (error) { showToast('❌ Failed: '+error.message, 'red'); return }
+    await logAudit('EXPENSE REJECTED', currentAdminLabel, 'Expense', `Expense ID: ${id} | Reason: ${rejectExpenseReason}`)
     showToast('✅ Expense rejected.'); setRejectingExpenseId(null); setRejectExpenseReason(''); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-rejected')
   }
   async function deleteExpense(id) {
-    if (!window.confirm('Delete this expense?')) return
-    await supabase.from('daily_expenses').delete().eq('id', id)
-    showToast('✅ Expense deleted.'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-deleted')
+    if (!requireOwnerAction('void company expense')) return
+    if (!window.confirm('Void this expense record? It will stay in the system for audit safety and will not be permanently deleted.')) return
+    const { error } = await supabase.from('daily_expenses').update({ status:'voided', approved_by:currentAdminLabel, approved_at:new Date().toISOString() }).eq('id', id)
+    if (error) { showToast('❌ Failed: '+error.message, 'red'); return }
+    await logAudit('EXPENSE VOIDED', currentAdminLabel, 'Expense', `Expense ID: ${id}`)
+    showToast('✅ Expense voided, not deleted.'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-voided')
   }
 
   async function loadCompanyPayables() {
+    if (!isOwnerRole) {
+      setCompanyPayables([])
+      setCompanyPayablesError('')
+      return
+    }
     setCompanyPayablesLoading(true)
     setCompanyPayablesError('')
     try {
@@ -5286,6 +5335,7 @@ This will remove the invoice and its line items.`
   }
 
   async function saveCompanyPayable() {
+    if (!requireOwnerAction('create company payable / PDC')) return
     if (!payableForm.payee_name.trim()) { showToast('❌ Please enter payee/supplier/account name.', 'red'); return }
     if (!payableForm.due_date) { showToast('❌ Please select a due date.', 'red'); return }
     const amount = safeNum(payableForm.amount, 0)
@@ -5305,7 +5355,7 @@ This will remove the invoice and its line items.`
       check_date: payableForm.check_date || null,
       notes: payableForm.notes || '',
       status: 'scheduled',
-      created_by: adminRole || 'Admin'
+      created_by: currentAdminLabel
     }
 
     const { error } = await supabase.from('company_payables').insert(payload)
@@ -5315,7 +5365,7 @@ This will remove the invoice and its line items.`
       return
     }
 
-    await logAudit('COMPANY PAYABLE ADDED', adminRole || 'Admin', payload.payee_name, `${payload.category} | Due: ${payload.due_date} | ${php(payload.amount)} | ${payload.payment_type}`)
+    await logAudit('COMPANY PAYABLE ADDED', currentAdminLabel, payload.payee_name, `${payload.category} | Due: ${payload.due_date} | ${php(payload.amount)} | ${payload.payment_type}`)
     showToast('✅ Payable / PDC saved.')
     setPayableForm({ payable_date:today, due_date:today, payee_type:'Supplier', payee_name:'', category:'Supplier Payment', amount:'', payment_type:'Accounts Payable', payment_method:'Cash', bank_name:'', check_number:'', check_date:'', notes:'' })
     setShowPayableForm(false)
@@ -5323,32 +5373,31 @@ This will remove the invoice and its line items.`
   }
 
   async function markCompanyPayablePaid(row) {
+    if (!requireOwnerAction('mark company payable as paid')) return
     if (!row?.id) return
     if (!window.confirm(`Mark ${row.payee_name || 'this payable'} as PAID?`)) return
-    const { error } = await supabase.from('company_payables').update({ status:'paid', paid_at:new Date().toISOString(), paid_by:adminRole || 'Admin' }).eq('id', row.id)
+    const { error } = await supabase.from('company_payables').update({ status:'paid', paid_at:new Date().toISOString(), paid_by:currentAdminLabel }).eq('id', row.id)
     if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
-    await logAudit('COMPANY PAYABLE PAID', adminRole || 'Admin', row.payee_name || '', `${row.category || ''} | ${php(row.amount)} | Due: ${row.due_date || ''}`)
+    await logAudit('COMPANY PAYABLE PAID', currentAdminLabel, row.payee_name || '', `${row.category || ''} | ${php(row.amount)} | Due: ${row.due_date || ''}`)
     showToast('✅ Payable marked paid.')
     loadCompanyPayables()
   }
 
   async function cancelCompanyPayable(row) {
+    if (!requireOwnerAction('cancel company payable / PDC')) return
     if (!row?.id) return
     if (!window.confirm(`Cancel ${row.payee_name || 'this payable'}?`)) return
     const { error } = await supabase.from('company_payables').update({ status:'cancelled' }).eq('id', row.id)
     if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
-    await logAudit('COMPANY PAYABLE CANCELLED', adminRole || 'Admin', row.payee_name || '', `${row.category || ''} | ${php(row.amount)}`)
+    await logAudit('COMPANY PAYABLE CANCELLED', currentAdminLabel, row.payee_name || '', `${row.category || ''} | ${php(row.amount)}`)
     showToast('✅ Payable cancelled.')
     loadCompanyPayables()
   }
 
   async function deleteCompanyPayable(row) {
-    if (!row?.id) return
-    if (!window.confirm('Delete this payable/PDC permanently?')) return
-    const { error } = await supabase.from('company_payables').delete().eq('id', row.id)
-    if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
-    showToast('✅ Payable deleted.')
-    loadCompanyPayables()
+    if (!requireOwnerAction('void/cancel company payable / PDC')) return
+    showToast('🔒 Permanent deletion is disabled for audit safety. Use CANCEL instead.', 'red')
+    await logAudit('PERMANENT PAYABLE DELETE BLOCKED', currentAdminLabel, row?.payee_name || '', `Payable ID: ${row?.id || ''}`)
   }
   // ── Financial Dashboard ───────────────────────────────────────────────────
   async function loadFinancialData() {
@@ -5811,12 +5860,13 @@ This will remove the invoice and its line items.`
 
   // ── Admin Functions ───────────────────────────────────────────────────────
   function canAccess(tab) {
-    if (adminRole === 'owner') return true
-    if (adminRole === 'manager') return true // Manager = full access same as owner
-    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sales'].includes(tab)
-    if (adminRole === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
-    if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
-    if (adminRole === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
+    const role = normalizeAdminRole(adminRole)
+    if (role === 'owner') return true
+    if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sales','analytics','foundation','franchise'].includes(tab)
+    if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts'].includes(tab)
+    if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
+    if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
+    if (role === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
     return false
   }
 
@@ -6238,22 +6288,31 @@ This will remove the invoice and its line items.`
   }
 
   async function approvePayroll(start, end) {
+    if (!requireOwnerOrPayrollAction('release payroll')) return
     if (!start || !end) { showToast('Please select payroll start and end dates.', 'red'); return }
 
-    const { data: records } = await supabase
+    const { data: records, error:recordsError } = await supabase
       .from('payroll_records')
-      .select('id')
+      .select('id,payroll_approved,approved_at')
       .eq('payroll_start', start)
       .eq('payroll_end', end)
-      .limit(1)
+      .limit(50)
+
+    if (recordsError) { showToast('Failed: '+recordsError.message, 'red'); return }
 
     if (!records || records.length === 0) {
       showToast('No payroll records found for this period. Compute payroll first.', 'red')
       return
     }
 
+    if (records.some(r => r.payroll_approved === true || !!r.approved_at)) {
+      showToast('🔒 This payroll period is already released. Releasing it again is blocked to prevent duplicate CA deductions or expense posting.', 'red')
+      await logAudit('DUPLICATE PAYROLL RELEASE BLOCKED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end}`)
+      return
+    }
+
     const { error } = await supabase.from('payroll_records')
-      .update({ payroll_approved: true, approved_by: 'Admin', approved_at: new Date().toISOString() })
+      .update({ payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString() })
       .eq('payroll_start', start).eq('payroll_end', end)
     if (error) { showToast('Failed: '+error.message,'red'); return }
 
@@ -6264,7 +6323,7 @@ This will remove the invoice and its line items.`
     setPayrollApproved(true)
     await logAudit(
       'PAYROLL APPROVED',
-      'Admin',
+      currentAdminLabel,
       'ALL',
       `Period: ${start} to ${end} | SIL cashouts auto-released: ${releasedSILCount} | CA deductions: ${caDeductionResult.applied ? 'applied ' + php(caDeductionResult.amount) : caDeductionResult.existing ? 'already applied' : caDeductionResult.none ? 'none' : 'not applied'} | Expense: ${expenseResult.posted ? 'posted ' + php(expenseResult.amount) : expenseResult.existing ? 'already posted' : 'not posted'}`
     )
@@ -8824,20 +8883,20 @@ This will create one approved expense record using the total payroll earnings.`)
     )
   }
   function openAdmin(role, empData) {
-    setAdminMode(true); setAdminRole(role||'owner'); setEmployeeSearch(''); setSidebarOpen(false)
+    const safeRole = normalizeAdminRole(role) || 'owner'
+    setAdminMode(true); setAdminRole(safeRole); setEmployeeSearch(''); setSidebarOpen(false)
     if (empData) {
       setAdminEmployee(empData)
       loadTodayLog(empData); loadTodaySchedule(empData); loadTodayBreaks(null)
       // Set available roles from employee record
-      const extraRoles = empData.extra_roles ? empData.extra_roles.split(',').filter(r=>r.trim()) : []
-      const allRoles = [empData.admin_role||role, ...extraRoles].filter((r,i,a)=>r&&a.indexOf(r)===i)
+      const allRoles = getEmployeeAdminRoles(empData, safeRole)
       if (allRoles.length > 0) setAvailableRoles(allRoles)
     }
-    const defaultTab = role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'
+    const defaultTab = safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
     setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
-    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if ((role||'owner')==='owner' || (role||'owner')==='manager') loadFoundationData().catch(()=>{})
+    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); if (safeRole==='owner' || safeRole==='payroll') autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if (safeRole==='owner' || safeRole==='manager') loadFoundationData().catch(()=>{})
     requestPushPermission()
     // Check Tuesday deposit reminder
     setTimeout(()=>checkTuesdayDepositReminder(), 2000)
@@ -14806,7 +14865,7 @@ This will create one approved expense record using the total payroll earnings.`)
 
                 {/* Sub-navigation */}
                 <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['adjustments','🧾 Adjustments'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['payables','📅 Payables / PDC'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].map(([v,l])=>(
+                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['adjustments','🧾 Adjustments'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['payables','📅 Payables / PDC'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].filter(([v])=>v!=='payables'||isOwnerRole).map(([v,l])=>(
                     <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
                   ))}
                 </div>
@@ -15994,7 +16053,15 @@ This will create one approved expense record using the total payroll earnings.`)
                 )}
 
                 {/* ── EXPENSES VIEW ── */}
-                {salesView==='payables' && (
+                {salesView==='payables' && !isOwnerRole && (
+                  <div style={{ ...cardS, border:'2px solid #ca1b1b', background:'#fff5f5', textAlign:'center', padding:'22px' }}>
+                    <h3 style={{ color:'#ca1b1b', marginTop:0 }}>🔒 Owner-only Payables / PDC</h3>
+                    <p style={{ color:'#555', fontSize:'13px', margin:'0 0 12px' }}>Supplier payables, PDCs, payroll payables, government remittances, loans, and scheduled company expenses are restricted to the Owner account.</p>
+                    <button style={{ ...btnBlack, width:'auto', marginTop:0 }} onClick={()=>setSalesView('dashboard')}>Back to Sales Dashboard</button>
+                  </div>
+                )}
+
+                {salesView==='payables' && isOwnerRole && (
                   <div>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
                       <div>
@@ -16082,7 +16149,7 @@ This will create one approved expense record using the total payroll earnings.`)
                               {paidPayables.slice(0,10).map(row=>(
                                 <div key={row.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', borderTop:'1px solid #f5f5f5', padding:'8px 0' }}>
                                   <div><p style={{ fontWeight:'bold', fontSize:'12px', color:'#333', margin:'0 0 2px' }}>{row.payee_name}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.category} · Due {row.due_date}</p></div>
-                                  <div style={{ display:'flex', alignItems:'center', gap:'8px' }}><p style={{ fontWeight:'bold', color:'#2d8a4e', margin:0 }}>{php(row.amount)}</p><button onClick={()=>deleteCompanyPayable(row)} style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ffd0d0', borderRadius:'8px', padding:'6px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>DELETE</button></div>
+                                  <div style={{ display:'flex', alignItems:'center', gap:'8px' }}><p style={{ fontWeight:'bold', color:'#2d8a4e', margin:0 }}>{php(row.amount)}</p><span style={{ background:'#f8f8f8', color:'#777', border:'1px solid #ddd', borderRadius:'8px', padding:'6px 8px', fontSize:'10px', fontWeight:'bold' }}>AUDIT LOCKED</span></div>
                                 </div>
                               ))}
                             </div>
@@ -18271,8 +18338,8 @@ This will create one approved expense record using the total payroll earnings.`)
               ))}
             </div>
           </div>
-          {employee?.is_admin && (
-            <button style={{ background:'#1a1a2e', color:'white', padding:'11px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:'8px', letterSpacing:'0.5px' }} onClick={()=>openAdmin('owner')}>🔧 ADMIN PANEL</button>
+          {getEmployeeAdminRoles(employee).length > 0 && (
+            <button style={{ background:'#1a1a2e', color:'white', padding:'11px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:'8px', letterSpacing:'0.5px' }} onClick={()=>{ const roles = getEmployeeAdminRoles(employee); setAvailableRoles(roles); openAdmin(roles[0], employee) }}>🔧 ADMIN PANEL</button>
           )}
 
           {showOTRequest && (
