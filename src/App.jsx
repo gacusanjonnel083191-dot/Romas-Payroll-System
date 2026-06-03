@@ -3310,84 +3310,163 @@ This will remove the invoice and its line items.`
       setProcessingItems(p => ({ ...p, [key]: false }))
     }
   }
+  function buildDeliveryInvoicePrintCSS() {
+    return `
+      <style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        html,body{background:#e5e5e5;}
+        body{font-family:Arial,sans-serif;color:#111;line-height:1.28;padding:8px;}
+        .no-print{max-width:145mm;margin:0 auto 10px;text-align:center;}
+        .invoice-page{
+          width:145mm;
+          min-height:209mm;
+          margin:10px auto;
+          background:white;
+          padding:8mm 8mm;
+          box-shadow:0 2px 10px rgba(0,0,0,0.18);
+          overflow:visible;
+        }
+        .invoice-header{display:grid;grid-template-columns:1.05fr .95fr;gap:8px;align-items:start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:7px;}
+        .brand-title{font-size:16px;color:#ca1b1b;font-weight:900;margin:0;line-height:1.05;}
+        .invoice-title{font-size:12px;font-weight:900;color:#ca1b1b;letter-spacing:.35px;text-align:right;}
+        .invoice-no{font-size:9.5px;font-weight:900;color:#111;text-align:right;margin-top:2px;}
+        .header-line{font-size:8.3px;color:#333;line-height:1.35;}
+        .header-label{font-weight:900;color:#ca1b1b;text-transform:uppercase;}
+        .top-details{display:grid;grid-template-columns:1.1fr .9fr;gap:7px;margin:7px 0 6px;}
+        .detail-box{border:1px solid #e1e1e1;border-radius:5px;padding:5px;min-height:42px;}
+        .label{font-size:7.4px;color:#ca1b1b;font-weight:900;text-transform:uppercase;letter-spacing:.25px;margin-bottom:3px;}
+        .info-text{font-size:8.2px;line-height:1.35;color:#111;}
+        .info-strong{font-size:9px;font-weight:900;color:#111;line-height:1.25;}
+        .notes-box{border:1px dashed #cfcfcf;border-radius:5px;padding:5px;margin:5px 0 7px;min-height:20px;}
+        table{width:100%;border-collapse:collapse;margin:5px 0 6px;table-layout:fixed;}
+        th{background:#ca1b1b;color:white;padding:4px 3px;font-size:7.2px;text-align:left;line-height:1.15;}
+        td{padding:3px 3px;border-bottom:1px solid #e8e8e8;font-size:7.5px;line-height:1.18;word-break:break-word;vertical-align:middle;}
+        .write-cell{border:1px solid #cfcfcf!important;min-height:13px;background:white;}
+        .total-row{background:#fff9e6;font-weight:900;}
+        .bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px;}
+        .bottom-box{border:1px solid #d9d9d9;border-radius:5px;padding:5px;min-height:34px;}
+        .bottom-label{font-size:7.3px;font-weight:900;color:#ca1b1b;text-transform:uppercase;margin-bottom:4px;}
+        .bottom-value{font-size:8.4px;font-weight:800;color:#111;min-height:12px;}
+        .write-line{border-bottom:1px solid #333;height:14px;margin-top:2px;}
+        .force-break{break-after:page;page-break-after:always;}
+        @media print{
+          @page{size:145mm 210mm;margin:0;}
+          html,body{background:white!important;margin:0!important;padding:0!important;}
+          .no-print{display:none!important;}
+          .invoice-page{
+            width:145mm!important;
+            min-height:209mm!important;
+            margin:0 auto!important;
+            padding:8mm 8mm!important;
+            box-shadow:none!important;
+            border:none!important;
+            overflow:visible!important;
+          }
+          .invoice-page:not(.force-break){break-after:auto;page-break-after:auto;}
+          .force-break{break-after:page!important;page-break-after:always!important;}
+        }
+      </style>`
+  }
+
+  function buildDeliveryInvoicePrintPage(invoice, pageClass = '') {
+    const items = invoice.delivery_invoice_items || []
+    const reseller = resellers.find(r => r.id === invoice.reseller_id)
+    const totalPieces = items.reduce((s,i)=>s+Number(i.quantity||0),0)
+    const balance = Number(invoice.total_amount || 0) - (Number(invoice.paid_amount) || 0)
+    const resellerAddress = reseller?.address || reseller?.area || ''
+    return `
+      <section class="invoice-page ${pageClass}">
+        <div class="invoice-header">
+          <div>
+            <div class="brand-title">Roma's Donuts</div>
+            <div class="header-line"><span class="header-label">Company Name</span></div>
+          </div>
+          <div>
+            <div class="invoice-title">DELIVERY INVOICE</div>
+            <div class="invoice-no">${invoice.invoice_number}</div>
+            <div class="header-line" style="text-align:right;"><span class="header-label">Date of Delivery:</span> ${invoice.delivery_date || ''}</div>
+          </div>
+        </div>
+
+        <div class="top-details">
+          <div class="detail-box">
+            <div class="label">Reseller Name &amp; Address</div>
+            <div class="info-strong">${invoice.reseller_name || ''}</div>
+            ${resellerAddress?`<div class="info-text">${resellerAddress}</div>`:''}
+          </div>
+          <div class="detail-box">
+            <div class="label">Notes</div>
+            <div class="info-text">${invoice.notes || '&nbsp;'}</div>
+          </div>
+        </div>
+
+        <table>
+          <tr>
+            <th style="width:28%;">Variant</th>
+            <th style="width:12%;text-align:right;">Price</th>
+            <th style="width:10%;text-align:right;">Inv Qty</th>
+            <th style="width:12%;text-align:center;">Adjust +/-</th>
+            <th style="width:12%;text-align:center;">Actual Qty</th>
+            <th style="width:15%;text-align:right;">Amount</th>
+            <th style="width:11%;text-align:center;">Unsold</th>
+          </tr>
+          ${items.map(i=>`<tr>
+            <td>${i.variant_name || ''}</td>
+            <td style="text-align:right;">${php(i.reseller_price)}</td>
+            <td style="text-align:right;font-weight:900;">${Number(i.quantity || 0).toLocaleString()}</td>
+            <td class="write-cell">&nbsp;</td>
+            <td class="write-cell">&nbsp;</td>
+            <td style="text-align:right;font-weight:900;">${php(i.total_price)}</td>
+            <td class="write-cell">&nbsp;</td>
+          </tr>`).join('')}
+          <tr class="total-row">
+            <td colspan="2" style="text-align:right;">Total (${totalPieces.toLocaleString()} pcs):</td>
+            <td></td><td></td><td></td>
+            <td style="text-align:right;color:#ca1b1b;font-size:8.3px;">${php(invoice.total_amount)}</td>
+            <td></td>
+          </tr>
+          ${(Number(invoice.paid_amount)||0)>0?`
+            <tr><td colspan="5" style="text-align:right;">Paid:</td><td style="text-align:right;color:#2d8a4e;font-weight:900;">${php(invoice.paid_amount)}</td><td></td></tr>
+            <tr class="total-row"><td colspan="5" style="text-align:right;">Balance:</td><td style="text-align:right;color:#ca1b1b;">${php(balance)}</td><td></td></tr>`:''}
+        </table>
+
+        <div class="bottom-grid">
+          <div class="bottom-box">
+            <div class="bottom-label">Dispatcher</div>
+            <div class="bottom-value">${invoice.dispatched_by || ''}</div>
+            <div class="write-line"></div>
+          </div>
+          <div class="bottom-box">
+            <div class="bottom-label">Delivery Personnel</div>
+            <div class="bottom-value">&nbsp;</div>
+            <div class="write-line"></div>
+          </div>
+          <div class="bottom-box">
+            <div class="bottom-label">Crates Used</div>
+            <div class="bottom-value">${invoice.crates_used || 0}</div>
+          </div>
+          <div class="bottom-box">
+            <div class="bottom-label">Crates Returned</div>
+            <div class="write-line"></div>
+          </div>
+        </div>
+      </section>`
+  }
+
   function printAllDailyInvoices(date) {
     const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
     if (dayInvoices.length === 0) { showToast('❌ No invoices for this date.','red'); return }
     const pw = window.open('','_blank','width=900,height=700')
     const grandTotal = dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
     pw.document.write(`<!DOCTYPE html><html><head><title>All Invoices — ${date}</title>
-      <style>
-      *{margin:0;padding:0;box-sizing:border-box;}
-      html,body{background:#e5e5e5;}
-      body{font-family:Arial,sans-serif;font-size:9px;color:#111;line-height:1.25;padding:8px;}
-      .invoice-page{width:145mm;min-height:210mm;margin:10px auto;background:white;padding:7mm 8mm;box-shadow:0 2px 10px rgba(0,0,0,0.18);page-break-after:always;}
-      .invoice-page.last{page-break-after:auto;}
-      h1{font-size:15px;color:#ca1b1b;}
-      table{width:100%;border-collapse:collapse;margin:7px 0;table-layout:fixed;}
-      th{background:#ca1b1b;color:white;padding:4px 5px;font-size:8px;text-align:left;line-height:1.2;}
-      td{padding:3px 5px;border-bottom:1px solid #eee;font-size:8px;line-height:1.2;word-break:break-word;}
-      .total{font-weight:bold;background:#fff9e6;}
-      .invoice-header{border-bottom:2px solid #ca1b1b;padding-bottom:7px;margin-bottom:8px;display:flex;justify-content:space-between;gap:8px;}
-      .no-print{max-width:145mm;margin:0 auto 10px;}
-      @media print{
-        @page{size:145mm 210mm;margin:0;}
-        html,body{width:145mm;min-height:210mm;background:white;padding:0;margin:0 auto;}
-        .no-print{display:none!important;}
-        .invoice-page{width:145mm;min-height:210mm;margin:0 auto;padding:7mm 8mm;box-shadow:none;break-after:page;page-break-after:always;}
-        .invoice-page.last{break-after:auto;page-break-after:auto;}
-      }
-      </style></head><body>
-      <div class="no-print" style="text-align:center;margin-bottom:16px;">
+      ${buildDeliveryInvoicePrintCSS()}
+    </head><body>
+      <div class="no-print">
         <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT ALL</button>
         <p style="font-size:11px;color:#888;margin-top:6px;">${dayInvoices.length} invoice(s) — Total: ${php(grandTotal)}</p>
+        <p style="font-size:10px;color:#888;margin-top:3px;">Use 145mm × 210mm paper size when available. Set scale to 100% and turn off headers/footers.</p>
       </div>
-      ${dayInvoices.map((inv,idx)=>{
-        const items = inv.delivery_invoice_items || []
-        const reseller = resellers.find(r=>r.id===inv.reseller_id)
-        return `
-        <div class="invoice-page ${idx < dayInvoices.length-1 ? '' : 'last'}">
-          <div class="invoice-header">
-            <div><h1>Roma's Donuts</h1><div style="font-size:9px;color:#888;">Every bite is a little piece of heaven</div></div>
-            <div style="text-align:right;">
-              <div style="font-size:14px;font-weight:bold;color:#ca1b1b;">DELIVERY INVOICE</div>
-              <div style="font-size:11px;font-weight:bold;">${inv.invoice_number}</div>
-              <div style="font-size:9px;color:#888;">Date: ${inv.delivery_date} | Due: ${inv.due_date}</div>
-              <div style="font-size:9px;font-weight:bold;color:${inv.status==='paid'?'#2d8a4e':'#ca1b1b'};">${inv.status?.toUpperCase()}</div>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:10px;">
-            <div>
-              <div style="font-weight:bold;font-size:9px;color:#ca1b1b;margin-bottom:4px;">DELIVER TO</div>
-              <div><strong>${inv.reseller_name}</strong></div>
-              ${reseller?.contact_person?`<div>${reseller.contact_person}</div>`:''}
-              ${reseller?.phone?`<div>${reseller.phone}</div>`:''}
-              ${reseller?.area?`<div>${reseller.area}</div>`:''}
-            </div>
-            <div>
-              <div style="font-weight:bold;font-size:9px;color:#ca1b1b;margin-bottom:4px;">PAYMENT TERMS</div>
-              <div>Reseller Discount: <strong>20% off retail</strong></div>
-              <div>Payment Due: <strong>${inv.due_date}</strong></div>
-            </div>
-          </div>
-          <table>
-            <tr><th style="width:5%;">#</th><th style="width:31%;">Variant</th><th style="width:12%;text-align:right;">Retail</th><th style="width:13%;text-align:right;">Reseller</th><th style="width:10%;text-align:right;">Qty</th><th style="width:17%;text-align:right;">Amount</th><th style="width:12%;text-align:center;">Unsold</th></tr>
-            ${items.map((it,n)=>`<tr>
-              <td>${n+1}</td><td>${it.variant_name}</td>
-              <td style="text-align:right;">${php(it.retail_price)}</td>
-              <td style="text-align:right;">${php(it.reseller_price)}</td>
-              <td style="text-align:right;font-weight:bold;">${Number(it.quantity).toLocaleString()}</td>
-              <td style="text-align:right;font-weight:bold;">${php(it.total_price)}</td>
-              <td style="text-align:center;border:1px solid #ddd;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>
-            </tr>`).join('')}
-            <tr class="total"><td colspan="5" style="text-align:right;">TOTAL DUE:</td><td style="text-align:right;color:#ca1b1b;font-size:11px;">${php(inv.total_amount)}</td><td></td></tr>
-          </table>
-          <div style="display:flex;justify-content:space-between;margin-top:20px;">
-            <div style="text-align:center;"><div style="border-top:1px solid #000;width:130px;padding-top:3px;font-size:9px;">Prepared by / Date</div></div>
-            <div style="text-align:center;"><div style="border-top:1px solid #000;width:130px;padding-top:3px;font-size:9px;">Received by / Date</div></div>
-            <div style="text-align:center;"><div style="border-top:1px solid #000;width:130px;padding-top:3px;font-size:9px;">Checked by / Date</div></div>
-          </div>
-        </div>`
-      }).join('')}
+      ${dayInvoices.map((inv,idx)=>buildDeliveryInvoicePrintPage(inv, idx < dayInvoices.length-1 ? 'force-break' : '')).join('')}
     </body></html>`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
   }
@@ -3411,122 +3490,16 @@ This will remove the invoice and its line items.`
     refreshFoundationAfterDataChange('reseller-payment-recorded')
   }
   function printDeliveryInvoice(invoice) {
-    const items = invoice.delivery_invoice_items || []
-    const reseller = resellers.find(r => r.id === invoice.reseller_id)
-    const totalPieces = items.reduce((s,i)=>s+Number(i.quantity||0),0)
     const pw = window.open('','_blank','width=650,height=900')
     pw.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoice_number}</title>
-      <style>
-        *{margin:0;padding:0;box-sizing:border-box;}
-        html,body{background:#e5e5e5;}
-        body{font-family:Arial,sans-serif;font-size:8.5px;color:#111;line-height:1.25;padding:8px;}
-        .wrap{width:145mm;min-height:210mm;margin:0 auto;background:white;padding:7mm 8mm;box-shadow:0 2px 10px rgba(0,0,0,0.18);}
-        h1{font-size:15px;color:#ca1b1b;margin:0;}
-        .tagline{font-size:7.5px;color:#888;}
-        table{width:100%;border-collapse:collapse;margin:6px 0;table-layout:fixed;}
-        th{background:#ca1b1b;color:white;padding:4px 4px;font-size:7.5px;text-align:left;line-height:1.2;}
-        td{padding:3px 4px;border-bottom:1px solid #f0f0f0;font-size:7.5px;line-height:1.2;word-break:break-word;}
-        .total-row{background:#fff9e6;font-weight:bold;}
-        .divider{border-top:1.5px solid #ca1b1b;margin:6px 0;}
-        .label{font-size:6.5px;color:#ca1b1b;font-weight:bold;letter-spacing:0.5px;text-transform:uppercase;}
-        .sig{border-top:1px solid #333;width:80px;text-align:center;font-size:6px;padding-top:2px;margin-top:14px;}
-        @media print{
-          @page{size:145mm 210mm;margin:0;}
-          html,body{width:145mm;min-height:210mm;background:white;padding:0;margin:0 auto;}
-          .wrap{width:145mm;min-height:210mm;margin:0 auto;padding:7mm 8mm;box-shadow:none;}
-          .no-print{display:none!important;}
-        }
-      </style></head>
-    <body><div class="wrap">
-      <!-- Header -->
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
-        <div>
-          <h1>Roma's Donuts</h1>
-          <div class="tagline">Every bite is a little piece of heaven</div>
-          <div class="tagline">Malued District, Dagupan City | 09706438113</div>
-        </div>
-        <div style="text-align:right;">
-          <div style="font-size:9px;font-weight:bold;color:#ca1b1b;">DELIVERY INVOICE</div>
-          <div style="font-size:8px;font-weight:bold;">${invoice.invoice_number}</div>
-          <div style="font-size:7px;color:#666;">Date: ${invoice.delivery_date}</div>
-          <div style="font-size:7px;color:#666;">Due: ${invoice.due_date}</div>
-          <div style="font-size:7px;font-weight:bold;color:${invoice.status==='paid'?'#2d8a4e':'#ca1b1b'};">${invoice.status?.toUpperCase()}</div>
-        </div>
+      ${buildDeliveryInvoicePrintCSS()}
+    </head><body>
+      <div class="no-print">
+        <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">🖨️ PRINT INVOICE</button>
+        <p style="font-size:10px;color:#888;margin-top:5px;">Use 145mm × 210mm paper size when available. Set scale to 100% and turn off headers/footers.</p>
       </div>
-      <div class="divider"></div>
-      <!-- Reseller Info -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:4px 0;">
-        <div>
-          <div class="label">Deliver To</div>
-          <div style="font-weight:bold;font-size:8px;">${invoice.reseller_name}</div>
-          ${reseller?.contact_person?`<div style="font-size:7px;">${reseller.contact_person}</div>`:''}
-          ${reseller?.phone?`<div style="font-size:7px;">${reseller.phone}</div>`:''}
-          ${reseller?.area?`<div style="font-size:7px;">${reseller.area}</div>`:''}
-        </div>
-        <div>
-          <div class="label">Details</div>
-          <div style="font-size:7px;">Discount: <strong>20% off retail</strong></div>
-          <div style="font-size:7px;">Due: <strong>${invoice.due_date}</strong></div>
-          <div style="font-size:7px;">Crates: <strong>${invoice.crates_used||0}</strong></div>
-          ${invoice.notes?`<div style="font-size:7px;">Note: ${invoice.notes}</div>`:''}
-        </div>
-      </div>
-      <div class="divider"></div>
-      <!-- Items Table -->
-      <table>
-        <tr><th style="width:29%;">Variant</th><th style="width:12%;text-align:right;">Price</th><th style="width:11%;text-align:right;">Inv Qty</th><th style="width:12%;text-align:center;">Adjust +/-</th><th style="width:12%;text-align:center;">Actual Qty</th><th style="width:14%;text-align:right;">Amount</th><th style="width:10%;text-align:center;">Unsold</th></tr>
-        ${items.map(i=>`<tr>
-          <td>${i.variant_name}</td>
-          <td style="text-align:right;">${php(i.reseller_price)}</td>
-          <td style="text-align:right;font-weight:bold;">${Number(i.quantity).toLocaleString()}</td>
-          <td style="text-align:center;border:1px solid #ddd;min-width:24px;">&nbsp;</td>
-          <td style="text-align:center;border:1px solid #ddd;min-width:24px;">&nbsp;</td>
-          <td style="text-align:right;font-weight:bold;">${php(i.total_price)}</td>
-          <td style="text-align:center;border:1px solid #ddd;min-width:24px;">&nbsp;</td>
-        </tr>`).join('')}
-        <tr class="total-row">
-          <td colspan="2" style="text-align:right;">Total (${totalPieces.toLocaleString()} pcs):</td>
-          <td></td>
-          <td></td>
-          <td></td>
-          <td style="text-align:right;color:#ca1b1b;font-size:9px;">${php(invoice.total_amount)}</td>
-          <td></td>
-        </tr>
-        ${invoice.paid_amount>0?`
-        <tr><td colspan="5" style="text-align:right;">Paid:</td><td style="text-align:right;color:#2d8a4e;">${php(invoice.paid_amount)}</td><td></td></tr>
-        <tr class="total-row"><td colspan="5" style="text-align:right;">Balance:</td><td style="text-align:right;color:#ca1b1b;">${php(Number(invoice.total_amount)-(Number(invoice.paid_amount)||0))}</td><td></td></tr>`:''}
-      </table>
-      <div class="divider" style="margin-top:6px;"></div>
-      <div style="font-size:6.5px;color:#666;margin-top:4px;border:1px dashed #ccc;padding:3px;">Dispatcher note: Write adjustment +/- and actual delivered quantity only when physical count differs from invoice quantity. Admin must encode final adjustment in Sales & Resellers → Adjustments so billable sales and receivables match actual delivery.</div>
-      <!-- Bottom fields -->
-      <div style="margin-top:8px;">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-          <div>
-            <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:14px;">Dispatcher:</div>
-            <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
-          </div>
-          <div>
-            <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;">Delivery Personnel:</div>
-            <div style="font-size:8px;font-weight:bold;color:#333;margin-bottom:8px;">Ronald Reyes / Jomar Cerezo</div>
-            <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">Signature / Date</div>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-          <div>
-            <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:14px;">Crates Used:</div>
-            <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">&nbsp;</div>
-          </div>
-          <div>
-            <div style="font-size:7px;font-weight:bold;color:#ca1b1b;margin-bottom:14px;">Crates Returned:</div>
-            <div style="border-top:1px solid #333;padding-top:3px;font-size:7px;color:#888;">&nbsp;</div>
-          </div>
-        </div>
-      </div>
-      <div class="no-print" style="text-align:center;margin-top:12px;">
-        <button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;font-weight:bold;cursor:pointer;">🖨️ PRINT (145×210mm Half-A4)</button>
-        <p style="font-size:10px;color:#888;margin-top:4px;">Use custom paper size 145mm × 210mm. Set scale to 100% and turn off headers/footers.</p>
-      </div>
-    </div></body></html>`)
+      ${buildDeliveryInvoicePrintPage(invoice)}
+    </body></html>`)
     pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
   }
   function buildInvoiceAdjustmentRows(invoice) {
