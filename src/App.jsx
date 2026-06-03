@@ -3373,13 +3373,13 @@ This will remove the invoice and its line items.`
     const reseller = resellers.find(r => r.id === invoice.reseller_id)
     const totalPieces = items.reduce((s,i)=>s+Number(i.quantity||0),0)
     const balance = Number(invoice.total_amount || 0) - (Number(invoice.paid_amount) || 0)
-    const resellerAddress = reseller?.address || reseller?.area || ''
+    const resellerName = reseller?.name || invoice.reseller_name || ''
+    const resellerAddress = invoice.reseller_address || invoice.address || reseller?.address || reseller?.area || ''
     return `
       <section class="invoice-page ${pageClass}">
         <div class="invoice-header">
           <div>
             <div class="brand-title">Roma's Donuts</div>
-            <div class="header-line"><span class="header-label">Company Name</span></div>
           </div>
           <div>
             <div class="invoice-title">DELIVERY INVOICE</div>
@@ -3390,9 +3390,8 @@ This will remove the invoice and its line items.`
 
         <div class="top-details">
           <div class="detail-box">
-            <div class="label">Reseller Name &amp; Address</div>
-            <div class="info-strong">${invoice.reseller_name || ''}</div>
-            ${resellerAddress?`<div class="info-text">${resellerAddress}</div>`:''}
+            <div class="info-strong">${resellerName}</div>
+            ${resellerAddress?`<div class="info-text">${resellerAddress}</div>`:'<div class="info-text">&nbsp;</div>'}
           </div>
           <div class="detail-box">
             <div class="label">Notes</div>
