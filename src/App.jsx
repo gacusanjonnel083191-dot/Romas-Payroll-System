@@ -605,12 +605,16 @@ export default function App() {
   const [availableRoles, setAvailableRoles] = useState([]) // all roles this employee can access
   const [showAdminAttendance, setShowAdminAttendance] = useState(false) // modal toggle
   const [cameFromAdmin, setCameFromAdmin] = useState(false) // tracks if employee portal was opened from admin
-  const [adminCredentials] = useState({
-    owner:    { code:'ADMIN001', pin:'admin2024', role:'owner',    name:'Owner' },
-    hr:       { code:'ADMIN002', pin:'hr2024',    role:'hr',       name:'HR Admin' },
-    payroll:  { code:'ADMIN003', pin:'pay2024',   role:'payroll',  name:'Payroll Officer' },
-    supervisor:{ code:'ADMIN004', pin:'sup2024',  role:'supervisor',name:'Supervisor' },
-  })
+  // Owner/Admin access now uses Supabase Auth email + password.
+  // No owner/admin password is stored in this frontend file.
+  const [adminAuthEmail, setAdminAuthEmail] = useState('')
+  const [adminAuthPassword, setAdminAuthPassword] = useState('')
+  const [adminAuthUser, setAdminAuthUser] = useState(null)
+  const [adminAuthProfile, setAdminAuthProfile] = useState(null)
+  const [showAdminPasswordForm, setShowAdminPasswordForm] = useState(false)
+  const [newAdminPassword, setNewAdminPassword] = useState('')
+  const [confirmAdminPassword, setConfirmAdminPassword] = useState('')
+  const [changingAdminPassword, setChangingAdminPassword] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [employees, setEmployees] = useState([])
@@ -1087,7 +1091,7 @@ export default function App() {
   const normalizedAdminRole = String(adminRole || '').trim().toLowerCase()
   const isOwnerRole = normalizedAdminRole === 'owner'
   const isPayrollRole = normalizedAdminRole === 'payroll'
-  const currentAdminLabel = adminEmployee?.full_name || (adminRole ? String(adminRole).toUpperCase() : 'Admin')
+  const currentAdminLabel = adminEmployee?.full_name || adminAuthProfile?.full_name || adminAuthUser?.email || (adminRole ? String(adminRole).toUpperCase() : 'Admin')
 
   function normalizeAdminRole(role) {
     const r = String(role || '').trim().toLowerCase()
@@ -1098,6 +1102,16 @@ export default function App() {
     const primary = normalizeAdminRole(emp?.admin_role || fallbackRole)
     const extras = String(emp?.extra_roles || '').split(',').map(normalizeAdminRole).filter(Boolean)
     return [primary, ...extras].filter((role, idx, arr) => role && arr.indexOf(role) === idx)
+  }
+
+  function getAdminAuthRoles(profile) {
+    const primary = normalizeAdminRole(profile?.role)
+    const extras = String(profile?.extra_roles || '').split(',').map(normalizeAdminRole).filter(Boolean)
+    return [primary, ...extras].filter((role, idx, arr) => role && arr.indexOf(role) === idx)
+  }
+
+  function getAdminDisplayName(profile, user) {
+    return profile?.full_name || user?.email || 'Admin User'
   }
 
   function requireOwnerAction(actionName = 'this action') {
@@ -1116,6 +1130,37 @@ export default function App() {
 
   useEffect(() => {
     setPasskeySupported(browserSupportsPasskeys())
+  }, [])
+
+  useEffect(() => {
+    let mounted = true
+
+    async function restoreAdminAuthSession() {
+      try {
+        const { data } = await supabase.auth.getSession()
+        const user = data?.session?.user
+        if (mounted && user) {
+          await loadAdminAuthProfile(user, { openPanel:true, silent:true })
+        }
+      } catch (err) {
+        console.warn('Admin auth session restore failed:', err)
+      }
+    }
+
+    restoreAdminAuthSession()
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return
+      if (!session?.user) {
+        setAdminAuthUser(null)
+        setAdminAuthProfile(null)
+      }
+    })
+
+    return () => {
+      mounted = false
+      authListener?.subscription?.unsubscribe?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -1331,20 +1376,11 @@ export default function App() {
     if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
   }
 
-  // ── Smart Login: checks master creds first, then employee DB role ─────────
+  // ── Smart Login: employee PIN is now for employee self-service only.
+  // Admin-level users must use Owner/Admin Login with Supabase Auth.
   async function handleLogin() {
     setLoading(true)
-    // 1. Emergency master credentials remain for owner lockout recovery only.
-    // Professional security path is employee admin_role + Supabase RLS/Auth migration.
-    const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
-    if (adminMatch) {
-      setLoading(false)
-      openAdmin(normalizeAdminRole(adminMatch.role) || 'owner')
-      logAudit('EMERGENCY ADMIN LOGIN USED', adminMatch.role || 'owner', 'System Access', 'Hardcoded emergency credential was used. Replace with Supabase Auth/RLS as soon as possible.')
-      return
-    }
 
-    // 2. Check employee database — look up by code + PIN
     const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
     setLoading(false)
     if (error || !data) { alert('Invalid Employee ID or PIN. Please try again.'); return }
@@ -1352,18 +1388,117 @@ export default function App() {
     const syncResult = await syncEmployeeSIL(data, { silent:true })
     const activeEmployee = syncResult?.employee || data
 
-    // 3. If employee has an admin_role assigned, open admin panel with that role
     const employeeRoles = getEmployeeAdminRoles(activeEmployee)
     if (employeeRoles.length > 0) {
-      setAvailableRoles(employeeRoles)
-      openAdmin(employeeRoles[0], activeEmployee)
-      return
+      showToast('🔒 Admin access now uses the Owner/Admin Login tab. Opening employee portal only.', 'red')
+      await logAudit('EMPLOYEE ADMIN LOGIN REDIRECTED', activeEmployee.full_name || activeEmployee.employee_code || 'Employee', activeEmployee.full_name || '', 'Employee PIN login cannot open admin panel after the Supabase Auth upgrade.')
     }
 
-    // 4. Regular employee — load portal
     setEmployee(activeEmployee)
     if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
   }
+
+  async function loadAdminAuthProfile(user, options = {}) {
+    if (!user?.id) throw new Error('Missing authenticated admin user.')
+
+    const { data: profile, error: profileError } = await supabase
+      .from('admin_users')
+      .select('*')
+      .eq('auth_user_id', user.id)
+      .eq('is_active', true)
+      .maybeSingle()
+
+    if (profileError) throw profileError
+    if (!profile) throw new Error('This email is not registered as an active admin user.')
+
+    const roles = getAdminAuthRoles(profile)
+    if (roles.length === 0) throw new Error('This admin account has no valid role assigned.')
+
+    let linkedEmployee = null
+    if (profile.employee_id) {
+      const { data: empData, error: empError } = await supabase
+        .from('employees')
+        .select('*')
+        .eq('id', profile.employee_id)
+        .eq('is_active', true)
+        .maybeSingle()
+      if (!empError && empData) linkedEmployee = empData
+    }
+
+    setAdminAuthUser(user)
+    setAdminAuthProfile(profile)
+    setAvailableRoles(roles)
+
+    if (options.openPanel) {
+      openAdmin(roles[0], linkedEmployee)
+      if (!options.silent) showToast(`✅ Welcome, ${getAdminDisplayName(profile, user)}!`)
+    }
+
+    return { profile, roles, linkedEmployee }
+  }
+
+  async function handleAdminAuthLogin() {
+    const email = adminAuthEmail.trim()
+    const passwordValue = adminAuthPassword
+    if (!email || !passwordValue) { alert('Please enter your admin email and password.'); return }
+
+    setLoading(true)
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password:passwordValue })
+      if (error) throw error
+      const user = data?.user
+      if (!user) throw new Error('Admin login failed. No authenticated user returned.')
+
+      await loadAdminAuthProfile(user, { openPanel:true })
+      setAdminAuthPassword('')
+      await logAudit('ADMIN AUTH LOGIN SUCCESS', email, 'System Access', 'Supabase Auth admin login succeeded.')
+    } catch (err) {
+      await supabase.auth.signOut().catch(()=>{})
+      setAdminAuthUser(null)
+      setAdminAuthProfile(null)
+      await logAudit('ADMIN AUTH LOGIN FAILED', email || 'Unknown email', 'System Access', err?.message || 'Admin auth login failed.')
+      alert('Admin login failed: ' + (err?.message || 'Please check your email/password and admin role setup.'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function logoutAdmin() {
+    try { await supabase.auth.signOut() } catch (err) { console.warn('Admin sign out failed:', err) }
+    setAdminMode(false)
+    setAdminRole(null)
+    setAdminEmployee(null)
+    setAdminAuthUser(null)
+    setAdminAuthProfile(null)
+    setAvailableRoles([])
+    setShowAdminPasswordForm(false)
+    setNewAdminPassword('')
+    setConfirmAdminPassword('')
+    setEmployeeCode('')
+    setPin('')
+    setActiveTab('dashboard')
+  }
+
+  async function changeAdminPassword() {
+    if (!adminAuthUser) { showToast('Please login through Owner/Admin Login first.', 'red'); return }
+    if (!newAdminPassword || newAdminPassword.length < 8) { showToast('Password must be at least 8 characters.', 'red'); return }
+    if (newAdminPassword !== confirmAdminPassword) { showToast('Passwords do not match.', 'red'); return }
+
+    setChangingAdminPassword(true)
+    try {
+      const { error } = await supabase.auth.updateUser({ password:newAdminPassword })
+      if (error) throw error
+      await logAudit('ADMIN PASSWORD CHANGED', currentAdminLabel, 'System Access', 'Admin changed own Supabase Auth password.')
+      setNewAdminPassword('')
+      setConfirmAdminPassword('')
+      setShowAdminPasswordForm(false)
+      showToast('✅ Password changed successfully.')
+    } catch (err) {
+      showToast('❌ Password change failed: ' + (err?.message || 'Unknown error'), 'red')
+    }
+    setChangingAdminPassword(false)
+  }
+
   async function openEmployeeAfterAuthentication(empData) {
     if (!empData) return
     const syncResult = await syncEmployeeSIL(empData, { silent:true })
@@ -1371,9 +1506,7 @@ export default function App() {
 
     const employeeRoles = getEmployeeAdminRoles(activeEmployee)
     if (employeeRoles.length > 0) {
-      setAvailableRoles(employeeRoles)
-      openAdmin(employeeRoles[0], activeEmployee)
-      return
+      showToast('🔒 Admin access now uses the Owner/Admin Login tab. Opening employee portal only.', 'red')
     }
 
     setEmployee(activeEmployee)
@@ -9030,14 +9163,18 @@ This will create one approved expense record using the total payroll earnings.`)
     )
   }
   function openAdmin(role, empData) {
-    const safeRole = normalizeAdminRole(role) || 'owner'
+    const safeRole = normalizeAdminRole(role)
+    if (!safeRole) {
+      showToast('❌ Invalid or missing admin role. Please check admin_users setup.', 'red')
+      return
+    }
     setAdminMode(true); setAdminRole(safeRole); setEmployeeSearch(''); setSidebarOpen(false)
-    if (empData) {
+    if (empData?.id) {
       setAdminEmployee(empData)
       loadTodayLog(empData); loadTodaySchedule(empData); loadTodayBreaks(null)
-      // Set available roles from employee record
-      const allRoles = getEmployeeAdminRoles(empData, safeRole)
-      if (allRoles.length > 0) setAvailableRoles(allRoles)
+      // Roles come from admin_users. Linked employee record is used only for My Attendance.
+    } else {
+      setAdminEmployee(null)
     }
     const defaultTab = safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
     setActiveTab(defaultTab)
@@ -10911,6 +11048,22 @@ This will create one approved expense record using the total payroll earnings.`)
             {toast.msg}
           </div>
         )}
+        {showAdminPasswordForm && (
+          <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:99998, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
+            <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'420px', width:'100%', boxShadow:'0 10px 40px rgba(0,0,0,0.35)' }}>
+              <h3 style={{ margin:'0 0 8px', color:'#ca1b1b' }}>🔐 Change Admin Password</h3>
+              <p style={{ margin:'0 0 14px', color:'#666', fontSize:'13px', lineHeight:1.5 }}>This changes your Supabase Auth password. Your password is never stored in App.jsx.</p>
+              <label style={lblS}>New Password</label>
+              <input type="password" value={newAdminPassword} onChange={e=>setNewAdminPassword(e.target.value)} style={inputStyle} placeholder="At least 8 characters" />
+              <label style={lblS}>Confirm New Password</label>
+              <input type="password" value={confirmAdminPassword} onChange={e=>setConfirmAdminPassword(e.target.value)} style={inputStyle} placeholder="Repeat new password" />
+              <div style={{ display:'flex', gap:'10px', marginTop:'10px' }}>
+                <button style={{ ...btnGreen, flex:1 }} disabled={changingAdminPassword} onClick={changeAdminPassword}>{changingAdminPassword?'Saving...':'Save Password'}</button>
+                <button style={{ ...btnGray, flex:1 }} onClick={()=>{ setShowAdminPasswordForm(false); setNewAdminPassword(''); setConfirmAdminPassword('') }}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div style={{ flex:1, display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden' }}>
 
           {/* ── Mobile Top Bar ── */}
@@ -10973,7 +11126,7 @@ This will create one approved expense record using the total payroll earnings.`)
                   <p style={{ color:'white', fontSize:'11px', fontWeight:'bold', margin:0 }}>
                     {adminRole==='owner'?'👑 Owner':adminRole==='manager'?'👔 Manager':adminRole==='hr'?'👤 HR Admin':adminRole==='payroll'?'💰 Payroll Officer':adminRole==='supervisor'?'👁 Supervisor':adminRole==='asst_supervisor'?'🔰 Asst. Supervisor':'👑 Owner'}
                   </p>
-                  {adminEmployee && <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'2px 0 0' }}>{adminEmployee.full_name}</p>}
+                  {(adminEmployee || adminAuthProfile || adminAuthUser) && <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'2px 0 0' }}>{adminEmployee?.full_name || adminAuthProfile?.full_name || adminAuthUser?.email}</p>}
                 </div>
                 {/* Role Switch — only shows if employee has multiple roles */}
                 {availableRoles.length > 1 && (
@@ -11012,8 +11165,13 @@ This will create one approved expense record using the total payroll earnings.`)
                     <span>⏰</span><span>My Attendance</span>
                   </button>
                 )}
-                <button style={{ padding:'9px 12px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'11px', textAlign:'left', width:'100%', background:'rgba(255,255,255,0.07)', color:'rgba(255,255,255,0.5)', display:'flex', alignItems:'center', gap:'8px' }} onClick={()=>{ setAdminMode(false); setAdminEmployee(null) }}>
-                  <span>←</span><span>Back to Login</span>
+                {adminAuthUser && (
+                  <button style={{ padding:'9px 12px', borderRadius:'8px', border:'1px solid rgba(255,255,255,0.15)', cursor:'pointer', fontWeight:'bold', fontSize:'11px', textAlign:'left', width:'100%', background:'transparent', color:'rgba(255,255,255,0.7)', display:'flex', alignItems:'center', gap:'8px' }} onClick={()=>setShowAdminPasswordForm(true)}>
+                    <span>🔐</span><span>Change Password</span>
+                  </button>
+                )}
+                <button style={{ padding:'9px 12px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'11px', textAlign:'left', width:'100%', background:'rgba(255,255,255,0.07)', color:'rgba(255,255,255,0.5)', display:'flex', alignItems:'center', gap:'8px' }} onClick={logoutAdmin}>
+                  <span>←</span><span>Logout Admin</span>
                 </button>
               </div>
             </div>
@@ -18531,7 +18689,9 @@ This will create one approved expense record using the total payroll earnings.`)
             </div>
           </div>
           {getEmployeeAdminRoles(employee).length > 0 && (
-            <button style={{ background:'#1a1a2e', color:'white', padding:'11px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:'8px', letterSpacing:'0.5px' }} onClick={()=>{ const roles = getEmployeeAdminRoles(employee); setAvailableRoles(roles); openAdmin(roles[0], employee) }}>🔧 ADMIN PANEL</button>
+            <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'10px', marginTop:'8px', color:'#7a5b00', fontSize:'12px', fontWeight:'bold', textAlign:'center' }}>
+              🔒 Admin panel access now requires the Owner/Admin Login tab with email and password.
+            </div>
           )}
 
           {showOTRequest && (
@@ -19448,19 +19608,29 @@ This will create one approved expense record using the total payroll earnings.`)
         </div>
         {/* Login type tabs */}
         <div style={{ display:'flex', gap:'6px', marginBottom:'20px', background:'#f4f4f4', padding:'4px', borderRadius:'12px' }}>
-          <button onClick={()=>setLoginType('employee')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='employee'?'white':'transparent', color:loginType==='employee'?'#ca1b1b':'#888', fontWeight:loginType==='employee'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='employee'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>👤 Employee / Admin</button>
+          <button onClick={()=>setLoginType('employee')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='employee'?'white':'transparent', color:loginType==='employee'?'#ca1b1b':'#888', fontWeight:loginType==='employee'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='employee'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>👤 Employee</button>
+          <button onClick={()=>setLoginType('admin')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='admin'?'white':'transparent', color:loginType==='admin'?'#ca1b1b':'#888', fontWeight:loginType==='admin'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='admin'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>🔐 Owner/Admin</button>
           <button onClick={()=>setLoginType('reseller')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='reseller'?'white':'transparent', color:loginType==='reseller'?'#ca1b1b':'#888', fontWeight:loginType==='reseller'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='reseller'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>🏪 Reseller</button>
         </div>
         {loginType==='employee' ? (
           <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
-            <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+            <input autoComplete="off" placeholder="Employee ID" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
             <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-            <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
+            <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'EMPLOYEE LOGIN'}</button>
             <button type="button" style={{ ...btnBlack, width:'100%', padding:'14px', fontSize:'14px', borderRadius:'12px', letterSpacing:'0.5px', marginTop:'10px', opacity:(!passkeySupported||passkeyLoading)?0.55:1, cursor:(!passkeySupported||passkeyLoading)?'not-allowed':'pointer' }} onClick={loginWithPasskey} disabled={!passkeySupported||passkeyLoading}>
               {passkeyLoading ? '⏳ VERIFYING...' : '🔐 LOGIN WITH FINGERPRINT'}
             </button>
             {!passkeySupported && <p style={{ color:'#ca1b1b', fontSize:'11px', textAlign:'center', margin:'8px 0 0' }}>Fingerprint login is not supported on this browser/device.</p>}
             <p style={{ color:'#888', fontSize:'10px', textAlign:'center', margin:'8px 0 0' }}>Set this up first from My Profile after logging in with Employee ID + PIN.</p>
+          </form>
+        ) : loginType==='admin' ? (
+          <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
+            <label style={lblS}>Owner/Admin Email:</label>
+            <input autoComplete="username" placeholder="owner@example.com" type="email" value={adminAuthEmail} onChange={e=>setAdminAuthEmail(e.target.value)} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
+            <label style={lblS}>Password:</label>
+            <input autoComplete="current-password" placeholder="Enter your password" type="password" value={adminAuthPassword} onChange={e=>setAdminAuthPassword(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleAdminAuthLogin() }} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
+            <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px' }} onClick={handleAdminAuthLogin} disabled={loading}>{loading?'⏳ LOGGING IN...':'🔐 OWNER / ADMIN LOGIN'}</button>
+            <p style={{ color:'#888', fontSize:'11px', textAlign:'center', marginTop:'10px', lineHeight:1.5 }}>Admin passwords are handled by Supabase Auth and are not stored inside App.jsx.</p>
           </form>
         ) : (
           <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
@@ -19471,9 +19641,6 @@ This will create one approved expense record using the total payroll earnings.`)
             <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px' }} onClick={resellerLogin} disabled={loading}>{loading?'⏳ LOGGING IN...':'🏪 RESELLER LOGIN'}</button>
             <p style={{ color:'#888', fontSize:'11px', textAlign:'center', marginTop:'10px' }}>Contact Roma's Donuts admin for your access code</p>
           </form>
-        )}
-        {employeeCode.toUpperCase()==='ADMIN001' && (
-          <p style={{ color:'#bbb', fontSize:'10px', marginTop:'10px', textAlign:'center' }}>👑 Master Owner Access</p>
         )}
         <p style={{ color:'#ccc', fontSize:'11px', textAlign:'center', marginTop:'20px' }}>Roma's Donuts © {new Date().getFullYear()}</p>
       </div>
