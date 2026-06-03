@@ -828,7 +828,7 @@ export default function App() {
   const [returnItems, setReturnItems] = useState({})
   const [savingReturn, setSavingReturn] = useState(false)
   const [invoiceFilter, setInvoiceFilter] = useState('active')
-  const [invoiceMonthFilter, setInvoiceMonthFilter] = useState(today.slice(0,7))
+  const [invoiceDayFilter, setInvoiceDayFilter] = useState(today)
   const [markingDelivered, setMarkingDelivered] = useState({})
   const [showPaymentFormMap, setShowPaymentFormMap] = useState({})
   const [paymentNotes, setPaymentNotes] = useState({})
@@ -2888,60 +2888,6 @@ export default function App() {
     return status === 'paid' ? 'paid' : 'unpaid'
   }
 
-
-  function getInvoiceDateKey(inv) {
-    return String(inv?.delivery_date || inv?.invoice_date || inv?.created_at || '').slice(0, 10)
-  }
-
-  function getInvoiceMonthKey(inv) {
-    return getInvoiceDateKey(inv).slice(0, 7)
-  }
-
-  function invoiceMatchesMonth(inv, monthFilter = invoiceMonthFilter) {
-    if (!monthFilter || monthFilter === 'all') return true
-    return getInvoiceMonthKey(inv) === monthFilter
-  }
-
-  function getSortedInvoices(rows = []) {
-    return [...(rows || [])].sort((a, b) => {
-      const ad = getInvoiceDateKey(a)
-      const bd = getInvoiceDateKey(b)
-      if (ad !== bd) return bd.localeCompare(ad)
-
-      const an = String(a?.invoice_number || '')
-      const bn = String(b?.invoice_number || '')
-      if (an !== bn) return bn.localeCompare(an)
-
-      return String(b?.created_at || b?.id || '').localeCompare(String(a?.created_at || a?.id || ''))
-    })
-  }
-
-  function getMonthFilteredInvoices(rows = []) {
-    return getSortedInvoices(rows).filter(inv => invoiceMatchesMonth(inv))
-  }
-
-  function getInvoiceMonthOptions(rows = []) {
-    const monthSet = new Set((rows || [])
-      .map(inv => getInvoiceMonthKey(inv))
-      .filter(m => /^\d{4}-\d{2}$/.test(m)))
-
-    const base = parseLocalDate(`${today.slice(0,7)}-01`) || new Date()
-    for (let i = 0; i < 12; i++) {
-      const d = new Date(base)
-      d.setMonth(base.getMonth() - i)
-      monthSet.add(formatDateLocal(d).slice(0, 7))
-    }
-
-    return [...monthSet].sort((a, b) => b.localeCompare(a))
-  }
-
-  function formatInvoiceMonthLabel(monthKey) {
-    if (monthKey === 'all') return 'All invoice months'
-    const d = parseLocalDate(`${monthKey}-01`)
-    if (!d) return monthKey
-    return d.toLocaleDateString('en-PH', { month:'long', year:'numeric' })
-  }
-
   function invoiceMatchesFilter(inv, filter) {
     const paymentStatus = getInvoicePaymentStatus(inv)
     const savedStatus = String(inv?.status || 'unpaid').toLowerCase()
@@ -2964,6 +2910,64 @@ export default function App() {
     if (filter === 'active') return paymentStatus !== 'paid' && savedStatus !== 'cancelled'
 
     return paymentStatus !== 'paid' && savedStatus !== 'cancelled'
+  }
+
+  function getInvoiceDeliveryDate(inv) {
+    return String(inv?.delivery_date || '').slice(0, 10)
+  }
+
+  function invoiceMatchesDayFilter(inv, dayFilter = invoiceDayFilter) {
+    if (!dayFilter || dayFilter === 'all') return true
+    return getInvoiceDeliveryDate(inv) === dayFilter
+  }
+
+  function sortDeliveryInvoicesNewestFirst(a, b) {
+    const dateCompare = getInvoiceDeliveryDate(b).localeCompare(getInvoiceDeliveryDate(a))
+    if (dateCompare !== 0) return dateCompare
+
+    const createdA = Date.parse(a?.created_at || a?.updated_at || '') || 0
+    const createdB = Date.parse(b?.created_at || b?.updated_at || '') || 0
+    if (createdA !== createdB) return createdB - createdA
+
+    return String(b?.invoice_number || '').localeCompare(String(a?.invoice_number || ''))
+  }
+
+  function getDayFilteredInvoices(dayFilter = invoiceDayFilter) {
+    return [...deliveryInvoices]
+      .filter(inv => invoiceMatchesDayFilter(inv, dayFilter))
+      .sort(sortDeliveryInvoicesNewestFirst)
+  }
+
+  function getVisibleDeliveryInvoices(filter = invoiceFilter, dayFilter = invoiceDayFilter) {
+    return getDayFilteredInvoices(dayFilter)
+      .filter(inv => invoiceMatchesFilter(inv, filter))
+      .sort(sortDeliveryInvoicesNewestFirst)
+  }
+
+  function getInvoiceDayOptions() {
+    const minDate = parseLocalDate(getDateOffsetString(-31))
+    const dates = new Set([today, getDateOffsetString(1)])
+
+    deliveryInvoices.forEach(inv => {
+      const dateKey = getInvoiceDeliveryDate(inv)
+      if (!dateKey) return
+      const parsed = parseLocalDate(dateKey)
+      if (!parsed) return
+      // Keep the dropdown focused on the latest one-month operating window,
+      // but still include future invoice dates for production planning.
+      if (!minDate || parsed >= minDate) dates.add(dateKey)
+    })
+
+    return Array.from(dates).sort((a, b) => b.localeCompare(a))
+  }
+
+  function formatInvoiceDayOption(dateKey) {
+    if (dateKey === 'all') return 'All loaded dates'
+    if (dateKey === today) return `Today — ${dateKey}`
+    if (dateKey === getDateOffsetString(1)) return `Tomorrow — ${dateKey}`
+    const parsed = parseLocalDate(dateKey)
+    if (!parsed) return dateKey
+    return `${parsed.toLocaleDateString('en-PH', { weekday:'short', month:'short', day:'2-digit', year:'numeric' })} — ${dateKey}`
   }
 
   async function normalizePaidInvoiceRows(rows = []) {
@@ -3083,19 +3087,19 @@ export default function App() {
     setInvoicesLoading(true)
     try {
       await autoMarkTodayDelivered()
-      const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).order('invoice_number', { ascending:false }).limit(500)
+      const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(500)
       if (!withItems.error) {
-        setDeliveryInvoices(await normalizePaidInvoiceRows(withItems.data || []))
+        setDeliveryInvoices((await normalizePaidInvoiceRows(withItems.data || [])).sort(sortDeliveryInvoicesNewestFirst))
         return
       }
       console.warn('delivery_invoices with items failed, trying basic invoice list:', withItems.error)
-      const basic = await supabase.from('delivery_invoices').select('*').order('delivery_date', { ascending:false }).order('invoice_number', { ascending:false }).limit(500)
+      const basic = await supabase.from('delivery_invoices').select('*').order('delivery_date', { ascending:false }).limit(500)
       if (basic.error) {
         console.warn('delivery_invoices basic query failed:', basic.error)
         setDeliveryInvoices([])
         return
       }
-      setDeliveryInvoices(await normalizePaidInvoiceRows(basic.data || []))
+      setDeliveryInvoices((await normalizePaidInvoiceRows(basic.data || [])).sort(sortDeliveryInvoicesNewestFirst))
     } catch(e) {
       console.warn('loadDeliveryInvoices:', e)
       setDeliveryInvoices([])
@@ -14725,48 +14729,55 @@ This will create one approved expense record using the total payroll earnings.`)
                             📦 PENDING ORDERS <span style={{ background:'white', color:'#f5a623', borderRadius:'50%', width:'18px', height:'18px', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:'10px', fontWeight:'bold' }}>{pendingResellerOrders.length}</span>
                           </button>
                         )}
-                        {deliveryInvoices.filter(i=>i.delivery_date===invoiceDate).length > 0 && (
-                          <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDate)}>🖨️ PRINT ALL ({invoiceDate})</button>
+                        {invoiceDayFilter !== 'all' && deliveryInvoices.filter(i=>getInvoiceDeliveryDate(i)===invoiceDayFilter).length > 0 && (
+                          <button style={{ ...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDayFilter)}>🖨️ PRINT ALL ({invoiceDayFilter})</button>
                         )}
                         <button style={{ ...btnYellow, padding:'9px 16px' }} onClick={()=>{ setShowCreateInvoice(!showCreateInvoice); if(!showCreateInvoice){ setInvoiceResellerId(''); setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }]); setInvoiceNotes(''); setInvoicePreparedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceDispatchedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceCrates('') } } }>
                           {showCreateInvoice?'✕ CANCEL':'+ CREATE INVOICE'}
                         </button>
                       </div>
                     </div>
-                    {/* Delivery Month + Filter Tabs */}
-                    <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'12px', flexWrap:'wrap' }}>
-                      <label style={{ ...lblS, marginBottom:0 }}>Invoice Month:</label>
-                      <select value={invoiceMonthFilter} onChange={e=>setInvoiceMonthFilter(e.target.value)} style={{ ...inputStyle, width:isMobile?'100%':'220px', marginBottom:0, padding:'8px 12px', fontSize:'12px', fontWeight:'700' }}>
-                        {getInvoiceMonthOptions(deliveryInvoices).map(monthKey => (
-                          <option key={monthKey} value={monthKey}>{formatInvoiceMonthLabel(monthKey)}</option>
-                        ))}
-                        <option value="all">All invoice months</option>
-                      </select>
-                      <span style={{ background:'#fff8dc', color:'#7a5a00', border:'1px solid #FDD412', borderRadius:'20px', padding:'7px 12px', fontSize:'11px', fontWeight:'700' }}>
-                        Showing {getMonthFilteredInvoices(deliveryInvoices).length} invoice(s)
-                      </span>
-                    </div>
-
-                    <div style={{ display:'flex', gap:'6px', marginBottom:'12px', flexWrap:'wrap' }}>
+                    {/* Delivery Day Dropdown + Status Filter Tabs */}
+                    <div style={{ background:'#fffdf4', border:'1px solid #f5e4a3', borderRadius:'14px', padding:'12px', marginBottom:'12px' }}>
                       {(()=>{
-                        const monthInvoices = getMonthFilteredInvoices(deliveryInvoices)
-                        const tom2 = new Date(); tom2.setDate(tom2.getDate()+1)
-                        const tomS = tom2.toISOString().slice(0,10)
-                        const todayCount = monthInvoices.filter(i=>getInvoiceDateKey(i)===today).length
-                        const tomorrowCount = monthInvoices.filter(i=>getInvoiceDateKey(i)===tomS).length
-                        const upcomingCount = monthInvoices.filter(i=>getInvoiceDateKey(i)>tomS).length
-                        return [
-                          ['today', `📦 Today (${todayCount})`],
-                          ['tomorrow', `🚚 Tomorrow (${tomorrowCount})`],
-                          ['upcoming', `📅 Upcoming (${upcomingCount})`],
-                          ['active','📋 Active'],['unpaid','⏳ Unpaid'],
-                          ['delivered','✅ Delivered'],['partial','💰 Partial'],
-                          ['paid','💵 Paid'],['all','📋 All'],
-                        ].map(([v,l])=>(
-                          <button key={v} onClick={()=>setInvoiceFilter(v)} style={{ padding:'7px 14px', borderRadius:'20px', border:'none', background:invoiceFilter===v?'#ca1b1b':'#f4f4f4', color:invoiceFilter===v?'white':'#555', fontWeight:invoiceFilter===v?'700':'500', fontSize:'11px', cursor:'pointer', whiteSpace:'nowrap', boxShadow:invoiceFilter===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>
-                            {l}
-                          </button>
-                        ))
+                        const dayInvoices = getDayFilteredInvoices(invoiceDayFilter)
+                        const statusOptions = [
+                          ['active', `📋 Active (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'active')).length})`],
+                          ['unpaid', `⏳ Unpaid (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'unpaid')).length})`],
+                          ['delivered', `✅ Delivered (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'delivered')).length})`],
+                          ['partial', `💰 Partial (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'partial')).length})`],
+                          ['paid', `💵 Paid (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'paid')).length})`],
+                          ['all', `📋 All (${dayInvoices.length})`],
+                        ]
+                        return (
+                          <>
+                            <div style={{ display:'grid', gridTemplateColumns:'minmax(220px, 360px) 1fr', gap:'10px', alignItems:'end', marginBottom:'10px' }}>
+                              <div>
+                                <label style={{ ...lblS, marginBottom:'4px' }}>Invoice Day</label>
+                                <select
+                                  value={invoiceDayFilter}
+                                  onChange={e=>setInvoiceDayFilter(e.target.value)}
+                                  style={{ ...inputStyle, marginBottom:0, fontSize:'12px', fontWeight:'700', color:'#333' }}
+                                >
+                                  <option value="all">All loaded dates</option>
+                                  {getInvoiceDayOptions().map(dateKey => (
+                                    <option key={dateKey} value={dateKey}>{formatInvoiceDayOption(dateKey)}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div style={{ color:'#777', fontSize:'11px', lineHeight:1.5 }}>
+                                Showing invoices by selected delivery day. Dates are sorted newest first. Dropdown includes the latest 1-month operating window plus future invoice dates.
+                              </div>
+                            </div>
+                            <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                              {statusOptions.map(([v,l])=>(
+                                <button key={v} onClick={()=>setInvoiceFilter(v)} style={{ padding:'7px 14px', borderRadius:'20px', border:'none', background:invoiceFilter===v?'#ca1b1b':'#f4f4f4', color:invoiceFilter===v?'white':'#555', fontWeight:invoiceFilter===v?'700':'500', fontSize:'11px', cursor:'pointer', whiteSpace:'nowrap', boxShadow:invoiceFilter===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>
+                                  {l}
+                                </button>
+                              ))}
+                            </div>
+                          </>
+                        )
                       })()}
                     </div>
 
@@ -14965,15 +14976,26 @@ This will create one approved expense record using the total payroll earnings.`)
                     )}
 
                     {invoicesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading invoices...</p>}
-                    {!invoicesLoading && getMonthFilteredInvoices(deliveryInvoices).length===0 && (
+                    {!invoicesLoading && deliveryInvoices.length===0 && (
                       <div style={{ textAlign:'center', padding:'30px', color:'#888' }}>
                         <p style={{ fontSize:'28px', margin:'0 0 10px' }}>🧾</p>
                         <p style={{ fontWeight:'bold', fontSize:'14px' }}>No invoices yet</p>
                         <p style={{ fontSize:'12px' }}>Create your first delivery invoice above.</p>
                       </div>
                     )}
-                    {/* Filter: hide paid by default */}
-                    {getMonthFilteredInvoices(deliveryInvoices).filter(i=>invoiceMatchesFilter(i, invoiceFilter)).map(inv=>{
+                    {/* Filtered invoices by selected day and status */}
+                    {(()=>{
+                      const visibleInvoices = getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter)
+                      if (!invoicesLoading && deliveryInvoices.length > 0 && visibleInvoices.length === 0) {
+                        return (
+                          <div style={{ textAlign:'center', padding:'30px', color:'#888', background:'white', border:'1px dashed #ddd', borderRadius:'14px' }}>
+                            <p style={{ fontSize:'28px', margin:'0 0 10px' }}>🧾</p>
+                            <p style={{ fontWeight:'bold', fontSize:'14px' }}>No invoices found for this day and status</p>
+                            <p style={{ fontSize:'12px' }}>Change the Invoice Day dropdown or status tab.</p>
+                          </div>
+                        )
+                      }
+                      return visibleInvoices.map(inv=>{
                       const balance = getInvoiceBalance(inv)
                       const displayStatus = getInvoicePaymentStatus(inv)
                       const isOverdue = displayStatus!=='paid' && balance > 0 && inv.due_date < today
@@ -15063,7 +15085,8 @@ This will create one approved expense record using the total payroll earnings.`)
                           {/* Payment form moved to Receivables tab */}
                         </div>
                       )
-                    }) }
+                    })
+                    })()}
                   </div>
                 )}
 
