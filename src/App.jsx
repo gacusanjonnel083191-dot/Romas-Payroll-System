@@ -97,20 +97,54 @@ function getPHDateTimeParts(asOf = new Date()) {
   }
 }
 
-function getOrderCutoffStatus(asOf = new Date()) {
+function getPHDateOffsetString(days = 0, asOf = new Date()) {
+  const ph = getPHDateTimeParts(asOf)
+  const [y, m, d] = String(ph.date || '').split('-').map(Number)
+  const date = new Date(y || new Date().getFullYear(), (m || 1) - 1, d || 1)
+  date.setDate(date.getDate() + safeNum(days, 0))
+  date.setHours(0, 0, 0, 0)
+  return formatDateLocal(date)
+}
+
+function getOrderCutoffStatus(targetDeliveryDate = null, asOf = new Date()) {
+  // Backward compatibility for old calls like getOrderCutoffStatus(new Date()).
+  if (targetDeliveryDate instanceof Date && arguments.length === 1) {
+    asOf = targetDeliveryDate
+    targetDeliveryDate = null
+  }
+
   const ph = getPHDateTimeParts(asOf)
   const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
-  const locked = ph.totalMinutes >= cutoffMinutes
+  const tomorrowDate = getPHDateOffsetString(1, asOf)
+  const targetDate = targetDeliveryDate ? String(targetDeliveryDate).slice(0, 10) : tomorrowDate
+  const appliesToTomorrow = targetDate === tomorrowDate
+  const timeLocked = ph.totalMinutes >= cutoffMinutes
+  const locked = appliesToTomorrow && timeLocked
+
   return {
     locked,
+    timeLocked,
+    appliesToTomorrow,
+    targetDate,
+    tomorrowDate,
     date: ph.date,
     time: ph.time,
     cutoffTime: ORDER_CUTOFF_TIME,
     cutoffLabel: ORDER_CUTOFF_LABEL,
     message: locked
-      ? `Order cut-off reached. Creating, changing, editing, approving, or submitting orders/invoices is locked after ${ORDER_CUTOFF_LABEL} PH time.`
-      : `Order and invoice creation/editing are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
+      ? `Order cut-off reached for tomorrow's delivery (${targetDate}). Orders, invoices, quantity edits, and invoice approval for tomorrow are locked after ${ORDER_CUTOFF_LABEL} PH time. Advance orders for later delivery dates are still allowed.`
+      : appliesToTomorrow
+        ? `Orders and invoices for tomorrow's delivery (${targetDate}) are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
+        : `Advance order allowed for ${targetDate}. The ${ORDER_CUTOFF_LABEL} cut-off only blocks delivery dated tomorrow (${tomorrowDate}).`
   }
+}
+
+function getDefaultResellerOrderDeliveryDate(asOf = new Date()) {
+  const ph = getPHDateTimeParts(asOf)
+  const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
+  // Before 12:00 PM PH time, tomorrow is still allowed. After 12:00 PM,
+  // default to the following day so the reseller can continue placing advance orders.
+  return getPHDateOffsetString(ph.totalMinutes >= cutoffMinutes ? 2 : 1, asOf)
 }
 function diffMinutesAcrossMidnight(startTime, endTime) {
   const start = minutesFromTime(startTime)
@@ -3110,9 +3144,9 @@ export default function App() {
   async function createDeliveryInvoice() {
     if (!invoiceResellerId) { showToast('❌ Please select a reseller.','red'); return }
     if (!invoiceDate) { showToast('❌ Please select a delivery date.','red'); return }
-    const cutoffStatus = getOrderCutoffStatus()
+    const cutoffStatus = getOrderCutoffStatus(invoiceDate)
     if (cutoffStatus.locked) {
-      showToast(`🔒 Invoice creation is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      showToast(`🔒 Invoice creation is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance dates are still allowed.`, 'red')
       await logAudit('INVOICE BLOCKED - ORDER CUT-OFF', adminRole, invoiceResellerId, cutoffStatus.message)
       return
     }
@@ -3165,9 +3199,9 @@ export default function App() {
   }
   async function saveInvoiceEdit() {
     if (!editingInvoice) return
-    const cutoffStatus = getOrderCutoffStatus()
+    const cutoffStatus = getOrderCutoffStatus(editingInvoice.delivery_date)
     if (cutoffStatus.locked) {
-      showToast(`🔒 Invoice editing is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      showToast(`🔒 Invoice editing is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
       await logAudit('INVOICE EDIT BLOCKED - ORDER CUT-OFF', adminRole, editingInvoice.reseller_name || '', `${editingInvoice.invoice_number || ''} — ${cutoffStatus.message}`)
       return
     }
@@ -4559,8 +4593,7 @@ This will remove the invoice and its line items.`
         setResellerMode(true)
         setResellerPortalView('dashboard')
         await loadResellerPortalData(branches[0].id)
-        const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
-        setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
+        setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
         await loadResellerOrderItems(branches[0].id)
         showToast(`✅ Welcome, ${account.account_name || account.owner_name || 'Reseller'}!`)
         setLoading(false)
@@ -4587,8 +4620,7 @@ This will remove the invoice and its line items.`
       setResellerPortalView('dashboard')
       await loadResellerPortalData(data.id)
 
-      const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
-      setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
+      setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
       await loadResellerOrderItems(data.id)
       showToast(`✅ Welcome, ${data.name}!`)
     } catch(err) {
@@ -4885,15 +4917,15 @@ This will remove the invoice and its line items.`
   }
 
   async function submitResellerOrder() {
-    const cutoffStatus = getOrderCutoffStatus()
-    if (cutoffStatus.locked) {
-      showToast(`🔒 Order cut-off reached. Changes are locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
-      await logAudit('RESELLER ORDER BLOCKED - ORDER CUT-OFF', 'Reseller Portal', currentReseller?.name || '', cutoffStatus.message)
-      return
-    }
     const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
     if (validItems.length===0) { showToast('❌ Enter at least one quantity.','red'); return }
     if (!resellerOrderDeliveryDate) { showToast('❌ Select delivery date.','red'); return }
+    const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
+    if (cutoffStatus.locked) {
+      showToast(`🔒 Order cut-off reached for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Please choose a later delivery date.`, 'red')
+      await logAudit('RESELLER ORDER BLOCKED - ORDER CUT-OFF', 'Reseller Portal', currentReseller?.name || '', cutoffStatus.message)
+      return
+    }
     const creditStatus = await checkResellerCreditBlockFresh(currentReseller?.id)
     if (creditStatus.blocked) {
       showToast(`🚫 Order blocked. ${creditStatus.message}`, 'red')
@@ -4932,9 +4964,9 @@ This will remove the invoice and its line items.`
     setPendingResellerOrders(data||[])
   }
   async function approveResellerOrder(order, customItems) {
-    const cutoffStatus = getOrderCutoffStatus()
+    const cutoffStatus = getOrderCutoffStatus(order?.delivery_date)
     if (cutoffStatus.locked) {
-      showToast(`🔒 Order approval/invoice conversion is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      showToast(`🔒 Approval into invoice is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance delivery dates are still allowed.`, 'red')
       await logAudit('ORDER APPROVAL BLOCKED - ORDER CUT-OFF', adminRole, order?.reseller_name || '', cutoffStatus.message)
       return
     }
@@ -14924,8 +14956,8 @@ This will create one approved expense record using the total payroll earnings.`)
 
                     {orderCutoffStatus.locked && (
                       <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 12px rgba(202,27,27,0.10)' }}>
-                        <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'13px' }}>🔒 ORDER CUT-OFF REACHED — {ORDER_CUTOFF_LABEL} PH TIME</h4>
-                        <p style={{ color:'#7a1a1a', margin:0, fontSize:'12px', lineHeight:1.5, fontWeight:'700' }}>Creating invoices, approving reseller orders into invoices, and editing invoice/order quantities are locked for production control. Use tomorrow's cycle or owner-approved manual process for urgent changes.</p>
+                        <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'13px' }}>🔒 TOMORROW DELIVERY CUT-OFF REACHED — {ORDER_CUTOFF_LABEL} PH TIME</h4>
+                        <p style={{ color:'#7a1a1a', margin:0, fontSize:'12px', lineHeight:1.5, fontWeight:'700' }}>Only orders/invoices dated tomorrow are locked. You can still create or submit advance orders for the following days.</p>
                       </div>
                     )}
 
@@ -14935,6 +14967,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>📦 Pending Reseller Orders — Requires Approval</h4>
                         {pendingResellerOrders.map(order=>{
                           const credit = getResellerCreditBlockInfo(order.reseller_id)
+                          const orderCutoff = getOrderCutoffStatus(order.delivery_date)
                           return (
                           <div key={order.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:`1px solid ${credit.blocked?'#ca1b1b':'#ffe0b2'}` }}>
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
@@ -14950,10 +14983,10 @@ This will create one approved expense record using the total payroll earnings.`)
                               </div>
                               <div style={{ display:'flex', gap:'6px' }}>
                                 <button
-                                  style={{ ...btnGreen, background:(credit.blocked || orderCutoffStatus.locked)?'#999':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:(credit.blocked || orderCutoffStatus.locked)?'not-allowed':'pointer' }}
-                                  disabled={credit.blocked || orderCutoffStatus.locked}
+                                  style={{ ...btnGreen, background:(credit.blocked || orderCutoff.locked)?'#999':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:(credit.blocked || orderCutoff.locked)?'not-allowed':'pointer' }}
+                                  disabled={credit.blocked || orderCutoff.locked}
                                   onClick={()=>approveResellerOrder(order)}
-                                >{credit.blocked?'🚫 HOLD':orderCutoffStatus.locked?'🔒 CUT-OFF':'✅ APPROVE'}</button>
+                                >{credit.blocked?'🚫 HOLD':orderCutoff.locked?'🔒 TOMORROW CUT-OFF':'✅ APPROVE'}</button>
                                 <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>rejectResellerOrder(order.id, order.reseller_name)}>❌ REJECT</button>
                               </div>
                             </div>
@@ -15102,14 +15135,15 @@ This will create one approved expense record using the total payroll earnings.`)
                         <input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
                         {(()=>{
                           const credit = getResellerCreditBlockInfo(invoiceResellerId)
-                          const disabled = savingInvoice || credit.blocked || orderCutoffStatus.locked
+                          const invoiceCutoff = getOrderCutoffStatus(invoiceDate)
+                          const disabled = savingInvoice || credit.blocked || invoiceCutoff.locked
                           return (
                             <button
-                              style={{ ...btnGreen, background:(credit.blocked || orderCutoffStatus.locked)?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
+                              style={{ ...btnGreen, background:(credit.blocked || invoiceCutoff.locked)?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
                               disabled={disabled}
                               onClick={createDeliveryInvoice}
                             >
-                              {credit.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : orderCutoffStatus.locked ? '🔒 ORDER CUT-OFF REACHED' : savingInvoice ? '⏳ Creating...' : '✅ CREATE & SAVE INVOICE'}
+                              {credit.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : invoiceCutoff.locked ? '🔒 TOMORROW CUT-OFF REACHED' : savingInvoice ? '⏳ Creating...' : '✅ CREATE & SAVE INVOICE'}
                             </button>
                           )
                         })()}
@@ -15329,10 +15363,10 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                         <button onClick={()=>{ setEditingInvoice(null); setEditInvoiceItems([]) }} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Cancel</button>
                       </div>
-                      {orderCutoffStatus.locked && (
+                      {getOrderCutoffStatus(editingInvoice?.delivery_date).locked && (
                         <div style={{ background:'#fff5f5', border:'1.5px solid #ca1b1b', borderRadius:'10px', padding:'10px 12px', marginBottom:'12px' }}>
-                          <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>🔒 ORDER CUT-OFF REACHED</p>
-                          <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>Creating and saving invoice/order changes is locked after {ORDER_CUTOFF_LABEL} PH time for production control.</p>
+                          <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>🔒 TOMORROW DELIVERY CUT-OFF REACHED</p>
+                          <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>This invoice is dated tomorrow, so quantity/order changes are locked after {ORDER_CUTOFF_LABEL} PH time. Later delivery dates are still allowed.</p>
                         </div>
                       )}
                       {/* Invoice details editable */}
@@ -15374,7 +15408,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                       )}
                       <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setEditInvoiceItems([...editInvoiceItems,{variant_id:'',variant_name:'',quantity:'',retail_price:0,reseller_price:0}])}>+ ADD ITEM</button>
-                      <button style={{ ...btnGreen, background:orderCutoffStatus.locked?'#999':'#2d8a4e', opacity:(savingEditInvoice||orderCutoffStatus.locked)?0.65:1 }} disabled={savingEditInvoice || orderCutoffStatus.locked} onClick={saveInvoiceEdit}>{orderCutoffStatus.locked?'🔒 CUT-OFF LOCKED':savingEditInvoice?'⏳ Saving...':'💾 SAVE CHANGES'}</button>
+                      {(()=>{ const invoiceCutoff = getOrderCutoffStatus(editingInvoice?.delivery_date); return <button style={{ ...btnGreen, background:invoiceCutoff.locked?'#999':'#2d8a4e', opacity:(savingEditInvoice||invoiceCutoff.locked)?0.65:1 }} disabled={savingEditInvoice || invoiceCutoff.locked} onClick={saveInvoiceEdit}>{invoiceCutoff.locked?'🔒 TOMORROW CUT-OFF LOCKED':savingEditInvoice?'⏳ Saving...':'💾 SAVE CHANGES'}</button> })()}
                     </div>
                   </div>
                 )}
@@ -18450,13 +18484,6 @@ This will create one approved expense record using the total payroll earnings.`)
             ))}
           </div>
 
-          {orderCutoffStatus.locked && (
-            <div style={{ position:'sticky', top:'0px', zIndex:49, background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 16px rgba(202,27,27,0.16)' }}>
-              <h3 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'15px' }}>🔒 ORDER CUT-OFF REACHED</h3>
-              <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5, fontWeight:'700' }}>Creating, changing, editing, approving, or submitting orders/invoices is no longer allowed after {ORDER_CUTOFF_LABEL} PH time. Please contact Roma’s Donuts admin for urgent concerns or submit in the next order cycle.</p>
-            </div>
-          )}
-
           {resellerPortalView==='dashboard' && (
             <div>
               <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'16px' }}>
@@ -18575,16 +18602,24 @@ This will create one approved expense record using the total payroll earnings.`)
           {resellerPortalView==='place_order' && (
             <div>
               <h2 style={h2s}>🛒 Place Order</h2>
-              {(creditStatus.blocked || orderCutoffStatus.locked) ? (
+              {(()=>{
+                const selectedOrderCutoff = resellerOrderDeliveryDate ? getOrderCutoffStatus(resellerOrderDeliveryDate) : { locked:false, message:'' }
+                return creditStatus.blocked ? (
                 <div style={{ ...portalCard, border:'2px solid #ca1b1b', background:'#fff5f5' }}>
-                  <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}>{creditStatus.blocked ? '🚫 Order Request Blocked' : '🔒 Order Cut-Off Reached'}</h3>
-                  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5 }}>{creditStatus.blocked ? creditStatus.message : `Changing or submitting orders is locked after ${ORDER_CUTOFF_LABEL} PH time. Please submit in the next order cycle or contact Roma’s Donuts admin for urgent concerns.`}</p>
+                  <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}>🚫 Order Request Blocked</h3>
+                  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5 }}>{creditStatus.message}</p>
                 </div>
               ) : (
                 <>
                   <div style={portalCard}>
                     <label style={lblS}>Delivery Date:</label>
-                    <input type="date" value={resellerOrderDeliveryDate} onChange={e=>setResellerOrderDeliveryDate(e.target.value)} style={inputStyle} min={today} />
+                    <input type="date" value={resellerOrderDeliveryDate} onChange={e=>setResellerOrderDeliveryDate(e.target.value)} style={inputStyle} min={getDefaultResellerOrderDeliveryDate()} />
+                    {selectedOrderCutoff.locked && (
+                      <div style={{ background:'#fff5f5', border:'1.5px solid #ca1b1b', borderRadius:'10px', padding:'10px', margin:'-4px 0 12px' }}>
+                        <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>🔒 Tomorrow delivery is already cut off</p>
+                        <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>Only tomorrow's delivery is closed after {ORDER_CUTOFF_LABEL}. Select the following day or another future delivery date to continue.</p>
+                      </div>
+                    )}
                     <label style={lblS}>Notes / special instruction:</label>
                     <input type="text" value={resellerOrderNotes} onChange={e=>setResellerOrderNotes(e.target.value)} placeholder="Optional notes..." style={inputStyle} />
                   </div>
@@ -18620,10 +18655,10 @@ This will create one approved expense record using the total payroll earnings.`)
                       <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
                       <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
                     </div>
-                    <button style={{ ...btnRed, opacity:submittingOrder?0.6:1 }} disabled={submittingOrder} onClick={submitResellerOrder}>{submittingOrder?'⏳ Submitting...':'📦 SUBMIT ORDER REQUEST'}</button>
+                    <button style={{ ...btnRed, background:selectedOrderCutoff.locked?'#999':'#ca1b1b', opacity:(submittingOrder||selectedOrderCutoff.locked)?0.6:1, cursor:selectedOrderCutoff.locked?'not-allowed':'pointer' }} disabled={submittingOrder || selectedOrderCutoff.locked} onClick={submitResellerOrder}>{selectedOrderCutoff.locked?'🔒 CHANGE DELIVERY DATE TO CONTINUE':submittingOrder?'⏳ Submitting...':'📦 SUBMIT ORDER REQUEST'}</button>
                   </div>
                 </>
-              )}
+              )})()}
             </div>
           )}
 
