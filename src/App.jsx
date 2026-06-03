@@ -3373,8 +3373,28 @@ This will remove the invoice and its line items.`
     const reseller = resellers.find(r => r.id === invoice.reseller_id)
     const totalPieces = items.reduce((s,i)=>s+Number(i.quantity||0),0)
     const balance = Number(invoice.total_amount || 0) - (Number(invoice.paid_amount) || 0)
-    const resellerName = reseller?.name || invoice.reseller_name || ''
-    const resellerAddress = invoice.reseller_address || invoice.address || reseller?.address || reseller?.area || ''
+    const resellerAccount = resellerAccounts.find(a => String(a.id) === String(reseller?.reseller_account_id || invoice.reseller_account_id || ''))
+    const cleanText = value => String(value || '').trim()
+    const sameText = (a,b) => cleanText(a).toLowerCase() === cleanText(b).toLowerCase()
+    const resellerName = [
+      reseller?.contact_person,
+      resellerAccount?.owner_name,
+      resellerAccount?.account_name,
+      invoice.reseller_contact_person,
+      invoice.reseller_owner_name,
+      invoice.reseller_name,
+      reseller?.name
+    ].map(cleanText).find(Boolean) || ''
+    const resellerAddress = [
+      reseller?.address,
+      invoice.reseller_address,
+      invoice.address,
+      reseller?.area,
+      reseller?.name
+    ].map(cleanText).find(v => v && !sameText(v, resellerName)) || ''
+    const deliveryPersonnelName = cleanText(invoice.delivery_personnel || invoice.delivery_personnel_name || invoice.driver_name || invoice.dispatched_by)
+    let dispatcherName = cleanText(invoice.dispatcher || invoice.dispatcher_name || invoice.prepared_by)
+    if (dispatcherName && deliveryPersonnelName && sameText(dispatcherName, deliveryPersonnelName)) dispatcherName = ''
     return `
       <section class="invoice-page ${pageClass}">
         <div class="invoice-header">
@@ -3432,12 +3452,12 @@ This will remove the invoice and its line items.`
         <div class="bottom-grid">
           <div class="bottom-box">
             <div class="bottom-label">Dispatcher</div>
-            <div class="bottom-value">${invoice.dispatched_by || ''}</div>
+            <div class="bottom-value">${dispatcherName || '&nbsp;'}</div>
             <div class="write-line"></div>
           </div>
           <div class="bottom-box">
             <div class="bottom-label">Delivery Personnel</div>
-            <div class="bottom-value">&nbsp;</div>
+            <div class="bottom-value">${deliveryPersonnelName || '&nbsp;'}</div>
             <div class="write-line"></div>
           </div>
           <div class="bottom-box">
@@ -14849,12 +14869,12 @@ This will create one approved expense record using the total payroll earnings.`)
                             <input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={inputStyle} />
                           </div>
                           <div>
-                            <label style={lblS}>Prepared by:</label>
-                            <input value={invoicePreparedBy} onChange={e=>setInvoicePreparedBy(e.target.value)} placeholder="Ronald Reyes / Jomar Cerezo" style={inputStyle} />
+                            <label style={lblS}>Dispatcher:</label>
+                            <input value={invoicePreparedBy} onChange={e=>setInvoicePreparedBy(e.target.value)} placeholder="Name of dispatcher" style={inputStyle} />
                           </div>
                           <div>
-                            <label style={lblS}>Dispatched by:</label>
-                            <input value={invoiceDispatchedBy} onChange={e=>setInvoiceDispatchedBy(e.target.value)} placeholder="Ronald Reyes / Jomar Cerezo" style={inputStyle} />
+                            <label style={lblS}>Delivery Personnel:</label>
+                            <input value={invoiceDispatchedBy} onChange={e=>setInvoiceDispatchedBy(e.target.value)} placeholder="e.g. Ronald Reyes / Jomar Cerezo" style={inputStyle} />
                           </div>
                           <div>
                             <label style={lblS}>Crates Used:</label>
@@ -15183,8 +15203,8 @@ This will create one approved expense record using the total payroll earnings.`)
                       )}
                       {/* Invoice details editable */}
                       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'12px' }}>
-                        <div><label style={lblS}>Prepared by:</label><input value={editingInvoice.prepared_by||''} onChange={e=>setEditingInvoice(p=>({...p,prepared_by:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
-                        <div><label style={lblS}>Dispatched by:</label><input value={editingInvoice.dispatched_by||''} onChange={e=>setEditingInvoice(p=>({...p,dispatched_by:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                        <div><label style={lblS}>Dispatcher:</label><input value={editingInvoice.prepared_by||''} onChange={e=>setEditingInvoice(p=>({...p,prepared_by:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
+                        <div><label style={lblS}>Delivery Personnel:</label><input value={editingInvoice.dispatched_by||''} onChange={e=>setEditingInvoice(p=>({...p,dispatched_by:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
                         <div><label style={lblS}>Crates Used:</label><input type="number" value={editingInvoice.crates_used||0} onChange={e=>setEditingInvoice(p=>({...p,crates_used:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} min="0" /></div>
                         <div><label style={lblS}>Notes:</label><input value={editingInvoice.notes||''} onChange={e=>setEditingInvoice(p=>({...p,notes:e.target.value}))} style={{ ...inputStyle, marginBottom:0 }} /></div>
                       </div>
@@ -15244,8 +15264,8 @@ This will create one approved expense record using the total payroll earnings.`)
                         {[
                           ['Delivery Date', viewingInvoice.delivery_date],
                           ['Due Date', viewingInvoice.due_date],
-                          ['Prepared by', viewingInvoice.prepared_by||'—'],
-                          ['Dispatched by', viewingInvoice.dispatched_by||'—'],
+                          ['Dispatcher', viewingInvoice.prepared_by||'—'],
+                          ['Delivery Personnel', viewingInvoice.dispatched_by||'—'],
                           ['Crates Used', viewingInvoice.crates_used||0],
                           ['Created by', viewingInvoice.created_by||'—'],
                         ].map(([l,v])=>(
