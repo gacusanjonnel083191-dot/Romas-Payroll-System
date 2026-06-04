@@ -180,6 +180,18 @@ function positiveNum(value, fallback = 1) {
 }
 function php(a) { return `PHP ${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })}` }
 function moneyRound(value) { return Math.round((safeNum(value, 0) + Number.EPSILON) * 100) / 100 }
+function clampPercent(value, fallback = 20) {
+  const n = safeNum(value, fallback)
+  return Math.min(100, Math.max(0, n))
+}
+function getResellerDiscountPct(reseller) {
+  if (!reseller || reseller.discount_pct === undefined || reseller.discount_pct === null || reseller.discount_pct === '') return 20
+  return clampPercent(reseller.discount_pct, 20)
+}
+function getResellerPrice(retailPrice, reseller) {
+  const discountPct = getResellerDiscountPct(reseller)
+  return moneyRound(safeNum(retailPrice, 0) * (1 - discountPct / 100))
+}
 function isMoneySettled(balance) { return moneyRound(balance) <= 0.01 }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
 function getDistanceMeters(la1,lo1,la2,lo2) {
@@ -840,7 +852,7 @@ export default function App() {
   const [resellersLoading, setResellersLoading] = useState(false)
   const [showResellerForm, setShowResellerForm] = useState(false)
   const [editingResellerId, setEditingResellerId] = useState(null)
-  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' })
+  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'', discount_pct:'20' })
   // Multi-branch reseller accounts: one owner login can manage multiple branch/outlet records.
   const [resellerAccounts, setResellerAccounts] = useState([])
   const [resellerAccountsLoading, setResellerAccountsLoading] = useState(false)
@@ -2918,6 +2930,23 @@ export default function App() {
     return account?.account_name || account?.owner_name || ''
   }
 
+  function getPricingReseller(resellerId, fallback = null) {
+    if (resellerId && typeof resellerId === 'object') return resellerId
+    const id = resellerId ? String(resellerId) : ''
+    if (id) {
+      return resellers.find(r => String(r.id) === id)
+        || resellerPortalBranches.find(r => String(r.id) === id)
+        || (String(currentReseller?.id || '') === id ? currentReseller : null)
+        || fallback
+    }
+    return fallback || currentReseller || null
+  }
+
+  function getPriceForReseller(retailPrice, resellerIdOrObject, fallback = null) {
+    const pricingReseller = getPricingReseller(resellerIdOrObject, fallback)
+    return getResellerPrice(retailPrice, pricingReseller)
+  }
+
   function getBranchesForAccount(accountId) {
     if (!accountId) return []
     return resellers.filter(r => String(r.reseller_account_id || '') === String(accountId))
@@ -2997,7 +3026,7 @@ export default function App() {
   }
   async function saveReseller() {
     if (!resellerForm.name.trim()) { showToast('❌ Reseller name is required.','red'); return }
-    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day, access_code:resellerForm.access_code||null, access_pin:resellerForm.access_pin||null, reseller_account_id:resellerForm.reseller_account_id||null }
+    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day, access_code:resellerForm.access_code||null, access_pin:resellerForm.access_pin||null, reseller_account_id:resellerForm.reseller_account_id||null, discount_pct:clampPercent(resellerForm.discount_pct, 20) }
     if (editingResellerId) {
       const { error } = await supabase.from('resellers').update(payload).eq('id', editingResellerId)
       if (error) { showToast('❌ Failed: '+error.message,'red'); return }
@@ -3008,7 +3037,7 @@ export default function App() {
       showToast('✅ Reseller added!')
     }
     setEditingResellerId(null); setShowResellerForm(false)
-    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' })
+    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'', discount_pct:'20' })
     loadResellers()
   }
   async function deleteReseller(r) {
@@ -3040,7 +3069,8 @@ export default function App() {
       delivery_day: r.delivery_day || 'Monday',
       access_code: r.access_code || '',
       access_pin: r.access_pin || '',
-      reseller_account_id: r.reseller_account_id || ''
+      reseller_account_id: r.reseller_account_id || '',
+      discount_pct: String(r.discount_pct ?? 20)
     })
     setShowResellerForm(true)
     setTimeout(() => {
@@ -3123,7 +3153,7 @@ export default function App() {
       return
     }
     const defaults = resellerDefaultOrders[resellerId] || []
-    const rows = await getAllOrderVariantRows(defaults)
+    const rows = await getAllOrderVariantRows(defaults, getPricingReseller(resellerId))
     setInvoiceItems(rows)
   }
 
@@ -3662,16 +3692,17 @@ export default function App() {
       const invoiceNum = `INV-${invoiceDate.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
       const dueDate = new Date(invoiceDate); dueDate.setDate(dueDate.getDate() + RESELLER_CREDIT_GRACE_DAYS)
       const dueDateStr = dueDate.toISOString().slice(0,10)
+      const discountPct = getResellerDiscountPct(reseller)
       const lineItems = validItems.map(i => {
         const variant = donutVariants.find(v => v.id === i.variant_id)
         const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
-        const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
+        const resellerPrice = getResellerPrice(retailPrice, reseller)
         return { ...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
       })
       const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
       const { data:inv, error:invErr } = await supabase.from('delivery_invoices').insert({
         invoice_number:invoiceNum, reseller_id:invoiceResellerId, reseller_name:reseller?.name||'',
-        delivery_date:invoiceDate, due_date:dueDateStr, subtotal, discount_pct:20,
+        delivery_date:invoiceDate, due_date:dueDateStr, subtotal, discount_pct:discountPct,
         total_amount:subtotal, status:'unpaid', notes:invoiceNotes||null, created_by:adminRole,
         prepared_by:invoicePreparedBy||null, dispatched_by:invoiceDispatchedBy||null,
         crates_used:Number(invoiceCrates||0)
@@ -3701,16 +3732,18 @@ export default function App() {
     setSavingEditInvoice(true)
     try {
       // Recalculate totals
+      const editPricingReseller = getPricingReseller(editingInvoice.reseller_id, { discount_pct: editingInvoice.discount_pct ?? 20 })
+      const editDiscountPct = getResellerDiscountPct(editPricingReseller)
       const lineItems = validItems.map(i => {
         const variant = donutVariants.find(v => v.id === i.variant_id)
         const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
-        const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
+        const resellerPrice = getResellerPrice(retailPrice, editPricingReseller)
         return { ...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
       })
       const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
       // Update invoice header
       await supabase.from('delivery_invoices').update({
-        subtotal, total_amount:subtotal,
+        subtotal, total_amount:subtotal, discount_pct:editDiscountPct,
         notes:editingInvoice.notes||null,
         prepared_by:editingInvoice.prepared_by||null,
         dispatched_by:editingInvoice.dispatched_by||null,
@@ -4103,7 +4136,7 @@ This will remove the invoice and its line items.`
           variant_id: v.id || '',
           variant_name: v.name || 'Variant',
           retail_price: retailPrice,
-          reseller_price: Math.round(retailPrice * 0.80 * 100) / 100,
+          reseller_price: getResellerPrice(retailPrice, invoice),
           original_quantity: 0,
           actual_quantity: 0,
           adjustment_type: 'Additional / Overproduced',
@@ -5120,7 +5153,7 @@ This will remove the invoice and its line items.`
     setLoading(false)
   }
 
-  async function getAllOrderVariantRows(defaultRows = []) {
+  async function getAllOrderVariantRows(defaultRows = [], pricingReseller = null) {
     let variants = Array.isArray(donutVariants) ? donutVariants : []
 
     if (!variants || variants.length === 0) {
@@ -5155,7 +5188,7 @@ This will remove the invoice and its line items.`
         variant_name:v.name || saved?.variant_name || 'Product',
         quantity:saved?.default_quantity ? String(saved.default_quantity) : '',
         retail_price:retail,
-        reseller_price:Math.round(retail * 0.80 * 100) / 100
+        reseller_price:getResellerPrice(retail, pricingReseller)
       }
     })
 
@@ -5169,7 +5202,7 @@ This will remove the invoice and its line items.`
           variant_name:saved.variant_name || 'Archived Product',
           quantity:saved?.default_quantity ? String(saved.default_quantity) : '',
           retail_price:retail,
-          reseller_price:Math.round(retail * 0.80 * 100) / 100
+          reseller_price:getResellerPrice(retail, pricingReseller)
         })
       }
     })
@@ -5191,7 +5224,8 @@ This will remove the invoice and its line items.`
       defaultRows = data || []
     }
 
-    const allRows = await getAllOrderVariantRows(defaultRows)
+    const pricingReseller = getPricingReseller(resellerId || templateSourceId, currentReseller)
+    const allRows = await getAllOrderVariantRows(defaultRows, pricingReseller)
     setResellerOrderItems(allRows)
   }
 
@@ -5206,7 +5240,10 @@ This will remove the invoice and its line items.`
       return false
     }
 
-    const items = await getAllOrderVariantRows(data || [])
+    const pricingReseller = target === 'portal'
+      ? getPricingReseller(sourceResellerId, currentReseller)
+      : getPricingReseller(invoiceResellerId || sourceResellerId)
+    const items = await getAllOrderVariantRows(data || [], pricingReseller)
     if (target === 'portal') setResellerOrderItems(items)
     else setInvoiceItems(items)
 
@@ -5478,12 +5515,13 @@ This will remove the invoice and its line items.`
     const reseller = resellers.find(r=>r.id===order.reseller_id)
     const invoiceNum = `INV-${order.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
     const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
-    const lineItems = validItems.map(i=>{ const rp=Math.round((i.retail_price||0)*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
+    const discountPct = getResellerDiscountPct(reseller)
+    const lineItems = validItems.map(i=>{ const rp=getResellerPrice(i.retail_price||0, reseller); return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
     const subtotal = lineItems.reduce((s,i)=>s+i.total_price,0)
     const { data:inv, error } = await supabase.from('delivery_invoices').insert({
       invoice_number:invoiceNum, reseller_id:order.reseller_id, reseller_name:order.reseller_name,
       delivery_date:order.delivery_date, due_date:dueDate.toISOString().slice(0,10),
-      subtotal, discount_pct:20, total_amount:subtotal, status:'unpaid',
+      subtotal, discount_pct:discountPct, total_amount:subtotal, status:'unpaid',
       prepared_by:'Ronald Reyes / Jomar Cerezo', dispatched_by:'Ronald Reyes / Jomar Cerezo',
       notes:`From order ${order.id.slice(0,8)}`, created_by:adminRole
     }).select().single()
@@ -15766,7 +15804,7 @@ This will create one approved expense record using the total payroll earnings.`)
                               {(order.reseller_order_items||[]).filter(i=>Number(i.quantity)>0).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' · ')}
                             </div>
                             <p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px', margin:'6px 0 0', textAlign:'right' }}>
-                              Estimated: {php((order.reseller_order_items||[]).reduce((s,i)=>s+Number(i.quantity||0)*Math.round((i.retail_price||0)*0.80*100)/100,0))}
+                              Estimated: {php((order.reseller_order_items||[]).reduce((s,i)=>s+Number(i.quantity||0)*safeNum(i.reseller_price, getResellerPrice(i.retail_price||0, getPricingReseller(order.reseller_id))),0))}
                             </p>
                           </div>
                           )
@@ -15849,7 +15887,7 @@ This will create one approved expense record using the total payroll earnings.`)
                                 }
                                 const items = data.map(d => {
                                   const v = variants.find(vv=>vv.id===d.variant_id)
-                                  return { variant_id:d.variant_id, variant_name:d.variant_name||v?.name||'', quantity:d.default_quantity, retail_price:v?.selling_price||0, reseller_price:Math.round((v?.selling_price||0)*0.80*100)/100 }
+                                  return { variant_id:d.variant_id, variant_name:d.variant_name||v?.name||'', quantity:d.default_quantity, retail_price:v?.selling_price||0, reseller_price:getResellerPrice(v?.selling_price||0, getPricingReseller(invoiceResellerId)) }
                                 })
                                 setInvoiceItems(items)
                                 showToast(`✅ Default order loaded — ${items.length} variants`)
@@ -15862,19 +15900,19 @@ This will create one approved expense record using the total payroll earnings.`)
                                   variants = data || []
                                 }
                                 if (variants.length === 0) { showToast('⚠️ No variants found. Go to Costing → Recipes → Load All Variants first.','red'); return }
-                                setInvoiceItems(variants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 })))
+                                setInvoiceItems(variants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:getResellerPrice(v.selling_price, getPricingReseller(invoiceResellerId)) })))
                                 showToast(`✅ ${variants.length} variants loaded`)
                               }}>📋 LOAD ALL VARIANTS</button>
                           </div>
                         </div>
                         {/* Header */}
                         <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
-                          {['Variant','Qty','Retail','Reseller (-20%)',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
+                          {['Variant','Qty','Retail',`Reseller (${getResellerDiscountPct(getPricingReseller(invoiceResellerId))}% off)`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
                         </div>
                         {invoiceItems.map((item,i)=>{
                           const variant = donutVariants.find(v=>v.id===item.variant_id)
-                          const retailPrice = variant?.selling_price || 0
-                          const resellerPrice = Math.round(retailPrice*0.80*100)/100
+                          const retailPrice = variant?.selling_price || Number(item.retail_price) || 0
+                          const resellerPrice = getResellerPrice(retailPrice, getPricingReseller(invoiceResellerId))
                           return (
                             <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
                               <select value={item.variant_id} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...invoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
@@ -15893,7 +15931,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         }) }
                         {/* Totals preview */}
                         {invoiceItems.some(i=>i.variant_id&&Number(i.quantity)>0) && (()=>{
-                          const total = invoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const rp=Math.round((v?.selling_price||0)*0.80*100)/100; return s+rp*Number(i.quantity||0) },0)
+                          const total = invoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const rp=getResellerPrice(v?.selling_price||i.retail_price||0, getPricingReseller(invoiceResellerId)); return s+rp*Number(i.quantity||0) },0)
                           const pieces = invoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)
                           return (
                             <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', margin:'8px 0', border:'1px solid #c8e6c9', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
@@ -16229,12 +16267,12 @@ This will create one approved expense record using the total payroll earnings.`)
                       {/* Line items */}
                       <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>Items:</p>
                       <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
-                        {['Variant','Qty','Retail','Reseller',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+                        {['Variant','Qty','Retail',`Reseller (${getResellerDiscountPct(getPricingReseller(editingInvoice?.reseller_id, { discount_pct: editingInvoice?.discount_pct ?? 20 }))}% off)`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
                       </div>
                       {editInvoiceItems.map((item,i)=>{
                         const variant = donutVariants.find(v=>v.id===item.variant_id)
                         const retailPrice = variant?.selling_price || Number(item.retail_price) || 0
-                        const resellerPrice = Math.round(retailPrice*0.80*100)/100
+                        const resellerPrice = getResellerPrice(retailPrice, getPricingReseller(editingInvoice?.reseller_id, { discount_pct: editingInvoice?.discount_pct ?? 20 }))
                         return (
                           <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
                             <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...editInvoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setEditInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
@@ -16253,7 +16291,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         <div style={{ background:'#fff9e6', borderRadius:'8px', padding:'8px 12px', margin:'6px 0', display:'flex', justifyContent:'space-between' }}>
                           <span style={{ fontSize:'12px', color:'#555' }}>{editInvoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)} pieces</span>
                           <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px' }}>
-                            New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); return s+Math.round((v?.selling_price||0)*0.80*100)/100*Number(i.quantity||0) },0))}
+                            New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); return s+getResellerPrice(v?.selling_price||i.retail_price||0, getPricingReseller(editingInvoice?.reseller_id, { discount_pct: editingInvoice?.discount_pct ?? 20 }))*Number(i.quantity||0) },0))}
                           </span>
                         </div>
                       )}
@@ -16938,7 +16976,7 @@ This will create one approved expense record using the total payroll earnings.`)
                   <div>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
                       <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🏪 Reseller Management ({resellers.length})</h3>
-                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' }) }}>
+                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'', discount_pct:'20' }) }}>
                         {showResellerForm?'✕ CANCEL':'+ ADD RESELLER'}
                       </button>
                     </div>
@@ -16997,6 +17035,20 @@ This will create one approved expense record using the total payroll earnings.`)
                               <option value="As needed">As needed</option>
                             </select>
                           </div>
+                          <div>
+                            <label style={lblS}>Reseller Discount %:</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.01"
+                              value={resellerForm.discount_pct ?? '20'}
+                              onChange={e=>setResellerForm(p=>({...p,discount_pct:e.target.value}))}
+                              style={inputStyle}
+                              placeholder="20 = standard reseller discount, 0 = no discount"
+                            />
+                            <p style={{ color:'#777', fontSize:'10px', margin:'-8px 0 8px' }}>20 = standard reseller price. 0 = full retail price/no reseller discount.</p>
+                          </div>
                           <div><label style={lblS}>Main Reseller Account / Owner:</label>
                             <select value={resellerForm.reseller_account_id||''} onChange={e=>setResellerForm(p=>({...p,reseller_account_id:e.target.value}))} style={inputStyle}>
                               <option value="">— No parent account / single branch —</option>
@@ -17020,6 +17072,7 @@ This will create one approved expense record using the total payroll earnings.`)
                             <div>
                               <p style={{ fontWeight:'bold', fontSize:'15px', color:'#ca1b1b', margin:'0 0 2px' }}>{r.name}</p>
                               <p style={{ color:'#888', fontSize:'12px', margin:'0 0 2px' }}>📍 {r.area||'—'} | 📅 Delivery: {r.delivery_day}</p>
+                              <p style={{ color:getResellerDiscountPct(r) === 0 ? '#ca1b1b' : '#2d8a4e', fontSize:'12px', margin:'0 0 2px', fontWeight:'bold' }}>💸 Discount: {getResellerDiscountPct(r)}% {getResellerDiscountPct(r) === 0 ? '(Full retail / no reseller discount)' : ''}</p>
                               <p style={{ color:'#888', fontSize:'12px', margin:'0 0 2px' }}>👤 {r.contact_person||'—'} | 📞 {r.phone||'—'}</p>
                               {r.reseller_account_id && <p style={{ color:'#4a90d9', fontSize:'11px', margin:0, fontWeight:'bold' }}>Main Account: {getResellerAccountName(r.reseller_account_id)}</p>}
                             </div>
