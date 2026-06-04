@@ -97,54 +97,20 @@ function getPHDateTimeParts(asOf = new Date()) {
   }
 }
 
-function getPHDateOffsetString(days = 0, asOf = new Date()) {
-  const ph = getPHDateTimeParts(asOf)
-  const [y, m, d] = String(ph.date || '').split('-').map(Number)
-  const date = new Date(y || new Date().getFullYear(), (m || 1) - 1, d || 1)
-  date.setDate(date.getDate() + safeNum(days, 0))
-  date.setHours(0, 0, 0, 0)
-  return formatDateLocal(date)
-}
-
-function getOrderCutoffStatus(targetDeliveryDate = null, asOf = new Date()) {
-  // Backward compatibility for old calls like getOrderCutoffStatus(new Date()).
-  if (targetDeliveryDate instanceof Date && arguments.length === 1) {
-    asOf = targetDeliveryDate
-    targetDeliveryDate = null
-  }
-
+function getOrderCutoffStatus(asOf = new Date()) {
   const ph = getPHDateTimeParts(asOf)
   const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
-  const tomorrowDate = getPHDateOffsetString(1, asOf)
-  const targetDate = targetDeliveryDate ? String(targetDeliveryDate).slice(0, 10) : tomorrowDate
-  const appliesToTomorrow = targetDate === tomorrowDate
-  const timeLocked = ph.totalMinutes >= cutoffMinutes
-  const locked = appliesToTomorrow && timeLocked
-
+  const locked = ph.totalMinutes >= cutoffMinutes
   return {
     locked,
-    timeLocked,
-    appliesToTomorrow,
-    targetDate,
-    tomorrowDate,
     date: ph.date,
     time: ph.time,
     cutoffTime: ORDER_CUTOFF_TIME,
     cutoffLabel: ORDER_CUTOFF_LABEL,
     message: locked
-      ? `Order cut-off reached for tomorrow's delivery (${targetDate}). Orders, invoices, quantity edits, and invoice approval for tomorrow are locked after ${ORDER_CUTOFF_LABEL} PH time. Advance orders for later delivery dates are still allowed.`
-      : appliesToTomorrow
-        ? `Orders and invoices for tomorrow's delivery (${targetDate}) are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
-        : `Advance order allowed for ${targetDate}. The ${ORDER_CUTOFF_LABEL} cut-off only blocks delivery dated tomorrow (${tomorrowDate}).`
+      ? `Order cut-off reached. Creating, changing, editing, approving, or submitting orders/invoices is locked after ${ORDER_CUTOFF_LABEL} PH time.`
+      : `Order and invoice creation/editing are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
   }
-}
-
-function getDefaultResellerOrderDeliveryDate(asOf = new Date()) {
-  const ph = getPHDateTimeParts(asOf)
-  const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
-  // Before 12:00 PM PH time, tomorrow is still allowed. After 12:00 PM,
-  // default to the following day so the reseller can continue placing advance orders.
-  return getPHDateOffsetString(ph.totalMinutes >= cutoffMinutes ? 2 : 1, asOf)
 }
 function diffMinutesAcrossMidnight(startTime, endTime) {
   const start = minutesFromTime(startTime)
@@ -178,7 +144,7 @@ function positiveNum(value, fallback = 1) {
   const n = safeNum(value, fallback)
   return n > 0 ? n : fallback
 }
-function php(a) { return `PHP ${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })}` }
+function php(a) { return `PHP ${safeNum(a).toFixed(2)}` }
 function moneyRound(value) { return Math.round((safeNum(value, 0) + Number.EPSILON) * 100) / 100 }
 function isMoneySettled(balance) { return moneyRound(balance) <= 0.01 }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
@@ -205,50 +171,12 @@ function formatDateLocal(date) {
   return d.toISOString().slice(0, 10)
 }
 
-function addMonthsClampedDateString(dateStr, monthOffset = 0) {
-  const start = parseLocalDate(dateStr)
-  if (!start) return ''
-  const targetYear = start.getFullYear()
-  const targetMonth = start.getMonth() + Number(monthOffset || 0)
-  const dueDay = start.getDate()
-  const lastDayOfTargetMonth = new Date(targetYear, targetMonth + 1, 0).getDate()
-  const out = new Date(targetYear, targetMonth, Math.min(dueDay, lastDayOfTargetMonth))
-  out.setHours(0, 0, 0, 0)
-  return formatDateLocal(out)
-}
-
-function getMonthlyPayableDueDates(startDueDate, repeatUntilDate, maxMonths = 60) {
-  const start = parseLocalDate(startDueDate)
-  const end = parseLocalDate(repeatUntilDate)
-  if (!start || !end || end < start) return []
-
-  const dates = []
-  for (let i = 0; i < maxMonths; i++) {
-    const dueDate = addMonthsClampedDateString(startDueDate, i)
-    const due = parseLocalDate(dueDate)
-    if (!due || due > end) break
-    dates.push(dueDate)
-  }
-  return dates
-}
-
 function addYearsLocal(date, years) {
   const d = new Date(date)
   const originalMonth = d.getMonth()
   d.setFullYear(d.getFullYear() + years)
   // Keep leap-day hires stable by moving overflowed dates to the last day of the target month.
   if (d.getMonth() !== originalMonth) d.setDate(0)
-  d.setHours(0, 0, 0, 0)
-  return d
-}
-
-function addMonthsLocal(date, months) {
-  const d = new Date(date)
-  const originalDate = d.getDate()
-  d.setDate(1)
-  d.setMonth(d.getMonth() + safeNum(months, 0))
-  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
-  d.setDate(Math.min(originalDate, lastDay))
   d.setHours(0, 0, 0, 0)
   return d
 }
@@ -605,16 +533,12 @@ export default function App() {
   const [availableRoles, setAvailableRoles] = useState([]) // all roles this employee can access
   const [showAdminAttendance, setShowAdminAttendance] = useState(false) // modal toggle
   const [cameFromAdmin, setCameFromAdmin] = useState(false) // tracks if employee portal was opened from admin
-  // Owner/Admin access now uses Supabase Auth email + password.
-  // No owner/admin password is stored in this frontend file.
-  const [adminAuthEmail, setAdminAuthEmail] = useState('')
-  const [adminAuthPassword, setAdminAuthPassword] = useState('')
-  const [adminAuthUser, setAdminAuthUser] = useState(null)
-  const [adminAuthProfile, setAdminAuthProfile] = useState(null)
-  const [showAdminPasswordForm, setShowAdminPasswordForm] = useState(false)
-  const [newAdminPassword, setNewAdminPassword] = useState('')
-  const [confirmAdminPassword, setConfirmAdminPassword] = useState('')
-  const [changingAdminPassword, setChangingAdminPassword] = useState(false)
+  const [adminCredentials] = useState({
+    owner:    { code:'ADMIN001', pin:'admin2024', role:'owner',    name:'Owner' },
+    hr:       { code:'ADMIN002', pin:'hr2024',    role:'hr',       name:'HR Admin' },
+    payroll:  { code:'ADMIN003', pin:'pay2024',   role:'payroll',  name:'Payroll Officer' },
+    supervisor:{ code:'ADMIN004', pin:'sup2024',  role:'supervisor',name:'Supervisor' },
+  })
   const [activeTab, setActiveTab] = useState('dashboard')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [employees, setEmployees] = useState([])
@@ -860,7 +784,6 @@ export default function App() {
   const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
   const [defaultOrderItems, setDefaultOrderItems] = useState([])
   const [deliveryInvoices, setDeliveryInvoices] = useState([])
-  const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('')
   const [invoicesLoading, setInvoicesLoading] = useState(false)
   const [showCreateInvoice, setShowCreateInvoice] = useState(false)
   const [invoiceResellerId, setInvoiceResellerId] = useState('')
@@ -895,27 +818,6 @@ export default function App() {
   const [salesNotes, setSalesNotes] = useState('')
   const [savingSales, setSavingSales] = useState(false)
   const [dailyExpenses, setDailyExpenses] = useState([])
-  const [companyPayables, setCompanyPayables] = useState([])
-  const [companyPayablesLoading, setCompanyPayablesLoading] = useState(false)
-  const [companyPayablesError, setCompanyPayablesError] = useState('')
-  const [payablesMonthFilter, setPayablesMonthFilter] = useState(today.slice(0,7))
-  const [showPayableForm, setShowPayableForm] = useState(false)
-  const [payableForm, setPayableForm] = useState({
-    payable_date:today,
-    due_date:today,
-    payee_type:'Supplier',
-    payee_name:'',
-    category:'Supplier Payment',
-    amount:'',
-    payment_type:'Accounts Payable',
-    payment_method:'Cash',
-    bank_name:'',
-    check_number:'',
-    check_date:'',
-    repeat_monthly:false,
-    repeat_until:'',
-    notes:''
-  })
   const [cashReconciliations, setCashReconciliations] = useState([])
   const [reconciliationDate, setReconciliationDate] = useState(today)
   const [actualCash, setActualCash] = useState('')
@@ -982,10 +884,6 @@ export default function App() {
   const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)
   const FOUNDATION_REFRESH_SECONDS = 60
   const EXPENSE_CATEGORIES = ['Payroll Expense','Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Miscellaneous']
-  const PAYABLE_TYPES = ['Supplier','Payroll','Government Contributions','Rent','Utilities','Loan','Equipment','Packaging Supplier','Raw Material Supplier','Other']
-  const PAYABLE_CATEGORIES = ['Supplier Payment','Payroll','SSS / PhilHealth / Pag-IBIG','Rent','Electricity','Water','Internet / Phone','Loan / Financing','Equipment Payable','Packaging Supplies','Raw Materials','Transportation/Fuel','Marketing/Promotion','Miscellaneous']
-  const PAYABLE_PAYMENT_TYPES = ['Accounts Payable','PDC','Scheduled Expense','Payroll Payable','Supplier Bill','Government Remittance','Loan Payment']
-  const PAYABLE_METHODS = ['Cash','GCash','Bank Transfer','Check','PDC','Online Banking','Other']
   const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
   const SALES_CHANNELS = [{ value:'walkin', label:'🏪 Walk-in' }, { value:'messenger', label:'💬 Messenger' }]
   const [inventorySearch, setInventorySearch] = useState('')
@@ -1087,92 +985,14 @@ export default function App() {
   const [orderCutoffTick, setOrderCutoffTick] = useState(Date.now())
   const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
 
-  // ── Security & Owner Control Lockdown v1 helpers ──────────────────────────
-  const ADMIN_ROLE_VALUES = ['owner','manager','hr','payroll','supervisor','asst_supervisor']
-  const normalizedAdminRole = String(adminRole || '').trim().toLowerCase()
-  const isOwnerRole = normalizedAdminRole === 'owner'
-  const isPayrollRole = normalizedAdminRole === 'payroll'
-  const currentAdminLabel = adminEmployee?.full_name || adminAuthProfile?.full_name || adminAuthUser?.email || (adminRole ? String(adminRole).toUpperCase() : 'Admin')
-
-  function normalizeAdminRole(role) {
-    const r = String(role || '').trim().toLowerCase()
-    return ADMIN_ROLE_VALUES.includes(r) ? r : ''
-  }
-
-  function getEmployeeAdminRoles(emp, fallbackRole = '') {
-    const primary = normalizeAdminRole(emp?.admin_role || fallbackRole)
-    const extras = String(emp?.extra_roles || '').split(',').map(normalizeAdminRole).filter(Boolean)
-    return [primary, ...extras].filter((role, idx, arr) => role && arr.indexOf(role) === idx)
-  }
-
-  function getAdminAuthRoles(profile) {
-    const primary = normalizeAdminRole(profile?.role)
-    const extras = String(profile?.extra_roles || '').split(',').map(normalizeAdminRole).filter(Boolean)
-    return [primary, ...extras].filter((role, idx, arr) => role && arr.indexOf(role) === idx)
-  }
-
-  function getAdminDisplayName(profile, user) {
-    return profile?.full_name || user?.email || 'Admin User'
-  }
-
-  function requireOwnerAction(actionName = 'this action') {
-    if (isOwnerRole) return true
-    showToast(`🔒 Owner-only control: ${actionName}. Please login as Owner.`, 'red')
-    logAudit('OWNER ACTION BLOCKED', currentAdminLabel, actionName, `Blocked role: ${adminRole || 'unknown'}`)
-    return false
-  }
-
-  function requireOwnerOrPayrollAction(actionName = 'this payroll action') {
-    if (isOwnerRole || isPayrollRole) return true
-    showToast(`🔒 Payroll control: ${actionName} is allowed only for Owner or Payroll Officer.`, 'red')
-    logAudit('PAYROLL ACTION BLOCKED', currentAdminLabel, actionName, `Blocked role: ${adminRole || 'unknown'}`)
-    return false
-  }
-
   useEffect(() => {
     setPasskeySupported(browserSupportsPasskeys())
-  }, [])
-
-  useEffect(() => {
-    let mounted = true
-
-    async function restoreAdminAuthSession() {
-      try {
-        const { data } = await supabase.auth.getSession()
-        const user = data?.session?.user
-        if (mounted && user) {
-          await loadAdminAuthProfile(user, { openPanel:true, silent:true })
-        }
-      } catch (err) {
-        console.warn('Admin auth session restore failed:', err)
-      }
-    }
-
-    restoreAdminAuthSession()
-
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (!mounted) return
-      if (!session?.user) {
-        setAdminAuthUser(null)
-        setAdminAuthProfile(null)
-      }
-    })
-
-    return () => {
-      mounted = false
-      authListener?.subscription?.unsubscribe?.()
-    }
   }, [])
 
   useEffect(() => {
     const timer = window.setInterval(() => setOrderCutoffTick(Date.now()), 30 * 1000)
     return () => window.clearInterval(timer)
   }, [])
-
-  useEffect(() => {
-    const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
-    if (isOwnerSide) loadDeliveryInvoices()
-  }, [adminMode, adminRole])
 
   useEffect(() => {
     const canViewFoundation = activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')
@@ -1377,11 +1197,14 @@ export default function App() {
     if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
   }
 
-  // ── Smart Login: employee PIN is now for employee self-service only.
-  // Admin-level users must use Owner/Admin Login with Supabase Auth.
+  // ── Smart Login: checks master creds first, then employee DB role ─────────
   async function handleLogin() {
     setLoading(true)
+    // 1. Check master hardcoded credentials (owner only emergency access)
+    const adminMatch = Object.values(adminCredentials).find(a=>a.code===employeeCode.trim()&&a.pin===pin.trim())
+    if (adminMatch) { setLoading(false); openAdmin(adminMatch.role); return }
 
+    // 2. Check employee database — look up by code + PIN
     const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
     setLoading(false)
     if (error || !data) { alert('Invalid Employee ID or PIN. Please try again.'); return }
@@ -1389,125 +1212,31 @@ export default function App() {
     const syncResult = await syncEmployeeSIL(data, { silent:true })
     const activeEmployee = syncResult?.employee || data
 
-    const employeeRoles = getEmployeeAdminRoles(activeEmployee)
-    if (employeeRoles.length > 0) {
-      showToast('🔒 Admin access now uses the Owner/Admin Login tab. Opening employee portal only.', 'red')
-      await logAudit('EMPLOYEE ADMIN LOGIN REDIRECTED', activeEmployee.full_name || activeEmployee.employee_code || 'Employee', activeEmployee.full_name || '', 'Employee PIN login cannot open admin panel after the Supabase Auth upgrade.')
+    // 3. If employee has an admin_role assigned, open admin panel with that role
+    if (activeEmployee.admin_role && ['owner','manager','hr','payroll','supervisor','asst_supervisor'].includes(activeEmployee.admin_role)) {
+      // Build list of all roles this employee can access (primary + extra roles)
+      const extraRoles = activeEmployee.extra_roles ? activeEmployee.extra_roles.split(',').filter(r=>r.trim()) : []
+      const allRoles = [activeEmployee.admin_role, ...extraRoles].filter((r,i,a)=>a.indexOf(r)===i)
+      setAvailableRoles(allRoles)
+      openAdmin(activeEmployee.admin_role, activeEmployee)
+      return
     }
 
+    // 4. Regular employee — load portal
     setEmployee(activeEmployee)
     if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
   }
-
-  async function loadAdminAuthProfile(user, options = {}) {
-    if (!user?.id) throw new Error('Missing authenticated admin user.')
-
-    const { data: profile, error: profileError } = await supabase
-      .from('admin_users')
-      .select('*')
-      .eq('auth_user_id', user.id)
-      .eq('is_active', true)
-      .maybeSingle()
-
-    if (profileError) throw profileError
-    if (!profile) throw new Error('This email is not registered as an active admin user.')
-
-    const roles = getAdminAuthRoles(profile)
-    if (roles.length === 0) throw new Error('This admin account has no valid role assigned.')
-
-    let linkedEmployee = null
-    if (profile.employee_id) {
-      const { data: empData, error: empError } = await supabase
-        .from('employees')
-        .select('*')
-        .eq('id', profile.employee_id)
-        .eq('is_active', true)
-        .maybeSingle()
-      if (!empError && empData) linkedEmployee = empData
-    }
-
-    setAdminAuthUser(user)
-    setAdminAuthProfile(profile)
-    setAvailableRoles(roles)
-
-    if (options.openPanel) {
-      openAdmin(roles[0], linkedEmployee)
-      if (!options.silent) showToast(`✅ Welcome, ${getAdminDisplayName(profile, user)}!`)
-    }
-
-    return { profile, roles, linkedEmployee }
-  }
-
-  async function handleAdminAuthLogin() {
-    const email = adminAuthEmail.trim()
-    const passwordValue = adminAuthPassword
-    if (!email || !passwordValue) { alert('Please enter your admin email and password.'); return }
-
-    setLoading(true)
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password:passwordValue })
-      if (error) throw error
-      const user = data?.user
-      if (!user) throw new Error('Admin login failed. No authenticated user returned.')
-
-      await loadAdminAuthProfile(user, { openPanel:true })
-      setAdminAuthPassword('')
-      await logAudit('ADMIN AUTH LOGIN SUCCESS', email, 'System Access', 'Supabase Auth admin login succeeded.')
-    } catch (err) {
-      await supabase.auth.signOut().catch(()=>{})
-      setAdminAuthUser(null)
-      setAdminAuthProfile(null)
-      await logAudit('ADMIN AUTH LOGIN FAILED', email || 'Unknown email', 'System Access', err?.message || 'Admin auth login failed.')
-      alert('Admin login failed: ' + (err?.message || 'Please check your email/password and admin role setup.'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function logoutAdmin() {
-    try { await supabase.auth.signOut() } catch (err) { console.warn('Admin sign out failed:', err) }
-    setAdminMode(false)
-    setAdminRole(null)
-    setAdminEmployee(null)
-    setAdminAuthUser(null)
-    setAdminAuthProfile(null)
-    setAvailableRoles([])
-    setShowAdminPasswordForm(false)
-    setNewAdminPassword('')
-    setConfirmAdminPassword('')
-    setEmployeeCode('')
-    setPin('')
-    setActiveTab('dashboard')
-  }
-
-  async function changeAdminPassword() {
-    if (!adminAuthUser) { showToast('Please login through Owner/Admin Login first.', 'red'); return }
-    if (!newAdminPassword || newAdminPassword.length < 8) { showToast('Password must be at least 8 characters.', 'red'); return }
-    if (newAdminPassword !== confirmAdminPassword) { showToast('Passwords do not match.', 'red'); return }
-
-    setChangingAdminPassword(true)
-    try {
-      const { error } = await supabase.auth.updateUser({ password:newAdminPassword })
-      if (error) throw error
-      await logAudit('ADMIN PASSWORD CHANGED', currentAdminLabel, 'System Access', 'Admin changed own Supabase Auth password.')
-      setNewAdminPassword('')
-      setConfirmAdminPassword('')
-      setShowAdminPasswordForm(false)
-      showToast('✅ Password changed successfully.')
-    } catch (err) {
-      showToast('❌ Password change failed: ' + (err?.message || 'Unknown error'), 'red')
-    }
-    setChangingAdminPassword(false)
-  }
-
   async function openEmployeeAfterAuthentication(empData) {
     if (!empData) return
     const syncResult = await syncEmployeeSIL(empData, { silent:true })
     const activeEmployee = syncResult?.employee || empData
 
-    const employeeRoles = getEmployeeAdminRoles(activeEmployee)
-    if (employeeRoles.length > 0) {
-      showToast('🔒 Admin access now uses the Owner/Admin Login tab. Opening employee portal only.', 'red')
+    if (activeEmployee.admin_role && ['owner','manager','hr','payroll','supervisor','asst_supervisor'].includes(activeEmployee.admin_role)) {
+      const extraRoles = activeEmployee.extra_roles ? activeEmployee.extra_roles.split(',').filter(r=>r.trim()) : []
+      const allRoles = [activeEmployee.admin_role, ...extraRoles].filter((r,i,a)=>a.indexOf(r)===i)
+      setAvailableRoles(allRoles)
+      openAdmin(activeEmployee.admin_role, activeEmployee)
+      return
     }
 
     setEmployee(activeEmployee)
@@ -3192,52 +2921,6 @@ export default function App() {
     return getInvoiceDeliveryDate(inv) === dayFilter
   }
 
-  function normalizeInvoiceSearchValue(value) {
-    return String(value || '').toLowerCase().trim()
-  }
-
-  function getInvoiceSearchHaystack(inv) {
-    const reseller = resellers.find(r => String(r.id) === String(inv?.reseller_id)) || {}
-    const deliveryDate = getInvoiceDeliveryDate(inv)
-    const dateLabel = deliveryDate
-      ? (() => {
-          const parsed = parseLocalDate(deliveryDate)
-          return parsed ? parsed.toLocaleDateString('en-PH', { month:'long', day:'numeric', year:'numeric' }) : deliveryDate
-        })()
-      : ''
-
-    return [
-      inv?.invoice_number,
-      inv?.reseller_name,
-      inv?.delivery_date,
-      dateLabel,
-      inv?.due_date,
-      inv?.status,
-      inv?.address,
-      inv?.delivery_address,
-      inv?.reseller_address,
-      inv?.area,
-      inv?.location,
-      reseller?.name,
-      reseller?.area,
-      reseller?.address,
-      reseller?.delivery_address,
-      reseller?.location,
-      reseller?.contact_person,
-      reseller?.phone,
-      ...(inv?.delivery_invoice_items || []).map(item => item?.variant_name)
-    ]
-      .filter(Boolean)
-      .join(' ')
-      .toLowerCase()
-  }
-
-  function invoiceMatchesSearch(inv, searchTerm = invoiceSearchTerm) {
-    const term = normalizeInvoiceSearchValue(searchTerm)
-    if (!term) return true
-    return getInvoiceSearchHaystack(inv).includes(term)
-  }
-
   function sortDeliveryInvoicesNewestFirst(a, b) {
     const dateCompare = getInvoiceDeliveryDate(b).localeCompare(getInvoiceDeliveryDate(a))
     if (dateCompare !== 0) return dateCompare
@@ -3256,14 +2939,8 @@ export default function App() {
   }
 
   function getVisibleDeliveryInvoices(filter = invoiceFilter, dayFilter = invoiceDayFilter) {
-    const searchActive = !!normalizeInvoiceSearchValue(invoiceSearchTerm)
-    const sourceInvoices = searchActive
-      ? [...deliveryInvoices]
-      : getDayFilteredInvoices(dayFilter)
-
-    return sourceInvoices
+    return getDayFilteredInvoices(dayFilter)
       .filter(inv => invoiceMatchesFilter(inv, filter))
-      .filter(inv => invoiceMatchesSearch(inv))
       .sort(sortDeliveryInvoicesNewestFirst)
   }
 
@@ -3395,187 +3072,6 @@ export default function App() {
 
     return buildResellerCreditStatus(resellerId, data || [], today)
   }
-
-  function getDaysUntilLocal(targetDate, asOfDate = today) {
-    const target = parseLocalDate(targetDate)
-    const asOf = parseLocalDate(asOfDate)
-    if (!target || !asOf) return null
-    return Math.floor((target.getTime() - asOf.getTime()) / (1000 * 60 * 60 * 24))
-  }
-
-  function getPayableDueDate(row) {
-    return row?.due_date || row?.check_date || row?.payable_date || row?.expense_date || today
-  }
-
-  function normalizeCompanyPayable(row) {
-    const dueDate = getPayableDueDate(row)
-    const daysUntilDue = getDaysUntilLocal(dueDate, today)
-    const amount = safeNum(row?.amount, 0)
-    const status = String(row?.status || 'scheduled').toLowerCase()
-    let urgency = 'open'
-    if (daysUntilDue !== null && daysUntilDue < 0) urgency = 'overdue'
-    else if (daysUntilDue === 0) urgency = 'due_today'
-    else if (daysUntilDue !== null && daysUntilDue <= 3) urgency = 'approaching'
-
-    return {
-      ...row,
-      source:'company_payables',
-      due_date_effective:dueDate,
-      days_until_due:daysUntilDue,
-      balance_amount:amount,
-      urgency,
-      status_normalized:status,
-      display_payee:row?.payee_name || row?.supplier_name || row?.category || 'Company payable',
-      display_category:row?.category || row?.payment_type || 'Payable'
-    }
-  }
-
-  function normalizePendingExpenseAsPayable(exp) {
-    const dueDate = exp?.expense_date || today
-    const daysUntilDue = getDaysUntilLocal(dueDate, today)
-    let urgency = 'open'
-    if (daysUntilDue !== null && daysUntilDue < 0) urgency = 'overdue'
-    else if (daysUntilDue === 0) urgency = 'due_today'
-    else if (daysUntilDue !== null && daysUntilDue <= 3) urgency = 'approaching'
-    return {
-      ...exp,
-      source:'daily_expenses',
-      due_date_effective:dueDate,
-      days_until_due:daysUntilDue,
-      balance_amount:safeNum(exp?.amount, 0),
-      urgency,
-      status_normalized:String(exp?.status || 'pending').toLowerCase(),
-      display_payee:exp?.description || exp?.category || 'Pending expense',
-      display_category:exp?.category || 'Expense Approval'
-    }
-  }
-
-  function getOwnerPaymentDeadlineAlerts(payableRows = companyPayables, expenseRows = dailyExpenses, asOfDate = today) {
-    const openCompanyPayables = (payableRows || [])
-      .filter(row => !['paid','cancelled','void','rejected'].includes(String(row?.status || 'scheduled').toLowerCase()))
-      .filter(row => safeNum(row?.amount, 0) > 0)
-      .map(row => {
-        const dueDate = getPayableDueDate(row)
-        const daysUntilDue = getDaysUntilLocal(dueDate, asOfDate)
-        let urgency = 'open'
-        if (daysUntilDue !== null && daysUntilDue < 0) urgency = 'overdue'
-        else if (daysUntilDue === 0) urgency = 'due_today'
-        else if (daysUntilDue !== null && daysUntilDue <= 3) urgency = 'approaching'
-        return { ...normalizeCompanyPayable(row), due_date_effective:dueDate, days_until_due:daysUntilDue, urgency }
-      })
-
-    const pendingExpenseRows = (expenseRows || [])
-      .filter(exp => String(exp?.status || '').toLowerCase() === 'pending')
-      .filter(exp => safeNum(exp?.amount, 0) > 0)
-      .map(normalizePendingExpenseAsPayable)
-
-    const openRows = [...openCompanyPayables, ...pendingExpenseRows].sort((a, b) => {
-      const da = a.days_until_due ?? 99999
-      const db = b.days_until_due ?? 99999
-      if (da !== db) return da - db
-      return safeNum(b.balance_amount, 0) - safeNum(a.balance_amount, 0)
-    })
-
-    const warningRows = openRows.filter(r => ['overdue','due_today','approaching'].includes(r.urgency))
-    const overdueRows = warningRows.filter(r => r.urgency === 'overdue')
-    const dueTodayRows = warningRows.filter(r => r.urgency === 'due_today')
-    const approachingRows = warningRows.filter(r => r.urgency === 'approaching')
-    const totalOpenBalance = openRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0)
-    const warningBalance = warningRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0)
-
-    return {
-      openRows,
-      warningRows,
-      overdueRows,
-      dueTodayRows,
-      approachingRows,
-      totalOpenBalance,
-      warningBalance,
-      warningCount: warningRows.length,
-      overdueBalance: overdueRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0),
-      dueTodayBalance: dueTodayRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0),
-      approachingBalance: approachingRows.reduce((sum, r) => sum + safeNum(r.balance_amount, 0), 0)
-    }
-  }
-
-  function getPaymentDeadlineLabel(row) {
-    if (row?.days_until_due === null || row?.days_until_due === undefined) return 'No due date'
-    if (row.days_until_due < 0) return `${Math.abs(row.days_until_due)} day(s) overdue`
-    if (row.days_until_due === 0) return 'Due today'
-    if (row.days_until_due === 1) return 'Due tomorrow'
-    return `Due in ${row.days_until_due} days`
-  }
-
-  function renderOwnerPaymentDeadlineWarning({ compact = false } = {}) {
-    const canSeeOwnerWarnings = ['owner','manager'].includes(String(adminRole || '').toLowerCase())
-    if (!canSeeOwnerWarnings) return null
-
-    const deadlineData = getOwnerPaymentDeadlineAlerts()
-    if (deadlineData.warningCount === 0) return null
-
-    const borderColor = deadlineData.overdueRows.length > 0 ? '#ca1b1b' : (deadlineData.dueTodayRows.length > 0 ? '#f57c00' : '#f5a623')
-    const bgColor = deadlineData.overdueRows.length > 0 ? '#fff5f5' : (deadlineData.dueTodayRows.length > 0 ? '#fff4e5' : '#fff8dc')
-    const title = deadlineData.overdueRows.length > 0
-      ? `🚨 Company payables overdue — ${deadlineData.overdueRows.length} payable${deadlineData.overdueRows.length === 1 ? '' : 's'}`
-      : deadlineData.dueTodayRows.length > 0
-        ? `⚠️ Company payments due today — ${deadlineData.dueTodayRows.length} payable${deadlineData.dueTodayRows.length === 1 ? '' : 's'}`
-        : `🔔 Company payables approaching within 3 days — ${deadlineData.approachingRows.length} payable${deadlineData.approachingRows.length === 1 ? '' : 's'}`
-
-    return (
-      <div style={{ position:'sticky', top:0, zIndex:80, background:bgColor, border:`2px solid ${borderColor}`, borderRadius:'14px', padding:compact?'12px':'14px', marginBottom:'16px', boxShadow:'0 6px 20px rgba(0,0,0,0.10)' }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
-          <div>
-            <p style={{ color:borderColor, fontWeight:'900', fontSize:compact?'13px':'15px', margin:'0 0 5px', letterSpacing:'0.2px' }}>{title}</p>
-            <p style={{ color:'#7a1a1a', fontSize:'12px', lineHeight:1.5, margin:0 }}>
-              Owner payable warning: supplier bills, PDCs, payroll payables, government remittances, rent, utilities, loans, and scheduled company expenses are monitored by due date. Warning starts 3 days before due date.
-            </p>
-          </div>
-          <button style={{ ...btnRed, width:'auto', marginTop:0, padding:'8px 14px', fontSize:'12px' }} onClick={()=>{ setActiveTab('sales'); setSalesView('payables') }}>
-            📅 OPEN PAYABLES / PDC
-          </button>
-        </div>
-
-        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'10px' }}>
-          {[
-            ['Warning Amount', php(deadlineData.warningBalance), borderColor],
-            ['Overdue', `${deadlineData.overdueRows.length} · ${php(deadlineData.overdueBalance)}`, '#ca1b1b'],
-            ['Due Today', `${deadlineData.dueTodayRows.length} · ${php(deadlineData.dueTodayBalance)}`, '#f57c00'],
-            ['Due in 1–3 Days', `${deadlineData.approachingRows.length} · ${php(deadlineData.approachingBalance)}`, '#f5a623'],
-          ].map(([label, value, color]) => (
-            <div key={label} style={{ background:'white', border:'1px solid #f0e0c0', borderRadius:'10px', padding:'8px 10px' }}>
-              <p style={{ color:'#888', fontSize:'10px', fontWeight:'bold', margin:'0 0 3px', textTransform:'uppercase' }}>{label}</p>
-              <p style={{ color, fontSize:'13px', fontWeight:'900', margin:0 }}>{value}</p>
-            </div>
-          ))}
-        </div>
-
-        {!compact && (
-          <div style={{ marginTop:'10px', border:'1px solid #f0d6d6', borderRadius:'10px', overflow:'hidden', background:'white' }}>
-            <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.9fr 0.8fr', gap:'8px', background:'#ca1b1b', color:'white', padding:'8px 10px', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.3px' }}>
-              <span>PAYEE / ACCOUNT</span><span>CATEGORY</span><span>DUE DATE</span><span>AMOUNT</span>
-            </div>
-            {deadlineData.warningRows.slice(0, 8).map(row => (
-              <div key={`${row.source}-${row.id}`} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.9fr 0.8fr', gap:'8px', padding:'8px 10px', borderTop:'1px solid #f2f2f2', alignItems:'center' }}>
-                <div>
-                  <p style={{ fontSize:'12px', fontWeight:'bold', color:'#333', margin:'0 0 2px' }}>{row.display_payee}</p>
-                  <p style={{ fontSize:'10px', color:'#888', margin:0 }}>{row.payment_type || row.payee_type || row.source}</p>
-                </div>
-                <div>
-                  <p style={{ fontSize:'12px', fontWeight:'bold', color:'#333', margin:'0 0 2px' }}>{row.display_category}</p>
-                  <p style={{ fontSize:'10px', color:'#888', margin:0 }}>{getPaymentDeadlineLabel(row)}</p>
-                </div>
-                <span style={{ fontSize:'12px', fontWeight:'bold', color:row.urgency==='overdue'?'#ca1b1b':row.urgency==='due_today'?'#f57c00':'#b36b00' }}>{row.due_date_effective || '—'}</span>
-                <span style={{ fontSize:'12px', fontWeight:'900', color:'#ca1b1b' }}>{php(row.balance_amount)}</span>
-              </div>
-            ))}
-            {deadlineData.warningRows.length > 8 && (
-              <p style={{ padding:'8px 10px', margin:0, fontSize:'11px', color:'#888', background:'#fafafa' }}>+ {deadlineData.warningRows.length - 8} more payable warning(s). Open Payables / PDC to review all.</p>
-            )}
-          </div>
-        )}
-      </div>
-    )
-  }
   async function autoMarkTodayDelivered() {
     try {
       const { data: todayInvs } = await supabase.from('delivery_invoices')
@@ -3614,9 +3110,9 @@ export default function App() {
   async function createDeliveryInvoice() {
     if (!invoiceResellerId) { showToast('❌ Please select a reseller.','red'); return }
     if (!invoiceDate) { showToast('❌ Please select a delivery date.','red'); return }
-    const cutoffStatus = getOrderCutoffStatus(invoiceDate)
+    const cutoffStatus = getOrderCutoffStatus()
     if (cutoffStatus.locked) {
-      showToast(`🔒 Invoice creation is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance dates are still allowed.`, 'red')
+      showToast(`🔒 Invoice creation is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
       await logAudit('INVOICE BLOCKED - ORDER CUT-OFF', adminRole, invoiceResellerId, cutoffStatus.message)
       return
     }
@@ -3669,9 +3165,9 @@ export default function App() {
   }
   async function saveInvoiceEdit() {
     if (!editingInvoice) return
-    const cutoffStatus = getOrderCutoffStatus(editingInvoice.delivery_date)
+    const cutoffStatus = getOrderCutoffStatus()
     if (cutoffStatus.locked) {
-      showToast(`🔒 Invoice editing is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      showToast(`🔒 Invoice editing is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
       await logAudit('INVOICE EDIT BLOCKED - ORDER CUT-OFF', adminRole, editingInvoice.reseller_name || '', `${editingInvoice.invoice_number || ''} — ${cutoffStatus.message}`)
       return
     }
@@ -5063,7 +4559,8 @@ This will remove the invoice and its line items.`
         setResellerMode(true)
         setResellerPortalView('dashboard')
         await loadResellerPortalData(branches[0].id)
-        setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
+        const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
+        setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
         await loadResellerOrderItems(branches[0].id)
         showToast(`✅ Welcome, ${account.account_name || account.owner_name || 'Reseller'}!`)
         setLoading(false)
@@ -5090,7 +4587,8 @@ This will remove the invoice and its line items.`
       setResellerPortalView('dashboard')
       await loadResellerPortalData(data.id)
 
-      setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
+      const tomorrow2 = new Date(); tomorrow2.setDate(tomorrow2.getDate()+1)
+      setResellerOrderDeliveryDate(tomorrow2.toISOString().slice(0,10))
       await loadResellerOrderItems(data.id)
       showToast(`✅ Welcome, ${data.name}!`)
     } catch(err) {
@@ -5200,13 +4698,12 @@ This will remove the invoice and its line items.`
     return true
   }
 
-  async function switchResellerPortalBranch(branchId, keepCurrentView = false) {
+  async function switchResellerPortalBranch(branchId) {
     const branch = resellerPortalBranches.find(b => String(b.id) === String(branchId))
     if (!branch) return
     setCurrentReseller(branch)
     setSelectedResellerBranchId(branch.id)
-    setResellerOrderTemplateSourceId('')
-    if (!keepCurrentView) setResellerPortalView('dashboard')
+    setResellerPortalView('dashboard')
     await loadResellerPortalData(branch.id)
     await loadResellerOrderItems(branch.id)
     showToast(`✅ Switched to ${branch.name}`)
@@ -5388,21 +4885,18 @@ This will remove the invoice and its line items.`
   }
 
   async function submitResellerOrder() {
-    const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
-    if (!orderBranch?.id) { showToast('❌ Select the branch/outlet for this order.','red'); return }
-
+    const cutoffStatus = getOrderCutoffStatus()
+    if (cutoffStatus.locked) {
+      showToast(`🔒 Order cut-off reached. Changes are locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+      await logAudit('RESELLER ORDER BLOCKED - ORDER CUT-OFF', 'Reseller Portal', currentReseller?.name || '', cutoffStatus.message)
+      return
+    }
     const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
     if (validItems.length===0) { showToast('❌ Enter at least one quantity.','red'); return }
     if (!resellerOrderDeliveryDate) { showToast('❌ Select delivery date.','red'); return }
-    const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
-    if (cutoffStatus.locked) {
-      showToast(`🔒 Order cut-off reached for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Please choose a later delivery date.`, 'red')
-      await logAudit('RESELLER ORDER BLOCKED - ORDER CUT-OFF', 'Reseller Portal', orderBranch?.name || '', cutoffStatus.message)
-      return
-    }
-    const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
+    const creditStatus = await checkResellerCreditBlockFresh(currentReseller?.id)
     if (creditStatus.blocked) {
-      showToast(`🚫 Order blocked for ${orderBranch.name}. ${creditStatus.message}`, 'red')
+      showToast(`🚫 Order blocked. ${creditStatus.message}`, 'red')
       return
     }
     setSubmittingOrder(true)
@@ -5410,7 +4904,7 @@ This will remove the invoice and its line items.`
       const total = validItems.reduce((s,i)=>s+Number(i.quantity)*i.reseller_price,0)
       const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
       const { data:order, error } = await supabase.from('reseller_orders').insert({
-        reseller_id:orderBranch.id, reseller_name:orderBranch.name,
+        reseller_id:currentReseller.id, reseller_name:currentReseller.name,
         order_date:today, delivery_date:resellerOrderDeliveryDate,
         total_qty:totalQty, estimated_amount:total,
         status:'pending', notes:resellerOrderNotes||null
@@ -5420,14 +4914,14 @@ This will remove the invoice and its line items.`
         order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
         quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
       })))
-      const accountLabel = resellerPortalAccount?.account_name ? `${resellerPortalAccount.account_name} / ${orderBranch.name}` : orderBranch.name
+      const accountLabel = resellerPortalAccount?.account_name ? `${resellerPortalAccount.account_name} / ${currentReseller.name}` : currentReseller.name
       await createNotification(null,'System','order',`📦 New Order: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.`)
       await logAudit('RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} — ${totalQty} pcs — ${php(total)}`)
-      showToast(`✅ Order submitted for ${orderBranch.name}! Waiting for admin approval.`)
+      showToast('✅ Order submitted! Waiting for admin approval.')
       setResellerOrderNotes('')
       setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
       setResellerPortalView('orders')
-      loadResellerPortalData(orderBranch.id)
+      loadResellerPortalData(currentReseller.id)
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
     setSubmittingOrder(false)
   }
@@ -5438,9 +4932,9 @@ This will remove the invoice and its line items.`
     setPendingResellerOrders(data||[])
   }
   async function approveResellerOrder(order, customItems) {
-    const cutoffStatus = getOrderCutoffStatus(order?.delivery_date)
+    const cutoffStatus = getOrderCutoffStatus()
     if (cutoffStatus.locked) {
-      showToast(`🔒 Approval into invoice is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance delivery dates are still allowed.`, 'red')
+      showToast(`🔒 Order approval/invoice conversion is locked after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
       await logAudit('ORDER APPROVAL BLOCKED - ORDER CUT-OFF', adminRole, order?.reseller_name || '', cutoffStatus.message)
       return
     }
@@ -5503,234 +4997,23 @@ This will remove the invoice and its line items.`
     const status = amt >= EXPENSE_APPROVAL_THRESHOLD ? 'pending' : 'approved'
     const { error } = await supabase.from('daily_expenses').insert({ ...expenseForm, expense_date:expenseForm.expense_date || today, amount:amt, status, encoded_by:adminRole })
     if (error) { showToast('❌ Failed: '+error.message,'red'); setSavingExpense(false); return }
-    showToast(status==='pending'?`✅ Expense submitted — awaiting Owner approval (${php(amt)} ≥ PHP 500.00)`:`✅ Expense of ${php(amt)} recorded!`)
+    showToast(status==='pending'?`✅ Expense submitted — awaiting Owner approval (₱${amt} ≥ ₱500)`:`✅ Expense of ${php(amt)} recorded!`)
     setExpenseForm({ expense_date:today, category:'Transportation/Fuel', amount:'', description:'' })
     loadDailyExpenses(); refreshFoundationAfterDataChange('expense-saved'); setSavingExpense(false)
   }
   async function approveExpense(id) {
-    if (!requireOwnerAction('approve company expense')) return
-    const { error } = await supabase.from('daily_expenses').update({ status:'approved', approved_by:currentAdminLabel, approved_at:new Date().toISOString() }).eq('id', id)
-    if (error) { showToast('❌ Failed: '+error.message, 'red'); return }
-    await logAudit('EXPENSE APPROVED', currentAdminLabel, 'Expense', `Expense ID: ${id}`)
+    await supabase.from('daily_expenses').update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString() }).eq('id', id)
     showToast('✅ Expense approved!'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-approved')
   }
   async function rejectExpense(id) {
-    if (!requireOwnerAction('reject company expense')) return
     if (!rejectExpenseReason.trim()) { showToast('❌ Please enter a rejection reason.','red'); return }
-    const { error } = await supabase.from('daily_expenses').update({ status:'rejected', approved_by:currentAdminLabel, approved_at:new Date().toISOString(), rejection_reason:rejectExpenseReason }).eq('id', id)
-    if (error) { showToast('❌ Failed: '+error.message, 'red'); return }
-    await logAudit('EXPENSE REJECTED', currentAdminLabel, 'Expense', `Expense ID: ${id} | Reason: ${rejectExpenseReason}`)
+    await supabase.from('daily_expenses').update({ status:'rejected', approved_by:adminRole, approved_at:new Date().toISOString(), rejection_reason:rejectExpenseReason }).eq('id', id)
     showToast('✅ Expense rejected.'); setRejectingExpenseId(null); setRejectExpenseReason(''); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-rejected')
   }
   async function deleteExpense(id) {
-    if (!requireOwnerAction('void company expense')) return
-    if (!window.confirm('Void this expense record? It will stay in the system for audit safety and will not be permanently deleted.')) return
-    const { error } = await supabase.from('daily_expenses').update({ status:'voided', approved_by:currentAdminLabel, approved_at:new Date().toISOString() }).eq('id', id)
-    if (error) { showToast('❌ Failed: '+error.message, 'red'); return }
-    await logAudit('EXPENSE VOIDED', currentAdminLabel, 'Expense', `Expense ID: ${id}`)
-    showToast('✅ Expense voided, not deleted.'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-voided')
-  }
-
-  async function loadCompanyPayables() {
-    if (!isOwnerRole) {
-      setCompanyPayables([])
-      setCompanyPayablesError('')
-      return
-    }
-    setCompanyPayablesLoading(true)
-    setCompanyPayablesError('')
-    try {
-      const { data, error } = await supabase
-        .from('company_payables')
-        .select('*')
-        .order('due_date', { ascending:true })
-        .limit(500)
-      if (error) {
-        console.warn('company_payables query failed:', error)
-        setCompanyPayables([])
-        setCompanyPayablesError(error.message || 'company_payables table is not ready yet.')
-        return
-      }
-      setCompanyPayables(data || [])
-    } catch(e) {
-      console.warn('loadCompanyPayables:', e)
-      setCompanyPayables([])
-      setCompanyPayablesError(String(e?.message || e || 'Unable to load company payables.'))
-    } finally {
-      setCompanyPayablesLoading(false)
-    }
-  }
-
-  async function saveCompanyPayable() {
-    if (!requireOwnerAction('create company payable / PDC')) return
-    if (!payableForm.payee_name.trim()) { showToast('❌ Please enter payee/supplier/account name.', 'red'); return }
-    if (!payableForm.due_date) { showToast('❌ Please select a due date.', 'red'); return }
-    const amount = safeNum(payableForm.amount, 0)
-    if (amount <= 0) { showToast('❌ Please enter a valid amount.', 'red'); return }
-
-    const isMonthlyRecurring = payableForm.repeat_monthly === true
-    let monthlyDueDates = [payableForm.due_date]
-
-    if (isMonthlyRecurring) {
-      if (!payableForm.repeat_until) { showToast('❌ Please select when this monthly payment should end.', 'red'); return }
-      monthlyDueDates = getMonthlyPayableDueDates(payableForm.due_date, payableForm.repeat_until, 60)
-      if (monthlyDueDates.length === 0) { showToast('❌ Monthly end date must be the same as or later than the first due date.', 'red'); return }
-      if (monthlyDueDates.length > 48 && !window.confirm(`This will create ${monthlyDueDates.length} monthly payable records. Continue?`)) return
-    }
-
-    const baseNotes = String(payableForm.notes || '').trim()
-    const recurringSeriesCode = isMonthlyRecurring
-      ? `RMP-${Date.now().toString(36).toUpperCase()}`
-      : ''
-
-    const payloads = monthlyDueDates.map((dueDate, idx) => {
-      const recurringNote = isMonthlyRecurring
-        ? `Monthly recurring payable ${idx + 1}/${monthlyDueDates.length}; Series ${recurringSeriesCode}; Starts ${payableForm.due_date}; Ends ${payableForm.repeat_until}. ${payableForm.check_number ? 'Review/update actual check number if each monthly PDC uses a different check.' : ''}`
-        : ''
-      return {
-        payable_date: idx === 0 ? (payableForm.payable_date || today) : dueDate,
-        due_date: dueDate,
-        payee_type: payableForm.payee_type || 'Supplier',
-        payee_name: payableForm.payee_name.trim(),
-        category: payableForm.category || 'Supplier Payment',
-        amount,
-        payment_type: payableForm.payment_type || 'Accounts Payable',
-        payment_method: payableForm.payment_method || 'Cash',
-        bank_name: payableForm.bank_name || '',
-        check_number: payableForm.check_number || '',
-        check_date: payableForm.check_date ? addMonthsClampedDateString(payableForm.check_date, idx) : null,
-        notes: [baseNotes, recurringNote].filter(Boolean).join(' | '),
-        status: 'scheduled',
-        created_by: currentAdminLabel
-      }
-    })
-
-    const { error } = await supabase.from('company_payables').insert(payloads)
-    if (error) {
-      showToast('❌ Failed to save payable/PDC: ' + error.message, 'red')
-      setCompanyPayablesError(error.message)
-      return
-    }
-
-    if (isMonthlyRecurring) {
-      await logAudit('MONTHLY COMPANY PAYABLES GENERATED', currentAdminLabel, payableForm.payee_name.trim(), `${payloads.length} records | ${payableForm.category} | ${php(amount)} monthly | From ${monthlyDueDates[0]} to ${monthlyDueDates[monthlyDueDates.length - 1]} | ${payableForm.payment_type}`)
-      showToast(`✅ ${payloads.length} monthly payable records created.`)
-    } else {
-      await logAudit('COMPANY PAYABLE ADDED', currentAdminLabel, payloads[0].payee_name, `${payloads[0].category} | Due: ${payloads[0].due_date} | ${php(payloads[0].amount)} | ${payloads[0].payment_type}`)
-      showToast('✅ Payable / PDC saved.')
-    }
-
-    setPayableForm({ payable_date:today, due_date:today, payee_type:'Supplier', payee_name:'', category:'Supplier Payment', amount:'', payment_type:'Accounts Payable', payment_method:'Cash', bank_name:'', check_number:'', check_date:'', repeat_monthly:false, repeat_until:'', notes:'' })
-    setShowPayableForm(false)
-    loadCompanyPayables()
-  }
-
-  async function markCompanyPayablePaid(row) {
-    if (!requireOwnerAction('mark company payable as paid')) return
-    if (!row?.id) return
-
-    const actionKey = `payable-paid-${row.id}`
-    if (processingItems[actionKey]) return
-
-    const payableAmount = moneyRound(row.amount)
-    if (payableAmount <= 0) { showToast('❌ Payable amount must be greater than zero.', 'red'); return }
-    if (String(row.status || '').toLowerCase() === 'paid') { showToast('ℹ️ This payable is already marked paid.'); return }
-
-    if (!window.confirm(`Mark ${row.payee_name || 'this payable'} as PAID and automatically post ${php(payableAmount)} to Expenses as owner-approved?`)) return
-
-    setProcessingItems(prev => ({ ...prev, [actionKey]:true }))
-    try {
-      const { data:latestPayable, error:payableReadError } = await supabase
-        .from('company_payables')
-        .select('id,status,amount,payee_name,category,due_date,payment_type,payment_method,bank_name,check_number,notes')
-        .eq('id', row.id)
-        .single()
-
-      if (payableReadError) { showToast('❌ Failed to verify payable: ' + payableReadError.message, 'red'); return }
-      if (String(latestPayable?.status || '').toLowerCase() === 'paid') { showToast('ℹ️ This payable is already marked paid.'); loadCompanyPayables(); return }
-
-      const amount = moneyRound(latestPayable?.amount ?? payableAmount)
-      if (amount <= 0) { showToast('❌ Payable amount must be greater than zero.', 'red'); return }
-
-      const expenseDescription = [
-        `Auto-posted from Payables/PDC: ${latestPayable?.payee_name || row.payee_name || 'Company payable'}`,
-        `Payable ID: ${row.id}`,
-        latestPayable?.payment_type ? `Payment Type: ${latestPayable.payment_type}` : '',
-        latestPayable?.payment_method ? `Method: ${latestPayable.payment_method}` : '',
-        latestPayable?.bank_name ? `Bank: ${latestPayable.bank_name}` : '',
-        latestPayable?.check_number ? `Check #: ${latestPayable.check_number}` : '',
-        latestPayable?.due_date ? `Due: ${latestPayable.due_date}` : '',
-        latestPayable?.notes ? `Notes: ${latestPayable.notes}` : ''
-      ].filter(Boolean).join(' | ')
-
-      const { data:existingExpense, error:existingExpenseError } = await supabase
-        .from('daily_expenses')
-        .select('id,status')
-        .ilike('description', `%Payable ID: ${row.id}%`)
-        .limit(1)
-
-      if (existingExpenseError) { showToast('❌ Failed checking duplicate expense: ' + existingExpenseError.message, 'red'); return }
-
-      let expenseRecord = existingExpense?.[0] || null
-      if (!expenseRecord) {
-        const { data:insertedExpense, error:expenseError } = await supabase
-          .from('daily_expenses')
-          .insert({
-            expense_date: today,
-            category: latestPayable?.category || row.category || 'Supplier Payment',
-            amount,
-            description: expenseDescription,
-            status:'approved',
-            encoded_by:currentAdminLabel || 'Owner',
-            approved_by:currentAdminLabel || 'Owner',
-            approved_at:new Date().toISOString()
-          })
-          .select()
-          .single()
-
-        if (expenseError) { showToast('❌ Payable was not marked paid because expense posting failed: ' + expenseError.message, 'red'); return }
-        expenseRecord = insertedExpense
-      }
-
-      const { error:payableUpdateError } = await supabase
-        .from('company_payables')
-        .update({ status:'paid', paid_at:new Date().toISOString(), paid_by:currentAdminLabel })
-        .eq('id', row.id)
-
-      if (payableUpdateError) {
-        if (expenseRecord?.id) {
-          await supabase.from('daily_expenses').update({ status:'voided', approved_by:currentAdminLabel, approved_at:new Date().toISOString() }).eq('id', expenseRecord.id)
-        }
-        showToast('❌ Expense was reversed because payable update failed: ' + payableUpdateError.message, 'red')
-        return
-      }
-
-      await logAudit('COMPANY PAYABLE PAID + EXPENSE POSTED', currentAdminLabel, latestPayable?.payee_name || row.payee_name || '', `${latestPayable?.category || row.category || ''} | ${php(amount)} | Due: ${latestPayable?.due_date || row.due_date || ''} | Expense ID: ${expenseRecord?.id || ''}`)
-      showToast(`✅ Payable marked paid and posted to Expenses as approved: ${php(amount)}`)
-      loadCompanyPayables()
-      loadDailyExpenses()
-      if (financialMonth === today.slice(0,7)) loadFinancialData()
-      refreshFoundationAfterDataChange('payable-paid-expense-posted')
-    } finally {
-      setProcessingItems(prev => ({ ...prev, [actionKey]:false }))
-    }
-  }
-
-  async function cancelCompanyPayable(row) {
-    if (!requireOwnerAction('cancel company payable / PDC')) return
-    if (!row?.id) return
-    if (!window.confirm(`Cancel ${row.payee_name || 'this payable'}?`)) return
-    const { error } = await supabase.from('company_payables').update({ status:'cancelled' }).eq('id', row.id)
-    if (error) { showToast('❌ Failed: ' + error.message, 'red'); return }
-    await logAudit('COMPANY PAYABLE CANCELLED', currentAdminLabel, row.payee_name || '', `${row.category || ''} | ${php(row.amount)}`)
-    showToast('✅ Payable cancelled.')
-    loadCompanyPayables()
-  }
-
-  async function deleteCompanyPayable(row) {
-    if (!requireOwnerAction('void/cancel company payable / PDC')) return
-    showToast('🔒 Permanent deletion is disabled for audit safety. Use CANCEL instead.', 'red')
-    await logAudit('PERMANENT PAYABLE DELETE BLOCKED', currentAdminLabel, row?.payee_name || '', `Payable ID: ${row?.id || ''}`)
+    if (!window.confirm('Delete this expense?')) return
+    await supabase.from('daily_expenses').delete().eq('id', id)
+    showToast('✅ Expense deleted.'); loadDailyExpenses(); refreshFoundationAfterDataChange('expense-deleted')
   }
   // ── Financial Dashboard ───────────────────────────────────────────────────
   async function loadFinancialData() {
@@ -6193,13 +5476,12 @@ This will remove the invoice and its line items.`
 
   // ── Admin Functions ───────────────────────────────────────────────────────
   function canAccess(tab) {
-    const role = normalizeAdminRole(adminRole)
-    if (role === 'owner') return true
-    if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sales','analytics','foundation','franchise'].includes(tab)
-    if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts'].includes(tab)
-    if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
-    if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
-    if (role === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
+    if (adminRole === 'owner') return true
+    if (adminRole === 'manager') return true // Manager = full access same as owner
+    if (adminRole === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sales'].includes(tab)
+    if (adminRole === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
+    if (adminRole === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
+    if (adminRole === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
     return false
   }
 
@@ -6621,31 +5903,22 @@ This will remove the invoice and its line items.`
   }
 
   async function approvePayroll(start, end) {
-    if (!requireOwnerOrPayrollAction('release payroll')) return
     if (!start || !end) { showToast('Please select payroll start and end dates.', 'red'); return }
 
-    const { data: records, error:recordsError } = await supabase
+    const { data: records } = await supabase
       .from('payroll_records')
-      .select('id,payroll_approved,approved_at')
+      .select('id')
       .eq('payroll_start', start)
       .eq('payroll_end', end)
-      .limit(50)
-
-    if (recordsError) { showToast('Failed: '+recordsError.message, 'red'); return }
+      .limit(1)
 
     if (!records || records.length === 0) {
       showToast('No payroll records found for this period. Compute payroll first.', 'red')
       return
     }
 
-    if (records.some(r => r.payroll_approved === true || !!r.approved_at)) {
-      showToast('🔒 This payroll period is already released. Releasing it again is blocked to prevent duplicate CA deductions or expense posting.', 'red')
-      await logAudit('DUPLICATE PAYROLL RELEASE BLOCKED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end}`)
-      return
-    }
-
     const { error } = await supabase.from('payroll_records')
-      .update({ payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString() })
+      .update({ payroll_approved: true, approved_by: 'Admin', approved_at: new Date().toISOString() })
       .eq('payroll_start', start).eq('payroll_end', end)
     if (error) { showToast('Failed: '+error.message,'red'); return }
 
@@ -6656,7 +5929,7 @@ This will remove the invoice and its line items.`
     setPayrollApproved(true)
     await logAudit(
       'PAYROLL APPROVED',
-      currentAdminLabel,
+      'Admin',
       'ALL',
       `Period: ${start} to ${end} | SIL cashouts auto-released: ${releasedSILCount} | CA deductions: ${caDeductionResult.applied ? 'applied ' + php(caDeductionResult.amount) : caDeductionResult.existing ? 'already applied' : caDeductionResult.none ? 'none' : 'not applied'} | Expense: ${expenseResult.posted ? 'posted ' + php(expenseResult.amount) : expenseResult.existing ? 'already posted' : 'not posted'}`
     )
@@ -9216,24 +8489,20 @@ This will create one approved expense record using the total payroll earnings.`)
     )
   }
   function openAdmin(role, empData) {
-    const safeRole = normalizeAdminRole(role)
-    if (!safeRole) {
-      showToast('❌ Invalid or missing admin role. Please check admin_users setup.', 'red')
-      return
-    }
-    setAdminMode(true); setAdminRole(safeRole); setEmployeeSearch(''); setSidebarOpen(false)
-    if (empData?.id) {
+    setAdminMode(true); setAdminRole(role||'owner'); setEmployeeSearch(''); setSidebarOpen(false)
+    if (empData) {
       setAdminEmployee(empData)
       loadTodayLog(empData); loadTodaySchedule(empData); loadTodayBreaks(null)
-      // Roles come from admin_users. Linked employee record is used only for My Attendance.
-    } else {
-      setAdminEmployee(null)
+      // Set available roles from employee record
+      const extraRoles = empData.extra_roles ? empData.extra_roles.split(',').filter(r=>r.trim()) : []
+      const allRoles = [empData.admin_role||role, ...extraRoles].filter((r,i,a)=>r&&a.indexOf(r)===i)
+      if (allRoles.length > 0) setAvailableRoles(allRoles)
     }
-    const defaultTab = safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
+    const defaultTab = role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'
     setActiveTab(defaultTab)
     loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
     loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
-    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); if (safeRole==='owner' || safeRole==='payroll') autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if (safeRole==='owner' || safeRole==='manager') loadFoundationData().catch(()=>{})
+    loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if ((role||'owner')==='owner' || (role||'owner')==='manager') loadFoundationData().catch(()=>{})
     requestPushPermission()
     // Check Tuesday deposit reminder
     setTimeout(()=>checkTuesdayDepositReminder(), 2000)
@@ -11036,7 +10305,6 @@ This will create one approved expense record using the total payroll earnings.`)
     const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
     const visibleSubTabs = currentSection.tabs.filter(t => canAccess(t.key))
     const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
-    const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
     const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
     const cashAdvanceCoveragePeriodOptions = (() => {
       const map = {}
@@ -11067,9 +10335,9 @@ This will create one approved expense record using the total payroll earnings.`)
       if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
       if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
       if(key==='schedule') { loadExistingSchedules() }
-      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
-      if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
-      if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
+      if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+      if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadFinancialData() }
+      if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
       if(key==='franchise') { loadFranchises() }
     }
 
@@ -11099,22 +10367,6 @@ This will create one approved expense record using the total payroll earnings.`)
         {toast && (
           <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>
             {toast.msg}
-          </div>
-        )}
-        {showAdminPasswordForm && (
-          <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:99998, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
-            <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'420px', width:'100%', boxShadow:'0 10px 40px rgba(0,0,0,0.35)' }}>
-              <h3 style={{ margin:'0 0 8px', color:'#ca1b1b' }}>🔐 Change Admin Password</h3>
-              <p style={{ margin:'0 0 14px', color:'#666', fontSize:'13px', lineHeight:1.5 }}>This changes your Supabase Auth password. Your password is never stored in App.jsx.</p>
-              <label style={lblS}>New Password</label>
-              <input type="password" value={newAdminPassword} onChange={e=>setNewAdminPassword(e.target.value)} style={inputStyle} placeholder="At least 8 characters" />
-              <label style={lblS}>Confirm New Password</label>
-              <input type="password" value={confirmAdminPassword} onChange={e=>setConfirmAdminPassword(e.target.value)} style={inputStyle} placeholder="Repeat new password" />
-              <div style={{ display:'flex', gap:'10px', marginTop:'10px' }}>
-                <button style={{ ...btnGreen, flex:1 }} disabled={changingAdminPassword} onClick={changeAdminPassword}>{changingAdminPassword?'Saving...':'Save Password'}</button>
-                <button style={{ ...btnGray, flex:1 }} onClick={()=>{ setShowAdminPasswordForm(false); setNewAdminPassword(''); setConfirmAdminPassword('') }}>Cancel</button>
-              </div>
-            </div>
           </div>
         )}
         <div style={{ flex:1, display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden' }}>
@@ -11179,7 +10431,7 @@ This will create one approved expense record using the total payroll earnings.`)
                   <p style={{ color:'white', fontSize:'11px', fontWeight:'bold', margin:0 }}>
                     {adminRole==='owner'?'👑 Owner':adminRole==='manager'?'👔 Manager':adminRole==='hr'?'👤 HR Admin':adminRole==='payroll'?'💰 Payroll Officer':adminRole==='supervisor'?'👁 Supervisor':adminRole==='asst_supervisor'?'🔰 Asst. Supervisor':'👑 Owner'}
                   </p>
-                  {(adminEmployee || adminAuthProfile || adminAuthUser) && <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'2px 0 0' }}>{adminEmployee?.full_name || adminAuthProfile?.full_name || adminAuthUser?.email}</p>}
+                  {adminEmployee && <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'2px 0 0' }}>{adminEmployee.full_name}</p>}
                 </div>
                 {/* Role Switch — only shows if employee has multiple roles */}
                 {availableRoles.length > 1 && (
@@ -11201,7 +10453,7 @@ This will create one approved expense record using the total payroll earnings.`)
                 {visibleSections.map(section => {
                   const isActive = currentSection.key === section.key
                   const hasBadge = (section.key==='payroll' && (leaveRequests.filter(r=>r.status==='pending').length>0||cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
-                                   (section.key==='sales' && ((pendingExpenses>0 && adminRole==='owner') || ownerDeadlineSummary.warningCount>0))
+                                   (section.key==='sales' && pendingExpenses>0 && adminRole==='owner')
                   return (
                     <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:isActive?'#ca1b1b':'transparent', color:isActive?'white':'rgba(255,255,255,0.65)', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
                       <span style={{ fontSize:'16px', flexShrink:0 }}>{section.icon}</span>
@@ -11218,13 +10470,8 @@ This will create one approved expense record using the total payroll earnings.`)
                     <span>⏰</span><span>My Attendance</span>
                   </button>
                 )}
-                {adminAuthUser && (
-                  <button style={{ padding:'9px 12px', borderRadius:'8px', border:'1px solid rgba(255,255,255,0.15)', cursor:'pointer', fontWeight:'bold', fontSize:'11px', textAlign:'left', width:'100%', background:'transparent', color:'rgba(255,255,255,0.7)', display:'flex', alignItems:'center', gap:'8px' }} onClick={()=>setShowAdminPasswordForm(true)}>
-                    <span>🔐</span><span>Change Password</span>
-                  </button>
-                )}
-                <button style={{ padding:'9px 12px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'11px', textAlign:'left', width:'100%', background:'rgba(255,255,255,0.07)', color:'rgba(255,255,255,0.5)', display:'flex', alignItems:'center', gap:'8px' }} onClick={logoutAdmin}>
-                  <span>←</span><span>Logout Admin</span>
+                <button style={{ padding:'9px 12px', borderRadius:'8px', border:'none', cursor:'pointer', fontWeight:'bold', fontSize:'11px', textAlign:'left', width:'100%', background:'rgba(255,255,255,0.07)', color:'rgba(255,255,255,0.5)', display:'flex', alignItems:'center', gap:'8px' }} onClick={()=>{ setAdminMode(false); setAdminEmployee(null) }}>
+                  <span>←</span><span>Back to Login</span>
                 </button>
               </div>
             </div>
@@ -11251,7 +10498,6 @@ This will create one approved expense record using the total payroll earnings.`)
             {activeTab==='dashboard' && (
               <div>
                 <h2 style={h2s}>🏠 Dashboard — {today}</h2>
-                {renderOwnerPaymentDeadlineWarning()}
 
                 {/* TIMED IN MODAL */}
                 {showTimedInModal && (
@@ -11377,7 +10623,7 @@ This will create one approved expense record using the total payroll earnings.`)
                 )}
                 <div>
                   <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'12px' }}>
-                    <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
+                    <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); showToast('✅ Dashboard refreshed!') }}>🔄 REFRESH</button>
                     {(adminRole==='owner'||adminRole==='hr') && (
                       <button style={{ ...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={autoApplySIL}>🌿 AUTO-APPLY SIL</button>
                     )}
@@ -15219,11 +14465,10 @@ This will create one approved expense record using the total payroll earnings.`)
                   <h2 style={h2s}>📈 Sales & Resellers</h2>
                   {salesView==='financial' && financialData && <button style={{ ...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printPLReport}>🖨️ PRINT P&L</button>}
                 </div>
-                {renderOwnerPaymentDeadlineWarning({ compact:salesView!=='dashboard' })}
 
                 {/* Sub-navigation */}
                 <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['adjustments','🧾 Adjustments'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['payables','📅 Payables / PDC'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].filter(([v])=>v!=='payables'||isOwnerRole).map(([v,l])=>(
+                  {[['dashboard','📊 Dashboard'],['deliveries','🚚 Deliveries'],['adjustments','🧾 Adjustments'],['receivables','💵 Receivables'],['sales','📊 Daily Sales'],['expenses','💸 Expenses'],['resellers','🏪 Resellers'],['disputes','⚠️ Disputes']].map(([v,l])=>(
                     <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
                   ))}
                 </div>
@@ -15677,38 +14922,10 @@ This will create one approved expense record using the total payroll earnings.`)
                       })()}
                     </div>
 
-                    {/* Live Invoice Search */}
-                    <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                      <label style={{ ...lblS, marginBottom:'6px' }}>Search All Invoices</label>
-                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
-                        <input
-                          type="text"
-                          value={invoiceSearchTerm}
-                          onChange={e=>setInvoiceSearchTerm(e.target.value)}
-                          placeholder="Search by reseller name, invoice number, date, area, or address..."
-                          style={{ ...inputStyle, marginBottom:0, flex:'1 1 260px', fontSize:'13px', border:'2px solid #f0f0f0' }}
-                        />
-                        {invoiceSearchTerm && (
-                          <button
-                            type="button"
-                            onClick={()=>setInvoiceSearchTerm('')}
-                            style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', cursor:'pointer', fontWeight:'800', fontSize:'12px' }}
-                          >
-                            CLEAR
-                          </button>
-                        )}
-                      </div>
-                      <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>
-                        {invoiceSearchTerm
-                          ? `Showing ${getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter).length} result(s) from all loaded invoices. Status tab still applies.`
-                          : 'Type to search live by reseller, invoice number, delivery date, area, or address.'}
-                      </p>
-                    </div>
-
                     {orderCutoffStatus.locked && (
                       <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 12px rgba(202,27,27,0.10)' }}>
-                        <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'13px' }}>🔒 TOMORROW DELIVERY CUT-OFF REACHED — {ORDER_CUTOFF_LABEL} PH TIME</h4>
-                        <p style={{ color:'#7a1a1a', margin:0, fontSize:'12px', lineHeight:1.5, fontWeight:'700' }}>Only orders/invoices dated tomorrow are locked. You can still create or submit advance orders for the following days.</p>
+                        <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'13px' }}>🔒 ORDER CUT-OFF REACHED — {ORDER_CUTOFF_LABEL} PH TIME</h4>
+                        <p style={{ color:'#7a1a1a', margin:0, fontSize:'12px', lineHeight:1.5, fontWeight:'700' }}>Creating invoices, approving reseller orders into invoices, and editing invoice/order quantities are locked for production control. Use tomorrow's cycle or owner-approved manual process for urgent changes.</p>
                       </div>
                     )}
 
@@ -15718,7 +14935,6 @@ This will create one approved expense record using the total payroll earnings.`)
                         <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>📦 Pending Reseller Orders — Requires Approval</h4>
                         {pendingResellerOrders.map(order=>{
                           const credit = getResellerCreditBlockInfo(order.reseller_id)
-                          const orderCutoff = getOrderCutoffStatus(order.delivery_date)
                           return (
                           <div key={order.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:`1px solid ${credit.blocked?'#ca1b1b':'#ffe0b2'}` }}>
                             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
@@ -15734,10 +14950,10 @@ This will create one approved expense record using the total payroll earnings.`)
                               </div>
                               <div style={{ display:'flex', gap:'6px' }}>
                                 <button
-                                  style={{ ...btnGreen, background:(credit.blocked || orderCutoff.locked)?'#999':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:(credit.blocked || orderCutoff.locked)?'not-allowed':'pointer' }}
-                                  disabled={credit.blocked || orderCutoff.locked}
+                                  style={{ ...btnGreen, background:(credit.blocked || orderCutoffStatus.locked)?'#999':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:(credit.blocked || orderCutoffStatus.locked)?'not-allowed':'pointer' }}
+                                  disabled={credit.blocked || orderCutoffStatus.locked}
                                   onClick={()=>approveResellerOrder(order)}
-                                >{credit.blocked?'🚫 HOLD':orderCutoff.locked?'🔒 TOMORROW CUT-OFF':'✅ APPROVE'}</button>
+                                >{credit.blocked?'🚫 HOLD':orderCutoffStatus.locked?'🔒 CUT-OFF':'✅ APPROVE'}</button>
                                 <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>rejectResellerOrder(order.id, order.reseller_name)}>❌ REJECT</button>
                               </div>
                             </div>
@@ -15804,7 +15020,7 @@ This will create one approved expense record using the total payroll earnings.`)
                           <label style={lblS}>Copy order quantities from another branch/template:</label>
                           <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
                             <select value={invoiceCopyFromResellerId} onChange={e=>setInvoiceCopyFromResellerId(e.target.value)} style={{ ...inputStyle, marginBottom:0, flex:'1 1 240px' }}>
-                              <option value="">— Select branch template to copy —</option>
+                              <option value="">— Select branch template —</option>
                               {resellers.map(r=><option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{r.reseller_account_id ? ` — ${getResellerAccountName(r.reseller_account_id)}` : ''}</option>)}
                             </select>
                             <button style={{ ...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(invoiceCopyFromResellerId || invoiceResellerId, 'invoice')}>📋 COPY TEMPLATE</button>
@@ -15886,15 +15102,14 @@ This will create one approved expense record using the total payroll earnings.`)
                         <input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
                         {(()=>{
                           const credit = getResellerCreditBlockInfo(invoiceResellerId)
-                          const invoiceCutoff = getOrderCutoffStatus(invoiceDate)
-                          const disabled = savingInvoice || credit.blocked || invoiceCutoff.locked
+                          const disabled = savingInvoice || credit.blocked || orderCutoffStatus.locked
                           return (
                             <button
-                              style={{ ...btnGreen, background:(credit.blocked || invoiceCutoff.locked)?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
+                              style={{ ...btnGreen, background:(credit.blocked || orderCutoffStatus.locked)?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
                               disabled={disabled}
                               onClick={createDeliveryInvoice}
                             >
-                              {credit.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : invoiceCutoff.locked ? '🔒 TOMORROW CUT-OFF REACHED' : savingInvoice ? '⏳ Creating...' : '✅ CREATE & SAVE INVOICE'}
+                              {credit.blocked ? '🚫 DELIVERY HOLD — SETTLE FIRST' : orderCutoffStatus.locked ? '🔒 ORDER CUT-OFF REACHED' : savingInvoice ? '⏳ Creating...' : '✅ CREATE & SAVE INVOICE'}
                             </button>
                           )
                         })()}
@@ -15912,13 +15127,12 @@ This will create one approved expense record using the total payroll earnings.`)
                     {/* Filtered invoices by selected day and status */}
                     {(()=>{
                       const visibleInvoices = getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter)
-                      const invoiceSearchActive = !!normalizeInvoiceSearchValue(invoiceSearchTerm)
                       if (!invoicesLoading && deliveryInvoices.length > 0 && visibleInvoices.length === 0) {
                         return (
                           <div style={{ textAlign:'center', padding:'30px', color:'#888', background:'white', border:'1px dashed #ddd', borderRadius:'14px' }}>
                             <p style={{ fontSize:'28px', margin:'0 0 10px' }}>🧾</p>
-                            <p style={{ fontWeight:'bold', fontSize:'14px' }}>{invoiceSearchActive ? `No invoices found for “${invoiceSearchTerm}”` : 'No invoices found for this day and status'}</p>
-                            <p style={{ fontSize:'12px' }}>{invoiceSearchActive ? 'Try another reseller name, invoice number, date, area, or address.' : 'Change the Invoice Day dropdown or status tab.'}</p>
+                            <p style={{ fontWeight:'bold', fontSize:'14px' }}>No invoices found for this day and status</p>
+                            <p style={{ fontSize:'12px' }}>Change the Invoice Day dropdown or status tab.</p>
                           </div>
                         )
                       }
@@ -16115,10 +15329,10 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                         <button onClick={()=>{ setEditingInvoice(null); setEditInvoiceItems([]) }} style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕ Cancel</button>
                       </div>
-                      {getOrderCutoffStatus(editingInvoice?.delivery_date).locked && (
+                      {orderCutoffStatus.locked && (
                         <div style={{ background:'#fff5f5', border:'1.5px solid #ca1b1b', borderRadius:'10px', padding:'10px 12px', marginBottom:'12px' }}>
-                          <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>🔒 TOMORROW DELIVERY CUT-OFF REACHED</p>
-                          <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>This invoice is dated tomorrow, so quantity/order changes are locked after {ORDER_CUTOFF_LABEL} PH time. Later delivery dates are still allowed.</p>
+                          <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>🔒 ORDER CUT-OFF REACHED</p>
+                          <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>Creating and saving invoice/order changes is locked after {ORDER_CUTOFF_LABEL} PH time for production control.</p>
                         </div>
                       )}
                       {/* Invoice details editable */}
@@ -16160,7 +15374,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                       )}
                       <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setEditInvoiceItems([...editInvoiceItems,{variant_id:'',variant_name:'',quantity:'',retail_price:0,reseller_price:0}])}>+ ADD ITEM</button>
-                      {(()=>{ const invoiceCutoff = getOrderCutoffStatus(editingInvoice?.delivery_date); return <button style={{ ...btnGreen, background:invoiceCutoff.locked?'#999':'#2d8a4e', opacity:(savingEditInvoice||invoiceCutoff.locked)?0.65:1 }} disabled={savingEditInvoice || invoiceCutoff.locked} onClick={saveInvoiceEdit}>{invoiceCutoff.locked?'🔒 TOMORROW CUT-OFF LOCKED':savingEditInvoice?'⏳ Saving...':'💾 SAVE CHANGES'}</button> })()}
+                      <button style={{ ...btnGreen, background:orderCutoffStatus.locked?'#999':'#2d8a4e', opacity:(savingEditInvoice||orderCutoffStatus.locked)?0.65:1 }} disabled={savingEditInvoice || orderCutoffStatus.locked} onClick={saveInvoiceEdit}>{orderCutoffStatus.locked?'🔒 CUT-OFF LOCKED':savingEditInvoice?'⏳ Saving...':'💾 SAVE CHANGES'}</button>
                     </div>
                   </div>
                 )}
@@ -16440,158 +15654,6 @@ This will create one approved expense record using the total payroll earnings.`)
                 )}
 
                 {/* ── EXPENSES VIEW ── */}
-                {salesView==='payables' && !isOwnerRole && (
-                  <div style={{ ...cardS, border:'2px solid #ca1b1b', background:'#fff5f5', textAlign:'center', padding:'22px' }}>
-                    <h3 style={{ color:'#ca1b1b', marginTop:0 }}>🔒 Owner-only Payables / PDC</h3>
-                    <p style={{ color:'#555', fontSize:'13px', margin:'0 0 12px' }}>Supplier payables, PDCs, payroll payables, government remittances, loans, and scheduled company expenses are restricted to the Owner account.</p>
-                    <button style={{ ...btnBlack, width:'auto', marginTop:0 }} onClick={()=>setSalesView('dashboard')}>Back to Sales Dashboard</button>
-                  </div>
-                )}
-
-                {salesView==='payables' && isOwnerRole && (
-                  <div>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
-                      <div>
-                        <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>📅 Company Payables / PDC Tracker</h3>
-                        <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Track supplier due dates, post-dated checks, payroll payables, government remittances, rent, utilities, loans, and upcoming company expenses. Owner warning starts 3 days before due date.</p>
-                      </div>
-                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-                        <button style={{ ...btnYellow, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>setShowPayableForm(!showPayableForm)}>{showPayableForm ? '✕ CANCEL' : '➕ ADD PDC / PAYABLE'}</button>
-                        <button style={{ ...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{ setShowPayableForm(true); setPayableForm(p=>({...p, repeat_monthly:true, repeat_until:p.repeat_until || p.due_date || today })) }}>🔁 ADD MONTHLY PAYMENT</button>
-                      </div>
-                    </div>
-
-                    {(()=>{
-                      const monthLabels = ['January','February','March','April','May','June','July','August','September','October','November','December']
-                      const monthSet = new Set([payablesMonthFilter, today.slice(0,7)])
-                      const baseMonth = parseLocalDate(`${today.slice(0,7)}-01`) || new Date()
-                      for (let i=-1; i<=18; i++) monthSet.add(formatDateLocal(addMonthsLocal(baseMonth, i)).slice(0,7))
-                      ;(companyPayables || []).forEach(p=>{ const m = String(p?.due_date || p?.check_date || p?.payable_date || '').slice(0,7); if (m) monthSet.add(m) })
-                      const monthOptions = Array.from(monthSet).filter(Boolean).sort()
-                      return (
-                        <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'12px', padding:'12px 14px', marginBottom:'14px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
-                          <div>
-                            <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'13px', margin:'0 0 2px' }}>📆 Monthly Payables View</p>
-                            <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Only payables due in the selected month are shown below, so the list stays clean and organized.</p>
-                          </div>
-                          <select value={payablesMonthFilter} onChange={e=>setPayablesMonthFilter(e.target.value)} style={{ ...inputStyle, marginBottom:0, width:isMobile?'100%':'240px', border:'2px solid #FDD412', fontWeight:'bold' }}>
-                            {monthOptions.map(m=>{ const [yy, mm] = String(m).split('-'); const label = `${monthLabels[(Number(mm)||1)-1] || mm} ${yy}`; return <option key={m} value={m}>{label}</option> })}
-                          </select>
-                        </div>
-                      )
-                    })()}
-
-                    {companyPayablesError && (
-                      <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
-                        <p style={{ color:'#ca1b1b', fontWeight:'bold', margin:'0 0 6px' }}>⚠️ Payables database table is not ready</p>
-                        <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Run the supplied Supabase SQL setup once, then refresh this page. Error: {companyPayablesError}</p>
-                      </div>
-                    )}
-
-                    {showPayableForm && (
-                      <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
-                        <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}>➕ Add Incoming Company Expense / PDC</h4>
-                        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px' }}>
-                          <div><label style={lblS}>Payable Date:</label><input type="date" value={payableForm.payable_date} onChange={e=>setPayableForm(p=>({...p,payable_date:e.target.value}))} style={inputStyle} /></div>
-                          <div><label style={lblS}>Due Date:</label><input type="date" value={payableForm.due_date} onChange={e=>setPayableForm(p=>({...p,due_date:e.target.value}))} style={{ ...inputStyle, border:'2px solid #FDD412', fontWeight:'bold' }} /></div>
-                          <div><label style={lblS}>Payee Type:</label><select value={payableForm.payee_type} onChange={e=>setPayableForm(p=>({...p,payee_type:e.target.value}))} style={inputStyle}>{PAYABLE_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
-                          <div><label style={lblS}>Payee / Supplier / Account Name:</label><input value={payableForm.payee_name} onChange={e=>setPayableForm(p=>({...p,payee_name:e.target.value}))} placeholder="e.g. Flour supplier, SSS, Payroll, Landlord" style={inputStyle} /></div>
-                          <div><label style={lblS}>Category:</label><select value={payableForm.category} onChange={e=>setPayableForm(p=>({...p,category:e.target.value}))} style={inputStyle}>{PAYABLE_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
-                          <div><label style={lblS}>Amount (₱):</label><input type="number" value={payableForm.amount} onChange={e=>setPayableForm(p=>({...p,amount:e.target.value}))} placeholder="0.00" style={inputStyle} min="0" step="0.01" /></div>
-                          <div><label style={lblS}>Payment Type:</label><select value={payableForm.payment_type} onChange={e=>setPayableForm(p=>({...p,payment_type:e.target.value,payment_method:e.target.value==='PDC'?'PDC':p.payment_method}))} style={inputStyle}>{PAYABLE_PAYMENT_TYPES.map(t=><option key={t}>{t}</option>)}</select></div>
-                          <div><label style={lblS}>Payment Method:</label><select value={payableForm.payment_method} onChange={e=>setPayableForm(p=>({...p,payment_method:e.target.value}))} style={inputStyle}>{PAYABLE_METHODS.map(m=><option key={m}>{m}</option>)}</select></div>
-                          <div><label style={lblS}>Bank Name:</label><input value={payableForm.bank_name} onChange={e=>setPayableForm(p=>({...p,bank_name:e.target.value}))} placeholder="e.g. BDO / Metrobank" style={inputStyle} /></div>
-                          <div><label style={lblS}>Check Number:</label><input value={payableForm.check_number} onChange={e=>setPayableForm(p=>({...p,check_number:e.target.value}))} placeholder="For PDC/check payments" style={inputStyle} /></div>
-                          <div><label style={lblS}>Check Date:</label><input type="date" value={payableForm.check_date} onChange={e=>setPayableForm(p=>({...p,check_date:e.target.value}))} style={inputStyle} /></div>
-                          <div><label style={lblS}>Repeat Monthly?</label><select value={payableForm.repeat_monthly ? 'yes' : 'no'} onChange={e=>setPayableForm(p=>({...p,repeat_monthly:e.target.value==='yes', repeat_until:e.target.value==='yes' ? (p.repeat_until || p.due_date || today) : ''}))} style={{ ...inputStyle, border:payableForm.repeat_monthly?'2px solid #2d8a4e':'1.5px solid #e8e8e8', fontWeight:payableForm.repeat_monthly?'bold':'normal' }}><option value="no">No — one-time payable</option><option value="yes">Yes — create every month</option></select></div>
-                          {payableForm.repeat_monthly && <div><label style={lblS}>Monthly Payment Ends On:</label><input type="date" value={payableForm.repeat_until} min={payableForm.due_date || today} onChange={e=>setPayableForm(p=>({...p,repeat_until:e.target.value}))} style={{ ...inputStyle, border:'2px solid #2d8a4e', fontWeight:'bold' }} /></div>}
-                          <div><label style={lblS}>Notes:</label><input value={payableForm.notes} onChange={e=>setPayableForm(p=>({...p,notes:e.target.value}))} placeholder="Invoice no., billing period, remarks..." style={inputStyle} /></div>
-                        </div>
-                        {payableForm.repeat_monthly && (()=>{ const monthlyDates = getMonthlyPayableDueDates(payableForm.due_date, payableForm.repeat_until, 60); return <div style={{ background:'#f0fff4', border:'1px solid #b7ebc6', borderRadius:'10px', padding:'10px 12px', margin:'8px 0 12px' }}><p style={{ color:'#2d8a4e', fontSize:'12px', fontWeight:'bold', margin:'0 0 4px' }}>🔁 Monthly payment schedule preview</p><p style={{ color:'#555', fontSize:'11px', margin:0 }}>{monthlyDates.length > 0 ? `This will create ${monthlyDates.length} payable record(s), from ${monthlyDates[0]} to ${monthlyDates[monthlyDates.length - 1]}. Each record will keep the same payee, amount, category, and payment type.` : 'Select a valid due date and monthly end date to preview the schedule.'}</p></div> })()}
-                        <button style={{ ...btnGreen, width:'auto', padding:'10px 20px', marginTop:'4px' }} onClick={saveCompanyPayable}>{payableForm.repeat_monthly ? '🔁 SAVE MONTHLY PAYABLES' : '💾 SAVE PAYABLE / PDC'}</button>
-                      </div>
-                    )}
-
-                    {(()=>{
-                      const allAlertData = getOwnerPaymentDeadlineAlerts()
-                      const selectedMonth = payablesMonthFilter || today.slice(0,7)
-                      const openPayables = allAlertData.openRows.filter(row => String(row.due_date_effective || row.due_date || '').slice(0,7) === selectedMonth)
-                      const paidPayablesForMonth = (companyPayables || []).filter(p=>String(p.status||'').toLowerCase()==='paid' && String(p.due_date || p.check_date || p.payable_date || '').slice(0,7)===selectedMonth)
-                      const selectedMonthRows = (companyPayables || []).filter(p=>!['cancelled','void','rejected'].includes(String(p.status||'scheduled').toLowerCase()) && String(p.due_date || p.check_date || p.payable_date || '').slice(0,7)===selectedMonth)
-                      const selectedMonthOpenRows = selectedMonthRows.filter(p=>String(p.status||'scheduled').toLowerCase() !== 'paid')
-                      const monthTotal = selectedMonthRows.reduce((sum, p)=>sum + safeNum(p.amount, 0), 0)
-                      const monthOpenTotal = openPayables.reduce((sum, p)=>sum + safeNum(p.balance_amount, 0), 0)
-                      const monthPaidTotal = paidPayablesForMonth.reduce((sum, p)=>sum + safeNum(p.amount, 0), 0)
-                      const methodText = (row)=>`${row?.payment_method || ''} ${row?.payment_type || ''}`.toLowerCase()
-                      const pdcTotal = selectedMonthOpenRows.filter(p=>methodText(p).includes('pdc')).reduce((sum,p)=>sum+safeNum(p.amount,0),0)
-                      const checkTotal = selectedMonthOpenRows.filter(p=>!methodText(p).includes('pdc') && (methodText(p).includes('check') || p?.check_number)).reduce((sum,p)=>sum+safeNum(p.amount,0),0)
-                      const cashOrOnlineTotal = selectedMonthOpenRows.filter(p=>!methodText(p).includes('pdc') && !methodText(p).includes('check') && !p?.check_number).reduce((sum,p)=>sum+safeNum(p.amount,0),0)
-                      return (
-                        <>
-                          <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'10px', marginBottom:'16px' }}>
-                            {[
-                              ['Selected Month Total', php(monthTotal), '#ca1b1b'],
-                              ['Open This Month', php(monthOpenTotal), '#f57c00'],
-                              ['Paid This Month', php(monthPaidTotal), '#2d8a4e'],
-                              ['Cash / Online / Bank To Pay', php(cashOrOnlineTotal), '#1a1a2e'],
-                              ['Checks To Pay', php(checkTotal), '#4a90d9'],
-                              ['PDC To Pay', php(pdcTotal), '#8e44ad'],
-                            ].map(([label,value,color])=>(
-                              <div key={label} style={{ background:'white', border:`1px solid ${color}33`, borderRadius:'12px', padding:'14px', textAlign:'center' }}>
-                                <p style={{ color:'#888', fontSize:'10px', fontWeight:'bold', margin:'0 0 5px', textTransform:'uppercase' }}>{label}</p>
-                                <p style={{ color, fontWeight:'900', fontSize:'15px', margin:0 }}>{value}</p>
-                              </div>
-                            ))}
-                          </div>
-
-                          {allAlertData.warningRows.length > 0 && (
-                            <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'12px 14px', marginBottom:'14px' }}>
-                              <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'13px', margin:'0 0 4px' }}>⚠️ Company Payables Warning</p>
-                              <p style={{ color:'#555', fontSize:'11px', margin:0 }}>{allAlertData.overdueRows.length} overdue · {allAlertData.dueTodayRows.length} due today · {allAlertData.approachingRows.length} due within 3 days · Total warning amount {php(allAlertData.warningBalance)}</p>
-                            </div>
-                          )}
-
-                          {companyPayablesLoading && <p style={{ color:'#888', fontSize:'13px' }}>⏳ Loading payables...</p>}
-                          {!companyPayablesLoading && openPayables.length===0 && paidPayablesForMonth.length===0 && !companyPayablesError && <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No company payables or PDCs recorded for the selected month.</p>}
-
-                          {openPayables.length > 0 && (
-                            <div style={{ background:'white', borderRadius:'14px', overflow:'hidden', border:'1px solid #eee', marginBottom:'16px' }}>
-                              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.8fr 0.8fr 0.9fr 1fr', gap:'8px', background:'#ca1b1b', color:'white', padding:'10px 12px', fontSize:'11px', fontWeight:'bold' }}>
-                                <span>PAYEE / ACCOUNT</span><span>CATEGORY</span><span>DUE DATE</span><span>AMOUNT</span><span>PAYMENT</span><span>ACTION</span>
-                              </div>
-                              {openPayables.map(row => (
-                                <div key={`${row.source}-${row.id}`} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 0.9fr 0.8fr 0.8fr 0.9fr 1fr', gap:'8px', padding:'10px 12px', borderTop:'1px solid #f0f0f0', alignItems:'center', background:row.urgency==='overdue'?'#fff5f5':row.urgency==='due_today'?'#fff4e5':row.urgency==='approaching'?'#fffdf0':'white' }}>
-                                  <div><p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.display_payee}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.payee_type || row.source}</p></div>
-                                  <div><p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.display_category} {String(row.notes||'').includes('Monthly recurring payable') && <span style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #b7ebc6', borderRadius:'999px', padding:'2px 6px', fontSize:'9px', marginLeft:'4px' }}>MONTHLY</span>}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.notes || row.description || '—'}</p></div>
-                                  <div><p style={{ fontWeight:'900', color:row.urgency==='overdue'?'#ca1b1b':row.urgency==='due_today'?'#f57c00':'#333', fontSize:'12px', margin:'0 0 2px' }}>{row.due_date_effective}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{getPaymentDeadlineLabel(row)}</p></div>
-                                  <p style={{ fontWeight:'900', color:'#ca1b1b', fontSize:'13px', margin:0 }}>{php(row.balance_amount)}</p>
-                                  <div><p style={{ fontWeight:'bold', color:'#555', fontSize:'11px', margin:'0 0 2px' }}>{row.payment_type || row.payment_method || '—'}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.check_number ? `Check #${row.check_number}` : row.bank_name || '—'}</p></div>
-                                  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-                                    {row.source==='company_payables' ? <button disabled={!!processingItems[`payable-paid-${row.id}`]} onClick={()=>markCompanyPayablePaid(row)} style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:processingItems[`payable-paid-${row.id}`]?'not-allowed':'pointer', opacity:processingItems[`payable-paid-${row.id}`]?0.65:1 }}>{processingItems[`payable-paid-${row.id}`]?'POSTING...':'PAID + EXPENSE'}</button> : <button onClick={()=>setSalesView('expenses')} style={{ background:'#f5c518', color:'#333', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>REVIEW</button>}
-                                    {row.source==='company_payables' && <button onClick={()=>cancelCompanyPayable(row)} style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>CANCEL</button>}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {paidPayablesForMonth.length > 0 && (
-                            <div style={{ background:'white', borderRadius:'14px', padding:'14px', border:'1px solid #eee' }}>
-                              <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 10px' }}>✅ Paid Payables for Selected Month</p>
-                              {paidPayablesForMonth.slice(0,20).map(row=>(
-                                <div key={row.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', borderTop:'1px solid #f5f5f5', padding:'8px 0' }}>
-                                  <div><p style={{ fontWeight:'bold', fontSize:'12px', color:'#333', margin:'0 0 2px' }}>{row.payee_name}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.category} · Due {row.due_date}</p></div>
-                                  <div style={{ display:'flex', alignItems:'center', gap:'8px' }}><p style={{ fontWeight:'bold', color:'#2d8a4e', margin:0 }}>{php(row.amount)}</p><span style={{ background:'#f8f8f8', color:'#777', border:'1px solid #ddd', borderRadius:'8px', padding:'6px 8px', fontSize:'10px', fontWeight:'bold' }}>AUDIT LOCKED</span></div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </>
-                      )
-                    })()}
-                  </div>
-                )}
-
                 {salesView==='expenses' && (
                   <div>
                     {/* CASH RECONCILIATION */}
@@ -18770,10 +17832,8 @@ This will create one approved expense record using the total payroll earnings.`)
               ))}
             </div>
           </div>
-          {getEmployeeAdminRoles(employee).length > 0 && (
-            <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'10px', marginTop:'8px', color:'#7a5b00', fontSize:'12px', fontWeight:'bold', textAlign:'center' }}>
-              🔒 Admin panel access now requires the Owner/Admin Login tab with email and password.
-            </div>
+          {employee?.is_admin && (
+            <button style={{ background:'#1a1a2e', color:'white', padding:'11px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:'8px', letterSpacing:'0.5px' }} onClick={()=>openAdmin('owner')}>🔧 ADMIN PANEL</button>
           )}
 
           {showOTRequest && (
@@ -19352,16 +18412,7 @@ This will create one approved expense record using the total payroll earnings.`)
               <h1 style={{ margin:'0 0 4px', fontSize:isMobile?'21px':'28px', lineHeight:1.1 }}>{currentReseller.name}</h1>
               <p style={{ color:'rgba(255,255,255,0.78)', fontSize:'12px', margin:0 }}>{currentReseller.area || 'No area set'} · {currentReseller.contact_person || 'No contact person set'}</p>
             </div>
-            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
-              {resellerPortalBranches.length > 1 && (
-                <select
-                  value={selectedResellerBranchId || currentReseller.id}
-                  onChange={e=>switchResellerPortalBranch(e.target.value)}
-                  style={{ background:'white', color:'#1a1a2e', border:'2px solid #FDD412', borderRadius:'10px', padding:'9px 12px', fontWeight:'900', fontSize:'12px', minWidth:isMobile?'100%':'220px' }}
-                >
-                  {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?`— ${b.area}`:''}</option>)}
-                </select>
-              )}
+            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
               <button style={{ ...btnYellow, padding:'9px 14px', fontSize:'12px' }} onClick={()=>loadResellerPortalData(currentReseller.id)} disabled={resellerPortalLoading}>{resellerPortalLoading?'⏳ Loading':'🔄 Refresh'}</button>
               <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.35)', borderRadius:'10px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={resellerLogout}>🚪 Logout</button>
             </div>
@@ -19398,6 +18449,13 @@ This will create one approved expense record using the total payroll earnings.`)
               <button key={v} onClick={()=>setResellerPortalView(v)} style={{ padding:'10px 14px', borderRadius:'999px', border:'none', background:resellerPortalView===v?'#ca1b1b':'white', color:resellerPortalView===v?'white':'#555', fontWeight:'800', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', boxShadow:resellerPortalView===v?'0 3px 10px rgba(202,27,27,0.25)':'0 1px 6px rgba(0,0,0,0.08)' }}>{l}</button>
             ))}
           </div>
+
+          {orderCutoffStatus.locked && (
+            <div style={{ position:'sticky', top:'0px', zIndex:49, background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 16px rgba(202,27,27,0.16)' }}>
+              <h3 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'15px' }}>🔒 ORDER CUT-OFF REACHED</h3>
+              <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5, fontWeight:'700' }}>Creating, changing, editing, approving, or submitting orders/invoices is no longer allowed after {ORDER_CUTOFF_LABEL} PH time. Please contact Roma’s Donuts admin for urgent concerns or submit in the next order cycle.</p>
+            </div>
+          )}
 
           {resellerPortalView==='dashboard' && (
             <div>
@@ -19517,47 +18575,26 @@ This will create one approved expense record using the total payroll earnings.`)
           {resellerPortalView==='place_order' && (
             <div>
               <h2 style={h2s}>🛒 Place Order</h2>
-              {(()=>{
-                const selectedOrderCutoff = resellerOrderDeliveryDate ? getOrderCutoffStatus(resellerOrderDeliveryDate) : { locked:false, message:'' }
-                return creditStatus.blocked ? (
+              {(creditStatus.blocked || orderCutoffStatus.locked) ? (
                 <div style={{ ...portalCard, border:'2px solid #ca1b1b', background:'#fff5f5' }}>
-                  <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}>🚫 Order Request Blocked</h3>
-                  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5 }}>{creditStatus.message}</p>
+                  <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}>{creditStatus.blocked ? '🚫 Order Request Blocked' : '🔒 Order Cut-Off Reached'}</h3>
+                  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5 }}>{creditStatus.blocked ? creditStatus.message : `Changing or submitting orders is locked after ${ORDER_CUTOFF_LABEL} PH time. Please submit in the next order cycle or contact Roma’s Donuts admin for urgent concerns.`}</p>
                 </div>
               ) : (
                 <>
                   <div style={portalCard}>
-                    {resellerPortalBranches.length > 1 && (
-                      <div style={{ background:'#fff9e6', border:'1.5px solid #FDD412', borderRadius:'12px', padding:'10px', marginBottom:'12px' }}>
-                        <label style={lblS}>Order for branch / outlet:</label>
-                        <select
-                          value={selectedResellerBranchId || currentReseller.id}
-                          onChange={e=>switchResellerPortalBranch(e.target.value, true)}
-                          style={{ ...inputStyle, marginBottom:'6px', border:'2px solid #FDD412', fontWeight:'900', color:'#1a1a2e' }}
-                        >
-                          {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?`— ${b.area}`:''}</option>)}
-                        </select>
-                        <p style={{ color:'#777', fontSize:'11px', margin:0 }}>This is the branch that will receive this order. Use the template section below only if you want to copy quantities from another branch.</p>
-                      </div>
-                    )}
                     <label style={lblS}>Delivery Date:</label>
-                    <input type="date" value={resellerOrderDeliveryDate} onChange={e=>setResellerOrderDeliveryDate(e.target.value)} style={inputStyle} min={getDefaultResellerOrderDeliveryDate()} />
-                    {selectedOrderCutoff.locked && (
-                      <div style={{ background:'#fff5f5', border:'1.5px solid #ca1b1b', borderRadius:'10px', padding:'10px', margin:'-4px 0 12px' }}>
-                        <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>🔒 Tomorrow delivery is already cut off</p>
-                        <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.5 }}>Only tomorrow's delivery is closed after {ORDER_CUTOFF_LABEL}. Select the following day or another future delivery date to continue.</p>
-                      </div>
-                    )}
+                    <input type="date" value={resellerOrderDeliveryDate} onChange={e=>setResellerOrderDeliveryDate(e.target.value)} style={inputStyle} min={today} />
                     <label style={lblS}>Notes / special instruction:</label>
                     <input type="text" value={resellerOrderNotes} onChange={e=>setResellerOrderNotes(e.target.value)} placeholder="Optional notes..." style={inputStyle} />
                   </div>
                   <div style={{ ...portalCard, marginTop:'12px' }}>
                     {resellerPortalBranches.length > 1 && (
                       <div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'12px' }}>
-                        <label style={lblS}>Optional: copy quantities/template from another branch:</label>
+                        <label style={lblS}>Copy quantities from branch:</label>
                         <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                           <select value={resellerOrderTemplateSourceId} onChange={e=>setResellerOrderTemplateSourceId(e.target.value)} style={{ ...inputStyle, marginBottom:0, flex:'1 1 220px' }}>
-                            <option value="">— Select branch template to copy —</option>
+                            <option value="">— Select branch template —</option>
                             {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?`— ${b.area}`:''}</option>)}
                           </select>
                           <button style={{ ...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(resellerOrderTemplateSourceId || currentReseller.id, 'portal')}>📋 COPY</button>
@@ -19583,10 +18620,10 @@ This will create one approved expense record using the total payroll earnings.`)
                       <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
                       <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
                     </div>
-                    <button style={{ ...btnRed, background:selectedOrderCutoff.locked?'#999':'#ca1b1b', opacity:(submittingOrder||selectedOrderCutoff.locked)?0.6:1, cursor:selectedOrderCutoff.locked?'not-allowed':'pointer' }} disabled={submittingOrder || selectedOrderCutoff.locked} onClick={submitResellerOrder}>{selectedOrderCutoff.locked?'🔒 CHANGE DELIVERY DATE TO CONTINUE':submittingOrder?'⏳ Submitting...':'📦 SUBMIT ORDER REQUEST'}</button>
+                    <button style={{ ...btnRed, opacity:submittingOrder?0.6:1 }} disabled={submittingOrder} onClick={submitResellerOrder}>{submittingOrder?'⏳ Submitting...':'📦 SUBMIT ORDER REQUEST'}</button>
                   </div>
                 </>
-              )})()}
+              )}
             </div>
           )}
 
@@ -19690,29 +18727,19 @@ This will create one approved expense record using the total payroll earnings.`)
         </div>
         {/* Login type tabs */}
         <div style={{ display:'flex', gap:'6px', marginBottom:'20px', background:'#f4f4f4', padding:'4px', borderRadius:'12px' }}>
-          <button onClick={()=>setLoginType('employee')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='employee'?'white':'transparent', color:loginType==='employee'?'#ca1b1b':'#888', fontWeight:loginType==='employee'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='employee'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>👤 Employee</button>
-          <button onClick={()=>setLoginType('admin')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='admin'?'white':'transparent', color:loginType==='admin'?'#ca1b1b':'#888', fontWeight:loginType==='admin'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='admin'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>🔐 Owner/Admin</button>
+          <button onClick={()=>setLoginType('employee')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='employee'?'white':'transparent', color:loginType==='employee'?'#ca1b1b':'#888', fontWeight:loginType==='employee'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='employee'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>👤 Employee / Admin</button>
           <button onClick={()=>setLoginType('reseller')} style={{ flex:1, padding:'9px', borderRadius:'9px', border:'none', background:loginType==='reseller'?'white':'transparent', color:loginType==='reseller'?'#ca1b1b':'#888', fontWeight:loginType==='reseller'?'700':'500', cursor:'pointer', fontSize:'12px', transition:'all 0.15s', boxShadow:loginType==='reseller'?'0 2px 6px rgba(0,0,0,0.1)':'none' }}>🏪 Reseller</button>
         </div>
         {loginType==='employee' ? (
           <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
-            <input autoComplete="off" placeholder="Employee ID" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
+            <input autoComplete="off" placeholder="Employee ID or Admin Code" value={employeeCode} onChange={e=>setEmployeeCode(e.target.value)} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
             <input autoComplete="new-password" placeholder="PIN" type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleLogin() }} style={{ ...inputStyle, fontSize:'15px', padding:'14px' }} />
-            <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'EMPLOYEE LOGIN'}</button>
+            <button style={{ ...btnYellow, width:'100%', padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px', boxShadow:'0 4px 16px rgba(253,212,18,0.4)' }} onClick={handleLogin} disabled={loading}>{loading?'⏳ PLEASE WAIT...':'LOGIN'}</button>
             <button type="button" style={{ ...btnBlack, width:'100%', padding:'14px', fontSize:'14px', borderRadius:'12px', letterSpacing:'0.5px', marginTop:'10px', opacity:(!passkeySupported||passkeyLoading)?0.55:1, cursor:(!passkeySupported||passkeyLoading)?'not-allowed':'pointer' }} onClick={loginWithPasskey} disabled={!passkeySupported||passkeyLoading}>
               {passkeyLoading ? '⏳ VERIFYING...' : '🔐 LOGIN WITH FINGERPRINT'}
             </button>
             {!passkeySupported && <p style={{ color:'#ca1b1b', fontSize:'11px', textAlign:'center', margin:'8px 0 0' }}>Fingerprint login is not supported on this browser/device.</p>}
             <p style={{ color:'#888', fontSize:'10px', textAlign:'center', margin:'8px 0 0' }}>Set this up first from My Profile after logging in with Employee ID + PIN.</p>
-          </form>
-        ) : loginType==='admin' ? (
-          <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
-            <label style={lblS}>Owner/Admin Email:</label>
-            <input autoComplete="username" placeholder="owner@example.com" type="email" value={adminAuthEmail} onChange={e=>setAdminAuthEmail(e.target.value)} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
-            <label style={lblS}>Password:</label>
-            <input autoComplete="current-password" placeholder="Enter your password" type="password" value={adminAuthPassword} onChange={e=>setAdminAuthPassword(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') handleAdminAuthLogin() }} style={{ ...inputStyle, fontSize:'14px', padding:'14px' }} />
-            <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px' }} onClick={handleAdminAuthLogin} disabled={loading}>{loading?'⏳ LOGGING IN...':'🔐 OWNER / ADMIN LOGIN'}</button>
-            <p style={{ color:'#888', fontSize:'11px', textAlign:'center', marginTop:'10px', lineHeight:1.5 }}>Admin passwords are handled by Supabase Auth and are not stored inside App.jsx.</p>
           </form>
         ) : (
           <form autoComplete="off" onSubmit={e=>e.preventDefault()} style={{ width:'100%' }}>
@@ -19723,6 +18750,9 @@ This will create one approved expense record using the total payroll earnings.`)
             <button style={{ ...btnRed, padding:'15px', fontSize:'16px', borderRadius:'12px', letterSpacing:'1px', marginTop:'8px' }} onClick={resellerLogin} disabled={loading}>{loading?'⏳ LOGGING IN...':'🏪 RESELLER LOGIN'}</button>
             <p style={{ color:'#888', fontSize:'11px', textAlign:'center', marginTop:'10px' }}>Contact Roma's Donuts admin for your access code</p>
           </form>
+        )}
+        {employeeCode.toUpperCase()==='ADMIN001' && (
+          <p style={{ color:'#bbb', fontSize:'10px', marginTop:'10px', textAlign:'center' }}>👑 Master Owner Access</p>
         )}
         <p style={{ color:'#ccc', fontSize:'11px', textAlign:'center', marginTop:'20px' }}>Roma's Donuts © {new Date().getFullYear()}</p>
       </div>
