@@ -861,6 +861,10 @@ export default function App() {
   const [defaultOrderItems, setDefaultOrderItems] = useState([])
   const [deliveryInvoices, setDeliveryInvoices] = useState([])
   const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('')
+  const [adjustmentSearchTerm, setAdjustmentSearchTerm] = useState('')
+  const [adjustmentDayFilter, setAdjustmentDayFilter] = useState('all')
+  const [receivableSearchTerm, setReceivableSearchTerm] = useState('')
+  const [receivableDayFilter, setReceivableDayFilter] = useState('all')
   const [invoicesLoading, setInvoicesLoading] = useState(false)
   const [showCreateInvoice, setShowCreateInvoice] = useState(false)
   const [invoiceResellerId, setInvoiceResellerId] = useState('')
@@ -3264,6 +3268,23 @@ export default function App() {
     return sourceInvoices
       .filter(inv => invoiceMatchesFilter(inv, filter))
       .filter(inv => invoiceMatchesSearch(inv))
+      .sort(sortDeliveryInvoicesNewestFirst)
+  }
+
+  function getFilteredInvoicesForSearchBox(dayFilter = 'all', searchTerm = '') {
+    return [...deliveryInvoices]
+      .filter(inv => invoiceMatchesDayFilter(inv, dayFilter))
+      .filter(inv => invoiceMatchesSearch(inv, searchTerm))
+      .sort(sortDeliveryInvoicesNewestFirst)
+  }
+
+  function getVisibleAdjustmentInvoices() {
+    return getFilteredInvoicesForSearchBox(adjustmentDayFilter, adjustmentSearchTerm)
+  }
+
+  function getVisibleReceivableInvoices(filter = invoiceFilter) {
+    return getFilteredInvoicesForSearchBox(receivableDayFilter, receivableSearchTerm)
+      .filter(inv => invoiceMatchesFilter(inv, filter))
       .sort(sortDeliveryInvoicesNewestFirst)
   }
 
@@ -16025,6 +16046,29 @@ This will create one approved expense record using the total payroll earnings.`)
                       <p style={{ color:'#7a4a00', margin:0, fontSize:'12px', lineHeight:1.5 }}>Use this when actual produced or delivered quantity is different from the printed invoice. The adjusted actual delivered quantity becomes the billable reseller sales total.</p>
                     </div>
 
+                    {/* Search / Date Filter for Adjustments */}
+                    <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'14px', padding:'14px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 2fr auto', gap:'10px', alignItems:'end' }}>
+                        <div>
+                          <label style={{ ...lblS, marginBottom:'5px' }}>Filter by Delivery Date</label>
+                          <select value={adjustmentDayFilter} onChange={e=>setAdjustmentDayFilter(e.target.value)} style={{ ...inputStyle, marginBottom:0, fontSize:'12px', fontWeight:'700' }}>
+                            <option value="all">All loaded dates</option>
+                            {getInvoiceDayOptions().map(dateKey => (
+                              <option key={dateKey} value={dateKey}>{formatInvoiceDayOption(dateKey)}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label style={{ ...lblS, marginBottom:'5px' }}>Search Adjustment Invoice</label>
+                          <input type="text" value={adjustmentSearchTerm} onChange={e=>setAdjustmentSearchTerm(e.target.value)} placeholder="Search by reseller name, invoice number, date, area, or address..." style={{ ...inputStyle, marginBottom:0, fontSize:'13px', border:'2px solid #f0f0f0' }} />
+                        </div>
+                        {(adjustmentSearchTerm || adjustmentDayFilter !== 'all') && (
+                          <button type="button" onClick={()=>{ setAdjustmentSearchTerm(''); setAdjustmentDayFilter('all') }} style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', cursor:'pointer', fontWeight:'800', fontSize:'12px' }}>CLEAR</button>
+                        )}
+                      </div>
+                      <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>Showing {getVisibleAdjustmentInvoices().length} invoice(s) for adjustment. Results update while you type.</p>
+                    </div>
+
                     <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
                       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr', gap:'10px', alignItems:'end' }}>
                         <div>
@@ -16037,7 +16081,8 @@ This will create one approved expense record using the total payroll earnings.`)
                             setAdjustmentReason('')
                           }} style={inputStyle}>
                             <option value="">Select invoice to adjust</option>
-                            {deliveryInvoices.map(inv=><option key={inv.id} value={inv.id}>{inv.delivery_date} — {inv.invoice_number} — {inv.reseller_name} — {php(inv.total_amount)}</option>)}
+                            {getVisibleAdjustmentInvoices().length === 0 && <option value="" disabled>No matching invoices found</option>}
+                            {getVisibleAdjustmentInvoices().map(inv=><option key={inv.id} value={inv.id}>{inv.delivery_date} — {inv.invoice_number} — {inv.reseller_name} — {php(inv.total_amount)}</option>)}
                           </select>
                         </div>
                         <div>
@@ -16262,6 +16307,29 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                       )
                     })()}
+                    {/* Search / Date Filter for Receivables */}
+                    <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'14px', padding:'14px', marginBottom:'12px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 2fr auto', gap:'10px', alignItems:'end' }}>
+                        <div>
+                          <label style={{ ...lblS, marginBottom:'5px' }}>Filter by Delivery Date</label>
+                          <select value={receivableDayFilter} onChange={e=>setReceivableDayFilter(e.target.value)} style={{ ...inputStyle, marginBottom:0, fontSize:'12px', fontWeight:'700' }}>
+                            <option value="all">All loaded dates</option>
+                            {getInvoiceDayOptions().map(dateKey => (
+                              <option key={dateKey} value={dateKey}>{formatInvoiceDayOption(dateKey)}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label style={{ ...lblS, marginBottom:'5px' }}>Search Receivables</label>
+                          <input type="text" value={receivableSearchTerm} onChange={e=>setReceivableSearchTerm(e.target.value)} placeholder="Search by reseller name, invoice number, date, area, or address..." style={{ ...inputStyle, marginBottom:0, fontSize:'13px', border:'2px solid #f0f0f0' }} />
+                        </div>
+                        {(receivableSearchTerm || receivableDayFilter !== 'all') && (
+                          <button type="button" onClick={()=>{ setReceivableSearchTerm(''); setReceivableDayFilter('all') }} style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', cursor:'pointer', fontWeight:'800', fontSize:'12px' }}>CLEAR</button>
+                        )}
+                      </div>
+                      <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>Showing {getVisibleReceivableInvoices(invoiceFilter).length} receivable invoice(s). Status tab still applies and results update while you type.</p>
+                    </div>
+
                     {/* Delivery Filter Tabs */}
                     <div style={{ display:'flex', gap:'6px', marginBottom:'12px', flexWrap:'wrap', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
                       {[['active','📋 Active'],['unpaid','⏳ Unpaid'],['delivered','🚚 Delivered'],['partial','💰 Partial'],['paid','✅ Paid'],['all','📋 All']].map(([v,l])=>(
@@ -16272,8 +16340,8 @@ This will create one approved expense record using the total payroll earnings.`)
                     </div>
                     {/* Invoice List */}
                     {(()=>{
-                      let filtered = deliveryInvoices.filter(i=>invoiceMatchesFilter(i, invoiceFilter))
-                      if (invoiceFilter==='overdue') filtered = deliveryInvoices.filter(i=>getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today)
+                      let filtered = getVisibleReceivableInvoices(invoiceFilter)
+                      if (invoiceFilter==='overdue') filtered = getFilteredInvoicesForSearchBox(receivableDayFilter, receivableSearchTerm).filter(i=>getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today)
                       if (filtered.length===0) return (
                         <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
                           <p style={{ fontSize:'32px', margin:'0 0 8px' }}>{invoiceFilter==='delivered'?'🚚':invoiceFilter==='paid'?'✅':'💵'}</p>
