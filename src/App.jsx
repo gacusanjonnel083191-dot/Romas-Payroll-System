@@ -860,6 +860,7 @@ export default function App() {
   const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
   const [defaultOrderItems, setDefaultOrderItems] = useState([])
   const [deliveryInvoices, setDeliveryInvoices] = useState([])
+  const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('')
   const [invoicesLoading, setInvoicesLoading] = useState(false)
   const [showCreateInvoice, setShowCreateInvoice] = useState(false)
   const [invoiceResellerId, setInvoiceResellerId] = useState('')
@@ -3191,6 +3192,52 @@ export default function App() {
     return getInvoiceDeliveryDate(inv) === dayFilter
   }
 
+  function normalizeInvoiceSearchValue(value) {
+    return String(value || '').toLowerCase().trim()
+  }
+
+  function getInvoiceSearchHaystack(inv) {
+    const reseller = resellers.find(r => String(r.id) === String(inv?.reseller_id)) || {}
+    const deliveryDate = getInvoiceDeliveryDate(inv)
+    const dateLabel = deliveryDate
+      ? (() => {
+          const parsed = parseLocalDate(deliveryDate)
+          return parsed ? parsed.toLocaleDateString('en-PH', { month:'long', day:'numeric', year:'numeric' }) : deliveryDate
+        })()
+      : ''
+
+    return [
+      inv?.invoice_number,
+      inv?.reseller_name,
+      inv?.delivery_date,
+      dateLabel,
+      inv?.due_date,
+      inv?.status,
+      inv?.address,
+      inv?.delivery_address,
+      inv?.reseller_address,
+      inv?.area,
+      inv?.location,
+      reseller?.name,
+      reseller?.area,
+      reseller?.address,
+      reseller?.delivery_address,
+      reseller?.location,
+      reseller?.contact_person,
+      reseller?.phone,
+      ...(inv?.delivery_invoice_items || []).map(item => item?.variant_name)
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+  }
+
+  function invoiceMatchesSearch(inv, searchTerm = invoiceSearchTerm) {
+    const term = normalizeInvoiceSearchValue(searchTerm)
+    if (!term) return true
+    return getInvoiceSearchHaystack(inv).includes(term)
+  }
+
   function sortDeliveryInvoicesNewestFirst(a, b) {
     const dateCompare = getInvoiceDeliveryDate(b).localeCompare(getInvoiceDeliveryDate(a))
     if (dateCompare !== 0) return dateCompare
@@ -3209,8 +3256,14 @@ export default function App() {
   }
 
   function getVisibleDeliveryInvoices(filter = invoiceFilter, dayFilter = invoiceDayFilter) {
-    return getDayFilteredInvoices(dayFilter)
+    const searchActive = !!normalizeInvoiceSearchValue(invoiceSearchTerm)
+    const sourceInvoices = searchActive
+      ? [...deliveryInvoices]
+      : getDayFilteredInvoices(dayFilter)
+
+    return sourceInvoices
       .filter(inv => invoiceMatchesFilter(inv, filter))
+      .filter(inv => invoiceMatchesSearch(inv))
       .sort(sortDeliveryInvoicesNewestFirst)
   }
 
@@ -15624,6 +15677,34 @@ This will create one approved expense record using the total payroll earnings.`)
                       })()}
                     </div>
 
+                    {/* Live Invoice Search */}
+                    <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+                      <label style={{ ...lblS, marginBottom:'6px' }}>Search All Invoices</label>
+                      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+                        <input
+                          type="text"
+                          value={invoiceSearchTerm}
+                          onChange={e=>setInvoiceSearchTerm(e.target.value)}
+                          placeholder="Search by reseller name, invoice number, date, area, or address..."
+                          style={{ ...inputStyle, marginBottom:0, flex:'1 1 260px', fontSize:'13px', border:'2px solid #f0f0f0' }}
+                        />
+                        {invoiceSearchTerm && (
+                          <button
+                            type="button"
+                            onClick={()=>setInvoiceSearchTerm('')}
+                            style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', cursor:'pointer', fontWeight:'800', fontSize:'12px' }}
+                          >
+                            CLEAR
+                          </button>
+                        )}
+                      </div>
+                      <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>
+                        {invoiceSearchTerm
+                          ? `Showing ${getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter).length} result(s) from all loaded invoices. Status tab still applies.`
+                          : 'Type to search live by reseller, invoice number, delivery date, area, or address.'}
+                      </p>
+                    </div>
+
                     {orderCutoffStatus.locked && (
                       <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 12px rgba(202,27,27,0.10)' }}>
                         <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'13px' }}>🔒 TOMORROW DELIVERY CUT-OFF REACHED — {ORDER_CUTOFF_LABEL} PH TIME</h4>
@@ -15831,12 +15912,13 @@ This will create one approved expense record using the total payroll earnings.`)
                     {/* Filtered invoices by selected day and status */}
                     {(()=>{
                       const visibleInvoices = getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter)
+                      const invoiceSearchActive = !!normalizeInvoiceSearchValue(invoiceSearchTerm)
                       if (!invoicesLoading && deliveryInvoices.length > 0 && visibleInvoices.length === 0) {
                         return (
                           <div style={{ textAlign:'center', padding:'30px', color:'#888', background:'white', border:'1px dashed #ddd', borderRadius:'14px' }}>
                             <p style={{ fontSize:'28px', margin:'0 0 10px' }}>🧾</p>
-                            <p style={{ fontWeight:'bold', fontSize:'14px' }}>No invoices found for this day and status</p>
-                            <p style={{ fontSize:'12px' }}>Change the Invoice Day dropdown or status tab.</p>
+                            <p style={{ fontWeight:'bold', fontSize:'14px' }}>{invoiceSearchActive ? `No invoices found for “${invoiceSearchTerm}”` : 'No invoices found for this day and status'}</p>
+                            <p style={{ fontSize:'12px' }}>{invoiceSearchActive ? 'Try another reseller name, invoice number, date, area, or address.' : 'Change the Invoice Day dropdown or status tab.'}</p>
                           </div>
                         )
                       }
