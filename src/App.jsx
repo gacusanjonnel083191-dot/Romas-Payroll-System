@@ -16067,6 +16067,59 @@ This will create one approved expense record using the total payroll earnings.`)
                         )}
                       </div>
                       <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>Showing {getVisibleAdjustmentInvoices().length} invoice(s) for adjustment. Results update while you type.</p>
+
+                      {(adjustmentSearchTerm || adjustmentDayFilter !== 'all') && (
+                        <div style={{ marginTop:'12px', borderTop:'1px solid #f0f0f0', paddingTop:'12px' }}>
+                          <p style={{ ...lblS, margin:'0 0 8px' }}>Matching Invoice Results</p>
+                          {getVisibleAdjustmentInvoices().length === 0 ? (
+                            <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#9f1239', borderRadius:'10px', padding:'12px', fontSize:'12px', fontWeight:'800', textAlign:'center' }}>
+                              No matching invoice found. Try another reseller name, invoice number, date, area, or address.
+                            </div>
+                          ) : (
+                            <div style={{ display:'grid', gap:'8px' }}>
+                              {getVisibleAdjustmentInvoices().slice(0, 20).map(inv => {
+                                const isSelected = String(adjustmentInvoiceId) === String(inv.id)
+                                return (
+                                  <button
+                                    key={inv.id}
+                                    type="button"
+                                    onClick={()=>{
+                                      setAdjustmentInvoiceId(inv.id)
+                                      setAdjustmentRows(buildInvoiceAdjustmentRows(inv))
+                                      setAdjustmentReason('')
+                                    }}
+                                    style={{
+                                      width:'100%',
+                                      textAlign:'left',
+                                      background:isSelected?'#fff8dc':'#fff',
+                                      border:`2px solid ${isSelected?'#f5a623':'#eeeeee'}`,
+                                      borderRadius:'12px',
+                                      padding:'10px 12px',
+                                      cursor:'pointer',
+                                      boxShadow:isSelected?'0 2px 8px rgba(245,166,35,0.20)':'0 1px 4px rgba(0,0,0,0.04)'
+                                    }}
+                                  >
+                                    <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
+                                      <div>
+                                        <p style={{ margin:'0 0 3px', fontSize:'13px', color:'#ca1b1b', fontWeight:'900' }}>{inv.reseller_name || 'Unnamed Reseller'}</p>
+                                        <p style={{ margin:0, fontSize:'11px', color:'#666' }}>{inv.invoice_number || 'No invoice #'} · Delivery: {getInvoiceDeliveryDate(inv) || inv.delivery_date || 'No date'}{inv.area ? ` · ${inv.area}` : ''}</p>
+                                      </div>
+                                      <div style={{ textAlign:'right' }}>
+                                        <p style={{ margin:'0 0 2px', fontSize:'10px', color:'#888', textTransform:'uppercase' }}>Invoice Total</p>
+                                        <p style={{ margin:0, fontSize:'13px', color:'#1a1a2e', fontWeight:'900' }}>{php(inv.total_amount)}</p>
+                                      </div>
+                                    </div>
+                                    <p style={{ margin:'6px 0 0', fontSize:'11px', color:'#888' }}>{inv.address || inv.delivery_address || inv.reseller_address || 'No address saved'}</p>
+                                  </button>
+                                )
+                              })}
+                              {getVisibleAdjustmentInvoices().length > 20 && (
+                                <p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px', textAlign:'center' }}>Showing first 20 matches. Type more details to narrow the result.</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
