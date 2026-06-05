@@ -2544,6 +2544,25 @@ export default function App() {
  setSupplierForm({ name:s.name||'', contact_person:s.contact_person||'', phone:s.phone||'', email:s.email||'', address:s.address||'', payment_terms:s.payment_terms||'COD (Cash on Delivery)', notes:s.notes||'' })
  setShowAddSupplier(true)
  }
+ async function assignInventoryItemToSupplier(item, supplier) {
+ if (!item?.id || !supplier?.id) { showToast('Invalid item or supplier selected.','red'); return }
+ const currentSupplierId = item.supplier_id ? String(item.supplier_id) : ''
+ const targetSupplierId = String(supplier.id)
+ if (currentSupplierId === targetSupplierId) { showToast(`${item.name} is already assigned to ${supplier.name}.`); return }
+ const currentSupplierName = suppliers.find(s=>String(s.id)===currentSupplierId)?.name || ''
+ if (currentSupplierId && currentSupplierId !== targetSupplierId) {
+ const ok = window.confirm(`${item.name} is currently assigned to ${currentSupplierName || 'another supplier'}. Move this item to ${supplier.name}?`)
+ if (!ok) return
+ }
+ const { error } = await supabase
+ .from('inventory_items')
+ .update({ supplier_id:supplier.id })
+ .eq('id', item.id)
+ if (error) { showToast('Failed to assign item: '+error.message,'red'); return }
+ setInventoryItems(prev => (prev || []).map(i => String(i.id)===String(item.id) ? { ...i, supplier_id:supplier.id } : i))
+ await logAudit('SUPPLIER ITEM ASSIGNED','Admin',supplier.name || '',`${item.name} assigned to supplier`)
+ showToast(`${item.name} added to ${supplier.name}.`)
+ }
 
  // Purchase Order Functions 
  async function loadPurchaseOrders() {
@@ -14682,6 +14701,63 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </select>
  <label style={lblS}>Notes:</label>
  <input type="text" placeholder="Any additional notes" value={supplierForm.notes} onChange={e=>setSupplierForm(p=>({...p,notes:e.target.value}))} style={inputStyle} />
+
+ {editingSupplierId && (() => {
+ const currentSupplier = suppliers.find(s=>String(s.id)===String(editingSupplierId))
+ const supplierItems = [...(inventoryItems || [])].sort((a,b)=>String(a.category||'').localeCompare(String(b.category||'')) || String(a.name||'').localeCompare(String(b.name||'')))
+ const assignedCount = supplierItems.filter(i=>String(i.supplier_id||'')===String(editingSupplierId)).length
+ return (
+ <div style={{ background:'white', border:'1px solid #e8d5f5', borderRadius:'12px', padding:'12px', margin:'10px 0 12px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', marginBottom:'8px' }}>
+ <div>
+ <p style={{ margin:'0 0 3px', color:'#7b4f9e', fontSize:'12px', fontWeight:'900' }}>Supplier Product Assignment</p>
+ <p style={{ margin:0, color:'#777', fontSize:'11px' }}>Click + to add or move an inventory item to this supplier. Assigned items automatically update their supplier.</p>
+ </div>
+ <span style={{ background:'#f8f0ff', color:'#7b4f9e', border:'1px solid #e8d5f5', borderRadius:'999px', padding:'5px 9px', fontSize:'11px', fontWeight:'900' }}>{assignedCount} assigned</span>
+ </div>
+ <div style={{ maxHeight:'280px', overflowY:'auto', border:'1px solid #eee', borderRadius:'10px' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'11px' }}>
+ <thead>
+ <tr style={{ background:'#fff8dc', color:'#444' }}>
+ <th style={{ padding:'7px', textAlign:'left', border:'1px solid #eee', width:'35px' }}>Add</th>
+ <th style={{ padding:'7px', textAlign:'left', border:'1px solid #eee' }}>Product / Item</th>
+ <th style={{ padding:'7px', textAlign:'left', border:'1px solid #eee', width:'130px' }}>Category</th>
+ <th style={{ padding:'7px', textAlign:'center', border:'1px solid #eee', width:'70px' }}>Unit</th>
+ <th style={{ padding:'7px', textAlign:'left', border:'1px solid #eee', width:'150px' }}>Current Supplier</th>
+ </tr>
+ </thead>
+ <tbody>
+ {supplierItems.map(item => {
+ const isAssigned = String(item.supplier_id||'') === String(editingSupplierId)
+ const itemSupplier = suppliers.find(s=>String(s.id)===String(item.supplier_id||''))
+ return (
+ <tr key={item.id} style={{ background:isAssigned?'#f0fff4':'white' }}>
+ <td style={{ padding:'6px', border:'1px solid #eee', textAlign:'center' }}>
+ <button
+ title={isAssigned?'Already assigned':'Add this item to supplier'}
+ disabled={isAssigned}
+ onClick={()=>assignInventoryItemToSupplier(item, currentSupplier)}
+ style={{
+ width:'26px', height:'26px', borderRadius:'8px', border:'none',
+ background:isAssigned?'#d8f3dc':'#7b4f9e', color:isAssigned?'#2d8a4e':'white',
+ fontWeight:'900', cursor:isAssigned?'default':'pointer', fontSize:'15px', lineHeight:'1'
+ }}
+ >{isAssigned?'OK':'+'}</button>
+ </td>
+ <td style={{ padding:'6px 8px', border:'1px solid #eee', fontWeight:'800', color:'#1a1a2e' }}>{item.name}</td>
+ <td style={{ padding:'6px 8px', border:'1px solid #eee', color:'#555' }}>{item.category || 'Uncategorized'}</td>
+ <td style={{ padding:'6px 8px', border:'1px solid #eee', textAlign:'center', color:'#555' }}>{item.unit}</td>
+ <td style={{ padding:'6px 8px', border:'1px solid #eee', color:isAssigned?'#2d8a4e':'#777', fontWeight:isAssigned?'800':'500' }}>{isAssigned?'This supplier':(itemSupplier?.name || 'No supplier')}</td>
+ </tr>
+ )
+ })}
+ </tbody>
+ </table>
+ </div>
+ </div>
+ )
+ })()}
+
  <button style={{...btnBlack, background:'#7b4f9e' }} onClick={saveSupplier}>{editingSupplierId?' UPDATE SUPPLIER':' SAVE SUPPLIER'}</button>
  </div>
  )}
