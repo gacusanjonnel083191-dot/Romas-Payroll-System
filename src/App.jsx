@@ -2061,7 +2061,7 @@ export default function App() {
  const lowStock = inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0)
  const totalValue = inventoryItems.reduce((s,i)=>s+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0)
  const byCategory = INVENTORY_CATEGORIES.map(cat=>({ cat, items: inventoryItems.filter(i=>i.category===cat) })).filter(g=>g.items.length>0)
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Inventory Report</title>
  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;color:#000;}
  @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
@@ -2300,7 +2300,7 @@ export default function App() {
  // Physical Count Sheet Print 
  function printPhysicalCountSheet() {
  const byCategory = INVENTORY_CATEGORIES.map(cat=>({ cat, items: inventoryItems.filter(i=>i.category===cat) })).filter(g=>g.items.length>0)
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Physical Count Sheet</title>
  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:12mm;font-size:10px;}
  @media print{@page{size:A4;margin:12mm;}.no-print{display:none;}}
@@ -2453,7 +2453,7 @@ export default function App() {
  const items = po.purchase_order_items || []
  const supplier = suppliers.find(s=>s.id===po.supplier_id)
  const total = items.reduce((s,i)=>s+Number(i.total_price||0),0)
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Purchase Order ${po.po_number}</title>
  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
  @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
@@ -2838,7 +2838,7 @@ export default function App() {
  }
  function printCostingReport() {
  const fin = computeFinancials()
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  const catColors = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }
  pw.document.write(`<!DOCTYPE html><html><head><title>Costing Report</title>
  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:10px;}
@@ -3753,198 +3753,384 @@ This will remove the invoice and its line items.`
  }
  }
  function buildDeliveryInvoicePrintCSS() {
- return `
- <style>
- *{margin:0;padding:0;box-sizing:border-box;}
- html,body{background:#e5e5e5;}
- body{font-family:Arial,sans-serif;color:#111;line-height:1.22;padding:8px;}
-.no-print{max-width:145mm;margin:0 auto 10px;text-align:center;}
-.invoice-page{
- width:145mm;
- max-width:145mm;
- margin:8px auto;
- background:white;
- padding:7mm 8mm 6mm;
- min-height:92mm;
- box-shadow:0 2px 10px rgba(0,0,0,0.18);
- overflow:hidden;
- break-inside:avoid;
- page-break-inside:avoid;
- }
-.invoice-header{display:grid;grid-template-columns:1.05fr.95fr;gap:8px;align-items:start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:7px;}
-.brand-title{font-size:18px;color:#ca1b1b;font-weight:900;margin:0;line-height:1.05;}
-.invoice-title{font-size:13px;font-weight:900;color:#ca1b1b;letter-spacing:.35px;text-align:right;}
-.invoice-no{font-size:10.2px;font-weight:900;color:#111;text-align:right;margin-top:2px;}
-.header-line{font-size:8.8px;color:#333;line-height:1.25;}
-.header-label{font-weight:900;color:#ca1b1b;text-transform:uppercase;}
-.top-details{display:grid;grid-template-columns:1.1fr.9fr;gap:6px;margin:7px 0 7px;}
-.detail-box{border:1px solid #d6d6d6;border-radius:5px;padding:5px 6px;min-height:38px;}
-.label{font-size:8px;color:#ca1b1b;font-weight:900;text-transform:uppercase;letter-spacing:.25px;margin-bottom:2px;}
-.info-text{font-size:9px;line-height:1.22;color:#111;}
-.info-strong{font-size:10px;font-weight:900;color:#111;line-height:1.18;}
- table{width:100%;border-collapse:collapse;margin:6px 0 6px;table-layout:fixed;}
- th{background:#ca1b1b;color:white;padding:3.4px 3px;font-size:7.8px;text-align:left;line-height:1.12;}
- td{padding:2.8px 3px;border-bottom:1px solid #e8e8e8;font-size:8.2px;line-height:1.14;word-break:break-word;vertical-align:middle;}
-.write-cell{border:1px solid #cfcfcf!important;min-height:13px;background:white;}
-.total-row{background:#fff9e6;font-weight:900;}
-.bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;}
-.bottom-box{border:1px solid #d9d9d9;border-radius:5px;padding:5px 6px;min-height:34px;}
-.bottom-label{font-size:8px;font-weight:900;color:#ca1b1b;text-transform:uppercase;margin-bottom:3px;}
-.bottom-value{font-size:9.2px;font-weight:800;color:#111;min-height:11px;}
-.write-line{border-bottom:1px solid #333;height:14px;margin-top:1px;}
-.force-break{break-after:page;page-break-after:always;}
- @page invoicePage{size:145mm 210mm;margin:0;}
- @page{size:145mm 210mm;margin:0;}
- @media print{
- html,body{
- width:145mm!important;
- min-width:145mm!important;
- max-width:145mm!important;
- height:auto!important;
- min-height:0!important;
- background:white!important;
- margin:0!important;
- padding:0!important;
- overflow:visible!important;
- }
- body{font-family:Arial,sans-serif!important;color:#111!important;}
-.no-print{display:none!important;}
-.invoice-page{
- page:invoicePage;
- width:145mm!important;
- max-width:145mm!important;
- height:auto!important;
- min-height:0!important;
- max-height:210mm!important;
- margin:0 auto!important;
- padding:7mm 8mm 6mm!important;
- min-height:92mm!important;
- box-shadow:none!important;
- border:none!important;
- overflow:hidden!important;
- break-before:auto!important;
- page-break-before:auto!important;
- break-inside:avoid!important;
- page-break-inside:avoid!important;
- break-after:avoid!important;
- page-break-after:avoid!important;
- }
-.print-all-invoices.invoice-page{break-after:page!important;page-break-after:always!important;}
-.print-all-invoices.invoice-page:last-of-type{break-after:avoid!important;page-break-after:avoid!important;}
-.single-invoice-print.invoice-page{break-after:avoid!important;page-break-after:avoid!important;}
-.force-break{break-after:page!important;page-break-after:always!important;}
- }
- </style>`
- }
+    return `<style>
+        @page invoicePage{
+          size:4in 6in;
+          margin:0;
+        }
+
+        *{
+          box-sizing:border-box;
+          -webkit-print-color-adjust:exact!important;
+          print-color-adjust:exact!important;
+        }
+
+        html,body{
+          width:4in!important;
+          min-width:4in!important;
+          max-width:4in!important;
+          height:auto!important;
+          min-height:0!important;
+          margin:0!important;
+          padding:0!important;
+          background:white!important;
+          font-family:Arial,sans-serif!important;
+          color:#000!important;
+          overflow:visible!important;
+        }
+
+        body{
+          display:block;
+        }
+
+        .no-print{
+          width:4in;
+          margin:0 auto 6px;
+          padding:6px;
+          background:#fff8dc;
+          border:1px solid #fdd412;
+          font-size:10px;
+          text-align:center;
+        }
+
+        .invoice-page{
+          page:invoicePage;
+          width:4in!important;
+          height:6in!important;
+          min-width:4in!important;
+          max-width:4in!important;
+          min-height:6in!important;
+          max-height:6in!important;
+          margin:0 auto!important;
+          padding:0.035in!important;
+          background:white!important;
+          overflow:hidden!important;
+          box-shadow:none!important;
+          border:none!important;
+          break-inside:avoid!important;
+          page-break-inside:avoid!important;
+        }
+
+        .invoice-table{
+          width:100%;
+          height:100%;
+          border-collapse:collapse;
+          table-layout:fixed;
+          border:1px solid #000;
+          font-size:8.5px;
+          line-height:1.05;
+        }
+
+        .invoice-table td,
+        .invoice-table th{
+          border:1px solid #000;
+          padding:1px 2px;
+          vertical-align:middle;
+          overflow:hidden;
+          white-space:nowrap;
+        }
+
+        .title-row td{
+          height:0.20in;
+          text-align:center;
+          font-weight:900;
+          font-size:10.5px;
+          letter-spacing:-0.1px;
+        }
+
+        .field-row td{
+          height:0.21in;
+          font-size:8.5px;
+        }
+
+        .field-label{
+          text-align:center;
+          font-weight:900;
+          width:31%;
+        }
+
+        .field-value{
+          font-weight:700;
+        }
+
+        .date-fill,
+        .customer-fill{
+          background:#cfe2f3!important;
+        }
+
+        .address-fill,
+        .prepared-fill{
+          background:#b6d7a8!important;
+        }
+
+        .blank-row td{
+          height:0.17in;
+        }
+
+        .header-row th{
+          height:0.22in;
+          text-align:center;
+          font-weight:900;
+          font-size:9.5px;
+        }
+
+        .product-row td{
+          height:0.205in;
+          font-size:8.6px;
+        }
+
+        .product-name{
+          text-align:center;
+          font-weight:900;
+        }
+
+        .number-cell{
+          text-align:center;
+          font-weight:800;
+        }
+
+        .money-cell{
+          text-align:right;
+          font-weight:800;
+        }
+
+        .footer-row td{
+          height:0.22in;
+          font-size:8.6px;
+        }
+
+        .footer-label{
+          text-align:center;
+          font-weight:900;
+          font-style:italic;
+        }
+
+        .total-label{
+          text-align:center;
+          font-weight:900;
+          font-size:12px!important;
+        }
+
+        .total-amount{
+          text-align:right;
+          font-weight:900;
+          background:#d9d9d9!important;
+          font-size:12px!important;
+        }
+
+        @media print{
+          .no-print{display:none!important;}
+          html,body{
+            width:4in!important;
+            height:auto!important;
+            margin:0!important;
+            padding:0!important;
+          }
+          .invoice-page{
+            margin:0!important;
+            break-after:page!important;
+            page-break-after:always!important;
+          }
+          .single-invoice-print .invoice-page:last-of-type,
+          .print-all-invoices .invoice-page:last-of-type{
+            break-after:avoid!important;
+            page-break-after:avoid!important;
+          }
+          .force-break{
+            break-after:page!important;
+            page-break-after:always!important;
+          }
+        }
+      </style>`
+  }
+
 
  function buildDeliveryInvoicePrintPage(invoice, pageClass = '') {
- const items = invoice.delivery_invoice_items || []
- const reseller = resellers.find(r => r.id === invoice.reseller_id)
- const totalPieces = items.reduce((s,i)=>s+Number(i.quantity||0),0)
- const balance = Number(invoice.total_amount || 0) - (Number(invoice.paid_amount) || 0)
- const resellerAccount = resellerAccounts.find(a => String(a.id) === String(reseller?.reseller_account_id || invoice.reseller_account_id || ''))
- const cleanText = value => String(value || '').trim()
- const sameText = (a,b) => cleanText(a).toLowerCase() === cleanText(b).toLowerCase()
- const resellerName = [
- reseller?.contact_person,
- resellerAccount?.owner_name,
- resellerAccount?.account_name,
- invoice.reseller_contact_person,
- invoice.reseller_owner_name,
- invoice.reseller_name,
- reseller?.name
- ].map(cleanText).find(Boolean) || ''
- const resellerAddress = [
- reseller?.address,
- invoice.reseller_address,
- invoice.address,
- reseller?.area,
- reseller?.name
- ].map(cleanText).find(v => v &&!sameText(v, resellerName)) || ''
- const deliveryPersonnelName = cleanText(invoice.delivery_personnel || invoice.delivery_personnel_name || invoice.driver_name || invoice.dispatched_by)
- let dispatcherName = cleanText(invoice.dispatcher || invoice.dispatcher_name || invoice.prepared_by)
- if (dispatcherName && deliveryPersonnelName && sameText(dispatcherName, deliveryPersonnelName)) dispatcherName = ''
- return `
- <section class="invoice-page ${pageClass}">
- <div class="invoice-header">
- <div>
- <div class="brand-title">Roma's Donuts</div>
- </div>
- <div>
- <div class="invoice-title">DELIVERY INVOICE</div>
- <div class="invoice-no">${invoice.invoice_number}</div>
- <div class="header-line" style="text-align:right;"><span class="header-label">Date of Delivery:</span> ${invoice.delivery_date || ''}</div>
- </div>
- </div>
+    const items = Array.isArray(invoice.delivery_invoice_items) ? invoice.delivery_invoice_items : [];
+    const reseller = resellers.find(r => String(r.id) === String(invoice.reseller_id));
+    const resellerAccount = resellerAccounts.find(a => String(a.id) === String(reseller?.reseller_account_id || invoice.reseller_account_id || ''));
 
- <div class="top-details">
- <div class="detail-box">
- <div class="info-strong">${resellerName}</div>
- ${resellerAddress?`<div class="info-text">${resellerAddress}</div>`:'<div class="info-text">&nbsp;</div>'}
- </div>
- <div class="detail-box">
- <div class="label">Notes</div>
- <div class="info-text">${invoice.notes || '&nbsp;'}</div>
- </div>
- </div>
+    const cleanText = value => String(value || '').trim();
+    const normalize = value => cleanText(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const escapeHtml = value => cleanText(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
 
- <table>
- <tr>
- <th style="width:28%;">Variant</th>
- <th style="width:12%;text-align:right;">Price</th>
- <th style="width:10%;text-align:right;">Inv Qty</th>
- <th style="width:12%;text-align:center;">Adjust +/-</th>
- <th style="width:12%;text-align:center;">Actual Qty</th>
- <th style="width:15%;text-align:right;">Amount</th>
- <th style="width:11%;text-align:center;">Unsold</th>
- </tr>
- ${items.map(i=>`<tr>
- <td>${i.variant_name || ''}</td>
- <td style="text-align:right;">${php(i.reseller_price)}</td>
- <td style="text-align:right;font-weight:900;">${Number(i.quantity || 0).toLocaleString()}</td>
- <td class="write-cell">&nbsp;</td>
- <td class="write-cell">&nbsp;</td>
- <td style="text-align:right;font-weight:900;">${php(i.total_price)}</td>
- <td class="write-cell">&nbsp;</td>
- </tr>`).join('')}
- <tr class="total-row">
- <td colspan="2" style="text-align:right;">Total (${totalPieces.toLocaleString()} pcs):</td>
- <td></td><td></td><td></td>
- <td style="text-align:right;color:#ca1b1b;font-size:8.3px;">${php(invoice.total_amount)}</td>
- <td></td>
- </tr>
- ${(Number(invoice.paid_amount)||0)>0?`
- <tr><td colspan="5" style="text-align:right;">Paid:</td><td style="text-align:right;color:#2d8a4e;font-weight:900;">${php(invoice.paid_amount)}</td><td></td></tr>
- <tr class="total-row"><td colspan="5" style="text-align:right;">Balance:</td><td style="text-align:right;color:#ca1b1b;">${php(balance)}</td><td></td></tr>`:''}
- </table>
+    const peso = value => {
+      const amount = safeNum(value, 0).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 });
+      return '\u20B1' + amount;
+    };
 
- <div class="bottom-grid">
- <div class="bottom-box">
- <div class="bottom-label">Dispatcher</div>
- <div class="bottom-value">${dispatcherName || '&nbsp;'}</div>
- <div class="write-line"></div>
- </div>
- <div class="bottom-box">
- <div class="bottom-label">Delivery Personnel</div>
- <div class="bottom-value">${deliveryPersonnelName || '&nbsp;'}</div>
- <div class="write-line"></div>
- </div>
- <div class="bottom-box">
- <div class="bottom-label">Crates Used</div>
- <div class="bottom-value">${invoice.crates_used || 0}</div>
- </div>
- <div class="bottom-box">
- <div class="bottom-label">Crates Returned</div>
- <div class="write-line"></div>
- </div>
- </div>
- </section>`
- }
+    const formatInvoiceDate = value => {
+      const raw = cleanText(value);
+      if (!raw) return '';
+      const datePart = raw.slice(0, 10);
+      const parts = datePart.split('-');
+      if (parts.length === 3) return parts[1] + ' / ' + parts[2] + ' / ' + parts[0];
+      return raw;
+    };
+
+    const resellerName = [
+      reseller?.contact_person,
+      resellerAccount?.owner_name,
+      resellerAccount?.account_name,
+      invoice.reseller_contact_person,
+      invoice.reseller_owner_name,
+      invoice.reseller_name,
+      reseller?.name
+    ].map(cleanText).find(Boolean) || '';
+
+    const resellerAddress = [
+      reseller?.address,
+      invoice.reseller_address,
+      invoice.address,
+      reseller?.area
+    ].map(cleanText).find(Boolean) || '';
+
+    const preparedBy = cleanText(invoice.prepared_by || invoice.dispatcher || invoice.dispatcher_name || invoice.created_by || '');
+
+    const rows = [
+      { label:'Choco Balls', aliases:['Choco Balls'] },
+      { label:'', aliases:[] },
+      { label:'Almond Glitz', aliases:['Almond Glitz'] },
+      { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
+      { label:'Oreo Dream', aliases:['Oreo Dream'] },
+      { label:'Lotus Cloud', aliases:['Lotus Cloud'] },
+      { label:'Rings', aliases:['Rings'] },
+      { label:'Shells', aliases:['Shells'] },
+      { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
+      { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
+      { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
+      { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
+      { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
+      { label:'Biscoreo', aliases:['Biscoreo'] },
+      { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] }
+    ];
+
+    const getQty = item => safeNum(item?.delivered_quantity ?? item?.actual_quantity ?? item?.quantity, 0);
+    const getPrice = item => safeNum(item?.reseller_price ?? item?.unit_price ?? item?.price ?? item?.selling_price, 0);
+    const getAmount = item => {
+      const stored = safeNum(item?.total_price ?? item?.amount ?? item?.line_total, NaN);
+      if (Number.isFinite(stored)) return stored;
+      return getQty(item) * getPrice(item);
+    };
+
+    const findMatchingItems = row => {
+      if (!row.label) return [];
+      const aliases = row.aliases.map(normalize);
+      return items.filter(item => {
+        const itemName = normalize(item.variant_name || item.product_name || item.name || '');
+        return aliases.some(alias => itemName === alias || itemName.includes(alias) || alias.includes(itemName));
+      });
+    };
+
+    const productRowsHtml = rows.map(row => {
+      if (!row.label) {
+        return '<tr class="product-row"><td>&nbsp;</td><td></td><td></td><td></td><td></td></tr>';
+      }
+
+      const matched = findMatchingItems(row);
+      const qty = matched.reduce((sum, item) => sum + getQty(item), 0);
+      const first = matched[0] || null;
+      const price = first ? getPrice(first) : 0;
+      const amount = matched.reduce((sum, item) => sum + getAmount(item), 0);
+
+      return `<tr class="product-row">
+        <td class="product-name">${escapeHtml(row.label)}</td>
+        <td class="number-cell">${qty ? qty.toLocaleString('en-PH') : ''}</td>
+        <td class="money-cell">${price ? peso(price) : ''}</td>
+        <td class="money-cell">${amount ? peso(amount) : ''}</td>
+        <td></td>
+      </tr>`;
+    }).join('');
+
+    const computedTotal = rows.reduce((sum, row) => {
+      return sum + findMatchingItems(row).reduce((itemSum, item) => itemSum + getAmount(item), 0);
+    }, 0);
+
+    const invoiceTotal = safeNum(invoice.total_amount, computedTotal || 0) || computedTotal;
+
+    return `
+      <section class="invoice-page ${pageClass}">
+        <table class="invoice-table">
+          <colgroup>
+            <col style="width:31%;">
+            <col style="width:21%;">
+            <col style="width:16%;">
+            <col style="width:16%;">
+            <col style="width:16%;">
+          </colgroup>
+
+          <tr class="title-row">
+            <td colspan="5">Roma\u2019s Donuts \u2013 Delivery Invoice</td>
+          </tr>
+
+          <tr class="field-row">
+            <td class="field-label">Date:</td>
+            <td class="field-value date-fill" colspan="3">${escapeHtml(formatInvoiceDate(invoice.delivery_date || invoice.invoice_date || ''))}</td>
+            <td></td>
+          </tr>
+
+          <tr class="field-row">
+            <td class="field-label">Customer:</td>
+            <td class="field-value customer-fill" colspan="3">${escapeHtml(resellerName)}</td>
+            <td></td>
+          </tr>
+
+          <tr class="field-row">
+            <td class="field-label">Address:</td>
+            <td class="field-value address-fill" colspan="3">${escapeHtml(resellerAddress)}</td>
+            <td></td>
+          </tr>
+
+          <tr class="blank-row"><td></td><td></td><td></td><td></td><td></td></tr>
+
+          <tr class="header-row">
+            <th>Product</th>
+            <th>Delivered</th>
+            <th>Price</th>
+            <th>Amount</th>
+            <th>Unsold</th>
+          </tr>
+
+          ${productRowsHtml}
+
+          <tr class="blank-row"><td></td><td></td><td></td><td></td><td></td></tr>
+
+          <tr class="footer-row">
+            <td class="footer-label">Crates Used</td>
+            <td class="number-cell">${invoice.crates_used ? escapeHtml(invoice.crates_used) : ''}</td>
+            <td></td>
+            <td></td>
+            <td></td>
+          </tr>
+
+          <tr class="footer-row">
+            <td class="footer-label">Crates Cover</td>
+            <td></td>
+            <td class="total-label">TOTAL</td>
+            <td class="total-amount">${peso(invoiceTotal)}</td>
+            <td></td>
+          </tr>
+
+          <tr class="footer-row">
+            <td class="footer-label prepared-fill">Prepared by:</td>
+            <td class="prepared-fill" colspan="2">${escapeHtml(preparedBy)}</td>
+            <td></td>
+            <td></td>
+          </tr>
+        </table>
+      </section>`;
+  }
+
 
  function printAllDailyInvoices(date) {
  const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
  if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  const grandTotal = dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
  pw.document.write(`<!DOCTYPE html><html><head><title>All Invoices ${date}</title>
  ${buildDeliveryInvoicePrintCSS()}
@@ -3952,7 +4138,7 @@ This will remove the invoice and its line items.`
  <div class="no-print">
  <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;"> PRINT ALL</button>
  <p style="font-size:11px;color:#888;margin-top:6px;">${dayInvoices.length} invoice(s) Total: ${php(grandTotal)}</p>
- <p style="font-size:10px;color:#888;margin-top:3px;">Use 145mm 210mm paper size, scale 100%, and turn off headers/footers. The invoice content is fitted to the printed area.</p>
+ <p style="font-size:10px;color:#888;margin-top:3px;">Use 4 x 6 inches paper size, scale 100%, and turn off headers/footers.</p>
  </div>
  ${dayInvoices.map((inv,idx)=>buildDeliveryInvoicePrintPage(inv, idx < dayInvoices.length-1? 'force-break': '')).join('')}
  </body></html>`)
@@ -3978,13 +4164,13 @@ This will remove the invoice and its line items.`
  refreshFoundationAfterDataChange('reseller-payment-recorded')
  }
  function printDeliveryInvoice(invoice) {
- const pw = window.open('','_blank','width=650,height=900')
+ const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoice_number}</title>
  ${buildDeliveryInvoicePrintCSS()}
  </head><body class="single-invoice-print">
  <div class="no-print">
  <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;"> PRINT INVOICE</button>
- <p style="font-size:10px;color:#888;margin-top:5px;">Use 145mm 210mm paper size, scale 100%, and turn off headers/footers. The invoice content is fitted to the printed area.</p>
+ <p style="font-size:10px;color:#888;margin-top:5px;">Use 4 x 6 inches paper size, scale 100%, and turn off headers/footers.</p>
  </div>
  ${buildDeliveryInvoicePrintPage(invoice)}
  </body></html>`)
@@ -5733,7 +5919,7 @@ This will remove the invoice and its line items.`
  }
  function printPLReport() {
  if (!financialData) return
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>P&L Report ${financialMonth}</title>
  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;}
  @media print{@page{size:A4;margin:15mm;}.no-print{display:none;}}
@@ -10356,7 +10542,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </tr>`
  }).join('')
 
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>DTR - ${empName} - ${monthName}</title>
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
@@ -10771,18 +10957,18 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
  function printAllPayslips() {
  if (payrollResults.length===0) { showToast('No payroll results to print.','red'); return }
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  const html = payrollResults.map((pay,idx)=>buildPayslipHTML(pay,payrollStart,payrollEnd,idx)).join('')
  pw.document.write(`<!DOCTYPE html><html><head><title>All Payslips</title>${printCSS}</head><body>${html}</body></html>`)
  pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },800)
  }
  function printSinglePayslip(pay, idx) {
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Payslip</title>${printCSS}</head><body>${buildPayslipHTML(pay,payrollStart,payrollEnd,idx)}</body></html>`)
  pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },800)
  }
  function printFinalPay(fp) {
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Final Pay</title>
  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:12px;color:#000;}
  @media print{@page{size:A4;margin:15mm;}}</style></head><body>
@@ -12763,7 +12949,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {thirteenthDetails.length>0 && (
  <div style={{ display:'flex', gap:'10px', marginBottom:'16px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  const html = thirteenthDetails.map((pay,idx)=>`
  <div class="payslip-wrap">
  <div style="width:145mm;min-height:105mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
@@ -12944,7 +13130,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div>
  <div style={{ display:'flex', gap:'10px', marginBottom:'16px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{
- const pw = window.open('','_blank','width=900,height=700')
+ const pw = window.open('','_blank','width=420,height=660')
  const tableRows = (list, field) => list.map(r=>`
  <tr>
  <td style="padding:5px 8px;border:1px solid #eee;">${r.employee_code}</td>
