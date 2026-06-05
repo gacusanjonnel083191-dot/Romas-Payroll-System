@@ -3754,6 +3754,7 @@ This will remove the invoice and its line items.`
  }
  
 
+
 function buildDeliveryInvoicePrintCSS() {
   return [
     '<style>',
@@ -3792,8 +3793,8 @@ function buildDeliveryInvoicePrintCSS() {
     '  border-collapse: collapse !important;',
     '  table-layout: fixed !important;',
     '  border: 2px solid #000 !important;',
-    '  font-size: 12px !important;',
-    '  line-height: 1 !important;',
+    '  font-size: 13px !important;',
+    '  line-height: 0.95 !important;',
     '}',
 
     '.invoice-table tr {',
@@ -3803,7 +3804,7 @@ function buildDeliveryInvoicePrintCSS() {
     '.invoice-table td, .invoice-table th {',
     '  border: 1px solid #000 !important;',
     '  border-color: #000 !important;',
-    '  padding: 1px 2px !important;',
+    '  padding: 0px 2px !important;',
     '  vertical-align: middle !important;',
     '  overflow: hidden !important;',
     '  white-space: nowrap !important;',
@@ -3812,35 +3813,47 @@ function buildDeliveryInvoicePrintCSS() {
     '.title-row td {',
     '  height: 0.22in !important;',
     '  text-align: center !important;',
-    '  font-weight: 900 !important;',
-    '  font-size: 13px !important;',
+    '  font-weight: 700 !important;',
+    '  font-size: 14px !important;',
     '}',
 
-    '.field-row td { height: 0.22in !important; font-size: 12px !important; }',
-    '.field-label { text-align: center !important; font-weight: 900 !important; }',
-    '.field-value { font-weight: 700 !important; }',
+    '.field-row td { height: 0.22in !important; font-size: 13px !important; }',
+    '.field-label { text-align: center !important; font-weight: 700 !important; }',
+    '.field-value { font-weight: 500 !important; }',
 
     '.date-fill, .customer-fill { background: #cfe2f3 !important; }',
     '.address-fill, .prepared-fill { background: #b6d7a8 !important; }',
 
-    '.blank-row td { height: 0.15in !important; }',
+    '.blank-row td { height: 0.13in !important; }',
 
     '.header-row th {',
-    '  height: 0.22in !important;',
+    '  height: 0.23in !important;',
     '  text-align: center !important;',
-    '  font-weight: 900 !important;',
-    '  font-size: 12px !important;',
+    '  font-weight: 700 !important;',
+    '  font-size: 13px !important;',
     '}',
 
-    '.product-row td { height: 0.205in !important; font-size: 12px !important; }',
-    '.product-name { text-align: center !important; font-weight: 900 !important; }',
-    '.number-cell { text-align: center !important; font-weight: 800 !important; }',
-    '.money-cell { text-align: right !important; font-weight: 800 !important; }',
+    '.product-row td { height: 0.205in !important; font-size: 13px !important; }',
+    '.product-name { text-align: center !important; font-weight: 600 !important; }',
+    '.number-cell { text-align: center !important; font-weight: 500 !important; }',
+    '.money-cell { text-align: right !important; font-weight: 500 !important; }',
 
-    '.footer-row td { height: 0.22in !important; font-size: 12px !important; }',
-    '.footer-label { text-align: center !important; font-weight: 900 !important; font-style: italic !important; }',
-    '.total-label { text-align: center !important; font-weight: 900 !important; font-size: 16px !important; }',
-    '.total-amount { text-align: right !important; font-weight: 900 !important; background: #d9d9d9 !important; font-size: 18px !important; color: #000 !important; }',
+    '.footer-row td { height: 0.22in !important; font-size: 13px !important; }',
+    '.footer-label { text-align: center !important; font-weight: 600 !important; font-style: italic !important; }',
+
+    '.total-label {',
+    '  text-align: center !important;',
+    '  font-weight: 700 !important;',
+    '  font-size: 16px !important;',
+    '}',
+
+    '.total-amount {',
+    '  text-align: right !important;',
+    '  font-weight: 700 !important;',
+    '  background: #d9d9d9 !important;',
+    '  font-size: 18px !important;',
+    '  color: #000 !important;',
+    '}',
 
     '@media screen {',
     '  html, body { width: auto !important; height: auto !important; min-height: 100vh !important; background: #ddd !important; display: flex !important; justify-content: center !important; align-items: flex-start !important; padding: 10px !important; }',
@@ -3855,6 +3868,8 @@ function buildDeliveryInvoicePrintCSS() {
     '</style>'
   ].join('\n')
 }
+
+
 
 
 
