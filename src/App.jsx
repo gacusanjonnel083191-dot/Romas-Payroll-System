@@ -2425,7 +2425,35 @@ export default function App() {
  order_qty: Math.max(0, (Number(i.min_stock||0)*2) - Number(i.current_stock||0)),
  unit_price: Number(i.cost_per_unit||0)
  }))
- setPOItems(items); setShowPOBuilder(true)
+ setPOSupplierId(supplierId)
+ setPOItems(items)
+ setShowPOSection(true)
+ setShowPOBuilder(true)
+ setPONotes(prev => prev || 'Auto-created from inventory reorder alert')
+ showToast(`PO draft prepared for ${supplier.name} with ${items.length} reorder item(s).`)
+ }
+
+ function addReorderToPODraft(item) {
+ if (!item?.supplier_id) { showToast('Assign a supplier to this item first before creating a PO draft.','red'); return }
+ const supplier = suppliers.find(s=>String(s.id)===String(item.supplier_id))
+ if (!supplier) { showToast('Supplier record not found for this item.','red'); return }
+ const lowItems = inventoryItems.filter(i=>String(i.supplier_id)===String(item.supplier_id) && Number(i.current_stock||0)<=Number(i.min_stock||0) && Number(i.min_stock||0)>0)
+ const draftItems = (lowItems.length>0 ? lowItems : [item]).map(i=>({
+ item_id: i.id,
+ item_name: i.name,
+ unit: i.unit,
+ current_stock: Number(i.current_stock||0),
+ min_stock: Number(i.min_stock||0),
+ order_qty: Math.max(1, (Number(i.min_stock||0)*2) - Number(i.current_stock||0)),
+ unit_price: Number(i.cost_per_unit||0)
+ }))
+ setPOSupplierId(item.supplier_id)
+ setPOItems(draftItems)
+ setPONotes(prev => prev || 'Auto-created from inventory reorder alert')
+ setShowPOSection(true)
+ setShowPOBuilder(true)
+ setInventorySubView('items')
+ showToast(`PO draft ready for ${supplier.name}: ${draftItems.length} item(s) added. Review, adjust, then save.`)
  }
  async function savePO() {
  if (!poSupplierId) { showToast(' Please select a supplier.','red'); return }
@@ -14790,36 +14818,36 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {grouped.map(group=>{
  const lowCount = group.items.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0).length
  return (
- <div key={group.cat} style={{ background:'white', border:'1px solid #e9e9e9', borderRadius:'14px', overflow:'hidden', boxShadow:'0 2px 8px rgba(0,0,0,0.04)' }}>
- <div style={{ background:'#ca1b1b', color:'white', padding:'9px 12px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+ <div key={group.cat} style={{ background:'white', border:'1px solid #d7d7d7', borderRadius:'12px', overflow:'hidden', boxShadow:'0 2px 8px rgba(0,0,0,0.04)' }}>
+ <div style={{ background:'#ca1b1b', color:'white', padding:'8px 12px', display:'flex', justifyContent:'space-between', alignItems:'center', borderBottom:'1px solid #9f1111' }}>
  <div style={{ fontWeight:'800', fontSize:'12.5px', letterSpacing:'0.2px' }}>{group.cat}</div>
  <div style={{ fontSize:'11px', opacity:0.95 }}>{group.items.length} item{group.items.length>1?'s':''}{lowCount>0 ? ` | ${lowCount} reorder` : ''}</div>
  </div>
 
  <div style={{ overflowX:'auto' }}>
- <table style={{ width:'100%', borderCollapse:'collapse', tableLayout:'fixed', minWidth:'960px' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', tableLayout:'fixed', minWidth:'900px', border:'1px solid #d7d7d7', background:'white' }}>
  <colgroup>
- <col style={{ width:'25%' }} />
- <col style={{ width:'7%' }} />
- <col style={{ width:'11%' }} />
- <col style={{ width:'11%' }} />
- <col style={{ width:'11%' }} />
- <col style={{ width:'9%' }} />
- <col style={{ width:'11%' }} />
- <col style={{ width:'7%' }} />
+ <col style={{ width:'22%' }} />
+ <col style={{ width:'6%' }} />
+ <col style={{ width:'10%' }} />
+ <col style={{ width:'10%' }} />
+ <col style={{ width:'10%' }} />
  <col style={{ width:'8%' }} />
+ <col style={{ width:'10%' }} />
+ <col style={{ width:'9%' }} />
+ <col style={{ width:'15%' }} />
  </colgroup>
  <thead>
  <tr style={{ background:'#fff8dc', borderBottom:'1px solid #eadf9a' }}>
- <th style={{ padding:'7px 8px', textAlign:'left', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>Item</th>
- <th style={{ padding:'7px 6px', textAlign:'center', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>Unit</th>
- <th style={{ padding:'7px 6px', textAlign:'right', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>On Hand</th>
- <th style={{ padding:'7px 6px', textAlign:'right', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>Used/Sold</th>
- <th style={{ padding:'7px 6px', textAlign:'right', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>Added</th>
- <th style={{ padding:'7px 6px', textAlign:'right', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>Min</th>
- <th style={{ padding:'7px 6px', textAlign:'right', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>Cost</th>
- <th style={{ padding:'7px 6px', textAlign:'center', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>Status</th>
- <th style={{ padding:'7px 8px', textAlign:'right', fontSize:'10.5px', color:'#555', fontWeight:'800' }}>Action</th>
+ <th style={{ padding:'6px 7px', textAlign:'left', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Item</th>
+ <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Unit</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>On Hand</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Used/Sold</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Added</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Min</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Cost</th>
+ <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Status</th>
+ <th style={{ padding:'6px 7px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Action</th>
  </tr>
  </thead>
  <tbody>
@@ -14831,11 +14859,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const addQty = Number(editItemFields.additional_stock_today || 0)
  const usedQty = Number(editItemFields.used_sold_today || 0)
  const finalPreview = manualCurrent + Math.max(0, addQty) - Math.max(0, usedQty)
- const rowBase = { padding:'7px 8px', verticalAlign:'middle', borderTop:'1px solid #f0f0f0', fontSize:'12px', color:'#1a1a2e' }
+ const rowBase = { padding:'6px 7px', verticalAlign:'middle', border:'1px solid #e3e3e3', fontSize:'11px', color:'#1a1a2e', lineHeight:1.2 }
  const numStyle = { ...rowBase, textAlign:'right', fontVariantNumeric:'tabular-nums' }
 
  return (
- <tr key={item.id} style={{ background:isLow?'#fff7f7':'white' }}>
+ <tr key={item.id} style={{ background:isLow?'#fff8f8':'white' }}>
  <td style={rowBase}>
  {isEditing? (
  <div style={{ display:'grid', gap:'5px' }}>
@@ -14850,8 +14878,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </div>
  ): (
  <div>
- <div style={{ fontWeight:'700', color:'#1a1a2e', fontSize:'12.5px', lineHeight:1.25, textTransform:'none' }}>{item.name}</div>
- <div style={{ fontSize:'10px', color:'#888', marginTop:'2px', lineHeight:1.2 }}>{suppliers.find(s=>s.id===item.supplier_id)?.name || 'No supplier'}</div>
+ <div style={{ fontWeight:'700', color:'#1a1a2e', fontSize:'11.5px', lineHeight:1.2, textTransform:'none' }}>{item.name}</div>
+ <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', lineHeight:1.15 }}>{suppliers.find(s=>s.id===item.supplier_id)?.name || 'No supplier'}</div>
  </div>
  )}
  </td>
@@ -14904,7 +14932,16 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {isEditing? (
  <div style={{ fontSize:'10.5px', fontWeight:'800', color:finalPreview<0?'#ca1b1b':'#2d8a4e' }}>Final {Number(finalPreview||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}</div>
  ): (
- <span style={{ display:'inline-block', padding:'3px 7px', borderRadius:'999px', fontSize:'9.5px', fontWeight:'800', background:isLow?'#ffe8e8':'#e8f5e9', color:isLow?'#ca1b1b':'#2d8a4e', textTransform:'uppercase' }}>{isLow?'Reorder':'OK'}</span>
+ isLow ? (
+ <button
+ type="button"
+ title={item.supplier_id ? 'Click to add this supplier low-stock items to a PO draft' : 'Assign a supplier first'}
+ onClick={()=>addReorderToPODraft(item)}
+ style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', padding:'4px 8px', borderRadius:'999px', border:'1px solid #f3b5b5', background:'#ffe8e8', color:'#ca1b1b', fontSize:'9px', fontWeight:'800', cursor:'pointer', textTransform:'uppercase', lineHeight:1 }}
+ >REORDER</button>
+ ) : (
+ <span style={{ display:'inline-block', padding:'4px 8px', borderRadius:'999px', fontSize:'9px', fontWeight:'800', background:'#e8f5e9', color:'#2d8a4e', textTransform:'uppercase', lineHeight:1 }}>OK</span>
+ )
  )}
  </td>
 
@@ -14912,13 +14949,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {isEditing? (
  <div style={{ display:'flex', gap:'5px', justifyContent:'flex-end', flexWrap:'nowrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'10px', borderRadius:'7px' }} onClick={()=>saveInventoryItemEdit(item)}>SAVE</button>
- <button style={{...btnGray, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'10px', borderRadius:'7px' }} onClick={()=>{ setEditingItemId(null); setEditItemFields({}) }}>CANCEL</button>
+ <button style={{...btnGray, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>{ setEditingItemId(null); setEditItemFields({}) }}>CANCEL</button>
  </div>
  ): (
  <div style={{ display:'flex', gap:'5px', justifyContent:'flex-end', flexWrap:'nowrap' }}>
- {isLow && item.supplier_id && <button style={{...btnGreen, background:'#2d6a4f', width:'auto', padding:'6px 7px', marginTop:0, fontSize:'10px', borderRadius:'7px' }} onClick={()=>{ setPOSupplierId(item.supplier_id); buildPO(item.supplier_id); setShowPOSection(true); setShowPOBuilder(true) }}>PO</button>}
- <button style={{...btnYellow, padding:'6px 8px', fontSize:'10px', borderRadius:'7px' }} onClick={()=>{ setEditingItemId(item.id); setEditItemFields({}) }}>EDIT</button>
- <button style={{...btnRed, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'10px', borderRadius:'7px' }} onClick={()=>deleteInventoryItem(item)}>DEL</button>
+ {isLow && item.supplier_id && <button style={{...btnGreen, background:'#2d6a4f', width:'auto', padding:'6px 7px', marginTop:0, fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>addReorderToPODraft(item)}>PO</button>}
+ <button style={{...btnYellow, padding:'6px 8px', fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>{ setEditingItemId(item.id); setEditItemFields({}) }}>EDIT</button>
+ <button style={{...btnRed, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>deleteInventoryItem(item)}>DEL</button>
  </div>
  )}
  </td>
