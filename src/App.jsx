@@ -867,6 +867,12 @@ export default function App() {
  const [invoicesLoading, setInvoicesLoading] = useState(false)
  const [showCreateInvoice, setShowCreateInvoice] = useState(false)
  const [invoiceResellerId, setInvoiceResellerId] = useState('')
+ const [invoiceCustomerType, setInvoiceCustomerType] = useState('reseller')
+ const [invoiceDiscountPct, setInvoiceDiscountPct] = useState('20')
+ const [invoiceCustomerName, setInvoiceCustomerName] = useState('')
+ const [invoiceCustomerAddress, setInvoiceCustomerAddress] = useState('')
+ const [invoiceCustomerContact, setInvoiceCustomerContact] = useState('')
+ const [invoiceContainerType, setInvoiceContainerType] = useState('Crates')
  const [invoiceDate, setInvoiceDate] = useState(today)
  const [invoiceItems, setInvoiceItems] = useState([])
  const [invoiceNotes, setInvoiceNotes] = useState('')
@@ -3337,6 +3343,32 @@ export default function App() {
  }
 
 
+ async function loadAllInvoiceVariants(defaultQuantity = '') {
+ let variants = donutVariants
+ if (!variants || variants.length === 0) {
+ const { data, error } = await supabase.from('donut_variants').select('*').order('name')
+ if (error) {
+ showToast('Failed to load donut varieties: ' + error.message, 'red')
+ return
+ }
+ variants = data || []
+ setDonutVariants(variants)
+ }
+ if (!variants || variants.length === 0) {
+ showToast('No donut varieties found. Go to Costing / Recipes and load variants first.', 'red')
+ return
+ }
+ setInvoiceItems(variants.map(v => ({
+ variant_id:v.id,
+ variant_name:v.name,
+ quantity:defaultQuantity,
+ retail_price:safeNum(v.selling_price, 0),
+ reseller_price:moneyRound(safeNum(v.selling_price, 0) * (1 - safeNum(invoiceDiscountPct, 0) / 100))
+ })))
+ showToast(`${variants.length} donut varieties loaded.`)
+ }
+
+
  // Reseller Credit Hold / Delivery Resume Guard 
  // Rule: if a reseller has an unpaid/partial invoice after the 7-day grace period,
  // the 8th day blocks new invoice/order creation until the account is settled.
@@ -3755,59 +3787,138 @@ export default function App() {
  }
  }
  async function createDeliveryInvoice() {
- if (!invoiceResellerId) { showToast(' Please select a reseller.','red'); return }
- if (!invoiceDate) { showToast(' Please select a delivery date.','red'); return }
- const cutoffStatus = getOrderCutoffStatus(invoiceDate)
- if (cutoffStatus.locked) {
- showToast(` Invoice creation is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance dates are still allowed.`, 'red')
- await logAudit('INVOICE BLOCKED - ORDER CUT-OFF', adminRole, invoiceResellerId, cutoffStatus.message)
+ const customerType = invoiceCustomerType === 'non_reseller' ? 'non_reseller' : 'reseller'
+ const discountPercent = safeNum(invoiceDiscountPct, customerType === 'reseller' ? 20 : 0)
+
+ if (!invoiceDate) { showToast('Please select a delivery date.','red'); return }
+
+ if (customerType === 'reseller' && !invoiceResellerId) {
+ showToast('Please select a reseller.','red')
  return
  }
+
+ if (customerType === 'non_reseller' && !String(invoiceCustomerName || '').trim()) {
+ showToast('Please enter the customer name.','red')
+ return
+ }
+
  const validItems = invoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
- if (validItems.length === 0) { showToast(' Please add at least one item with quantity.','red'); return }
+ if (validItems.length === 0) { showToast('Please add at least one item with quantity.','red'); return }
+
+ if (customerType === 'reseller') {
  const visibleCreditStatus = getResellerCreditBlockInfo(invoiceResellerId)
  if (visibleCreditStatus.blocked) {
- showToast(` Delivery hold. ${visibleCreditStatus.message}`, 'red')
+ showToast(`Delivery hold. ${visibleCreditStatus.message}`, 'red')
  return
+ }
  }
 
  setSavingInvoice(true)
  try {
- const reseller = resellers.find(r => r.id === invoiceResellerId)
+ const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
+
+ if (customerType === 'reseller') {
  const freshCreditStatus = await checkResellerCreditBlockFresh(invoiceResellerId)
  if (freshCreditStatus.blocked) {
- showToast(` Cannot create invoice for ${reseller?.name || 'this reseller'}. ${freshCreditStatus.message}`, 'red')
+ showToast(`Cannot create invoice for ${reseller?.name || 'this reseller'}. ${freshCreditStatus.message}`, 'red')
  await logAudit('INVOICE BLOCKED - CREDIT HOLD', adminRole, reseller?.name || '', freshCreditStatus.message)
  setSavingInvoice(false)
  return
  }
+ }
+
  const invoiceNum = `INV-${invoiceDate.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
- const dueDate = new Date(invoiceDate); dueDate.setDate(dueDate.getDate() + RESELLER_CREDIT_GRACE_DAYS)
+ const dueDate = new Date(invoiceDate)
+ dueDate.setDate(dueDate.getDate() + (customerType === 'reseller' ? RESELLER_CREDIT_GRACE_DAYS : 0))
  const dueDateStr = dueDate.toISOString().slice(0,10)
+
  const lineItems = validItems.map(i => {
  const variant = donutVariants.find(v => v.id === i.variant_id)
- const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
- const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
- return {...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
+ const retailPrice = safeNum(variant?.selling_price ?? i.retail_price, 0)
+ const invoicePrice = moneyRound(retailPrice * (1 - discountPercent / 100))
+ return {
+ ...i,
+ retail_price:retailPrice,
+ reseller_price:invoicePrice,
+ total_price:moneyRound(invoicePrice * Number(i.quantity || 0))
+ }
  })
- const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
- const { data:inv, error:invErr } = await supabase.from('delivery_invoices').insert({
- invoice_number:invoiceNum, reseller_id:invoiceResellerId, reseller_name:reseller?.name||'',
- delivery_date:invoiceDate, due_date:dueDateStr, subtotal, discount_pct:20,
- total_amount:subtotal, status:'unpaid', notes:invoiceNotes||null, created_by:adminRole,
- prepared_by:invoicePreparedBy||null, dispatched_by:invoiceDispatchedBy||null,
- crates_used:Number(invoiceCrates||0)
- }).select().single()
+
+ const subtotal = moneyRound(lineItems.reduce((s,i) => s + safeNum(i.total_price, 0), 0))
+ const customerName = customerType === 'reseller' ? (reseller?.name || '') : String(invoiceCustomerName || '').trim()
+ const customerAddress = customerType === 'reseller' ? (reseller?.address || reseller?.area || '') : String(invoiceCustomerAddress || '').trim()
+ const customerContact = customerType === 'reseller' ? (reseller?.phone || '') : String(invoiceCustomerContact || '').trim()
+ const baseNotes = invoiceNotes || ''
+ const nonResellerNote = customerType === 'non_reseller'
+ ? `Non-reseller invoice | Customer: ${customerName}${customerContact ? ' | Contact: ' + customerContact : ''}${customerAddress ? ' | Address: ' + customerAddress : ''}`
+ : ''
+ const finalNotes = [baseNotes, nonResellerNote].filter(Boolean).join(' | ') || null
+
+ const invoicePayload = {
+ invoice_number:invoiceNum,
+ reseller_id:customerType === 'reseller' ? invoiceResellerId : null,
+ reseller_name:customerName,
+ delivery_date:invoiceDate,
+ due_date:dueDateStr,
+ subtotal,
+ discount_pct:discountPercent,
+ total_amount:subtotal,
+ status:'unpaid',
+ notes:finalNotes,
+ created_by:adminRole,
+ prepared_by:invoicePreparedBy||null,
+ dispatched_by:invoiceDispatchedBy||null,
+ crates_used:Number(invoiceCrates||0),
+ customer_type:customerType,
+ customer_name:customerName,
+ customer_address:customerAddress || null,
+ customer_contact:customerContact || null,
+ container_type:invoiceContainerType || 'Crates'
+ }
+
+ let { data:inv, error:invErr } = await supabase.from('delivery_invoices').insert(invoicePayload).select().single()
+
+ if (invErr && String(invErr.message || '').toLowerCase().includes('column')) {
+ const fallbackPayload = {...invoicePayload}
+ delete fallbackPayload.customer_type
+ delete fallbackPayload.customer_name
+ delete fallbackPayload.customer_address
+ delete fallbackPayload.customer_contact
+ delete fallbackPayload.container_type
+ ;({ data:inv, error:invErr } = await supabase.from('delivery_invoices').insert(fallbackPayload).select().single())
+ }
+
  if (invErr) throw invErr
- const itemRows = lineItems.map(i => ({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:i.retail_price, reseller_price:i.reseller_price, quantity:Number(i.quantity), total_price:i.total_price }))
+
+ const itemRows = lineItems.map(i => ({
+ invoice_id:inv.id,
+ variant_id:i.variant_id,
+ variant_name:i.variant_name,
+ retail_price:i.retail_price,
+ reseller_price:i.reseller_price,
+ quantity:Number(i.quantity),
+ total_price:i.total_price
+ }))
  const { error:itemErr } = await supabase.from('delivery_invoice_items').insert(itemRows)
  if (itemErr) throw itemErr
- await logAudit('INVOICE CREATED', adminRole, reseller?.name||'', `${invoiceNum} ${php(subtotal)}`)
- showToast(` Invoice ${invoiceNum} created!`)
- setShowCreateInvoice(false); setInvoiceResellerId(''); setInvoiceItems([])
- setInvoiceNotes(''); setInvoicePreparedBy(''); setInvoiceDispatchedBy(''); setInvoiceCrates('')
+
+ await logAudit('INVOICE CREATED', adminRole, customerName, `${invoiceNum} ${php(subtotal)} ${discountPercent}% discount ${customerType}`)
+ showToast(`Invoice ${invoiceNum} created!`)
+ setShowCreateInvoice(false)
+ setInvoiceCustomerType('reseller')
+ setInvoiceDiscountPct('20')
+ setInvoiceResellerId('')
+ setInvoiceCustomerName('')
+ setInvoiceCustomerAddress('')
+ setInvoiceCustomerContact('')
+ setInvoiceContainerType('Crates')
+ setInvoiceItems([])
+ setInvoiceNotes('')
+ setInvoicePreparedBy('')
+ setInvoiceDispatchedBy('')
+ setInvoiceCrates('')
  loadDeliveryInvoices()
- } catch(err) { showToast(' Failed: '+err.message,'red') }
+ } catch(err) { showToast('Failed: '+err.message,'red') }
  setSavingInvoice(false)
  }
  async function saveInvoiceEdit() {
@@ -4109,23 +4220,31 @@ function buildDeliveryInvoicePrintCSS() {
       return raw;
     };
 
-    const resellerName = [
-      reseller?.contact_person,
-      resellerAccount?.owner_name,
-      resellerAccount?.account_name,
-      invoice.reseller_contact_person,
-      invoice.reseller_owner_name,
-      invoice.reseller_name,
-      reseller?.name
-    ].map(cleanText).find(Boolean) || '';
+    const customerType = cleanText(invoice.customer_type || (invoice.reseller_id ? 'reseller' : 'non_reseller')).toLowerCase();
+    const resellerName = customerType === 'non_reseller'
+      ? [invoice.customer_name, invoice.reseller_name, invoice.customer_contact].map(cleanText).find(Boolean) || ''
+      : [
+        reseller?.contact_person,
+        resellerAccount?.owner_name,
+        resellerAccount?.account_name,
+        invoice.reseller_contact_person,
+        invoice.reseller_owner_name,
+        invoice.customer_name,
+        invoice.reseller_name,
+        reseller?.name
+      ].map(cleanText).find(Boolean) || '';
 
-    const resellerAddress = [
-      reseller?.address,
-      invoice.reseller_address,
-      invoice.address,
-      reseller?.area
-    ].map(cleanText).find(Boolean) || '';
+    const resellerAddress = customerType === 'non_reseller'
+      ? [invoice.customer_address, invoice.address, invoice.customer_contact].map(cleanText).find(Boolean) || ''
+      : [
+        reseller?.address,
+        invoice.customer_address,
+        invoice.reseller_address,
+        invoice.address,
+        reseller?.area
+      ].map(cleanText).find(Boolean) || '';
 
+    const containerLabel = cleanText(invoice.container_type || 'Crates');
     const preparedBy = '';
 
     const rows = [
@@ -4237,7 +4356,7 @@ function buildDeliveryInvoicePrintCSS() {
           <tr class="blank-row"><td></td><td></td><td></td><td></td><td></td></tr>
 
           <tr class="footer-row">
-            <td class="footer-label">Crates Used</td>
+            <td class="footer-label">${escapeHtml(containerLabel)} Used</td>
             <td class="number-cell">${invoice.crates_used ? escapeHtml(invoice.crates_used) : ''}</td>
             <td></td>
             <td></td>
@@ -4245,7 +4364,7 @@ function buildDeliveryInvoicePrintCSS() {
           </tr>
 
           <tr class="footer-row">
-            <td class="footer-label">Crates Cover</td>
+            <td class="footer-label">${escapeHtml(containerLabel)} Cover</td>
             <td></td>
             <td class="total-label">TOTAL</td>
             <td class="total-amount">${peso(invoiceTotal)}</td>
@@ -16201,8 +16320,26 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {invoiceDayFilter!== 'all' && deliveryInvoices.filter(i=>getInvoiceDeliveryDate(i)===invoiceDayFilter).length > 0 && (
  <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDayFilter)}> PRINT ALL ({invoiceDayFilter})</button>
  )}
- <button style={{...btnYellow, padding:'9px 16px' }} onClick={()=>{ setShowCreateInvoice(!showCreateInvoice); if(!showCreateInvoice){ setInvoiceResellerId(''); setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }]); setInvoiceNotes(''); setInvoicePreparedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceDispatchedBy('Ronald Reyes / Jomar Cerezo'); setInvoiceCrates('') } } }>
- {showCreateInvoice?' CANCEL':'+ CREATE INVOICE'}
+ <button style={{...btnYellow, padding:'9px 16px' }} onClick={async ()=>{
+ const willOpen = !showCreateInvoice
+ setShowCreateInvoice(willOpen)
+ if(willOpen){
+ setInvoiceCustomerType('reseller')
+ setInvoiceDiscountPct('20')
+ setInvoiceResellerId('')
+ setInvoiceCopyFromResellerId('')
+ setInvoiceCustomerName('')
+ setInvoiceCustomerAddress('')
+ setInvoiceCustomerContact('')
+ setInvoiceContainerType('Crates')
+ setInvoiceItems([{ variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])
+ setInvoiceNotes('')
+ setInvoicePreparedBy('Ronald Reyes / Jomar Cerezo')
+ setInvoiceDispatchedBy('Ronald Reyes / Jomar Cerezo')
+ setInvoiceCrates('')
+ }
+ }}>
+ {showCreateInvoice?'CANCEL':'+ CREATE INVOICE'}
  </button>
  </div>
  </div>
@@ -16327,26 +16464,71 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
 
  {showCreateInvoice && (
- <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
- <h4 style={{ color:'#2d8a4e', margin:'0 0 14px', fontSize:'13px' }}> New Delivery Invoice</h4>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Reseller:</label>
- <select value={invoiceResellerId} onChange={async e=>{ setInvoiceResellerId(e.target.value); setInvoiceCopyFromResellerId(e.target.value); await buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
- <option value=""> Select reseller </option>
- {resellers.map(r=>{
+<div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+<h4 style={{ color:'#2d8a4e', margin:'0 0 14px', fontSize:'13px' }}>New Delivery Invoice</h4>
+<div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+<div>
+<label style={lblS}>Invoice Type:</label>
+<select value={invoiceCustomerType} onChange={async e=>{
+ const type = e.target.value
+ setInvoiceCustomerType(type)
+ setInvoiceResellerId('')
+ setInvoiceCopyFromResellerId('')
+ setInvoiceCustomerName('')
+ setInvoiceCustomerAddress('')
+ setInvoiceCustomerContact('')
+ setInvoiceDiscountPct(type === 'reseller' ? '20' : '0')
+ if (type === 'non_reseller') await loadAllInvoiceVariants('')
+}} style={inputStyle}>
+<option value="reseller">Reseller Invoice</option>
+<option value="non_reseller">Non-reseller / Online Customer</option>
+</select>
+</div>
+<div>
+<label style={lblS}>Discount:</label>
+<select value={invoiceDiscountPct} onChange={e=>setInvoiceDiscountPct(e.target.value)} style={inputStyle}>
+<option value="20">20% discount</option>
+<option value="0">0% discount</option>
+</select>
+</div>
+<div>
+<label style={lblS}>Delivery Date:</label>
+<input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={inputStyle} />
+</div>
+{invoiceCustomerType === 'reseller' ? (
+<div style={{ gridColumn:isMobile?'auto':'1 / -1' }}>
+<label style={lblS}>Reseller:</label>
+<select value={invoiceResellerId} onChange={async e=>{ setInvoiceResellerId(e.target.value); setInvoiceCopyFromResellerId(e.target.value); await buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
+<option value="">Select reseller</option>
+{resellers.map(r=>{
  const credit = getResellerCreditBlockInfo(r.id)
  return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked? ' DELIVERY HOLD': ''}</option>
- })}
- </select>
- </div>
- {invoiceResellerId && (()=>{
+})}
+</select>
+</div>
+) : (
+<>
+<div>
+<label style={lblS}>Customer Name:</label>
+<input value={invoiceCustomerName} onChange={e=>setInvoiceCustomerName(e.target.value)} placeholder="Online customer / walk-in customer" style={inputStyle} />
+</div>
+<div>
+<label style={lblS}>Contact Number:</label>
+<input value={invoiceCustomerContact} onChange={e=>setInvoiceCustomerContact(e.target.value)} placeholder="Optional" style={inputStyle} />
+</div>
+<div>
+<label style={lblS}>Address / Location:</label>
+<input value={invoiceCustomerAddress} onChange={e=>setInvoiceCustomerAddress(e.target.value)} placeholder="Delivery address or pickup note" style={inputStyle} />
+</div>
+</>
+)}
+{invoiceCustomerType === 'reseller' && invoiceResellerId && (()=>{
  const credit = getResellerCreditBlockInfo(invoiceResellerId)
  const oldest = credit.oldest
  return (
  <div style={{ gridColumn:'1 / -1', background:credit.blocked?'#fff5f5':'#f0fff4', border:`1.5px solid ${credit.blocked?'#ca1b1b':'#2d8a4e'}`, borderRadius:'10px', padding:'10px', marginBottom:'2px' }}>
  <p style={{ margin:'0 0 4px', color:credit.blocked?'#ca1b1b':'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>
- {credit.blocked? ' DELIVERY HOLD SETTLE FIRST': ' Credit status clear for invoice creation'}
+ {credit.blocked? 'DELIVERY HOLD - SETTLE FIRST': 'Credit status clear for invoice creation'}
  </p>
  <p style={{ margin:0, color:'#555', fontSize:'11px', lineHeight:1.5 }}>
  {credit.message}
@@ -16354,125 +16536,121 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </p>
  </div>
  )
- })()}
- <div>
- <label style={lblS}>Delivery Date:</label>
- <input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={inputStyle} />
- </div>
- <div>
- <label style={lblS}>Dispatcher:</label>
- <input value={invoicePreparedBy} onChange={e=>setInvoicePreparedBy(e.target.value)} placeholder="Name of dispatcher" style={inputStyle} />
- </div>
- <div>
- <label style={lblS}>Delivery Personnel:</label>
- <input value={invoiceDispatchedBy} onChange={e=>setInvoiceDispatchedBy(e.target.value)} placeholder="e.g. Ronald Reyes / Jomar Cerezo" style={inputStyle} />
- </div>
- <div>
- <label style={lblS}>Crates Used:</label>
- <input type="number" value={invoiceCrates} onChange={e=>setInvoiceCrates(e.target.value)} placeholder="0" min="0" style={inputStyle} />
- </div>
- </div>
- {/* Invoice items */}
- <div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
- <label style={lblS}>Copy order quantities from another branch/template:</label>
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
- <select value={invoiceCopyFromResellerId} onChange={e=>setInvoiceCopyFromResellerId(e.target.value)} style={{...inputStyle, marginBottom:0, flex:'1 1 240px' }}>
- <option value=""> Select branch template to copy </option>
- {resellers.map(r=><option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{r.reseller_account_id? ` ${getResellerAccountName(r.reseller_account_id)}`: ''}</option>)}
- </select>
- <button style={{...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(invoiceCopyFromResellerId || invoiceResellerId, 'invoice')}> COPY TEMPLATE</button>
- </div>
- <p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>Use this when one branch will receive the same quantities/variants as another branch. You can still edit quantities before saving.</p>
- </div>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
- <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:0 }}>Items:</p>
- <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
- <button style={{ background: invoiceResellerId? '#2d8a4e': '#aaa', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor: invoiceResellerId? 'pointer': 'not-allowed', fontWeight:'bold', fontSize:'11px' }}
- onClick={async ()=>{
- if (!invoiceResellerId) { showToast(' Select a reseller first.','red'); return }
- // Always fetch fresh from DB
+})()}
+<div>
+<label style={lblS}>Dispatcher:</label>
+<input value={invoicePreparedBy} onChange={e=>setInvoicePreparedBy(e.target.value)} placeholder="Name of dispatcher" style={inputStyle} />
+</div>
+<div>
+<label style={lblS}>Delivery Personnel:</label>
+<input value={invoiceDispatchedBy} onChange={e=>setInvoiceDispatchedBy(e.target.value)} placeholder="e.g. Ronald Reyes / Jomar Cerezo" style={inputStyle} />
+</div>
+<div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+<div>
+<label style={lblS}>Container:</label>
+<select value={invoiceContainerType} onChange={e=>setInvoiceContainerType(e.target.value)} style={inputStyle}>
+<option value="Crates">Crates</option>
+<option value="Box">Box</option>
+</select>
+</div>
+<div>
+<label style={lblS}>Qty Used:</label>
+<input type="number" value={invoiceCrates} onChange={e=>setInvoiceCrates(e.target.value)} placeholder="0" min="0" style={inputStyle} />
+</div>
+</div>
+</div>
+{invoiceCustomerType === 'reseller' && (
+<div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
+<label style={lblS}>Copy order quantities from another branch/template:</label>
+<div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+<select value={invoiceCopyFromResellerId} onChange={e=>setInvoiceCopyFromResellerId(e.target.value)} style={{...inputStyle, marginBottom:0, flex:'1 1 240px' }}>
+<option value="">Select branch template to copy</option>
+{resellers.map(r=><option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{r.reseller_account_id? ` ${getResellerAccountName(r.reseller_account_id)}`: ''}</option>)}
+</select>
+<button style={{...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(invoiceCopyFromResellerId || invoiceResellerId, 'invoice')}>COPY TEMPLATE</button>
+</div>
+<p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>Use this when one branch will receive the same quantities/variants as another branch. You can still edit quantities before saving.</p>
+</div>
+)}
+<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
+<p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:0 }}>Items:</p>
+<div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+{invoiceCustomerType === 'reseller' && (
+<button style={{ background: invoiceResellerId? '#2d8a4e': '#aaa', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor: invoiceResellerId? 'pointer': 'not-allowed', fontWeight:'bold', fontSize:'11px' }}
+onClick={async ()=>{
+ if (!invoiceResellerId) { showToast('Select a reseller first.','red'); return }
  const { data } = await supabase.from('reseller_default_orders').select('*').eq('reseller_id', invoiceResellerId)
- if (!data || data.length === 0) { showToast(' No default order set. Go to Resellers tab EDIT to set one.','red'); return }
- // Fetch variants too if needed
+ if (!data || data.length === 0) { showToast('No default order set. Go to Resellers tab EDIT to set one.','red'); return }
  let variants = donutVariants
  if (!variants || variants.length === 0) {
  const { data:vd } = await supabase.from('donut_variants').select('*')
  variants = vd || []
+ setDonutVariants(variants)
  }
  const items = data.map(d => {
  const v = variants.find(vv=>vv.id===d.variant_id)
- return { variant_id:d.variant_id, variant_name:d.variant_name||v?.name||'', quantity:d.default_quantity, retail_price:v?.selling_price||0, reseller_price:Math.round((v?.selling_price||0)*0.80*100)/100 }
+ const retail = safeNum(v?.selling_price, 0)
+ const price = moneyRound(retail * (1 - safeNum(invoiceDiscountPct, 0) / 100))
+ return { variant_id:d.variant_id, variant_name:d.variant_name||v?.name||'', quantity:d.default_quantity, retail_price:retail, reseller_price:price }
  })
  setInvoiceItems(items)
- showToast(` Default order loaded ${items.length} variants`)
- }}> USE DEFAULT ORDER</button>
- <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}
- onClick={async ()=>{
- let variants = donutVariants
- if (!variants || variants.length === 0) {
- const { data } = await supabase.from('donut_variants').select('*').order('name')
- variants = data || []
- }
- if (variants.length === 0) { showToast(' No variants found. Go to Costing Recipes Load All Variants first.','red'); return }
- setInvoiceItems(variants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 })))
- showToast(` ${variants.length} variants loaded`)
- }}> LOAD ALL VARIANTS</button>
- </div>
- </div>
- {/* Header */}
- <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
- {['Variant','Qty','Retail','Reseller (-20%)',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
- </div>
- {invoiceItems.map((item,i)=>{
+ showToast(`Default order loaded ${items.length} variants`)
+}}>USE DEFAULT ORDER</button>
+)}
+<button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>loadAllInvoiceVariants('')}>LOAD ALL VARIANTS</button>
+</div>
+</div>
+<div style={{ display:'grid', gridTemplateColumns:'3fr .75fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
+{['Variant','Qty','Retail',`${safeNum(invoiceDiscountPct,0)}% Price`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
+</div>
+{invoiceItems.map((item,i)=>{
  const variant = donutVariants.find(v=>v.id===item.variant_id)
- const retailPrice = variant?.selling_price || 0
- const resellerPrice = Math.round(retailPrice*0.80*100)/100
+ const retailPrice = safeNum(variant?.selling_price ?? item.retail_price, 0)
+ const invoicePrice = moneyRound(retailPrice * (1 - safeNum(invoiceDiscountPct, 0) / 100))
  return (
- <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
- <select value={item.variant_id} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...invoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
- <option value=""> Select </option>
+ <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr .75fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
+ <select value={item.variant_id} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const retail=safeNum(v?.selling_price,0); const price=moneyRound(retail*(1-safeNum(invoiceDiscountPct,0)/100)); const upd=[...invoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||'',retail_price:retail,reseller_price:price}; setInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
+ <option value="">Select</option>
  {donutVariants.length === 0
-? <option disabled> No variants loaded go to Costing Recipes Load All Variants</option>
-: donutVariants.map(v=><option key={v.id} value={v.id}>{v.name} {v.selling_price}</option>)
+ ? <option disabled>No variants loaded. Go to Costing / Recipes and load variants first.</option>
+ : donutVariants.map(v=><option key={v.id} value={v.id}>{v.name} {php(v.selling_price)}</option>)
  }
  </select>
  <input type="number" value={item.quantity} onChange={e=>{ const upd=[...invoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'right' }} min="0" placeholder="0" />
  <span style={{ textAlign:'right', fontSize:'11px', color:'#888' }}>{php(retailPrice)}</span>
- <span style={{ textAlign:'right', fontSize:'11px', fontWeight:'bold', color:'#2d8a4e' }}>{php(resellerPrice)}</span>
- <button onClick={()=>setInvoiceItems(invoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}> </button>
+ <span style={{ textAlign:'right', fontSize:'11px', fontWeight:'bold', color:'#2d8a4e' }}>{php(invoicePrice)}</span>
+ <button onClick={()=>setInvoiceItems(invoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}>DEL</button>
  </div>
  )
- }) }
- {/* Totals preview */}
- {invoiceItems.some(i=>i.variant_id&&Number(i.quantity)>0) && (()=>{
- const total = invoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const rp=Math.round((v?.selling_price||0)*0.80*100)/100; return s+rp*Number(i.quantity||0) },0)
+})}
+{invoiceItems.some(i=>i.variant_id&&Number(i.quantity)>0) && (()=>{
+ const total = invoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const retail=safeNum(v?.selling_price ?? i.retail_price,0); const price=moneyRound(retail*(1-safeNum(invoiceDiscountPct,0)/100)); return s+price*Number(i.quantity||0) },0)
  const pieces = invoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)
  return (
  <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', margin:'8px 0', border:'1px solid #c8e6c9', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
- <span style={{ fontSize:'12px', color:'#555' }}>{pieces.toLocaleString()} pieces</span>
+ <span style={{ fontSize:'12px', color:'#555' }}>{pieces.toLocaleString()} pieces | {safeNum(invoiceDiscountPct,0)}% discount | {invoiceCustomerType === 'reseller' ? 'Reseller' : 'Non-reseller'}</span>
  <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>Total: {php(total)}</span>
  </div>
  )
- })()}
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setInvoiceItems([...invoiceItems, { variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])}>+ ADD ROW</button>
- <label style={lblS}>Notes (optional):</label>
- <input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
- {(()=>{
- const credit = getResellerCreditBlockInfo(invoiceResellerId)
- const invoiceCutoff = getOrderCutoffStatus(invoiceDate)
- const disabled = savingInvoice || credit.blocked || invoiceCutoff.locked
+})()}
+<button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setInvoiceItems([...invoiceItems, { variant_id:'', variant_name:'', quantity:'', retail_price:0, reseller_price:0 }])}>+ ADD ROW</button>
+<label style={lblS}>Notes (optional):</label>
+<input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
+{(()=>{
+ const credit = invoiceCustomerType === 'reseller' ? getResellerCreditBlockInfo(invoiceResellerId) : { blocked:false }
+ const disabled = savingInvoice || credit.blocked
  return (
  <button
- style={{...btnGreen, background:(credit.blocked || invoiceCutoff.locked)?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
+ style={{...btnGreen, background:credit.blocked?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
  disabled={disabled}
  onClick={createDeliveryInvoice}
  >
- {credit.blocked? ' DELIVERY HOLD SETTLE FIRST': invoiceCutoff.locked? ' TOMORROW CUT-OFF REACHED': savingInvoice? ' Creating...': ' CREATE & SAVE INVOICE'}
+ {credit.blocked? 'DELIVERY HOLD - SETTLE FIRST': savingInvoice? 'Creating...': 'CREATE & SAVE INVOICE'}
  </button>
  )
- })()}
- </div>
- )}
+})()}
+</div>
+)}
 
  {invoicesLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading invoices...</p>}
  {!invoicesLoading && deliveryInvoices.length===0 && (
