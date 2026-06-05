@@ -11171,7 +11171,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  { key:'foundation', icon:'\uD83E\uDDF1', label:'Foundation',
  tabs:[{key:'foundation',label:'Foundation'}],
  roles:['owner','manager'] },
- { key:'payablesMain', icon:'\\uD83D\\uDCC5', label:'Payables / PDC',
+ { key:'payablesMain', icon:'', label:'Payables / PDC',
         tabs:[{key:'payablesMain',label:'Payables / PDC'}],
         roles:['owner'] },
 
