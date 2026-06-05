@@ -544,6 +544,23 @@ const printCSS = `
  </style>`
 
 export default function App() {
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    if (document.getElementById('payables-main-blink-style')) return
+    const style = document.createElement('style')
+    style.id = 'payables-main-blink-style'
+    style.textContent = '@keyframes payablesMainBlink{0%,100%{background:#ca1b1b;color:#fff;box-shadow:0 0 0 rgba(253,212,18,0)}50%{background:#fdd412;color:#1a1a2e;box-shadow:0 0 18px rgba(253,212,18,.95)}}'
+    document.head.appendChild(style)
+  }, [])
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    if (document.getElementById('payables-sidebar-blink-style')) return
+    const style = document.createElement('style')
+    style.id = 'payables-sidebar-blink-style'
+    style.textContent = '@keyframes payablesSidebarBlink{0%,100%{background:#ca1b1b;color:#fff;box-shadow:0 0 0 rgba(253,212,18,0)}50%{background:#fdd412;color:#1a1a2e;box-shadow:0 0 18px rgba(253,212,18,.95)}}'
+    document.head.appendChild(style)
+  }, [])
+
  const today = getTodayDate()
  const videoRef = useRef(null)
  const canvasRef = useRef(null)
@@ -899,6 +916,8 @@ export default function App() {
  const [companyPayables, setCompanyPayables] = useState([])
  const [companyPayablesLoading, setCompanyPayablesLoading] = useState(false)
  const [companyPayablesError, setCompanyPayablesError] = useState('')
+  const [payablesAlertSeenKey, setPayablesAlertSeenKey] = useState('')
+  const [payablesBlinkSeenKey, setPayablesBlinkSeenKey] = useState('')
  const [payablesMonthFilter, setPayablesMonthFilter] = useState(today.slice(0,7))
  const [showPayableForm, setShowPayableForm] = useState(false)
  const [payableForm, setPayableForm] = useState({
@@ -11152,6 +11171,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  { key:'foundation', icon:'\uD83E\uDDF1', label:'Foundation',
  tabs:[{key:'foundation',label:'Foundation'}],
  roles:['owner','manager'] },
+ { key:'payablesMain', icon:'\\uD83D\\uDCC5', label:'Payables / PDC',
+        tabs:[{key:'payablesMain',label:'Payables / PDC'}],
+        roles:['owner'] },
+
  { key:'franchise', icon:'\uD83C\uDFEA', label:'Franchise',
  tabs:[{key:'franchise',label:'Franchise'}],
  roles:['owner'] },
@@ -11161,6 +11184,16 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const visibleSubTabs = currentSection.tabs.filter(t => canAccess(t.key))
  const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
  const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
+    const payablesDeadlineKey = (ownerDeadlineSummary.warningRows || [])
+      .map(r => String(r.source || '') + ':' + String(r.id || '') + ':' + String(r.due_date_effective || r.due_date || ''))
+      .sort()
+      .join('|')
+    const shouldBlinkPayablesButton = ownerDeadlineSummary.warningCount > 0 && payablesAlertSeenKey !== payablesDeadlineKey
+    const payablesWarningKey = (ownerDeadlineSummary.warningRows || [])
+      .map(r => String(r.source || '') + ':' + String(r.id || '') + ':' + String(r.due_date_effective || r.due_date || ''))
+      .sort()
+      .join('|')
+    const shouldBlinkPayablesMainButton = isOwnerRole && ownerDeadlineSummary.warningCount > 0 && payablesBlinkSeenKey !== payablesWarningKey
  const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
  const cashAdvanceCoveragePeriodOptions = (() => {
  const map = {}
@@ -11173,6 +11206,19 @@ This recovery button creates one approved expense record using GROSS payroll ear
  })()
 
  const handleTabClick = (key) => {
+      if(key==='payablesMain') {
+        setActiveTab('payablesMain')
+        setSalesView('payables')
+        setPayablesBlinkSeenKey(payablesWarningKey || 'seen')
+        setSidebarOpen(false)
+        loadResellers()
+        loadResellerAccounts({ silent:true })
+        loadDeliveryInvoices()
+        loadDailyExpenses()
+        loadCompanyPayables()
+        loadFinancialData()
+        return
+      }
  setActiveTab(key); setSidebarOpen(false)
  if(key==='leaveRequests') loadLeaveRequests()
  if(key==='cashRequests') loadCashAdvanceRequests()
@@ -11324,10 +11370,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ flex:1, padding:'8px 10px', display:'flex', flexDirection:'column', gap:'2px' }}>
  {visibleSections.map(section => {
  const isActive = currentSection.key === section.key
+                  const shouldBlinkThisPayablesButton = section.key==='payablesMain' && shouldBlinkPayablesMainButton
  const hasBadge = (section.key==='payroll' && (leaveRequests.filter(r=>r.status==='pending').length>0||cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
- (section.key==='sales' && ((pendingExpenses>0 && adminRole==='owner') || ownerDeadlineSummary.warningCount>0))
+ (section.key==='sales' && (pendingExpenses>0 && adminRole==='owner')) || (section.key==='payablesMain' && ownerDeadlineSummary.warningCount>0)
  return (
- <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:isActive?'#ca1b1b':'transparent', color:isActive?'white':'rgba(255,255,255,0.65)', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
+ <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:shouldBlinkThisPayablesButton?'#fdd412':isActive?'#ca1b1b':'transparent', color:shouldBlinkThisPayablesButton?'#1a1a2e':isActive?'white':'rgba(255,255,255,0.65)', animation:shouldBlinkThisPayablesButton?'payablesSidebarBlink 0.8s ease-in-out infinite':'none', boxShadow:shouldBlinkThisPayablesButton?'0 0 16px rgba(253,212,18,0.9)':'none', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
  <span style={{ fontSize:'16px', flexShrink:0 }}>{section.icon}</span>
  <span style={{ fontSize:'12px', fontWeight:isActive?'bold':'500', flex:1 }}>{section.label}</span>
  {hasBadge && <span style={{ background:'#fdd412', color:'#1a1a2e', borderRadius:'10px', padding:'1px 6px', fontSize:'9px', fontWeight:'bold' }}>!</span>}
@@ -11500,7 +11547,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
  <div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'12px' }}>
- <button style={{...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast(' Dashboard refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast(' Dashboard refreshed!') }}>REFRESH</button>
  {(adminRole==='owner'||adminRole==='hr') && (
  <button style={{...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={autoApplySIL}> AUTO-APPLY SIL</button>
  )}
@@ -11651,7 +11698,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ flex:1 }}>
  <input placeholder=" Search by action, employee, or admin..." value={auditSearch} onChange={e=>setAuditSearch(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
  </div>
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{ await loadAuditTrail(); showToast(' Audit trail refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{ await loadAuditTrail(); showToast(' Audit trail refreshed!') }}>REFRESH</button>
  </div>
  {auditLoading && <p style={{ color:'#888', textAlign:'center', padding:'20px' }}> Loading audit trail...</p>}
  {!auditLoading && auditLogs.length===0 && <p style={{ color:'#888' }}>No audit logs found.</p>}
@@ -12358,7 +12405,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {activeTab==='overtime' && (
  <div>
  <h2 style={h2s}>Overtime / Undertime Requests</h2>
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadTimeAdjRequests(); showToast(' OT/UT requests refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadTimeAdjRequests(); showToast(' OT/UT requests refreshed!') }}>REFRESH</button>
  {timeAdjRequests.length===0 && <p style={{ color:'#888' }}>No pending requests.</p>}
  {timeAdjRequests.map(req=>(
  <div key={req.id} style={{...cardS, border:`2px solid ${req.request_type==='overtime'?'#2d8a4e':'#f5a623'}`, background:req.request_type==='overtime'?'#f0fff0':'#fffbf0' }}>
@@ -12714,7 +12761,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {[2024,2025,2026,2027].map(y=><option key={y} value={y}>{y}</option>)}
  </select>
  </div>
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{ await loadPayrollHistory(); showToast(' Payroll history refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{ await loadPayrollHistory(); showToast(' Payroll history refreshed!') }}>REFRESH</button>
  </div>
  {historyLoading && <p style={{ color:'#888' }}> Loading payroll history...</p>}
  {!historyLoading && payrollHistory.length===0 && <p style={{ color:'#888' }}>No payroll records found.</p>}
@@ -13328,7 +13375,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {activeTab==='leaveRequests' && (
  <div>
  <h2 style={h2s}>Leave Requests</h2>
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadLeaveRequests(); showToast(' Leave requests refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadLeaveRequests(); showToast(' Leave requests refreshed!') }}>REFRESH</button>
  {leaveRequests.length===0 && <p style={{ color:'#888' }}>No pending leave requests.</p>}
  {leaveRequests.map(req=>(
  <div key={req.id} style={{...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
@@ -13364,7 +13411,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {activeTab==='cashRequests' && (
  <div>
  <h2 style={h2s}>Cash Advance Requests</h2>
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadCashAdvanceRequests(); showToast(' Cash advance requests refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadCashAdvanceRequests(); showToast(' Cash advance requests refreshed!') }}>REFRESH</button>
  {cashAdvanceRequests.length===0 && <p style={{ color:'#888' }}>No pending requests.</p>}
  {cashAdvanceRequests.map(req=>(
  <div key={req.id} style={{...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
@@ -13496,7 +13543,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {activeTab==='disputes' && (
  <div>
  <h2 style={h2s}>Payslip Disputes</h2>
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadPayslipDisputes(); showToast(' Disputes refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadPayslipDisputes(); showToast(' Disputes refreshed!') }}>REFRESH</button>
  {payslipDisputes.length===0 && <p style={{ color:'#888' }}>No pending disputes.</p>}
  {payslipDisputes.map(d=>(
  <div key={d.id} style={{...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
@@ -13642,7 +13689,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  onChange={e=>setContractSearch(e.target.value)}
  style={{...inputStyle, marginBottom:0, flex:1, minWidth:'180px' }}
  />
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{ loadContracts(); showToast(' Contracts refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={()=>{ loadContracts(); showToast(' Contracts refreshed!') }}>REFRESH</button>
  </div>
 
  {contractsLoading && <p style={{ color:'#888', textAlign:'center', padding:'20px' }}> Loading contracts...</p>}
@@ -13716,7 +13763,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
  <h2 style={h2s}> Inventory Management</h2>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); showToast(' Refreshed!') }}>\u21BB REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); showToast(' Refreshed!') }}>REFRESH</button>
  <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printInventoryReport}> PRINT REPORT</button>
  </div>
  </div>
@@ -15336,7 +15383,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
 
  {/* SALES & RESELLERS */}
- {activeTab==='sales' && (
+ {(activeTab==='sales'||activeTab==='payablesMain') && (
  <div>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
  <h2 style={h2s}> Sales & Resellers</h2>
@@ -15345,7 +15392,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  {/* Sub-navigation */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
- {[['dashboard','\uD83D\uDCCA Dashboard'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['expenses','\uD83D\uDCB8 Expenses'],['payables','\uD83D\uDCC5 Payables / PDC'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].filter(([v])=>v!=='payables'||isOwnerRole).map(([v,l])=>(
+ {[['dashboard','\uD83D\uDCCA Dashboard'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
  <button key={v} onClick={()=>setSalesView(v)} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
@@ -18601,7 +18648,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {activeTab==='sales' && salesView==='disputes' && (
  <div>
  <h3 style={h2s}> Reseller Disputes</h3>
- <button style={{...btnRed, width:'auto', padding:'8px 16px', marginBottom:'14px', marginTop:0 }} onClick={()=>{ supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>setResellerDisputes(data||[])); checkSuspiciousPatterns() }}>\u21BB REFRESH</button>
+ <button style={{...btnRed, width:'auto', padding:'8px 16px', marginBottom:'14px', marginTop:0 }} onClick={()=>{ supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>setResellerDisputes(data||[])); checkSuspiciousPatterns() }}>REFRESH</button>
  {resellerDisputes.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No disputes filed yet.</p>:resellerDisputes.map(d=>(
  <div key={d.id} style={{...cardS, border:`2px solid ${d.status==='pending'?'#f5a623':d.status==='resolved'?'#2d8a4e':'#eee'}` }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
