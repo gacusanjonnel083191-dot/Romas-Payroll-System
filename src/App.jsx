@@ -3752,197 +3752,195 @@ This will remove the invoice and its line items.`
  setProcessingItems(p => ({...p, [key]: false }))
  }
  }
- function buildDeliveryInvoicePrintCSS() {
-    return `<style>
-        @page invoicePage{
-          size:4in 6in;
-          margin:0;
-        }
+ 
+function buildDeliveryInvoicePrintCSS() {
+  return [
+    '<style>',
+    '@page { size: 4in 6in; margin: 0; }',
+    '@page invoicePage { size: 4in 6in; margin: 0; }',
 
-        *{
-          box-sizing:border-box;
-          -webkit-print-color-adjust:exact!important;
-          print-color-adjust:exact!important;
-        }
+    '* {',
+    '  box-sizing: border-box;',
+    '  -webkit-print-color-adjust: exact !important;',
+    '  print-color-adjust: exact !important;',
+    '}',
 
-        html,body{
-          width:4in!important;
-          min-width:4in!important;
-          max-width:4in!important;
-          height:auto!important;
-          min-height:0!important;
-          margin:0!important;
-          padding:0!important;
-          background:white!important;
-          font-family:Arial,sans-serif!important;
-          color:#000!important;
-          overflow:visible!important;
-        }
+    'html, body {',
+    '  margin: 0 !important;',
+    '  padding: 0 !important;',
+    '  background: white !important;',
+    '  font-family: Arial, sans-serif !important;',
+    '  color: #000 !important;',
+    '}',
 
-        body{
-          display:block;
-        }
+    '.no-print {',
+    '  display: none !important;',
+    '}',
 
-        .no-print{
-          width:4in;
-          margin:0 auto 6px;
-          padding:6px;
-          background:#fff8dc;
-          border:1px solid #fdd412;
-          font-size:10px;
-          text-align:center;
-        }
+    '.invoice-page {',
+    '  page: invoicePage;',
+    '  width: 4in !important;',
+    '  height: 6in !important;',
+    '  min-width: 4in !important;',
+    '  max-width: 4in !important;',
+    '  min-height: 6in !important;',
+    '  max-height: 6in !important;',
+    '  margin: 0 auto !important;',
+    '  padding: 0.035in !important;',
+    '  background: white !important;',
+    '  overflow: hidden !important;',
+    '}',
 
-        .invoice-page{
-          page:invoicePage;
-          width:4in!important;
-          height:6in!important;
-          min-width:4in!important;
-          max-width:4in!important;
-          min-height:6in!important;
-          max-height:6in!important;
-          margin:0 auto!important;
-          padding:0.035in!important;
-          background:white!important;
-          overflow:hidden!important;
-          box-shadow:none!important;
-          border:none!important;
-          break-inside:avoid!important;
-          page-break-inside:avoid!important;
-        }
+    '.invoice-table {',
+    '  width: 100% !important;',
+    '  height: 100% !important;',
+    '  border-collapse: collapse !important;',
+    '  table-layout: fixed !important;',
+    '  border: 1px solid #000 !important;',
+    '  font-size: 8.7px !important;',
+    '  line-height: 1 !important;',
+    '}',
 
-        .invoice-table{
-          width:100%;
-          height:100%;
-          border-collapse:collapse;
-          table-layout:fixed;
-          border:1px solid #000;
-          font-size:8.5px;
-          line-height:1.05;
-        }
+    '.invoice-table td, .invoice-table th {',
+    '  border: 1px solid #000 !important;',
+    '  padding: 1px 2px !important;',
+    '  vertical-align: middle !important;',
+    '  overflow: hidden !important;',
+    '  white-space: nowrap !important;',
+    '}',
 
-        .invoice-table td,
-        .invoice-table th{
-          border:1px solid #000;
-          padding:1px 2px;
-          vertical-align:middle;
-          overflow:hidden;
-          white-space:nowrap;
-        }
+    '.title-row td {',
+    '  height: 0.22in !important;',
+    '  text-align: center !important;',
+    '  font-weight: 900 !important;',
+    '  font-size: 10.5px !important;',
+    '}',
 
-        .title-row td{
-          height:0.20in;
-          text-align:center;
-          font-weight:900;
-          font-size:10.5px;
-          letter-spacing:-0.1px;
-        }
+    '.field-row td {',
+    '  height: 0.23in !important;',
+    '  font-size: 8.6px !important;',
+    '}',
 
-        .field-row td{
-          height:0.21in;
-          font-size:8.5px;
-        }
+    '.field-label {',
+    '  text-align: center !important;',
+    '  font-weight: 900 !important;',
+    '}',
 
-        .field-label{
-          text-align:center;
-          font-weight:900;
-          width:31%;
-        }
+    '.field-value {',
+    '  font-weight: 700 !important;',
+    '}',
 
-        .field-value{
-          font-weight:700;
-        }
+    '.date-fill, .customer-fill {',
+    '  background: #cfe2f3 !important;',
+    '}',
 
-        .date-fill,
-        .customer-fill{
-          background:#cfe2f3!important;
-        }
+    '.address-fill, .prepared-fill {',
+    '  background: #b6d7a8 !important;',
+    '}',
 
-        .address-fill,
-        .prepared-fill{
-          background:#b6d7a8!important;
-        }
+    '.blank-row td {',
+    '  height: 0.16in !important;',
+    '}',
 
-        .blank-row td{
-          height:0.17in;
-        }
+    '.header-row th {',
+    '  height: 0.24in !important;',
+    '  text-align: center !important;',
+    '  font-weight: 900 !important;',
+    '  font-size: 9.3px !important;',
+    '}',
 
-        .header-row th{
-          height:0.22in;
-          text-align:center;
-          font-weight:900;
-          font-size:9.5px;
-        }
+    '.product-row td {',
+    '  height: 0.22in !important;',
+    '  font-size: 8.5px !important;',
+    '}',
 
-        .product-row td{
-          height:0.205in;
-          font-size:8.6px;
-        }
+    '.product-name {',
+    '  text-align: center !important;',
+    '  font-weight: 900 !important;',
+    '}',
 
-        .product-name{
-          text-align:center;
-          font-weight:900;
-        }
+    '.number-cell {',
+    '  text-align: center !important;',
+    '  font-weight: 800 !important;',
+    '}',
 
-        .number-cell{
-          text-align:center;
-          font-weight:800;
-        }
+    '.money-cell {',
+    '  text-align: right !important;',
+    '  font-weight: 800 !important;',
+    '}',
 
-        .money-cell{
-          text-align:right;
-          font-weight:800;
-        }
+    '.footer-row td {',
+    '  height: 0.24in !important;',
+    '  font-size: 8.5px !important;',
+    '}',
 
-        .footer-row td{
-          height:0.22in;
-          font-size:8.6px;
-        }
+    '.footer-label {',
+    '  text-align: center !important;',
+    '  font-weight: 900 !important;',
+    '  font-style: italic !important;',
+    '}',
 
-        .footer-label{
-          text-align:center;
-          font-weight:900;
-          font-style:italic;
-        }
+    '.total-label {',
+    '  text-align: center !important;',
+    '  font-weight: 900 !important;',
+    '  font-size: 12px !important;',
+    '}',
 
-        .total-label{
-          text-align:center;
-          font-weight:900;
-          font-size:12px!important;
-        }
+    '.total-amount {',
+    '  text-align: right !important;',
+    '  font-weight: 900 !important;',
+    '  background: #d9d9d9 !important;',
+    '  font-size: 12px !important;',
+    '}',
 
-        .total-amount{
-          text-align:right;
-          font-weight:900;
-          background:#d9d9d9!important;
-          font-size:12px!important;
-        }
+    '@media screen {',
+    '  body {',
+    '    width: auto !important;',
+    '    min-height: 100vh !important;',
+    '    background: #e5e5e5 !important;',
+    '    display: flex !important;',
+    '    justify-content: center !important;',
+    '    align-items: flex-start !important;',
+    '    padding: 12px !important;',
+    '    overflow: auto !important;',
+    '  }',
+    '  .invoice-page {',
+    '    margin: 0 auto !important;',
+    '    box-shadow: 0 2px 10px rgba(0,0,0,0.25) !important;',
+    '  }',
+    '}',
 
-        @media print{
-          .no-print{display:none!important;}
-          html,body{
-            width:4in!important;
-            height:auto!important;
-            margin:0!important;
-            padding:0!important;
-          }
-          .invoice-page{
-            margin:0!important;
-            break-after:page!important;
-            page-break-after:always!important;
-          }
-          .single-invoice-print .invoice-page:last-of-type,
-          .print-all-invoices .invoice-page:last-of-type{
-            break-after:avoid!important;
-            page-break-after:avoid!important;
-          }
-          .force-break{
-            break-after:page!important;
-            page-break-after:always!important;
-          }
-        }
-      </style>`
-  }
+    '@media print {',
+    '  html, body {',
+    '    width: 4in !important;',
+    '    height: 6in !important;',
+    '    min-width: 4in !important;',
+    '    max-width: 4in !important;',
+    '    min-height: 6in !important;',
+    '    max-height: 6in !important;',
+    '    margin: 0 !important;',
+    '    padding: 0 !important;',
+    '    overflow: hidden !important;',
+    '  }',
+    '  .invoice-page {',
+    '    width: 4in !important;',
+    '    height: 6in !important;',
+    '    margin: 0 !important;',
+    '    padding: 0.035in !important;',
+    '    box-shadow: none !important;',
+    '    break-after: page !important;',
+    '    page-break-after: always !important;',
+    '  }',
+    '  .invoice-page:last-of-type {',
+    '    break-after: auto !important;',
+    '    page-break-after: auto !important;',
+    '  }',
+    '}',
+    '</style>'
+  ].join('\\n')
+}
+
+
 
 
  function buildDeliveryInvoicePrintPage(invoice, pageClass = '') {
@@ -4138,7 +4136,7 @@ This will remove the invoice and its line items.`
  <div class="no-print">
  <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;"> PRINT ALL</button>
  <p style="font-size:11px;color:#888;margin-top:6px;">${dayInvoices.length} invoice(s) Total: ${php(grandTotal)}</p>
- <p style="font-size:10px;color:#888;margin-top:3px;">Use 4 x 6 inches paper size, scale 100%, and turn off headers/footers.</p>
+ <p style="font-size:10px;color:#888;margin-top:3px;">Use 4 x 6 inches paper size, scale 100%, margins none, backgrounds on, headers/footers off.</p>
  </div>
  ${dayInvoices.map((inv,idx)=>buildDeliveryInvoicePrintPage(inv, idx < dayInvoices.length-1? 'force-break': '')).join('')}
  </body></html>`)
@@ -4170,7 +4168,7 @@ This will remove the invoice and its line items.`
  </head><body class="single-invoice-print">
  <div class="no-print">
  <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;"> PRINT INVOICE</button>
- <p style="font-size:10px;color:#888;margin-top:5px;">Use 4 x 6 inches paper size, scale 100%, and turn off headers/footers.</p>
+ <p style="font-size:10px;color:#888;margin-top:5px;">Use 4 x 6 inches paper size, scale 100%, margins none, backgrounds on, headers/footers off.</p>
  </div>
  ${buildDeliveryInvoicePrintPage(invoice)}
  </body></html>`)
