@@ -3792,7 +3792,7 @@ function buildDeliveryInvoicePrintCSS() {
     '  border-collapse: collapse !important;',
     '  table-layout: fixed !important;',
     '  border: 2px solid #000 !important;',
-    '  font-size: 8.4px !important;',
+    '  font-size: 12px !important;',
     '  line-height: 1 !important;',
     '}',
 
@@ -3813,10 +3813,10 @@ function buildDeliveryInvoicePrintCSS() {
     '  height: 0.22in !important;',
     '  text-align: center !important;',
     '  font-weight: 900 !important;',
-    '  font-size: 10px !important;',
+    '  font-size: 13px !important;',
     '}',
 
-    '.field-row td { height: 0.22in !important; font-size: 8.4px !important; }',
+    '.field-row td { height: 0.22in !important; font-size: 12px !important; }',
     '.field-label { text-align: center !important; font-weight: 900 !important; }',
     '.field-value { font-weight: 700 !important; }',
 
@@ -3826,21 +3826,21 @@ function buildDeliveryInvoicePrintCSS() {
     '.blank-row td { height: 0.15in !important; }',
 
     '.header-row th {',
-    '  height: 0.23in !important;',
+    '  height: 0.22in !important;',
     '  text-align: center !important;',
     '  font-weight: 900 !important;',
-    '  font-size: 9px !important;',
+    '  font-size: 12px !important;',
     '}',
 
-    '.product-row td { height: 0.215in !important; font-size: 8.2px !important; }',
+    '.product-row td { height: 0.205in !important; font-size: 12px !important; }',
     '.product-name { text-align: center !important; font-weight: 900 !important; }',
     '.number-cell { text-align: center !important; font-weight: 800 !important; }',
     '.money-cell { text-align: right !important; font-weight: 800 !important; }',
 
-    '.footer-row td { height: 0.23in !important; font-size: 8.3px !important; }',
+    '.footer-row td { height: 0.22in !important; font-size: 12px !important; }',
     '.footer-label { text-align: center !important; font-weight: 900 !important; font-style: italic !important; }',
-    '.total-label { text-align: center !important; font-weight: 900 !important; font-size: 11px !important; }',
-    '.total-amount { text-align: right !important; font-weight: 900 !important; background: #d9d9d9 !important; font-size: 11px !important; }',
+    '.total-label { text-align: center !important; font-weight: 900 !important; font-size: 16px !important; }',
+    '.total-amount { text-align: right !important; font-weight: 900 !important; background: #d9d9d9 !important; font-size: 18px !important; color: #000 !important; }',
 
     '@media screen {',
     '  html, body { width: auto !important; height: auto !important; min-height: 100vh !important; background: #ddd !important; display: flex !important; justify-content: center !important; align-items: flex-start !important; padding: 10px !important; }',
@@ -3906,7 +3906,7 @@ function buildDeliveryInvoicePrintCSS() {
       reseller?.area
     ].map(cleanText).find(Boolean) || '';
 
-    const preparedBy = cleanText(invoice.prepared_by || invoice.dispatcher || invoice.dispatcher_name || invoice.created_by || '');
+    const preparedBy = '';
 
     const rows = [
       { label:'Choco Balls', aliases:['Choco Balls'] },
