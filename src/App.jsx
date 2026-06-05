@@ -107,45 +107,31 @@ function getPHDateOffsetString(days = 0, asOf = new Date()) {
 }
 
 function getOrderCutoffStatus(targetDeliveryDate = null, asOf = new Date()) {
- // Backward compatibility for old calls like getOrderCutoffStatus(new Date()).
- if (targetDeliveryDate instanceof Date && arguments.length === 1) {
- asOf = targetDeliveryDate
- targetDeliveryDate = null
- }
-
+ // Order cut-off has been completely removed.
+ // Resellers and admins can create, edit, and approve orders/invoices anytime.
  const ph = getPHDateTimeParts(asOf)
- const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
  const tomorrowDate = getPHDateOffsetString(1, asOf)
  const targetDate = targetDeliveryDate? String(targetDeliveryDate).slice(0, 10): tomorrowDate
- const appliesToTomorrow = targetDate === tomorrowDate
- const timeLocked = ph.totalMinutes >= cutoffMinutes
- const locked = appliesToTomorrow && timeLocked
-
  return {
- locked,
- timeLocked,
- appliesToTomorrow,
+ locked:false,
+ timeLocked:false,
+ appliesToTomorrow:false,
  targetDate,
  tomorrowDate,
  date: ph.date,
  time: ph.time,
- cutoffTime: ORDER_CUTOFF_TIME,
- cutoffLabel: ORDER_CUTOFF_LABEL,
- message: locked
-? `Order cut-off reached for tomorrow's delivery (${targetDate}). Orders, invoices, quantity edits, and invoice approval for tomorrow are locked after ${ORDER_CUTOFF_LABEL} PH time. Advance orders for later delivery dates are still allowed.`
-: appliesToTomorrow
-? `Orders and invoices for tomorrow's delivery (${targetDate}) are allowed until ${ORDER_CUTOFF_LABEL} PH time today.`
-: `Advance order allowed for ${targetDate}. The ${ORDER_CUTOFF_LABEL} cut-off only blocks delivery dated tomorrow (${tomorrowDate}).`
+ cutoffTime:null,
+ cutoffLabel:'No cut-off',
+ message:'Order cut-off removed. Orders, invoices, quantity edits, and order approvals are allowed anytime.'
  }
 }
 
+
 function getDefaultResellerOrderDeliveryDate(asOf = new Date()) {
- const ph = getPHDateTimeParts(asOf)
- const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
- // Before 12:00 PM PH time, tomorrow is still allowed. After 12:00 PM,
- // default to the following day so the reseller can continue placing advance orders.
- return getPHDateOffsetString(ph.totalMinutes >= cutoffMinutes? 2: 1, asOf)
+ // No cut-off: tomorrow remains the default delivery date at any time of day.
+ return getPHDateOffsetString(1, asOf)
 }
+
 function diffMinutesAcrossMidnight(startTime, endTime) {
  const start = minutesFromTime(startTime)
  let end = minutesFromTime(endTime)
