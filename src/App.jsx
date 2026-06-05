@@ -180,18 +180,6 @@ function positiveNum(value, fallback = 1) {
 }
 function php(a) { return `PHP ${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })}` }
 function moneyRound(value) { return Math.round((safeNum(value, 0) + Number.EPSILON) * 100) / 100 }
-function clampPercent(value, fallback = 20) {
-  const n = safeNum(value, fallback)
-  return Math.min(100, Math.max(0, n))
-}
-function getResellerDiscountPct(reseller) {
-  if (!reseller || reseller.discount_pct === undefined || reseller.discount_pct === null || reseller.discount_pct === '') return 20
-  return clampPercent(reseller.discount_pct, 20)
-}
-function getResellerPrice(retailPrice, reseller) {
-  const discountPct = getResellerDiscountPct(reseller)
-  return moneyRound(safeNum(retailPrice, 0) * (1 - discountPct / 100))
-}
 function isMoneySettled(balance) { return moneyRound(balance) <= 0.01 }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
 function getDistanceMeters(la1,lo1,la2,lo2) {
@@ -852,7 +840,7 @@ export default function App() {
   const [resellersLoading, setResellersLoading] = useState(false)
   const [showResellerForm, setShowResellerForm] = useState(false)
   const [editingResellerId, setEditingResellerId] = useState(null)
-  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'', discount_pct:'20' })
+  const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' })
   // Multi-branch reseller accounts: one owner login can manage multiple branch/outlet records.
   const [resellerAccounts, setResellerAccounts] = useState([])
   const [resellerAccountsLoading, setResellerAccountsLoading] = useState(false)
@@ -873,10 +861,6 @@ export default function App() {
   const [defaultOrderItems, setDefaultOrderItems] = useState([])
   const [deliveryInvoices, setDeliveryInvoices] = useState([])
   const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('')
-  const [adjustmentSearchTerm, setAdjustmentSearchTerm] = useState('')
-  const [adjustmentDayFilter, setAdjustmentDayFilter] = useState('all')
-  const [receivableSearchTerm, setReceivableSearchTerm] = useState('')
-  const [receivableDayFilter, setReceivableDayFilter] = useState('all')
   const [invoicesLoading, setInvoicesLoading] = useState(false)
   const [showCreateInvoice, setShowCreateInvoice] = useState(false)
   const [invoiceResellerId, setInvoiceResellerId] = useState('')
@@ -2930,23 +2914,6 @@ export default function App() {
     return account?.account_name || account?.owner_name || ''
   }
 
-  function getPricingReseller(resellerId, fallback = null) {
-    if (resellerId && typeof resellerId === 'object') return resellerId
-    const id = resellerId ? String(resellerId) : ''
-    if (id) {
-      return resellers.find(r => String(r.id) === id)
-        || resellerPortalBranches.find(r => String(r.id) === id)
-        || (String(currentReseller?.id || '') === id ? currentReseller : null)
-        || fallback
-    }
-    return fallback || currentReseller || null
-  }
-
-  function getPriceForReseller(retailPrice, resellerIdOrObject, fallback = null) {
-    const pricingReseller = getPricingReseller(resellerIdOrObject, fallback)
-    return getResellerPrice(retailPrice, pricingReseller)
-  }
-
   function getBranchesForAccount(accountId) {
     if (!accountId) return []
     return resellers.filter(r => String(r.reseller_account_id || '') === String(accountId))
@@ -3026,7 +2993,7 @@ export default function App() {
   }
   async function saveReseller() {
     if (!resellerForm.name.trim()) { showToast('❌ Reseller name is required.','red'); return }
-    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day, access_code:resellerForm.access_code||null, access_pin:resellerForm.access_pin||null, reseller_account_id:resellerForm.reseller_account_id||null, discount_pct:clampPercent(resellerForm.discount_pct, 20) }
+    const payload = { name:resellerForm.name.trim(), area:resellerForm.area.trim(), contact_person:resellerForm.contact_person.trim(), phone:resellerForm.phone.trim(), address:resellerForm.address.trim(), delivery_day:resellerForm.delivery_day, access_code:resellerForm.access_code||null, access_pin:resellerForm.access_pin||null, reseller_account_id:resellerForm.reseller_account_id||null }
     if (editingResellerId) {
       const { error } = await supabase.from('resellers').update(payload).eq('id', editingResellerId)
       if (error) { showToast('❌ Failed: '+error.message,'red'); return }
@@ -3037,7 +3004,7 @@ export default function App() {
       showToast('✅ Reseller added!')
     }
     setEditingResellerId(null); setShowResellerForm(false)
-    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'', discount_pct:'20' })
+    setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' })
     loadResellers()
   }
   async function deleteReseller(r) {
@@ -3069,8 +3036,7 @@ export default function App() {
       delivery_day: r.delivery_day || 'Monday',
       access_code: r.access_code || '',
       access_pin: r.access_pin || '',
-      reseller_account_id: r.reseller_account_id || '',
-      discount_pct: String(r.discount_pct ?? 20)
+      reseller_account_id: r.reseller_account_id || ''
     })
     setShowResellerForm(true)
     setTimeout(() => {
@@ -3153,7 +3119,7 @@ export default function App() {
       return
     }
     const defaults = resellerDefaultOrders[resellerId] || []
-    const rows = await getAllOrderVariantRows(defaults, getPricingReseller(resellerId))
+    const rows = await getAllOrderVariantRows(defaults)
     setInvoiceItems(rows)
   }
 
@@ -3298,23 +3264,6 @@ export default function App() {
     return sourceInvoices
       .filter(inv => invoiceMatchesFilter(inv, filter))
       .filter(inv => invoiceMatchesSearch(inv))
-      .sort(sortDeliveryInvoicesNewestFirst)
-  }
-
-  function getFilteredInvoicesForSearchBox(dayFilter = 'all', searchTerm = '') {
-    return [...deliveryInvoices]
-      .filter(inv => invoiceMatchesDayFilter(inv, dayFilter))
-      .filter(inv => invoiceMatchesSearch(inv, searchTerm))
-      .sort(sortDeliveryInvoicesNewestFirst)
-  }
-
-  function getVisibleAdjustmentInvoices() {
-    return getFilteredInvoicesForSearchBox(adjustmentDayFilter, adjustmentSearchTerm)
-  }
-
-  function getVisibleReceivableInvoices(filter = invoiceFilter) {
-    return getFilteredInvoicesForSearchBox(receivableDayFilter, receivableSearchTerm)
-      .filter(inv => invoiceMatchesFilter(inv, filter))
       .sort(sortDeliveryInvoicesNewestFirst)
   }
 
@@ -3692,17 +3641,16 @@ export default function App() {
       const invoiceNum = `INV-${invoiceDate.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
       const dueDate = new Date(invoiceDate); dueDate.setDate(dueDate.getDate() + RESELLER_CREDIT_GRACE_DAYS)
       const dueDateStr = dueDate.toISOString().slice(0,10)
-      const discountPct = getResellerDiscountPct(reseller)
       const lineItems = validItems.map(i => {
         const variant = donutVariants.find(v => v.id === i.variant_id)
         const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
-        const resellerPrice = getResellerPrice(retailPrice, reseller)
+        const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
         return { ...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
       })
       const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
       const { data:inv, error:invErr } = await supabase.from('delivery_invoices').insert({
         invoice_number:invoiceNum, reseller_id:invoiceResellerId, reseller_name:reseller?.name||'',
-        delivery_date:invoiceDate, due_date:dueDateStr, subtotal, discount_pct:discountPct,
+        delivery_date:invoiceDate, due_date:dueDateStr, subtotal, discount_pct:20,
         total_amount:subtotal, status:'unpaid', notes:invoiceNotes||null, created_by:adminRole,
         prepared_by:invoicePreparedBy||null, dispatched_by:invoiceDispatchedBy||null,
         crates_used:Number(invoiceCrates||0)
@@ -3732,18 +3680,16 @@ export default function App() {
     setSavingEditInvoice(true)
     try {
       // Recalculate totals
-      const editPricingReseller = getPricingReseller(editingInvoice.reseller_id, { discount_pct: editingInvoice.discount_pct ?? 20 })
-      const editDiscountPct = getResellerDiscountPct(editPricingReseller)
       const lineItems = validItems.map(i => {
         const variant = donutVariants.find(v => v.id === i.variant_id)
         const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
-        const resellerPrice = getResellerPrice(retailPrice, editPricingReseller)
+        const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
         return { ...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
       })
       const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
       // Update invoice header
       await supabase.from('delivery_invoices').update({
-        subtotal, total_amount:subtotal, discount_pct:editDiscountPct,
+        subtotal, total_amount:subtotal,
         notes:editingInvoice.notes||null,
         prepared_by:editingInvoice.prepared_by||null,
         dispatched_by:editingInvoice.dispatched_by||null,
@@ -4136,7 +4082,7 @@ This will remove the invoice and its line items.`
           variant_id: v.id || '',
           variant_name: v.name || 'Variant',
           retail_price: retailPrice,
-          reseller_price: getResellerPrice(retailPrice, invoice),
+          reseller_price: Math.round(retailPrice * 0.80 * 100) / 100,
           original_quantity: 0,
           actual_quantity: 0,
           adjustment_type: 'Additional / Overproduced',
@@ -5153,7 +5099,7 @@ This will remove the invoice and its line items.`
     setLoading(false)
   }
 
-  async function getAllOrderVariantRows(defaultRows = [], pricingReseller = null) {
+  async function getAllOrderVariantRows(defaultRows = []) {
     let variants = Array.isArray(donutVariants) ? donutVariants : []
 
     if (!variants || variants.length === 0) {
@@ -5188,7 +5134,7 @@ This will remove the invoice and its line items.`
         variant_name:v.name || saved?.variant_name || 'Product',
         quantity:saved?.default_quantity ? String(saved.default_quantity) : '',
         retail_price:retail,
-        reseller_price:getResellerPrice(retail, pricingReseller)
+        reseller_price:Math.round(retail * 0.80 * 100) / 100
       }
     })
 
@@ -5202,7 +5148,7 @@ This will remove the invoice and its line items.`
           variant_name:saved.variant_name || 'Archived Product',
           quantity:saved?.default_quantity ? String(saved.default_quantity) : '',
           retail_price:retail,
-          reseller_price:getResellerPrice(retail, pricingReseller)
+          reseller_price:Math.round(retail * 0.80 * 100) / 100
         })
       }
     })
@@ -5224,8 +5170,7 @@ This will remove the invoice and its line items.`
       defaultRows = data || []
     }
 
-    const pricingReseller = getPricingReseller(resellerId || templateSourceId, currentReseller)
-    const allRows = await getAllOrderVariantRows(defaultRows, pricingReseller)
+    const allRows = await getAllOrderVariantRows(defaultRows)
     setResellerOrderItems(allRows)
   }
 
@@ -5240,10 +5185,7 @@ This will remove the invoice and its line items.`
       return false
     }
 
-    const pricingReseller = target === 'portal'
-      ? getPricingReseller(sourceResellerId, currentReseller)
-      : getPricingReseller(invoiceResellerId || sourceResellerId)
-    const items = await getAllOrderVariantRows(data || [], pricingReseller)
+    const items = await getAllOrderVariantRows(data || [])
     if (target === 'portal') setResellerOrderItems(items)
     else setInvoiceItems(items)
 
@@ -5515,13 +5457,12 @@ This will remove the invoice and its line items.`
     const reseller = resellers.find(r=>r.id===order.reseller_id)
     const invoiceNum = `INV-${order.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
     const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
-    const discountPct = getResellerDiscountPct(reseller)
-    const lineItems = validItems.map(i=>{ const rp=getResellerPrice(i.retail_price||0, reseller); return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
+    const lineItems = validItems.map(i=>{ const rp=Math.round((i.retail_price||0)*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
     const subtotal = lineItems.reduce((s,i)=>s+i.total_price,0)
     const { data:inv, error } = await supabase.from('delivery_invoices').insert({
       invoice_number:invoiceNum, reseller_id:order.reseller_id, reseller_name:order.reseller_name,
       delivery_date:order.delivery_date, due_date:dueDate.toISOString().slice(0,10),
-      subtotal, discount_pct:discountPct, total_amount:subtotal, status:'unpaid',
+      subtotal, discount_pct:20, total_amount:subtotal, status:'unpaid',
       prepared_by:'Ronald Reyes / Jomar Cerezo', dispatched_by:'Ronald Reyes / Jomar Cerezo',
       notes:`From order ${order.id.slice(0,8)}`, created_by:adminRole
     }).select().single()
@@ -6685,10 +6626,10 @@ This will remove the invoice and its line items.`
 
     const { data: records, error:recordsError } = await supabase
       .from('payroll_records')
-      .select('id,payroll_approved,approved_at')
+      .select('id,payroll_approved,approved_at,cash_advance_deduction')
       .eq('payroll_start', start)
       .eq('payroll_end', end)
-      .limit(50)
+      .limit(500)
 
     if (recordsError) { showToast('Failed: '+recordsError.message, 'red'); return }
 
@@ -6697,19 +6638,36 @@ This will remove the invoice and its line items.`
       return
     }
 
-    if (records.some(r => r.payroll_approved === true || !!r.approved_at)) {
-      showToast('🔒 This payroll period is already released. Releasing it again is blocked to prevent duplicate CA deductions or expense posting.', 'red')
-      await logAudit('DUPLICATE PAYROLL RELEASE BLOCKED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end}`)
-      return
-    }
+    const alreadyReleased = records.some(r => r.payroll_approved === true || !!r.approved_at)
+    if (alreadyReleased) {
+      const hasCADeductions = records.some(r => safeNum(r.cash_advance_deduction, 0) > 0)
+      const caExisting = hasCADeductions ? await caPayrollDeductionsAlreadyApplied(start, end) : { exists:true, none:true }
+      const expenseExisting = await payrollExpenseAlreadyPosted(start, end)
 
-    const { error } = await supabase.from('payroll_records')
-      .update({ payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString() })
-      .eq('payroll_start', start).eq('payroll_end', end)
-    if (error) { showToast('Failed: '+error.message,'red'); return }
+      if ((!hasCADeductions || caExisting.exists) && expenseExisting.exists) {
+        showToast('🔒 This payroll period is already fully released. Releasing it again is blocked to prevent duplicate CA deductions or expense posting.', 'red')
+        await logAudit('DUPLICATE PAYROLL RELEASE BLOCKED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end}`)
+        return
+      }
+
+      showToast('⚠️ Payroll was already marked released, but one release step is missing. The system will safely recover only the missing CA/expense step.', 'red')
+      await logAudit('PAYROLL RELEASE RECOVERY STARTED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | CA done: ${!hasCADeductions || caExisting.exists} | Expense done: ${expenseExisting.exists}`)
+    } else {
+      const { error } = await supabase.from('payroll_records')
+        .update({ payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString() })
+        .eq('payroll_start', start).eq('payroll_end', end)
+      if (error) { showToast('Failed: '+error.message,'red'); return }
+    }
 
     const releasedSILCount = await markSILCashoutsReleasedForPayrollPeriod(start, end, { auto:true, silent:true })
     const caDeductionResult = await applyCashAdvanceDeductionsForPayrollPeriod(start, end, { auto:true, silent:true })
+    if (caDeductionResult.error) {
+      setPayrollApproved(true)
+      await logAudit('PAYROLL RELEASE CA DEDUCTION FAILED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Error: ${caDeductionResult.error}`)
+      showToast('Payroll was marked released, but CA deduction update failed: ' + caDeductionResult.error + '. Fix the database issue, then click RELEASE PAYROLL again to recover the missing step safely.', 'red')
+      return
+    }
+
     const expenseResult = await postPayrollToExpenses(start, end, { auto:true, silent:true })
 
     setPayrollApproved(true)
@@ -6741,7 +6699,7 @@ This will remove the invoice and its line items.`
 
   function getPayrollExpenseDescription(start, end, summary) {
     const tag = buildPayrollExpenseTag(start, end)
-    return `${tag} | Payroll expense for ${start} to ${end} | Employees: ${summary.employeeCount} | Gross earnings: ${php(summary.grossEarnings)} | Net pay: ${php(summary.netPay)} | Includes basic salary, overtime, night differential, holiday pay, paid SIL, unused SIL conversion, and payroll additions.`
+    return `${tag} | Payroll expense for ${start} to ${end} | Employees: ${summary.employeeCount} | Gross earnings posted as expense: ${php(summary.grossEarnings)} | Net pay released: ${php(summary.netPay)} | Cash advance deductions: ${php(summary.cashAdvanceDeduction || 0)} (loan repayment only — NOT added as payroll expense). | Includes basic salary, overtime, night differential, holiday pay, paid SIL, unused SIL conversion, and payroll additions.`
   }
 
   async function payrollExpenseAlreadyPosted(start, end) {
@@ -6757,10 +6715,26 @@ This will remove the invoice and its line items.`
     return { exists:(data || []).length > 0, record:(data || [])[0] || null }
   }
 
+  async function payrollPeriodHasReleasedRecords(start, end) {
+    const { data, error } = await supabase
+      .from('payroll_records')
+      .select('id,payroll_approved,approved_at')
+      .eq('payroll_start', start)
+      .eq('payroll_end', end)
+      .limit(500)
+
+    if (error) return { released:false, count:0, error:error.message }
+    const records = data || []
+    return {
+      released: records.length > 0 && records.some(r => r.payroll_approved === true || !!r.approved_at),
+      count: records.length
+    }
+  }
+
   async function getPayrollExpenseSummary(start, end) {
     const { data, error } = await supabase
       .from('payroll_records')
-      .select('id,total_earnings,net_pay,basic_pay,birthday_pay,overtime_pay,night_diff_pay,holiday_pay,other_earnings,total_deductions')
+      .select('id,total_earnings,net_pay,basic_pay,birthday_pay,overtime_pay,night_diff_pay,holiday_pay,other_earnings,total_deductions,cash_advance_deduction')
       .eq('payroll_start', start)
       .eq('payroll_end', end)
 
@@ -6778,7 +6752,8 @@ This will remove the invoice and its line items.`
       nightDiffPay: records.reduce((s,r)=>s+safeNum(r.night_diff_pay,0),0),
       holidayPay: records.reduce((s,r)=>s+safeNum(r.holiday_pay,0),0),
       otherEarnings: records.reduce((s,r)=>s+safeNum(r.other_earnings,0),0),
-      totalDeductions: records.reduce((s,r)=>s+safeNum(r.total_deductions,0),0)
+      totalDeductions: records.reduce((s,r)=>s+safeNum(r.total_deductions,0),0),
+      cashAdvanceDeduction: records.reduce((s,r)=>s+safeNum(r.cash_advance_deduction,0),0)
     }
   }
 
@@ -6840,7 +6815,7 @@ This will remove the invoice and its line items.`
     try {
       const { data, error } = await supabase
         .from('payroll_records')
-        .select('payroll_start,payroll_end,payroll_approved')
+        .select('payroll_start,payroll_end,payroll_approved,cash_advance_deduction')
         .eq('payroll_approved', true)
         .order('payroll_start', { ascending:false })
         .limit(300)
@@ -6849,11 +6824,21 @@ This will remove the invoice and its line items.`
 
       const periods = {}
       ;(data || []).forEach(r => {
-        if (r.payroll_start && r.payroll_end) periods[`${r.payroll_start}|${r.payroll_end}`] = { start:r.payroll_start, end:r.payroll_end }
+        if (!r.payroll_start || !r.payroll_end) return
+        const key = `${r.payroll_start}|${r.payroll_end}`
+        if (!periods[key]) periods[key] = { start:r.payroll_start, end:r.payroll_end, hasCADeductions:false }
+        if (safeNum(r.cash_advance_deduction, 0) > 0) periods[key].hasCADeductions = true
       })
 
       let posted = 0
       for (const p of Object.values(periods)) {
+        if (p.hasCADeductions) {
+          const caResult = await applyCashAdvanceDeductionsForPayrollPeriod(p.start, p.end, { auto:true, silent:true })
+          if (caResult.error) {
+            await logAudit('PAYROLL EXPENSE AUTO-POST SKIPPED', 'System Auto', 'ALL', `Period: ${p.start} to ${p.end} | CA deduction failed first: ${caResult.error}`)
+            continue
+          }
+        }
         const result = await postPayrollToExpenses(p.start, p.end, { auto:true, silent:true })
         if (result.posted) posted++
       }
@@ -6871,9 +6856,18 @@ This will remove the invoice and its line items.`
 
   async function handleManualPayrollExpensePost(start, end) {
     if (!start || !end) { showToast('Please select a payroll period.', 'red'); return }
+
+    const releasedCheck = await payrollPeriodHasReleasedRecords(start, end)
+    if (releasedCheck.error) { showToast('Failed to verify payroll release status: ' + releasedCheck.error, 'red'); return }
+    if (!releasedCheck.count) { showToast('No payroll records found. Compute payroll first.', 'red'); return }
+    if (!releasedCheck.released) {
+      showToast('Release payroll first. Payroll expense posting is blocked until payroll is approved/released so expenses will not be posted from a draft computation.', 'red')
+      return
+    }
+
     if (!window.confirm(`Post payroll to Expenses for ${start} to ${end}?
 
-This will create one approved expense record using the total payroll earnings.`)) return
+This recovery button creates one approved expense record using GROSS payroll earnings only. Cash advance deductions are loan repayments and will NOT be added as extra expense.`)) return
     const result = await postPayrollToExpenses(start, end, { auto:false })
     if (result.existing) showToast('Payroll expense is already posted for this period.', 'red')
   }
@@ -15804,7 +15798,7 @@ This will create one approved expense record using the total payroll earnings.`)
                               {(order.reseller_order_items||[]).filter(i=>Number(i.quantity)>0).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' · ')}
                             </div>
                             <p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px', margin:'6px 0 0', textAlign:'right' }}>
-                              Estimated: {php((order.reseller_order_items||[]).reduce((s,i)=>s+Number(i.quantity||0)*safeNum(i.reseller_price, getResellerPrice(i.retail_price||0, getPricingReseller(order.reseller_id))),0))}
+                              Estimated: {php((order.reseller_order_items||[]).reduce((s,i)=>s+Number(i.quantity||0)*Math.round((i.retail_price||0)*0.80*100)/100,0))}
                             </p>
                           </div>
                           )
@@ -15887,7 +15881,7 @@ This will create one approved expense record using the total payroll earnings.`)
                                 }
                                 const items = data.map(d => {
                                   const v = variants.find(vv=>vv.id===d.variant_id)
-                                  return { variant_id:d.variant_id, variant_name:d.variant_name||v?.name||'', quantity:d.default_quantity, retail_price:v?.selling_price||0, reseller_price:getResellerPrice(v?.selling_price||0, getPricingReseller(invoiceResellerId)) }
+                                  return { variant_id:d.variant_id, variant_name:d.variant_name||v?.name||'', quantity:d.default_quantity, retail_price:v?.selling_price||0, reseller_price:Math.round((v?.selling_price||0)*0.80*100)/100 }
                                 })
                                 setInvoiceItems(items)
                                 showToast(`✅ Default order loaded — ${items.length} variants`)
@@ -15900,19 +15894,19 @@ This will create one approved expense record using the total payroll earnings.`)
                                   variants = data || []
                                 }
                                 if (variants.length === 0) { showToast('⚠️ No variants found. Go to Costing → Recipes → Load All Variants first.','red'); return }
-                                setInvoiceItems(variants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:getResellerPrice(v.selling_price, getPricingReseller(invoiceResellerId)) })))
+                                setInvoiceItems(variants.map(v=>({ variant_id:v.id, variant_name:v.name, quantity:'', retail_price:v.selling_price, reseller_price:Math.round(v.selling_price*0.80*100)/100 })))
                                 showToast(`✅ ${variants.length} variants loaded`)
                               }}>📋 LOAD ALL VARIANTS</button>
                           </div>
                         </div>
                         {/* Header */}
                         <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
-                          {['Variant','Qty','Retail',`Reseller (${getResellerDiscountPct(getPricingReseller(invoiceResellerId))}% off)`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
+                          {['Variant','Qty','Retail','Reseller (-20%)',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
                         </div>
                         {invoiceItems.map((item,i)=>{
                           const variant = donutVariants.find(v=>v.id===item.variant_id)
-                          const retailPrice = variant?.selling_price || Number(item.retail_price) || 0
-                          const resellerPrice = getResellerPrice(retailPrice, getPricingReseller(invoiceResellerId))
+                          const retailPrice = variant?.selling_price || 0
+                          const resellerPrice = Math.round(retailPrice*0.80*100)/100
                           return (
                             <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
                               <select value={item.variant_id} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...invoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
@@ -15931,7 +15925,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         }) }
                         {/* Totals preview */}
                         {invoiceItems.some(i=>i.variant_id&&Number(i.quantity)>0) && (()=>{
-                          const total = invoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const rp=getResellerPrice(v?.selling_price||i.retail_price||0, getPricingReseller(invoiceResellerId)); return s+rp*Number(i.quantity||0) },0)
+                          const total = invoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const rp=Math.round((v?.selling_price||0)*0.80*100)/100; return s+rp*Number(i.quantity||0) },0)
                           const pieces = invoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)
                           return (
                             <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', margin:'8px 0', border:'1px solid #c8e6c9', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
@@ -16084,82 +16078,6 @@ This will create one approved expense record using the total payroll earnings.`)
                       <p style={{ color:'#7a4a00', margin:0, fontSize:'12px', lineHeight:1.5 }}>Use this when actual produced or delivered quantity is different from the printed invoice. The adjusted actual delivered quantity becomes the billable reseller sales total.</p>
                     </div>
 
-                    {/* Search / Date Filter for Adjustments */}
-                    <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'14px', padding:'14px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 2fr auto', gap:'10px', alignItems:'end' }}>
-                        <div>
-                          <label style={{ ...lblS, marginBottom:'5px' }}>Filter by Delivery Date</label>
-                          <select value={adjustmentDayFilter} onChange={e=>setAdjustmentDayFilter(e.target.value)} style={{ ...inputStyle, marginBottom:0, fontSize:'12px', fontWeight:'700' }}>
-                            <option value="all">All loaded dates</option>
-                            {getInvoiceDayOptions().map(dateKey => (
-                              <option key={dateKey} value={dateKey}>{formatInvoiceDayOption(dateKey)}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label style={{ ...lblS, marginBottom:'5px' }}>Search Adjustment Invoice</label>
-                          <input type="text" value={adjustmentSearchTerm} onChange={e=>setAdjustmentSearchTerm(e.target.value)} placeholder="Search by reseller name, invoice number, date, area, or address..." style={{ ...inputStyle, marginBottom:0, fontSize:'13px', border:'2px solid #f0f0f0' }} />
-                        </div>
-                        {(adjustmentSearchTerm || adjustmentDayFilter !== 'all') && (
-                          <button type="button" onClick={()=>{ setAdjustmentSearchTerm(''); setAdjustmentDayFilter('all') }} style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', cursor:'pointer', fontWeight:'800', fontSize:'12px' }}>CLEAR</button>
-                        )}
-                      </div>
-                      <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>Showing {getVisibleAdjustmentInvoices().length} invoice(s) for adjustment. Results update while you type.</p>
-
-                      {(adjustmentSearchTerm || adjustmentDayFilter !== 'all') && (
-                        <div style={{ marginTop:'12px', borderTop:'1px solid #f0f0f0', paddingTop:'12px' }}>
-                          <p style={{ ...lblS, margin:'0 0 8px' }}>Matching Invoice Results</p>
-                          {getVisibleAdjustmentInvoices().length === 0 ? (
-                            <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#9f1239', borderRadius:'10px', padding:'12px', fontSize:'12px', fontWeight:'800', textAlign:'center' }}>
-                              No matching invoice found. Try another reseller name, invoice number, date, area, or address.
-                            </div>
-                          ) : (
-                            <div style={{ display:'grid', gap:'8px' }}>
-                              {getVisibleAdjustmentInvoices().slice(0, 20).map(inv => {
-                                const isSelected = String(adjustmentInvoiceId) === String(inv.id)
-                                return (
-                                  <button
-                                    key={inv.id}
-                                    type="button"
-                                    onClick={()=>{
-                                      setAdjustmentInvoiceId(inv.id)
-                                      setAdjustmentRows(buildInvoiceAdjustmentRows(inv))
-                                      setAdjustmentReason('')
-                                    }}
-                                    style={{
-                                      width:'100%',
-                                      textAlign:'left',
-                                      background:isSelected?'#fff8dc':'#fff',
-                                      border:`2px solid ${isSelected?'#f5a623':'#eeeeee'}`,
-                                      borderRadius:'12px',
-                                      padding:'10px 12px',
-                                      cursor:'pointer',
-                                      boxShadow:isSelected?'0 2px 8px rgba(245,166,35,0.20)':'0 1px 4px rgba(0,0,0,0.04)'
-                                    }}
-                                  >
-                                    <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
-                                      <div>
-                                        <p style={{ margin:'0 0 3px', fontSize:'13px', color:'#ca1b1b', fontWeight:'900' }}>{inv.reseller_name || 'Unnamed Reseller'}</p>
-                                        <p style={{ margin:0, fontSize:'11px', color:'#666' }}>{inv.invoice_number || 'No invoice #'} · Delivery: {getInvoiceDeliveryDate(inv) || inv.delivery_date || 'No date'}{inv.area ? ` · ${inv.area}` : ''}</p>
-                                      </div>
-                                      <div style={{ textAlign:'right' }}>
-                                        <p style={{ margin:'0 0 2px', fontSize:'10px', color:'#888', textTransform:'uppercase' }}>Invoice Total</p>
-                                        <p style={{ margin:0, fontSize:'13px', color:'#1a1a2e', fontWeight:'900' }}>{php(inv.total_amount)}</p>
-                                      </div>
-                                    </div>
-                                    <p style={{ margin:'6px 0 0', fontSize:'11px', color:'#888' }}>{inv.address || inv.delivery_address || inv.reseller_address || 'No address saved'}</p>
-                                  </button>
-                                )
-                              })}
-                              {getVisibleAdjustmentInvoices().length > 20 && (
-                                <p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px', textAlign:'center' }}>Showing first 20 matches. Type more details to narrow the result.</p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
                     <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
                       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr', gap:'10px', alignItems:'end' }}>
                         <div>
@@ -16172,8 +16090,7 @@ This will create one approved expense record using the total payroll earnings.`)
                             setAdjustmentReason('')
                           }} style={inputStyle}>
                             <option value="">Select invoice to adjust</option>
-                            {getVisibleAdjustmentInvoices().length === 0 && <option value="" disabled>No matching invoices found</option>}
-                            {getVisibleAdjustmentInvoices().map(inv=><option key={inv.id} value={inv.id}>{inv.delivery_date} — {inv.invoice_number} — {inv.reseller_name} — {php(inv.total_amount)}</option>)}
+                            {deliveryInvoices.map(inv=><option key={inv.id} value={inv.id}>{inv.delivery_date} — {inv.invoice_number} — {inv.reseller_name} — {php(inv.total_amount)}</option>)}
                           </select>
                         </div>
                         <div>
@@ -16267,12 +16184,12 @@ This will create one approved expense record using the total payroll earnings.`)
                       {/* Line items */}
                       <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>Items:</p>
                       <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
-                        {['Variant','Qty','Retail',`Reseller (${getResellerDiscountPct(getPricingReseller(editingInvoice?.reseller_id, { discount_pct: editingInvoice?.discount_pct ?? 20 }))}% off)`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+                        {['Variant','Qty','Retail','Reseller',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
                       </div>
                       {editInvoiceItems.map((item,i)=>{
                         const variant = donutVariants.find(v=>v.id===item.variant_id)
                         const retailPrice = variant?.selling_price || Number(item.retail_price) || 0
-                        const resellerPrice = getResellerPrice(retailPrice, getPricingReseller(editingInvoice?.reseller_id, { discount_pct: editingInvoice?.discount_pct ?? 20 }))
+                        const resellerPrice = Math.round(retailPrice*0.80*100)/100
                         return (
                           <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
                             <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...editInvoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setEditInvoiceItems(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
@@ -16291,7 +16208,7 @@ This will create one approved expense record using the total payroll earnings.`)
                         <div style={{ background:'#fff9e6', borderRadius:'8px', padding:'8px 12px', margin:'6px 0', display:'flex', justifyContent:'space-between' }}>
                           <span style={{ fontSize:'12px', color:'#555' }}>{editInvoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)} pieces</span>
                           <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px' }}>
-                            New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); return s+getResellerPrice(v?.selling_price||i.retail_price||0, getPricingReseller(editingInvoice?.reseller_id, { discount_pct: editingInvoice?.discount_pct ?? 20 }))*Number(i.quantity||0) },0))}
+                            New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); return s+Math.round((v?.selling_price||0)*0.80*100)/100*Number(i.quantity||0) },0))}
                           </span>
                         </div>
                       )}
@@ -16398,29 +16315,6 @@ This will create one approved expense record using the total payroll earnings.`)
                         </div>
                       )
                     })()}
-                    {/* Search / Date Filter for Receivables */}
-                    <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'14px', padding:'14px', marginBottom:'12px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
-                      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 2fr auto', gap:'10px', alignItems:'end' }}>
-                        <div>
-                          <label style={{ ...lblS, marginBottom:'5px' }}>Filter by Delivery Date</label>
-                          <select value={receivableDayFilter} onChange={e=>setReceivableDayFilter(e.target.value)} style={{ ...inputStyle, marginBottom:0, fontSize:'12px', fontWeight:'700' }}>
-                            <option value="all">All loaded dates</option>
-                            {getInvoiceDayOptions().map(dateKey => (
-                              <option key={dateKey} value={dateKey}>{formatInvoiceDayOption(dateKey)}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label style={{ ...lblS, marginBottom:'5px' }}>Search Receivables</label>
-                          <input type="text" value={receivableSearchTerm} onChange={e=>setReceivableSearchTerm(e.target.value)} placeholder="Search by reseller name, invoice number, date, area, or address..." style={{ ...inputStyle, marginBottom:0, fontSize:'13px', border:'2px solid #f0f0f0' }} />
-                        </div>
-                        {(receivableSearchTerm || receivableDayFilter !== 'all') && (
-                          <button type="button" onClick={()=>{ setReceivableSearchTerm(''); setReceivableDayFilter('all') }} style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', cursor:'pointer', fontWeight:'800', fontSize:'12px' }}>CLEAR</button>
-                        )}
-                      </div>
-                      <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>Showing {getVisibleReceivableInvoices(invoiceFilter).length} receivable invoice(s). Status tab still applies and results update while you type.</p>
-                    </div>
-
                     {/* Delivery Filter Tabs */}
                     <div style={{ display:'flex', gap:'6px', marginBottom:'12px', flexWrap:'wrap', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
                       {[['active','📋 Active'],['unpaid','⏳ Unpaid'],['delivered','🚚 Delivered'],['partial','💰 Partial'],['paid','✅ Paid'],['all','📋 All']].map(([v,l])=>(
@@ -16431,8 +16325,8 @@ This will create one approved expense record using the total payroll earnings.`)
                     </div>
                     {/* Invoice List */}
                     {(()=>{
-                      let filtered = getVisibleReceivableInvoices(invoiceFilter)
-                      if (invoiceFilter==='overdue') filtered = getFilteredInvoicesForSearchBox(receivableDayFilter, receivableSearchTerm).filter(i=>getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today)
+                      let filtered = deliveryInvoices.filter(i=>invoiceMatchesFilter(i, invoiceFilter))
+                      if (invoiceFilter==='overdue') filtered = deliveryInvoices.filter(i=>getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today)
                       if (filtered.length===0) return (
                         <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
                           <p style={{ fontSize:'32px', margin:'0 0 8px' }}>{invoiceFilter==='delivered'?'🚚':invoiceFilter==='paid'?'✅':'💵'}</p>
@@ -16976,7 +16870,7 @@ This will create one approved expense record using the total payroll earnings.`)
                   <div>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
                       <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}>🏪 Reseller Management ({resellers.length})</h3>
-                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'', discount_pct:'20' }) }}>
+                      <button style={{ ...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' }) }}>
                         {showResellerForm?'✕ CANCEL':'+ ADD RESELLER'}
                       </button>
                     </div>
@@ -17035,20 +16929,6 @@ This will create one approved expense record using the total payroll earnings.`)
                               <option value="As needed">As needed</option>
                             </select>
                           </div>
-                          <div>
-                            <label style={lblS}>Reseller Discount %:</label>
-                            <input
-                              type="number"
-                              min="0"
-                              max="100"
-                              step="0.01"
-                              value={resellerForm.discount_pct ?? '20'}
-                              onChange={e=>setResellerForm(p=>({...p,discount_pct:e.target.value}))}
-                              style={inputStyle}
-                              placeholder="20 = standard reseller discount, 0 = no discount"
-                            />
-                            <p style={{ color:'#777', fontSize:'10px', margin:'-8px 0 8px' }}>20 = standard reseller price. 0 = full retail price/no reseller discount.</p>
-                          </div>
                           <div><label style={lblS}>Main Reseller Account / Owner:</label>
                             <select value={resellerForm.reseller_account_id||''} onChange={e=>setResellerForm(p=>({...p,reseller_account_id:e.target.value}))} style={inputStyle}>
                               <option value="">— No parent account / single branch —</option>
@@ -17072,7 +16952,6 @@ This will create one approved expense record using the total payroll earnings.`)
                             <div>
                               <p style={{ fontWeight:'bold', fontSize:'15px', color:'#ca1b1b', margin:'0 0 2px' }}>{r.name}</p>
                               <p style={{ color:'#888', fontSize:'12px', margin:'0 0 2px' }}>📍 {r.area||'—'} | 📅 Delivery: {r.delivery_day}</p>
-                              <p style={{ color:getResellerDiscountPct(r) === 0 ? '#ca1b1b' : '#2d8a4e', fontSize:'12px', margin:'0 0 2px', fontWeight:'bold' }}>💸 Discount: {getResellerDiscountPct(r)}% {getResellerDiscountPct(r) === 0 ? '(Full retail / no reseller discount)' : ''}</p>
                               <p style={{ color:'#888', fontSize:'12px', margin:'0 0 2px' }}>👤 {r.contact_person||'—'} | 📞 {r.phone||'—'}</p>
                               {r.reseller_account_id && <p style={{ color:'#4a90d9', fontSize:'11px', margin:0, fontWeight:'bold' }}>Main Account: {getResellerAccountName(r.reseller_account_id)}</p>}
                             </div>
