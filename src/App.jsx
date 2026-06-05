@@ -2126,6 +2126,159 @@ export default function App() {
  pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
  }
 
+ function getLowStockItems() {
+ const lowItems = inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0)
+ return lowItems.sort((a,b)=>String(a.category||'').localeCompare(String(b.category||'')) || String(a.name||'').localeCompare(String(b.name||'')))
+ }
+
+ function getSuggestedOrderQty(item) {
+ const current = Number(item.current_stock||0)
+ const min = Number(item.min_stock||0)
+ return Math.max(1, (min * 2) - current)
+ }
+
+ function printLowStockItemsReport() {
+ const lowItems = getLowStockItems()
+ if (lowItems.length === 0) { showToast('No low stock items to print.'); return }
+ const groupedBySupplier = lowItems.reduce((groups, item) => {
+ const supplier = suppliers.find(s=>String(s.id)===String(item.supplier_id||''))
+ const key = supplier?.id || 'NO_SUPPLIER'
+ if (!groups[key]) groups[key] = { supplierName:supplier?.name || 'No supplier assigned', items:[] }
+ groups[key].items.push(item)
+ return groups
+ }, {})
+ const reportDate = new Date().toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric' })
+ const pw = window.open('','_blank','width=900,height=700')
+ pw.document.write(`<!DOCTYPE html><html><head><title>Low Stock Items</title>
+ <style>
+ *{margin:0;padding:0;box-sizing:border-box;}
+ body{font-family:Arial,sans-serif;padding:14mm;font-size:11px;color:#000;background:white;}
+ @media print{@page{size:A4;margin:12mm;}.no-print{display:none!important;} body{padding:0;}}
+ h1{font-size:20px;color:#ca1b1b;margin-bottom:2px;}
+ .sub{font-size:11px;color:#666;margin-bottom:14px;}
+ .summary{display:flex;gap:10px;margin:12px 0 16px;flex-wrap:wrap;}
+ .card{border:1px solid #ddd;border-radius:8px;padding:8px 12px;background:#fafafa;}
+ .card-label{font-size:9px;text-transform:uppercase;color:#777;font-weight:bold;}
+ .card-value{font-size:16px;font-weight:bold;color:#ca1b1b;margin-top:2px;}
+ .supplier-title{background:#ca1b1b;color:white;padding:7px 9px;font-size:11px;font-weight:bold;margin-top:12px;border-radius:6px 6px 0 0;}
+ table{width:100%;border-collapse:collapse;margin-bottom:10px;}
+ th{background:#fff8dc;color:#333;border:1px solid #999;padding:5px 6px;text-align:left;font-size:9px;text-transform:uppercase;}
+ td{border:1px solid #ccc;padding:5px 6px;font-size:10px;vertical-align:middle;}
+ .right{text-align:right;}.center{text-align:center;}.low{color:#ca1b1b;font-weight:bold;}.order{color:#2d8a4e;font-weight:bold;}
+ .warning{background:#fff5f5;border:1px solid #ca1b1b;border-radius:8px;padding:8px;margin-top:12px;color:#ca1b1b;font-size:10px;font-weight:bold;}
+ .no-print{text-align:center;margin-top:16px;}
+ .print-btn{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 22px;font-size:13px;font-weight:bold;cursor:pointer;}
+ </style></head><body>
+ <div style="border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:12px;display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+ <div><h1>Roma's Donuts</h1><div style="font-size:12px;font-weight:bold;">LOW STOCK REORDER REPORT</div><div class="sub">Generated: ${reportDate}</div></div>
+ <div style="text-align:right;font-size:10px;color:#666;">Inventory Control<br/>For purchasing / owner review</div>
+ </div>
+ <div class="summary">
+ <div class="card"><div class="card-label">Low stock items</div><div class="card-value">${lowItems.length}</div></div>
+ <div class="card"><div class="card-label">Suppliers involved</div><div class="card-value">${Object.keys(groupedBySupplier).filter(k=>k!=='NO_SUPPLIER').length}</div></div>
+ <div class="card"><div class="card-label">No supplier assigned</div><div class="card-value">${lowItems.filter(i=>!i.supplier_id).length}</div></div>
+ </div>
+ ${Object.values(groupedBySupplier).map(group=>`
+ <div class="supplier-title">${group.supplierName} - ${group.items.length} item(s)</div>
+ <table>
+ <thead><tr><th>Item</th><th>Category</th><th class="center">Unit</th><th class="right">On Hand</th><th class="right">Min</th><th class="right">Suggested Order</th><th class="right">Cost/Unit</th></tr></thead>
+ <tbody>
+ ${group.items.map(i=>`
+ <tr>
+ <td><strong>${String(i.name||'')}</strong></td>
+ <td>${String(i.category||'')}</td>
+ <td class="center">${String(i.unit||'')}</td>
+ <td class="right low">${Number(i.current_stock||0).toLocaleString('en-PH',{minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+ <td class="right">${Number(i.min_stock||0).toLocaleString('en-PH',{minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+ <td class="right order">${getSuggestedOrderQty(i).toLocaleString('en-PH',{minimumFractionDigits:2, maximumFractionDigits:2})}</td>
+ <td class="right">${php(i.cost_per_unit||0)}</td>
+ </tr>`).join('')}
+ </tbody></table>`).join('')}
+ ${lowItems.some(i=>!i.supplier_id)?'<div class="warning">Some low-stock items have no assigned supplier. Assign a supplier first before creating automatic P.O. drafts for those items.</div>':''}
+ <div class="no-print"><button class="print-btn" onclick="window.print()">PRINT LOW STOCK REPORT</button></div>
+ </body></html>`)
+ pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+ }
+
+ async function createPOsForLowStockSuppliers() {
+ const lowItems = getLowStockItems()
+ if (lowItems.length === 0) { showToast('No low stock items found.'); return }
+ const itemsWithSupplier = lowItems.filter(i=>i.supplier_id)
+ const itemsWithoutSupplier = lowItems.filter(i=>!i.supplier_id)
+ if (itemsWithSupplier.length === 0) {
+ showToast('No P.O. created. Assign suppliers to low-stock items first.', 'red')
+ return
+ }
+ const grouped = itemsWithSupplier.reduce((groups, item) => {
+ const supplierId = String(item.supplier_id)
+ if (!groups[supplierId]) groups[supplierId] = []
+ groups[supplierId].push(item)
+ return groups
+ }, {})
+ const supplierCount = Object.keys(grouped).length
+ const confirmMsg = `Create draft purchase orders for ${supplierCount} supplier(s) covering ${itemsWithSupplier.length} low-stock item(s)?${itemsWithoutSupplier.length ? `\n\n${itemsWithoutSupplier.length} item(s) without supplier will be skipped.` : ''}`
+ if (!window.confirm(confirmMsg)) return
+ setSavingPO(true)
+ try {
+ const created = []
+ for (const [supplierId, items] of Object.entries(grouped)) {
+ const supplier = suppliers.find(s=>String(s.id)===String(supplierId))
+ if (!supplier) continue
+ const timestamp = new Date()
+ const poNumber = `PO-${timestamp.getFullYear()}${String(timestamp.getMonth()+1).padStart(2,'0')}${String(timestamp.getDate()).padStart(2,'0')}-${Math.floor(1000+Math.random()*9000)}`
+ const poItemsForSupplier = items.map(i=>({
+ item_id: i.id,
+ item_name: i.name,
+ unit: i.unit,
+ current_stock: Number(i.current_stock||0),
+ min_stock: Number(i.min_stock||0),
+ order_qty: getSuggestedOrderQty(i),
+ unit_price: Number(i.cost_per_unit||0)
+ }))
+ const total = poItemsForSupplier.reduce((sum,i)=>sum + Number(i.order_qty||0) * Number(i.unit_price||0), 0)
+ const { data:poData, error:poError } = await supabase.from('purchase_orders').insert({
+ po_number: poNumber,
+ supplier_id: supplierId,
+ supplier_name: supplier.name || '',
+ payment_terms: supplier.payment_terms || '',
+ status: 'draft',
+ notes: 'Auto-created from Low Stock Alerts',
+ total_amount: total
+ }).select().single()
+ if (poError) throw poError
+ const itemRows = poItemsForSupplier.map(i=>({
+ po_id: poData.id,
+ item_id: i.item_id,
+ item_name: i.item_name,
+ unit: i.unit,
+ current_stock: i.current_stock,
+ order_qty: Number(i.order_qty || 0),
+ unit_price: Number(i.unit_price || 0),
+ total_price: Number(i.order_qty || 0) * Number(i.unit_price || 0)
+ }))
+ const { error:itemsError } = await supabase.from('purchase_order_items').insert(itemRows)
+ if (itemsError) throw itemsError
+ created.push({ poNumber, supplierName:supplier.name, itemCount:itemRows.length, total })
+ }
+ if (created.length === 0) {
+ showToast('No P.O. created. Check supplier assignment for low-stock items.', 'red')
+ } else {
+ await logAudit('AUTO PO CREATED', 'Admin', 'Inventory', `${created.length} draft PO(s) created from low stock alerts.`)
+ await loadPurchaseOrders()
+ setShowPOSection(true)
+ setShowPOBuilder(false)
+ setPOSupplierId('')
+ setPOItems([])
+ setPONotes('')
+ showToast(`Created ${created.length} draft P.O.(s) from low stock alerts.${itemsWithoutSupplier.length ? ` ${itemsWithoutSupplier.length} item(s) skipped without supplier.` : ''}`)
+ }
+ } catch(err) {
+ showToast('Failed to create P.O. drafts: ' + err.message, 'red')
+ } finally {
+ setSavingPO(false)
+ }
+ }
+
  // Wastage / Spoilage Functions 
  async function loadWastageLogs() {
  setWastageLoading(true)
@@ -14210,19 +14363,54 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
 
  {/* Low Stock Alert Banner */}
- {inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0).length > 0 && (
+ {(() => {
+ const lowItems = getLowStockItems()
+ if (lowItems.length === 0) return null
+ const supplierCount = new Set(lowItems.filter(i=>i.supplier_id).map(i=>String(i.supplier_id))).size
+ const noSupplierCount = lowItems.filter(i=>!i.supplier_id).length
+ return (
  <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'16px' }}>
- <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}> Low Stock Alerts</p>
- {inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0).map(i=>(
- <div key={i.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'5px 0', borderBottom:'1px solid #fee', flexWrap:'wrap', gap:'6px' }}>
- <span style={{ fontWeight:'bold', fontSize:'13px', color:'#333' }}>{i.name}</span>
- <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>
- {Number(i.current_stock||0).toFixed(2)} / {Number(i.min_stock||0).toFixed(2)} {i.unit} min
- </span>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+ <div>
+ <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 3px' }}>Low Stock Alerts</p>
+ <p style={{ color:'#777', fontSize:'11px', margin:0 }}>{lowItems.length} item(s) below minimum stock | {supplierCount} supplier(s) involved{noSupplierCount ? ` | ${noSupplierCount} without supplier` : ''}</p>
  </div>
- ))}
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{ ...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px', background:'#1a1a2e' }} onClick={printLowStockItemsReport}>PRINT LOW STOCK</button>
+ <button style={{ ...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px', opacity:savingPO?0.65:1 }} disabled={savingPO} onClick={createPOsForLowStockSuppliers}>{savingPO?'CREATING...':'CREATE P.O. DRAFTS'}</button>
  </div>
- )}
+ </div>
+ <div style={{ border:'1px solid #f5c2c7', borderRadius:'10px', overflow:'hidden', background:'white' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+ <thead>
+ <tr style={{ background:'#ca1b1b', color:'white' }}>
+ <th style={{ padding:'7px 8px', textAlign:'left', fontSize:'10px' }}>Item</th>
+ <th style={{ padding:'7px 8px', textAlign:'left', fontSize:'10px' }}>Supplier</th>
+ <th style={{ padding:'7px 8px', textAlign:'right', fontSize:'10px' }}>On Hand</th>
+ <th style={{ padding:'7px 8px', textAlign:'right', fontSize:'10px' }}>Min</th>
+ <th style={{ padding:'7px 8px', textAlign:'right', fontSize:'10px' }}>Suggested PO</th>
+ </tr>
+ </thead>
+ <tbody>
+ {lowItems.map(i=>{
+ const supplier = suppliers.find(s=>String(s.id)===String(i.supplier_id||''))
+ return (
+ <tr key={i.id} style={{ borderBottom:'1px solid #fee' }}>
+ <td style={{ padding:'7px 8px', fontWeight:'bold', color:'#333' }}>{i.name}<span style={{ color:'#888', fontWeight:'normal', fontSize:'10px' }}> {i.unit}</span></td>
+ <td style={{ padding:'7px 8px', color:supplier?'#555':'#ca1b1b', fontSize:'11px', fontWeight:supplier?'600':'800' }}>{supplier?.name || 'No supplier assigned'}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{Number(i.current_stock||0).toFixed(2)}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right' }}>{Number(i.min_stock||0).toFixed(2)}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', color:'#2d8a4e', fontWeight:'bold' }}>{getSuggestedOrderQty(i).toFixed(2)}</td>
+ </tr>
+ )
+ })}
+ </tbody>
+ </table>
+ </div>
+ {noSupplierCount > 0 && <p style={{ margin:'8px 0 0', color:'#ca1b1b', fontSize:'11px', fontWeight:'bold' }}>Reminder: items without assigned supplier will not be included in automatic P.O. drafts.</p>}
+ </div>
+ )
+ })()}
 
  {/* Stock In / Out / Wastage / Count Buttons */}
  <div style={{ background:'white', borderRadius:'12px', padding:'14px', marginBottom:'16px', border:'1px solid #eee', boxShadow:'0 1px 4px rgba(0,0,0,0.05)' }}>
