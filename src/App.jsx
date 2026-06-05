@@ -3454,6 +3454,10 @@ export default function App() {
  return [
  inv?.invoice_number,
  inv?.reseller_name,
+ inv?.customer_name,
+ inv?.customer_address,
+ inv?.customer_contact,
+ inv?.customer_type,
  inv?.delivery_date,
  dateLabel,
  inv?.due_date,
@@ -3481,6 +3485,37 @@ export default function App() {
  const term = normalizeInvoiceSearchValue(searchTerm)
  if (!term) return true
  return getInvoiceSearchHaystack(inv).includes(term)
+ }
+
+ function renderInvoiceSearchBox(title = 'Search All Invoices', note = 'Search by customer/reseller, invoice number, date, area, address, contact, or product.') {
+ const active = !!normalizeInvoiceSearchValue(invoiceSearchTerm)
+ const resultCount = deliveryInvoices.filter(inv => invoiceMatchesSearch(inv)).length
+ return (
+ <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+ <label style={{...lblS, marginBottom:'6px' }}>{title}</label>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+ <input
+ type="text"
+ value={invoiceSearchTerm}
+ onChange={e=>setInvoiceSearchTerm(e.target.value)}
+ placeholder="Search invoice no., customer/reseller, date, address, contact, product..."
+ style={{...inputStyle, marginBottom:0, flex:'1 1 260px', fontSize:'13px', border:'2px solid #f0f0f0' }}
+ />
+ {active && (
+ <button
+ type="button"
+ onClick={()=>setInvoiceSearchTerm('')}
+ style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', cursor:'pointer', fontWeight:'800', fontSize:'12px' }}
+ >
+ CLEAR
+ </button>
+ )}
+ </div>
+ <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>
+ {active ? `Showing ${resultCount} matching invoice(s) from all loaded invoices. Status/date filters may still narrow the list.` : note}
+ </p>
+ </div>
+ )
  }
 
  function sortDeliveryInvoicesNewestFirst(a, b) {
@@ -16776,6 +16811,8 @@ onClick={async ()=>{
  <p style={{ color:'#7a4a00', margin:0, fontSize:'12px', lineHeight:1.5 }}>Use this when actual produced or delivered quantity is different from the printed invoice. The adjusted actual delivered quantity becomes the billable reseller sales total.</p>
  </div>
 
+ {renderInvoiceSearchBox('Search Invoice for Adjustment', 'Search by invoice number, customer/reseller name, date, address, contact, or product before selecting an invoice to adjust.')}
+
  <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr', gap:'10px', alignItems:'end' }}>
  <div>
@@ -16788,7 +16825,10 @@ onClick={async ()=>{
  setAdjustmentReason('')
  }} style={inputStyle}>
  <option value="">Select invoice to adjust</option>
- {deliveryInvoices.map(inv=><option key={inv.id} value={inv.id}>{inv.delivery_date} {inv.invoice_number} {inv.reseller_name} {php(inv.total_amount)}</option>)}
+ {deliveryInvoices
+ .filter(inv=>invoiceMatchesSearch(inv) || String(inv.id)===String(adjustmentInvoiceId))
+ .sort(sortDeliveryInvoicesNewestFirst)
+ .map(inv=><option key={inv.id} value={inv.id}>{inv.delivery_date} {inv.invoice_number} {inv.customer_name || inv.reseller_name} {php(inv.total_amount)}</option>)}
  </select>
  </div>
  <div>
@@ -16804,7 +16844,7 @@ onClick={async ()=>{
  <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>{inv?.invoice_number} {inv?.reseller_name}</h3>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>{inv?.invoice_number} {inv?.customer_name || inv?.reseller_name}</h3>
  <p style={{...cps, margin:0 }}>Delivery Date: {inv?.delivery_date} | Status: {inv?.status}</p>
  </div>
  <div style={{ textAlign:isMobile?'left':'right' }}>
@@ -17021,14 +17061,17 @@ onClick={async ()=>{
  </button>
  ))}
  </div>
+ {renderInvoiceSearchBox('Search Receivables / Payments', 'Search all invoices before recording payments by customer/reseller, invoice number, delivery date, address, contact, or product.')}
  {/* Invoice List */}
  {(()=>{
- let filtered = deliveryInvoices.filter(i=>invoiceMatchesFilter(i, invoiceFilter))
- if (invoiceFilter==='overdue') filtered = deliveryInvoices.filter(i=>getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today)
+ let filtered = deliveryInvoices
+   .filter(i=>invoiceMatchesFilter(i, invoiceFilter))
+   .filter(i=>invoiceMatchesSearch(i))
+ if (invoiceFilter==='overdue') filtered = deliveryInvoices.filter(i=>getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today&&invoiceMatchesSearch(i))
  if (filtered.length===0) return (
  <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
  <p style={{ fontSize:'32px', margin:'0 0 8px' }}>{invoiceFilter==='delivered'?' ':invoiceFilter==='paid'?' ':' '}</p>
- <p style={{ fontWeight:'bold', color:'#555', fontSize:'13px' }}>No {invoiceFilter} invoices</p>
+ <p style={{ fontWeight:'bold', color:'#555', fontSize:'13px' }}>{invoiceSearchTerm ? `No ${invoiceFilter} invoices found for ${invoiceSearchTerm}` : `No ${invoiceFilter} invoices`}</p>
  {invoiceFilter==='delivered' && <p style={{ fontSize:'12px' }}>Mark invoices as delivered in the Deliveries tab first.</p>}
  </div>
  )
@@ -17042,7 +17085,7 @@ onClick={async ()=>{
  {/* Invoice Header */}
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'10px' }}>
  <div>
- <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 2px' }}>{inv.reseller_name}</p>
+ <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 2px' }}>{inv.customer_name || inv.reseller_name}</p>
  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 2px' }}>{inv.invoice_number} Delivery: {inv.delivery_date}</p>
  {isOverdue && <p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'bold', margin:0 }}> {daysOverdue} day(s) overdue</p>}
  </div>
