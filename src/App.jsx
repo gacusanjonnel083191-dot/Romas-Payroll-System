@@ -892,6 +892,7 @@ export default function App() {
   const [showSalesForm, setShowSalesForm] = useState(false)
   const [salesDate, setSalesDate] = useState(today)
   const [salesEntries, setSalesEntries] = useState([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])
+  const [otherSalesEntries, setOtherSalesEntries] = useState([])
   const [salesNotes, setSalesNotes] = useState('')
   const [savingSales, setSavingSales] = useState(false)
   const [dailyExpenses, setDailyExpenses] = useState([])
@@ -988,6 +989,13 @@ export default function App() {
   const PAYABLE_METHODS = ['Cash','GCash','Bank Transfer','Check','PDC','Online Banking','Other']
   const WEEK_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
   const SALES_CHANNELS = [{ value:'walkin', label:'🏪 Walk-in' }, { value:'messenger', label:'💬 Messenger' }]
+  const OTHER_SALES_CATEGORIES = [
+    { value:'snacks_drinks', label:'Snacks and Drinks', bucket:'walkin' },
+    { value:'online_orders', label:'Online Orders', bucket:'messenger' },
+    { value:'messenger', label:'Messenger', bucket:'messenger' },
+    { value:'others', label:'Others', bucket:'walkin' },
+  ]
+  const getOtherSalesCategory = (value) => OTHER_SALES_CATEGORIES.find(c => c.value === value) || OTHER_SALES_CATEGORIES[0]
   const [inventorySearch, setInventorySearch] = useState('')
   const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState('all')
   const [showAddItem, setShowAddItem] = useState(false)
@@ -4212,17 +4220,30 @@ This will remove the invoice and its line items.`
   async function saveDailySales() {
     if (!salesDate) { showToast('❌ Please select a date.','red'); return }
     const valid = salesEntries.filter(e => e.variant_id && Number(e.quantity) > 0)
-    if (valid.length === 0) { showToast('❌ Please add at least one sale entry.','red'); return }
+    const validOtherSales = otherSalesEntries.filter(e => e.category && Number(e.amount) > 0)
+    if (valid.length === 0 && validOtherSales.length === 0) {
+      showToast('❌ Please add at least one donut sale or other sale entry.','red')
+      return
+    }
     setSavingSales(true)
     try {
-      const walkinTotal = valid.filter(e=>e.channel==='walkin').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
-      const messengerTotal = valid.filter(e=>e.channel==='messenger').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
+      const donutWalkinTotal = valid.filter(e=>e.channel==='walkin').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
+      const donutMessengerTotal = valid.filter(e=>e.channel==='messenger').reduce((s,e)=>s+Number(e.quantity)*Number(e.unit_price||0),0)
+      const otherWalkinTotal = validOtherSales.filter(e=>getOtherSalesCategory(e.category).bucket==='walkin').reduce((s,e)=>s+Number(e.amount||0),0)
+      const otherMessengerTotal = validOtherSales.filter(e=>getOtherSalesCategory(e.category).bucket==='messenger').reduce((s,e)=>s+Number(e.amount||0),0)
+      const otherSalesTotal = otherWalkinTotal + otherMessengerTotal
+      const walkinTotal = donutWalkinTotal + otherWalkinTotal
+      const messengerTotal = donutMessengerTotal + otherMessengerTotal
       const resellerInvoicesDay = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
       const totalRevenue = walkinTotal + messengerTotal + resellerInvoicesDay
+      const otherSalesNote = validOtherSales.length
+        ? `Other Sales: ${validOtherSales.map(e=>`${getOtherSalesCategory(e.category).label} ${php(e.amount)}${e.description ? ` (${e.description})` : ''}`).join('; ')} | Other Sales Total: ${php(otherSalesTotal)}`
+        : ''
+      const combinedNotes = [String(salesNotes || '').trim(), otherSalesNote].filter(Boolean).join(' | ')
       const { data:saleData, error:sErr } = await supabase.from('daily_sales').insert({
         sale_date:salesDate, total_walkin:walkinTotal, total_messenger:messengerTotal,
         total_reseller:resellerInvoicesDay, total_revenue:totalRevenue,
-        notes:salesNotes||null, encoded_by:adminRole
+        notes:combinedNotes||null, encoded_by:adminRole
       }).select().single()
       if (sErr) throw sErr
       const itemRows = valid.map(e => {
@@ -4230,10 +4251,13 @@ This will remove the invoice and its line items.`
         const unitPrice = variant?.selling_price || Number(e.unit_price||0)
         return { sale_id:saleData.id, variant_id:e.variant_id, variant_name:e.variant_name||variant?.name||'', channel:e.channel, quantity:Number(e.quantity), unit_price:unitPrice, total_price:Number(e.quantity)*unitPrice }
       })
-      await supabase.from('daily_sales_items').insert(itemRows)
-      await logAudit('DAILY SALES ENCODED', adminRole, 'Sales', `${salesDate} — ${php(totalRevenue)}`)
+      if (itemRows.length > 0) {
+        const { error:itemErr } = await supabase.from('daily_sales_items').insert(itemRows)
+        if (itemErr) throw itemErr
+      }
+      await logAudit('DAILY SALES ENCODED', adminRole, 'Sales', `${salesDate} — ${php(totalRevenue)}${otherSalesTotal>0 ? ` | Other Sales: ${php(otherSalesTotal)}` : ''}`)
       showToast(`✅ Sales for ${salesDate} saved! Total: ${php(totalRevenue)}`)
-      setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setSalesNotes('')
+      setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setOtherSalesEntries([]); setSalesNotes('')
       loadDailySales()
       refreshFoundationAfterDataChange('daily-sales-saved')
     } catch(err) { showToast('❌ Failed: '+err.message,'red') }
@@ -16445,17 +16469,45 @@ This recovery button creates one approved expense record using GROSS payroll ear
                             <button onClick={()=>setSalesEntries(salesEntries.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'7px 9px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕</button>
                           </div>
                         ))}
-                        <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:'10px', fontSize:'12px' }} onClick={()=>setSalesEntries([...salesEntries, { variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])}>+ ADD ROW</button>
-                        {salesEntries.some(e=>e.variant_id&&Number(e.quantity)>0) && (()=>{
-                          const walkin = salesEntries.filter(e=>e.channel==='walkin'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
-                          const messenger = salesEntries.filter(e=>e.channel==='messenger'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
+                        <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'10px' }}>
+                          <button style={{ ...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginBottom:0, fontSize:'12px' }} onClick={()=>setSalesEntries([...salesEntries, { variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])}>+ ADD DONUT SALE ROW</button>
+                          <button style={{ ...btnYellow, width:'auto', padding:'8px 14px', fontSize:'12px' }} onClick={()=>setOtherSalesEntries([...otherSalesEntries, { category:'snacks_drinks', amount:'', description:'' }])}>+ ADD OTHER SALES</button>
+                        </div>
+                        {otherSalesEntries.length > 0 && (
+                          <div style={{ background:'#fffbe6', border:'1.5px solid #FDD412', borderRadius:'12px', padding:'12px', marginBottom:'12px' }}>
+                            <p style={{ fontWeight:'bold', color:'#8a6d00', fontSize:'13px', margin:'0 0 8px' }}>➕ Other Sales From Other Sources</p>
+                            <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1.5fr auto', gap:'6px', marginBottom:'4px' }}>
+                              {['Category','Amount','Notes / Source',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+                            </div>
+                            {otherSalesEntries.map((entry,i)=>(
+                              <div key={i} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1.5fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
+                                <select value={entry.category} onChange={e=>{ const upd=[...otherSalesEntries]; upd[i]={...upd[i],category:e.target.value}; setOtherSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }}>
+                                  {OTHER_SALES_CATEGORIES.map(cat=><option key={cat.value} value={cat.value}>{cat.label}</option>)}
+                                </select>
+                                <input type="number" placeholder="Amount" value={entry.amount} onChange={e=>{ const upd=[...otherSalesEntries]; upd[i]={...upd[i],amount:e.target.value}; setOtherSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" step="0.01" />
+                                <input type="text" placeholder="e.g. Coke, packed snacks, FB order" value={entry.description||''} onChange={e=>{ const upd=[...otherSalesEntries]; upd[i]={...upd[i],description:e.target.value}; setOtherSalesEntries(upd) }} style={{ ...inputStyle, marginBottom:0, fontSize:'11px' }} />
+                                <button onClick={()=>setOtherSalesEntries(otherSalesEntries.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'7px 9px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }}>✕</button>
+                              </div>
+                            ))}
+                            <p style={{ color:'#8a6d00', fontSize:'11px', margin:'6px 0 0' }}>These amounts are included in Total Revenue. Snacks/Drinks and Others are grouped with Walk-in; Online Orders and Messenger are grouped with Messenger.</p>
+                          </div>
+                        )}
+                        {(salesEntries.some(e=>e.variant_id&&Number(e.quantity)>0) || otherSalesEntries.some(e=>e.category&&Number(e.amount)>0)) && (()=>{
+                          const donutWalkin = salesEntries.filter(e=>e.channel==='walkin'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
+                          const donutMessenger = salesEntries.filter(e=>e.channel==='messenger'&&e.variant_id).reduce((s,e)=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); return s+Number(e.quantity||0)*(v?.selling_price||0) },0)
+                          const otherWalkin = otherSalesEntries.filter(e=>e.category&&getOtherSalesCategory(e.category).bucket==='walkin').reduce((s,e)=>s+Number(e.amount||0),0)
+                          const otherMessenger = otherSalesEntries.filter(e=>e.category&&getOtherSalesCategory(e.category).bucket==='messenger').reduce((s,e)=>s+Number(e.amount||0),0)
+                          const walkin = donutWalkin + otherWalkin
+                          const messenger = donutMessenger + otherMessenger
+                          const otherTotal = otherWalkin + otherMessenger
                           const resellerTotal = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
                           return (
                             <div style={{ background:'#e8f5e9', borderRadius:'10px', padding:'12px', marginBottom:'12px', border:'1px solid #c8e6c9' }}>
                               <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 8px' }}>📊 Revenue Preview</p>
-                              <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'6px', fontSize:'12px' }}>
+                              <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'6px', fontSize:'12px' }}>
                                 <p style={cps}>Walk-in: <strong>{php(walkin)}</strong></p>
                                 <p style={cps}>Messenger: <strong>{php(messenger)}</strong></p>
+                                <p style={cps}>Other sales included: <strong>{php(otherTotal)}</strong></p>
                                 <p style={cps}>Reseller deliveries: <strong>{php(resellerTotal)}</strong></p>
                                 <p style={{ ...cps, fontWeight:'bold', color:'#ca1b1b' }}>Total: <strong>{php(walkin+messenger+resellerTotal)}</strong></p>
                               </div>
