@@ -16813,6 +16813,89 @@ onClick={async ()=>{
 
  {renderInvoiceSearchBox('Search Invoice for Adjustment', 'Search by invoice number, customer/reseller name, date, address, contact, or product before selecting an invoice to adjust.')}
 
+ {normalizeInvoiceSearchValue(invoiceSearchTerm) && (() => {
+ const matchingInvoices = deliveryInvoices
+ .filter(inv => invoiceMatchesSearch(inv))
+ .sort(sortDeliveryInvoicesNewestFirst)
+ .slice(0, 30)
+ return (
+ <div style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)', border:'1px solid #f0f0f0' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 3px', fontSize:'14px' }}>Matching Invoice Results</h3>
+ <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Click an invoice below to load it for adjustment. The dropdown is still available as a backup.</p>
+ </div>
+ <span style={{ background:'#fff8dc', color:'#ca1b1b', border:'1px solid #fdd412', borderRadius:'999px', padding:'5px 10px', fontWeight:'900', fontSize:'11px' }}>
+ {matchingInvoices.length} result{matchingInvoices.length===1?'':'s'}
+ </span>
+ </div>
+ {matchingInvoices.length === 0 ? (
+ <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', borderRadius:'10px', padding:'12px', color:'#ca1b1b', fontSize:'12px', fontWeight:'700' }}>
+ No invoice matched your search. Try invoice number, customer/reseller name, delivery date, address, contact number, or product name.
+ </div>
+ ) : (
+ <div style={{ display:'grid', gap:'8px' }}>
+ {matchingInvoices.map(inv => {
+ const isSelected = String(inv.id) === String(adjustmentInvoiceId)
+ const customerName = inv.customer_name || inv.reseller_name || 'Customer'
+ const customerType = String(inv.customer_type || (inv.reseller_id ? 'reseller' : 'non-reseller')).replace('_',' ')
+ const itemPreview = (inv.delivery_invoice_items || [])
+ .map(item => item.variant_name)
+ .filter(Boolean)
+ .slice(0, 4)
+ .join(', ')
+ const balance = Math.max(0, safeNum(inv.total_amount, 0) - safeNum(inv.paid_amount, 0))
+ return (
+ <button
+ key={inv.id}
+ type="button"
+ onClick={()=>startInvoiceAdjustment(inv)}
+ style={{
+ width:'100%',
+ textAlign:'left',
+ background:isSelected?'#fff8dc':'#ffffff',
+ border:isSelected?'2px solid #fdd412':'1px solid #eeeeee',
+ borderRadius:'12px',
+ padding:'12px',
+ cursor:'pointer',
+ boxShadow:isSelected?'0 3px 10px rgba(253,212,18,0.25)':'0 1px 5px rgba(0,0,0,0.04)'
+ }}
+ >
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.15fr 1.6fr 0.85fr 0.85fr 0.85fr', gap:'8px', alignItems:'center' }}>
+ <div>
+ <p style={{ margin:'0 0 3px', fontWeight:'900', color:'#ca1b1b', fontSize:'13px' }}>{inv.invoice_number || 'No invoice no.'}</p>
+ <p style={{ margin:0, color:'#777', fontSize:'11px', textTransform:'capitalize' }}>{customerType}</p>
+ </div>
+ <div>
+ <p style={{ margin:'0 0 3px', fontWeight:'800', color:'#1a1a2e', fontSize:'13px' }}>{customerName}</p>
+ <p style={{ margin:0, color:'#777', fontSize:'11px' }}>{inv.customer_address || inv.reseller_address || inv.address || inv.area || 'No address recorded'}</p>
+ </div>
+ <div>
+ <p style={{ margin:'0 0 3px', color:'#777', fontSize:'10px', fontWeight:'800' }}>Delivery Date</p>
+ <p style={{ margin:0, color:'#333', fontSize:'12px', fontWeight:'700' }}>{inv.delivery_date || '-'}</p>
+ </div>
+ <div>
+ <p style={{ margin:'0 0 3px', color:'#777', fontSize:'10px', fontWeight:'800' }}>Total / Balance</p>
+ <p style={{ margin:0, color:'#ca1b1b', fontSize:'12px', fontWeight:'900' }}>{php(inv.total_amount || 0)} / {php(balance)}</p>
+ </div>
+ <div style={{ textAlign:isMobile?'left':'right' }}>
+ <span style={{ display:'inline-block', background:isSelected?'#2d8a4e':'#f4f4f4', color:isSelected?'white':'#555', borderRadius:'999px', padding:'5px 10px', fontSize:'10px', fontWeight:'900' }}>
+ {isSelected?'SELECTED':'LOAD'}
+ </span>
+ </div>
+ </div>
+ <p style={{ margin:'8px 0 0', color:'#888', fontSize:'11px', lineHeight:1.4 }}>
+ {itemPreview ? `Items: ${itemPreview}${(inv.delivery_invoice_items || []).length > 4 ? '...' : ''}` : 'No item preview loaded.'}
+ </p>
+ </button>
+ )
+ })}
+ </div>
+ )}
+ </div>
+ )
+ })()}
+
  <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr', gap:'10px', alignItems:'end' }}>
  <div>
