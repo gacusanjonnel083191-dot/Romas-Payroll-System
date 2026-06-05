@@ -11153,7 +11153,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </div>
  </>
  )}
- <button style={{...btnGray, maxWidth:'360px', marginTop:'12px' }} onClick={()=>{ setCameraMode(null); setCapturedPhoto(null); stopCamera() }}>\u2715 CANCEL</button>
+ <button style={{...btnGray, maxWidth:'360px', marginTop:'12px' }} onClick={()=>{ setCameraMode(null); setCapturedPhoto(null); stopCamera() }}>CANCEL</button>
  </div>
  )
  }
@@ -12021,7 +12021,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
  <div style={{ display:'flex', gap:'8px' }}>
  <button onClick={saveEmployeeChanges} disabled={saveEmployeeLoading} style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0, opacity:saveEmployeeLoading?0.7:1 }}>{saveEmployeeLoading?' SAVING...':' SAVE CHANGES'}</button>
- <button onClick={()=>{ setEditingEmployeeId(''); setSaveSuccess(null) }} style={{...btnGray, width:'auto', padding:'10px 18px', marginTop:0 }}>\u2715 CANCEL</button>
+ <button onClick={()=>{ setEditingEmployeeId(''); setSaveSuccess(null) }} style={{...btnGray, width:'auto', padding:'10px 18px', marginTop:0 }}>CANCEL</button>
  </div>
  </div>
  )}
@@ -13078,7 +13078,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ display:'flex', gap:'10px', marginTop:'16px', flexWrap:'wrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={processFinalPay}> PROCESS & DEACTIVATE</button>
  <button style={{...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>printFinalPay(finalPayResult)}> PRINT</button>
- <button style={{...btnGray, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setFinalPayResult(null)}>\u2715 CANCEL</button>
+ <button style={{...btnGray, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setFinalPayResult(null)}>CANCEL</button>
  </div>
  </div>
  )}
@@ -14391,7 +14391,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {isEditing? (
  <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
  <input type="date" value={expiryDate} onChange={e=>setExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0, width:'150px' }} />
- <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>saveExpiryDate(item.id)}>\uD83D\uDCBE SAVE</button>
+ <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>saveExpiryDate(item.id)}>SAVE</button>
  <button style={{...btnGray, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>setEditingExpiryId(null)}> </button>
  </div>
  ): (
@@ -15170,7 +15170,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  ): (
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={saveBaseDough}>{savingRecipe?' Saving...':' SAVE'}</button>
- <button style={{...btnGray, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setSelectedRecipeVariantId(null)}>\u2715 CANCEL</button>
+ <button style={{...btnGray, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setSelectedRecipeVariantId(null)}>CANCEL</button>
  </div>
  )}
  </div>
@@ -15255,7 +15255,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <input type="number" value={editVariantFields.pieces_per_batch??v.pieces_per_batch} onChange={e=>setEditVariantFields(p=>({...p,pieces_per_batch:e.target.value}))} style={{...inputStyle, marginBottom:0, width:'80px', fontSize:'12px' }} min="1" />
  <label style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Sell Price:</label>
  <input type="number" value={editVariantFields.selling_price??v.selling_price} onChange={e=>setEditVariantFields(p=>({...p,selling_price:e.target.value}))} style={{...inputStyle, marginBottom:0, width:'80px', fontSize:'12px' }} min="0" step="0.5" />
- <button style={{...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>updateVariant(v.id,{ pieces_per_batch:Number(editVariantFields.pieces_per_batch||v.pieces_per_batch), selling_price:Number(editVariantFields.selling_price||v.selling_price) })}>\uD83D\uDCBE SAVE</button>
+ <button style={{...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>updateVariant(v.id,{ pieces_per_batch:Number(editVariantFields.pieces_per_batch||v.pieces_per_batch), selling_price:Number(editVariantFields.selling_price||v.selling_price) })}>SAVE</button>
  <button style={{...btnGray, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setEditingVariantId(null)}> </button>
  </div>
  )}
@@ -16905,7 +16905,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div><p style={{ fontWeight:'bold', color:'#555', fontSize:'11px', margin:'0 0 2px' }}>{row.payment_type || row.payment_method || ' '}</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{row.check_number? `Check #${row.check_number}`: row.bank_name || ' '}</p></div>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
  {row.source==='company_payables'? <button disabled={!!processingItems[`payable-paid-${row.id}`]} onClick={()=>markCompanyPayablePaid(row)} style={{ background:'#2d8a4e', color:'white', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:processingItems[`payable-paid-${row.id}`]?'not-allowed':'pointer', opacity:processingItems[`payable-paid-${row.id}`]?0.65:1 }}>{processingItems[`payable-paid-${row.id}`]?'POSTING...':'PAID + EXPENSE'}</button>: <button onClick={()=>setSalesView('expenses')} style={{ background:'#f5c518', color:'#333', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>REVIEW</button>}
- {row.source==='company_payables' && <button onClick={()=>cancelCompanyPayable(row)} style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>\u2715 CANCEL</button>}
+ {row.source==='company_payables' && <button onClick={()=>cancelCompanyPayable(row)} style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'8px', padding:'7px 10px', fontSize:'10px', fontWeight:'bold', cursor:'pointer' }}>CANCEL</button>}
  </div>
  </div>
  ))}
@@ -16949,7 +16949,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </div>
  <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
  <input type="date" value={reconciliationDate} onChange={e=>setReconciliationDate(e.target.value)} style={{...inputStyle, marginBottom:0, width:'140px', fontSize:'12px', padding:'6px 10px' }} />
- <button style={{...btnBlack, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowReconciliationHistory(!showReconciliationHistory)}>\uD83D\uDCCB HISTORY</button>
+ <button style={{...btnBlack, width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>setShowReconciliationHistory(!showReconciliationHistory)}>HISTORY</button>
  </div>
  </div>
  {/* Summary */}
@@ -17023,7 +17023,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <h3 style={{ color:'#1a1a2e', margin:'0 0 2px', fontSize:'14px' }}> Weekly Bank Deposit {isDayOfWeek&&<span style={{ background:'#ca1b1b', color:'white', borderRadius:'6px', padding:'2px 8px', fontSize:'10px', marginLeft:'6px' }}> DEPOSIT DAY TODAY!</span>}</h3>
  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Every Tuesday Admin deposits weekly collections</p>
  </div>
- <button style={{...btnYellow, padding:'8px 16px' }} onClick={()=>setShowDepositForm(!showDepositForm)}>\uD83D\uDCB0 RECORD DEPOSIT</button>
+ <button style={{...btnYellow, padding:'8px 16px' }} onClick={()=>setShowDepositForm(!showDepositForm)}>RECORD DEPOSIT</button>
  </div>
  {/* Summary */}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'10px', marginBottom:'12px' }}>
@@ -17252,7 +17252,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <button type="button" style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); startEditDefaultOrder(r.id) }}> EDIT</button>
  ): (
  <div style={{ display:'flex', gap:'6px' }}>
- <button style={{...btnGreen, width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>saveDefaultOrder(r.id)}>\uD83D\uDCBE SAVE</button>
+ <button style={{...btnGreen, width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>saveDefaultOrder(r.id)}>SAVE</button>
  <button style={{...btnGray, width:'auto', padding:'4px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>setEditingDefaultOrder(null)}> </button>
  </div>
  )}
