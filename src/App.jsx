@@ -748,6 +748,14 @@ export default function App() {
  const [savingSop, setSavingSop] = useState(false)
  const [sopAcknowledgements, setSopAcknowledgements] = useState([])
  const [sopAckLoading, setSopAckLoading] = useState(false)
+ const [sopAckStatusFilter, setSopAckStatusFilter] = useState('missing')
+ const [sopAckSearch, setSopAckSearch] = useState('')
+ const [showMySops, setShowMySops] = useState(false)
+ const [mySopDocuments, setMySopDocuments] = useState([])
+ const [mySopAckRecords, setMySopAckRecords] = useState([])
+ const [mySopsLoading, setMySopsLoading] = useState(false)
+ const [viewingMySop, setViewingMySop] = useState(null)
+ const [acknowledgingSopId, setAcknowledgingSopId] = useState(null)
  const [sopForm, setSopForm] = useState({
  sop_code:'',
  title:'',
@@ -1247,6 +1255,7 @@ export default function App() {
  if (adminMode && activeTab === 'sops') {
  loadSops()
  loadSopAcknowledgements()
+ loadEmployees()
  }
  }, [adminMode, activeTab])
 
@@ -1282,7 +1291,7 @@ export default function App() {
  loadTodayLog(activeEmployee); loadTodaySchedule(activeEmployee)
  loadMyPayslips(activeEmployee); loadMyCashAdvances(activeEmployee)
  loadMyAttendanceHistory(activeEmployee); loadMyLeaveBalance(activeEmployee)
- checkAnnouncements(activeEmployee); loadMyCharges(activeEmployee)
+ checkAnnouncements(activeEmployee); loadMyCharges(activeEmployee); loadMySops(activeEmployee)
  }
 
  loadEmployeePortalData()
@@ -1722,11 +1731,12 @@ export default function App() {
  setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
  setTodaySchedule(null); setMyPayslips([]); setCameraMode(null)
  setCapturedPhoto(null); stopCamera(); setPendingAnnouncement(null); setShowAnnouncementPopup(false)
+ setShowMySops(false); setMySopDocuments([]); setMySopAckRecords([]); setViewingMySop(null)
  }
  function closeAllPanels() {
  setShowLeaveRequest(false); setShowPayslips(false)
  setShowCashAdvances(false); setShowCashAdvanceRequest(false); setShowMyAttendance(false); setShowOTRequest(false)
- setShowMyLeaves(false)
+ setShowMyLeaves(false); setShowMySops(false); setViewingMySop(null)
  }
 
  // Announcements 
@@ -7574,8 +7584,97 @@ function buildDeliveryInvoicePrintCSS() {
 
  async function refreshSopLibrary(options = {}) {
  const silent = options?.silent === true
- await Promise.all([loadSops(), loadSopAcknowledgements()])
+ await Promise.all([loadSops(), loadSopAcknowledgements(), loadEmployees()])
  if (!silent) showToast('SOP Library refreshed.')
+ }
+
+ function isSopAcknowledgedByEmployee(sop, emp, records = sopAcknowledgements) {
+ if (!sop?.id || !emp?.id) return false
+ return (records || []).some(row =>
+ String(row.sop_id || '') === String(sop.id) &&
+ String(row.employee_id || '') === String(emp.id) &&
+ String(row.version || '') === String(sop.version || '') &&
+ String(row.status || 'acknowledged').toLowerCase() === 'acknowledged'
+ )
+ }
+
+ function getEmployeeSopAckRecord(sop, records = mySopAckRecords) {
+ if (!sop?.id || !employee?.id) return null
+ return (records || []).find(row =>
+ String(row.sop_id || '') === String(sop.id) &&
+ String(row.employee_id || '') === String(employee.id) &&
+ String(row.version || '') === String(sop.version || '') &&
+ String(row.status || 'acknowledged').toLowerCase() === 'acknowledged'
+ ) || null
+ }
+
+ async function loadMySops(emp = employee) {
+ if (!emp?.id) return
+ setMySopsLoading(true)
+ try {
+ const { data:sopData, error:sopError } = await supabase
+ .from('sop_documents')
+ .select('*')
+ .eq('status', 'active')
+ .eq('acknowledgement_required', true)
+ .order('sop_code', { ascending:true })
+ if (sopError) throw sopError
+
+ const { data:ackData, error:ackError } = await supabase
+ .from('sop_acknowledgements')
+ .select('*')
+ .eq('employee_id', emp.id)
+ .order('acknowledged_at', { ascending:false })
+ if (ackError) throw ackError
+
+ setMySopDocuments(sopData || [])
+ setMySopAckRecords(ackData || [])
+ } catch(e) {
+ console.warn('loadMySops:', e?.message || e)
+ setMySopDocuments([])
+ setMySopAckRecords([])
+ } finally {
+ setMySopsLoading(false)
+ }
+ }
+
+ async function acknowledgeMySop(sop) {
+ if (!employee?.id || !sop?.id) return
+ if (String(sop.status || '').toLowerCase() !== 'active') { showToast('Only active SOPs can be acknowledged.', 'red'); return }
+ setAcknowledgingSopId(sop.id)
+ try {
+ const existing = getEmployeeSopAckRecord(sop)
+ const payload = {
+ sop_id:sop.id,
+ sop_code:sop.sop_code || '',
+ version:sop.version || '1.0',
+ employee_id:employee.id,
+ employee_code:employee.employee_code || '',
+ employee_name:employee.full_name || '',
+ role:employee.position || employee.department || 'Employee',
+ status:'acknowledged',
+ acknowledged_at:new Date().toISOString(),
+ remarks:'Employee acknowledged through employee portal.'
+ }
+
+ let error
+ if (existing?.id) {
+ ;({ error } = await supabase.from('sop_acknowledgements').update(payload).eq('id', existing.id))
+ } else {
+ ;({ error } = await supabase.from('sop_acknowledgements').insert(payload))
+ }
+ if (error) throw error
+
+ await logAudit('SOP ACKNOWLEDGED', employee.full_name || employee.employee_code || 'Employee', sop.sop_code || '', sop.title || '')
+ showToast('SOP acknowledged successfully.')
+ await loadMySops(employee)
+ await loadSopAcknowledgements()
+ setViewingMySop(null)
+ } catch(e) {
+ showToast('SOP acknowledgement failed: ' + (e?.message || 'Unknown error'), 'red')
+ } finally {
+ setAcknowledgingSopId(null)
+ }
  }
 
  async function saveSopDocument() {
@@ -12593,6 +12692,33 @@ This recovery button creates one approved expense record using GROSS payroll ear
  archived:(sops || []).filter(s => s.status === 'archived').length,
  ackRequired:(sops || []).filter(s => s.acknowledgement_required !== false).length
  }
+ const activeAckSops = (sops || []).filter(s => String(s.status || '').toLowerCase() === 'active' && s.acknowledgement_required !== false)
+ const activeSopEmployees = (employees || []).filter(e => e?.is_active !== false)
+ const sopAckMatrixRows = activeSopEmployees.flatMap(emp => activeAckSops.map(sop => {
+ const ack = (sopAcknowledgements || []).find(row =>
+ String(row.sop_id || '') === String(sop.id) &&
+ String(row.employee_id || '') === String(emp.id) &&
+ String(row.version || '') === String(sop.version || '') &&
+ String(row.status || 'acknowledged').toLowerCase() === 'acknowledged'
+ )
+ return {
+ key:`${emp.id}-${sop.id}-${sop.version || '1.0'}`,
+ employee:emp,
+ sop,
+ ack,
+ status:ack? 'acknowledged':'missing'
+ }
+ }))
+ const sopAckCompletedCount = sopAckMatrixRows.filter(r => r.status === 'acknowledged').length
+ const sopAckMissingCount = sopAckMatrixRows.filter(r => r.status === 'missing').length
+ const sopAckTotalRequired = sopAckMatrixRows.length
+ const sopAckCoveragePct = sopAckTotalRequired? Math.round((sopAckCompletedCount / sopAckTotalRequired) * 100):0
+ const filteredSopAckMatrixRows = sopAckMatrixRows.filter(row => {
+ const q = sopAckSearch.trim().toLowerCase()
+ const matchesStatus = sopAckStatusFilter === 'all' || row.status === sopAckStatusFilter
+ const matchesSearch = !q || [row.employee.full_name, row.employee.employee_code, row.employee.position, row.employee.department, row.sop.sop_code, row.sop.title, row.sop.department].some(v => String(v || '').toLowerCase().includes(q))
+ return matchesStatus && matchesSearch
+ })
  const openSopLibraryFilter = (status = 'all', ackOnly = false) => {
  setSopSearch('')
  setSopDepartmentFilter('all')
@@ -20737,40 +20863,81 @@ onClick={async ()=>{
  )}
 
  {sopView==='acknowledgements' && (
+ <div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'16px' }}>
+ {[
+ ['Required SOPs', activeAckSops.length, '#1a1a2e'],
+ ['Active Employees', activeSopEmployees.length, '#4a90d9'],
+ ['Required Acknowledgements', sopAckTotalRequired, '#ca1b1b'],
+ ['Completed', sopAckCompletedCount, '#2d8a4e'],
+ ['Missing', sopAckMissingCount, '#f5a623'],
+ ].map(([label,value,color]) => (
+ <div key={label} style={{ background:'white', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)', border:`1px solid ${color}22` }}>
+ <p style={{ color:'#888', fontSize:'10px', margin:'0 0 6px', textTransform:'uppercase', letterSpacing:'0.5px' }}>{label}</p>
+ <p style={{ color, fontSize:'22px', fontWeight:'900', margin:0 }}>{value}</p>
+ </div>
+ ))}
+ </div>
+
  <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', marginBottom:'12px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', marginBottom:'12px', flexWrap:'wrap' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px' }}>Employee SOP Acknowledgements</h3>
- <p style={{ color:'#777', fontSize:'12px', margin:0 }}>This is ready for the next phase: employee read-and-acknowledge tracking.</p>
+ <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Track who already acknowledged each active SOP and who still needs to read it. Current coverage: <b>{sopAckCoveragePct}%</b>.</p>
  </div>
- <button style={{...btnYellow, width:'auto' }} onClick={loadSopAcknowledgements}>REFRESH</button>
+ <button style={{...btnYellow, width:'auto' }} onClick={()=>refreshSopLibrary()}>REFRESH</button>
  </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 180px', gap:'10px', marginBottom:'10px' }}>
+ <input value={sopAckSearch} onChange={e=>setSopAckSearch(e.target.value)} placeholder="Search employee, code, position, SOP code, title, or department..." style={inputStyle} />
+ <select value={sopAckStatusFilter} onChange={e=>setSopAckStatusFilter(e.target.value)} style={inputStyle}>
+ <option value="missing">Missing Only</option>
+ <option value="acknowledged">Acknowledged Only</option>
+ <option value="all">All Records</option>
+ </select>
+ </div>
+
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
+ {[['missing','Missing'],['acknowledged','Acknowledged'],['all','All']].map(([key,label]) => (
+ <button key={key} style={{...btnBase, width:'auto', marginTop:0, padding:'8px 12px', background:sopAckStatusFilter===key?'#ca1b1b':'#f2f2f2', color:sopAckStatusFilter===key?'white':'#333', boxShadow:sopAckStatusFilter===key?'0 2px 8px rgba(202,27,27,0.25)':'none' }} onClick={()=>setSopAckStatusFilter(key)}>{label}</button>
+ ))}
+ </div>
+
  {sopAckLoading? <p style={{ color:'#888' }}>Loading acknowledgements...</p>:
- sopAcknowledgements.length === 0? (
+ activeAckSops.length === 0? (
  <div style={{ background:'#f8f8f8', borderRadius:'12px', padding:'24px', textAlign:'center', color:'#888' }}>
- <p style={{ fontWeight:'bold', color:'#555', margin:'0 0 6px' }}>No acknowledgement records yet</p>
- <p style={{ fontSize:'12px', margin:0 }}>After we add employee-side acknowledgement, records will appear here.</p>
+ <p style={{ fontWeight:'bold', color:'#555', margin:'0 0 6px' }}>No active SOPs require acknowledgement</p>
+ <p style={{ fontSize:'12px', margin:0 }}>Activate SOPs and keep acknowledgement required enabled to make them appear here.</p>
+ </div>
+ ) : filteredSopAckMatrixRows.length === 0? (
+ <div style={{ background:'#f8f8f8', borderRadius:'12px', padding:'24px', textAlign:'center', color:'#888' }}>
+ <p style={{ fontWeight:'bold', color:'#555', margin:'0 0 6px' }}>No matching acknowledgement records</p>
+ <p style={{ fontSize:'12px', margin:0 }}>Try changing the filter or search term.</p>
  </div>
  ) : (
  <div style={{ overflowX:'auto' }}>
  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
  <thead><tr style={{ background:'#1a1a2e', color:'white' }}>
- {['Date','Employee','SOP','Version','Status'].map(h=><th key={h} style={{ padding:'9px', textAlign:'left' }}>{h}</th>)}
+ {['Status','Employee','Position','SOP','Department','Version','Acknowledged At'].map(h=><th key={h} style={{ padding:'9px', textAlign:'left' }}>{h}</th>)}
  </tr></thead>
  <tbody>
- {sopAcknowledgements.map(row => (
- <tr key={row.id} style={{ borderBottom:'1px solid #eee' }}>
- <td style={{ padding:'9px' }}>{String(row.acknowledged_at || '').slice(0,19).replace('T',' ')}</td>
- <td style={{ padding:'9px', fontWeight:'bold' }}>{row.employee_name || row.employee_id || 'Employee'}</td>
- <td style={{ padding:'9px' }}>{row.sop_code || row.sop_id}</td>
- <td style={{ padding:'9px' }}>{row.version || ''}</td>
- <td style={{ padding:'9px' }}>{row.status || 'acknowledged'}</td>
+ {filteredSopAckMatrixRows.slice(0, 1000).map(row => (
+ <tr key={row.key} style={{ borderBottom:'1px solid #eee', background:row.status==='missing'?'#fff8f0':'white' }}>
+ <td style={{ padding:'9px' }}><span style={{ background:row.status==='acknowledged'?'#e8f5e9':'#fff5f5', color:row.status==='acknowledged'?'#2d8a4e':'#ca1b1b', borderRadius:'20px', padding:'4px 8px', fontSize:'10px', fontWeight:'900' }}>{row.status==='acknowledged'?'ACKNOWLEDGED':'MISSING'}</span></td>
+ <td style={{ padding:'9px', fontWeight:'bold' }}>{row.employee.full_name || row.employee.employee_code || 'Employee'}<br/><span style={{ color:'#888', fontSize:'10px' }}>{row.employee.employee_code || ''}</span></td>
+ <td style={{ padding:'9px' }}>{row.employee.position || row.employee.department || '-'}</td>
+ <td style={{ padding:'9px' }}><b>{row.sop.sop_code}</b><br/><span style={{ color:'#555' }}>{row.sop.title}</span></td>
+ <td style={{ padding:'9px' }}>{row.sop.department}</td>
+ <td style={{ padding:'9px' }}>{row.sop.version || '1.0'}</td>
+ <td style={{ padding:'9px' }}>{row.ack?.acknowledged_at? String(row.ack.acknowledged_at).slice(0,19).replace('T',' '): '-'}</td>
  </tr>
  ))}
  </tbody>
  </table>
+ {filteredSopAckMatrixRows.length > 1000 && <p style={{ color:'#888', fontSize:'11px', marginTop:'8px' }}>Showing first 1,000 rows. Use search/filter to narrow results.</p>}
  </div>
  )}
+ </div>
  </div>
  )}
 
@@ -21076,6 +21243,7 @@ onClick={async ()=>{
  { label:'Attendance', icon:' ', action:()=>{ closeAllPanels(); setShowMyAttendance(!showMyAttendance) }, disabled:false },
  { label:'Fingerprint', icon:' ', action:()=>registerPasskeyForEmployee(), disabled:!passkeySupported||passkeyLoading },
  { label:'My Profile', icon:' ', action:()=>setShowMyProfile(!showMyProfile), disabled:false },
+ { label:'My SOPs', icon:'📘', action:()=>{ closeAllPanels(); setShowMySops(!showMySops); if(!showMySops) loadMySops(employee) }, disabled:false },
  ].map(btn=>(
  <button key={btn.label} onClick={btn.action} disabled={btn.disabled} style={{ background:btn.disabled?'#f8f8f8':'white', color:btn.disabled?'#ccc':'#333', border:`1px solid ${btn.disabled?'#f0f0f0':'#e0e0e0'}`, borderRadius:'10px', padding:'10px 6px', cursor:btn.disabled?'not-allowed':'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:'4px', transition:'all 0.15s' }}>
  <span style={{ fontSize:'18px' }}>{btn.icon}</span>
@@ -21087,6 +21255,76 @@ onClick={async ()=>{
  {getEmployeeAdminRoles(employee).length > 0 && (
  <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'10px', marginTop:'8px', color:'#7a5b00', fontSize:'12px', fontWeight:'bold', textAlign:'center' }}>
  Admin panel access now requires the Owner/Admin Login tab with email and password.
+ </div>
+ )}
+
+ {showMySops && (
+ <div style={{ background:'#fffdf1', padding:'14px', borderRadius:'12px', border:'1.5px solid #FDD412', marginBottom:'8px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', marginBottom:'10px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'14px' }}> My SOP Acknowledgements</h3>
+ <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Read active SOPs and tap acknowledge after reviewing.</p>
+ </div>
+ <button style={{ background:'#FDD412', color:'#1a1a2e', border:'none', borderRadius:'8px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>loadMySops(employee)}>REFRESH</button>
+ </div>
+ {mySopsLoading? (
+ <p style={{ color:'#888', fontSize:'12px', textAlign:'center' }}>Loading SOPs...</p>
+ ) : mySopDocuments.length === 0? (
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'10px', padding:'14px', textAlign:'center', color:'#888', fontSize:'12px' }}>No active SOPs require acknowledgement right now.</div>
+ ) : (
+ <div style={{ display:'grid', gap:'8px' }}>
+ {mySopDocuments.map(sop => {
+ const ack = getEmployeeSopAckRecord(sop)
+ return (
+ <div key={sop.id || sop.sop_code} style={{ background:'white', border:`1.5px solid ${ack?'#2d8a4e':'#ca1b1b'}`, borderRadius:'12px', padding:'12px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'flex-start' }}>
+ <div>
+ <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'11px', margin:'0 0 3px' }}>{sop.sop_code}</p>
+ <p style={{ color:'#1a1a2e', fontWeight:'bold', fontSize:'13px', margin:'0 0 4px' }}>{sop.title}</p>
+ <p style={{ color:'#777', fontSize:'10px', margin:0 }}>{sop.department} • Version {sop.version}</p>
+ </div>
+ <span style={{ background:ack?'#e8f5e9':'#fff5f5', color:ack?'#2d8a4e':'#ca1b1b', borderRadius:'20px', padding:'4px 8px', fontSize:'9px', fontWeight:'900', whiteSpace:'nowrap' }}>{ack?'ACKNOWLEDGED':'PENDING'}</span>
+ </div>
+ <p style={{ color:'#555', fontSize:'11px', lineHeight:1.5, margin:'8px 0' }}>{String(sop.purpose || '').slice(0,130)}{String(sop.purpose || '').length>130?'...':''}</p>
+ {ack && <p style={{ color:'#2d8a4e', fontSize:'10px', margin:'0 0 8px', fontWeight:'bold' }}>Acknowledged on {String(ack.acknowledged_at || '').slice(0,19).replace('T',' ')}</p>}
+ <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+ <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>setViewingMySop(sop)}>READ SOP</button>
+ {!ack && <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'8px 10px', cursor:acknowledgingSopId===sop.id?'wait':'pointer', fontWeight:'bold', fontSize:'11px' }} disabled={acknowledgingSopId===sop.id} onClick={()=>acknowledgeMySop(sop)}>{acknowledgingSopId===sop.id?'SAVING...':'ACKNOWLEDGE'}</button>}
+ </div>
+ </div>
+ )
+ })}
+ </div>
+ )}
+ </div>
+ )}
+
+ {viewingMySop && (
+ <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.72)', zIndex:9999, display:'flex', justifyContent:'center', alignItems:'center', padding:'18px' }} onClick={()=>setViewingMySop(null)}>
+ <div style={{ background:'white', borderRadius:'18px', padding:'18px', width:'100%', maxWidth:'760px', maxHeight:'88vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.45)' }} onClick={e=>e.stopPropagation()}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', borderBottom:'2px solid #f0f0f0', paddingBottom:'10px', marginBottom:'12px' }}>
+ <div>
+ <p style={{ color:'#ca1b1b', fontWeight:'900', margin:'0 0 4px' }}>{viewingMySop.sop_code}</p>
+ <h2 style={{ color:'#1a1a2e', margin:'0 0 6px', fontSize:'19px' }}>{viewingMySop.title}</h2>
+ <p style={{ color:'#777', fontSize:'12px', margin:0 }}>{viewingMySop.department} • Version {viewingMySop.version}</p>
+ </div>
+ <button style={{ background:'#f0f0f0', color:'#333', border:'none', borderRadius:'8px', padding:'8px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>setViewingMySop(null)}>CLOSE</button>
+ </div>
+ {[
+ ['Purpose', viewingMySop.purpose],
+ ['Procedure', viewingMySop.procedure],
+ ['Required Records', viewingMySop.required_records],
+ ].map(([label,value]) => (
+ <div key={label} style={{ marginBottom:'12px' }}>
+ <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', textTransform:'uppercase', fontSize:'12px', letterSpacing:'0.6px' }}>{label}</h4>
+ <div style={{ whiteSpace:'pre-wrap', background:'#fffdf8', border:'1px solid #eee', borderRadius:'12px', padding:'12px', color:'#333', fontSize:'13px', lineHeight:1.7 }}>{value || '-'}</div>
+ </div>
+ ))}
+ {!getEmployeeSopAckRecord(viewingMySop) && (
+ <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px 16px', width:'100%', cursor:acknowledgingSopId===viewingMySop.id?'wait':'pointer', fontWeight:'bold' }} disabled={acknowledgingSopId===viewingMySop.id} onClick={()=>acknowledgeMySop(viewingMySop)}>{acknowledgingSopId===viewingMySop.id?'SAVING ACKNOWLEDGEMENT...':'I HAVE READ AND UNDERSTOOD THIS SOP'}</button>
+ )}
+ {getEmployeeSopAckRecord(viewingMySop) && <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'12px', color:'#2d8a4e', fontWeight:'bold', textAlign:'center' }}>Already acknowledged</div>}
+ </div>
  </div>
  )}
 
