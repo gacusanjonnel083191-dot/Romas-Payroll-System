@@ -4460,73 +4460,359 @@ function buildDeliveryInvoicePrintCSS() {
    return clean.slice(0, 120) || 'roma-delivery-invoice'
  }
 
- function buildDeliveryInvoiceWordCSS() {
-   return [
-     '<style>',
-     '@page WordSection1 { size: 4in 6in; margin: 0in 0in 0in 0in; mso-header-margin: 0in; mso-footer-margin: 0in; }',
-     '* { box-sizing: border-box; }',
-     'html, body { width: 4in; margin: 0; padding: 0; background: #ffffff; font-family: Arial, sans-serif; color: #000000; }',
-     'body { mso-margin-top-alt: 0in; mso-margin-bottom-alt: 0in; mso-margin-left-alt: 0in; mso-margin-right-alt: 0in; }',
-     'div.WordSection1 { page: WordSection1; width: 4in; margin: 0; padding: 0; }',
-     '.no-print { display: none; }',
-     '.invoice-page { width: 4in; height: 6in; margin: 0; padding: 0; background: #ffffff; overflow: hidden; page-break-after: always; }',
-     '.invoice-page:last-child { page-break-after: auto; }',
-     '.invoice-table { width: 4in; height: 6in; border-collapse: collapse; table-layout: fixed; border: 2px solid #000000; font-size: 13px; line-height: 0.95; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }',
-     '.invoice-table tr { border: 1px solid #000000; }',
-     '.invoice-table td, .invoice-table th { border: 1px solid #000000; border-color: #000000; padding: 0px 2px; vertical-align: middle; overflow: hidden; white-space: nowrap; }',
-     '.title-row td { height: 0.22in; text-align: center; font-weight: 700; font-size: 14px; }',
-     '.field-row td { height: 0.22in; font-size: 13px; }',
-     '.field-label { text-align: center; font-weight: 700; }',
-     '.field-value { font-weight: 500; }',
-     '.date-fill, .customer-fill { background: #cfe2f3; }',
-     '.address-fill, .prepared-fill { background: #b6d7a8; }',
-     '.blank-row td { height: 0.13in; }',
-     '.header-row th { height: 0.23in; text-align: center; font-weight: 700; font-size: 13px; }',
-     '.product-row td { height: 0.205in; font-size: 13px; }',
-     '.product-name { text-align: center; font-weight: 600; }',
-     '.number-cell { text-align: center; font-weight: 500; }',
-     '.money-cell { text-align: right; font-weight: 500; }',
-     '.footer-row td { height: 0.22in; font-size: 13px; }',
-     '.footer-label { text-align: center; font-weight: 600; font-style: italic; }',
-     '.total-label { text-align: center; font-weight: 700; font-size: 16px; }',
-     '.total-amount { text-align: right; font-weight: 700; background: #d9d9d9; font-size: 18px; color: #000000; }',
-     '</style>'
-   ].join('\n')
+ function getDeliveryInvoicePrintData(invoice) {
+   const items = Array.isArray(invoice?.delivery_invoice_items) ? invoice.delivery_invoice_items : []
+   const reseller = resellers.find(r => String(r.id) === String(invoice?.reseller_id))
+   const resellerAccount = resellerAccounts.find(a => String(a.id) === String(reseller?.reseller_account_id || invoice?.reseller_account_id || ''))
+
+   const cleanText = value => String(value || '').trim()
+   const normalize = value => cleanText(value).toLowerCase().replace(/[^a-z0-9]/g, '')
+
+   const peso = value => {
+     const amount = safeNum(value, 0).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })
+     return '\u20B1' + amount
+   }
+
+   const formatInvoiceDate = value => {
+     const raw = cleanText(value)
+     if (!raw) return ''
+     const datePart = raw.slice(0, 10)
+     const parts = datePart.split('-')
+     if (parts.length === 3) return parts[1] + ' / ' + parts[2] + ' / ' + parts[0]
+     return raw
+   }
+
+   const customerType = cleanText(invoice?.customer_type || (invoice?.reseller_id ? 'reseller' : 'non_reseller')).toLowerCase()
+   const customerName = customerType === 'non_reseller'
+     ? [invoice?.customer_name, invoice?.reseller_name, invoice?.customer_contact].map(cleanText).find(Boolean) || ''
+     : [
+       reseller?.contact_person,
+       resellerAccount?.owner_name,
+       resellerAccount?.account_name,
+       invoice?.reseller_contact_person,
+       invoice?.reseller_owner_name,
+       invoice?.customer_name,
+       invoice?.reseller_name,
+       reseller?.name
+     ].map(cleanText).find(Boolean) || ''
+
+   const customerAddress = customerType === 'non_reseller'
+     ? [invoice?.customer_address, invoice?.address, invoice?.customer_contact].map(cleanText).find(Boolean) || ''
+     : [
+       reseller?.address,
+       invoice?.customer_address,
+       invoice?.reseller_address,
+       invoice?.address,
+       reseller?.area
+     ].map(cleanText).find(Boolean) || ''
+
+   const productTemplate = [
+     { label:'Choco Balls', aliases:['Choco Balls'] },
+     { label:'', aliases:[] },
+     { label:'Almond Glitz', aliases:['Almond Glitz'] },
+     { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
+     { label:'Oreo Dream', aliases:['Oreo Dream'] },
+     { label:'Lotus Cloud', aliases:['Lotus Cloud'] },
+     { label:'Rings', aliases:['Rings'] },
+     { label:'Shells', aliases:['Shells'] },
+     { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
+     { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
+     { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
+     { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
+     { label:'Strawberry Pops', aliases:['Strawberry Pops'] },
+     { label:'Taro Pops', aliases:['Taro Pops'] },
+     { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
+     { label:'Biscoreo', aliases:['Biscoreo'] },
+     { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] }
+   ]
+
+   const getQty = item => safeNum(item?.delivered_quantity ?? item?.actual_quantity ?? item?.quantity, 0)
+   const getPrice = item => safeNum(item?.reseller_price ?? item?.unit_price ?? item?.price ?? item?.selling_price, 0)
+   const getAmount = item => {
+     const stored = safeNum(item?.total_price ?? item?.amount ?? item?.line_total, NaN)
+     if (Number.isFinite(stored)) return stored
+     return getQty(item) * getPrice(item)
+   }
+
+   const findMatchingItems = row => {
+     if (!row.label) return []
+     const aliases = row.aliases.map(normalize)
+     return items.filter(item => {
+       const itemName = normalize(item.variant_name || item.product_name || item.name || '')
+       return aliases.some(alias => itemName === alias || itemName.includes(alias) || alias.includes(itemName))
+     })
+   }
+
+   const productRows = productTemplate.map(row => {
+     if (!row.label) return { product:'', delivered:'', price:'', amount:'', unsold:'' }
+     const matched = findMatchingItems(row)
+     const qty = matched.reduce((sum, item) => sum + getQty(item), 0)
+     const first = matched[0] || null
+     const price = first ? getPrice(first) : 0
+     const amount = matched.reduce((sum, item) => sum + getAmount(item), 0)
+     return {
+       product: row.label,
+       delivered: qty ? qty.toLocaleString('en-PH') : '',
+       price: price ? peso(price) : '',
+       amount: amount ? peso(amount) : '',
+       unsold: ''
+     }
+   })
+
+   const computedTotal = productTemplate.reduce((sum, row) => {
+     return sum + findMatchingItems(row).reduce((itemSum, item) => itemSum + getAmount(item), 0)
+   }, 0)
+   const invoiceTotal = safeNum(invoice?.total_amount, computedTotal || 0) || computedTotal
+
+   return {
+     title:'Roma’s Donuts - Delivery Invoice',
+     date:formatInvoiceDate(invoice?.delivery_date || invoice?.invoice_date || ''),
+     customerName,
+     customerAddress,
+     containerLabel:cleanText(invoice?.container_type || 'Crates'),
+     cratesUsed:invoice?.crates_used ? cleanText(invoice.crates_used) : '',
+     total:peso(invoiceTotal),
+     preparedBy:'',
+     productRows
+   }
  }
 
- function buildDeliveryInvoiceWordDocument(title, pagesHtml) {
-   return `<!DOCTYPE html>
-<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-<head>
-<meta charset="utf-8">
-<meta name="ProgId" content="Word.Document">
-<meta name="Generator" content="Roma's Donuts Business System">
-<title>${escapeWordDocText(title)}</title>
-<!--[if gte mso 9]>
-<xml>
-  <w:WordDocument>
-    <w:View>Print</w:View>
-    <w:Zoom>100</w:Zoom>
-    <w:DoNotOptimizeForBrowser/>
-  </w:WordDocument>
-</xml>
-<![endif]-->
-${buildDeliveryInvoiceWordCSS()}
-</head>
-<body>
-<div class="WordSection1">
-${pagesHtml}
-</div>
-</body>
-</html>`
+ function wordXmlText(value) {
+   return String(value ?? '')
+     .replace(/&/g, '&amp;')
+     .replace(/</g, '&lt;')
+     .replace(/>/g, '&gt;')
+     .replace(/"/g, '&quot;')
+     .replace(/'/g, '&apos;')
  }
 
- function downloadDeliveryInvoiceWordFile(filename, html) {
-   const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' })
+ function wordRun(text, opts = {}) {
+   const size = opts.size || 15
+   const bold = opts.bold ? '<w:b/>' : ''
+   const italic = opts.italic ? '<w:i/>' : ''
+   return `<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${bold}${italic}</w:rPr><w:t xml:space="preserve">${wordXmlText(text)}</w:t></w:r>`
+ }
+
+ function wordParagraph(text, opts = {}) {
+   const align = opts.align || 'left'
+   const line = opts.line || 180
+   return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:before="0" w:after="0" w:line="${line}" w:lineRule="auto"/></w:pPr>${wordRun(text, opts)}</w:p>`
+ }
+
+ function wordCell(text, opts = {}) {
+   const width = safeNum(opts.width, 1000)
+   const span = opts.span ? `<w:gridSpan w:val="${opts.span}"/>` : ''
+   const shade = opts.shade ? `<w:shd w:fill="${opts.shade}"/>` : ''
+   const vAlign = '<w:vAlign w:val="center"/>'
+   const cellMargins = '<w:tcMar><w:top w:w="0" w:type="dxa"/><w:left w:w="24" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="24" w:type="dxa"/></w:tcMar>'
+   return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${span}${shade}${vAlign}${cellMargins}</w:tcPr>${wordParagraph(text, opts)}</w:tc>`
+ }
+
+ function wordRow(cells, height = 320) {
+   return `<w:tr><w:trPr><w:trHeight w:val="${height}" w:hRule="exact"/><w:cantSplit/></w:trPr>${cells.join('')}</w:tr>`
+ }
+
+ function buildDeliveryInvoiceDocxTable(invoice) {
+   const data = getDeliveryInvoicePrintData(invoice)
+   const widths = [1786, 1210, 922, 922, 920]
+   const full = widths.reduce((sum, w) => sum + w, 0)
+   const valueSpan3 = widths[1] + widths[2] + widths[3]
+
+   const rows = []
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:18 })], 360))
+   rows.push(wordRow([
+     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:15 }),
+     wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:15, shade:'CFE2F3' }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 330))
+   rows.push(wordRow([
+     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:15 }),
+     wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:15, shade:'CFE2F3' }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 330))
+   rows.push(wordRow([
+     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:15 }),
+     wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:14, shade:'B6D7A8' }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 330))
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 130))
+   rows.push(wordRow([
+     wordCell('Product', { width:widths[0], align:'center', bold:true, size:15 }),
+     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:15 }),
+     wordCell('Price', { width:widths[2], align:'center', bold:true, size:15 }),
+     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:15 }),
+     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:15 })
+   ], 330))
+
+   data.productRows.forEach(row => {
+     rows.push(wordRow([
+       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:14 }),
+       wordCell(row.delivered, { width:widths[1], align:'center', size:15 }),
+       wordCell(row.price, { width:widths[2], align:'right', size:14 }),
+       wordCell(row.amount, { width:widths[3], align:'right', size:14 }),
+       wordCell(row.unsold, { width:widths[4], align:'center', size:15 })
+     ], 305))
+   })
+
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 120))
+   rows.push(wordRow([
+     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
+     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:15 }),
+     wordCell('', { width:widths[2], align:'center', size:15 }),
+     wordCell('', { width:widths[3], align:'center', size:15 }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 330))
+   rows.push(wordRow([
+     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
+     wordCell('', { width:widths[1], align:'center', size:15 }),
+     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:17 }),
+     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:17, shade:'D9D9D9' }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 360))
+   rows.push(wordRow([
+     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:14, shade:'B6D7A8' }),
+     wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:14, shade:'B6D7A8' }),
+     wordCell('', { width:widths[3], align:'center', size:15 }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 350))
+
+   return `<w:tbl><w:tblPr><w:tblW w:w="5760" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblBorders><w:top w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="8" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="8" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
+ }
+
+ function buildDeliveryInvoicesDocxDocument(invoices) {
+   const invoiceList = Array.isArray(invoices) ? invoices : []
+   const bodyParts = []
+   invoiceList.forEach((invoice, idx) => {
+     bodyParts.push(buildDeliveryInvoiceDocxTable(invoice))
+     if (idx < invoiceList.length - 1) bodyParts.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
+   })
+
+   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5760" w:h="8640"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+ }
+
+ function createCrc32Table() {
+   const table = new Uint32Array(256)
+   for (let i = 0; i < 256; i++) {
+     let c = i
+     for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1)
+     table[i] = c >>> 0
+   }
+   return table
+ }
+
+ function crc32Bytes(bytes) {
+   const table = createCrc32Table()
+   let crc = 0xFFFFFFFF
+   for (let i = 0; i < bytes.length; i++) crc = table[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8)
+   return (crc ^ 0xFFFFFFFF) >>> 0
+ }
+
+ function writeUint16LE(array, value) {
+   array.push(value & 0xFF, (value >>> 8) & 0xFF)
+ }
+
+ function writeUint32LE(array, value) {
+   array.push(value & 0xFF, (value >>> 8) & 0xFF, (value >>> 16) & 0xFF, (value >>> 24) & 0xFF)
+ }
+
+ function concatUint8Arrays(chunks) {
+   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
+   const out = new Uint8Array(total)
+   let offset = 0
+   chunks.forEach(chunk => { out.set(chunk, offset); offset += chunk.length })
+   return out
+ }
+
+ function createStoredZipBlob(files, mimeType) {
+   const encoder = new TextEncoder()
+   const localChunks = []
+   const centralChunks = []
+   let offset = 0
+   const now = new Date()
+   const dosTime = ((now.getHours() & 0x1F) << 11) | ((now.getMinutes() & 0x3F) << 5) | ((Math.floor(now.getSeconds() / 2)) & 0x1F)
+   const dosDate = (((now.getFullYear() - 1980) & 0x7F) << 9) | (((now.getMonth() + 1) & 0x0F) << 5) | (now.getDate() & 0x1F)
+
+   files.forEach(file => {
+     const nameBytes = encoder.encode(file.name)
+     const dataBytes = typeof file.data === 'string' ? encoder.encode(file.data) : file.data
+     const crc = crc32Bytes(dataBytes)
+     const local = []
+     writeUint32LE(local, 0x04034b50)
+     writeUint16LE(local, 20)
+     writeUint16LE(local, 0)
+     writeUint16LE(local, 0)
+     writeUint16LE(local, dosTime)
+     writeUint16LE(local, dosDate)
+     writeUint32LE(local, crc)
+     writeUint32LE(local, dataBytes.length)
+     writeUint32LE(local, dataBytes.length)
+     writeUint16LE(local, nameBytes.length)
+     writeUint16LE(local, 0)
+     const localHeader = new Uint8Array([...local, ...nameBytes])
+     localChunks.push(localHeader, dataBytes)
+
+     const central = []
+     writeUint32LE(central, 0x02014b50)
+     writeUint16LE(central, 20)
+     writeUint16LE(central, 20)
+     writeUint16LE(central, 0)
+     writeUint16LE(central, 0)
+     writeUint16LE(central, dosTime)
+     writeUint16LE(central, dosDate)
+     writeUint32LE(central, crc)
+     writeUint32LE(central, dataBytes.length)
+     writeUint32LE(central, dataBytes.length)
+     writeUint16LE(central, nameBytes.length)
+     writeUint16LE(central, 0)
+     writeUint16LE(central, 0)
+     writeUint16LE(central, 0)
+     writeUint16LE(central, 0)
+     writeUint32LE(central, 0)
+     writeUint32LE(central, offset)
+     centralChunks.push(new Uint8Array([...central, ...nameBytes]))
+
+     offset += localHeader.length + dataBytes.length
+   })
+
+   const centralStart = offset
+   const centralData = concatUint8Arrays(centralChunks)
+   const end = []
+   writeUint32LE(end, 0x06054b50)
+   writeUint16LE(end, 0)
+   writeUint16LE(end, 0)
+   writeUint16LE(end, files.length)
+   writeUint16LE(end, files.length)
+   writeUint32LE(end, centralData.length)
+   writeUint32LE(end, centralStart)
+   writeUint16LE(end, 0)
+
+   const zipData = concatUint8Arrays([...localChunks, centralData, new Uint8Array(end)])
+   return new Blob([zipData], { type:mimeType })
+ }
+
+ function buildDeliveryInvoicesDocxBlob(invoices) {
+   const documentXml = buildDeliveryInvoicesDocxDocument(invoices)
+   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`
+   const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
+   const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`
+   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
+
+   return createStoredZipBlob([
+     { name:'[Content_Types].xml', data:contentTypes },
+     { name:'_rels/.rels', data:rootRels },
+     { name:'word/document.xml', data:documentXml },
+     { name:'word/_rels/document.xml.rels', data:docRels },
+     { name:'word/styles.xml', data:styles }
+   ], 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+ }
+
+ function downloadDeliveryInvoiceDocxFile(filename, invoices) {
+   const blob = buildDeliveryInvoicesDocxBlob(invoices)
    const url = URL.createObjectURL(blob)
    const link = document.createElement('a')
    link.href = url
-   link.download = `${sanitizeWordFileName(filename)}.doc`
+   link.download = `${sanitizeWordFileName(filename)}.docx`
    document.body.appendChild(link)
    link.click()
    document.body.removeChild(link)
@@ -4534,12 +4820,10 @@ ${pagesHtml}
  }
 
  function printAllDailyInvoices(date) {
- const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
- if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
- const pagesHtml = dayInvoices.map((inv,idx)=>buildDeliveryInvoicePrintPage(inv, idx < dayInvoices.length-1? 'force-break': '')).join('')
- const html = buildDeliveryInvoiceWordDocument(`Roma's Donuts Delivery Invoices ${date}`, pagesHtml)
- downloadDeliveryInvoiceWordFile(`Romas_Donuts_Delivery_Invoices_${date}`, html)
- showToast(` Downloaded ${dayInvoices.length} invoice(s) as 4x6 Word file.`)
+   const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
+   if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
+   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
+   showToast(` Downloaded ${dayInvoices.length} invoice(s) as fixed 4x6 Word file.`)
  }
  async function recordPayment(invoice) {
  const amt = Number(paymentAmount[invoice.id] || 0)
@@ -4563,9 +4847,8 @@ ${pagesHtml}
  function printDeliveryInvoice(invoice) {
  if (!invoice) { showToast(' No invoice selected.','red'); return }
  const invoiceNumber = invoice.invoice_number || invoice.id || 'invoice'
- const html = buildDeliveryInvoiceWordDocument(`Roma's Donuts Delivery Invoice ${invoiceNumber}`, buildDeliveryInvoicePrintPage(invoice))
- downloadDeliveryInvoiceWordFile(`Romas_Donuts_Invoice_${invoiceNumber}`, html)
- showToast(' Downloaded invoice as 4x6 Word file.')
+ downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [invoice])
+ showToast(' Downloaded invoice as fixed 4x6 Word file.')
  }
  function buildInvoiceAdjustmentRows(invoice) {
  if (!invoice) return []
