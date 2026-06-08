@@ -559,6 +559,7 @@ export default function App() {
  const videoRef = useRef(null)
  const canvasRef = useRef(null)
  const profilePhotoInputRef = useRef(null)
+ const resellerOrderSubmitLockRef = useRef(false)
 
  const [employeeCode, setEmployeeCode] = useState('')
  const [pin, setPin] = useState('')
@@ -3864,6 +3865,16 @@ export default function App() {
  try {
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
 
+ if (customerType === 'reseller') {
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(invoiceResellerId, invoiceDate)
+ if (duplicateCheck.blocked) {
+ showToast(duplicateCheck.message, 'red')
+ await logAudit('INVOICE CREATE BLOCKED - DUPLICATE SAME DAY', adminRole, reseller?.name || '', duplicateCheck.message)
+ setSavingInvoice(false)
+ return
+ }
+ }
+
  let freshCreditStatus = null
  if (customerType === 'reseller') {
  freshCreditStatus = await checkResellerCreditBlockFresh(invoiceResellerId)
@@ -5845,6 +5856,67 @@ function buildDeliveryInvoicePrintCSS() {
  return allowedBranchIds.includes(String(order.reseller_id))
  }
 
+ function isActiveDuplicateOrderStatus(status) {
+ const s = String(status || '').trim().toLowerCase()
+ return !['rejected','cancelled','canceled','void','deleted'].includes(s)
+ }
+
+ function isActiveDuplicateInvoiceStatus(status) {
+ const s = String(status || '').trim().toLowerCase()
+ return !['cancelled','canceled','void','deleted'].includes(s)
+ }
+
+ async function checkSameDayOutletOrderOrInvoice(resellerId, deliveryDate, options = {}) {
+ const targetResellerId = String(resellerId || '')
+ const targetDate = String(deliveryDate || '').slice(0, 10)
+ const excludeOrderId = options.excludeOrderId? String(options.excludeOrderId): ''
+ const excludeInvoiceId = options.excludeInvoiceId? String(options.excludeInvoiceId): ''
+
+ if (!targetResellerId || !targetDate) return { blocked:false, message:'' }
+
+ const { data:existingOrders, error:orderErr } = await supabase
+ .from('reseller_orders')
+ .select('id,status,delivery_date,reseller_name,invoice_id')
+ .eq('reseller_id', targetResellerId)
+ .eq('delivery_date', targetDate)
+ .limit(20)
+ if (orderErr) throw orderErr
+
+ const duplicateOrder = (existingOrders || []).find(o =>
+ String(o.id) !== excludeOrderId && isActiveDuplicateOrderStatus(o.status)
+ )
+ if (duplicateOrder) {
+ return {
+ blocked:true,
+ type:'order',
+ record:duplicateOrder,
+ message:`Duplicate blocked: ${duplicateOrder.reseller_name || 'this outlet'} already has an active order for ${targetDate}. Only one order/invoice per outlet per delivery date is allowed.`
+ }
+ }
+
+ const { data:existingInvoices, error:invoiceErr } = await supabase
+ .from('delivery_invoices')
+ .select('id,invoice_number,status,delivery_date,reseller_name')
+ .eq('reseller_id', targetResellerId)
+ .eq('delivery_date', targetDate)
+ .limit(20)
+ if (invoiceErr) throw invoiceErr
+
+ const duplicateInvoice = (existingInvoices || []).find(inv =>
+ String(inv.id) !== excludeInvoiceId && isActiveDuplicateInvoiceStatus(inv.status)
+ )
+ if (duplicateInvoice) {
+ return {
+ blocked:true,
+ type:'invoice',
+ record:duplicateInvoice,
+ message:`Duplicate blocked: ${duplicateInvoice.reseller_name || 'this outlet'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Only one order/invoice per outlet per delivery date is allowed.`
+ }
+ }
+
+ return { blocked:false, message:'' }
+ }
+
  async function startEditResellerOrder(order) {
  if (!canEditResellerOrder(order)) {
  showToast(' This order is already approved/rejected or already has an invoice. It can no longer be edited.', 'red')
@@ -5929,6 +6001,13 @@ function buildDeliveryInvoicePrintCSS() {
  await logAudit('RESELLER ORDER EDIT BLOCKED - ORDER CUT-OFF', 'Reseller Portal', orderBranch?.name || '', cutoffStatus.message)
  return
  }
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, resellerOrderDeliveryDate, { excludeOrderId:existingOrder.id, excludeInvoiceId:existingOrder.invoice_id })
+ if (duplicateCheck.blocked) {
+ showToast(duplicateCheck.message, 'red')
+ await logAudit('RESELLER ORDER EDIT BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
+ return
+ }
+
  const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
  if (creditStatus.blocked) {
  showToast(` Credit warning for ${orderBranch.name}. Edit is allowed, but admin will see a red warning before approval. ${creditStatus.message}`, 'red')
@@ -5986,6 +6065,10 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  async function submitResellerOrder() {
+ if (resellerOrderSubmitLockRef.current || submittingOrder) {
+ showToast(' Order already submitted. Please wait while the system records it.', 'red')
+ return
+ }
  const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
  if (!orderBranch?.id) { showToast(' Select the branch/outlet for this order.','red'); return }
 
@@ -5998,13 +6081,23 @@ function buildDeliveryInvoicePrintCSS() {
  await logAudit('RESELLER ORDER BLOCKED - ORDER CUT-OFF', 'Reseller Portal', orderBranch?.name || '', cutoffStatus.message)
  return
  }
+
+ resellerOrderSubmitLockRef.current = true
+ setSubmittingOrder(true)
+ try {
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, resellerOrderDeliveryDate)
+ if (duplicateCheck.blocked) {
+ showToast(duplicateCheck.message, 'red')
+ await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
+ return
+ }
+
  const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
  const hasCreditWarning = creditStatus.blocked
  if (hasCreditWarning) {
  showToast(` Credit warning for ${orderBranch.name}. Order is allowed, but admin will see a red warning before approval. ${creditStatus.message}`, 'red')
  }
- setSubmittingOrder(true)
- try {
+
  const total = validItems.reduce((s,i)=>s+Number(i.quantity)*i.reseller_price,0)
  const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
  const { data:order, error } = await supabase.from('reseller_orders').insert({
@@ -6026,9 +6119,13 @@ function buildDeliveryInvoicePrintCSS() {
  setResellerOrderNotes('')
  setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
  setResellerPortalView('orders')
- loadResellerPortalData(orderBranch.id)
- } catch(err) { showToast(' Failed: '+err.message,'red') }
+ await loadResellerPortalData(orderBranch.id)
+ } catch(err) {
+ showToast(' Failed: '+(err?.message || err),'red')
+ } finally {
+ resellerOrderSubmitLockRef.current = false
  setSubmittingOrder(false)
+ }
  }
 
  // Feature: Admin Order Management 
@@ -6046,6 +6143,12 @@ function buildDeliveryInvoicePrintCSS() {
  const items = customItems || order.reseller_order_items || []
  const validItems = items.filter(i=>Number(i.quantity)>0)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(order.reseller_id, order.delivery_date, { excludeOrderId:order.id })
+ if (duplicateCheck.blocked) {
+ showToast(duplicateCheck.message, 'red')
+ await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY', adminRole, order?.reseller_name || '', duplicateCheck.message)
+ return
+ }
  const creditStatus = await checkResellerCreditBlockFresh(order.reseller_id)
  const hasCreditWarning = creditStatus.blocked
  if (hasCreditWarning) {
@@ -20679,7 +20782,7 @@ onClick={async ()=>{
  <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
  <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
  </div>
- <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.6:1, cursor:selectedOrderCutoff.locked?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' Saving changes...':' SAVE ORDER CHANGES'):(submittingOrder?' Submitting...':' SUBMIT ORDER REQUEST')}</button>
+ <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' ORDER SUBMITTED - PROCESSING...':' SUBMIT ORDER REQUEST')}</button>
  {editingResellerOrderId && <button style={{...btnGray, marginTop:'8px' }} disabled={updatingResellerOrder} onClick={cancelResellerOrderEdit}>CANCEL EDIT</button>}
  </div>
  </>
