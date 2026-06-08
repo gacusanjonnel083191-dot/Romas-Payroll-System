@@ -4600,7 +4600,7 @@ function buildDeliveryInvoicePrintCSS() {
    // A line-height equal to the font size clips bold text in Word print preview.
    // Give each line a small safety allowance while keeping the exact 4x6 table height.
    const size = opts.size || 15
-   const line = opts.line || Math.max(220, Math.ceil(size * 13))
+   const line = opts.line || Math.max(190, Math.ceil(size * 12))
    return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:before="0" w:after="0" w:line="${line}" w:lineRule="exact"/></w:pPr>${wordRun(text, opts)}</w:p>`
  }
 
@@ -4609,7 +4609,7 @@ function buildDeliveryInvoicePrintCSS() {
    const span = opts.span ? `<w:gridSpan w:val="${opts.span}"/>` : ''
    const shade = opts.shade ? `<w:shd w:fill="${opts.shade}"/>` : ''
    const vAlign = '<w:vAlign w:val="center"/>'
-   const cellMargins = '<w:tcMar><w:top w:w="8" w:type="dxa"/><w:left w:w="28" w:type="dxa"/><w:bottom w:w="8" w:type="dxa"/><w:right w:w="28" w:type="dxa"/></w:tcMar>'
+   const cellMargins = '<w:tcMar><w:top w:w="4" w:type="dxa"/><w:left w:w="22" w:type="dxa"/><w:bottom w:w="4" w:type="dxa"/><w:right w:w="22" w:type="dxa"/></w:tcMar>'
    return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${span}${shade}${vAlign}${cellMargins}</w:tcPr>${wordParagraph(text, opts)}</w:tc>`
  }
 
@@ -4623,74 +4623,77 @@ function buildDeliveryInvoicePrintCSS() {
    // after each invoice. A trailing page-break paragraph can be forced onto its own sheet,
    // which creates the blank pages seen between invoices in Word print preview.
    const pageBreak = startNewPage ? '<w:pageBreakBefore/>' : ''
-   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="150" w:lineRule="exact"/></w:pPr></w:p>`
+   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="300" w:lineRule="exact"/></w:pPr></w:p>`
  }
 
  function buildDeliveryInvoiceDocxTable(invoice) {
    const data = getDeliveryInvoicePrintData(invoice)
-   const widths = [1786, 1210, 922, 922, 920]
+   // Keep invoice content inside the printer-safe area.
+   // Page remains exactly 4x6 inches, but the table is slightly narrower
+   // and centered to avoid physical printer cropping and off-center output.
+   const widths = [1675, 1135, 863, 864, 863]
    const full = widths.reduce((sum, w) => sum + w, 0)
    const valueSpan3 = widths[1] + widths[2] + widths[3]
 
    const rows = []
-   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:18, line:240 })], 420))
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:17, line:215 })], 350))
    rows.push(wordRow([
      wordCell('Date:', { width:widths[0], align:'center', bold:true, size:15 }),
      wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:15, shade:'CFE2F3' }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 330))
+   ], 285))
    rows.push(wordRow([
      wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:15 }),
      wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:15, shade:'CFE2F3' }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 330))
+   ], 285))
    rows.push(wordRow([
      wordCell('Address:', { width:widths[0], align:'center', bold:true, size:15 }),
      wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:14, shade:'B6D7A8' }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 330))
-   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 130))
+   ], 285))
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
    rows.push(wordRow([
      wordCell('Product', { width:widths[0], align:'center', bold:true, size:15 }),
      wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:15 }),
      wordCell('Price', { width:widths[2], align:'center', bold:true, size:15 }),
      wordCell('Amount', { width:widths[3], align:'center', bold:true, size:15 }),
      wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:15 })
-   ], 330))
+   ], 285))
 
    data.productRows.forEach(row => {
      rows.push(wordRow([
-       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:14 }),
-       wordCell(row.delivered, { width:widths[1], align:'center', size:15 }),
-       wordCell(row.price, { width:widths[2], align:'right', size:14 }),
-       wordCell(row.amount, { width:widths[3], align:'right', size:14 }),
-       wordCell(row.unsold, { width:widths[4], align:'center', size:15 })
-     ], 305))
+       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:13 }),
+       wordCell(row.delivered, { width:widths[1], align:'center', size:14 }),
+       wordCell(row.price, { width:widths[2], align:'right', size:13 }),
+       wordCell(row.amount, { width:widths[3], align:'right', size:13 }),
+       wordCell(row.unsold, { width:widths[4], align:'center', size:14 })
+     ], 250))
    })
 
-   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 120))
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
    rows.push(wordRow([
      wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
      wordCell(data.cratesUsed, { width:widths[1], align:'center', size:15 }),
      wordCell('', { width:widths[2], align:'center', size:15 }),
      wordCell('', { width:widths[3], align:'center', size:15 }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 330))
+   ], 285))
    rows.push(wordRow([
      wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
      wordCell('', { width:widths[1], align:'center', size:15 }),
      wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:17 }),
      wordCell(data.total, { width:widths[3], align:'right', bold:true, size:17, shade:'D9D9D9' }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 360))
+   ], 310))
    rows.push(wordRow([
      wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:14, shade:'B6D7A8' }),
      wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:14, shade:'B6D7A8' }),
      wordCell('', { width:widths[3], align:'center', size:15 }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350))
+   ], 300))
 
-   return `<w:tbl><w:tblPr><w:tblW w:w="5760" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
+   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
  function buildDeliveryInvoicesDocxDocument(invoices) {
@@ -4839,7 +4842,7 @@ function buildDeliveryInvoicePrintCSS() {
    const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
    if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
    downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
-   showToast(` Downloaded ${dayInvoices.length} invoice(s) as fixed 4x6 Word file.`)
+   showToast(` Downloaded ${dayInvoices.length} invoice(s) as centered 4x6 Word file.`)
  }
  async function recordPayment(invoice) {
  const amt = Number(paymentAmount[invoice.id] || 0)
@@ -4864,7 +4867,7 @@ function buildDeliveryInvoicePrintCSS() {
  if (!invoice) { showToast(' No invoice selected.','red'); return }
  const invoiceNumber = invoice.invoice_number || invoice.id || 'invoice'
  downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [invoice])
- showToast(' Downloaded invoice as fixed 4x6 Word file.')
+ showToast(' Downloaded centered 4x6 invoice Word file.')
  }
  function buildInvoiceAdjustmentRows(invoice) {
  if (!invoice) return []
