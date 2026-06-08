@@ -4588,15 +4588,20 @@ function buildDeliveryInvoicePrintCSS() {
 
  function wordRun(text, opts = {}) {
    const size = opts.size || 15
-   const bold = opts.bold ? '<w:b/>' : ''
-   const italic = opts.italic ? '<w:i/>' : ''
+   // Use bold as the default for invoice readability on 4x6 thermal/photo paper.
+   // Pass bold:false only for intentionally light text.
+   const bold = opts.bold === false ? '' : '<w:b/><w:bCs/>'
+   const italic = opts.italic ? '<w:i/><w:iCs/>' : ''
    return `<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${bold}${italic}</w:rPr><w:t xml:space="preserve">${wordXmlText(text)}</w:t></w:r>`
  }
 
  function wordParagraph(text, opts = {}) {
    const align = opts.align || 'left'
-   const line = opts.line || 180
-   return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:before="0" w:after="0" w:line="${line}" w:lineRule="auto"/></w:pPr>${wordRun(text, opts)}</w:p>`
+   // A line-height equal to the font size clips bold text in Word print preview.
+   // Give each line a small safety allowance while keeping the exact 4x6 table height.
+   const size = opts.size || 15
+   const line = opts.line || Math.max(220, Math.ceil(size * 13))
+   return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:before="0" w:after="0" w:line="${line}" w:lineRule="exact"/></w:pPr>${wordRun(text, opts)}</w:p>`
  }
 
  function wordCell(text, opts = {}) {
@@ -4604,12 +4609,17 @@ function buildDeliveryInvoicePrintCSS() {
    const span = opts.span ? `<w:gridSpan w:val="${opts.span}"/>` : ''
    const shade = opts.shade ? `<w:shd w:fill="${opts.shade}"/>` : ''
    const vAlign = '<w:vAlign w:val="center"/>'
-   const cellMargins = '<w:tcMar><w:top w:w="0" w:type="dxa"/><w:left w:w="24" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="24" w:type="dxa"/></w:tcMar>'
+   const cellMargins = '<w:tcMar><w:top w:w="8" w:type="dxa"/><w:left w:w="28" w:type="dxa"/><w:bottom w:w="8" w:type="dxa"/><w:right w:w="28" w:type="dxa"/></w:tcMar>'
    return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${span}${shade}${vAlign}${cellMargins}</w:tcPr>${wordParagraph(text, opts)}</w:tc>`
  }
 
  function wordRow(cells, height = 320) {
    return `<w:tr><w:trPr><w:trHeight w:val="${height}" w:hRule="exact"/><w:cantSplit/></w:trPr>${cells.join('')}</w:tr>`
+ }
+
+ function buildInvoiceDocxTopSpacer() {
+   // Keeps the invoice title away from Word/printer top clipping while page margin stays 0.
+   return '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="150" w:lineRule="exact"/></w:pPr></w:p>'
  }
 
  function buildDeliveryInvoiceDocxTable(invoice) {
@@ -4619,7 +4629,7 @@ function buildDeliveryInvoicePrintCSS() {
    const valueSpan3 = widths[1] + widths[2] + widths[3]
 
    const rows = []
-   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:18 })], 360))
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:18, line:240 })], 420))
    rows.push(wordRow([
      wordCell('Date:', { width:widths[0], align:'center', bold:true, size:15 }),
      wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:15, shade:'CFE2F3' }),
@@ -4676,15 +4686,16 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell('', { width:widths[4], align:'center', size:15 })
    ], 350))
 
-   return `<w:tbl><w:tblPr><w:tblW w:w="5760" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblBorders><w:top w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="12" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="8" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="8" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
+   return `<w:tbl><w:tblPr><w:tblW w:w="5760" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
  function buildDeliveryInvoicesDocxDocument(invoices) {
    const invoiceList = Array.isArray(invoices) ? invoices : []
    const bodyParts = []
    invoiceList.forEach((invoice, idx) => {
+     bodyParts.push(buildInvoiceDocxTopSpacer())
      bodyParts.push(buildDeliveryInvoiceDocxTable(invoice))
-     if (idx < invoiceList.length - 1) bodyParts.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
+     if (idx < invoiceList.length - 1) bodyParts.push('<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:br w:type="page"/></w:r></w:p>')
    })
 
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -4793,17 +4804,19 @@ function buildDeliveryInvoicePrintCSS() {
 
  function buildDeliveryInvoicesDocxBlob(invoices) {
    const documentXml = buildDeliveryInvoicesDocxDocument(invoices)
-   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`
+   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
-   const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`
-   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
+   const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`
+   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
+   const settings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`
 
    return createStoredZipBlob([
      { name:'[Content_Types].xml', data:contentTypes },
      { name:'_rels/.rels', data:rootRels },
      { name:'word/document.xml', data:documentXml },
      { name:'word/_rels/document.xml.rels', data:docRels },
-     { name:'word/styles.xml', data:styles }
+     { name:'word/styles.xml', data:styles },
+     { name:'word/settings.xml', data:settings }
    ], 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
  }
 
