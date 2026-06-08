@@ -733,6 +733,36 @@ export default function App() {
  const [viewingContract, setViewingContract] = useState(null)
  const [contractStorageType, setContractStorageType] = useState('digital')
  const [contractPhysicalLocation, setContractPhysicalLocation] = useState('')
+ // SOP Library / Company Standards
+ const [sops, setSops] = useState([])
+ const [sopsLoading, setSopsLoading] = useState(false)
+ const [sopLoadError, setSopLoadError] = useState('')
+ const [sopView, setSopView] = useState('dashboard')
+ const [sopSearch, setSopSearch] = useState('')
+ const [sopDepartmentFilter, setSopDepartmentFilter] = useState('all')
+ const [sopStatusFilter, setSopStatusFilter] = useState('all')
+ const [showSopForm, setShowSopForm] = useState(false)
+ const [editingSopId, setEditingSopId] = useState(null)
+ const [viewingSop, setViewingSop] = useState(null)
+ const [savingSop, setSavingSop] = useState(false)
+ const [sopAcknowledgements, setSopAcknowledgements] = useState([])
+ const [sopAckLoading, setSopAckLoading] = useState(false)
+ const [sopForm, setSopForm] = useState({
+ sop_code:'',
+ title:'',
+ department:'Production',
+ category:'Operations',
+ version:'1.0',
+ effective_date:today,
+ status:'draft',
+ access_roles:'owner,manager,hr,supervisor,asst_supervisor',
+ acknowledgement_required:true,
+ purpose:'',
+ procedure:'',
+ required_records:'',
+ approved_by:'Owner',
+ notes:''
+ })
  // Wastage / Spoilage 
  const [showWastageForm, setShowWastageForm] = useState(false)
  const [wastageItemId, setWastageItemId] = useState('')
@@ -1022,6 +1052,10 @@ export default function App() {
  { value:'others', label:'Others', bucket:'walkin' },
  ]
  const getOtherSalesCategory = (value) => OTHER_SALES_CATEGORIES.find(c => c.value === value) || OTHER_SALES_CATEGORIES[0]
+ const SOP_DEPARTMENTS = ['Production','Quality Control','Food Safety','Inventory','Packing / Dispatch','Delivery','Reseller Management','Finance','HR / Discipline','System','Safety','Management']
+ const SOP_CATEGORIES = ['Operations','Quality Control','Food Safety','Inventory Control','Dispatch','Delivery','Sales / Reseller','Finance','HR Policy','System Control','Safety','Management Control']
+ const SOP_STATUSES = ['draft','active','archived']
+ const SOP_ACCESS_ROLE_OPTIONS = ['owner','manager','hr','payroll','supervisor','asst_supervisor','employee','reseller']
  const [inventorySearch, setInventorySearch] = useState('')
  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState('all')
  const [showAddItem, setShowAddItem] = useState(false)
@@ -1207,6 +1241,13 @@ export default function App() {
  const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
  if (isOwnerSide) loadDeliveryInvoices()
  }, [adminMode, adminRole])
+
+ useEffect(() => {
+ if (adminMode && activeTab === 'sops') {
+ loadSops()
+ loadSopAcknowledgements()
+ }
+ }, [adminMode, activeTab])
 
  useEffect(() => {
  const canViewFoundation = activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')
@@ -7407,16 +7448,237 @@ function buildDeliveryInvoicePrintCSS() {
  function canAccess(tab) {
  const role = normalizeAdminRole(adminRole)
  if (role === 'owner') return true
- if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sales','analytics','foundation','franchise'].includes(tab)
- if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts'].includes(tab)
+ if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','sales','analytics','foundation','franchise'].includes(tab)
+ if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops'].includes(tab)
  if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
- if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
- if (role === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory'].includes(tab)
+ if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops'].includes(tab)
+ if (role === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops'].includes(tab)
  return false
  }
 
  async function logAudit(action, by, target, details) {
  try { await supabase.from('audit_logs').insert({ action, performed_by:by, target_employee:target, details }) } catch(e) {}
+ }
+
+ // SOP Library Functions
+ function canManageSops() {
+ const role = normalizeAdminRole(adminRole)
+ return role === 'owner' || role === 'manager'
+ }
+
+ function resetSopForm() {
+ setEditingSopId(null)
+ setSopForm({
+ sop_code:'',
+ title:'',
+ department:'Production',
+ category:'Operations',
+ version:'1.0',
+ effective_date:today,
+ status:'draft',
+ access_roles:'owner,manager,hr,supervisor,asst_supervisor',
+ acknowledgement_required:true,
+ purpose:'',
+ procedure:'',
+ required_records:'',
+ approved_by:'Owner',
+ notes:''
+ })
+ }
+
+ function openNewSopForm() {
+ resetSopForm()
+ setShowSopForm(true)
+ setSopView('library')
+ }
+
+ function openEditSop(sop) {
+ if (!canManageSops()) { showToast('Only Owner or Manager can edit SOPs.', 'red'); return }
+ setEditingSopId(sop.id)
+ setSopForm({
+ sop_code:sop.sop_code || '',
+ title:sop.title || '',
+ department:sop.department || 'Production',
+ category:sop.category || 'Operations',
+ version:sop.version || '1.0',
+ effective_date:String(sop.effective_date || today).slice(0,10),
+ status:sop.status || 'draft',
+ access_roles:sop.access_roles || 'owner,manager,hr,supervisor,asst_supervisor',
+ acknowledgement_required:sop.acknowledgement_required !== false,
+ purpose:sop.purpose || '',
+ procedure:sop.procedure || '',
+ required_records:sop.required_records || '',
+ approved_by:sop.approved_by || 'Owner',
+ notes:sop.notes || ''
+ })
+ setShowSopForm(true)
+ setSopView('library')
+ window.scrollTo?.({ top:0, behavior:'smooth' })
+ }
+
+ function getSopAccessRoles(sop) {
+ return String(sop?.access_roles || '').split(',').map(r => r.trim().toLowerCase()).filter(Boolean)
+ }
+
+ function canViewSop(sop) {
+ const role = normalizeAdminRole(adminRole)
+ if (role === 'owner') return true
+ const roles = getSopAccessRoles(sop)
+ return roles.length === 0 || roles.includes(role)
+ }
+
+ async function loadSops() {
+ setSopsLoading(true)
+ setSopLoadError('')
+ try {
+ const { data, error } = await supabase
+ .from('sop_documents')
+ .select('*')
+ .order('sop_code', { ascending:true })
+
+ if (error) {
+ setSops([])
+ setSopLoadError(error.message || 'Unable to load SOP Library. Run the SOP Supabase setup SQL first.')
+ return
+ }
+
+ setSops(data || [])
+ } catch(e) {
+ setSops([])
+ setSopLoadError(e?.message || 'Unable to load SOP Library. Run the SOP Supabase setup SQL first.')
+ } finally {
+ setSopsLoading(false)
+ }
+ }
+
+ async function loadSopAcknowledgements() {
+ setSopAckLoading(true)
+ try {
+ const { data, error } = await supabase
+ .from('sop_acknowledgements')
+ .select('*')
+ .order('acknowledged_at', { ascending:false })
+ .limit(500)
+ if (error) {
+ setSopAcknowledgements([])
+ return
+ }
+ setSopAcknowledgements(data || [])
+ } catch(e) {
+ setSopAcknowledgements([])
+ } finally {
+ setSopAckLoading(false)
+ }
+ }
+
+ async function saveSopDocument() {
+ if (!canManageSops()) { showToast('Only Owner or Manager can save SOPs.', 'red'); return }
+ if (!sopForm.sop_code.trim() || !sopForm.title.trim()) {
+ showToast('SOP code and title are required.', 'red')
+ return
+ }
+
+ setSavingSop(true)
+ try {
+ const payload = {
+ sop_code:sopForm.sop_code.trim(),
+ title:sopForm.title.trim(),
+ department:sopForm.department || 'Production',
+ category:sopForm.category || 'Operations',
+ version:sopForm.version || '1.0',
+ effective_date:sopForm.effective_date || today,
+ status:sopForm.status || 'draft',
+ access_roles:sopForm.access_roles || 'owner,manager,hr,supervisor,asst_supervisor',
+ acknowledgement_required:sopForm.acknowledgement_required !== false,
+ purpose:sopForm.purpose || '',
+ procedure:sopForm.procedure || '',
+ required_records:sopForm.required_records || '',
+ approved_by:sopForm.approved_by || currentAdminLabel,
+ notes:sopForm.notes || '',
+ updated_by:currentAdminLabel
+ }
+
+ let error
+ if (editingSopId) {
+ ;({ error } = await supabase.from('sop_documents').update(payload).eq('id', editingSopId))
+ } else {
+ ;({ error } = await supabase.from('sop_documents').insert({ ...payload, created_by:currentAdminLabel }))
+ }
+
+ if (error) throw error
+
+ await logAudit(editingSopId? 'SOP UPDATED':'SOP CREATED', currentAdminLabel, payload.sop_code, payload.title)
+ showToast(editingSopId? 'SOP updated successfully.':'SOP created successfully.')
+ setShowSopForm(false)
+ resetSopForm()
+ loadSops()
+ } catch(e) {
+ showToast('SOP save failed: ' + (e?.message || 'Unknown error'), 'red')
+ } finally {
+ setSavingSop(false)
+ }
+ }
+
+ async function updateSopStatus(sop, status) {
+ if (!canManageSops()) { showToast('Only Owner or Manager can change SOP status.', 'red'); return }
+ if (!sop?.id || !SOP_STATUSES.includes(status)) return
+ try {
+ const { error } = await supabase.from('sop_documents').update({ status, updated_by:currentAdminLabel }).eq('id', sop.id)
+ if (error) throw error
+ await logAudit('SOP STATUS UPDATED', currentAdminLabel, sop.sop_code, `${sop.title} -> ${status}`)
+ showToast(`SOP marked as ${status}.`)
+ loadSops()
+ } catch(e) {
+ showToast('Status update failed: ' + (e?.message || 'Unknown error'), 'red')
+ }
+ }
+
+ function exportSopText(sop) {
+ if (!sop) return
+ const content = [
+ "ROMA'S DONUTS - STANDARD OPERATING PROCEDURE",
+ '',
+ `SOP Code: ${sop.sop_code || ''}`,
+ `Title: ${sop.title || ''}`,
+ `Department: ${sop.department || ''}`,
+ `Category: ${sop.category || ''}`,
+ `Version: ${sop.version || ''}`,
+ `Effective Date: ${sop.effective_date || ''}`,
+ `Status: ${String(sop.status || '').toUpperCase()}`,
+ `Acknowledgement Required: ${sop.acknowledgement_required === false? 'No':'Yes'}`,
+ `Approved By: ${sop.approved_by || ''}`,
+ '',
+ 'PURPOSE',
+ sop.purpose || '',
+ '',
+ 'PROCEDURE',
+ sop.procedure || '',
+ '',
+ 'REQUIRED RECORDS',
+ sop.required_records || '',
+ '',
+ 'NOTES',
+ sop.notes || ''
+ ].join('\\n')
+ const safeName = `${sop.sop_code || 'SOP'}-${String(sop.title || '').replace(/[^a-z0-9]+/gi,'-').slice(0,60)}.txt`
+ downloadTextFile(safeName, content, 'text/plain')
+ }
+
+ function exportSopLibraryCSV() {
+ const rows = (sops || []).map(sop => ({
+ code:sop.sop_code,
+ title:sop.title,
+ department:sop.department,
+ category:sop.category,
+ version:sop.version,
+ status:sop.status,
+ effective_date:sop.effective_date,
+ acknowledgement_required:sop.acknowledgement_required === false? 'No':'Yes',
+ access_roles:sop.access_roles,
+ approved_by:sop.approved_by,
+ updated_at:sop.updated_at
+ }))
+ downloadTextFile(`romas-sop-library-${today}.csv`, rowsToCSV(rows), 'text/csv')
  }
 
  // SIL Automation 
@@ -12281,6 +12543,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
  { key:'inventory', icon:'\uD83D\uDCE6', label:'Inventory',
  tabs:[{key:'inventory',label:'Inventory'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
+ { key:'sops', icon:'\uD83D\uDCD8', label:'SOP Library',
+ tabs:[{key:'sops',label:'SOP Control Center'}],
+ roles:['owner','manager','hr','supervisor','asst_supervisor'] },
  { key:'costing', icon:'\uD83C\uDF69', label:'Costing',
  tabs:[{key:'costing',label:'Costing'}],
  roles:['owner','manager'] },
@@ -12304,6 +12569,22 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
  const visibleSubTabs = currentSection.tabs.filter(t => canAccess(t.key))
+ const canManageSopLibrary = ['owner','manager'].includes(normalizeAdminRole(adminRole))
+ const filteredSops = (sops || []).filter(sop => {
+ if (!canViewSop(sop)) return false
+ const q = sopSearch.trim().toLowerCase()
+ const matchesSearch = !q || [sop.sop_code, sop.title, sop.department, sop.category, sop.purpose, sop.procedure, sop.required_records].some(v => String(v || '').toLowerCase().includes(q))
+ const matchesDepartment = sopDepartmentFilter === 'all' || sop.department === sopDepartmentFilter
+ const matchesStatus = sopStatusFilter === 'all' || String(sop.status || '').toLowerCase() === sopStatusFilter
+ return matchesSearch && matchesDepartment && matchesStatus
+ })
+ const sopStats = {
+ total:(sops || []).length,
+ active:(sops || []).filter(s => s.status === 'active').length,
+ draft:(sops || []).filter(s => s.status === 'draft').length,
+ archived:(sops || []).filter(s => s.status === 'archived').length,
+ ackRequired:(sops || []).filter(s => s.acknowledgement_required !== false).length
+ }
  const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
  const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
     const payablesDeadlineKey = (ownerDeadlineSummary.warningRows || [])
@@ -20219,7 +20500,273 @@ onClick={async ()=>{
  )}
 
  {/* FRANCHISE MODULE */}
- {activeTab==='franchise' && adminRole==='owner' && (
+
+ {/* SOP LIBRARY */}
+ {activeTab==='sops' && canAccess('sops') && (
+ <div>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:isMobile?'flex-start':'center', flexDirection:isMobile?'column':'row', gap:'10px', marginBottom:'14px' }}>
+ <div>
+ <h2 style={{...h2s, marginBottom:'4px' }}> SOP & Standards Control Center</h2>
+ <p style={{ color:'#777', fontSize:'13px', margin:0 }}>Central library for Roma's Donuts production, food safety, inventory, reseller, finance, and HR SOPs.</p>
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnYellow, width:'auto' }} onClick={loadSops}>REFRESH</button>
+ <button style={{...btnBlack, width:'auto' }} onClick={exportSopLibraryCSV}>EXPORT CSV</button>
+ {canManageSopLibrary && <button style={{...btnRed, width:'auto' }} onClick={openNewSopForm}>ADD SOP</button>}
+ </div>
+ </div>
+
+ {sopLoadError && (
+ <div style={{ background:'#fff5f5', border:'1.5px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', margin:'0 0 6px' }}>SOP database setup needed</p>
+ <p style={{ color:'#555', fontSize:'13px', margin:0 }}>Run the Supabase SOP setup SQL first, then click Refresh. Error: {sopLoadError}</p>
+ </div>
+ )}
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'16px' }}>
+ {[
+ ['Total SOPs', sopStats.total, '#1a1a2e'],
+ ['Active', sopStats.active, '#2d8a4e'],
+ ['Draft', sopStats.draft, '#f5a623'],
+ ['Archived', sopStats.archived, '#777'],
+ ['Need Acknowledgement', sopStats.ackRequired, '#ca1b1b'],
+ ].map(([label,value,color]) => (
+ <div key={label} style={{ background:'white', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${color}22` }}>
+ <p style={{ color:'#888', fontSize:'10px', margin:'0 0 6px', textTransform:'uppercase', letterSpacing:'0.5px' }}>{label}</p>
+ <p style={{ color, fontSize:'24px', fontWeight:'900', margin:0 }}>{value}</p>
+ </div>
+ ))}
+ </div>
+
+ <div style={{ background:'white', borderRadius:'14px', padding:'10px', marginBottom:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)', display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ {[
+ ['dashboard','Dashboard'],
+ ['library','SOP Library'],
+ ['acknowledgements','Acknowledgements'],
+ ].map(([key,label]) => (
+ <button key={key} style={{...btnBase, width:'auto', marginTop:0, background:sopView===key?'#ca1b1b':'#f2f2f2', color:sopView===key?'white':'#333', boxShadow:sopView===key?'0 2px 8px rgba(202,27,27,0.25)':'none' }} onClick={()=>setSopView(key)}>
+ {label}
+ </button>
+ ))}
+ </div>
+
+ {sopView==='dashboard' && (
+ <div>
+ <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)', marginBottom:'16px' }}>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 10px' }}>SOP Coverage by Department</h3>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+ {SOP_DEPARTMENTS.map(dept => {
+ const count = (sops || []).filter(s => s.department === dept).length
+ const activeCount = (sops || []).filter(s => s.department === dept && s.status === 'active').length
+ return (
+ <div key={dept} style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:'#fffdf8' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
+ <p style={{ fontWeight:'bold', color:'#333', margin:0, fontSize:'13px' }}>{dept}</p>
+ <span style={{ fontWeight:'bold', color:count?'#2d8a4e':'#ca1b1b', fontSize:'12px' }}>{activeCount}/{count} active</span>
+ </div>
+ <div style={{ height:'6px', background:'#eee', borderRadius:'20px', marginTop:'8px', overflow:'hidden' }}>
+ <div style={{ height:'100%', width:`${count? Math.min(100, (activeCount / count) * 100):0}%`, background:activeCount?'#2d8a4e':'#ca1b1b' }} />
+ </div>
+ </div>
+ )
+ })}
+ </div>
+ </div>
+
+ <div style={{ background:'#1a1a2e', color:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 8px rgba(0,0,0,0.12)' }}>
+ <h3 style={{ margin:'0 0 8px', color:'#FDD412' }}>Owner Control Notes</h3>
+ <p style={{ fontSize:'13px', lineHeight:1.6, margin:'0 0 8px' }}>Keep SOPs as Draft while editing. Change to Active only after owner approval. Archived SOPs are kept for history but should not be used for daily operations.</p>
+ <p style={{ fontSize:'13px', lineHeight:1.6, margin:0 }}>For recipes, use a separate restricted vault later. Do not store secret formulations inside normal employee SOPs.</p>
+ </div>
+ </div>
+ )}
+
+ {sopView==='library' && (
+ <div>
+ <div style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr', gap:'10px' }}>
+ <input value={sopSearch} onChange={e=>setSopSearch(e.target.value)} placeholder="Search SOP code, title, department, purpose, or procedure..." style={inputStyle} />
+ <select value={sopDepartmentFilter} onChange={e=>setSopDepartmentFilter(e.target.value)} style={inputStyle}>
+ <option value="all">All Departments</option>
+ {SOP_DEPARTMENTS.map(dept => <option key={dept} value={dept}>{dept}</option>)}
+ </select>
+ <select value={sopStatusFilter} onChange={e=>setSopStatusFilter(e.target.value)} style={inputStyle}>
+ <option value="all">All Status</option>
+ {SOP_STATUSES.map(status => <option key={status} value={status}>{status.toUpperCase()}</option>)}
+ </select>
+ </div>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0' }}>Showing {filteredSops.length} SOP{filteredSops.length!==1?'s':''}. Owner/Manager can create, edit, activate, and archive.</p>
+ </div>
+
+ {showSopForm && (
+ <div style={{ background:'#fffdf1', border:'2px solid #FDD412', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', marginBottom:'10px' }}>
+ <h3 style={{ color:'#ca1b1b', margin:0 }}>{editingSopId? 'Edit SOP':'Add New SOP'}</h3>
+ <button style={{...btnGray, width:'auto', marginTop:0 }} onClick={()=>{ setShowSopForm(false); resetSopForm() }}>CANCEL</button>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 2fr', gap:'10px' }}>
+ <div><label style={lblS}>SOP Code</label><input value={sopForm.sop_code} onChange={e=>setSopForm(p=>({...p,sop_code:e.target.value}))} placeholder="e.g. PROD-001" style={inputStyle} /></div>
+ <div><label style={lblS}>Title</label><input value={sopForm.title} onChange={e=>setSopForm(p=>({...p,title:e.target.value}))} placeholder="SOP title" style={inputStyle} /></div>
+ <div><label style={lblS}>Department</label><select value={sopForm.department} onChange={e=>setSopForm(p=>({...p,department:e.target.value}))} style={inputStyle}>{SOP_DEPARTMENTS.map(dept=><option key={dept} value={dept}>{dept}</option>)}</select></div>
+ <div><label style={lblS}>Category</label><select value={sopForm.category} onChange={e=>setSopForm(p=>({...p,category:e.target.value}))} style={inputStyle}>{SOP_CATEGORIES.map(cat=><option key={cat} value={cat}>{cat}</option>)}</select></div>
+ <div><label style={lblS}>Version</label><input value={sopForm.version} onChange={e=>setSopForm(p=>({...p,version:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Effective Date</label><input type="date" value={sopForm.effective_date} onChange={e=>setSopForm(p=>({...p,effective_date:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Status</label><select value={sopForm.status} onChange={e=>setSopForm(p=>({...p,status:e.target.value}))} style={inputStyle}>{SOP_STATUSES.map(status=><option key={status} value={status}>{status.toUpperCase()}</option>)}</select></div>
+ <div><label style={lblS}>Approved By</label><input value={sopForm.approved_by} onChange={e=>setSopForm(p=>({...p,approved_by:e.target.value}))} style={inputStyle} /></div>
+ </div>
+
+ <label style={lblS}>Access Roles</label>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'10px' }}>
+ {SOP_ACCESS_ROLE_OPTIONS.map(role => {
+ const roles = String(sopForm.access_roles || '').split(',').map(r=>r.trim()).filter(Boolean)
+ const checked = roles.includes(role)
+ return (
+ <label key={role} style={{ display:'inline-flex', alignItems:'center', gap:'6px', background:checked?'#ffe8e8':'#f5f5f5', border:`1px solid ${checked?'#ca1b1b':'#ddd'}`, borderRadius:'20px', padding:'6px 10px', fontSize:'12px', fontWeight:'bold', color:checked?'#ca1b1b':'#555' }}>
+ <input type="checkbox" checked={checked} onChange={e=>{
+ const next = e.target.checked? [...roles, role]: roles.filter(r=>r!==role)
+ setSopForm(p=>({...p,access_roles:next.join(',')}))
+ }} />
+ {role}
+ </label>
+ )
+ })}
+ </div>
+
+ <label style={{ display:'flex', alignItems:'center', gap:'8px', fontWeight:'bold', color:'#555', fontSize:'13px', margin:'0 0 10px' }}>
+ <input type="checkbox" checked={sopForm.acknowledgement_required !== false} onChange={e=>setSopForm(p=>({...p,acknowledgement_required:e.target.checked}))} />
+ Employee acknowledgement required
+ </label>
+
+ <label style={lblS}>Purpose</label>
+ <textarea value={sopForm.purpose} onChange={e=>setSopForm(p=>({...p,purpose:e.target.value}))} placeholder="Why this SOP exists..." style={{...inputStyle, minHeight:'80px', resize:'vertical' }} />
+ <label style={lblS}>Procedure</label>
+ <textarea value={sopForm.procedure} onChange={e=>setSopForm(p=>({...p,procedure:e.target.value}))} placeholder="Step-by-step procedure..." style={{...inputStyle, minHeight:'160px', resize:'vertical' }} />
+ <label style={lblS}>Required Records</label>
+ <textarea value={sopForm.required_records} onChange={e=>setSopForm(p=>({...p,required_records:e.target.value}))} placeholder="Logs, forms, checklists, reports..." style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
+ <label style={lblS}>Notes</label>
+ <textarea value={sopForm.notes} onChange={e=>setSopForm(p=>({...p,notes:e.target.value}))} placeholder="Internal notes..." style={{...inputStyle, minHeight:'60px', resize:'vertical' }} />
+
+ <button style={{...btnGreen }} disabled={savingSop} onClick={saveSopDocument}>{savingSop? 'SAVING...':'SAVE SOP'}</button>
+ </div>
+ )}
+
+ {sopsLoading? (
+ <div style={{ background:'white', borderRadius:'14px', padding:'30px', textAlign:'center', color:'#888' }}>Loading SOP library...</div>
+ ) : filteredSops.length === 0? (
+ <div style={{ background:'white', borderRadius:'14px', padding:'40px', textAlign:'center', color:'#888' }}>
+ <p style={{ fontSize:'40px', margin:'0 0 8px' }}>📘</p>
+ <p style={{ fontWeight:'bold', color:'#555', margin:'0 0 4px' }}>No SOPs found</p>
+ <p style={{ fontSize:'12px', margin:0 }}>Run the SOP setup SQL or add a new SOP manually.</p>
+ </div>
+ ) : (
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'12px' }}>
+ {filteredSops.map(sop => {
+ const statusColor = sop.status === 'active'? '#2d8a4e': sop.status === 'draft'? '#f5a623':'#777'
+ return (
+ <div key={sop.id || sop.sop_code} style={{ background:'white', borderRadius:'16px', padding:'16px', border:`2px solid ${statusColor}22`, boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'flex-start' }}>
+ <div>
+ <p style={{ color:'#ca1b1b', fontWeight:'900', margin:'0 0 4px', fontSize:'13px' }}>{sop.sop_code}</p>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 6px', fontSize:'15px' }}>{sop.title}</h3>
+ </div>
+ <span style={{ background:`${statusColor}18`, color:statusColor, borderRadius:'20px', padding:'4px 10px', fontSize:'10px', fontWeight:'900' }}>{String(sop.status || '').toUpperCase()}</span>
+ </div>
+ <p style={{ color:'#777', fontSize:'12px', margin:'0 0 8px' }}>{sop.department} • {sop.category} • Version {sop.version}</p>
+ <p style={{ color:'#555', fontSize:'12px', lineHeight:1.5, minHeight:'38px', margin:'0 0 10px' }}>{String(sop.purpose || '').slice(0,170)}{String(sop.purpose || '').length>170?'...':''}</p>
+ <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+ <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0 }} onClick={()=>setViewingSop(sop)}>VIEW</button>
+ <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0 }} onClick={()=>exportSopText(sop)}>EXPORT</button>
+ {canManageSopLibrary && <button style={{...btnYellow, width:'auto', padding:'8px 12px', marginTop:0 }} onClick={()=>openEditSop(sop)}>EDIT</button>}
+ {canManageSopLibrary && sop.status !== 'active' && <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0 }} onClick={()=>updateSopStatus(sop,'active')}>ACTIVATE</button>}
+ {canManageSopLibrary && sop.status !== 'archived' && <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0 }} onClick={()=>updateSopStatus(sop,'archived')}>ARCHIVE</button>}
+ </div>
+ </div>
+ )
+ })}
+ </div>
+ )}
+ </div>
+ )}
+
+ {sopView==='acknowledgements' && (
+ <div style={{ background:'white', borderRadius:'16px', padding:'18px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', marginBottom:'12px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px' }}>Employee SOP Acknowledgements</h3>
+ <p style={{ color:'#777', fontSize:'12px', margin:0 }}>This is ready for the next phase: employee read-and-acknowledge tracking.</p>
+ </div>
+ <button style={{...btnYellow, width:'auto' }} onClick={loadSopAcknowledgements}>REFRESH</button>
+ </div>
+ {sopAckLoading? <p style={{ color:'#888' }}>Loading acknowledgements...</p>:
+ sopAcknowledgements.length === 0? (
+ <div style={{ background:'#f8f8f8', borderRadius:'12px', padding:'24px', textAlign:'center', color:'#888' }}>
+ <p style={{ fontWeight:'bold', color:'#555', margin:'0 0 6px' }}>No acknowledgement records yet</p>
+ <p style={{ fontSize:'12px', margin:0 }}>After we add employee-side acknowledgement, records will appear here.</p>
+ </div>
+ ) : (
+ <div style={{ overflowX:'auto' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}>
+ {['Date','Employee','SOP','Version','Status'].map(h=><th key={h} style={{ padding:'9px', textAlign:'left' }}>{h}</th>)}
+ </tr></thead>
+ <tbody>
+ {sopAcknowledgements.map(row => (
+ <tr key={row.id} style={{ borderBottom:'1px solid #eee' }}>
+ <td style={{ padding:'9px' }}>{String(row.acknowledged_at || '').slice(0,19).replace('T',' ')}</td>
+ <td style={{ padding:'9px', fontWeight:'bold' }}>{row.employee_name || row.employee_id || 'Employee'}</td>
+ <td style={{ padding:'9px' }}>{row.sop_code || row.sop_id}</td>
+ <td style={{ padding:'9px' }}>{row.version || ''}</td>
+ <td style={{ padding:'9px' }}>{row.status || 'acknowledged'}</td>
+ </tr>
+ ))}
+ </tbody>
+ </table>
+ </div>
+ )}
+ </div>
+ )}
+
+ {viewingSop && (
+ <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.72)', zIndex:9999, display:'flex', justifyContent:'center', alignItems:'center', padding:'18px' }} onClick={()=>setViewingSop(null)}>
+ <div style={{ background:'white', borderRadius:'18px', padding:'22px', width:'100%', maxWidth:'850px', maxHeight:'88vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.45)' }} onClick={e=>e.stopPropagation()}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', borderBottom:'2px solid #f0f0f0', paddingBottom:'12px', marginBottom:'14px' }}>
+ <div>
+ <p style={{ color:'#ca1b1b', fontWeight:'900', margin:'0 0 4px' }}>{viewingSop.sop_code}</p>
+ <h2 style={{ color:'#1a1a2e', margin:'0 0 6px' }}>{viewingSop.title}</h2>
+ <p style={{ color:'#777', fontSize:'12px', margin:0 }}>{viewingSop.department} • {viewingSop.category} • Version {viewingSop.version} • {viewingSop.status?.toUpperCase()}</p>
+ </div>
+ <button style={{...btnGray, width:'auto', marginTop:0 }} onClick={()=>setViewingSop(null)}>CLOSE</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'12px', marginBottom:'12px' }}>
+ <div style={{ background:'#f8f8f8', borderRadius:'10px', padding:'10px' }}><p style={{...cps, margin:0 }}><b>Effective Date:</b> {viewingSop.effective_date || '-'}</p></div>
+ <div style={{ background:'#f8f8f8', borderRadius:'10px', padding:'10px' }}><p style={{...cps, margin:0 }}><b>Approved By:</b> {viewingSop.approved_by || '-'}</p></div>
+ <div style={{ background:'#f8f8f8', borderRadius:'10px', padding:'10px' }}><p style={{...cps, margin:0 }}><b>Acknowledgement:</b> {viewingSop.acknowledgement_required === false? 'Not required':'Required'}</p></div>
+ <div style={{ background:'#f8f8f8', borderRadius:'10px', padding:'10px' }}><p style={{...cps, margin:0 }}><b>Access:</b> {viewingSop.access_roles || '-'}</p></div>
+ </div>
+ {[
+ ['Purpose', viewingSop.purpose],
+ ['Procedure', viewingSop.procedure],
+ ['Required Records', viewingSop.required_records],
+ ['Notes', viewingSop.notes],
+ ].map(([label,value]) => (
+ <div key={label} style={{ marginBottom:'14px' }}>
+ <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', textTransform:'uppercase', fontSize:'12px', letterSpacing:'0.6px' }}>{label}</h4>
+ <div style={{ whiteSpace:'pre-wrap', background:'#fffdf8', border:'1px solid #eee', borderRadius:'12px', padding:'12px', color:'#333', fontSize:'13px', lineHeight:1.7 }}>{value || '-'}</div>
+ </div>
+ ))}
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnBlack, width:'auto' }} onClick={()=>exportSopText(viewingSop)}>EXPORT SOP</button>
+ {canManageSopLibrary && <button style={{...btnYellow, width:'auto' }} onClick={()=>{ openEditSop(viewingSop); setViewingSop(null) }}>EDIT SOP</button>}
+ </div>
+ </div>
+ </div>
+ )}
+ </div>
+ )}
+
+
+  {activeTab==='franchise' && adminRole==='owner' && (
  <div>
  <h2 style={h2s}> Franchise Management</h2>
  {/* Summary */}
