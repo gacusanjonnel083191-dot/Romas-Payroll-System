@@ -824,6 +824,8 @@ export default function App() {
  { name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Bavarian Bites', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+ { name:'Strawberry Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+ { name:'Taro Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Choco Lollisticks', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Glazed Circlets', category:'Glaze Circlet', selling_price:13, pieces_per_batch:20 },
  { name:'Cinnamon Rolls', category:'Premium', selling_price:18, pieces_per_batch:8 },
@@ -4295,6 +4297,8 @@ function buildDeliveryInvoicePrintCSS() {
       { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
       { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
       { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
+      { label:'Strawberry Pops', aliases:['Strawberry Pops'] },
+      { label:'Taro Pops', aliases:['Taro Pops'] },
       { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
       { label:'Biscoreo', aliases:['Biscoreo'] },
       { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] }
@@ -16204,6 +16208,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  // Dry premix weight per piece (grams) after 10% reduction
  const DRY_PREMIX_GRAMS = {
  'Choco Balls': 9.45, 'Bavarian Bites': 9.45, 'Bavarian Pops': 9.45,
+ 'Strawberry Pops': 9.45, 'Taro Pops': 9.45,
  'Choco Lollisticks': 0,
  'Glazed Circlets': 11.7,
  'Cinnamon Rolls': 27, 'Rings': 27, 'Shells': 27,
