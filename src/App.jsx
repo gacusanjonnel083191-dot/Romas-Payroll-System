@@ -955,6 +955,8 @@ export default function App() {
  const [markingDelivered, setMarkingDelivered] = useState({})
  const [showPaymentFormMap, setShowPaymentFormMap] = useState({})
  const [paymentNotes, setPaymentNotes] = useState({})
+ const [settlementRows, setSettlementRows] = useState({})
+ const [settlementSaving, setSettlementSaving] = useState({})
  // Driver Return Form
  const [showDriverReturnForm, setShowDriverReturnForm] = useState(null)
  const [driverReturnItems, setDriverReturnItems] = useState([])
@@ -5409,6 +5411,136 @@ function buildDeliveryInvoicePrintCSS() {
  </div></body></html>`)
  pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
  }
+
+ function buildInvoiceSettlementRows(inv) {
+ const items = inv?.delivery_invoice_items || []
+ return items.map(item => {
+ const qty = Math.max(0, safeNum(item.quantity, 0))
+ const price = moneyRound(item.reseller_price ?? item.unit_price ?? 0)
+ return { item_id:item.id || null, variant_id:item.variant_id || '', variant_name:item.variant_name || 'Unknown Variant', original_quantity:qty, actual_quantity:qty, returned_quantity:0, reseller_price:price, retail_price:moneyRound(item.retail_price ?? price) }
+ })
+ }
+
+ async function openInvoiceSettlement(inv) {
+ if (showPaymentFormMap[inv.id]) { setShowPaymentFormMap(p=>({...p,[inv.id]:false})); return }
+ let rows = buildInvoiceSettlementRows(inv)
+ try {
+ const { data } = await supabase.from('reseller_returns').select('id, reseller_return_items(*)').eq('invoice_id', inv.id)
+ const returned = {}
+ ;(data || []).forEach(r => (r.reseller_return_items || []).forEach(i => {
+ const key = String(i.variant_id || i.variant_name || '')
+ returned[key] = safeNum(returned[key], 0) + safeNum(i.returned_quantity, 0)
+ }))
+ rows = rows.map(r => {
+ const key = String(r.variant_id || r.variant_name || '')
+ return {...r, returned_quantity:Math.min(safeNum(r.actual_quantity,0), safeNum(returned[key],0))}
+ })
+ } catch(e) { console.warn('openInvoiceSettlement existing returns:', e) }
+ setSettlementRows(p=>({...p,[inv.id]:rows}))
+ setPaymentAmount(p=>({...p,[inv.id]:p[inv.id] || ''}))
+ setPaymentMethod(p=>({...p,[inv.id]:p[inv.id] || 'Cash'}))
+ setPaymentNotes(p=>({...p,[inv.id]:p[inv.id] || ''}))
+ setShowPaymentFormMap(p=>({...p,[inv.id]:true}))
+ }
+
+ function updateSettlementRow(invoiceId, idx, field, value) {
+ setSettlementRows(prev => {
+ const rows = [...(prev[invoiceId] || [])]
+ const row = {...rows[idx], [field]:value}
+ const actual = Math.max(0, safeNum(field === 'actual_quantity'? value: row.actual_quantity, 0))
+ const returned = Math.max(0, safeNum(field === 'returned_quantity'? value: row.returned_quantity, 0))
+ if (field === 'actual_quantity' && returned > actual) row.returned_quantity = actual
+ if (field === 'returned_quantity' && returned > actual) row.returned_quantity = actual
+ rows[idx] = row
+ return {...prev, [invoiceId]:rows}
+ })
+ }
+
+ function getSettlementSummary(inv, rowsArg = null) {
+ const rows = rowsArg || settlementRows[inv.id] || buildInvoiceSettlementRows(inv)
+ const out = { originalQty:0, actualQty:0, returnedQty:0, billableQty:0, originalGross:0, adjustedGross:0, returnsCredit:0, finalTotal:0 }
+ rows.forEach(row => {
+ const originalQty = Math.max(0, safeNum(row.original_quantity, 0))
+ const actualQty = Math.max(0, safeNum(row.actual_quantity, 0))
+ const returnedQty = Math.min(actualQty, Math.max(0, safeNum(row.returned_quantity, 0)))
+ const billableQty = Math.max(0, actualQty - returnedQty)
+ const price = moneyRound(row.reseller_price || 0)
+ out.originalQty += originalQty
+ out.actualQty += actualQty
+ out.returnedQty += returnedQty
+ out.billableQty += billableQty
+ out.originalGross = moneyRound(out.originalGross + originalQty * price)
+ out.adjustedGross = moneyRound(out.adjustedGross + actualQty * price)
+ out.returnsCredit = moneyRound(out.returnsCredit + returnedQty * price)
+ out.finalTotal = moneyRound(out.finalTotal + billableQty * price)
+ })
+ const alreadyPaid = moneyRound(inv.paid_amount || 0)
+ const cashReceived = moneyRound(paymentAmount[inv.id] || 0)
+ const dueBeforeCash = moneyRound(Math.max(0, out.finalTotal - alreadyPaid))
+ const newPaidTotal = moneyRound(Math.min(out.finalTotal, alreadyPaid + cashReceived))
+ const finalBalance = moneyRound(Math.max(0, out.finalTotal - newPaidTotal))
+ const newStatus = finalBalance <= 0 ? 'paid' : newPaidTotal > 0 ? 'partial' : (String(inv.status || '').toLowerCase() === 'delivered' ? 'delivered' : 'unpaid')
+ return {...out, alreadyPaid, cashReceived, dueBeforeCash, newPaidTotal, finalBalance, newStatus}
+ }
+
+ async function saveInvoiceSettlement(inv) {
+ const rows = (settlementRows[inv.id] || buildInvoiceSettlementRows(inv)).map(row => {
+ const actual = Math.max(0, safeNum(row.actual_quantity, 0))
+ const returned = Math.min(actual, Math.max(0, safeNum(row.returned_quantity, 0)))
+ const price = moneyRound(row.reseller_price || 0)
+ return {...row, actual_quantity:actual, returned_quantity:returned, billable_quantity:Math.max(0, actual - returned), total_price:moneyRound(actual * price), return_credit:moneyRound(returned * price)}
+ })
+ if (!rows.length) { showToast(' No invoice items found for settlement.', 'red'); return }
+ const summary = getSettlementSummary(inv, rows)
+ if (summary.cashReceived - summary.dueBeforeCash > 0.01) { showToast(` Cash received exceeds final balance of ${php(summary.dueBeforeCash)}.`, 'red'); return }
+ setSettlementSaving(p=>({...p,[inv.id]:true}))
+ let paymentId = null
+ try {
+ const { data:oldReturns } = await supabase.from('reseller_returns').select('id').eq('invoice_id', inv.id)
+ const oldIds = (oldReturns || []).map(r => r.id).filter(Boolean)
+ if (oldIds.length) { await supabase.from('reseller_return_items').delete().in('return_id', oldIds); await supabase.from('reseller_returns').delete().in('id', oldIds) }
+ const returnedRows = rows.filter(r => safeNum(r.returned_quantity,0) > 0)
+ if (returnedRows.length) {
+ const { data:ret, error:retErr } = await supabase.from('reseller_returns').insert({ invoice_id:inv.id, reseller_id:inv.reseller_id, reseller_name:inv.reseller_name, return_date:today, total_returned_amount:summary.returnsCredit, recorded_by:adminRole, notes:`Recorded inside payment settlement. Actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs.` }).select().single()
+ if (retErr) throw retErr
+ const { error:itemRetErr } = await supabase.from('reseller_return_items').insert(returnedRows.map(r => ({ return_id:ret.id, variant_id:r.variant_id || null, variant_name:r.variant_name, returned_quantity:safeNum(r.returned_quantity,0), reseller_price:safeNum(r.reseller_price,0), total_credit:safeNum(r.return_credit,0) })))
+ if (itemRetErr) throw itemRetErr
+ }
+ for (const row of rows) {
+ if (!row.item_id) continue
+ const { error:itemErr } = await supabase.from('delivery_invoice_items').update({ quantity:safeNum(row.actual_quantity,0), total_price:safeNum(row.total_price,0) }).eq('id', row.item_id)
+ if (itemErr) throw itemErr
+ }
+ if (summary.cashReceived > 0) {
+ const { data:payRows, error:payErr } = await supabase.from('reseller_payments').insert({ reseller_id:inv.reseller_id, reseller_name:inv.reseller_name, invoice_id:inv.id, amount:summary.cashReceived, payment_date:today, payment_method:paymentMethod[inv.id] || 'Cash', notes:paymentNotes[inv.id] || `Settlement for ${inv.invoice_number}`, recorded_by:adminRole }).select('id')
+ if (payErr) throw payErr
+ paymentId = Array.isArray(payRows) ? payRows[0]?.id : payRows?.id
+ }
+ const note = `Settlement ${today}: actual delivered ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final payable ${php(summary.finalTotal)}, cash received ${php(summary.cashReceived)}, balance ${php(summary.finalBalance)}.`
+ const invoiceUpdate = { subtotal:summary.adjustedGross, total_amount:summary.finalTotal, paid_amount:summary.newPaidTotal, paid_date:summary.newStatus === 'paid' ? today : null, status:summary.newStatus, returns_amount:summary.returnsCredit, returns_qty:summary.returnedQty, notes:[inv.notes, note].filter(Boolean).join(' | ') }
+ let { error:invoiceErr } = await supabase.from('delivery_invoices').update(invoiceUpdate).eq('id', inv.id)
+ if (invoiceErr && String(invoiceErr.message || '').toLowerCase().includes('column')) {
+ const fallback = {...invoiceUpdate}; delete fallback.returns_amount; delete fallback.returns_qty
+ ;({ error:invoiceErr } = await supabase.from('delivery_invoices').update(fallback).eq('id', inv.id))
+ }
+ if (invoiceErr) throw invoiceErr
+ await logAudit('INVOICE SETTLED', adminRole, inv.reseller_name, `${inv.invoice_number} actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final ${php(summary.finalTotal)}, cash ${php(summary.cashReceived)}, balance ${php(summary.finalBalance)}, status ${summary.newStatus}`)
+ showToast(summary.newStatus === 'paid' ? ` Settlement saved. ${inv.reseller_name} is fully paid.` : ` Settlement saved. Remaining balance: ${php(summary.finalBalance)}`)
+ setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
+ setPaymentAmount(p=>({...p,[inv.id]:''}))
+ setPaymentMethod(p=>({...p,[inv.id]:'Cash'}))
+ setPaymentNotes(p=>({...p,[inv.id]:''}))
+ setSettlementRows(p=>({...p,[inv.id]:[]}))
+ if (summary.newStatus === 'paid') setInvoiceFilter('paid')
+ else if (summary.newStatus === 'partial') setInvoiceFilter('partial')
+ await loadDeliveryInvoices()
+ refreshFoundationAfterDataChange('invoice-settlement-saved')
+ } catch(err) {
+ if (paymentId) await supabase.from('reseller_payments').delete().eq('id', paymentId)
+ showToast(' Settlement was not saved: '+(err?.message || err), 'red')
+ } finally { setSettlementSaving(p=>({...p,[inv.id]:false})) }
+ }
+
 
  // Record Payment with Partial Support 
  async function recordPaymentNew(inv) {
@@ -17852,44 +17984,69 @@ onClick={async ()=>{
  {/* Action Buttons */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
- {inv.status!=='paid' && balance > 0 && (
- <button style={{...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>setShowPaymentFormMap(p=>({...p,[inv.id]:!p[inv.id]}))}>
- {showPaymentFormMap[inv.id]?' CANCEL':' RECORD PAYMENT'}
+ {displayStatus!=='paid' && (
+ <button style={{...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>openInvoiceSettlement(inv)}>
+ {showPaymentFormMap[inv.id]?' CANCEL SETTLEMENT':' RECORD PAYMENT'}
  </button>
  )}
  </div>
- {/* Payment Form */}
- {showPaymentFormMap[inv.id] && (
- <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'12px', padding:'16px', marginTop:'12px' }}>
- <p style={{ fontWeight:'bold', color:'#2d8a4e', fontSize:'13px', margin:'0 0 12px' }}> Record Payment Balance: {php(Math.max(0,balance))}</p>
+ {/* Payment / Actual Delivery / Returns Settlement Form */}
+ {showPaymentFormMap[inv.id] && (()=>{
+ const rows = settlementRows[inv.id] || buildInvoiceSettlementRows(inv)
+ const summary = getSettlementSummary(inv, rows)
+ const cashTooHigh = summary.cashReceived - summary.dueBeforeCash > 0.01
+ return (
+ <div style={{ background:'#fffdf0', border:'2px solid #FDD412', borderRadius:'12px', padding:'16px', marginTop:'12px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div>
+ <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'14px', margin:'0 0 4px' }}>Payment Settlement Center</p>
+ <p style={{ color:'#666', fontSize:'11px', margin:0 }}>Edit actual delivered quantity, returns/unsold, and cash received here. The final balance computes automatically.</p>
+ </div>
+ <span style={{ background:'#ca1b1b', color:'white', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>One-click settlement</span>
+ </div>
+ <div style={{ overflowX:'auto', background:'white', borderRadius:'10px', border:'1px solid #eee', marginBottom:'12px' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'760px', fontSize:'11px' }}>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}>
+ <th style={{ padding:'8px', textAlign:'left' }}>Product</th><th style={{ padding:'8px', textAlign:'right' }}>Invoice Qty</th><th style={{ padding:'8px', textAlign:'right' }}>Actual Delivered</th><th style={{ padding:'8px', textAlign:'right' }}>Returns / Unsold</th><th style={{ padding:'8px', textAlign:'right' }}>Billable Qty</th><th style={{ padding:'8px', textAlign:'right' }}>Price</th><th style={{ padding:'8px', textAlign:'right' }}>Amount</th>
+ </tr></thead>
+ <tbody>
+ {rows.map((row, idx)=>{
+ const actual = Math.max(0, safeNum(row.actual_quantity,0))
+ const returned = Math.min(actual, Math.max(0, safeNum(row.returned_quantity,0)))
+ const billable = Math.max(0, actual - returned)
+ const amount = moneyRound(billable * safeNum(row.reseller_price,0))
+ const changed = safeNum(row.original_quantity,0)!==actual || returned>0
+ return <tr key={`${row.item_id || row.variant_name}-${idx}`} style={{ borderBottom:'1px solid #eee', background:changed?'#fffaf0':'white' }}>
+ <td style={{ padding:'7px', fontWeight:'bold', color:'#333' }}>{row.variant_name}</td>
+ <td style={{ padding:'7px', textAlign:'right', color:'#777' }}>{safeNum(row.original_quantity,0)}</td>
+ <td style={{ padding:'7px', textAlign:'right' }}><input type="number" min="0" value={row.actual_quantity} onChange={e=>updateSettlementRow(inv.id, idx, 'actual_quantity', e.target.value)} style={{...inputStyle, marginBottom:0, width:'90px', padding:'6px 8px', textAlign:'right', fontWeight:'bold' }} /></td>
+ <td style={{ padding:'7px', textAlign:'right' }}><input type="number" min="0" max={actual} value={row.returned_quantity} onChange={e=>updateSettlementRow(inv.id, idx, 'returned_quantity', e.target.value)} style={{...inputStyle, marginBottom:0, width:'90px', padding:'6px 8px', textAlign:'right', border:returned>0?'2px solid #ca1b1b':'1.5px solid #e8e8e8', fontWeight:'bold' }} /></td>
+ <td style={{ padding:'7px', textAlign:'right', fontWeight:'bold', color:'#2d8a4e' }}>{billable}</td>
+ <td style={{ padding:'7px', textAlign:'right' }}>{php(row.reseller_price)}</td>
+ <td style={{ padding:'7px', textAlign:'right', fontWeight:'bold' }}>{php(amount)}</td>
+ </tr>
+ })}
+ <tr style={{ background:'#f7f7f7', fontWeight:'bold' }}><td style={{ padding:'8px' }}>TOTAL</td><td style={{ padding:'8px', textAlign:'right' }}>{summary.originalQty}</td><td style={{ padding:'8px', textAlign:'right' }}>{summary.actualQty}</td><td style={{ padding:'8px', textAlign:'right', color:'#ca1b1b' }}>{summary.returnedQty}</td><td style={{ padding:'8px', textAlign:'right', color:'#2d8a4e' }}>{summary.billableQty}</td><td></td><td style={{ padding:'8px', textAlign:'right' }}>{php(summary.finalTotal)}</td></tr>
+ </tbody>
+ </table>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5, 1fr)', gap:'8px', marginBottom:'12px' }}>
+ <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Actual Delivered</p><p style={{ color:'#1a1a2e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.adjustedGross)}</p></div>
+ <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Returns / Unsold</p><p style={{ color:'#ca1b1b', fontWeight:'900', margin:'3px 0 0' }}>- {php(summary.returnsCredit)}</p></div>
+ <div style={{ background:'#e8f5e9', borderRadius:'10px', padding:'10px', border:'1px solid #2d8a4e33' }}><p style={{ color:'#2d8a4e', fontSize:'10px', margin:0 }}>Final Payable</p><p style={{ color:'#2d8a4e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.finalTotal)}</p></div>
+ <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Already Paid</p><p style={{ color:'#2d8a4e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.alreadyPaid)}</p></div>
+ <div style={{ background:summary.finalBalance>0?'#fff5f5':'#e8f5e9', borderRadius:'10px', padding:'10px', border:`1px solid ${summary.finalBalance>0?'#ca1b1b33':'#2d8a4e33'}` }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Balance After Cash</p><p style={{ color:summary.finalBalance>0?'#ca1b1b':'#2d8a4e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.finalBalance)}</p></div>
+ </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px' }}>
- <div>
- <label style={lblS}>Amount Received ( ):</label>
- <input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{...inputStyle, marginBottom:0, border:'2px solid #FDD412', fontWeight:'bold', fontSize:'16px' }} min="1" placeholder={`Balance: ${php(balance)}`} />
+ <div><label style={lblS}>Cash on Hand / Amount Received:</label><input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{...inputStyle, marginBottom:0, border:cashTooHigh?'2px solid #ca1b1b':'2px solid #FDD412', fontWeight:'bold', fontSize:'16px' }} min="0" step="0.01" placeholder={`Final balance: ${php(summary.dueBeforeCash)}`} /></div>
+ <div><label style={lblS}>Payment Method:</label><select value={paymentMethod[inv.id]||'Cash'} onChange={e=>setPaymentMethod(p=>({...p,[inv.id]:e.target.value}))} style={{...inputStyle, marginBottom:0 }}>{['Cash','GCash','Bank Transfer','Maya','Check'].map(m=><option key={m}>{m}</option>)}</select></div>
+ <div><label style={lblS}>Notes / Reference #:</label><input value={paymentNotes[inv.id]||''} onChange={e=>setPaymentNotes(p=>({...p,[inv.id]:e.target.value}))} placeholder="GCash ref, slip #, return note, etc." style={{...inputStyle, marginBottom:0 }} /></div>
  </div>
- <div>
- <label style={lblS}>Payment Method:</label>
- <select value={paymentMethod[inv.id]||'Cash'} onChange={e=>setPaymentMethod(p=>({...p,[inv.id]:e.target.value}))} style={{...inputStyle, marginBottom:0 }}>
- {['Cash','GCash','Bank Transfer','Maya','Check'].map(m=><option key={m}>{m}</option>)}
- </select>
+ {cashTooHigh && <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'10px 0 0' }}>Cash received is higher than the final balance. Please check amount before saving.</p>}
+ <button disabled={!!settlementSaving[inv.id] || cashTooHigh} style={{...btnGreen, fontSize:'14px', fontWeight:'bold', opacity:settlementSaving[inv.id] || cashTooHigh?0.55:1 }} onClick={()=>saveInvoiceSettlement(inv)}>{settlementSaving[inv.id]?' SAVING SETTLEMENT...':' SAVE PAYMENT / RETURNS / ACTUAL DELIVERY'}</button>
  </div>
- <div>
- <label style={lblS}>Notes / Reference #:</label>
- <input value={paymentNotes[inv.id]||''} onChange={e=>setPaymentNotes(p=>({...p,[inv.id]:e.target.value}))} placeholder="GCash ref, slip #, etc." style={{...inputStyle, marginBottom:0 }} />
- </div>
- </div>
- {paymentAmount[inv.id] && (
- <div style={{ background:Number(paymentAmount[inv.id])>=balance?'#c8e6c9':'#fff3cd', borderRadius:'10px', padding:'10px 14px', margin:'10px 0', border:`1px solid ${Number(paymentAmount[inv.id])>=balance?'#2d8a4e':'#ffc107'}` }}>
- <p style={{ margin:0, fontSize:'13px', fontWeight:'bold', color:Number(paymentAmount[inv.id])>=balance?'#2d8a4e':'#856404' }}>
- {Number(paymentAmount[inv.id])>=balance
-?` Full payment Invoice will be marked as PAID`
-:` Partial Remaining balance: ${php(Math.max(0,balance-Number(paymentAmount[inv.id])))} (Invoice stays in Partial)`}
- </p>
- </div>
- )}
- <button style={{...btnGreen, fontSize:'14px', fontWeight:'bold' }} onClick={()=>recordPaymentNew(inv)}> CONFIRM PAYMENT</button>
- </div>
- )}
+ )
+ })()}
  </div>
  )
  })
