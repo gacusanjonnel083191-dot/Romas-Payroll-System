@@ -546,6 +546,14 @@ export default function App() {
     style.textContent = '@keyframes payablesSidebarBlink{0%,100%{background:#ca1b1b;color:#fff;box-shadow:0 0 0 rgba(253,212,18,0)}50%{background:#fdd412;color:#1a1a2e;box-shadow:0 0 18px rgba(253,212,18,.95)}}'
     document.head.appendChild(style)
   }, [])
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    if (document.getElementById('credit-risk-flash-style')) return
+    const style = document.createElement('style')
+    style.id = 'credit-risk-flash-style'
+    style.textContent = '@keyframes creditRiskFlash{0%,100%{border-color:#ca1b1b;background:#fff5f5;box-shadow:0 0 0 rgba(202,27,27,0)}50%{border-color:#ff0000;background:#ffe1e1;box-shadow:0 0 18px rgba(202,27,27,.65)}}'
+    document.head.appendChild(style)
+  }, [])
 
  const today = getTodayDate()
  const videoRef = useRef(null)
@@ -3373,9 +3381,10 @@ export default function App() {
  }
 
 
- // Reseller Credit Hold / Delivery Resume Guard 
+ // Reseller Credit Warning / Admin Approval Guard
  // Rule: if a reseller has an unpaid/partial invoice after the 7-day grace period,
- // the 8th day blocks new invoice/order creation until the account is settled.
+ // the app no longer blocks new orders/invoices. Instead, affected orders/invoices
+ // flash red continually so admin can review the account before approval.
  function getInvoiceBalance(inv) {
  const balance = moneyRound(safeNum(inv?.total_amount, 0) - safeNum(inv?.paid_amount, 0))
  return isMoneySettled(balance)? 0: Math.max(0, balance)
@@ -3650,10 +3659,10 @@ export default function App() {
  blockedBalance,
  oldest,
  message: blockedInvoices.length > 0
-? `Delivery hold: ${blockedInvoices.length} invoice(s) unpaid beyond the ${RESELLER_CREDIT_GRACE_DAYS}-day grace period. Settle ${php(blockedBalance)} before creating a new invoice or delivery order.`
+? `Credit warning: ${blockedInvoices.length} invoice(s) unpaid beyond the ${RESELLER_CREDIT_GRACE_DAYS}-day grace period. Orders/invoices are still allowed, but admin should collect or review ${php(blockedBalance)} before approval.`
 : outstanding.length > 0
 ? `Open balance: ${php(totalBalance)}. Please settle within ${RESELLER_CREDIT_GRACE_DAYS} days after delivery to keep continuous delivery active.`
-: 'Clear account delivery allowed.'
+: 'Clear account. Orders and deliveries allowed.'
  }
  }
 
@@ -3847,8 +3856,7 @@ export default function App() {
  if (customerType === 'reseller') {
  const visibleCreditStatus = getResellerCreditBlockInfo(invoiceResellerId)
  if (visibleCreditStatus.blocked) {
- showToast(`Delivery hold. ${visibleCreditStatus.message}`, 'red')
- return
+ showToast(`Credit warning only. Invoice creation is allowed, but review this reseller before approval/dispatch. ${visibleCreditStatus.message}`, 'red')
  }
  }
 
@@ -3856,13 +3864,12 @@ export default function App() {
  try {
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
 
+ let freshCreditStatus = null
  if (customerType === 'reseller') {
- const freshCreditStatus = await checkResellerCreditBlockFresh(invoiceResellerId)
+ freshCreditStatus = await checkResellerCreditBlockFresh(invoiceResellerId)
  if (freshCreditStatus.blocked) {
- showToast(`Cannot create invoice for ${reseller?.name || 'this reseller'}. ${freshCreditStatus.message}`, 'red')
- await logAudit('INVOICE BLOCKED - CREDIT HOLD', adminRole, reseller?.name || '', freshCreditStatus.message)
- setSavingInvoice(false)
- return
+ showToast(`Credit warning for ${reseller?.name || 'this reseller'}. Invoice will still be created, but admin should review before dispatch. ${freshCreditStatus.message}`, 'red')
+ await logAudit('INVOICE CREATED WITH CREDIT WARNING', adminRole, reseller?.name || '', freshCreditStatus.message)
  }
  }
 
@@ -5924,8 +5931,7 @@ function buildDeliveryInvoicePrintCSS() {
  }
  const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
  if (creditStatus.blocked) {
- showToast(` Order edit blocked for ${orderBranch.name}. ${creditStatus.message}`, 'red')
- return
+ showToast(` Credit warning for ${orderBranch.name}. Edit is allowed, but admin will see a red warning before approval. ${creditStatus.message}`, 'red')
  }
 
  setUpdatingResellerOrder(true)
@@ -5993,9 +5999,9 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
  const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
- if (creditStatus.blocked) {
- showToast(` Order blocked for ${orderBranch.name}. ${creditStatus.message}`, 'red')
- return
+ const hasCreditWarning = creditStatus.blocked
+ if (hasCreditWarning) {
+ showToast(` Credit warning for ${orderBranch.name}. Order is allowed, but admin will see a red warning before approval. ${creditStatus.message}`, 'red')
  }
  setSubmittingOrder(true)
  try {
@@ -6013,9 +6019,9 @@ function buildDeliveryInvoicePrintCSS() {
  quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
  })))
  const accountLabel = resellerPortalAccount?.account_name? `${resellerPortalAccount.account_name} / ${orderBranch.name}`: orderBranch.name
- await createNotification(null,'System','order',` New Order: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.`)
- await logAudit('RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} ${totalQty} pcs ${php(total)}`)
- showToast(` Order submitted for ${orderBranch.name}! Waiting for admin approval.`)
+ await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
+ await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
+ showToast(` Order submitted for ${orderBranch.name}! Waiting for admin approval${hasCreditWarning?' with credit warning.':'.'}`)
  setEditingResellerOrderId(null)
  setResellerOrderNotes('')
  setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
@@ -6041,10 +6047,10 @@ function buildDeliveryInvoicePrintCSS() {
  const validItems = items.filter(i=>Number(i.quantity)>0)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
  const creditStatus = await checkResellerCreditBlockFresh(order.reseller_id)
- if (creditStatus.blocked) {
- showToast(` Cannot approve order for ${order.reseller_name}. ${creditStatus.message}`, 'red')
- await logAudit('ORDER BLOCKED - CREDIT HOLD', adminRole, order.reseller_name, creditStatus.message)
- return
+ const hasCreditWarning = creditStatus.blocked
+ if (hasCreditWarning) {
+ showToast(` Credit warning for ${order.reseller_name}. Approval is allowed, but review/collect before releasing delivery. ${creditStatus.message}`, 'red')
+ await logAudit('ORDER APPROVAL CREDIT WARNING', adminRole, order.reseller_name, creditStatus.message)
  }
  // Create invoice automatically
  const reseller = resellers.find(r=>r.id===order.reseller_id)
@@ -16629,7 +16635,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const credit = getResellerCreditBlockInfo(order.reseller_id)
  const orderCutoff = getOrderCutoffStatus(order.delivery_date)
  return (
- <div key={order.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:`1px solid ${credit.blocked?'#ca1b1b':'#ffe0b2'}` }}>
+ <div key={order.id} style={{ background:credit.blocked?'#fff5f5':'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:`2px solid ${credit.blocked?'#ca1b1b':'#ffe0b2'}`, animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{order.reseller_name}</p>
@@ -16637,16 +16643,16 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {order.notes && <p style={{ color:'#888', fontSize:'11px', margin:'2px 0 0' }}>Note: {order.notes}</p>}
  {credit.blocked && (
  <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'4px 0 0', fontWeight:'bold' }}>
- Delivery hold: settle overdue balance before invoice approval.
+ CREDIT WARNING: unsettled balance is beyond 7 days. Order is allowed, but review/collect before approval.
  </p>
  )}
  </div>
  <div style={{ display:'flex', gap:'6px' }}>
  <button
- style={{...btnGreen, background:(credit.blocked || orderCutoff.locked)?'#999':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:(credit.blocked || orderCutoff.locked)?'not-allowed':'pointer' }}
- disabled={credit.blocked || orderCutoff.locked}
+ style={{...btnGreen, background:orderCutoff.locked?'#999':credit.blocked?'#ca1b1b':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:orderCutoff.locked?'not-allowed':'pointer', animation:credit.blocked && !orderCutoff.locked?'creditRiskFlash 1.15s infinite':'none' }}
+ disabled={orderCutoff.locked}
  onClick={()=>approveResellerOrder(order)}
- >{credit.blocked?' HOLD':orderCutoff.locked?' TOMORROW CUT-OFF':' APPROVE'}</button>
+ >{orderCutoff.locked?' TOMORROW CUT-OFF':credit.blocked?' APPROVE WITH WARNING':' APPROVE'}</button>
  <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>rejectResellerOrder(order.id, order.reseller_name)}> REJECT</button>
  </div>
  </div>
@@ -16701,7 +16707,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
 <option value="">Select reseller</option>
 {resellers.map(r=>{
  const credit = getResellerCreditBlockInfo(r.id)
- return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked? ' DELIVERY HOLD': ''}</option>
+ return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked? ' CREDIT WARNING': ''}</option>
 })}
 </select>
 </div>
@@ -16725,9 +16731,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const credit = getResellerCreditBlockInfo(invoiceResellerId)
  const oldest = credit.oldest
  return (
- <div style={{ gridColumn:'1 / -1', background:credit.blocked?'#fff5f5':'#f0fff4', border:`1.5px solid ${credit.blocked?'#ca1b1b':'#2d8a4e'}`, borderRadius:'10px', padding:'10px', marginBottom:'2px' }}>
+ <div style={{ gridColumn:'1 / -1', background:credit.blocked?'#fff5f5':'#f0fff4', border:`2px solid ${credit.blocked?'#ca1b1b':'#2d8a4e'}`, borderRadius:'10px', padding:'10px', marginBottom:'2px', animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}>
  <p style={{ margin:'0 0 4px', color:credit.blocked?'#ca1b1b':'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>
- {credit.blocked? 'DELIVERY HOLD - SETTLE FIRST': 'Credit status clear for invoice creation'}
+ {credit.blocked? 'CREDIT WARNING - 7+ DAYS UNSETTLED': 'Credit status clear for invoice creation'}
  </p>
  <p style={{ margin:0, color:'#555', fontSize:'11px', lineHeight:1.5 }}>
  {credit.message}
@@ -16837,14 +16843,14 @@ onClick={async ()=>{
 <input type="text" value={invoiceNotes} onChange={e=>setInvoiceNotes(e.target.value)} placeholder="e.g. Special instructions, delivery notes" style={inputStyle} />
 {(()=>{
  const credit = invoiceCustomerType === 'reseller' ? getResellerCreditBlockInfo(invoiceResellerId) : { blocked:false }
- const disabled = savingInvoice || credit.blocked
+ const disabled = savingInvoice
  return (
  <button
- style={{...btnGreen, background:credit.blocked?'#999':'#2d8a4e', opacity:disabled?0.65:1 }}
+ style={{...btnGreen, background:credit.blocked?'#ca1b1b':'#2d8a4e', opacity:disabled?0.65:1, animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}
  disabled={disabled}
  onClick={createDeliveryInvoice}
  >
- {credit.blocked? 'DELIVERY HOLD - SETTLE FIRST': savingInvoice? 'Creating...': 'CREATE & SAVE INVOICE'}
+ {credit.blocked? 'CREATE INVOICE WITH CREDIT WARNING': savingInvoice? 'Creating...': 'CREATE & SAVE INVOICE'}
  </button>
  )
 })()}
@@ -16875,10 +16881,11 @@ onClick={async ()=>{
  return visibleInvoices.map(inv=>{
  const balance = getInvoiceBalance(inv)
  const displayStatus = getInvoicePaymentStatus(inv)
+ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : { blocked:false, message:'' }
  const isOverdue = displayStatus!=='paid' && balance > 0 && inv.due_date < today
- const statusColor = displayStatus==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':'#f57c00'
+ const statusColor = credit.blocked?'#ca1b1b':displayStatus==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':'#f57c00'
  return (
- <div key={inv.id} style={{...cardS, border:`2px solid ${statusColor}44`, marginBottom:'12px' }}>
+ <div key={inv.id} style={{...cardS, border:`2px solid ${credit.blocked?'#ca1b1b':statusColor+'44'}`, marginBottom:'12px', animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 2px' }}>{inv.invoice_number}</p>
@@ -16891,6 +16898,12 @@ onClick={async ()=>{
  {balance > 0 && displayStatus==='partial' && <p style={{ color:'#f57c00', fontSize:'11px', margin:'4px 0 0' }}>Balance: {php(balance)}</p>}
  </div>
  </div>
+ {credit.blocked && (
+ <div style={{ background:'#fff5f5', border:'1.5px solid #ca1b1b', borderRadius:'10px', padding:'9px 12px', margin:'8px 0', animation:'creditRiskFlash 1.15s infinite' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 3px' }}>CREDIT WARNING - REVIEW BEFORE APPROVAL/DISPATCH</p>
+ <p style={{ color:'#7a1a1a', fontSize:'11px', margin:0, lineHeight:1.45 }}>{credit.message}</p>
+ </div>
+ )}
  {/* Items preview */}
  {(inv.delivery_invoice_items||[]).length > 0 && (
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'8px' }}>
@@ -20447,13 +20460,13 @@ onClick={async ()=>{
  boxShadow:creditStatus.blocked?'0 4px 16px rgba(202,27,27,0.18)':'0 4px 16px rgba(253,212,18,0.22)'
  }}>
  <h3 style={{ color:creditStatus.blocked?'#ca1b1b':'#8a5a00', margin:'0 0 6px', fontSize:'16px' }}>
- {creditStatus.blocked? ' DELIVERY HOLD SETTLE FIRST': ' PAYMENT REMINDER KEEP DELIVERY ACTIVE'}
+ {creditStatus.blocked? ' CREDIT WARNING - 7+ DAYS UNSETTLED': ' PAYMENT REMINDER KEEP ACCOUNT CLEAN'}
  </h3>
  <p style={{ color:creditStatus.blocked?'#7a1a1a':'#6f5200', margin:'0 0 8px', fontSize:'13px', lineHeight:1.5, fontWeight:'700' }}>{creditStatus.message}</p>
  <p style={{ color:'#555', margin:0, fontSize:'12px', lineHeight:1.5 }}>
  {creditStatus.blocked
-? 'New order requests and deliveries are disabled. Please settle the overdue balance first before delivery can resume.'
-: `Please settle payment within ${RESELLER_CREDIT_GRACE_DAYS} days after delivery. On the day after the grace period, new order requests and invoice creation will be blocked until settled.`}
+? 'Orders are still allowed, but admin will see a red warning before approval. Please settle the overdue balance to avoid delayed approval or delivery.'
+: `Please settle payment within ${RESELLER_CREDIT_GRACE_DAYS} days after delivery to keep approvals and deliveries smooth.`}
  </p>
  </div>
  ): (
@@ -20503,7 +20516,7 @@ onClick={async ()=>{
  <div style={{...portalCard, marginTop:'14px' }}>
  <h2 style={{...h2s, fontSize:'18px' }}> Today's Reseller Checklist</h2>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px' }}>
- {[creditStatus.blocked?'Settle overdue balance before requesting delivery.':'Check next delivery and submit order early.', openInvoices.length>0?'Review open invoices and coordinate payment.':'Keep payment records clean and updated.', 'Report unsold/returned donuts on the same day.'].map((t,i)=><div key={i} style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', fontSize:'12px', color:'#555' }}>{i+1}. {t}</div>)}
+ {[creditStatus.blocked?'Settle overdue balance; orders are allowed but admin will see a red warning.':'Check next delivery and submit order early.', openInvoices.length>0?'Review open invoices and coordinate payment.':'Keep payment records clean and updated.', 'Report unsold/returned donuts on the same day.'].map((t,i)=><div key={i} style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', fontSize:'12px', color:'#555' }}>{i+1}. {t}</div>)}
  </div>
  </div>
  </div>
@@ -20522,7 +20535,7 @@ onClick={async ()=>{
  <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'15px', margin:'0 0 2px' }}>{inv.invoice_number}</p><p style={{ color:'#4a90d9', fontSize:'11px', margin:'0 0 2px', fontWeight:'bold' }}>{resellers.find(r=>String(r.id)===String(inv.reseller_id))?.name || inv.reseller_name}</p>
  <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Delivery: {inv.delivery_date} Due/Hold Date: {getInvoiceCreditHoldDate(inv)||' '}</p>
  </div>
- <Badge label={balance<=0?'PAID':blocked?'DELIVERY HOLD':String(inv.status||'OPEN').toUpperCase()} color={balance<=0?'green':blocked?'red':'orange'} />
+ <Badge label={balance<=0?'PAID':blocked?'CREDIT WARNING':String(inv.status||'OPEN').toUpperCase()} color={balance<=0?'green':blocked?'red':'orange'} />
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', background:'#fafafa', borderRadius:'10px', padding:'10px' }}>
  <p style={cps}><strong>Total:</strong><br/>{php(inv.total_amount)}</p>
@@ -20543,11 +20556,11 @@ onClick={async ()=>{
 
  {resellerPortalView==='balances' && (
  <div>
- <h2 style={h2s}> Balances & Credit Hold</h2>
+ <h2 style={h2s}> Balances & Credit Warning</h2>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'14px' }}>
  {kpiCard('Total Balance', php(totalBalance), `${openInvoices.length} unpaid/partial invoices`, totalBalance>0?'#ca1b1b':'#2d8a4e')}
- {kpiCard('Overdue / Hold Balance', php(creditStatus.blockedBalance), `${creditStatus.blockedInvoices.length} blocked invoice(s)`, creditStatus.blocked?'#ca1b1b':'#2d8a4e')}
- {kpiCard('Delivery Status', creditStatus.blocked?'ON HOLD':'ALLOWED', creditStatus.blocked?'Settle first':'Account clear for delivery', creditStatus.blocked?'#ca1b1b':'#2d8a4e')}
+ {kpiCard('7-Day Warning Balance', php(creditStatus.blockedBalance), `${creditStatus.blockedInvoices.length} warning invoice(s)`, creditStatus.blocked?'#ca1b1b':'#2d8a4e')}
+ {kpiCard('Order Status', creditStatus.blocked?'ALLOWED - WARNING':'ALLOWED', creditStatus.blocked?'Admin review needed':'Account clear for delivery', creditStatus.blocked?'#ca1b1b':'#2d8a4e')}
  </div>
  <div style={portalCard}>
  <h3 style={{ margin:'0 0 10px', color:'#333', fontSize:'14px' }}>Collection Priority</h3>
@@ -20556,7 +20569,7 @@ onClick={async ()=>{
  <strong style={{ color:'#ca1b1b', fontSize:'12px' }}>{inv.invoice_number}</strong>
  <span style={{ fontSize:'12px', color:'#555' }}>Age: {inv.credit_age_days} day(s)</span>
  <span style={{ fontSize:'12px', color:'#555' }}>Balance: {php(inv.balance_amount)}</span>
- <Badge label={inv.is_credit_blocked?'HOLD':'OPEN'} color={inv.is_credit_blocked?'red':'orange'} />
+ <Badge label={inv.is_credit_blocked?'WARNING':'OPEN'} color={inv.is_credit_blocked?'red':'orange'} />
  </div>
  ))}
  </div>
@@ -20594,13 +20607,14 @@ onClick={async ()=>{
  <h2 style={h2s}>{editingResellerOrderId?' Edit Pending Order':' Place Order'}</h2>
  {(()=>{
  const selectedOrderCutoff = resellerOrderDeliveryDate? getOrderCutoffStatus(resellerOrderDeliveryDate): { locked:false, message:'' }
- return creditStatus.blocked && !editingResellerOrderId? (
- <div style={{...portalCard, border:'2px solid #ca1b1b', background:'#fff5f5' }}>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}> Order Request Blocked</h3>
+ return (
+ <>
+ {creditStatus.blocked && !editingResellerOrderId && (
+ <div style={{...portalCard, border:'2px solid #ca1b1b', background:'#fff5f5', animation:'creditRiskFlash 1.15s infinite' }}>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}> Credit Warning - Order Still Allowed</h3>
  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5 }}>{creditStatus.message}</p>
  </div>
- ): (
- <>
+ )}
  {editingResellerOrderId && (
  <div style={{...portalCard, border:'2px solid #FDD412', background:'#fff9e6' }}>
  <h3 style={{ color:'#1a1a2e', margin:'0 0 6px', fontSize:'14px' }}>Editing pending order</h3>
@@ -20742,7 +20756,7 @@ onClick={async ()=>{
  {resellerPortalView==='notices' && (
  <div>
  <h2 style={h2s}> Notices & Reminders</h2>
- {creditStatus.blocked && <div style={{...portalCard, background:'#fff5f5', border:'2px solid #ca1b1b', marginBottom:'12px' }}><h3 style={{ color:'#ca1b1b', margin:'0 0 6px' }}> Delivery Hold Reminder</h3><p style={{ margin:0, color:'#7a1a1a', fontSize:'13px' }}>{creditStatus.message}</p></div>}
+ {creditStatus.blocked && <div style={{...portalCard, background:'#fff5f5', border:'2px solid #ca1b1b', marginBottom:'12px', animation:'creditRiskFlash 1.15s infinite' }}><h3 style={{ color:'#ca1b1b', margin:'0 0 6px' }}> Credit Warning Reminder</h3><p style={{ margin:0, color:'#7a1a1a', fontSize:'13px' }}>{creditStatus.message}</p></div>}
  {resellerNotices.length===0? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No admin notices yet.</p>: resellerNotices.map(n=>(
  <div key={n.id} style={{...portalCard, marginBottom:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap' }}>
