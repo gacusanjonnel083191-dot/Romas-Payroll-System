@@ -769,6 +769,8 @@ export default function App() {
  const [resellerOrderDeliveryDate, setResellerOrderDeliveryDate] = useState('')
  const [resellerOrderNotes, setResellerOrderNotes] = useState('')
  const [submittingOrder, setSubmittingOrder] = useState(false)
+ const [editingResellerOrderId, setEditingResellerOrderId] = useState(null)
+ const [updatingResellerOrder, setUpdatingResellerOrder] = useState(false)
  const [resellerOrders, setResellerOrders] = useState([])
  const [resellerReturns, setResellerReturns] = useState([])
  const [resellerReturnInvoiceId, setResellerReturnInvoiceId] = useState('')
@@ -5742,6 +5744,10 @@ function buildDeliveryInvoicePrintCSS() {
  setResellerOrders([])
  setResellerReturns([])
  setResellerNotices([])
+ setEditingResellerOrderId(null)
+ setUpdatingResellerOrder(false)
+ setResellerOrderNotes('')
+ setResellerOrderItems([])
  }
 
  async function confirmDeliveryReceipt(invoiceId) {
@@ -5821,6 +5827,158 @@ function buildDeliveryInvoicePrintCSS() {
  setSubmittingResellerReturn(false)
  }
 
+ function canEditResellerOrder(order) {
+ const status = String(order?.status || 'pending').toLowerCase()
+ return status === 'pending' && !order?.invoice_id
+ }
+
+ function resellerOrderBelongsToCurrentPortal(order) {
+ if (!order?.reseller_id || !currentReseller?.id) return false
+ const allowedBranchIds = getResellerBranchIds(currentReseller.id).map(id => String(id))
+ return allowedBranchIds.includes(String(order.reseller_id))
+ }
+
+ async function startEditResellerOrder(order) {
+ if (!canEditResellerOrder(order)) {
+ showToast(' This order is already approved/rejected or already has an invoice. It can no longer be edited.', 'red')
+ return
+ }
+ if (!resellerOrderBelongsToCurrentPortal(order)) {
+ showToast(' This order does not belong to the current reseller account.', 'red')
+ return
+ }
+
+ const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(order.reseller_id)) || currentReseller
+ if (orderBranch?.id) {
+ setCurrentReseller(orderBranch)
+ setSelectedResellerBranchId(orderBranch.id)
+ }
+
+ const existingItems = order.reseller_order_items || []
+ const seedRows = existingItems.map(i => ({
+ variant_id:i.variant_id,
+ variant_name:i.variant_name,
+ default_quantity:i.quantity,
+ retail_price:i.retail_price,
+ reseller_price:i.reseller_price
+ }))
+ const existingMap = new Map(existingItems.map(i => [String(i.variant_id), i]))
+ let rows = await getAllOrderVariantRows(seedRows)
+ rows = rows.map(row => {
+ const saved = existingMap.get(String(row.variant_id))
+ return saved? {
+ ...row,
+ quantity:String(safeNum(saved.quantity, 0) || ''),
+ retail_price:safeNum(saved.retail_price, row.retail_price),
+ reseller_price:safeNum(saved.reseller_price, row.reseller_price)
+ }: row
+ })
+
+ setEditingResellerOrderId(order.id)
+ setResellerOrderDeliveryDate(String(order.delivery_date || getDefaultResellerOrderDeliveryDate()).slice(0, 10))
+ setResellerOrderNotes(order.notes || '')
+ setResellerOrderTemplateSourceId('')
+ setResellerOrderItems(rows)
+ setResellerPortalView('place_order')
+ showToast(' Edit mode opened. Save changes before admin approval.')
+ }
+
+ async function cancelResellerOrderEdit() {
+ setEditingResellerOrderId(null)
+ setUpdatingResellerOrder(false)
+ setResellerOrderNotes('')
+ setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
+ await loadResellerOrderItems(currentReseller?.id)
+ setResellerPortalView('orders')
+ }
+
+ async function updateResellerOrder() {
+ const existingOrder = resellerOrders.find(o => String(o.id) === String(editingResellerOrderId))
+ if (!existingOrder) { showToast(' Order not found. Please refresh and try again.', 'red'); return }
+ if (!canEditResellerOrder(existingOrder)) {
+ showToast(' This order is already approved/rejected or already has an invoice. It can no longer be edited.', 'red')
+ await loadResellerPortalData(currentReseller.id)
+ setEditingResellerOrderId(null)
+ setResellerPortalView('orders')
+ return
+ }
+ if (!resellerOrderBelongsToCurrentPortal(existingOrder)) {
+ showToast(' This order does not belong to the current reseller account.', 'red')
+ return
+ }
+
+ const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId || existingOrder.reseller_id)) || currentReseller
+ if (!orderBranch?.id || String(orderBranch.id) !== String(existingOrder.reseller_id)) {
+ showToast(' Pending orders can only be edited under the same branch/outlet that created them.', 'red')
+ return
+ }
+
+ const validItems = resellerOrderItems.filter(i => Number(i.quantity) > 0)
+ if (validItems.length === 0) { showToast(' Enter at least one quantity.', 'red'); return }
+ if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.', 'red'); return }
+ const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
+ if (cutoffStatus.locked) {
+ showToast(` Order cut-off reached for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Please choose a later delivery date.`, 'red')
+ await logAudit('RESELLER ORDER EDIT BLOCKED - ORDER CUT-OFF', 'Reseller Portal', orderBranch?.name || '', cutoffStatus.message)
+ return
+ }
+ const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
+ if (creditStatus.blocked) {
+ showToast(` Order edit blocked for ${orderBranch.name}. ${creditStatus.message}`, 'red')
+ return
+ }
+
+ setUpdatingResellerOrder(true)
+ try {
+ const total = validItems.reduce((s,i)=>s+Number(i.quantity)*safeNum(i.reseller_price,0),0)
+ const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
+
+ const { data:updatedOrder, error:updateErr } = await supabase
+ .from('reseller_orders')
+ .update({
+ delivery_date:resellerOrderDeliveryDate,
+ total_qty:totalQty,
+ estimated_amount:total,
+ notes:resellerOrderNotes || null
+ })
+ .eq('id', existingOrder.id)
+ .eq('status', 'pending')
+ .is('invoice_id', null)
+ .select('id,status,invoice_id')
+ .maybeSingle()
+ if (updateErr) throw updateErr
+ if (!updatedOrder) throw new Error('Order was already approved or locked before your changes were saved. Please refresh.')
+
+ const { error:deleteErr } = await supabase.from('reseller_order_items').delete().eq('order_id', existingOrder.id)
+ if (deleteErr) throw deleteErr
+
+ const { error:itemErr } = await supabase.from('reseller_order_items').insert(validItems.map(i=>({
+ order_id:existingOrder.id,
+ variant_id:i.variant_id,
+ variant_name:i.variant_name,
+ quantity:Number(i.quantity),
+ retail_price:safeNum(i.retail_price,0),
+ reseller_price:safeNum(i.reseller_price,0)
+ })))
+ if (itemErr) throw itemErr
+
+ const accountLabel = resellerPortalAccount?.account_name? `${resellerPortalAccount.account_name} / ${orderBranch.name}`: orderBranch.name
+ await createNotification(null,'System','order',` Order Edited: ${accountLabel}`,`${accountLabel} updated a pending order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.`)
+ await logAudit('RESELLER ORDER EDITED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} ${totalQty} pcs ${php(total)}`)
+
+ showToast(' Pending order updated successfully. Waiting for admin approval.')
+ setEditingResellerOrderId(null)
+ setResellerOrderNotes('')
+ setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
+ setResellerPortalView('orders')
+ await loadResellerPortalData(orderBranch.id)
+ await loadResellerOrderItems(orderBranch.id)
+ } catch(err) {
+ showToast(' Failed to update order: ' + (err?.message || err), 'red')
+ }
+ setUpdatingResellerOrder(false)
+ }
+
  async function submitResellerOrder() {
  const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
  if (!orderBranch?.id) { showToast(' Select the branch/outlet for this order.','red'); return }
@@ -5858,6 +6016,7 @@ function buildDeliveryInvoicePrintCSS() {
  await createNotification(null,'System','order',` New Order: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.`)
  await logAudit('RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} ${totalQty} pcs ${php(total)}`)
  showToast(` Order submitted for ${orderBranch.name}! Waiting for admin approval.`)
+ setEditingResellerOrderId(null)
  setResellerOrderNotes('')
  setResellerOrderItems(p=>p.map(i=>({...i,quantity:''})))
  setResellerPortalView('orders')
@@ -20419,6 +20578,12 @@ onClick={async ()=>{
  <p style={{ color:'#555', fontSize:'12px', margin:'8px 0 0' }}>{(ord.reseller_order_items||[]).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' ')}</p>
  {ord.invoice_id && <p style={{ color:'#2d8a4e', fontSize:'11px', margin:'6px 0 0', fontWeight:'bold' }}>Invoice created by admin.</p>}
  {ord.status==='rejected' && ord.notes && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'6px 0 0' }}>Reason: {ord.notes}</p>}
+ {canEditResellerOrder(ord) && (
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'10px' }}>
+ <button style={{...btnYellow, width:'auto', padding:'8px 12px', fontSize:'11px' }} onClick={()=>startEditResellerOrder(ord)}> EDIT PENDING ORDER</button>
+ <span style={{ color:'#777', fontSize:'11px', alignSelf:'center' }}>Editable until admin approval.</span>
+ </div>
+ )}
  </div>
  ))}
  </div>
@@ -20426,16 +20591,22 @@ onClick={async ()=>{
 
  {resellerPortalView==='place_order' && (
  <div>
- <h2 style={h2s}> Place Order</h2>
+ <h2 style={h2s}>{editingResellerOrderId?' Edit Pending Order':' Place Order'}</h2>
  {(()=>{
  const selectedOrderCutoff = resellerOrderDeliveryDate? getOrderCutoffStatus(resellerOrderDeliveryDate): { locked:false, message:'' }
- return creditStatus.blocked? (
+ return creditStatus.blocked && !editingResellerOrderId? (
  <div style={{...portalCard, border:'2px solid #ca1b1b', background:'#fff5f5' }}>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 8px' }}> Order Request Blocked</h3>
  <p style={{ color:'#7a1a1a', margin:0, fontSize:'13px', lineHeight:1.5 }}>{creditStatus.message}</p>
  </div>
  ): (
  <>
+ {editingResellerOrderId && (
+ <div style={{...portalCard, border:'2px solid #FDD412', background:'#fff9e6' }}>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 6px', fontSize:'14px' }}>Editing pending order</h3>
+ <p style={{ color:'#555', margin:0, fontSize:'12px', lineHeight:1.5 }}>You can change the delivery date, notes, and quantities while this order is still pending. Once admin approves it and creates an invoice, it will be locked.</p>
+ </div>
+ )}
  <div style={portalCard}>
  {resellerPortalBranches.length > 1 && (
  <div style={{ background:'#fff9e6', border:'1.5px solid #FDD412', borderRadius:'12px', padding:'10px', marginBottom:'12px' }}>
@@ -20443,7 +20614,8 @@ onClick={async ()=>{
  <select
  value={selectedResellerBranchId || currentReseller.id}
  onChange={e=>switchResellerPortalBranch(e.target.value, true)}
- style={{...inputStyle, marginBottom:'6px', border:'2px solid #FDD412', fontWeight:'900', color:'#1a1a2e' }}
+ disabled={!!editingResellerOrderId}
+ style={{...inputStyle, marginBottom:'6px', border:'2px solid #FDD412', fontWeight:'900', color:'#1a1a2e', background:editingResellerOrderId?'#f5f5f5':'white' }}
  >
  {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?` ${b.area}`:''}</option>)}
  </select>
@@ -20476,7 +20648,7 @@ onClick={async ()=>{
  )}
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:0 }}>Enter quantities for {currentReseller.name}</p>
- <button style={{...btnGray, width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>loadResellerOrderItems(currentReseller.id)}> SHOW ALL VARIANTS</button>
+ <button style={{...btnGray, width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px', opacity:editingResellerOrderId?0.55:1, cursor:editingResellerOrderId?'not-allowed':'pointer' }} disabled={!!editingResellerOrderId} onClick={()=>loadResellerOrderItems(currentReseller.id)}> SHOW ALL VARIANTS</button>
  </div>
  <p style={{ color:'#777', fontSize:'11px', margin:'-4px 0 10px' }}>All active variants are listed automatically. Leave quantity blank or 0 for items not needed.</p>
  <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', padding:'7px 10px', background:'#ca1b1b', borderRadius:'9px' }}>
@@ -20493,7 +20665,8 @@ onClick={async ()=>{
  <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
  <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
  </div>
- <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':'#ca1b1b', opacity:(submittingOrder||selectedOrderCutoff.locked)?0.6:1, cursor:selectedOrderCutoff.locked?'not-allowed':'pointer' }} disabled={submittingOrder || selectedOrderCutoff.locked} onClick={submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':submittingOrder?' Submitting...':' SUBMIT ORDER REQUEST'}</button>
+ <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.6:1, cursor:selectedOrderCutoff.locked?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' Saving changes...':' SAVE ORDER CHANGES'):(submittingOrder?' Submitting...':' SUBMIT ORDER REQUEST')}</button>
+ {editingResellerOrderId && <button style={{...btnGray, marginTop:'8px' }} disabled={updatingResellerOrder} onClick={cancelResellerOrderEdit}>CANCEL EDIT</button>}
  </div>
  </>
  )})()}
