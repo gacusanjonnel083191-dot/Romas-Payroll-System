@@ -772,6 +772,49 @@ export default function App() {
  approved_by:'Owner',
  notes:''
  })
+ // Recipe Vault / Confidential Product Costing
+ const [recipeVault, setRecipeVault] = useState([])
+ const [recipeVaultItems, setRecipeVaultItems] = useState([])
+ const [recipeVaultLoading, setRecipeVaultLoading] = useState(false)
+ const [recipeVaultLoadError, setRecipeVaultLoadError] = useState('')
+ const [recipeVaultView, setRecipeVaultView] = useState('dashboard')
+ const [recipeVaultSearch, setRecipeVaultSearch] = useState('')
+ const [recipeVaultStatusFilter, setRecipeVaultStatusFilter] = useState('all')
+ const [showRecipeVaultForm, setShowRecipeVaultForm] = useState(false)
+ const [editingRecipeVaultId, setEditingRecipeVaultId] = useState(null)
+ const [viewingRecipeVault, setViewingRecipeVault] = useState(null)
+ const [savingRecipeVault, setSavingRecipeVault] = useState(false)
+ const [recipeCostRows, setRecipeCostRows] = useState([])
+ const [recipeVaultForm, setRecipeVaultForm] = useState({
+ recipe_code:'',
+ product_name:'',
+ product_category:'Donut',
+ linked_variant_id:'',
+ batch_size_label:'1 batch',
+ batch_yield_pieces:'',
+ batch_weight_grams:'',
+ selling_price:'',
+ reseller_price:'',
+ target_margin_pct:'35',
+ labor_cost_per_batch:'',
+ overhead_cost_per_batch:'',
+ packaging_cost_per_piece:'',
+ version:'1.0',
+ status:'test',
+ access_roles:'owner,manager',
+ approved_by:'Owner',
+ procedure:'',
+ mixing_time:'',
+ resting_time:'',
+ proofing_time:'',
+ frying_temperature:'',
+ frying_time:'',
+ cooling_instructions:'',
+ finishing_instructions:'',
+ shelf_life_notes:'',
+ notes:''
+ })
+
  // Wastage / Spoilage 
  const [showWastageForm, setShowWastageForm] = useState(false)
  const [wastageItemId, setWastageItemId] = useState('')
@@ -1065,6 +1108,10 @@ export default function App() {
  const SOP_CATEGORIES = ['Operations','Quality Control','Food Safety','Inventory Control','Dispatch','Delivery','Sales / Reseller','Finance','HR Policy','System Control','Safety','Management Control']
  const SOP_STATUSES = ['draft','active','archived']
  const SOP_ACCESS_ROLE_OPTIONS = ['owner','manager','hr','payroll','supervisor','asst_supervisor','employee','reseller']
+
+ const RECIPE_VAULT_STATUSES = ['test','active','archived']
+ const RECIPE_COST_ITEM_TYPES = ['Ingredient','Packaging','Labor','Overhead','Other']
+ const RECIPE_ACCESS_ROLE_OPTIONS = ['owner','manager','supervisor','asst_supervisor']
  const [inventorySearch, setInventorySearch] = useState('')
  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState('all')
  const [showAddItem, setShowAddItem] = useState(false)
@@ -1258,6 +1305,12 @@ export default function App() {
  loadEmployees()
  }
  }, [adminMode, activeTab])
+
+ useEffect(() => {
+ if (adminMode && activeTab === 'recipes' && ['owner','manager'].includes(normalizeAdminRole(adminRole))) {
+ refreshRecipeVault({ silent:true })
+ }
+ }, [adminMode, activeTab, adminRole])
 
  useEffect(() => {
  const canViewFoundation = activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')
@@ -7459,7 +7512,7 @@ function buildDeliveryInvoicePrintCSS() {
  function canAccess(tab) {
  const role = normalizeAdminRole(adminRole)
  if (role === 'owner') return true
- if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','sales','analytics','foundation','franchise'].includes(tab)
+ if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise'].includes(tab)
  if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops'].includes(tab)
  if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
  if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops'].includes(tab)
@@ -7786,6 +7839,470 @@ function buildDeliveryInvoicePrintCSS() {
  }))
  downloadTextFile(`romas-sop-library-${today}.csv`, rowsToCSV(rows), 'text/csv')
  }
+
+ // Recipe Vault Functions
+ function canManageRecipeVault() {
+ const role = normalizeAdminRole(adminRole)
+ return role === 'owner' || role === 'manager'
+ }
+
+ function getRecipeVaultAccessRoles(recipe) {
+ return String(recipe?.access_roles || '').split(',').map(r => r.trim().toLowerCase()).filter(Boolean)
+ }
+
+ function canViewRecipeVault(recipe = null) {
+ const role = normalizeAdminRole(adminRole)
+ if (role === 'owner' || role === 'manager') return true
+ if (!recipe) return false
+ const roles = getRecipeVaultAccessRoles(recipe)
+ return roles.includes(role)
+ }
+
+ function makeRecipeCode(productName) {
+ const raw = String(productName || 'RECIPE').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '')
+ return `RC-${raw || 'RECIPE'}`.slice(0, 48)
+ }
+
+ function getInventoryItemById(id) {
+ return (inventoryItems || []).find(item => String(item.id) === String(id)) || null
+ }
+
+ function getRecipeVaultRows(recipeId) {
+ return (recipeVaultItems || []).filter(row => String(row.recipe_id || '') === String(recipeId || '')).sort((a,b)=>safeNum(a.sort_order,0)-safeNum(b.sort_order,0))
+ }
+
+ function normalizeRecipeCostRow(row = {}, idx = 0) {
+ const linkedItem = getInventoryItemById(row.inventory_item_id)
+ return {
+ row_key:row.row_key || row.id || `row-${Date.now()}-${idx}-${Math.random().toString(16).slice(2)}`,
+ id:row.id || null,
+ recipe_id:row.recipe_id || null,
+ item_type:row.item_type || 'Ingredient',
+ item_name:row.item_name || linkedItem?.name || '',
+ inventory_item_id:row.inventory_item_id || '',
+ quantity:row.quantity ?? '',
+ unit:row.unit || linkedItem?.unit || 'g',
+ unit_cost:row.unit_cost ?? linkedItem?.cost_per_unit ?? '',
+ waste_percent:row.waste_percent ?? 0,
+ notes:row.notes || '',
+ sort_order:row.sort_order ?? idx
+ }
+ }
+
+ function computeRecipeVaultCost(recipe = recipeVaultForm, rows = recipeCostRows) {
+ const yieldPieces = positiveNum(recipe.batch_yield_pieces, 1)
+ const sellingPrice = safeNum(recipe.selling_price, 0)
+ const resellerPrice = safeNum(recipe.reseller_price, 0)
+ const targetMarginPct = safeNum(recipe.target_margin_pct, 35)
+ const packagingCost = safeNum(recipe.packaging_cost_per_piece, 0) * yieldPieces
+ const directLabor = safeNum(recipe.labor_cost_per_batch, 0)
+ const directOverhead = safeNum(recipe.overhead_cost_per_batch, 0)
+ const cleanRows = (rows || []).filter(row => String(row.item_name || '').trim())
+ const rowTotals = cleanRows.map((row, idx) => {
+ const qty = safeNum(row.quantity, 0)
+ const unitCost = safeNum(row.unit_cost, 0)
+ const wasteFactor = 1 + (safeNum(row.waste_percent, 0) / 100)
+ const total = moneyRound(qty * unitCost * wasteFactor)
+ return {...row, sort_order:idx, row_total:total, waste_factor:wasteFactor }
+ })
+ const ingredientCost = rowTotals.filter(row => String(row.item_type || '').toLowerCase() === 'ingredient').reduce((sum,row)=>sum+safeNum(row.row_total),0)
+ const packagingRowsCost = rowTotals.filter(row => String(row.item_type || '').toLowerCase() === 'packaging').reduce((sum,row)=>sum+safeNum(row.row_total),0)
+ const laborRowsCost = rowTotals.filter(row => String(row.item_type || '').toLowerCase() === 'labor').reduce((sum,row)=>sum+safeNum(row.row_total),0)
+ const overheadRowsCost = rowTotals.filter(row => String(row.item_type || '').toLowerCase() === 'overhead').reduce((sum,row)=>sum+safeNum(row.row_total),0)
+ const otherCost = rowTotals.filter(row => !['ingredient','packaging','labor','overhead'].includes(String(row.item_type || '').toLowerCase())).reduce((sum,row)=>sum+safeNum(row.row_total),0)
+ const totalPackaging = packagingCost + packagingRowsCost
+ const totalLabor = directLabor + laborRowsCost
+ const totalOverhead = directOverhead + overheadRowsCost
+ const batchCost = moneyRound(ingredientCost + totalPackaging + totalLabor + totalOverhead + otherCost)
+ const costPerPiece = moneyRound(batchCost / yieldPieces)
+ const suggestedRetailPrice = targetMarginPct >= 100? 0: moneyRound(costPerPiece / (1 - (targetMarginPct / 100)))
+ const foodCostPct = sellingPrice > 0? moneyRound((costPerPiece / sellingPrice) * 100): 0
+ const grossProfitPerPiece = sellingPrice > 0? moneyRound(sellingPrice - costPerPiece): 0
+ const grossMarginPct = sellingPrice > 0? moneyRound((grossProfitPerPiece / sellingPrice) * 100): 0
+ const resellerFoodCostPct = resellerPrice > 0? moneyRound((costPerPiece / resellerPrice) * 100): 0
+ const resellerMarginPct = resellerPrice > 0? moneyRound(((resellerPrice - costPerPiece) / resellerPrice) * 100): 0
+ return { yieldPieces, rowTotals, ingredientCost, totalPackaging, totalLabor, totalOverhead, otherCost, batchCost, costPerPiece, suggestedRetailPrice, foodCostPct, grossProfitPerPiece, grossMarginPct, resellerFoodCostPct, resellerMarginPct }
+ }
+
+ function resetRecipeVaultForm() {
+ setEditingRecipeVaultId(null)
+ setRecipeVaultForm({
+ recipe_code:'',
+ product_name:'',
+ product_category:'Donut',
+ linked_variant_id:'',
+ batch_size_label:'1 batch',
+ batch_yield_pieces:'',
+ batch_weight_grams:'',
+ selling_price:'',
+ reseller_price:'',
+ target_margin_pct:'35',
+ labor_cost_per_batch:'',
+ overhead_cost_per_batch:'',
+ packaging_cost_per_piece:'',
+ version:'1.0',
+ status:'test',
+ access_roles:'owner,manager',
+ approved_by:'Owner',
+ procedure:'',
+ mixing_time:'',
+ resting_time:'',
+ proofing_time:'',
+ frying_temperature:'',
+ frying_time:'',
+ cooling_instructions:'',
+ finishing_instructions:'',
+ shelf_life_notes:'',
+ notes:''
+ })
+ setRecipeCostRows([
+ normalizeRecipeCostRow({ item_type:'Ingredient', item_name:'Base dough / premix', quantity:'', unit:'g', unit_cost:'', waste_percent:0 }, 0),
+ normalizeRecipeCostRow({ item_type:'Ingredient', item_name:'Filling / glaze / topping', quantity:'', unit:'g', unit_cost:'', waste_percent:0 }, 1),
+ normalizeRecipeCostRow({ item_type:'Packaging', item_name:'Box / paper / sticker', quantity:'', unit:'pc', unit_cost:'', waste_percent:0 }, 2)
+ ])
+ }
+
+ function openNewRecipeVaultForm(variant = null) {
+ resetRecipeVaultForm()
+ if (variant) {
+ const price = safeNum(variant.selling_price, 0)
+ setRecipeVaultForm(p => ({
+ ...p,
+ recipe_code:makeRecipeCode(variant.name),
+ product_name:variant.name || '',
+ product_category:variant.category || 'Donut',
+ linked_variant_id:String(variant.id || '').startsWith('local-')? '':variant.id || '',
+ batch_yield_pieces:variant.pieces_per_batch || '',
+ selling_price:price || '',
+ reseller_price:price? moneyRound(price * 0.8):''
+ }))
+ }
+ setShowRecipeVaultForm(true)
+ setRecipeVaultView('recipes')
+ window.scrollTo?.({ top:0, behavior:'smooth' })
+ }
+
+ function openEditRecipeVault(recipe) {
+ if (!canManageRecipeVault()) { showToast('Only Owner or Manager can edit recipes.', 'red'); return }
+ setEditingRecipeVaultId(recipe.id)
+ setRecipeVaultForm({
+ recipe_code:recipe.recipe_code || '',
+ product_name:recipe.product_name || '',
+ product_category:recipe.product_category || 'Donut',
+ linked_variant_id:recipe.linked_variant_id || '',
+ batch_size_label:recipe.batch_size_label || '1 batch',
+ batch_yield_pieces:recipe.batch_yield_pieces || '',
+ batch_weight_grams:recipe.batch_weight_grams || '',
+ selling_price:recipe.selling_price || '',
+ reseller_price:recipe.reseller_price || '',
+ target_margin_pct:recipe.target_margin_pct || '35',
+ labor_cost_per_batch:recipe.labor_cost_per_batch || '',
+ overhead_cost_per_batch:recipe.overhead_cost_per_batch || '',
+ packaging_cost_per_piece:recipe.packaging_cost_per_piece || '',
+ version:recipe.version || '1.0',
+ status:recipe.status || 'test',
+ access_roles:recipe.access_roles || 'owner,manager',
+ approved_by:recipe.approved_by || 'Owner',
+ procedure:recipe.procedure || '',
+ mixing_time:recipe.mixing_time || '',
+ resting_time:recipe.resting_time || '',
+ proofing_time:recipe.proofing_time || '',
+ frying_temperature:recipe.frying_temperature || '',
+ frying_time:recipe.frying_time || '',
+ cooling_instructions:recipe.cooling_instructions || '',
+ finishing_instructions:recipe.finishing_instructions || '',
+ shelf_life_notes:recipe.shelf_life_notes || '',
+ notes:recipe.notes || ''
+ })
+ const rows = getRecipeVaultRows(recipe.id)
+ setRecipeCostRows(rows.length? rows.map(normalizeRecipeCostRow): [])
+ setShowRecipeVaultForm(true)
+ setRecipeVaultView('recipes')
+ window.scrollTo?.({ top:0, behavior:'smooth' })
+ }
+
+ async function loadRecipeVault() {
+ setRecipeVaultLoading(true)
+ setRecipeVaultLoadError('')
+ try {
+ const { data:recipesData, error:recipesError } = await supabase
+ .from('recipe_vault')
+ .select('*')
+ .order('product_name', { ascending:true })
+ if (recipesError) throw recipesError
+ const { data:itemsData, error:itemsError } = await supabase
+ .from('recipe_cost_items')
+ .select('*')
+ .order('recipe_id', { ascending:true })
+ .order('sort_order', { ascending:true })
+ if (itemsError) throw itemsError
+ setRecipeVault(recipesData || [])
+ setRecipeVaultItems(itemsData || [])
+ } catch(e) {
+ setRecipeVault([])
+ setRecipeVaultItems([])
+ setRecipeVaultLoadError(e?.message || 'Unable to load Recipe Vault. Run the Recipe Vault Supabase setup SQL first.')
+ } finally {
+ setRecipeVaultLoading(false)
+ }
+ }
+
+ async function refreshRecipeVault(options = {}) {
+ const silent = options?.silent === true
+ await Promise.all([loadRecipeVault(), loadDonutVariants(), loadInventoryItems()])
+ if (!silent) showToast('Recipe Vault refreshed.')
+ }
+
+ function updateRecipeCostRow(rowKey, field, value) {
+ setRecipeCostRows(rows => rows.map(row => {
+ if (row.row_key !== rowKey) return row
+ const next = {...row, [field]:value }
+ if (field === 'inventory_item_id') {
+ const inv = getInventoryItemById(value)
+ if (inv) {
+ next.item_name = inv.name || next.item_name
+ next.unit = inv.unit || next.unit || 'unit'
+ next.unit_cost = inv.cost_per_unit ?? next.unit_cost
+ }
+ }
+ return next
+ }))
+ }
+
+ function addRecipeCostRow(type = 'Ingredient') {
+ setRecipeCostRows(rows => [...rows, normalizeRecipeCostRow({ item_type:type, sort_order:rows.length }, rows.length)])
+ }
+
+ function removeRecipeCostRow(rowKey) {
+ setRecipeCostRows(rows => rows.filter(row => row.row_key !== rowKey))
+ }
+
+ async function saveRecipeVaultDocument() {
+ if (!canManageRecipeVault()) { showToast('Only Owner or Manager can save Recipe Vault records.', 'red'); return }
+ if (!recipeVaultForm.product_name.trim()) { showToast('Product / recipe name is required.', 'red'); return }
+ if (!positiveNum(recipeVaultForm.batch_yield_pieces, 0)) { showToast('Batch yield pieces is required for costing.', 'red'); return }
+ setSavingRecipeVault(true)
+ try {
+ const computed = computeRecipeVaultCost(recipeVaultForm, recipeCostRows)
+ const payload = {
+ recipe_code:(recipeVaultForm.recipe_code || makeRecipeCode(recipeVaultForm.product_name)).trim(),
+ product_name:recipeVaultForm.product_name.trim(),
+ product_category:recipeVaultForm.product_category || 'Donut',
+ linked_variant_id:recipeVaultForm.linked_variant_id || null,
+ batch_size_label:recipeVaultForm.batch_size_label || '1 batch',
+ batch_yield_pieces:safeNum(recipeVaultForm.batch_yield_pieces, 0),
+ batch_weight_grams:safeNum(recipeVaultForm.batch_weight_grams, 0),
+ selling_price:safeNum(recipeVaultForm.selling_price, 0),
+ reseller_price:safeNum(recipeVaultForm.reseller_price, 0),
+ target_margin_pct:safeNum(recipeVaultForm.target_margin_pct, 35),
+ labor_cost_per_batch:safeNum(recipeVaultForm.labor_cost_per_batch, 0),
+ overhead_cost_per_batch:safeNum(recipeVaultForm.overhead_cost_per_batch, 0),
+ packaging_cost_per_piece:safeNum(recipeVaultForm.packaging_cost_per_piece, 0),
+ version:recipeVaultForm.version || '1.0',
+ status:recipeVaultForm.status || 'test',
+ access_roles:recipeVaultForm.access_roles || 'owner,manager',
+ approved_by:recipeVaultForm.approved_by || currentAdminLabel,
+ procedure:recipeVaultForm.procedure || '',
+ mixing_time:recipeVaultForm.mixing_time || '',
+ resting_time:recipeVaultForm.resting_time || '',
+ proofing_time:recipeVaultForm.proofing_time || '',
+ frying_temperature:recipeVaultForm.frying_temperature || '',
+ frying_time:recipeVaultForm.frying_time || '',
+ cooling_instructions:recipeVaultForm.cooling_instructions || '',
+ finishing_instructions:recipeVaultForm.finishing_instructions || '',
+ shelf_life_notes:recipeVaultForm.shelf_life_notes || '',
+ notes:recipeVaultForm.notes || '',
+ batch_cost:computed.batchCost,
+ cost_per_piece:computed.costPerPiece,
+ suggested_retail_price:computed.suggestedRetailPrice,
+ food_cost_pct:computed.foodCostPct,
+ gross_margin_pct:computed.grossMarginPct,
+ updated_by:currentAdminLabel
+ }
+ let recipeId = editingRecipeVaultId
+ let error
+ if (recipeId) {
+ ;({ error } = await supabase.from('recipe_vault').update(payload).eq('id', recipeId))
+ } else {
+ const result = await supabase.from('recipe_vault').insert({...payload, created_by:currentAdminLabel }).select('id').single()
+ error = result.error
+ recipeId = result.data?.id
+ }
+ if (error) throw error
+ if (!recipeId) throw new Error('Recipe ID was not returned.')
+ await supabase.from('recipe_cost_items').delete().eq('recipe_id', recipeId)
+ const validRows = (recipeCostRows || []).filter(row => String(row.item_name || '').trim())
+ if (validRows.length) {
+ const { error:itemsError } = await supabase.from('recipe_cost_items').insert(validRows.map((row, idx) => ({
+ recipe_id:recipeId,
+ item_type:row.item_type || 'Ingredient',
+ item_name:String(row.item_name || '').trim(),
+ inventory_item_id:row.inventory_item_id || null,
+ quantity:safeNum(row.quantity, 0),
+ unit:row.unit || '',
+ unit_cost:safeNum(row.unit_cost, 0),
+ waste_percent:safeNum(row.waste_percent, 0),
+ notes:row.notes || '',
+ sort_order:idx
+ })))
+ if (itemsError) throw itemsError
+ }
+ await logAudit(editingRecipeVaultId? 'RECIPE UPDATED':'RECIPE CREATED', currentAdminLabel, payload.recipe_code, `${payload.product_name} | Cost/Pc ${php(payload.cost_per_piece)}`)
+ showToast(editingRecipeVaultId? 'Recipe updated successfully.':'Recipe created successfully.')
+ setShowRecipeVaultForm(false)
+ resetRecipeVaultForm()
+ refreshRecipeVault({ silent:true })
+ } catch(e) {
+ showToast('Recipe save failed: ' + (e?.message || 'Unknown error'), 'red')
+ } finally {
+ setSavingRecipeVault(false)
+ }
+ }
+
+ async function updateRecipeVaultStatus(recipe, status) {
+ if (!canManageRecipeVault()) { showToast('Only Owner or Manager can change recipe status.', 'red'); return }
+ if (!recipe?.id || !RECIPE_VAULT_STATUSES.includes(status)) return
+ try {
+ const { error } = await supabase.from('recipe_vault').update({ status, updated_by:currentAdminLabel }).eq('id', recipe.id)
+ if (error) throw error
+ await logAudit('RECIPE STATUS UPDATED', currentAdminLabel, recipe.recipe_code || '', `${recipe.product_name} -> ${status}`)
+ showToast(`Recipe marked as ${status}.`)
+ loadRecipeVault()
+ } catch(e) {
+ showToast('Recipe status update failed: ' + (e?.message || 'Unknown error'), 'red')
+ }
+ }
+
+ async function createRecipeTemplatesFromProducts() {
+ if (!canManageRecipeVault()) { showToast('Only Owner or Manager can create recipe templates.', 'red'); return }
+ const variants = (donutVariants || []).length? donutVariants:DONUT_VARIANTS_DEFAULT.map((v,i)=>({...v,id:`local-${i}`}))
+ if (!variants.length) { showToast('No product variants found.', 'red'); return }
+ if (!window.confirm(`Create missing recipe costing templates for ${variants.length} products? Existing product names will be skipped.`)) return
+ try {
+ let added = 0
+ for (const v of variants) {
+ const existing = (recipeVault || []).find(r => String(r.product_name || '').toLowerCase() === String(v.name || '').toLowerCase())
+ if (existing) continue
+ const price = safeNum(v.selling_price, 0)
+ const payload = {
+ recipe_code:makeRecipeCode(v.name),
+ product_name:v.name || 'Unnamed Product',
+ product_category:v.category || 'Donut',
+ linked_variant_id:String(v.id || '').startsWith('local-')? null:v.id || null,
+ batch_size_label:'1 batch / template',
+ batch_yield_pieces:safeNum(v.pieces_per_batch, 0) || 1,
+ batch_weight_grams:0,
+ selling_price:price,
+ reseller_price:price? moneyRound(price * 0.8):0,
+ target_margin_pct:35,
+ labor_cost_per_batch:0,
+ overhead_cost_per_batch:0,
+ packaging_cost_per_piece:0,
+ version:'1.0',
+ status:'test',
+ access_roles:'owner,manager',
+ approved_by:'Owner',
+ procedure:'Template only. Encode official recipe procedure before activating.',
+ mixing_time:'', resting_time:'', proofing_time:'', frying_temperature:'', frying_time:'',
+ cooling_instructions:'', finishing_instructions:'', shelf_life_notes:'',
+ notes:'Created from product list. Add ingredients, packaging, labor, overhead, and process details before approval.',
+ batch_cost:0,
+ cost_per_piece:0,
+ suggested_retail_price:0,
+ food_cost_pct:0,
+ gross_margin_pct:0,
+ created_by:currentAdminLabel,
+ updated_by:currentAdminLabel
+ }
+ const { error } = await supabase.from('recipe_vault').insert(payload)
+ if (error) throw error
+ added++
+ }
+ await logAudit('RECIPE TEMPLATES CREATED', currentAdminLabel, 'Recipe Vault', `${added} product templates added`)
+ showToast(`${added} recipe template(s) created.`)
+ refreshRecipeVault({ silent:true })
+ } catch(e) {
+ showToast('Template creation failed: ' + (e?.message || e), 'red')
+ }
+ }
+
+ function exportRecipeVaultCSV() {
+ const rows = (recipeVault || []).map(recipe => {
+ const cost = computeRecipeVaultCost(recipe, getRecipeVaultRows(recipe.id))
+ return {
+ code:recipe.recipe_code,
+ product:recipe.product_name,
+ category:recipe.product_category,
+ status:recipe.status,
+ version:recipe.version,
+ batch_yield:recipe.batch_yield_pieces,
+ batch_cost:cost.batchCost,
+ cost_per_piece:cost.costPerPiece,
+ retail_price:recipe.selling_price,
+ reseller_price:recipe.reseller_price,
+ food_cost_pct:cost.foodCostPct,
+ gross_margin_pct:cost.grossMarginPct,
+ suggested_retail_price:cost.suggestedRetailPrice,
+ updated_at:recipe.updated_at
+ }
+ })
+ downloadTextFile(`romas-recipe-vault-costing-${today}.csv`, rowsToCSV(rows), 'text/csv')
+ }
+
+ function exportRecipeVaultText(recipe) {
+ if (!recipe) return
+ const rows = getRecipeVaultRows(recipe.id)
+ const cost = computeRecipeVaultCost(recipe, rows)
+ const content = [
+ "ROMA'S DONUTS - CONFIDENTIAL RECIPE VAULT RECORD",
+ 'CONFIDENTIAL: For authorized personnel only.',
+ '',
+ `Recipe Code: ${recipe.recipe_code || ''}`,
+ `Product: ${recipe.product_name || ''}`,
+ `Category: ${recipe.product_category || ''}`,
+ `Version: ${recipe.version || ''}`,
+ `Status: ${String(recipe.status || '').toUpperCase()}`,
+ `Batch Size: ${recipe.batch_size_label || ''}`,
+ `Yield: ${recipe.batch_yield_pieces || ''} pieces`,
+ `Retail Price: ${php(recipe.selling_price || 0)}`,
+ `Reseller Price: ${php(recipe.reseller_price || 0)}`,
+ '',
+ 'COSTING SUMMARY',
+ `Batch Cost: ${php(cost.batchCost)}`,
+ `Cost Per Piece: ${php(cost.costPerPiece)}`,
+ `Suggested Retail Price: ${php(cost.suggestedRetailPrice)}`,
+ `Food Cost %: ${cost.foodCostPct}%`,
+ `Gross Margin %: ${cost.grossMarginPct}%`,
+ '',
+ 'COST ITEMS',
+ ...(rows || []).map(row => `${row.item_type || ''} | ${row.item_name || ''} | Qty: ${row.quantity || 0} ${row.unit || ''} | Unit Cost: ${php(row.unit_cost || 0)} | Waste: ${row.waste_percent || 0}%`),
+ '',
+ 'PROCESS',
+ `Mixing Time: ${recipe.mixing_time || ''}`,
+ `Resting Time: ${recipe.resting_time || ''}`,
+ `Proofing Time: ${recipe.proofing_time || ''}`,
+ `Frying Temperature: ${recipe.frying_temperature || ''}`,
+ `Frying Time: ${recipe.frying_time || ''}`,
+ '',
+ 'PROCEDURE',
+ recipe.procedure || '',
+ '',
+ 'COOLING',
+ recipe.cooling_instructions || '',
+ '',
+ 'FINISHING',
+ recipe.finishing_instructions || '',
+ '',
+ 'SHELF LIFE NOTES',
+ recipe.shelf_life_notes || '',
+ '',
+ 'NOTES',
+ recipe.notes || ''
+ ].join('\n')
+ const safeName = `${recipe.recipe_code || 'RECIPE'}-${String(recipe.product_name || '').replace(/[^a-z0-9]+/gi,'-').slice(0,60)}.txt`
+ downloadTextFile(safeName, content, 'text/plain')
+ }
+
 
  // SIL Automation 
  async function silAuditMarkerExists(emp, action, cycleStart) {
@@ -12652,6 +13169,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
  { key:'sops', icon:'\uD83D\uDCD8', label:'SOP Library',
  tabs:[{key:'sops',label:'SOP Control Center'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
+ { key:'recipes', icon:'\uD83D\uDD10', label:'Recipe Vault',
+ tabs:[{key:'recipes',label:'Recipe Vault'}],
+ roles:['owner','manager'] },
  { key:'costing', icon:'\uD83C\uDF69', label:'Costing',
  tabs:[{key:'costing',label:'Costing'}],
  roles:['owner','manager'] },
@@ -12739,6 +13259,25 @@ This recovery button creates one approved expense record using GROSS payroll ear
  setSopView('library')
  setTimeout(() => document.getElementById('sop-library-list')?.scrollIntoView({ behavior:'smooth', block:'start' }), 80)
  }
+ const filteredRecipeVault = (recipeVault || []).filter(recipe => {
+ if (!canViewRecipeVault(recipe)) return false
+ const q = recipeVaultSearch.trim().toLowerCase()
+ const matchesSearch = !q || [recipe.recipe_code, recipe.product_name, recipe.product_category, recipe.procedure, recipe.notes].some(v => String(v || '').toLowerCase().includes(q))
+ const matchesStatus = recipeVaultStatusFilter === 'all' || String(recipe.status || '').toLowerCase() === recipeVaultStatusFilter
+ return matchesSearch && matchesStatus
+ })
+ const recipeVaultStats = {
+ total:(recipeVault || []).length,
+ active:(recipeVault || []).filter(r => String(r.status || '').toLowerCase() === 'active').length,
+ test:(recipeVault || []).filter(r => String(r.status || '').toLowerCase() === 'test').length,
+ archived:(recipeVault || []).filter(r => String(r.status || '').toLowerCase() === 'archived').length,
+ avgFoodCost:(recipeVault || []).length? moneyRound((recipeVault || []).reduce((sum, r) => sum + safeNum(computeRecipeVaultCost(r, getRecipeVaultRows(r.id)).foodCostPct,0),0) / (recipeVault || []).length):0
+ }
+ const recipeRiskRows = (recipeVault || []).map(recipe => ({ recipe, cost:computeRecipeVaultCost(recipe, getRecipeVaultRows(recipe.id)) }))
+ .sort((a,b)=>safeNum(b.cost.foodCostPct,0)-safeNum(a.cost.foodCostPct,0))
+ .slice(0, 8)
+ const currentRecipePreviewCost = computeRecipeVaultCost(recipeVaultForm, recipeCostRows)
+
  const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
  const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
     const payablesDeadlineKey = (ownerDeadlineSummary.warningRows || [])
@@ -12799,6 +13338,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
  if(key==='franchise') { loadFranchises() }
  if(key==='sops') { setSopView('dashboard'); refreshSopLibrary({ silent:true }) }
+ if(key==='recipes') { setRecipeVaultView('dashboard'); refreshRecipeVault({ silent:true }) }
  }
 
  // Open full employee portal from admin panel 
@@ -20655,6 +21195,254 @@ onClick={async ()=>{
  )}
 
  {/* FRANCHISE MODULE */}
+
+
+
+ {/* RECIPE VAULT */}
+ {activeTab==='recipes' && canAccess('recipes') && (
+ <div>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'16px' }}>
+ <div>
+ <h2 style={{...h2s, marginBottom:'4px' }}> Recipe Vault & Product Costing</h2>
+ <p style={{ color:'#777', fontSize:'13px', margin:0 }}>Restricted recipe templates with ingredient costing, batch yield, labor, overhead, packaging, margins, and suggested price.</p>
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnYellow, width:'auto' }} onClick={()=>refreshRecipeVault()}>REFRESH</button>
+ <button style={{...btnBlack, width:'auto' }} onClick={exportRecipeVaultCSV}>EXPORT CSV</button>
+ {canManageRecipeVault() && <button style={{...btnGray, width:'auto' }} onClick={createRecipeTemplatesFromProducts}>CREATE PRODUCT TEMPLATES</button>}
+ {canManageRecipeVault() && <button style={{...btnRed, width:'auto' }} onClick={()=>openNewRecipeVaultForm()}>ADD RECIPE</button>}
+ </div>
+ </div>
+
+ {recipeVaultLoadError && (
+ <div style={{ background:'#fff5f5', border:'1px solid #ffcccc', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', margin:'0 0 6px' }}>Recipe Vault database setup needed</p>
+ <p style={{ color:'#555', fontSize:'13px', margin:0 }}>Run the Recipe Vault Supabase setup SQL first, then click Refresh. Error: {recipeVaultLoadError}</p>
+ </div>
+ )}
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'10px', marginBottom:'14px' }}>
+ {[
+ ['Total Recipes', recipeVaultStats.total, '#1a1a2e', 'all'],
+ ['Active', recipeVaultStats.active, '#2d8a4e', 'active'],
+ ['Test / Draft', recipeVaultStats.test, '#f5a623', 'test'],
+ ['Archived', recipeVaultStats.archived, '#777', 'archived'],
+ ['Avg Food Cost %', `${recipeVaultStats.avgFoodCost}%`, '#ca1b1b', 'all'],
+ ].map(([label,value,color,status])=>(
+ <button key={label} onClick={()=>{ setRecipeVaultStatusFilter(status); setRecipeVaultView('recipes') }} style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'15px', textAlign:'center', cursor:'pointer', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
+ <p style={{ color:'#999', fontSize:'10px', letterSpacing:'1px', fontWeight:'bold', margin:'0 0 6px', textTransform:'uppercase' }}>{label}</p>
+ <p style={{ color, fontWeight:'900', fontSize:'20px', margin:0 }}>{value}</p>
+ </button>
+ ))}
+ </div>
+
+ <div style={{ background:'white', borderRadius:'14px', padding:'12px', marginBottom:'14px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ {[
+ ['dashboard','Dashboard'],['recipes','Recipe List'],['template','Costing Template Guide']
+ ].map(([key,label])=>(
+ <button key={key} onClick={()=>setRecipeVaultView(key)} style={{ border:'none', borderRadius:'10px', padding:'10px 18px', background:recipeVaultView===key?'#ca1b1b':'#f4f4f4', color:recipeVaultView===key?'white':'#333', fontWeight:'bold', cursor:'pointer' }}>{label}</button>
+ ))}
+ </div>
+
+ {recipeVaultView==='dashboard' && (
+ <div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+ <div style={{ background:'white', borderRadius:'14px', padding:'18px', border:'1px solid #eee' }}>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 10px' }}>Recipe Vault Rules</h3>
+ <p style={{ color:'#555', fontSize:'13px', lineHeight:1.6, margin:'0 0 8px' }}>Keep secret formulas inside Recipe Vault only. Do not place full recipes inside employee SOPs.</p>
+ <p style={{ color:'#555', fontSize:'13px', lineHeight:1.6, margin:'0 0 8px' }}>Use TEST status while encoding or adjusting ingredients. Change to ACTIVE only after owner approval and production testing.</p>
+ <p style={{ color:'#555', fontSize:'13px', lineHeight:1.6, margin:0 }}>Costing formula: ingredient + packaging + labor + overhead + other cost, divided by batch yield.</p>
+ </div>
+ <div style={{ background:'#1a1a2e', color:'white', borderRadius:'14px', padding:'18px' }}>
+ <h3 style={{ color:'#fdd412', margin:'0 0 10px' }}>Owner Costing Checklist</h3>
+ <ul style={{ margin:'0 0 0 18px', padding:0, fontSize:'13px', lineHeight:1.7 }}>
+ <li>Encode every ingredient quantity and unit cost.</li>
+ <li>Add packaging cost per piece or as a row.</li>
+ <li>Add labor and overhead per batch.</li>
+ <li>Check cost per piece against reseller and retail price.</li>
+ <li>Watch food cost percentage and margin before activating.</li>
+ </ul>
+ </div>
+ </div>
+
+ <div style={{ background:'white', borderRadius:'14px', padding:'18px', border:'1px solid #eee' }}>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 12px' }}>Highest Food Cost Watchlist</h3>
+ {recipeRiskRows.length===0? <p style={{ color:'#888', fontSize:'13px' }}>No recipe records yet. Create product templates first.</p>:
+ <div style={{ display:'grid', gap:'8px' }}>
+ {recipeRiskRows.map(({recipe,cost})=>(
+ <div key={recipe.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr 1fr', gap:'8px', alignItems:'center', border:'1px solid #eee', borderRadius:'10px', padding:'10px' }}>
+ <div><b>{recipe.product_name}</b><p style={{ color:'#888', fontSize:'11px', margin:'2px 0 0' }}>{recipe.recipe_code} | {String(recipe.status || '').toUpperCase()}</p></div>
+ <div><span style={{ color:'#888', fontSize:'10px' }}>Cost/Pc</span><p style={{ margin:0, fontWeight:'bold' }}>{php(cost.costPerPiece)}</p></div>
+ <div><span style={{ color:'#888', fontSize:'10px' }}>Food Cost</span><p style={{ margin:0, fontWeight:'bold', color:cost.foodCostPct>45?'#ca1b1b':'#2d8a4e' }}>{cost.foodCostPct}%</p></div>
+ <button style={{...btnYellow, width:'auto', padding:'8px 12px' }} onClick={()=>setViewingRecipeVault(recipe)}>VIEW</button>
+ </div>
+ ))}
+ </div>}
+ </div>
+ </div>
+ )}
+
+ {recipeVaultView==='template' && (
+ <div style={{ background:'white', borderRadius:'14px', padding:'18px', border:'1px solid #eee' }}>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 12px' }}>Full Recipe Costing Template</h3>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'12px' }}>
+ {[
+ ['Recipe Header','Product name, category, recipe code, batch size, yield, version, status, approved by.'],
+ ['Ingredients','Premix, water/liquid, yeast, oil, glaze, fillings, toppings, and other ingredient quantities with unit cost.'],
+ ['Packaging','Box, paper, sticker, bag, tray, label, or per-piece packaging allowance.'],
+ ['Production Cost','Labor per batch, overhead per batch, electricity/fryer/equipment allowance, and wastage percent.'],
+ ['Process Standard','Mixing time, resting time, proofing time, frying temperature, frying time, cooling, finishing, and shelf-life notes.'],
+ ['Profitability','Batch cost, cost per piece, food cost %, margin %, reseller price check, retail price check, and suggested retail price.'],
+ ].map(([title,desc])=>(
+ <div key={title} style={{ border:'1px solid #eee', borderRadius:'12px', padding:'14px', background:'#fafafa' }}>
+ <p style={{ fontWeight:'900', color:'#1a1a2e', margin:'0 0 6px' }}>{title}</p>
+ <p style={{ color:'#555', fontSize:'13px', margin:0, lineHeight:1.5 }}>{desc}</p>
+ </div>
+ ))}
+ </div>
+ </div>
+ )}
+
+ {recipeVaultView==='recipes' && (
+ <div id="recipe-vault-list">
+ <div style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'14px', border:'1px solid #eee' }}>
+ <input value={recipeVaultSearch} onChange={e=>setRecipeVaultSearch(e.target.value)} placeholder="Search recipe code, product name, category, procedure, or notes..." style={inputStyle} />
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+ {['all',...RECIPE_VAULT_STATUSES].map(status=>(
+ <button key={status} onClick={()=>setRecipeVaultStatusFilter(status)} style={{ border:'none', borderRadius:'20px', padding:'8px 14px', background:recipeVaultStatusFilter===status?'#ca1b1b':'#f4f4f4', color:recipeVaultStatusFilter===status?'white':'#333', fontWeight:'bold', cursor:'pointer', fontSize:'12px' }}>{status.toUpperCase()}</button>
+ ))}
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 0 auto' }}>Showing {filteredRecipeVault.length} recipe{filteredRecipeVault.length!==1?'s':''}</p>
+ </div>
+ </div>
+
+ {showRecipeVaultForm && canManageRecipeVault() && (
+ <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'18px', marginBottom:'16px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px', gap:'10px', flexWrap:'wrap' }}>
+ <h3 style={{ color:'#ca1b1b', margin:0 }}>{editingRecipeVaultId? 'Edit Recipe Costing':'Add Recipe Costing Template'}</h3>
+ <button style={{...btnGray, width:'auto', marginTop:0 }} onClick={()=>{ setShowRecipeVaultForm(false); resetRecipeVaultForm() }}>CANCEL</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px' }}>
+ <div><label style={lblS}>Link Product Variant</label><select value={recipeVaultForm.linked_variant_id} onChange={e=>{ const id=e.target.value; const v=(donutVariants||[]).find(x=>String(x.id)===String(id)); setRecipeVaultForm(p=>({...p, linked_variant_id:id, product_name:v?.name || p.product_name, product_category:v?.category || p.product_category, recipe_code:p.recipe_code || makeRecipeCode(v?.name), batch_yield_pieces:v?.pieces_per_batch || p.batch_yield_pieces, selling_price:v?.selling_price ?? p.selling_price, reseller_price:v?.selling_price? moneyRound(safeNum(v.selling_price)*0.8):p.reseller_price })) }} style={inputStyle}><option value="">Manual / Not Linked</option>{(donutVariants||[]).map(v=><option key={v.id} value={v.id}>{v.name} - {php(v.selling_price||0)}</option>)}</select></div>
+ <div><label style={lblS}>Recipe Code</label><input value={recipeVaultForm.recipe_code} onChange={e=>setRecipeVaultForm(p=>({...p, recipe_code:e.target.value}))} placeholder="RC-CHOCO-BALLS" style={inputStyle} /></div>
+ <div><label style={lblS}>Product Name</label><input value={recipeVaultForm.product_name} onChange={e=>setRecipeVaultForm(p=>({...p, product_name:e.target.value, recipe_code:p.recipe_code || makeRecipeCode(e.target.value)}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Category</label><input value={recipeVaultForm.product_category} onChange={e=>setRecipeVaultForm(p=>({...p, product_category:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Batch Size Label</label><input value={recipeVaultForm.batch_size_label} onChange={e=>setRecipeVaultForm(p=>({...p, batch_size_label:e.target.value}))} placeholder="1 batch / 6kg dough" style={inputStyle} /></div>
+ <div><label style={lblS}>Yield Pieces</label><input type="number" value={recipeVaultForm.batch_yield_pieces} onChange={e=>setRecipeVaultForm(p=>({...p, batch_yield_pieces:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Retail Price</label><input type="number" value={recipeVaultForm.selling_price} onChange={e=>setRecipeVaultForm(p=>({...p, selling_price:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Reseller Price</label><input type="number" value={recipeVaultForm.reseller_price} onChange={e=>setRecipeVaultForm(p=>({...p, reseller_price:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Labor Cost / Batch</label><input type="number" value={recipeVaultForm.labor_cost_per_batch} onChange={e=>setRecipeVaultForm(p=>({...p, labor_cost_per_batch:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Overhead / Batch</label><input type="number" value={recipeVaultForm.overhead_cost_per_batch} onChange={e=>setRecipeVaultForm(p=>({...p, overhead_cost_per_batch:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Packaging / Piece</label><input type="number" value={recipeVaultForm.packaging_cost_per_piece} onChange={e=>setRecipeVaultForm(p=>({...p, packaging_cost_per_piece:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Target Margin %</label><input type="number" value={recipeVaultForm.target_margin_pct} onChange={e=>setRecipeVaultForm(p=>({...p, target_margin_pct:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Version</label><input value={recipeVaultForm.version} onChange={e=>setRecipeVaultForm(p=>({...p, version:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Status</label><select value={recipeVaultForm.status} onChange={e=>setRecipeVaultForm(p=>({...p, status:e.target.value}))} style={inputStyle}>{RECIPE_VAULT_STATUSES.map(status=><option key={status} value={status}>{status.toUpperCase()}</option>)}</select></div>
+ <div><label style={lblS}>Approved By</label><input value={recipeVaultForm.approved_by} onChange={e=>setRecipeVaultForm(p=>({...p, approved_by:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Access Roles</label><div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>{RECIPE_ACCESS_ROLE_OPTIONS.map(role=>{ const roles=String(recipeVaultForm.access_roles||'').split(',').map(r=>r.trim()).filter(Boolean); const checked=roles.includes(role); return <label key={role} style={{ fontSize:'11px', background:checked?'#fff8dc':'#f5f5f5', border:`1px solid ${checked?'#fdd412':'#eee'}`, borderRadius:'20px', padding:'6px 9px', cursor:'pointer' }}><input type="checkbox" checked={checked} onChange={e=>{ const next=e.target.checked?[...new Set([...roles, role])]:roles.filter(r=>r!==role); setRecipeVaultForm(p=>({...p, access_roles:next.join(',')})) }} /> {role}</label> })}</div></div>
+ </div>
+
+ <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'12px', padding:'12px', margin:'12px 0' }}>
+ <h4 style={{ color:'#1a1a2e', margin:'0 0 8px' }}>Live Costing Summary</h4>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'8px' }}>
+ {[
+ ['Batch Cost', php(currentRecipePreviewCost.batchCost)],
+ ['Cost/Piece', php(currentRecipePreviewCost.costPerPiece)],
+ ['Suggested Retail', php(currentRecipePreviewCost.suggestedRetailPrice)],
+ ['Food Cost %', `${currentRecipePreviewCost.foodCostPct}%`],
+ ['Margin %', `${currentRecipePreviewCost.grossMarginPct}%`],
+ ['Reseller Margin %', `${currentRecipePreviewCost.resellerMarginPct}%`],
+ ].map(([l,v])=><div key={l}><p style={{ color:'#777', fontSize:'10px', margin:'0 0 2px' }}>{l}</p><p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'15px', margin:0 }}>{v}</p></div>)}
+ </div>
+ </div>
+
+ <h4 style={{ color:'#ca1b1b', margin:'14px 0 8px' }}>Cost Items</h4>
+ <div style={{ overflowX:'auto' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'950px' }}>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}>{['Type','Inventory Link','Item Name','Qty','Unit','Unit Cost','Waste %','Total','Notes',''].map(h=><th key={h} style={{ padding:'8px', textAlign:'left' }}>{h}</th>)}</tr></thead>
+ <tbody>
+ {recipeCostRows.map((row, idx)=>{ const total=moneyRound(safeNum(row.quantity)*safeNum(row.unit_cost)*(1+safeNum(row.waste_percent)/100)); return (
+ <tr key={row.row_key} style={{ borderBottom:'1px solid #eee' }}>
+ <td style={{ padding:'6px' }}><select value={row.item_type} onChange={e=>updateRecipeCostRow(row.row_key,'item_type',e.target.value)} style={{...inputStyle, marginBottom:0 }}>{RECIPE_COST_ITEM_TYPES.map(type=><option key={type} value={type}>{type}</option>)}</select></td>
+ <td style={{ padding:'6px' }}><select value={row.inventory_item_id || ''} onChange={e=>updateRecipeCostRow(row.row_key,'inventory_item_id',e.target.value)} style={{...inputStyle, marginBottom:0 }}><option value="">Manual</option>{(inventoryItems||[]).map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></td>
+ <td style={{ padding:'6px' }}><input value={row.item_name} onChange={e=>updateRecipeCostRow(row.row_key,'item_name',e.target.value)} style={{...inputStyle, marginBottom:0 }} /></td>
+ <td style={{ padding:'6px' }}><input type="number" value={row.quantity} onChange={e=>updateRecipeCostRow(row.row_key,'quantity',e.target.value)} style={{...inputStyle, marginBottom:0, width:'85px' }} /></td>
+ <td style={{ padding:'6px' }}><input value={row.unit} onChange={e=>updateRecipeCostRow(row.row_key,'unit',e.target.value)} style={{...inputStyle, marginBottom:0, width:'75px' }} /></td>
+ <td style={{ padding:'6px' }}><input type="number" value={row.unit_cost} onChange={e=>updateRecipeCostRow(row.row_key,'unit_cost',e.target.value)} style={{...inputStyle, marginBottom:0, width:'95px' }} /></td>
+ <td style={{ padding:'6px' }}><input type="number" value={row.waste_percent} onChange={e=>updateRecipeCostRow(row.row_key,'waste_percent',e.target.value)} style={{...inputStyle, marginBottom:0, width:'80px' }} /></td>
+ <td style={{ padding:'6px', fontWeight:'bold' }}>{php(total)}</td>
+ <td style={{ padding:'6px' }}><input value={row.notes || ''} onChange={e=>updateRecipeCostRow(row.row_key,'notes',e.target.value)} style={{...inputStyle, marginBottom:0 }} /></td>
+ <td style={{ padding:'6px' }}><button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'7px 10px', cursor:'pointer' }} onClick={()=>removeRecipeCostRow(row.row_key)}>X</button></td>
+ </tr>
+ )})}
+ </tbody>
+ </table>
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'8px' }}>{RECIPE_COST_ITEM_TYPES.map(type=><button key={type} style={{...btnGray, width:'auto', padding:'8px 12px' }} onClick={()=>addRecipeCostRow(type)}>+ {type}</button>)}</div>
+
+ <h4 style={{ color:'#ca1b1b', margin:'16px 0 8px' }}>Production Process</h4>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'10px' }}>
+ <div><label style={lblS}>Mixing Time</label><input value={recipeVaultForm.mixing_time} onChange={e=>setRecipeVaultForm(p=>({...p, mixing_time:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Resting Time</label><input value={recipeVaultForm.resting_time} onChange={e=>setRecipeVaultForm(p=>({...p, resting_time:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Proofing Time</label><input value={recipeVaultForm.proofing_time} onChange={e=>setRecipeVaultForm(p=>({...p, proofing_time:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Frying Temp</label><input value={recipeVaultForm.frying_temperature} onChange={e=>setRecipeVaultForm(p=>({...p, frying_temperature:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Frying Time</label><input value={recipeVaultForm.frying_time} onChange={e=>setRecipeVaultForm(p=>({...p, frying_time:e.target.value}))} style={inputStyle} /></div>
+ </div>
+ <label style={lblS}>Full Procedure</label><textarea value={recipeVaultForm.procedure} onChange={e=>setRecipeVaultForm(p=>({...p, procedure:e.target.value}))} placeholder="Encode official production procedure here. Keep secret formulas restricted." style={{...inputStyle, minHeight:'100px', resize:'vertical' }} />
+ <label style={lblS}>Cooling Instructions</label><textarea value={recipeVaultForm.cooling_instructions} onChange={e=>setRecipeVaultForm(p=>({...p, cooling_instructions:e.target.value}))} style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
+ <label style={lblS}>Glazing / Filling / Topping Instructions</label><textarea value={recipeVaultForm.finishing_instructions} onChange={e=>setRecipeVaultForm(p=>({...p, finishing_instructions:e.target.value}))} style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
+ <label style={lblS}>Shelf-Life Notes</label><textarea value={recipeVaultForm.shelf_life_notes} onChange={e=>setRecipeVaultForm(p=>({...p, shelf_life_notes:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'vertical' }} />
+ <label style={lblS}>Owner Notes</label><textarea value={recipeVaultForm.notes} onChange={e=>setRecipeVaultForm(p=>({...p, notes:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'vertical' }} />
+ <button style={{...btnGreen, opacity:savingRecipeVault?0.6:1 }} disabled={savingRecipeVault} onClick={saveRecipeVaultDocument}>{savingRecipeVault?'SAVING RECIPE...':'SAVE RECIPE COSTING'}</button>
+ </div>
+ )}
+
+ {recipeVaultLoading && <div style={{ background:'white', borderRadius:'14px', padding:'30px', textAlign:'center', color:'#888' }}>Loading Recipe Vault...</div>}
+ {!recipeVaultLoading && filteredRecipeVault.length===0 && <div style={{ background:'white', borderRadius:'14px', padding:'30px', textAlign:'center', color:'#888' }}>No recipe records found. Click ADD RECIPE or CREATE PRODUCT TEMPLATES.</div>}
+ {!recipeVaultLoading && filteredRecipeVault.map(recipe=>{ const cost=computeRecipeVaultCost(recipe, getRecipeVaultRows(recipe.id)); return (
+ <div key={recipe.id} style={{ background:'white', border:'1px solid #eee', borderLeft:`5px solid ${recipe.status==='active'?'#2d8a4e':recipe.status==='archived'?'#777':'#f5a623'}`, borderRadius:'14px', padding:'14px', marginBottom:'10px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', flexWrap:'wrap' }}>
+ <div>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 4px' }}>{recipe.product_name}</h3>
+ <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{recipe.recipe_code} | {recipe.product_category} | Version {recipe.version} | <b>{String(recipe.status || '').toUpperCase()}</b></p>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', minWidth:isMobile?'100%':'420px' }}>
+ {[['Cost/Pc',php(cost.costPerPiece)],['Batch Cost',php(cost.batchCost)],['Food Cost',`${cost.foodCostPct}%`],['Margin',`${cost.grossMarginPct}%`]].map(([l,v])=><div key={l} style={{ background:'#fafafa', borderRadius:'8px', padding:'8px', textAlign:'center' }}><p style={{ color:'#999', fontSize:'10px', margin:'0 0 2px' }}>{l}</p><p style={{ fontWeight:'900', color:'#ca1b1b', margin:0 }}>{v}</p></div>)}
+ </div>
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'12px' }}>
+ <button style={{...btnBlack, width:'auto', padding:'8px 14px' }} onClick={()=>setViewingRecipeVault(recipe)}>VIEW</button>
+ {canManageRecipeVault() && <button style={{...btnYellow, width:'auto', padding:'8px 14px' }} onClick={()=>openEditRecipeVault(recipe)}>EDIT</button>}
+ {canManageRecipeVault() && recipe.status!=='active' && <button style={{...btnGreen, width:'auto', padding:'8px 14px' }} onClick={()=>updateRecipeVaultStatus(recipe,'active')}>ACTIVATE</button>}
+ {canManageRecipeVault() && recipe.status!=='archived' && <button style={{...btnGray, width:'auto', padding:'8px 14px' }} onClick={()=>updateRecipeVaultStatus(recipe,'archived')}>ARCHIVE</button>}
+ <button style={{...btnGray, width:'auto', padding:'8px 14px' }} onClick={()=>exportRecipeVaultText(recipe)}>EXPORT</button>
+ </div>
+ </div>
+ )})}
+ </div>
+ )}
+
+ {viewingRecipeVault && (()=>{ const rows=getRecipeVaultRows(viewingRecipeVault.id); const cost=computeRecipeVaultCost(viewingRecipeVault, rows); return (
+ <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
+ <div style={{ background:'white', borderRadius:'18px', padding:'22px', width:'100%', maxWidth:'950px', maxHeight:'90vh', overflowY:'auto' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', marginBottom:'12px' }}>
+ <div><h2 style={{ color:'#ca1b1b', margin:'0 0 4px' }}>{viewingRecipeVault.product_name}</h2><p style={{ color:'#888', fontSize:'12px', margin:0 }}>{viewingRecipeVault.recipe_code} | Version {viewingRecipeVault.version} | {String(viewingRecipeVault.status || '').toUpperCase()}</p></div>
+ <button style={{ background:'#f0f0f0', border:'none', borderRadius:'10px', padding:'8px 12px', cursor:'pointer', fontWeight:'bold' }} onClick={()=>setViewingRecipeVault(null)}>CLOSE</button>
+ </div>
+ <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'12px', padding:'12px', marginBottom:'12px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'8px' }}>
+ {[['Yield',`${cost.yieldPieces} pcs`],['Batch Cost',php(cost.batchCost)],['Cost/Pc',php(cost.costPerPiece)],['Retail',php(viewingRecipeVault.selling_price||0)],['Food Cost',`${cost.foodCostPct}%`],['Margin',`${cost.grossMarginPct}%`]].map(([l,v])=><div key={l}><p style={{ color:'#777', fontSize:'10px', margin:'0 0 2px' }}>{l}</p><p style={{ fontWeight:'900', color:'#1a1a2e', margin:0 }}>{v}</p></div>)}
+ </div>
+ </div>
+ <h4 style={{ color:'#ca1b1b', margin:'0 0 8px' }}>Cost Items</h4>
+ <div style={{ overflowX:'auto', marginBottom:'12px' }}><table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}><thead><tr style={{ background:'#1a1a2e', color:'white' }}>{['Type','Item','Qty','Unit','Unit Cost','Waste','Total'].map(h=><th key={h} style={{ padding:'8px', textAlign:'left' }}>{h}</th>)}</tr></thead><tbody>{cost.rowTotals.map((row,idx)=><tr key={row.id || idx} style={{ borderBottom:'1px solid #eee' }}><td style={{ padding:'8px' }}>{row.item_type}</td><td style={{ padding:'8px', fontWeight:'bold' }}>{row.item_name}</td><td style={{ padding:'8px' }}>{row.quantity}</td><td style={{ padding:'8px' }}>{row.unit}</td><td style={{ padding:'8px' }}>{php(row.unit_cost||0)}</td><td style={{ padding:'8px' }}>{row.waste_percent||0}%</td><td style={{ padding:'8px', fontWeight:'bold' }}>{php(row.row_total)}</td></tr>)}</tbody></table></div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'12px' }}>
+ <div><h4 style={{ color:'#ca1b1b', margin:'0 0 6px' }}>Process</h4><p style={{ whiteSpace:'pre-wrap', fontSize:'13px', lineHeight:1.6 }}>{viewingRecipeVault.procedure || 'No procedure encoded yet.'}</p></div>
+ <div><h4 style={{ color:'#ca1b1b', margin:'0 0 6px' }}>Timing / Notes</h4><p style={{ fontSize:'13px', lineHeight:1.7, margin:0 }}>Mixing: {viewingRecipeVault.mixing_time || '-'}<br/>Resting: {viewingRecipeVault.resting_time || '-'}<br/>Proofing: {viewingRecipeVault.proofing_time || '-'}<br/>Frying: {viewingRecipeVault.frying_temperature || '-'} / {viewingRecipeVault.frying_time || '-'}<br/>Shelf Life: {viewingRecipeVault.shelf_life_notes || '-'}</p></div>
+ </div>
+ </div>
+ </div>
+ )})()}
+ </div>
+ )}
 
  {/* SOP LIBRARY */}
  {activeTab==='sops' && canAccess('sops') && (
