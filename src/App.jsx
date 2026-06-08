@@ -4441,22 +4441,105 @@ function buildDeliveryInvoicePrintCSS() {
   }
 
 
+
+ function escapeWordDocText(value) {
+   return String(value || '')
+     .replace(/&/g, '&amp;')
+     .replace(/</g, '&lt;')
+     .replace(/>/g, '&gt;')
+     .replace(/"/g, '&quot;')
+     .replace(/'/g, '&#39;')
+ }
+
+ function sanitizeWordFileName(value) {
+   const clean = String(value || 'roma-delivery-invoice')
+     .replace(/[\\/:*?"<>|]+/g, '-')
+     .replace(/\s+/g, '_')
+     .replace(/_+/g, '_')
+     .replace(/^_+|_+$/g, '')
+   return clean.slice(0, 120) || 'roma-delivery-invoice'
+ }
+
+ function buildDeliveryInvoiceWordCSS() {
+   return [
+     '<style>',
+     '@page WordSection1 { size: 4in 6in; margin: 0in 0in 0in 0in; mso-header-margin: 0in; mso-footer-margin: 0in; }',
+     '* { box-sizing: border-box; }',
+     'html, body { width: 4in; margin: 0; padding: 0; background: #ffffff; font-family: Arial, sans-serif; color: #000000; }',
+     'body { mso-margin-top-alt: 0in; mso-margin-bottom-alt: 0in; mso-margin-left-alt: 0in; mso-margin-right-alt: 0in; }',
+     'div.WordSection1 { page: WordSection1; width: 4in; margin: 0; padding: 0; }',
+     '.no-print { display: none; }',
+     '.invoice-page { width: 4in; height: 6in; margin: 0; padding: 0; background: #ffffff; overflow: hidden; page-break-after: always; }',
+     '.invoice-page:last-child { page-break-after: auto; }',
+     '.invoice-table { width: 4in; height: 6in; border-collapse: collapse; table-layout: fixed; border: 2px solid #000000; font-size: 13px; line-height: 0.95; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }',
+     '.invoice-table tr { border: 1px solid #000000; }',
+     '.invoice-table td, .invoice-table th { border: 1px solid #000000; border-color: #000000; padding: 0px 2px; vertical-align: middle; overflow: hidden; white-space: nowrap; }',
+     '.title-row td { height: 0.22in; text-align: center; font-weight: 700; font-size: 14px; }',
+     '.field-row td { height: 0.22in; font-size: 13px; }',
+     '.field-label { text-align: center; font-weight: 700; }',
+     '.field-value { font-weight: 500; }',
+     '.date-fill, .customer-fill { background: #cfe2f3; }',
+     '.address-fill, .prepared-fill { background: #b6d7a8; }',
+     '.blank-row td { height: 0.13in; }',
+     '.header-row th { height: 0.23in; text-align: center; font-weight: 700; font-size: 13px; }',
+     '.product-row td { height: 0.205in; font-size: 13px; }',
+     '.product-name { text-align: center; font-weight: 600; }',
+     '.number-cell { text-align: center; font-weight: 500; }',
+     '.money-cell { text-align: right; font-weight: 500; }',
+     '.footer-row td { height: 0.22in; font-size: 13px; }',
+     '.footer-label { text-align: center; font-weight: 600; font-style: italic; }',
+     '.total-label { text-align: center; font-weight: 700; font-size: 16px; }',
+     '.total-amount { text-align: right; font-weight: 700; background: #d9d9d9; font-size: 18px; color: #000000; }',
+     '</style>'
+   ].join('\n')
+ }
+
+ function buildDeliveryInvoiceWordDocument(title, pagesHtml) {
+   return `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<meta name="ProgId" content="Word.Document">
+<meta name="Generator" content="Roma's Donuts Business System">
+<title>${escapeWordDocText(title)}</title>
+<!--[if gte mso 9]>
+<xml>
+  <w:WordDocument>
+    <w:View>Print</w:View>
+    <w:Zoom>100</w:Zoom>
+    <w:DoNotOptimizeForBrowser/>
+  </w:WordDocument>
+</xml>
+<![endif]-->
+${buildDeliveryInvoiceWordCSS()}
+</head>
+<body>
+<div class="WordSection1">
+${pagesHtml}
+</div>
+</body>
+</html>`
+ }
+
+ function downloadDeliveryInvoiceWordFile(filename, html) {
+   const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' })
+   const url = URL.createObjectURL(blob)
+   const link = document.createElement('a')
+   link.href = url
+   link.download = `${sanitizeWordFileName(filename)}.doc`
+   document.body.appendChild(link)
+   link.click()
+   document.body.removeChild(link)
+   setTimeout(() => URL.revokeObjectURL(url), 1500)
+ }
+
  function printAllDailyInvoices(date) {
  const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
  if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
- const pw = window.open('','_blank','width=420,height=660')
- const grandTotal = dayInvoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
- pw.document.write(`<!DOCTYPE html><html><head><title>All Invoices ${date}</title>
- ${buildDeliveryInvoicePrintCSS()}
- </head><body class="print-all-invoices">
- <div class="no-print">
- <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;"> PRINT ALL</button>
- <p style="font-size:11px;color:#888;margin-top:6px;">${dayInvoices.length} invoice(s) Total: ${php(grandTotal)}</p>
- <p style="font-size:10px;color:#888;margin-top:3px;">Use 4 x 6 inches paper size, scale 100%, margins none, backgrounds on, headers/footers off.</p>
- </div>
- ${dayInvoices.map((inv,idx)=>buildDeliveryInvoicePrintPage(inv, idx < dayInvoices.length-1? 'force-break': '')).join('')}
- </body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+ const pagesHtml = dayInvoices.map((inv,idx)=>buildDeliveryInvoicePrintPage(inv, idx < dayInvoices.length-1? 'force-break': '')).join('')
+ const html = buildDeliveryInvoiceWordDocument(`Roma's Donuts Delivery Invoices ${date}`, pagesHtml)
+ downloadDeliveryInvoiceWordFile(`Romas_Donuts_Delivery_Invoices_${date}`, html)
+ showToast(` Downloaded ${dayInvoices.length} invoice(s) as 4x6 Word file.`)
  }
  async function recordPayment(invoice) {
  const amt = Number(paymentAmount[invoice.id] || 0)
@@ -4478,17 +4561,11 @@ function buildDeliveryInvoicePrintCSS() {
  refreshFoundationAfterDataChange('reseller-payment-recorded')
  }
  function printDeliveryInvoice(invoice) {
- const pw = window.open('','_blank','width=420,height=660')
- pw.document.write(`<!DOCTYPE html><html><head><title>Invoice ${invoice.invoice_number}</title>
- ${buildDeliveryInvoicePrintCSS()}
- </head><body class="single-invoice-print">
- <div class="no-print">
- <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;"> PRINT INVOICE</button>
- <p style="font-size:10px;color:#888;margin-top:5px;">Use 4 x 6 inches paper size, scale 100%, margins none, backgrounds on, headers/footers off.</p>
- </div>
- ${buildDeliveryInvoicePrintPage(invoice)}
- </body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+ if (!invoice) { showToast(' No invoice selected.','red'); return }
+ const invoiceNumber = invoice.invoice_number || invoice.id || 'invoice'
+ const html = buildDeliveryInvoiceWordDocument(`Roma's Donuts Delivery Invoice ${invoiceNumber}`, buildDeliveryInvoicePrintPage(invoice))
+ downloadDeliveryInvoiceWordFile(`Romas_Donuts_Invoice_${invoiceNumber}`, html)
+ showToast(' Downloaded invoice as 4x6 Word file.')
  }
  function buildInvoiceAdjustmentRows(invoice) {
  if (!invoice) return []
