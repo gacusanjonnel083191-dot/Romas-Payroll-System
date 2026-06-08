@@ -741,6 +741,7 @@ export default function App() {
  const [sopSearch, setSopSearch] = useState('')
  const [sopDepartmentFilter, setSopDepartmentFilter] = useState('all')
  const [sopStatusFilter, setSopStatusFilter] = useState('all')
+ const [sopAckRequiredOnly, setSopAckRequiredOnly] = useState(false)
  const [showSopForm, setShowSopForm] = useState(false)
  const [editingSopId, setEditingSopId] = useState(null)
  const [viewingSop, setViewingSop] = useState(null)
@@ -7571,6 +7572,12 @@ function buildDeliveryInvoicePrintCSS() {
  }
  }
 
+ async function refreshSopLibrary(options = {}) {
+ const silent = options?.silent === true
+ await Promise.all([loadSops(), loadSopAcknowledgements()])
+ if (!silent) showToast('SOP Library refreshed.')
+ }
+
  async function saveSopDocument() {
  if (!canManageSops()) { showToast('Only Owner or Manager can save SOPs.', 'red'); return }
  if (!sopForm.sop_code.trim() || !sopForm.title.trim()) {
@@ -12576,7 +12583,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const matchesSearch = !q || [sop.sop_code, sop.title, sop.department, sop.category, sop.purpose, sop.procedure, sop.required_records].some(v => String(v || '').toLowerCase().includes(q))
  const matchesDepartment = sopDepartmentFilter === 'all' || sop.department === sopDepartmentFilter
  const matchesStatus = sopStatusFilter === 'all' || String(sop.status || '').toLowerCase() === sopStatusFilter
- return matchesSearch && matchesDepartment && matchesStatus
+ const matchesAckRequired = !sopAckRequiredOnly || sop.acknowledgement_required !== false
+ return matchesSearch && matchesDepartment && matchesStatus && matchesAckRequired
  })
  const sopStats = {
  total:(sops || []).length,
@@ -12584,6 +12592,26 @@ This recovery button creates one approved expense record using GROSS payroll ear
  draft:(sops || []).filter(s => s.status === 'draft').length,
  archived:(sops || []).filter(s => s.status === 'archived').length,
  ackRequired:(sops || []).filter(s => s.acknowledgement_required !== false).length
+ }
+ const openSopLibraryFilter = (status = 'all', ackOnly = false) => {
+ setSopSearch('')
+ setSopDepartmentFilter('all')
+ setSopStatusFilter(status)
+ setSopAckRequiredOnly(!!ackOnly)
+ setShowSopForm(false)
+ setViewingSop(null)
+ setSopView('library')
+ setTimeout(() => document.getElementById('sop-library-list')?.scrollIntoView({ behavior:'smooth', block:'start' }), 80)
+ }
+ const openSopDepartment = (department) => {
+ setSopSearch('')
+ setSopDepartmentFilter(department || 'all')
+ setSopStatusFilter('all')
+ setSopAckRequiredOnly(false)
+ setShowSopForm(false)
+ setViewingSop(null)
+ setSopView('library')
+ setTimeout(() => document.getElementById('sop-library-list')?.scrollIntoView({ behavior:'smooth', block:'start' }), 80)
  }
  const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
  const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
@@ -12644,6 +12672,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
  if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
  if(key==='franchise') { loadFranchises() }
+ if(key==='sops') { setSopView('dashboard'); refreshSopLibrary({ silent:true }) }
  }
 
  // Open full employee portal from admin panel 
@@ -20510,7 +20539,7 @@ onClick={async ()=>{
  <p style={{ color:'#777', fontSize:'13px', margin:0 }}>Central library for Roma's Donuts production, food safety, inventory, reseller, finance, and HR SOPs.</p>
  </div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnYellow, width:'auto' }} onClick={loadSops}>REFRESH</button>
+ <button style={{...btnYellow, width:'auto' }} onClick={()=>refreshSopLibrary()}>REFRESH</button>
  <button style={{...btnBlack, width:'auto' }} onClick={exportSopLibraryCSV}>EXPORT CSV</button>
  {canManageSopLibrary && <button style={{...btnRed, width:'auto' }} onClick={openNewSopForm}>ADD SOP</button>}
  </div>
@@ -20525,16 +20554,17 @@ onClick={async ()=>{
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'16px' }}>
  {[
- ['Total SOPs', sopStats.total, '#1a1a2e'],
- ['Active', sopStats.active, '#2d8a4e'],
- ['Draft', sopStats.draft, '#f5a623'],
- ['Archived', sopStats.archived, '#777'],
- ['Need Acknowledgement', sopStats.ackRequired, '#ca1b1b'],
- ].map(([label,value,color]) => (
- <div key={label} style={{ background:'white', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${color}22` }}>
+ { label:'Total SOPs', value:sopStats.total, color:'#1a1a2e', status:'all', ackOnly:false },
+ { label:'Active', value:sopStats.active, color:'#2d8a4e', status:'active', ackOnly:false },
+ { label:'Draft', value:sopStats.draft, color:'#f5a623', status:'draft', ackOnly:false },
+ { label:'Archived', value:sopStats.archived, color:'#777', status:'archived', ackOnly:false },
+ { label:'Need Acknowledgement', value:sopStats.ackRequired, color:'#ca1b1b', status:'all', ackOnly:true },
+ ].map(({label,value,color,status,ackOnly}) => (
+ <button type="button" key={label} onClick={()=>openSopLibraryFilter(status, ackOnly)} style={{ textAlign:'left', background:'white', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`1px solid ${color}33`, cursor:'pointer', fontFamily:'inherit' }}>
  <p style={{ color:'#888', fontSize:'10px', margin:'0 0 6px', textTransform:'uppercase', letterSpacing:'0.5px' }}>{label}</p>
- <p style={{ color, fontSize:'24px', fontWeight:'900', margin:0 }}>{value}</p>
- </div>
+ <p style={{ color, fontSize:'24px', fontWeight:'900', margin:'0 0 4px' }}>{value}</p>
+ <p style={{ color:'#999', fontSize:'10px', margin:0 }}>Click to view</p>
+ </button>
  ))}
  </div>
 
@@ -20559,7 +20589,7 @@ onClick={async ()=>{
  const count = (sops || []).filter(s => s.department === dept).length
  const activeCount = (sops || []).filter(s => s.department === dept && s.status === 'active').length
  return (
- <div key={dept} style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:'#fffdf8' }}>
+ <button type="button" key={dept} onClick={()=>openSopDepartment(dept)} style={{ textAlign:'left', border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:'#fffdf8', cursor:'pointer', fontFamily:'inherit' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}>
  <p style={{ fontWeight:'bold', color:'#333', margin:0, fontSize:'13px' }}>{dept}</p>
  <span style={{ fontWeight:'bold', color:count?'#2d8a4e':'#ca1b1b', fontSize:'12px' }}>{activeCount}/{count} active</span>
@@ -20567,7 +20597,8 @@ onClick={async ()=>{
  <div style={{ height:'6px', background:'#eee', borderRadius:'20px', marginTop:'8px', overflow:'hidden' }}>
  <div style={{ height:'100%', width:`${count? Math.min(100, (activeCount / count) * 100):0}%`, background:activeCount?'#2d8a4e':'#ca1b1b' }} />
  </div>
- </div>
+ <p style={{ color:'#999', fontSize:'10px', margin:'7px 0 0' }}>Click to open {dept} SOPs</p>
+ </button>
  )
  })}
  </div>
@@ -20582,20 +20613,36 @@ onClick={async ()=>{
  )}
 
  {sopView==='library' && (
- <div>
+ <div id="sop-library-list">
  <div style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)' }}>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'10px' }}>
+ {[
+ { label:'All SOPs', status:'all', ackOnly:false, count:sopStats.total },
+ { label:'Active', status:'active', ackOnly:false, count:sopStats.active },
+ { label:'Draft', status:'draft', ackOnly:false, count:sopStats.draft },
+ { label:'Archived', status:'archived', ackOnly:false, count:sopStats.archived },
+ { label:'Need Acknowledgement', status:'all', ackOnly:true, count:sopStats.ackRequired },
+ ].map(btn => {
+ const active = sopStatusFilter === btn.status && sopAckRequiredOnly === btn.ackOnly && sopDepartmentFilter === 'all'
+ return (
+ <button type="button" key={btn.label} onClick={()=>openSopLibraryFilter(btn.status, btn.ackOnly)} style={{...btnBase, width:'auto', marginTop:0, padding:'8px 12px', background:active?'#ca1b1b':'#f2f2f2', color:active?'white':'#333', boxShadow:active?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>
+ {btn.label} ({btn.count})
+ </button>
+ )
+ })}
+ </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr', gap:'10px' }}>
  <input value={sopSearch} onChange={e=>setSopSearch(e.target.value)} placeholder="Search SOP code, title, department, purpose, or procedure..." style={inputStyle} />
  <select value={sopDepartmentFilter} onChange={e=>setSopDepartmentFilter(e.target.value)} style={inputStyle}>
  <option value="all">All Departments</option>
  {SOP_DEPARTMENTS.map(dept => <option key={dept} value={dept}>{dept}</option>)}
  </select>
- <select value={sopStatusFilter} onChange={e=>setSopStatusFilter(e.target.value)} style={inputStyle}>
+ <select value={sopStatusFilter} onChange={e=>{ setSopStatusFilter(e.target.value); setSopAckRequiredOnly(false) }} style={inputStyle}>
  <option value="all">All Status</option>
  {SOP_STATUSES.map(status => <option key={status} value={status}>{status.toUpperCase()}</option>)}
  </select>
  </div>
- <p style={{ color:'#888', fontSize:'12px', margin:'0' }}>Showing {filteredSops.length} SOP{filteredSops.length!==1?'s':''}. Owner/Manager can create, edit, activate, and archive.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0' }}>Showing {filteredSops.length} SOP{filteredSops.length!==1?'s':''}{sopDepartmentFilter !== 'all'? ` in ${sopDepartmentFilter}`:''}{sopStatusFilter !== 'all'? ` marked ${sopStatusFilter.toUpperCase()}`:''}{sopAckRequiredOnly? ' requiring acknowledgement':''}. Owner/Manager can create, edit, activate, and archive.</p>
  </div>
 
  {showSopForm && (
