@@ -4617,9 +4617,13 @@ function buildDeliveryInvoicePrintCSS() {
    return `<w:tr><w:trPr><w:trHeight w:val="${height}" w:hRule="exact"/><w:cantSplit/></w:trPr>${cells.join('')}</w:tr>`
  }
 
- function buildInvoiceDocxTopSpacer() {
+ function buildInvoiceDocxTopSpacer(startNewPage = false) {
    // Keeps the invoice title away from Word/printer top clipping while page margin stays 0.
-   return '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="150" w:lineRule="exact"/></w:pPr></w:p>'
+   // For Print All, use pageBreakBefore on this spacer instead of placing a page-break paragraph
+   // after each invoice. A trailing page-break paragraph can be forced onto its own sheet,
+   // which creates the blank pages seen between invoices in Word print preview.
+   const pageBreak = startNewPage ? '<w:pageBreakBefore/>' : ''
+   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="150" w:lineRule="exact"/></w:pPr></w:p>`
  }
 
  function buildDeliveryInvoiceDocxTable(invoice) {
@@ -4693,9 +4697,8 @@ function buildDeliveryInvoicePrintCSS() {
    const invoiceList = Array.isArray(invoices) ? invoices : []
    const bodyParts = []
    invoiceList.forEach((invoice, idx) => {
-     bodyParts.push(buildInvoiceDocxTopSpacer())
+     bodyParts.push(buildInvoiceDocxTopSpacer(idx > 0))
      bodyParts.push(buildDeliveryInvoiceDocxTable(invoice))
-     if (idx < invoiceList.length - 1) bodyParts.push('<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:br w:type="page"/></w:r></w:p>')
    })
 
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
