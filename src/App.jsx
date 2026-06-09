@@ -1038,6 +1038,7 @@ export default function App() {
  const [showPaymentFormMap, setShowPaymentFormMap] = useState({})
  const [paymentNotes, setPaymentNotes] = useState({})
  const [settlementRows, setSettlementRows] = useState({})
+ const [settlementCrates, setSettlementCrates] = useState({})
  const [settlementSaving, setSettlementSaving] = useState({})
  // Driver Return Form
  const [showDriverReturnForm, setShowDriverReturnForm] = useState(null)
@@ -2163,8 +2164,8 @@ export default function App() {
  const signed = getCrateMovementSignedQty(m)
  const qty = safeNum(m.quantity, 0)
  const type = String(m.movement_type || '').toLowerCase()
- if (type === 'dispatch' || type === 'released') map[key].dispatched += qty
- else if (type === 'collection' || type === 'returned' || type === 'return') map[key].collected += qty
+ if (type === 'dispatch' || type === 'released' || type === 'settlement_dispatch') map[key].dispatched += qty
+ else if (type === 'collection' || type === 'returned' || type === 'return' || type === 'settlement_collection') map[key].collected += qty
  else map[key].adjustments += signed
  map[key].balance += signed
  if (!map[key].last_movement || new Date(m.created_at || m.movement_date || 0) > new Date(map[key].last_movement.created_at || map[key].last_movement.movement_date || 0)) {
@@ -2185,8 +2186,8 @@ export default function App() {
  function getCrateDashboardData() {
  const rows = getCrateBalanceRows()
  const allRows = getCrateBalanceRows(true)
- const totalReleased = (crateMovements || []).filter(m => ['dispatch','released'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
- const totalCollected = (crateMovements || []).filter(m => ['collection','returned','return'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
+ const totalReleased = (crateMovements || []).filter(m => ['dispatch','released','settlement_dispatch'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
+ const totalCollected = (crateMovements || []).filter(m => ['collection','returned','return','settlement_collection'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
  const totalWithResellers = allRows.reduce((s,r)=>s+Math.max(0, safeNum(r.balance,0)),0)
  const resellersWithBalance = allRows.filter(r => safeNum(r.balance,0) > 0).length
  return { rows, allRows, totalReleased, totalCollected, totalWithResellers, resellersWithBalance }
@@ -5848,7 +5849,37 @@ function buildDeliveryInvoicePrintCSS() {
  return {...r, returned_quantity:Math.min(safeNum(r.actual_quantity,0), safeNum(returned[key],0))}
  })
  } catch(e) { console.warn('openInvoiceSettlement existing returns:', e) }
+ let crateDefaults = {
+ delivered:safeNum(inv.crates_used ?? inv.crates ?? inv.crate_count ?? inv.total_crates, 0) || '',
+ returned:'',
+ dispatcher:'',
+ driver:'',
+ notes:''
+ }
+ try {
+ const { data:invoiceCrates, error:crateErr } = await supabase
+ .from('crate_movements')
+ .select('*')
+ .eq('invoice_id', inv.id)
+ .eq('is_deleted', false)
+ if (!crateErr && Array.isArray(invoiceCrates) && invoiceCrates.length) {
+ const releasedRows = invoiceCrates.filter(m => getCrateMovementSignedQty(m) > 0)
+ const collectedRows = invoiceCrates.filter(m => getCrateMovementSignedQty(m) < 0)
+ const delivered = releasedRows.reduce((sum,m)=>sum + safeNum(m.quantity,0),0)
+ const returned = collectedRows.reduce((sum,m)=>sum + safeNum(m.quantity,0),0)
+ const latestReleased = releasedRows[0] || {}
+ const latestCollected = collectedRows[0] || {}
+ crateDefaults = {
+ delivered:delivered || '',
+ returned:returned || '',
+ dispatcher:latestReleased.dispatcher_name || '',
+ driver:latestCollected.driver_name || '',
+ notes:[latestReleased.notes, latestCollected.notes].filter(Boolean).join(' | ').slice(0, 180)
+ }
+ }
+ } catch(e) { console.warn('openInvoiceSettlement existing crates:', e) }
  setSettlementRows(p=>({...p,[inv.id]:rows}))
+ setSettlementCrates(p=>({...p,[inv.id]:crateDefaults}))
  setPaymentAmount(p=>({...p,[inv.id]:p[inv.id] || ''}))
  setPaymentMethod(p=>({...p,[inv.id]:p[inv.id] || 'Cash'}))
  setPaymentNotes(p=>({...p,[inv.id]:p[inv.id] || ''}))
@@ -5866,6 +5897,94 @@ function buildDeliveryInvoicePrintCSS() {
  rows[idx] = row
  return {...prev, [invoiceId]:rows}
  })
+ }
+
+ function updateSettlementCrates(invoiceId, field, value) {
+ setSettlementCrates(prev => {
+ const current = prev[invoiceId] || { delivered:'', returned:'', dispatcher:'', driver:'', notes:'' }
+ return {...prev, [invoiceId]:{...current, [field]:value }}
+ })
+ }
+
+ function getSettlementCrateSummary(inv) {
+ const data = settlementCrates[inv.id] || {}
+ const delivered = Math.max(0, safeNum(data.delivered, 0))
+ const returned = Math.max(0, safeNum(data.returned, 0))
+ const variance = moneyRound(delivered - returned)
+ const existingNet = (crateMovements || [])
+ .filter(m => String(m.invoice_id || '') === String(inv.id) && m.is_deleted !== true)
+ .reduce((sum,m)=>sum + getCrateMovementSignedQty(m),0)
+ const resellerRow = getCrateBalanceRows(true).find(r => String(r.reseller_id) === String(inv.reseller_id || ''))
+ const currentBalance = safeNum(resellerRow?.balance, 0)
+ const projectedBalance = moneyRound(currentBalance - existingNet + variance)
+ return {
+ delivered,
+ returned,
+ variance,
+ existingNet,
+ currentBalance,
+ projectedBalance,
+ hasEntry:delivered > 0 || returned > 0,
+ status:variance > 0 ? `${variance} unreturned` : variance < 0 ? `${Math.abs(variance)} extra returned` : 'Clear'
+ }
+ }
+
+ async function syncInvoiceSettlementCrates(inv) {
+ const data = settlementCrates[inv.id] || {}
+ const summary = getSettlementCrateSummary(inv)
+ if (!summary.hasEntry) return { ok:true, saved:false }
+ if (!inv.reseller_id && !inv.reseller_name) return { ok:false, saved:false, error:'Invoice has no reseller link.' }
+ const reseller = getResellerRecordById(inv.reseller_id) || { id:inv.reseller_id || null, name:inv.reseller_name || 'Customer' }
+ const deliveryDate = String(inv.delivery_date || inv.invoice_date || today).slice(0,10)
+ const staffName = adminEmployee?.full_name || adminRole || 'Admin'
+ const baseNotes = String(data.notes || '').trim()
+ const replaceNote = `Replaced by one-click settlement on ${today}`
+
+ const { error:oldErr } = await supabase
+ .from('crate_movements')
+ .update({ is_deleted:true, notes:replaceNote })
+ .eq('invoice_id', inv.id)
+ .in('movement_type', ['dispatch','collection','released','returned','return','settlement_dispatch','settlement_collection'])
+ .eq('is_deleted', false)
+ if (oldErr) throw oldErr
+
+ const payloads = []
+ if (summary.delivered > 0) payloads.push({
+ movement_date:deliveryDate,
+ related_delivery_date:deliveryDate,
+ reseller_id:reseller.id || null,
+ reseller_name:reseller.name || inv.reseller_name || '',
+ invoice_id:inv.id,
+ invoice_number:inv.invoice_number || '',
+ movement_type:'settlement_dispatch',
+ direction:'out',
+ quantity:summary.delivered,
+ dispatcher_name:String(data.dispatcher || '').trim(),
+ driver_name:'',
+ recorded_by:staffName,
+ notes:[`One-click settlement: crates delivered/released for ${inv.invoice_number || 'invoice'}.`, baseNotes].filter(Boolean).join(' '),
+ is_deleted:false
+ })
+ if (summary.returned > 0) payloads.push({
+ movement_date:today,
+ related_delivery_date:deliveryDate,
+ reseller_id:reseller.id || null,
+ reseller_name:reseller.name || inv.reseller_name || '',
+ invoice_id:inv.id,
+ invoice_number:inv.invoice_number || '',
+ movement_type:'settlement_collection',
+ direction:'in',
+ quantity:summary.returned,
+ dispatcher_name:'',
+ driver_name:String(data.driver || '').trim(),
+ recorded_by:staffName,
+ notes:[`One-click settlement: crates returned/collected for ${inv.invoice_number || 'invoice'}.`, baseNotes].filter(Boolean).join(' '),
+ is_deleted:false
+ })
+ if (!payloads.length) return { ok:true, saved:false }
+ const { error:insertErr } = await supabase.from('crate_movements').insert(payloads)
+ if (insertErr) throw insertErr
+ return { ok:true, saved:true, summary }
  }
 
  function getSettlementSummary(inv, rowsArg = null) {
@@ -5904,9 +6023,11 @@ function buildDeliveryInvoicePrintCSS() {
  })
  if (!rows.length) { showToast(' No invoice items found for settlement.', 'red'); return }
  const summary = getSettlementSummary(inv, rows)
+ const crateSummary = getSettlementCrateSummary(inv)
  if (summary.cashReceived - summary.dueBeforeCash > 0.01) { showToast(` Cash received exceeds final balance of ${php(summary.dueBeforeCash)}.`, 'red'); return }
  setSettlementSaving(p=>({...p,[inv.id]:true}))
  let paymentId = null
+ let crateSyncResult = { ok:true, saved:false }
  try {
  const { data:oldReturns } = await supabase.from('reseller_returns').select('id').eq('invoice_id', inv.id)
  const oldIds = (oldReturns || []).map(r => r.id).filter(Boolean)
@@ -5936,13 +6057,26 @@ function buildDeliveryInvoicePrintCSS() {
  ;({ error:invoiceErr } = await supabase.from('delivery_invoices').update(fallback).eq('id', inv.id))
  }
  if (invoiceErr) throw invoiceErr
- await logAudit('INVOICE SETTLED', adminRole, inv.reseller_name, `${inv.invoice_number} actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final ${php(summary.finalTotal)}, cash ${php(summary.cashReceived)}, balance ${php(summary.finalBalance)}, status ${summary.newStatus}`)
- showToast(summary.newStatus === 'paid' ? ` Settlement saved. ${inv.reseller_name} is fully paid.` : ` Settlement saved. Remaining balance: ${php(summary.finalBalance)}`)
+ if (crateSummary.hasEntry) {
+ try {
+ crateSyncResult = await syncInvoiceSettlementCrates(inv)
+ } catch(crateErr) {
+ console.warn('syncInvoiceSettlementCrates:', crateErr)
+ crateSyncResult = { ok:false, saved:false, error:crateErr?.message || String(crateErr) }
+ }
+ }
+ const crateAuditText = crateSummary.hasEntry ? `, crates delivered ${crateSummary.delivered}, crates returned ${crateSummary.returned}, crate variance ${crateSummary.variance}` : ''
+ await logAudit('INVOICE SETTLED', adminRole, inv.reseller_name, `${inv.invoice_number} actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final ${php(summary.finalTotal)}, cash ${php(summary.cashReceived)}, balance ${php(summary.finalBalance)}, status ${summary.newStatus}${crateAuditText}${crateSyncResult.ok === false ? ', CRATES NOT SYNCED' : ''}`)
+ const settlementMessage = summary.newStatus === 'paid' ? ` Settlement saved. ${inv.reseller_name} is fully paid.` : ` Settlement saved. Remaining balance: ${php(summary.finalBalance)}`
+ const crateMessage = crateSyncResult.saved ? ` Crates inventory updated: delivered ${crateSummary.delivered}, returned ${crateSummary.returned}, variance ${crateSummary.variance}.` : crateSyncResult.ok === false ? ' Payment saved, but crates inventory was not updated. Please check crate_movements SQL setup.' : ''
+ showToast(settlementMessage + crateMessage, crateSyncResult.ok === false ? 'orange' : 'green')
  setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
  setPaymentAmount(p=>({...p,[inv.id]:''}))
  setPaymentMethod(p=>({...p,[inv.id]:'Cash'}))
  setPaymentNotes(p=>({...p,[inv.id]:''}))
  setSettlementRows(p=>({...p,[inv.id]:[]}))
+ setSettlementCrates(p=>({...p,[inv.id]:{ delivered:'', returned:'', dispatcher:'', driver:'', notes:'' }}))
+ if (crateSyncResult.saved) loadCrateMovements()
  if (summary.newStatus === 'paid') setInvoiceFilter('paid')
  else if (summary.newStatus === 'partial') setInvoiceFilter('partial')
  await loadDeliveryInvoices()
@@ -19508,6 +19642,8 @@ onClick={async ()=>{
  {showPaymentFormMap[inv.id] && (()=>{
  const rows = settlementRows[inv.id] || buildInvoiceSettlementRows(inv)
  const summary = getSettlementSummary(inv, rows)
+ const crateEntry = settlementCrates[inv.id] || { delivered:'', returned:'', dispatcher:'', driver:'', notes:'' }
+ const crateSummary = getSettlementCrateSummary(inv)
  const cashTooHigh = summary.cashReceived - summary.dueBeforeCash > 0.01
  return (
  <div style={{ background:'#fffdf0', border:'2px solid #FDD412', borderRadius:'12px', padding:'16px', marginTop:'12px' }}>
@@ -19544,6 +19680,40 @@ onClick={async ()=>{
  </tbody>
  </table>
  </div>
+ <div style={{ background:'#f8fbff', border:'2px solid #4a90d933', borderRadius:'12px', padding:'12px', marginBottom:'12px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+ <div>
+ <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'13px', margin:'0 0 3px' }}>Crates Settlement</p>
+ <p style={{ color:'#666', fontSize:'11px', margin:0 }}>Record crates delivered/released and crates returned/collected here. This updates Inventory → Crates Inventory automatically.</p>
+ </div>
+ <span style={{ background:crateSummary.variance>0?'#fff5f5':crateSummary.variance<0?'#e8f0fe':'#f0fff4', color:crateSummary.variance>0?'#ca1b1b':crateSummary.variance<0?'#4a90d9':'#2d8a4e', border:`1px solid ${crateSummary.variance>0?'#ca1b1b33':crateSummary.variance<0?'#4a90d933':'#2d8a4e33'}`, borderRadius:'20px', padding:'4px 10px', fontSize:'11px', fontWeight:'bold' }}>{crateSummary.status}</span>
+ </div>
+ <div style={{ overflowX:'auto', background:'white', borderRadius:'10px', border:'1px solid #e8eef8', marginBottom:'10px' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'620px', fontSize:'11px' }}>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}>
+ <th style={{ padding:'8px', textAlign:'left' }}>Crate Item</th>
+ <th style={{ padding:'8px', textAlign:'right' }}>Delivered / Released</th>
+ <th style={{ padding:'8px', textAlign:'right' }}>Returned / Collected</th>
+ <th style={{ padding:'8px', textAlign:'right' }}>Variance</th>
+ <th style={{ padding:'8px', textAlign:'right' }}>Projected Balance</th>
+ </tr></thead>
+ <tbody>
+ <tr>
+ <td style={{ padding:'8px', fontWeight:'bold', color:'#333' }}>Plastic Crates</td>
+ <td style={{ padding:'8px', textAlign:'right' }}><input type="number" min="0" step="1" value={crateEntry.delivered} onChange={e=>updateSettlementCrates(inv.id, 'delivered', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #4a90d966' }} placeholder="0" /></td>
+ <td style={{ padding:'8px', textAlign:'right' }}><input type="number" min="0" step="1" value={crateEntry.returned} onChange={e=>updateSettlementCrates(inv.id, 'returned', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #2d8a4e66' }} placeholder="0" /></td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:crateSummary.variance>0?'#ca1b1b':crateSummary.variance<0?'#4a90d9':'#2d8a4e' }}>{crateSummary.variance}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:crateSummary.projectedBalance>0?'#ca1b1b':'#2d8a4e' }}>{Math.max(0, crateSummary.projectedBalance)}</td>
+ </tr>
+ </tbody>
+ </table>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1.5fr', gap:'8px' }}>
+ <div><label style={lblS}>Dispatcher / Released By:</label><input value={crateEntry.dispatcher || ''} onChange={e=>updateSettlementCrates(inv.id, 'dispatcher', e.target.value)} placeholder="Name or initials" style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Driver / Collected By:</label><input value={crateEntry.driver || ''} onChange={e=>updateSettlementCrates(inv.id, 'driver', e.target.value)} placeholder="Name or initials" style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Crate Notes:</label><input value={crateEntry.notes || ''} onChange={e=>updateSettlementCrates(inv.id, 'notes', e.target.value)} placeholder="e.g. 2 crates left at reseller, 1 old crate returned" style={{...inputStyle, marginBottom:0 }} /></div>
+ </div>
+ </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5, 1fr)', gap:'8px', marginBottom:'12px' }}>
  <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Actual Delivered</p><p style={{ color:'#1a1a2e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.adjustedGross)}</p></div>
  <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Returns / Unsold</p><p style={{ color:'#ca1b1b', fontWeight:'900', margin:'3px 0 0' }}>- {php(summary.returnsCredit)}</p></div>
@@ -19557,7 +19727,7 @@ onClick={async ()=>{
  <div><label style={lblS}>Notes / Reference #:</label><input value={paymentNotes[inv.id]||''} onChange={e=>setPaymentNotes(p=>({...p,[inv.id]:e.target.value}))} placeholder="GCash ref, slip #, return note, etc." style={{...inputStyle, marginBottom:0 }} /></div>
  </div>
  {cashTooHigh && <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'10px 0 0' }}>Cash received is higher than the final balance. Please check amount before saving.</p>}
- <button disabled={!!settlementSaving[inv.id] || cashTooHigh} style={{...btnGreen, fontSize:'14px', fontWeight:'bold', opacity:settlementSaving[inv.id] || cashTooHigh?0.55:1 }} onClick={()=>saveInvoiceSettlement(inv)}>{settlementSaving[inv.id]?' SAVING SETTLEMENT...':' SAVE PAYMENT / RETURNS / ACTUAL DELIVERY'}</button>
+ <button disabled={!!settlementSaving[inv.id] || cashTooHigh} style={{...btnGreen, fontSize:'14px', fontWeight:'bold', opacity:settlementSaving[inv.id] || cashTooHigh?0.55:1 }} onClick={()=>saveInvoiceSettlement(inv)}>{settlementSaving[inv.id]?' SAVING SETTLEMENT...':' SAVE PAYMENT / RETURNS / ACTUAL DELIVERY / CRATES'}</button>
  </div>
  )
  })()}
