@@ -4351,9 +4351,8 @@ function buildDeliveryInvoicePrintCSS() {
     '.address-fill, .prepared-fill { background: #b6d7a8 !important; }',
 
     '.blank-row td { height: 0.13in !important; }',
-    '.note-row td { height: 0.36in !important; font-size: 10px !important; line-height: 1.05 !important; white-space: normal !important; }',
-    '.note-label { text-align: center !important; font-weight: 700 !important; font-style: italic !important; background: #fff2cc !important; }',
-    '.note-value { text-align: left !important; font-weight: 600 !important; background: #fff2cc !important; }',
+    '.note-row td { height: 0.36in !important; font-size: 13px !important; line-height: 1.05 !important; white-space: normal !important; }',
+    '.note-cell { text-align: left !important; font-weight: 800 !important; background: #fff2cc !important; padding-left: 6px !important; }',
 
     '.header-row th {',
     '  height: 0.23in !important;',
@@ -4558,8 +4557,7 @@ function buildDeliveryInvoicePrintCSS() {
           </tr>
 
           <tr class="note-row">
-            <td class="note-label" colspan="2">Production / Dispatch Note:</td>
-            <td class="note-value" colspan="3">${escapeHtml(productionDispatchNote)}</td>
+            <td class="note-cell" colspan="5">NOTES:${productionDispatchNote ? ' ' + escapeHtml(productionDispatchNote) : ''}</td>
           </tr>
 
           <tr class="header-row">
@@ -4813,9 +4811,8 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell('', { width:widths[4], align:'center', size:15 })
    ], 350))
    rows.push(wordRow([
-     wordCell('Production / Dispatch Note:', { width:widths[0] + widths[1], span:2, align:'center', bold:true, italic:true, size:10, line:135, shade:'FFF2CC' }),
-     wordCell(data.productionDispatchNote || '', { width:widths[2] + widths[3] + widths[4], span:3, align:'left', bold:false, size:10, line:135, shade:'FFF2CC' })
-   ], 310))
+     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:14, line:175, shade:'FFF2CC' })
+   ], 360))
    rows.push(wordRow([
      wordCell('Product', { width:widths[0], align:'center', bold:true, size:16 }),
      wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:16 }),
@@ -4831,7 +4828,7 @@ function buildDeliveryInvoicePrintCSS() {
        wordCell(row.price, { width:widths[2], align:'right', size:14 }),
        wordCell(row.amount, { width:widths[3], align:'right', size:14 }),
        wordCell(row.unsold, { width:widths[4], align:'center', size:15 })
-     ], 270))
+     ], 267))
    })
 
    rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
