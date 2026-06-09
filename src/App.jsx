@@ -694,6 +694,7 @@ export default function App() {
  const [newHolidayName, setNewHolidayName] = useState('')
  const [newHolidayType, setNewHolidayType] = useState('regular')
  const [timeAdjRequests, setTimeAdjRequests] = useState([])
+ const [timeAdjView, setTimeAdjView] = useState('active')
  const [adjAdminReason, setAdjAdminReason] = useState({})
  const [cashAdvanceRequests, setCashAdvanceRequests] = useState([])
  const [installmentCounts, setInstallmentCounts] = useState({})
@@ -12349,37 +12350,101 @@ This recovery button creates one approved expense record using GROSS payroll ear
  await supabase.from('holidays').delete().eq('id', id)
  setHolidays(prev=>prev.filter(h=>h.id!==id)); showToast(' Holiday deleted')
  }
- async function loadTimeAdjRequests() {
- const { data } = await supabase.from('time_adjustment_requests').select('*').eq('status', 'pending').order('created_at', { ascending:false })
+ async function loadTimeAdjRequests(view = timeAdjView) {
+ let query = supabase.from('time_adjustment_requests').select('*').order('created_at', { ascending:false })
+ if (view === 'pending') query = query.eq('status', 'pending')
+ else if (view === 'approved') query = query.eq('status', 'approved')
+ else if (view === 'history') query = query.in('status', ['approved','rejected','voided'])
+ else query = query.in('status', ['pending','approved'])
+ const { data, error } = await query.limit(view === 'history'? 100: 200)
+ if (error) { showToast('Failed to load OT/UT requests: '+error.message, 'red'); return }
  setTimeAdjRequests(data || [])
  }
+
+ async function checkTimeAdjPayrollStatus(req) {
+ const attendanceDate = String(req?.attendance_date || '').slice(0, 10)
+ if (!req?.employee_id || !attendanceDate) return { released:false, computed:false, records:[] }
+ const { data, error } = await supabase
+.from('payroll_records')
+.select('id,payroll_start,payroll_end,payroll_approved,approved_at')
+.eq('employee_id', req.employee_id)
+.lte('payroll_start', attendanceDate)
+.gte('payroll_end', attendanceDate)
+.limit(20)
+
+ if (error) return { released:false, computed:false, records:[], error:error.message }
+ const records = data || []
+ return {
+ released: records.some(r => r.payroll_approved === true ||!!r.approved_at),
+ computed: records.length > 0,
+ records
+ }
+ }
+
  async function approveTimeAdj(req) {
- const { error } = await supabase.from('time_adjustment_requests').update({ status:'approved', reviewed_by:'Admin', reviewed_at:new Date().toISOString(), admin_reason:adjAdminReason[req.id]||'' }).eq('id', req.id)
+ const reviewNote = adjAdminReason[req.id]||''
+ const { error } = await supabase.from('time_adjustment_requests').update({ status:'approved', reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reviewNote }).eq('id', req.id)
  if (error) { showToast('Failed: '+error.message,'red'); return }
  if (req.request_type==='overtime') {
  await supabase.from('attendance_logs').update({ overtime_minutes:req.minutes, overtime_approved:true, status:'Overtime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
  } else {
  await supabase.from('attendance_logs').update({ undertime_minutes:req.minutes, status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
  }
- await logAudit(`${req.request_type.toUpperCase()} APPROVED`,'Admin',req.employee_name,`${req.minutes} min on ${req.attendance_date}`)
+ await logAudit(`${req.request_type.toUpperCase()} APPROVED`,currentAdminLabel,req.employee_name,`${req.minutes} min on ${req.attendance_date}`)
  await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Approved`, `Your ${req.request_type} request of ${req.minutes} minutes on ${req.attendance_date} has been approved.`)
- setTimeAdjRequests(prev=>prev.filter(r=>r.id!==req.id))
+ setTimeAdjRequests(prev=>prev.map(r=>r.id===req.id? {...r, status:'approved', reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reviewNote}: r))
  showToast(' OT/UT Approved successfully!')
  }
  async function rejectTimeAdj(req) {
  const reason = adjAdminReason[req.id]
  if (!reason?.trim()) { showToast('Please enter a reason for rejection.','red'); return }
- const { error } = await supabase.from('time_adjustment_requests').update({ status:'rejected', reviewed_by:'Admin', reviewed_at:new Date().toISOString(), admin_reason:reason }).eq('id', req.id)
+ const { error } = await supabase.from('time_adjustment_requests').update({ status:'rejected', reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reason }).eq('id', req.id)
  if (error) { showToast('Failed: '+error.message,'red'); return }
  if (req.request_type==='overtime') {
  await supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
  } else {
  await supabase.from('attendance_logs').update({ undertime_minutes:0, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
  }
- await logAudit(`${req.request_type.toUpperCase()} REJECTED`,'Admin',req.employee_name,`Reason: ${reason}`)
+ await logAudit(`${req.request_type.toUpperCase()} REJECTED`,currentAdminLabel,req.employee_name,`Reason: ${reason}`)
  await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Rejected`, `Your ${req.request_type} request on ${req.attendance_date} was rejected. Reason: ${reason}`)
  setTimeAdjRequests(prev=>prev.filter(r=>r.id!==req.id))
  showToast(' OT/UT Rejected.','red')
+ }
+
+ async function voidTimeAdj(req) {
+ const reason = adjAdminReason[req.id]
+ if (!reason?.trim()) { showToast('Please enter the reason for voiding/undoing this OT/UT record.', 'red'); return }
+ const statusLabel = String(req.status || '').toUpperCase() || 'REQUEST'
+ const actionLabel = req.status === 'approved'? 'undo this approved': 'void/cancel this'
+ if (!window.confirm(`Confirm ${actionLabel} ${req.request_type}?\n\nEmployee: ${req.employee_name}\nDate: ${req.attendance_date}\nMinutes: ${req.minutes}\nCurrent Status: ${statusLabel}\n\nReason: ${reason}`)) return
+
+ const payrollCheck = await checkTimeAdjPayrollStatus(req)
+ if (payrollCheck.error) { showToast('Could not verify payroll status: '+payrollCheck.error, 'red'); return }
+ if (payrollCheck.released) {
+ await logAudit(`${req.request_type.toUpperCase()} VOID BLOCKED`, currentAdminLabel, req.employee_name, `Payroll already released for ${req.attendance_date}. Reason attempted: ${reason}`)
+ showToast('Blocked: this OT/UT is already inside a released payroll. Use Payroll Adjustment to correct it in the next payroll instead of deleting history.', 'red')
+ return
+ }
+
+ const voidReason = `VOIDED / UNDONE: ${reason}`
+ const { error } = await supabase.from('time_adjustment_requests').update({
+ status:'voided',
+ reviewed_by:currentAdminLabel,
+ reviewed_at:new Date().toISOString(),
+ admin_reason:voidReason
+ }).eq('id', req.id)
+ if (error) { showToast('Failed: '+error.message, 'red'); return }
+
+ if (req.request_type === 'overtime') {
+ await supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+ } else {
+ await supabase.from('attendance_logs').update({ undertime_minutes:0, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+ }
+
+ await logAudit(`${req.request_type.toUpperCase()} VOIDED / UNDONE`, currentAdminLabel, req.employee_name, `${req.minutes} min on ${req.attendance_date} | Reason: ${reason}`)
+ await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Voided`, `Your ${req.request_type} request of ${req.minutes} minutes on ${req.attendance_date} was voided/undone. Reason: ${reason}`)
+ setTimeAdjRequests(prev=>prev.filter(r=>r.id!==req.id))
+ showToast(payrollCheck.computed? ' OT/UT voided. Payroll was computed but not released; recompute payroll before release.': ' OT/UT voided successfully.')
  }
  async function saveEmployeeChanges() {
  setSaveEmployeeLoading(true)
@@ -15150,22 +15215,41 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {activeTab==='overtime' && (
  <div>
  <h2 style={h2s}>Overtime / Undertime Requests</h2>
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadTimeAdjRequests(); showToast(' OT/UT requests refreshed!') }}>REFRESH</button>
- {timeAdjRequests.length===0 && <p style={{ color:'#888' }}>No pending requests.</p>}
+ <div style={{ background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+ <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>OT/UT Control Center</strong>
+ <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>Use <strong>Void / Undo</strong> for wrong OT/UT before payroll release. If payroll was already released, the system blocks the undo and you should use Payroll Adjustment for the next payroll correction.</p>
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'15px' }}>
+ {[{key:'active',label:'Pending + Approved'},{key:'pending',label:'Pending Only'},{key:'approved',label:'Approved / Can Undo'},{key:'history',label:'History'}].map(v=>(
+ <button key={v.key} style={{...(timeAdjView===v.key?btnRed:btnGray), width:'auto', padding:'9px 13px', marginTop:0, fontSize:'12px' }} onClick={async()=>{ setTimeAdjView(v.key); await loadTimeAdjRequests(v.key) }}>{v.label}</button>
+ ))}
+ <button style={{...btnGreen, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'12px' }} onClick={async()=>{ await loadTimeAdjRequests(timeAdjView); showToast(' OT/UT requests refreshed!') }}>REFRESH</button>
+ </div>
+ {timeAdjRequests.length===0 && <p style={{ color:'#888' }}>No OT/UT records found in this view.</p>}
  {timeAdjRequests.map(req=>(
  <div key={req.id} style={{...cardS, border:`2px solid ${req.request_type==='overtime'?'#2d8a4e':'#f5a623'}`, background:req.request_type==='overtime'?'#f0fff0':'#fffbf0' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
+ <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', justifyContent:'flex-end' }}>
  <Badge label={req.request_type==='overtime'?'OVERTIME':'UNDERTIME'} color={req.request_type==='overtime'?'green':'orange'} />
+ <Badge label={String(req.status || 'pending').toUpperCase()} color={req.status==='approved'?'blue':req.status==='rejected'?'red':req.status==='voided'?'gray':'orange'} />
+ </div>
  </div>
  <p style={cps}>Date: {req.attendance_date} | Minutes: <strong>{req.minutes}</strong></p>
- <p style={cps}>Employee Reason: <em>"{req.employee_reason}"</em></p>
- <label style={lblS}>Admin Response / Reason (required for rejection):</label>
- <textarea placeholder="Enter your response..." value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
- <div style={{ display:'flex', gap:'8px', marginTop:'4px' }}>
- <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await approveTimeAdj(req); btn.disabled=false; btn.textContent=' APPROVE' }}> APPROVE</button>
- <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent=' REJECT' }}> REJECT</button>
+ <p style={cps}>Employee Reason: <em>"{req.employee_reason || 'No employee reason'}"</em></p>
+ {req.reviewed_at && <p style={cps}>Reviewed: {new Date(req.reviewed_at).toLocaleString()} {req.reviewed_by? `by ${req.reviewed_by}`: ''}</p>}
+ {req.admin_reason && req.status!=='pending' && <p style={cps}>Admin Note: <em>"{req.admin_reason}"</em></p>}
+ {(req.status==='pending' || req.status==='approved') && (
+ <>
+ <label style={lblS}>Admin Response / Reason {req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
+ <textarea placeholder={req.status==='approved'? 'Enter reason for undoing this approved OT/UT...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
+ <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
+ {req.status==='pending' && <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await approveTimeAdj(req); btn.disabled=false; btn.textContent=' APPROVE' }}> APPROVE</button>}
+ {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent=' REJECT' }}> REJECT</button>}
+ <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? ' UNDO APPROVED OT/UT':' VOID / CANCEL' }}>{req.status==='approved'? ' UNDO APPROVED OT/UT':' VOID / CANCEL'}</button>
  </div>
+ </>
+ )}
  </div>
  ))}
  </div>
