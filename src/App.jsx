@@ -4235,6 +4235,52 @@ This will remove the invoice and its line items.`
  
 
 
+
+function getInvoiceProductionDispatchNote(invoice) {
+  const clean = value => String(value || '').replace(/\s+/g, ' ').trim()
+  const directNote = [
+    invoice?.reseller_request,
+    invoice?.reseller_requests,
+    invoice?.reseller_note,
+    invoice?.reseller_notes,
+    invoice?.order_request,
+    invoice?.order_requests,
+    invoice?.order_note,
+    invoice?.order_notes,
+    invoice?.special_instruction,
+    invoice?.special_instructions,
+    invoice?.production_note,
+    invoice?.dispatch_note
+  ].map(clean).find(Boolean)
+
+  if (directNote) return directNote.slice(0, 140)
+
+  const rawNotes = clean(invoice?.notes)
+  if (!rawNotes) return ''
+
+  const noteSegments = rawNotes
+    .split(/\s*(?:\||\n|;)\s*/g)
+    .map(clean)
+    .filter(Boolean)
+
+  const labelledNotePattern = /^(reseller\s*(?:request|requests|note|notes|instruction|instructions)|order\s*(?:request|requests|note|notes|instruction|instructions)|production\s*(?:\/\s*)?dispatch\s*note|dispatch\s*note)\s*:\s*/i
+  const labelledNote = noteSegments.find(segment => labelledNotePattern.test(segment))
+  if (labelledNote) return clean(labelledNote.replace(labelledNotePattern, '')).slice(0, 140)
+
+  const internalNotePatterns = [
+    /^from order\b/i,
+    /^returns?\b/i,
+    /^driver returns?\b/i,
+    /^adjustment\b/i,
+    /^actual\b/i,
+    /^settlement\b/i,
+    /^recorded inside payment\b/i,
+    /^non-reseller invoice\b/i
+  ]
+  const manualNote = noteSegments.find(segment => !internalNotePatterns.some(pattern => pattern.test(segment)))
+  return manualNote ? manualNote.slice(0, 140) : ''
+}
+
 function buildDeliveryInvoicePrintCSS() {
   return [
     '<style>',
@@ -4305,6 +4351,9 @@ function buildDeliveryInvoicePrintCSS() {
     '.address-fill, .prepared-fill { background: #b6d7a8 !important; }',
 
     '.blank-row td { height: 0.13in !important; }',
+    '.note-row td { height: 0.36in !important; font-size: 10px !important; line-height: 1.05 !important; white-space: normal !important; }',
+    '.note-label { text-align: center !important; font-weight: 700 !important; font-style: italic !important; background: #fff2cc !important; }',
+    '.note-value { text-align: left !important; font-weight: 600 !important; background: #fff2cc !important; }',
 
     '.header-row th {',
     '  height: 0.23in !important;',
@@ -4313,7 +4362,7 @@ function buildDeliveryInvoicePrintCSS() {
     '  font-size: 13px !important;',
     '}',
 
-    '.product-row td { height: 0.205in !important; font-size: 13px !important; }',
+    '.product-row td { height: 0.190in !important; font-size: 12px !important; }',
     '.product-name { text-align: center !important; font-weight: 600 !important; }',
     '.number-cell { text-align: center !important; font-weight: 500 !important; }',
     '.money-cell { text-align: right !important; font-weight: 500 !important; }',
@@ -4410,6 +4459,7 @@ function buildDeliveryInvoicePrintCSS() {
 
     const containerLabel = cleanText(invoice.container_type || 'Crates');
     const preparedBy = '';
+    const productionDispatchNote = getInvoiceProductionDispatchNote(invoice);
 
     const rows = [
       { label:'Choco Balls', aliases:['Choco Balls'] },
@@ -4507,7 +4557,10 @@ function buildDeliveryInvoicePrintCSS() {
             <td></td>
           </tr>
 
-          <tr class="blank-row"><td></td><td></td><td></td><td></td><td></td></tr>
+          <tr class="note-row">
+            <td class="note-label" colspan="2">Production / Dispatch Note:</td>
+            <td class="note-value" colspan="3">${escapeHtml(productionDispatchNote)}</td>
+          </tr>
 
           <tr class="header-row">
             <th>Product</th>
@@ -4678,6 +4731,7 @@ function buildDeliveryInvoicePrintCSS() {
      customerAddress,
      containerLabel:cleanText(invoice?.container_type || 'Crates'),
      cratesUsed:invoice?.crates_used ? cleanText(invoice.crates_used) : '',
+     productionDispatchNote:getInvoiceProductionDispatchNote(invoice),
      total:peso(invoiceTotal),
      preparedBy:'',
      productRows
@@ -4758,7 +4812,10 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:15, shade:'B6D7A8' }),
      wordCell('', { width:widths[4], align:'center', size:15 })
    ], 350))
-   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
+   rows.push(wordRow([
+     wordCell('Production / Dispatch Note:', { width:widths[0] + widths[1], span:2, align:'center', bold:true, italic:true, size:10, line:135, shade:'FFF2CC' }),
+     wordCell(data.productionDispatchNote || '', { width:widths[2] + widths[3] + widths[4], span:3, align:'left', bold:false, size:10, line:135, shade:'FFF2CC' })
+   ], 310))
    rows.push(wordRow([
      wordCell('Product', { width:widths[0], align:'center', bold:true, size:16 }),
      wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:16 }),
@@ -4774,7 +4831,7 @@ function buildDeliveryInvoicePrintCSS() {
        wordCell(row.price, { width:widths[2], align:'right', size:14 }),
        wordCell(row.amount, { width:widths[3], align:'right', size:14 }),
        wordCell(row.unsold, { width:widths[4], align:'center', size:15 })
-     ], 284))
+     ], 270))
    })
 
    rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
@@ -6776,12 +6833,14 @@ function buildDeliveryInvoicePrintCSS() {
  const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
  const lineItems = validItems.map(i=>{ const rp=Math.round((i.retail_price||0)*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
  const subtotal = lineItems.reduce((s,i)=>s+i.total_price,0)
+ const resellerRequestNote = String(order?.notes || '').trim()
+ const invoiceOrderNotes = [`From order ${order.id.slice(0,8)}`, resellerRequestNote ? `Reseller note: ${resellerRequestNote}` : ''].filter(Boolean).join(' | ')
  const { data:inv, error } = await supabase.from('delivery_invoices').insert({
  invoice_number:invoiceNum, reseller_id:order.reseller_id, reseller_name:order.reseller_name,
  delivery_date:order.delivery_date, due_date:dueDate.toISOString().slice(0,10),
  subtotal, discount_pct:20, total_amount:subtotal, status:'unpaid',
  prepared_by:'Ronald Reyes / Jomar Cerezo', dispatched_by:'Ronald Reyes / Jomar Cerezo',
- notes:`From order ${order.id.slice(0,8)}`, created_by:adminRole
+ notes:invoiceOrderNotes, created_by:adminRole
  }).select().single()
  if (error) { showToast(' Failed: '+error.message,'red'); return }
  await supabase.from('delivery_invoice_items').insert(lineItems.map(i=>({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:i.retail_price||0, reseller_price:i.reseller_price, quantity:Number(i.quantity), total_price:i.total_price })))
