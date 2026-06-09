@@ -1257,7 +1257,7 @@ export default function App() {
  const [dailySalesOnlinePaymentsMonth, setDailySalesOnlinePaymentsMonth] = useState(today.slice(0,7))
  const [dailySalesOnlinePaymentsSearch, setDailySalesOnlinePaymentsSearch] = useState('')
  const [savingDailySalesOnlinePayment, setSavingDailySalesOnlinePayment] = useState(false)
- const [dailySalesOnlinePaymentForm, setDailySalesOnlinePaymentForm] = useState({ payment_date:today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'' })
+ const [dailySalesOnlinePaymentForm, setDailySalesOnlinePaymentForm] = useState({ payment_date:today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'', count_as_revenue:true })
  const [invoicesLoading, setInvoicesLoading] = useState(false)
  const [showCreateInvoice, setShowCreateInvoice] = useState(false)
  const [invoiceResellerId, setInvoiceResellerId] = useState('')
@@ -1292,6 +1292,14 @@ export default function App() {
  const ONLINE_PAYMENT_METHODS = ['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Check','Other Online Payment']
  const DAILY_SALES_ONLINE_PAYMENT_METHODS = ['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Debit/Credit Card','QR PH','Other Online Payment']
  const DAILY_SALES_ONLINE_CHANNELS = ['Walk-in','Messenger / Online Order','Facebook Order','Phone Order','Other Daily Sales']
+ const isDailySalesOnlinePaymentRevenue = row => row?.count_as_revenue !== false && String(row?.status || 'active').toLowerCase() !== 'void'
+ const getDailySalesOnlineBucket = row => {
+ const source = String(row?.sales_channel || '').toLowerCase()
+ if (source.includes('walk') || source.includes('counter')) return 'walkin'
+ return 'messenger'
+ }
+ const sumDailySalesOnlineRows = (rows = []) => (rows || []).filter(isDailySalesOnlinePaymentRevenue).reduce((sum, row) => sum + safeNum(row.amount, 0), 0)
+ const sumDailySalesOnlineByBucket = (rows = [], bucket = 'messenger') => (rows || []).filter(isDailySalesOnlinePaymentRevenue).filter(row => getDailySalesOnlineBucket(row) === bucket).reduce((sum, row) => sum + safeNum(row.amount, 0), 0)
  const [arFilter, setArFilter] = useState('all')
  const [dailySales, setDailySales] = useState([])
  const [dailySalesLoading, setDailySalesLoading] = useState(false)
@@ -4992,11 +5000,19 @@ export default function App() {
  const summary = (rows || []).reduce((acc, payment) => {
  const amt = safeNum(payment.amount, 0)
  const method = String(payment.payment_method || 'Online Payment')
+ const revenueCounted = isDailySalesOnlinePaymentRevenue(payment)
  acc.total += amt
  acc.count += 1
  acc.byMethod[method] = (acc.byMethod[method] || 0) + amt
+ if (revenueCounted) {
+ acc.revenueTotal += amt
+ const bucket = getDailySalesOnlineBucket(payment)
+ acc.byBucket[bucket] = (acc.byBucket[bucket] || 0) + amt
+ } else {
+ acc.trackingOnly += amt
+ }
  return acc
- }, { total:0, count:0, byMethod:{} })
+ }, { total:0, revenueTotal:0, trackingOnly:0, count:0, byMethod:{}, byBucket:{ walkin:0, messenger:0 } })
  summary.gcash = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('gcash')).reduce((sum, [,v])=>sum+v, 0)
  summary.bank = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('bank') || m.toLowerCase().includes('online')).reduce((sum, [,v])=>sum+v, 0)
  summary.maya = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('maya')).reduce((sum, [,v])=>sum+v, 0)
@@ -5025,14 +5041,18 @@ export default function App() {
  amount:amt,
  notes:String(form.notes || '').trim() || null,
  recorded_by:adminRole || adminEmployee?.full_name || 'admin',
+ count_as_revenue:form.count_as_revenue !== false,
  status:'active'
  })
  if (error) throw error
  await logAudit('DAILY SALES ONLINE PAYMENT RECORDED', adminRole, 'Daily Sales', `${form.payment_date} ${form.payment_method} ${php(amt)} Ref: ${form.reference_number || '-'}`)
  showToast(` Daily Sales ${form.payment_method} payment recorded: ${php(amt)}`)
- setDailySalesOnlinePaymentForm({ payment_date:form.payment_date || today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'' })
+ setDailySalesOnlinePaymentForm({ payment_date:form.payment_date || today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'', count_as_revenue:true })
  loadDailySalesOnlinePayments(String(form.payment_date || today).slice(0,7))
  loadDailySales()
+ loadCashReconciliations()
+ loadBankDeposits()
+ if (financialMonth === String(form.payment_date || today).slice(0,7)) loadFinancialData()
  refreshFoundationAfterDataChange('daily-sales-online-payment-saved')
  } catch(err) {
  console.warn('saveDailySalesOnlinePayment:', err)
@@ -8448,8 +8468,9 @@ function buildDeliveryInvoicePrintCSS() {
  try {
  const monthStart = financialMonth + '-01'
  const monthEnd = new Date(Number(financialMonth.split('-')[0]), Number(financialMonth.split('-')[1]), 0).toISOString().slice(0,10)
- const [salesRes, prodLogsRes, productionReportsRes, expensesRes, invoicesRes, returnsRes, payrollRes, employeesRes, recipeRes] = await Promise.all([
+ const [salesRes, dailySalesOnlineRes, prodLogsRes, productionReportsRes, expensesRes, invoicesRes, returnsRes, payrollRes, employeesRes, recipeRes] = await Promise.all([
  supabase.from('daily_sales').select('*, daily_sales_items(*)').gte('sale_date', monthStart).lte('sale_date', monthEnd),
+ supabase.from('daily_sales_online_payments').select('*').gte('payment_date', monthStart).lte('payment_date', monthEnd).neq('status','void'),
  supabase.from('production_logs').select('*').gte('production_date', monthStart).lte('production_date', monthEnd),
  supabase.from('production_reports').select('*, production_report_items(*)').gte('report_date', monthStart).lte('report_date', monthEnd),
  supabase.from('daily_expenses').select('*').gte('expense_date', monthStart).lte('expense_date', monthEnd),
@@ -8460,6 +8481,7 @@ function buildDeliveryInvoicePrintCSS() {
  supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
  ])
  if (salesRes.error) console.warn('daily_sales query failed:', salesRes.error)
+ if (dailySalesOnlineRes.error) console.warn('daily_sales_online_payments query failed:', dailySalesOnlineRes.error)
  if (prodLogsRes.error) console.warn('production_logs query failed:', prodLogsRes.error)
  if (productionReportsRes.error) console.warn('production_reports query failed:', productionReportsRes.error)
  if (expensesRes.error) console.warn('daily_expenses query failed:', expensesRes.error)
@@ -8469,6 +8491,10 @@ function buildDeliveryInvoicePrintCSS() {
  if (employeesRes.error) console.warn('employees query failed:', employeesRes.error)
  if (recipeRes.error) console.warn('recipe_vault query failed:', recipeRes.error)
  const sales = salesRes.data || []
+ const dailySalesOnlineRowsForMonth = dailySalesOnlineRes.data || []
+ const onlineRevenueForMonth = sumDailySalesOnlineRows(dailySalesOnlineRowsForMonth)
+ const onlineWalkinRevenueForMonth = sumDailySalesOnlineByBucket(dailySalesOnlineRowsForMonth, 'walkin')
+ const onlineMessengerRevenueForMonth = sumDailySalesOnlineByBucket(dailySalesOnlineRowsForMonth, 'messenger')
  const prodLogs = prodLogsRes.data || []
  const productionReportsForMonth = productionReportsRes.data || []
  const expenses = expensesRes.data || []
@@ -8496,10 +8522,13 @@ function buildDeliveryInvoicePrintCSS() {
  const directProductCOGS = directCOGSChoice.amount
  const productionLaborCOGS = payrollClassification.productionLaborCOGS
  const operatingPayrollExpense = payrollClassification.operatingPayrollExpense
- const totalRevenue = sales.reduce((s,d)=>s+Number(d.total_revenue||0),0)
- const walkinRevenue = sales.reduce((s,d)=>s+Number(d.total_walkin||0),0)
- const messengerRevenue = sales.reduce((s,d)=>s+Number(d.total_messenger||0),0)
+ const baseWalkinRevenue = sales.reduce((s,d)=>s+Number(d.total_walkin||0),0)
+ const baseMessengerRevenue = sales.reduce((s,d)=>s+Number(d.total_messenger||0),0)
+ const baseDailySalesRevenue = baseWalkinRevenue + baseMessengerRevenue
+ const walkinRevenue = baseWalkinRevenue + onlineWalkinRevenueForMonth
+ const messengerRevenue = baseMessengerRevenue + onlineMessengerRevenueForMonth
  const resellerRevenue = invoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
+ const totalRevenue = walkinRevenue + messengerRevenue + resellerRevenue
  const totalCOGS = directProductCOGS + productionLaborCOGS
  const nonPayrollExpenses = expenses.filter(e=>e.status!== 'rejected' && e.category !== 'Payroll Expense').reduce((s,e)=>s+safeNum(e.amount,0),0)
  const totalExpenses = nonPayrollExpenses + operatingPayrollExpense
@@ -8513,8 +8542,12 @@ function buildDeliveryInvoicePrintCSS() {
  const totalAR = allUnpaid.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
  const overdueAR = allUnpaid.filter(i=>i.due_date && i.due_date<today).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
  const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:cat==='Payroll Expense'? operatingPayrollExpense: expenses.filter(e=>e.status!== 'rejected' && e.category===cat).reduce((s,e)=>s+safeNum(e.amount,0),0) })).filter(c=>c.total>0)
- const salesByDay = sales.map(d=>({ date:d.sale_date, revenue:Number(d.total_revenue||0) })).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')))
- setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, directProductCOGS, soldProductCOGS, productionReportCOGS, productionLogCOGS, productionLaborCOGS, operatingPayrollExpense, nonPayrollExpenses, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length + productionReportsForMonth.length, cogsSource:directCOGSChoice.source, cogsMethod:directCOGSChoice.method, missingCostQty:soldProductCOGSInfo.missingCostQty + productionReportCOGSInfo.missingCostQty })
+ const salesByDayMap = {}
+ sales.forEach(d => { const date = String(d.sale_date || '').slice(0,10); if (date) salesByDayMap[date] = (salesByDayMap[date] || 0) + safeNum(d.total_walkin,0) + safeNum(d.total_messenger,0) })
+ dailySalesOnlineRowsForMonth.filter(isDailySalesOnlinePaymentRevenue).forEach(row => { const date = String(row.payment_date || '').slice(0,10); if (date) salesByDayMap[date] = (salesByDayMap[date] || 0) + safeNum(row.amount,0) })
+ invoices.forEach(inv => { const date = String(inv.delivery_date || '').slice(0,10); if (date) salesByDayMap[date] = (salesByDayMap[date] || 0) + safeNum(inv.total_amount,0) })
+ const salesByDay = Object.entries(salesByDayMap).map(([date,revenue])=>({ date, revenue })).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')))
+ setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, onlineDailySalesRevenue:onlineRevenueForMonth, onlineWalkinRevenue:onlineWalkinRevenueForMonth, onlineMessengerRevenue:onlineMessengerRevenueForMonth, baseDailySalesRevenue, totalCOGS, directProductCOGS, soldProductCOGS, productionReportCOGS, productionLogCOGS, productionLaborCOGS, operatingPayrollExpense, nonPayrollExpenses, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length + dailySalesOnlineRowsForMonth.filter(isDailySalesOnlinePaymentRevenue).length, productionDays:prodLogs.length + productionReportsForMonth.length, cogsSource:directCOGSChoice.source, cogsMethod:directCOGSChoice.method, missingCostQty:soldProductCOGSInfo.missingCostQty + productionReportCOGSInfo.missingCostQty })
  } catch(e) {
  console.warn('loadFinancialData:', e)
  setFinancialData({ totalRevenue:0, walkinRevenue:0, messengerRevenue:0, resellerRevenue:0, totalCOGS:0, totalExpenses:0, grossProfit:0, netProfit:0, grossMarginPct:0, netMarginPct:0, totalAR:0, overdueAR:0, expenseByCategory:[], salesByDay:[], salesDays:0, productionDays:0 })
@@ -11313,15 +11346,16 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const trendStart = trendMonths[0]?.start || start
  const todayDate = today
  const [
- employeesRes, attendanceRes, dailySalesRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes,
+ employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes,
  productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes,
  contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes,
  bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes,
- recipeVaultCostRes, trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes
+ recipeVaultCostRes, trendDailySalesRes, trendDailySalesOnlineRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes
  ] = await Promise.all([
  foundationSelect('employees', '*', q=>q.eq('is_active', true)),
  foundationSelect('attendance_logs', '*', q=>q.gte('attendance_date', start).lte('attendance_date', end)),
  foundationSelect('daily_sales', '*, daily_sales_items(*)', q=>q.gte('sale_date', start).lte('sale_date', end)),
+ foundationSelect('daily_sales_online_payments', '*', q=>q.gte('payment_date', start).lte('payment_date', end).neq('status','void')),
  foundationSelect('delivery_invoices', '*, delivery_invoice_items(*)', q=>q.gte('delivery_date', start).lte('delivery_date', end)),
  foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', start).lte('return_date', end)),
  foundationSelect('daily_expenses', '*', q=>q.gte('expense_date', start).lte('expense_date', end)),
@@ -11344,6 +11378,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  foundationSelect('resellers', '*'),
  foundationSelect('recipe_vault', 'id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at'),
  foundationSelect('daily_sales', '*, daily_sales_items(*)', q=>q.gte('sale_date', trendStart).lte('sale_date', end)),
+ foundationSelect('daily_sales_online_payments', '*', q=>q.gte('payment_date', trendStart).lte('payment_date', end).neq('status','void')),
  foundationSelect('delivery_invoices', '*, delivery_invoice_items(*)', q=>q.gte('delivery_date', trendStart).lte('delivery_date', end)),
  foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', trendStart).lte('return_date', end)),
  foundationSelect('payroll_records', '*', q=>q.gte('payroll_start', trendStart).lte('payroll_end', end)),
@@ -11353,7 +11388,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  ])
 
  let invoices = invoicesWithItemsRes.data || []
- const errors = [employeesRes, attendanceRes, dailySalesRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, recipeVaultCostRes, trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
+ const errors = [employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, recipeVaultCostRes, trendDailySalesRes, trendDailySalesOnlineRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
  if (invoicesWithItemsRes.error) {
  const fallbackInv = await foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', start).lte('delivery_date', end))
  invoices = fallbackInv.data || []
@@ -11363,6 +11398,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const activeEmployees = employeesRes.data || []
  const attendance = attendanceRes.data || []
  const dailySalesRows = dailySalesRes.data || []
+ const dailySalesOnlineRows = dailySalesOnlineRes.data || []
  const returnRows = returnsRes.data || []
  const expenses = expensesRes.data || []
  const payrollRecords = payrollRes.data || []
@@ -11384,6 +11420,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const resellersRows = resellersRes.data || []
  const recipeCostRowsForFoundation = recipeVaultCostRes.data || []
  const trendDailySalesRows = trendDailySalesRes.data || []
+ const trendDailySalesOnlineRows = trendDailySalesOnlineRes.data || []
  const trendInvoiceRows = trendInvoicesRes.data || []
  const trendReturnRows = trendReturnsRes.data || []
  const trendPayrollRows = trendPayrollRes.data || []
@@ -11391,9 +11428,12 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const trendProductionReportRows = trendProductionReportsRes.data || []
  const trendWastageRows = trendWastageRes.data || []
 
- const walkinMessengerSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_revenue?? r.total_amount,0),0)
- const walkinSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_walkin,0),0)
- const messengerSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_messenger,0),0)
+ const onlineDailySalesRevenue = sumDailySalesOnlineRows(dailySalesOnlineRows)
+ const onlineWalkinSales = sumDailySalesOnlineByBucket(dailySalesOnlineRows, 'walkin')
+ const onlineMessengerSales = sumDailySalesOnlineByBucket(dailySalesOnlineRows, 'messenger')
+ const walkinMessengerSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_walkin,0)+safeNum(r.total_messenger,0),0) + onlineDailySalesRevenue
+ const walkinSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_walkin,0),0) + onlineWalkinSales
+ const messengerSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_messenger,0),0) + onlineMessengerSales
 
  const invoiceReturnMap = {}
  const returnItemMap = {}
@@ -11972,7 +12012,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const depositCoveragePct = cashIn > 0? (bankDepositsTotal / cashIn) * 100: 0
  const cashCollectionEfficiencyPct = (walkinMessengerSales + resellerSales) > 0? (cashIn / (walkinMessengerSales + resellerSales)) * 100: 0
  const cashFlowTrend = trendMonths.map(m => {
- const mDaily = trendDailySalesRows.filter(r=>String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end).reduce((sum,r)=>sum+safeNum(r.total_revenue?? r.total_amount,0),0)
+ const mDaily = trendDailySalesRows.filter(r=>String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end).reduce((sum,r)=>sum+safeNum(r.total_walkin,0)+safeNum(r.total_messenger,0),0) + trendDailySalesOnlineRows.filter(r=>String(r.payment_date || '').slice(0,10) >= m.start && String(r.payment_date || '').slice(0,10) <= m.end).filter(isDailySalesOnlinePaymentRevenue).reduce((sum,r)=>sum+safeNum(r.amount,0),0)
  const mInvoices = trendInvoiceRows.filter(i=>String(i.delivery_date || '').slice(0,10) >= m.start && String(i.delivery_date || '').slice(0,10) <= m.end)
  const mCollected = mInvoices.reduce((sum,i)=>sum+safeNum(i.paid_amount,0),0)
  const mPayrollRows = trendPayrollRows.filter(p=>String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
@@ -12849,7 +12889,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  setFoundationData({
  loadedAt,
- start, end, errors, grossSales, salesReturns, netSales, totalSales, walkinMessengerSales, walkinSales, messengerSales, resellerSales,
+ start, end, errors, grossSales, salesReturns, netSales, totalSales, walkinMessengerSales, walkinSales, messengerSales, onlineDailySalesRevenue, onlineWalkinSales, onlineMessengerSales, resellerSales,
  collectedInvoices, totalReturnsAmount, totalReturnsQty, returnsRate, returnsQtyRate, totalDeliveredQty, returnsAnalysis, returnsActionPlan, returnRecords, returnResellerRows, returnProductRows, returnDailyRows, returnsTrend, highReturnInvoices, totalCOGS, grossProfit, operatingProfitBeforePayroll, netProfit,
  foodCostPct, foodCost, foodCostTrend, foodCostActionPlan, productionCostRows, productCOGSRows, directProductCOGS, soldProductCOGS, productionReportCOGS, productionLogCOGS, productionLaborCOGS, cogsSource:directCOGSChoice.source, cogsMethod:directCOGSChoice.method, cogsMissingCostQty:soldProductCOGSInfo.missingCostQty + productionReportCOGSInfo.missingCostQty, payrollClassification, salaryToSalesRatio, salaryRatio, salaryRatioPeriodRows, salaryRatioEmployeeRows, salaryRatioTrend, salaryRatioActionPlan, operatingExpenseRatio, totalExpenseRatio, grossMarginPct, netMarginPct, nonPayrollExpenses, totalOperatingExpenses, totalExpenses, payrollExpense,
  payrollExpensePosted, payrollExpenseSource, payrollGross, payrollNet, expenseByCategory, payrollAnalysis, cashIn, cashOut,
@@ -15241,7 +15281,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
  {!dashboardData && <p style={{ color:'#888' }}>Loading...</p>}
  {dashboardData && (
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'24px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'24px' }}>
  {[
  [' Total Employees', dashboardData.totalEmployees, 'blue', 'employees', null],
  [' Timed In', dashboardData.timedIn, 'green', 'attendance', loadTimedInEmployees],
@@ -16292,7 +16332,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {payrollSummary && (
  <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'22px' }}>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 12px' }}> Summary {payrollStart} to {payrollEnd}</h3>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'8px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
  {[['Employees',payrollSummary.totalEmployees],['Basic Pay',php(payrollSummary.totalBasicPay)],[' Birthday Pay',php(payrollSummary.totalBirthdayPay||0)],['Overtime',php(payrollSummary.totalOvertimePay)],['Night Diff',php(payrollSummary.totalNightDiff)],['Holiday Pay',php(payrollSummary.totalHolidayPay)],['Total Earnings',php(payrollSummary.totalEarnings)],['SSS',php(payrollSummary.totalSSS)],['Pag-IBIG',php(payrollSummary.totalPagibig)],['PhilHealth',php(payrollSummary.totalPhilhealth)],['Cash Advance',php(payrollSummary.totalCA)],['Total Deductions',php(payrollSummary.totalDeductions)],['TOTAL NET PAY',php(payrollSummary.totalNetPay)]].map(([l,v])=>(
  <div key={l} style={{ background:'white', borderRadius:'8px', padding:'10px', border:'1px solid #eee' }}>
  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 3px' }}>{l}</p>
@@ -19856,7 +19896,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', fontWeight:'bold', letterSpacing:'1px', margin:'0 0 8px' }}>TOTAL REVENUE {financialMonth}</p>
  <p style={{ fontSize:'36px', fontWeight:'bold', margin:'0 0 4px' }}>{php(financialData.totalRevenue)}</p>
  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'10px', marginTop:'12px' }}>
- {[[' Walk-in',financialData.walkinRevenue],[' Messenger',financialData.messengerRevenue],[' Resellers',financialData.resellerRevenue]].map(([l,v])=>(
+ {[[' Walk-in',financialData.walkinRevenue],[' Messenger / Online',financialData.messengerRevenue],[' Resellers',financialData.resellerRevenue]].map(([l,v])=>(
  <div key={l} style={{ background:'rgba(255,255,255,0.15)', borderRadius:'8px', padding:'8px', textAlign:'center' }}>
  <p style={{ fontSize:'10px', color:'rgba(255,255,255,0.7)', margin:'0 0 4px' }}>{l}</p>
  <p style={{ fontWeight:'bold', fontSize:'14px', margin:0 }}>{php(v||0)}</p>
@@ -21374,7 +21414,7 @@ onClick={async ()=>{
 
  <div style={{ background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
  <p style={{ color:'#8a6d00', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>Important recording rule</p>
- <p style={{ color:'#555', fontSize:'11px', margin:0 }}>Use this tab to trace daily sales paid through GCash, Maya, bank transfer, QR, or card. This separates online collections from cash-on-hand and prevents mixing daily sales with reseller receivables.</p>
+ <p style={{ color:'#555', fontSize:'11px', margin:0 }}>Use this tab to trace daily sales paid through GCash, Maya, bank transfer, QR, or card. Checked records are added to sales revenue and dashboards; unchecked records are tracking-only to avoid double-counting a sale already encoded in Daily Sales.</p>
  </div>
 
  <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
@@ -21387,12 +21427,17 @@ onClick={async ()=>{
  <div><label style={lblS}>Reference Number:</label><input value={dailySalesOnlinePaymentForm.reference_number} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,reference_number:e.target.value}))} placeholder="GCash / bank ref no." style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Customer / Source:</label><input value={dailySalesOnlinePaymentForm.customer_name} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,customer_name:e.target.value}))} placeholder="Customer name, FB order, walk-in QR" style={{...inputStyle, marginBottom:0 }} /></div>
  <div style={{ gridColumn:isMobile?'auto':'1 / span 3' }}><label style={lblS}>Notes:</label><input value={dailySalesOnlinePaymentForm.notes} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,notes:e.target.value}))} placeholder="Any remarks, order details, or verification note" style={{...inputStyle, marginBottom:0 }} /></div>
+ <label style={{ display:'flex', gap:'8px', alignItems:'center', gridColumn:isMobile?'auto':'1 / span 3', background:'#f8f7f5', border:'1px solid #eee', borderRadius:'10px', padding:'10px', fontSize:'12px', color:'#333', fontWeight:'700' }}>
+ <input type="checkbox" checked={dailySalesOnlinePaymentForm.count_as_revenue !== false} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,count_as_revenue:e.target.checked}))} />
+ Add this amount to Daily Sales revenue and dashboards. Uncheck only if this is a payment-tracking duplicate of a sale already encoded in Daily Sales.
+ </label>
  </div>
  <button disabled={savingDailySalesOnlinePayment} style={{...btnGreen, opacity:savingDailySalesOnlinePayment?0.6:1, marginTop:'12px' }} onClick={saveDailySalesOnlinePayment}>{savingDailySalesOnlinePayment?'SAVING...':'SAVE DAILY SALES ONLINE PAYMENT'}</button>
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4, 1fr)', gap:'10px', marginBottom:'12px' }}>
- <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>TOTAL DAILY SALES ONLINE</p><h3 style={{ color:'#ca1b1b', margin:'6px 0 2px' }}>{php(summary.total)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{summary.count} record(s)</p></div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5, 1fr)', gap:'10px', marginBottom:'12px' }}>
+ <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>ONLINE PAYMENTS RECORDED</p><h3 style={{ color:'#ca1b1b', margin:'6px 0 2px' }}>{php(summary.total)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{summary.count} record(s)</p></div>
+ <div style={{ background:'#f0fff4', border:'1px solid #2d8a4e33', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>ADDED TO SALES REVENUE</p><h3 style={{ color:'#2d8a4e', margin:'6px 0 2px' }}>{php(summary.revenueTotal)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Walk-in {php(summary.byBucket.walkin || 0)} / Online {php(summary.byBucket.messenger || 0)}</p></div>
  <div style={{ background:'#f0fff4', border:'1px solid #2d8a4e33', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>GCASH</p><h3 style={{ color:'#2d8a4e', margin:'6px 0 2px' }}>{php(summary.gcash)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{dailySalesOnlinePaymentsMonth}</p></div>
  <div style={{ background:'#f8fbff', border:'1px solid #4a90d933', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>BANK / ONLINE TRANSFER</p><h3 style={{ color:'#4a90d9', margin:'6px 0 2px' }}>{php(summary.bank)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Bank-based payments</p></div>
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>MAYA / CARD / QR / OTHER</p><h3 style={{ color:'#1a1a2e', margin:'6px 0 2px' }}>{php(summary.maya + summary.cardQrOther)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Other non-cash</p></div>
@@ -21417,10 +21462,10 @@ onClick={async ()=>{
 
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', overflowX:'auto' }}>
  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
- <thead><tr style={{ background:'#1a1a2e', color:'white' }}>{['Date','Source','Customer','Method','Reference #','Amount','Notes','Recorded By'].map(h=><th key={h} style={{ padding:'10px 8px', textAlign:h==='Amount'?'right':'left' }}>{h}</th>)}</tr></thead>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}>{['Date','Source','Customer','Method','Reference #','Amount','Sales Impact','Notes','Recorded By'].map(h=><th key={h} style={{ padding:'10px 8px', textAlign:h==='Amount'?'right':'left' }}>{h}</th>)}</tr></thead>
  <tbody>
- {dailySalesOnlinePaymentsLoading && <tr><td colSpan="8" style={{ padding:'18px', textAlign:'center', color:'#777' }}>Loading daily sales GCash and online payments...</td></tr>}
- {!dailySalesOnlinePaymentsLoading && rows.length === 0 && <tr><td colSpan="8" style={{ padding:'18px', textAlign:'center', color:'#777' }}>No daily sales GCash or online payments found for this filter.</td></tr>}
+ {dailySalesOnlinePaymentsLoading && <tr><td colSpan="9" style={{ padding:'18px', textAlign:'center', color:'#777' }}>Loading daily sales GCash and online payments...</td></tr>}
+ {!dailySalesOnlinePaymentsLoading && rows.length === 0 && <tr><td colSpan="9" style={{ padding:'18px', textAlign:'center', color:'#777' }}>No daily sales GCash or online payments found for this filter.</td></tr>}
  {!dailySalesOnlinePaymentsLoading && rows.map(payment => (
  <tr key={payment.id || `${payment.payment_date}-${payment.amount}-${payment.reference_number}`} style={{ borderBottom:'1px solid #eee' }}>
  <td style={{ padding:'9px 8px', fontWeight:'bold' }}>{payment.payment_date || '-'}</td>
@@ -21429,6 +21474,7 @@ onClick={async ()=>{
  <td style={{ padding:'9px 8px' }}><span style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'20px', padding:'4px 9px', fontWeight:'bold', color:'#1a1a2e' }}>{payment.payment_method || 'Online Payment'}</span></td>
  <td style={{ padding:'9px 8px', color:'#555' }}>{payment.reference_number || '-'}</td>
  <td style={{ padding:'9px 8px', textAlign:'right', color:'#2d8a4e', fontWeight:'900' }}>{php(payment.amount)}</td>
+ <td style={{ padding:'9px 8px' }}><span style={{ background:isDailySalesOnlinePaymentRevenue(payment)?'#e8f5e9':'#f4f4f4', color:isDailySalesOnlinePaymentRevenue(payment)?'#2d8a4e':'#777', borderRadius:'20px', padding:'4px 8px', fontWeight:'bold', fontSize:'10px' }}>{isDailySalesOnlinePaymentRevenue(payment)?'Added to Sales':'Tracking Only'}</span></td>
  <td style={{ padding:'9px 8px', color:'#555', maxWidth:'320px' }}>{payment.notes || '-'}</td>
  <td style={{ padding:'9px 8px', color:'#777' }}>{payment.recorded_by || '-'}</td>
  </tr>
@@ -21446,7 +21492,8 @@ onClick={async ()=>{
  {(()=>{
  const dayInvoices = deliveryInvoices.filter(i=>i.delivery_date===reconciliationDate||i.paid_date===reconciliationDate)
  const dayPaidAmount = dayInvoices.reduce((s,i)=>s+Number(i.paid_amount||0),0)
- const daySales = dailySales.filter(s=>s.sale_date===reconciliationDate).reduce((s,d)=>s+Number(d.total_amount||0),0)
+ const daySales = dailySales.filter(s=>s.sale_date===reconciliationDate).reduce((s,d)=>s+safeNum(d.total_walkin,0)+safeNum(d.total_messenger,0),0)
+ const dayOnlineSales = (dailySalesOnlinePayments || []).filter(p=>String(p.payment_date || '').slice(0,10)===reconciliationDate).filter(isDailySalesOnlinePaymentRevenue).reduce((s,p)=>s+safeNum(p.amount,0),0)
  const dayExpenses = dailyExpenses.filter(e=>e.expense_date===reconciliationDate&&e.status==='approved').reduce((s,e)=>s+Number(e.amount||0),0)
  const expectedCash = dayPaidAmount + daySales - dayExpenses
  const todayRecon = cashReconciliations.find(r=>r.reconciliation_date===reconciliationDate)
@@ -21464,10 +21511,11 @@ onClick={async ()=>{
  </div>
  </div>
  {/* Summary */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
  ['Reseller Payments',php(dayPaidAmount),'#4a90d9'],
- ['Walk-in Sales',php(daySales),'#2d8a4e'],
+ ['Cash Daily Sales',php(daySales),'#2d8a4e'],
+ ['Online Daily Sales',php(dayOnlineSales),'#4a90d9'],
  ['Expenses',php(dayExpenses),'#ca1b1b'],
  ['Expected Cash',php(expectedCash),'#1a1a2e'],
  ].map(([l,v,c])=>(
@@ -21522,9 +21570,11 @@ onClick={async ()=>{
  })()}
  {/* BANK DEPOSIT TRACKER */}
  {(()=>{
- const weekPaid = deliveryInvoices.filter(i=>i.paid_date&&i.paid_date>=bankDeposits[0]?.week_start).reduce((s,i)=>s+Number(i.paid_amount||0),0)
- const weekSales = dailySales.filter(s=>s.sale_date>=bankDeposits[0]?.week_start).reduce((s,d)=>s+Number(d.total_amount||0),0)
- const weekExp = dailyExpenses.filter(e=>e.status==='approved'&&e.expense_date>=bankDeposits[0]?.week_start).reduce((s,e)=>s+Number(e.amount||0),0)
+ const activeWeekStart = bankDeposits[0]?.week_start || getDateOffsetString(-7)
+ const weekPaid = deliveryInvoices.filter(i=>i.paid_date&&i.paid_date>=activeWeekStart).reduce((s,i)=>s+Number(i.paid_amount||0),0)
+ const weekSales = dailySales.filter(s=>s.sale_date>=activeWeekStart).reduce((s,d)=>s+safeNum(d.total_walkin,0)+safeNum(d.total_messenger,0),0)
+ const weekOnlineSales = (dailySalesOnlinePayments || []).filter(p=>String(p.payment_date || '').slice(0,10)>=activeWeekStart).filter(isDailySalesOnlinePaymentRevenue).reduce((s,p)=>s+safeNum(p.amount,0),0)
+ const weekExp = dailyExpenses.filter(e=>e.status==='approved'&&e.expense_date>=activeWeekStart).reduce((s,e)=>s+Number(e.amount||0),0)
  const expectedDeposit = weekPaid + weekSales - weekExp
  const isDayOfWeek = new Date().getDay()===2 // Tuesday
  return (
@@ -21537,8 +21587,8 @@ onClick={async ()=>{
  <button style={{...btnYellow, padding:'8px 16px' }} onClick={()=>setShowDepositForm(!showDepositForm)}>RECORD DEPOSIT</button>
  </div>
  {/* Summary */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'10px', marginBottom:'12px' }}>
- {[['This Week Collections',php(weekPaid+weekSales),'#2d8a4e'],['Expenses Paid',php(weekExp),'#ca1b1b'],['Expected Deposit',php(expectedDeposit),'#1a1a2e']].map(([l,v,c])=>(
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'12px' }}>
+ {[['Cash Collections',php(weekPaid+weekSales),'#2d8a4e'],['Online Daily Sales',php(weekOnlineSales),'#4a90d9'],['Expenses Paid',php(weekExp),'#ca1b1b'],['Expected Cash Deposit',php(expectedDeposit),'#1a1a2e']].map(([l,v,c])=>(
  <div key={l} style={{ background:'#f8f7f5', borderRadius:'10px', padding:'10px', textAlign:'center', border:`1px solid ${c}22` }}>
  <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase' }}>{l}</p>
  <p style={{ fontWeight:'bold', color:c, fontSize:'16px', margin:0 }}>{v}</p>
