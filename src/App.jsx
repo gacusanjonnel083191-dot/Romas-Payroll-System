@@ -1380,7 +1380,7 @@ export default function App() {
  const [foundationAutoRefresh, setFoundationAutoRefresh] = useState(true)
  const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)
  const FOUNDATION_REFRESH_SECONDS = 60
- const EXPENSE_CATEGORIES = ['Payroll Expense','Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Miscellaneous']
+ const EXPENSE_CATEGORIES = ['Payroll Expense','Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Ingredients and Supplies','Groceries','Mix Plant Inc.','Shopee/Lazada','Drinks','Meals','Utilities','Employee Benefits','Administrative Cost','Permits and Taxes','Loan Repayment','Car Installment','Miscellaneous']
  const PAYABLE_TYPES = ['Supplier','Payroll','Government Contributions','Rent','Utilities','Loan','Equipment','Packaging Supplier','Raw Material Supplier','Other']
  const PAYABLE_CATEGORIES = ['Supplier Payment','Payroll','SSS / PhilHealth / Pag-IBIG','Rent','Electricity','Water','Internet / Phone','Loan / Financing','Equipment Payable','Packaging Supplies','Raw Materials','Transportation/Fuel','Marketing/Promotion','Miscellaneous']
  const PAYABLE_PAYMENT_TYPES = ['Accounts Payable','PDC','Scheduled Expense','Payroll Payable','Supplier Bill','Government Remittance','Loan Payment']
