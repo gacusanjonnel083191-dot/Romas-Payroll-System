@@ -1149,6 +1149,29 @@ export default function App() {
  const [inventoryValuation, setInventoryValuation] = useState(null)
  const [stockMovementMonth, setStockMovementMonth] = useState(today.slice(0,7))
  const [stockMovementData, setStockMovementData] = useState([])
+ // Crates Inventory / Reseller Variance Tracking
+ const [crateMovements, setCrateMovements] = useState([])
+ const [cratesLoading, setCratesLoading] = useState(false)
+ const [cratesLoadError, setCratesLoadError] = useState('')
+ const [crateSearch, setCrateSearch] = useState('')
+ const [crateDispatchDate, setCrateDispatchDate] = useState(today)
+ const [crateDispatchResellerId, setCrateDispatchResellerId] = useState('')
+ const [crateDispatchInvoiceId, setCrateDispatchInvoiceId] = useState('')
+ const [crateReleasedQty, setCrateReleasedQty] = useState('')
+ const [crateDispatcherName, setCrateDispatcherName] = useState('')
+ const [crateDispatchNotes, setCrateDispatchNotes] = useState('')
+ const [crateCollectionDate, setCrateCollectionDate] = useState(today)
+ const [crateCollectionDeliveryDate, setCrateCollectionDeliveryDate] = useState(getDateOffsetString(-1))
+ const [crateCollectionResellerId, setCrateCollectionResellerId] = useState('')
+ const [crateCollectedQty, setCrateCollectedQty] = useState('')
+ const [crateDriverName, setCrateDriverName] = useState('')
+ const [crateCollectionNotes, setCrateCollectionNotes] = useState('')
+ const [crateAdjustmentDate, setCrateAdjustmentDate] = useState(today)
+ const [crateAdjustmentResellerId, setCrateAdjustmentResellerId] = useState('')
+ const [crateAdjustmentDirection, setCrateAdjustmentDirection] = useState('reduce_balance')
+ const [crateAdjustmentQty, setCrateAdjustmentQty] = useState('')
+ const [crateAdjustmentReason, setCrateAdjustmentReason] = useState('Correction')
+ const [crateAdjustmentNotes, setCrateAdjustmentNotes] = useState('')
  const [editingItemId, setEditingItemId] = useState(null)
  const [editItemFields, setEditItemFields] = useState({})
  // Suppliers
@@ -2085,6 +2108,236 @@ export default function App() {
  setInventoryTransactions(data || [])
  setInventoryTxLoading(false)
  }
+
+ function getCrateMovementSignedQty(movement) {
+ const qty = safeNum(movement?.quantity, 0)
+ const direction = String(movement?.direction || '').toLowerCase()
+ const type = String(movement?.movement_type || '').toLowerCase()
+
+ // Positive means crates are with the reseller. Negative means crates returned/reduced.
+ if (direction === 'out' || direction === 'increase_balance') return qty
+ if (direction === 'in' || direction === 'reduce_balance') return -qty
+ if (type === 'dispatch' || type === 'released') return qty
+ if (type === 'collection' || type === 'returned' || type === 'return') return -qty
+ if (type === 'lost' || type === 'damaged') return -qty
+ return qty
+ }
+
+ function getResellerRecordById(resellerId) {
+ return (resellers || []).find(r => String(r.id) === String(resellerId)) || null
+ }
+
+ function getInvoiceRecordById(invoiceId) {
+ return (deliveryInvoices || []).find(inv => String(inv.id) === String(invoiceId)) || null
+ }
+
+ function getCrateBalanceRows(ignoreSearch = false) {
+ const map = {}
+ ;(resellers || []).forEach(r => {
+ map[String(r.id)] = {
+ reseller_id:String(r.id),
+ reseller_name:r.name || 'Unnamed Reseller',
+ area:r.area || '',
+ dispatched:0,
+ collected:0,
+ adjustments:0,
+ balance:0,
+ last_movement:null
+ }
+ })
+
+ ;(crateMovements || []).forEach(m => {
+ const key = String(m.reseller_id || m.reseller_name || 'unknown')
+ if (!map[key]) {
+ map[key] = {
+ reseller_id:m.reseller_id || key,
+ reseller_name:m.reseller_name || 'Unknown Reseller',
+ area:'',
+ dispatched:0,
+ collected:0,
+ adjustments:0,
+ balance:0,
+ last_movement:null
+ }
+ }
+ const signed = getCrateMovementSignedQty(m)
+ const qty = safeNum(m.quantity, 0)
+ const type = String(m.movement_type || '').toLowerCase()
+ if (type === 'dispatch' || type === 'released') map[key].dispatched += qty
+ else if (type === 'collection' || type === 'returned' || type === 'return') map[key].collected += qty
+ else map[key].adjustments += signed
+ map[key].balance += signed
+ if (!map[key].last_movement || new Date(m.created_at || m.movement_date || 0) > new Date(map[key].last_movement.created_at || map[key].last_movement.movement_date || 0)) {
+ map[key].last_movement = m
+ }
+ })
+
+ return Object.values(map)
+ .filter(row => row.dispatched || row.collected || row.adjustments || row.balance || !crateSearch)
+ .filter(row => {
+ const q = ignoreSearch ? '' : String(crateSearch || '').trim().toLowerCase()
+ if (!q) return true
+ return String(row.reseller_name || '').toLowerCase().includes(q) || String(row.area || '').toLowerCase().includes(q)
+ })
+ .sort((a,b) => safeNum(b.balance, 0) - safeNum(a.balance, 0) || String(a.reseller_name).localeCompare(String(b.reseller_name)))
+ }
+
+ function getCrateDashboardData() {
+ const rows = getCrateBalanceRows()
+ const allRows = getCrateBalanceRows(true)
+ const totalReleased = (crateMovements || []).filter(m => ['dispatch','released'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
+ const totalCollected = (crateMovements || []).filter(m => ['collection','returned','return'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
+ const totalWithResellers = allRows.reduce((s,r)=>s+Math.max(0, safeNum(r.balance,0)),0)
+ const resellersWithBalance = allRows.filter(r => safeNum(r.balance,0) > 0).length
+ return { rows, allRows, totalReleased, totalCollected, totalWithResellers, resellersWithBalance }
+ }
+
+ async function loadCrateMovements() {
+ setCratesLoading(true)
+ setCratesLoadError('')
+ try {
+ const { data, error } = await supabase
+ .from('crate_movements')
+ .select('*')
+ .eq('is_deleted', false)
+ .order('movement_date', { ascending:false })
+ .order('created_at', { ascending:false })
+ .limit(1000)
+ if (error) throw error
+ setCrateMovements(data || [])
+ } catch (err) {
+ console.warn('loadCrateMovements:', err)
+ setCrateMovements([])
+ setCratesLoadError('Crates table is not ready yet. Please run the Supabase setup SQL once.')
+ } finally {
+ setCratesLoading(false)
+ }
+ }
+
+ async function saveCrateDispatch() {
+ const reseller = getResellerRecordById(crateDispatchResellerId)
+ const qty = safeNum(crateReleasedQty, 0)
+ if (!crateDispatchDate) { showToast('Please select dispatch date.','red'); return }
+ if (!reseller) { showToast('Please select reseller.','red'); return }
+ if (qty <= 0) { showToast('Please enter crates released.','red'); return }
+ const invoice = getInvoiceRecordById(crateDispatchInvoiceId)
+ try {
+ const payload = {
+ movement_date:crateDispatchDate,
+ related_delivery_date:crateDispatchDate,
+ reseller_id:reseller.id,
+ reseller_name:reseller.name || '',
+ invoice_id:invoice?.id || null,
+ invoice_number:invoice?.invoice_number || '',
+ movement_type:'dispatch',
+ direction:'out',
+ quantity:qty,
+ dispatcher_name:String(crateDispatcherName || '').trim(),
+ driver_name:'',
+ recorded_by:adminEmployee?.full_name || adminRole || 'Admin',
+ notes:String(crateDispatchNotes || '').trim(),
+ is_deleted:false
+ }
+ const { error } = await supabase.from('crate_movements').insert(payload)
+ if (error) throw error
+ await logAudit('CRATES DISPATCHED', adminRole || 'Admin', reseller.name, `${qty} crate(s) released${invoice?.invoice_number ? ' for '+invoice.invoice_number : ''}`)
+ showToast(' Crates dispatch recorded!')
+ setCrateReleasedQty(''); setCrateDispatchInvoiceId(''); setCrateDispatchNotes('')
+ loadCrateMovements()
+ } catch (err) {
+ console.warn('saveCrateDispatch:', err)
+ showToast('Crates dispatch failed. Run the crate_movements SQL setup first.','red')
+ }
+ }
+
+ async function saveCrateCollection() {
+ const reseller = getResellerRecordById(crateCollectionResellerId)
+ const qty = safeNum(crateCollectedQty, 0)
+ if (!crateCollectionDate) { showToast('Please select collection date.','red'); return }
+ if (!reseller) { showToast('Please select reseller.','red'); return }
+ if (qty <= 0) { showToast('Please enter crates collected.','red'); return }
+ try {
+ const payload = {
+ movement_date:crateCollectionDate,
+ related_delivery_date:crateCollectionDeliveryDate || null,
+ reseller_id:reseller.id,
+ reseller_name:reseller.name || '',
+ invoice_id:null,
+ invoice_number:'',
+ movement_type:'collection',
+ direction:'in',
+ quantity:qty,
+ dispatcher_name:'',
+ driver_name:String(crateDriverName || '').trim(),
+ recorded_by:adminEmployee?.full_name || adminRole || 'Admin',
+ notes:String(crateCollectionNotes || '').trim(),
+ is_deleted:false
+ }
+ const { error } = await supabase.from('crate_movements').insert(payload)
+ if (error) throw error
+ await logAudit('CRATES COLLECTED', adminRole || 'Admin', reseller.name, `${qty} crate(s) collected`)
+ showToast(' Crates collection recorded!')
+ setCrateCollectedQty(''); setCrateCollectionNotes('')
+ loadCrateMovements()
+ } catch (err) {
+ console.warn('saveCrateCollection:', err)
+ showToast('Crates collection failed. Run the crate_movements SQL setup first.','red')
+ }
+ }
+
+ async function saveCrateAdjustment() {
+ const reseller = getResellerRecordById(crateAdjustmentResellerId)
+ const qty = safeNum(crateAdjustmentQty, 0)
+ if (!crateAdjustmentDate) { showToast('Please select adjustment date.','red'); return }
+ if (!reseller) { showToast('Please select reseller.','red'); return }
+ if (qty <= 0) { showToast('Please enter adjustment quantity.','red'); return }
+ const reducing = crateAdjustmentDirection === 'reduce_balance'
+ try {
+ const payload = {
+ movement_date:crateAdjustmentDate,
+ related_delivery_date:null,
+ reseller_id:reseller.id,
+ reseller_name:reseller.name || '',
+ invoice_id:null,
+ invoice_number:'',
+ movement_type:reducing ? 'adjustment_reduce' : 'adjustment_add',
+ direction:reducing ? 'in' : 'out',
+ quantity:qty,
+ dispatcher_name:'',
+ driver_name:'',
+ recorded_by:adminEmployee?.full_name || adminRole || 'Admin',
+ notes:`${crateAdjustmentReason || 'Correction'}${crateAdjustmentNotes ? ' - '+crateAdjustmentNotes : ''}`,
+ is_deleted:false
+ }
+ const { error } = await supabase.from('crate_movements').insert(payload)
+ if (error) throw error
+ await logAudit('CRATES ADJUSTED', adminRole || 'Admin', reseller.name, `${reducing ? 'Reduced' : 'Added'} ${qty} crate(s): ${crateAdjustmentReason || 'Correction'}`)
+ showToast(' Crate adjustment saved!')
+ setCrateAdjustmentQty(''); setCrateAdjustmentNotes('')
+ loadCrateMovements()
+ } catch (err) {
+ console.warn('saveCrateAdjustment:', err)
+ showToast('Crate adjustment failed. Run the crate_movements SQL setup first.','red')
+ }
+ }
+
+ function exportCrateBalancesCSV() {
+ const rows = getCrateBalanceRows()
+ const headers = ['Reseller','Area','Total Released','Total Collected','Manual Adjustments','Total Unreturned','Last Movement']
+ const lines = [headers.join(',')]
+ rows.forEach(r => {
+ const last = r.last_movement ? `${r.last_movement.movement_date || ''} ${r.last_movement.movement_type || ''}` : ''
+ lines.push([r.reseller_name, r.area, r.dispatched, r.collected, r.adjustments, r.balance, last].map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(','))
+ })
+ const blob = new Blob([lines.join('\n')], { type:'text/csv;charset=utf-8;' })
+ const url = URL.createObjectURL(blob)
+ const a = document.createElement('a')
+ a.href = url
+ a.download = `crates-balances-${today}.csv`
+ a.click()
+ URL.revokeObjectURL(url)
+ }
+
  async function addInventoryItem() {
  if (!newItemName.trim()) { showToast(' Please enter item name.','red'); return }
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
@@ -13386,7 +13639,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if(key==='remittance') loadPayrollHistory()
  if(key==='dtr') loadEmployees()
  if(key==='contracts') { loadContracts(); loadEmployees() }
- if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
+ if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
  if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
@@ -15917,7 +16170,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
  <h2 style={h2s}> Inventory Management</h2>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); showToast(' Refreshed!') }}>REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); loadCrateMovements(); loadResellers(); loadDeliveryInvoices(); showToast(' Refreshed!') }}>REFRESH</button>
  <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printInventoryReport}> PRINT REPORT</button>
  </div>
  </div>
@@ -15928,11 +16181,12 @@ This recovery button creates one approved expense record using GROSS payroll ear
  ['items',' Items'],
  ['adjust',' Adjust Stock'],
  ['receiving',' Receiving'],
+ ['crates',' Crates Inventory'],
  ['valuation',' Valuation'],
  ['movement',' Movement Report'],
  ['history',' Item History'],
  ].map(([v,l])=>(
- <button key={v} onClick={()=>{ setInventorySubView(v); if(v==='valuation') computeInventoryValuation() }} style={{ padding:'8px 14px', borderRadius:'20px', border:'none', background:inventorySubView===v?'#ca1b1b':'#f4f4f4', color:inventorySubView===v?'white':'#555', fontWeight:inventorySubView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:inventorySubView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
+ <button key={v} onClick={()=>{ setInventorySubView(v); if(v==='valuation') computeInventoryValuation(); if(v==='crates') { loadCrateMovements(); loadResellers(); loadDeliveryInvoices() } }} style={{ padding:'8px 14px', borderRadius:'20px', border:'none', background:inventorySubView===v?'#ca1b1b':'#f4f4f4', color:inventorySubView===v?'white':'#555', fontWeight:inventorySubView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:inventorySubView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
  ))}
  </div>
 
@@ -16043,6 +16297,234 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
  </div>
  )}
+
+
+ {/* Crates Inventory / Reseller Variance View */}
+ {inventorySubView==='crates' && (() => {
+ const crateData = getCrateDashboardData()
+ const selectedCollectionRow = crateData.allRows.find(r => String(r.reseller_id) === String(crateCollectionResellerId))
+ const selectedCollectionBalance = Math.max(0, safeNum(selectedCollectionRow?.balance, 0))
+ const collectionRemainingAfterEntry = selectedCollectionBalance - safeNum(crateCollectedQty, 0)
+ const dispatchReseller = getResellerRecordById(crateDispatchResellerId)
+ const dispatchInvoices = (deliveryInvoices || []).filter(inv => {
+ const sameReseller = !crateDispatchResellerId || String(inv.reseller_id || '') === String(crateDispatchResellerId) || String(inv.reseller_name || '').toLowerCase() === String(dispatchReseller?.name || '').toLowerCase()
+ const sameDate = !crateDispatchDate || String(inv.delivery_date || inv.invoice_date || '').slice(0,10) === crateDispatchDate
+ return sameReseller && sameDate
+ }).slice(0, 50)
+ const visibleMovements = (crateMovements || []).filter(m => {
+ const q = String(crateSearch || '').trim().toLowerCase()
+ if (!q) return true
+ return String(m.reseller_name || '').toLowerCase().includes(q) || String(m.invoice_number || '').toLowerCase().includes(q) || String(m.notes || '').toLowerCase().includes(q)
+ }).slice(0, 150)
+ return (
+ <div>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'14px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', fontSize:'15px', margin:'0 0 4px' }}>Crates Inventory & Reseller Variance</h3>
+ <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Track company crates released by dispatcher, collected by driver, and still unreturned by each reseller.</p>
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadCrateMovements(); loadResellers(); loadDeliveryInvoices(); showToast(' Crates refreshed!') }}>REFRESH CRATES</button>
+ <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={exportCrateBalancesCSV}>EXPORT CSV</button>
+ </div>
+ </div>
+
+ {cratesLoadError && (
+ <div style={{ background:'#fff5f5', border:'1px solid #ffcdd2', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:'0 0 4px' }}>Supabase setup needed</p>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>{cratesLoadError}</p>
+ </div>
+ )}
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+ {[
+ { label:'Crates Released', value:crateData.totalReleased, sub:'All dispatch records', color:'#4a90d9', bg:'#e8f0fe' },
+ { label:'Crates Collected', value:crateData.totalCollected, sub:'All return records', color:'#2d8a4e', bg:'#f0fff4' },
+ { label:'With Resellers', value:crateData.totalWithResellers, sub:'Current unreturned crates', color:crateData.totalWithResellers>0?'#ca1b1b':'#2d8a4e', bg:crateData.totalWithResellers>0?'#fff5f5':'#f0fff4' },
+ { label:'Resellers w/ Balance', value:crateData.resellersWithBalance, sub:'Need follow-up', color:crateData.resellersWithBalance>0?'#f57c00':'#2d8a4e', bg:'#fff8e1' },
+ ].map(c => (
+ <div key={c.label} style={{ background:c.bg, border:`2px solid ${c.color}22`, borderRadius:'12px', padding:'12px' }}>
+ <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px', fontWeight:'bold' }}>{c.label}</p>
+ <p style={{ color:c.color, fontWeight:'bold', fontSize:'22px', margin:'0 0 2px' }}>{c.value}</p>
+ <p style={{ color:'#999', fontSize:'10px', margin:0 }}>{c.sub}</p>
+ </div>
+ ))}
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'16px' }}>
+ {/* Dispatcher Release Form */}
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 4px' }}>1. Dispatcher Records Crates Used</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}>Use this after packing/dispatch when the real crate count is already known.</p>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+ <div>
+ <label style={lblS}>Dispatch / Delivery Date:</label>
+ <input type="date" value={crateDispatchDate} onChange={e=>setCrateDispatchDate(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>Reseller:</label>
+ <select value={crateDispatchResellerId} onChange={e=>{ setCrateDispatchResellerId(e.target.value); setCrateDispatchInvoiceId('') }} style={inputStyle}>
+ <option value="">Select reseller</option>
+ {(resellers || []).map(r => <option key={r.id} value={r.id}>{r.name} {r.area ? `- ${r.area}` : ''}</option>)}
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>Related Invoice <span style={{ color:'#999', fontWeight:'normal' }}>(optional)</span>:</label>
+ <select value={crateDispatchInvoiceId} onChange={e=>setCrateDispatchInvoiceId(e.target.value)} style={inputStyle}>
+ <option value="">No specific invoice</option>
+ {dispatchInvoices.map(inv => <option key={inv.id} value={inv.id}>{inv.invoice_number || inv.id} - {php(inv.total_amount || inv.total_sales || 0)}</option>)}
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>Crates Released:</label>
+ <input type="number" min="0" step="1" value={crateReleasedQty} onChange={e=>setCrateReleasedQty(e.target.value)} placeholder="e.g. 8" style={inputStyle} />
+ </div>
+ </div>
+ <label style={lblS}>Dispatcher Name / Initial:</label>
+ <input value={crateDispatcherName} onChange={e=>setCrateDispatcherName(e.target.value)} placeholder="e.g. Ana / AG" style={inputStyle} />
+ <label style={lblS}>Dispatch Notes:</label>
+ <textarea value={crateDispatchNotes} onChange={e=>setCrateDispatchNotes(e.target.value)} placeholder="Optional notes, e.g. 2 crates are mixed boxes." style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
+ <button style={btnGreen} onClick={saveCrateDispatch}>SAVE CRATES RELEASED</button>
+ </div>
+
+ {/* Driver Collection Form */}
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 4px' }}>2. Driver Records Crates Collected</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}>Use this the next day or anytime crates are returned. It reduces the reseller's running crate balance.</p>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+ <div>
+ <label style={lblS}>Collection Date:</label>
+ <input type="date" value={crateCollectionDate} onChange={e=>setCrateCollectionDate(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>Related Delivery Date:</label>
+ <input type="date" value={crateCollectionDeliveryDate} onChange={e=>setCrateCollectionDeliveryDate(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>Reseller:</label>
+ <select value={crateCollectionResellerId} onChange={e=>setCrateCollectionResellerId(e.target.value)} style={inputStyle}>
+ <option value="">Select reseller</option>
+ {crateData.allRows.map(r => <option key={r.reseller_id} value={r.reseller_id}>{r.reseller_name} - Balance: {Math.max(0, safeNum(r.balance,0))}</option>)}
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>Crates Collected:</label>
+ <input type="number" min="0" step="1" value={crateCollectedQty} onChange={e=>setCrateCollectedQty(e.target.value)} placeholder="e.g. 6" style={inputStyle} />
+ </div>
+ </div>
+ {crateCollectionResellerId && (
+ <div style={{ background:collectionRemainingAfterEntry>0?'#fff8e1':'#f0fff4', border:`1px solid ${collectionRemainingAfterEntry>0?'#f5a623':'#2d8a4e'}`, borderRadius:'10px', padding:'10px', marginBottom:'12px' }}>
+ <p style={{ margin:'0 0 3px', color:'#555', fontSize:'12px' }}>Current expected crates from this reseller: <strong style={{ color:'#ca1b1b' }}>{selectedCollectionBalance}</strong></p>
+ <p style={{ margin:0, color:collectionRemainingAfterEntry>0?'#f57c00':'#2d8a4e', fontSize:'12px', fontWeight:'bold' }}>Balance after this collection: {collectionRemainingAfterEntry}</p>
+ </div>
+ )}
+ <label style={lblS}>Driver / Delivery Assistant Name:</label>
+ <input value={crateDriverName} onChange={e=>setCrateDriverName(e.target.value)} placeholder="e.g. Driver name / initials" style={inputStyle} />
+ <label style={lblS}>Collection Notes:</label>
+ <textarea value={crateCollectionNotes} onChange={e=>setCrateCollectionNotes(e.target.value)} placeholder="Optional notes, e.g. 2 crates left at outlet." style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
+ <button style={btnGreen} onClick={saveCrateCollection}>SAVE CRATES COLLECTED</button>
+ </div>
+ </div>
+
+ {/* Manual Adjustment */}
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 4px' }}>Manual Crate Adjustment</p>
+ <p style={{ color:'#666', fontSize:'12px', margin:'0 0 12px' }}>Use only for corrections, lost crates, damaged crates, or crates returned from older balances.</p>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'10px', alignItems:'end' }}>
+ <div>
+ <label style={lblS}>Date:</label>
+ <input type="date" value={crateAdjustmentDate} onChange={e=>setCrateAdjustmentDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Reseller:</label>
+ <select value={crateAdjustmentResellerId} onChange={e=>setCrateAdjustmentResellerId(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+ <option value="">Select reseller</option>
+ {(resellers || []).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>Action:</label>
+ <select value={crateAdjustmentDirection} onChange={e=>setCrateAdjustmentDirection(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+ <option value="reduce_balance">Reduce reseller balance</option>
+ <option value="add_balance">Add to reseller balance</option>
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>Qty:</label>
+ <input type="number" min="0" step="1" value={crateAdjustmentQty} onChange={e=>setCrateAdjustmentQty(e.target.value)} placeholder="Qty" style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <button style={{...btnBlack, marginTop:0 }} onClick={saveCrateAdjustment}>SAVE ADJUSTMENT</button>
+ </div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 2fr', gap:'10px', marginTop:'10px' }}>
+ <select value={crateAdjustmentReason} onChange={e=>setCrateAdjustmentReason(e.target.value)} style={inputStyle}>
+ {['Correction','Lost crate','Damaged crate','Late return from old balance','Wrong entry correction','Owner-approved write-off','Other'].map(r => <option key={r} value={r}>{r}</option>)}
+ </select>
+ <input value={crateAdjustmentNotes} onChange={e=>setCrateAdjustmentNotes(e.target.value)} placeholder="Adjustment notes / approval details" style={inputStyle} />
+ </div>
+ </div>
+
+ {/* Reseller Balances */}
+ <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
+ <div>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 2px' }}>Reseller Crate Balances</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Positive balance means crates are still with the reseller.</p>
+ </div>
+ <input value={crateSearch} onChange={e=>setCrateSearch(e.target.value)} placeholder="Search reseller, invoice, notes..." style={{...inputStyle, maxWidth:'280px', marginBottom:0 }} />
+ </div>
+ {cratesLoading ? <p style={{ color:'#888', textAlign:'center', padding:'20px' }}>Loading crate records...</p> : (
+ <div style={{ overflowX:'auto' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+ <thead>
+ <tr style={{ background:'#ca1b1b', color:'white' }}>
+ {['Reseller','Released','Collected','Adjustments','Unreturned Balance','Last Movement','Status'].map(h => <th key={h} style={{ padding:'9px', textAlign:h==='Reseller'?'left':'center' }}>{h}</th>)}
+ </tr>
+ </thead>
+ <tbody>
+ {crateData.rows.length === 0 && (
+ <tr><td colSpan="7" style={{ padding:'18px', textAlign:'center', color:'#888' }}>No crate balance records yet.</td></tr>
+ )}
+ {crateData.rows.map((r,idx) => {
+ const balance = safeNum(r.balance,0)
+ return (
+ <tr key={r.reseller_id} style={{ background:idx%2===0?'white':'#fafafa', borderBottom:'1px solid #eee' }}>
+ <td style={{ padding:'9px', fontWeight:'bold', color:'#333' }}>{r.reseller_name}<br/><span style={{ color:'#999', fontWeight:'normal', fontSize:'10px' }}>{r.area || ''}</span></td>
+ <td style={{ padding:'9px', textAlign:'center' }}>{r.dispatched}</td>
+ <td style={{ padding:'9px', textAlign:'center', color:'#2d8a4e', fontWeight:'bold' }}>{r.collected}</td>
+ <td style={{ padding:'9px', textAlign:'center', color:r.adjustments<0?'#2d8a4e':r.adjustments>0?'#ca1b1b':'#777' }}>{r.adjustments}</td>
+ <td style={{ padding:'9px', textAlign:'center', fontWeight:'bold', color:balance>0?'#ca1b1b':'#2d8a4e', fontSize:'15px' }}>{balance}</td>
+ <td style={{ padding:'9px', textAlign:'center', color:'#777' }}>{r.last_movement ? `${r.last_movement.movement_date || ''} / ${String(r.last_movement.movement_type || '').replace(/_/g,' ')}` : '-'}</td>
+ <td style={{ padding:'9px', textAlign:'center' }}><Badge label={balance>0?'UNRETURNED':'CLEAR'} color={balance>0?'red':'green'} /></td>
+ </tr>
+ )
+ })}
+ </tbody>
+ </table>
+ </div>
+ )}
+ </div>
+
+ {/* Movement History */}
+ <div style={{ background:'white', borderRadius:'14px', padding:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.06)' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 12px' }}>Crate Movement History</p>
+ {visibleMovements.length === 0 ? <p style={{ color:'#888', textAlign:'center', padding:'18px' }}>No crate movements recorded yet.</p> : visibleMovements.map(m => {
+ const signed = getCrateMovementSignedQty(m)
+ return (
+ <div key={m.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1.3fr .8fr .8fr 2fr', gap:'8px', alignItems:'center', borderBottom:'1px solid #f0f0f0', padding:'9px 0' }}>
+ <div><p style={{ fontWeight:'bold', fontSize:'12px', margin:'0 0 2px', color:'#333' }}>{m.movement_date}</p><p style={{ color:'#999', fontSize:'10px', margin:0 }}>{m.related_delivery_date ? `Delivery: ${m.related_delivery_date}` : 'No delivery date'}</p></div>
+ <div><p style={{ fontWeight:'bold', fontSize:'12px', margin:'0 0 2px', color:'#333' }}>{m.reseller_name}</p><p style={{ color:'#999', fontSize:'10px', margin:0 }}>{m.invoice_number || 'No invoice linked'}</p></div>
+ <div><Badge label={String(m.movement_type || '').replace(/_/g,' ').toUpperCase()} color={signed>=0?'blue':'green'} /></div>
+ <div style={{ fontWeight:'bold', color:signed>=0?'#ca1b1b':'#2d8a4e', fontSize:'15px' }}>{signed>0?'+':''}{signed}</div>
+ <div><p style={{ color:'#666', fontSize:'11px', margin:'0 0 2px' }}>{m.notes || '-'}</p><p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{m.dispatcher_name ? `Dispatcher: ${m.dispatcher_name}` : ''} {m.driver_name ? `Driver: ${m.driver_name}` : ''}</p></div>
+ </div>
+ )
+ })}
+ </div>
+ </div>
+ )
+ })()}
 
  {/* Valuation View */}
  {inventorySubView==='valuation' && inventoryValuation && (
