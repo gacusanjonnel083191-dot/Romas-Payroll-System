@@ -382,6 +382,119 @@ function getEmployeeLeaveInfo(emp) {
 }
 
 
+const PAYROLL_COST_TYPES = [
+ { value:'auto', label:'Auto classify from department / position', shortLabel:'Auto', bucket:'auto' },
+ { value:'production_cogs', label:'Production Labor / COGS', shortLabel:'Production COGS', bucket:'cogs' },
+ { value:'admin_expense', label:'Admin Payroll Expense', shortLabel:'Admin Expense', bucket:'expense' },
+ { value:'sales_expense', label:'Sales / Store Payroll Expense', shortLabel:'Sales Expense', bucket:'expense' },
+ { value:'delivery_expense', label:'Delivery / Dispatch Payroll Expense', shortLabel:'Delivery Expense', bucket:'expense' },
+ { value:'management_expense', label:'Management Payroll Expense', shortLabel:'Management Expense', bucket:'expense' },
+ { value:'operating_expense', label:'Other Operating Payroll Expense', shortLabel:'Operating Expense', bucket:'expense' }
+]
+
+function normalizePayrollCostType(value) {
+ const raw = String(value || '').trim().toLowerCase()
+ const found = PAYROLL_COST_TYPES.find(t => t.value === raw)
+ return found? found.value: 'auto'
+}
+
+function getPayrollCostTypeInfo(value) {
+ const key = normalizePayrollCostType(value)
+ return PAYROLL_COST_TYPES.find(t => t.value === key) || PAYROLL_COST_TYPES[0]
+}
+
+function inferPayrollCostType(emp = {}) {
+ const text = `${emp.department || ''} ${emp.position || ''} ${emp.full_name || ''}`.toLowerCase()
+ if (/production|kitchen|baker|bakery|dough|mixer|mixing|fry|fryman|fryer|cutter|glazer|finisher|finishing|packer|packing|quality|qc/.test(text)) return 'production_cogs'
+ if (/delivery|driver|dispatch|dispatcher|logistics|rider/.test(text)) return 'delivery_expense'
+ if (/cashier|sales|seller|saleslady|rolling|cart|store|counter|service crew|crew/.test(text)) return 'sales_expense'
+ if (/owner|manager|management|supervisor/.test(text)) return 'management_expense'
+ if (/admin|office|hr|payroll|accounting|bookkeeper|finance/.test(text)) return 'admin_expense'
+ return 'operating_expense'
+}
+
+function getEmployeePayrollCostType(emp = {}) {
+ const saved = normalizePayrollCostType(emp.payroll_cost_type)
+ return saved === 'auto'? inferPayrollCostType(emp): saved
+}
+
+function isProductionPayrollCostType(value) {
+ return normalizePayrollCostType(value) === 'production_cogs'
+}
+
+function isReleasedPayrollRecord(record = {}) {
+ return record.payroll_approved === true || !!record.approved_at
+}
+
+function getEmployeeLookupForPayroll(employeeRows = []) {
+ const lookup = {}
+ ;(employeeRows || []).forEach(emp => {
+  if (!emp) return
+  if (emp.id) lookup[`id:${emp.id}`] = emp
+  if (emp.employee_code) lookup[`code:${String(emp.employee_code).toLowerCase()}`] = emp
+  if (emp.full_name) lookup[`name:${String(emp.full_name).toLowerCase()}`] = emp
+ })
+ return lookup
+}
+
+function findPayrollEmployeeForRecord(record = {}, lookup = {}) {
+ return lookup[`id:${record.employee_id}`] || lookup[`code:${String(record.employee_code || '').toLowerCase()}`] || lookup[`name:${String(record.employee_name || '').toLowerCase()}`] || {}
+}
+
+function classifyPayrollRecords(records = [], employeeRows = [], options = {}) {
+ const includeUnreleased = options.includeUnreleased === true
+ const lookup = getEmployeeLookupForPayroll(employeeRows)
+ const byType = {}
+ PAYROLL_COST_TYPES.forEach(t => { if (t.value !== 'auto') byType[t.value] = { ...t, amount:0, count:0 } })
+ let productionLaborCOGS = 0
+ let operatingPayrollExpense = 0
+ let totalPayroll = 0
+ let releasedCount = 0
+ const rows = []
+ ;(records || []).forEach(record => {
+  if (!includeUnreleased && !isReleasedPayrollRecord(record)) return
+  const emp = findPayrollEmployeeForRecord(record, lookup)
+  const recordType = normalizePayrollCostType(record.payroll_cost_type)
+  const type = recordType !== 'auto'? recordType: getEmployeePayrollCostType(emp)
+  const info = getPayrollCostTypeInfo(type)
+  const amount = safeNum(record.total_earnings, 0)
+  totalPayroll += amount
+  releasedCount += 1
+  if (!byType[type]) byType[type] = { ...info, amount:0, count:0 }
+  byType[type].amount += amount
+  byType[type].count += 1
+  if (isProductionPayrollCostType(type)) productionLaborCOGS += amount
+  else operatingPayrollExpense += amount
+  rows.push({
+   id:record.id,
+   employee_id:record.employee_id,
+   employee_code:record.employee_code,
+   employee_name:record.employee_name || emp.full_name || '',
+   payroll_start:record.payroll_start,
+   payroll_end:record.payroll_end,
+   amount,
+   payroll_cost_type:type,
+   payroll_cost_label:info.shortLabel || info.label,
+   bucket:info.bucket,
+   released:isReleasedPayrollRecord(record)
+  })
+ })
+ return {
+  productionLaborCOGS,
+  operatingPayrollExpense,
+  totalPayroll,
+  releasedCount,
+  byType:Object.values(byType).filter(t => safeNum(t.amount, 0) > 0),
+  rows
+ }
+}
+
+function isMissingPayrollCostColumnError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('payroll_cost_type') || msg.includes('payroll_cost_label') || msg.includes('column') && msg.includes('cost')
+}
+
+
 // Passkey / Fingerprint Login Helpers 
 // Uses WebAuthn. The app never receives or stores the actual fingerprint.
 function browserSupportsPasskeys() {
@@ -664,7 +777,7 @@ export default function App() {
  const [breakTimerSeconds, setBreakTimerSeconds] = useState(0)
  const [breakTimerInterval, setBreakTimerInterval] = useState(null)
  const [editFields, setEditFields] = useState({})
- const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'' })
+ const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
  const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
  const [finalPayReason, setFinalPayReason] = useState('resigned')
  const [finalPayLastDate, setFinalPayLastDate] = useState(today)
@@ -7913,26 +8026,38 @@ function buildDeliveryInvoicePrintCSS() {
  try {
  const monthStart = financialMonth + '-01'
  const monthEnd = new Date(Number(financialMonth.split('-')[0]), Number(financialMonth.split('-')[1]), 0).toISOString().slice(0,10)
- const [salesRes, prodLogsRes, expensesRes, invoicesRes] = await Promise.all([
+ const [salesRes, prodLogsRes, expensesRes, invoicesRes, payrollRes, employeesRes] = await Promise.all([
  supabase.from('daily_sales').select('*').gte('sale_date', monthStart).lte('sale_date', monthEnd),
  supabase.from('production_logs').select('*').gte('production_date', monthStart).lte('production_date', monthEnd),
  supabase.from('daily_expenses').select('*').gte('expense_date', monthStart).lte('expense_date', monthEnd),
  supabase.from('delivery_invoices').select('*').gte('delivery_date', monthStart).lte('delivery_date', monthEnd),
+ supabase.from('payroll_records').select('*').gte('payroll_start', monthStart).lte('payroll_end', monthEnd),
+ supabase.from('employees').select('id,employee_code,full_name,position,department,payroll_cost_type')
  ])
  if (salesRes.error) console.warn('daily_sales query failed:', salesRes.error)
  if (prodLogsRes.error) console.warn('production_logs query failed:', prodLogsRes.error)
  if (expensesRes.error) console.warn('daily_expenses query failed:', expensesRes.error)
  if (invoicesRes.error) console.warn('delivery_invoices query failed:', invoicesRes.error)
+ if (payrollRes.error) console.warn('payroll_records query failed:', payrollRes.error)
+ if (employeesRes.error) console.warn('employees query failed:', employeesRes.error)
  const sales = salesRes.data || []
  const prodLogs = prodLogsRes.data || []
  const expenses = expensesRes.data || []
  const invoices = invoicesRes.data || []
+ const payrollRecordsForMonth = payrollRes.data || []
+ const employeesForPayroll = employeesRes.data || []
+ const releasedPayrollForMonth = payrollRecordsForMonth.filter(isReleasedPayrollRecord)
+ const payrollClassification = classifyPayrollRecords(releasedPayrollForMonth, employeesForPayroll)
+ const productionLogCOGS = prodLogs.reduce((s,l)=>s+safeNum(l.total_cost,0),0)
+ const productionLaborCOGS = payrollClassification.productionLaborCOGS
+ const operatingPayrollExpense = payrollClassification.operatingPayrollExpense
  const totalRevenue = sales.reduce((s,d)=>s+Number(d.total_revenue||0),0)
  const walkinRevenue = sales.reduce((s,d)=>s+Number(d.total_walkin||0),0)
  const messengerRevenue = sales.reduce((s,d)=>s+Number(d.total_messenger||0),0)
  const resellerRevenue = invoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
- const totalCOGS = prodLogs.reduce((s,l)=>s+Number(l.total_cost||0),0)
- const totalExpenses = expenses.reduce((s,e)=>s+Number(e.amount||0),0)
+ const totalCOGS = productionLogCOGS + productionLaborCOGS
+ const nonPayrollExpenses = expenses.filter(e=>e.status!== 'rejected' && e.category !== 'Payroll Expense').reduce((s,e)=>s+safeNum(e.amount,0),0)
+ const totalExpenses = nonPayrollExpenses + operatingPayrollExpense
  const grossProfit = totalRevenue - totalCOGS
  const netProfit = grossProfit - totalExpenses
  const grossMarginPct = totalRevenue > 0? (grossProfit/totalRevenue)*100: 0
@@ -7942,9 +8067,9 @@ function buildDeliveryInvoicePrintCSS() {
  const allUnpaid = unpaidRes.data || []
  const totalAR = allUnpaid.reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
  const overdueAR = allUnpaid.filter(i=>i.due_date && i.due_date<today).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
- const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:expenses.filter(e=>e.category===cat).reduce((s,e)=>s+Number(e.amount||0),0) })).filter(c=>c.total>0)
+ const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:cat==='Payroll Expense'? operatingPayrollExpense: expenses.filter(e=>e.status!== 'rejected' && e.category===cat).reduce((s,e)=>s+safeNum(e.amount,0),0) })).filter(c=>c.total>0)
  const salesByDay = sales.map(d=>({ date:d.sale_date, revenue:Number(d.total_revenue||0) })).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')))
- setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length })
+ setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, productionLogCOGS, productionLaborCOGS, operatingPayrollExpense, nonPayrollExpenses, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length })
  } catch(e) {
  console.warn('loadFinancialData:', e)
  setFinancialData({ totalRevenue:0, walkinRevenue:0, messengerRevenue:0, resellerRevenue:0, totalCOGS:0, totalExpenses:0, grossProfit:0, netProfit:0, grossMarginPct:0, netMarginPct:0, totalAR:0, overdueAR:0, expenseByCategory:[], salesByDay:[], salesDays:0, productionDays:0 })
@@ -7981,7 +8106,7 @@ function buildDeliveryInvoicePrintCSS() {
  <tr><td class="label">Ingredient Costs</td><td class="val">Included in production</td></tr>
  <tr><td class="label">Labor Costs</td><td class="val">Included in production</td></tr>
  <tr><td class="label">Overhead (Rent, Electricity, Loans, Depreciation)</td><td class="val">Included in production</td></tr>
- <tr class="total"><td>TOTAL COGS (from production logs)</td><td class="val">${php(financialData.totalCOGS)}</td></tr>
+ <tr class="total"><td>TOTAL COGS (production logs + direct production labor)</td><td class="val">${php(financialData.totalCOGS)}</td></tr>
  <tr class="${financialData.grossProfit>=0?'profit':'loss'}"><td>GROSS PROFIT (${financialData.grossMarginPct.toFixed(1)}%)</td><td class="val">${php(financialData.grossProfit)}</td></tr>
  <tr><td colspan="2" class="section">ADDITIONAL EXPENSES</td></tr>
  ${financialData.expenseByCategory.map(c=>`<tr><td class="label">${c.cat}</td><td class="val">${php(c.total)}</td></tr>`).join('')}
@@ -7990,7 +8115,7 @@ function buildDeliveryInvoicePrintCSS() {
  </table>
  <div style="margin-top:20px;background:#fff8dc;border:1px solid #f5c518;border-radius:6px;padding:12px;">
  <p style="font-weight:bold;color:#ca1b1b;margin:0 0 6px;"> Notes</p>
- <p style="font-size:10px;color:#555;margin:0;"> COGS pulled from production logs. Accurate only if production is logged daily.</p>
+ <p style="font-size:10px;color:#555;margin:0;"> COGS pulls production logs plus released payroll classified as Production Labor / COGS. Accurate only when production logs and payroll classifications are maintained.</p>
  <p style="font-size:10px;color:#555;margin:0;"> Reseller revenue = total invoiced. Collected amount may differ check AR report.</p>
  <p style="font-size:10px;color:#555;"> Outstanding AR: <strong>${php(financialData.totalAR)}</strong> | Overdue: <strong>${php(financialData.overdueAR)}</strong></p>
  </div>
@@ -9654,7 +9779,7 @@ function buildDeliveryInvoicePrintCSS() {
 
  function getPayrollExpenseDescription(start, end, summary) {
  const tag = buildPayrollExpenseTag(start, end)
- return `${tag} | Payroll expense for ${start} to ${end} | Employees: ${summary.employeeCount} | Gross earnings posted as expense: ${php(summary.grossEarnings)} | Net pay released: ${php(summary.netPay)} | Cash advance deductions: ${php(summary.cashAdvanceDeduction || 0)} (loan repayment only NOT added as payroll expense). | Includes basic salary, overtime, night differential, holiday pay, paid SIL, unused SIL conversion, and payroll additions.`
+ return `${tag} | Payroll expense for ${start} to ${end} | Employees: ${summary.employeeCount} | Operating payroll posted as expense: ${php(summary.operatingPayrollExpense ?? summary.grossEarnings)} | Direct production labor moved to COGS: ${php(summary.productionLaborCOGS || 0)} | Total gross earnings: ${php(summary.grossEarnings)} | Net pay released: ${php(summary.netPay)} | Cash advance deductions: ${php(summary.cashAdvanceDeduction || 0)} (loan repayment only NOT added as payroll expense). | Includes basic salary, overtime, night differential, holiday pay, paid SIL, unused SIL conversion, and payroll additions.`
  }
 
  async function payrollExpenseAlreadyPosted(start, end) {
@@ -9689,7 +9814,7 @@ function buildDeliveryInvoicePrintCSS() {
  async function getPayrollExpenseSummary(start, end) {
  const { data, error } = await supabase
 .from('payroll_records')
-.select('id,total_earnings,net_pay,basic_pay,birthday_pay,overtime_pay,night_diff_pay,holiday_pay,other_earnings,total_deductions,cash_advance_deduction')
+.select('*')
 .eq('payroll_start', start)
 .eq('payroll_end', end)
 
@@ -9697,10 +9822,21 @@ function buildDeliveryInvoicePrintCSS() {
  const records = data || []
  if (records.length === 0) return { error:'No payroll records found. Compute payroll first.' }
 
+ const employeeIds = Array.from(new Set(records.map(r=>r.employee_id).filter(Boolean)))
+ let payrollEmployees = []
+ if (employeeIds.length > 0) {
+ const empRes = await supabase.from('employees').select('id,employee_code,full_name,position,department,payroll_cost_type').in('id', employeeIds)
+ if (!empRes.error) payrollEmployees = empRes.data || []
+ }
+ const classified = classifyPayrollRecords(records, payrollEmployees, { includeUnreleased:true })
+
  return {
  employeeCount: records.length,
  grossEarnings: records.reduce((s,r)=>s+safeNum(r.total_earnings,0),0),
  netPay: records.reduce((s,r)=>s+safeNum(r.net_pay,0),0),
+ productionLaborCOGS: classified.productionLaborCOGS,
+ operatingPayrollExpense: classified.operatingPayrollExpense,
+ payrollByType: classified.byType,
  basicPay: records.reduce((s,r)=>s+safeNum(r.basic_pay,0),0),
  birthdayPay: records.reduce((s,r)=>s+safeNum(r.birthday_pay,0),0),
  overtimePay: records.reduce((s,r)=>s+safeNum(r.overtime_pay,0),0),
@@ -9728,9 +9864,9 @@ function buildDeliveryInvoicePrintCSS() {
  return { posted:false, error:summary.error }
  }
 
- const amount = safeNum(summary.grossEarnings, 0)
+ const amount = safeNum(summary.operatingPayrollExpense, 0)
  if (amount <= 0) {
- const msg = 'Payroll total earnings is zero. Nothing to post to expenses.'
+ const msg = 'Operating payroll expense is zero. Production payroll is still counted under COGS after payroll release.'
  if (!options.silent) showToast(msg, 'red')
  return { posted:false, error:msg }
  }
@@ -9756,10 +9892,10 @@ function buildDeliveryInvoicePrintCSS() {
  options.auto? 'PAYROLL EXPENSE AUTO-POSTED': 'PAYROLL EXPENSE POSTED',
  options.auto? 'System Auto': 'Admin',
  'ALL',
- `Period: ${start} to ${end} | Gross payroll expense: ${php(amount)} | Net pay: ${php(summary.netPay)} | Expense ID: ${data?.id || ''}`
+ `Period: ${start} to ${end} | Operating payroll expense: ${php(amount)} | Production labor COGS: ${php(summary.productionLaborCOGS || 0)} | Net pay: ${php(summary.netPay)} | Expense ID: ${data?.id || ''}`
  )
 
- if (!options.silent) showToast(` Payroll expense posted: ${php(amount)}`)
+ if (!options.silent) showToast(` Operating payroll expense posted: ${php(amount)}. Production labor COGS: ${php(summary.productionLaborCOGS || 0)}.`)
  loadDailyExpenses()
  if (financialMonth === String(end).slice(0,7)) loadFinancialData()
  refreshFoundationAfterDataChange('payroll-expense-posted')
@@ -10923,7 +11059,12 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const returnsRate = grossSales > 0? (totalReturnsAmount / grossSales) * 100: 0
  const returnsQtyRate = totalDeliveredQty > 0? (totalReturnsQty / totalDeliveredQty) * 100: 0
 
- const totalCOGS = productionLogsRows.reduce((s,l)=>s+safeNum(l.total_cost,0),0)
+ const productionLogCOGS = productionLogsRows.reduce((s,l)=>s+safeNum(l.total_cost,0),0)
+ const releasedPayrollRecords = payrollRecords.filter(isReleasedPayrollRecord)
+ const payrollClassification = classifyPayrollRecords(releasedPayrollRecords, activeEmployees)
+ const productionLaborCOGS = payrollClassification.productionLaborCOGS
+ const operatingPayrollExpense = payrollClassification.operatingPayrollExpense
+ const totalCOGS = productionLogCOGS + productionLaborCOGS
  const totalPiecesProduced = productionLogsRows.reduce((s,l)=>s+safeNum(l.total_pieces?? l.pieces_produced?? l.quantity,0),0)
  const totalProductionReportPieces = productionReportsRows.reduce((s,r)=>s+(r.production_report_items||[]).reduce((a,it)=>a+safeNum(it.quantity?? it.pieces?? it.produced_qty,0),0),0)
  const expectedOutput = productionReportsRows.reduce((s,r)=>s+(r.production_report_items||[]).reduce((a,it)=>a+safeNum(it.expected_quantity?? it.default_quantity,0),0),0)
@@ -10934,10 +11075,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const approvedExpenses = expenses.filter(e=>e.status!== 'rejected')
  const payrollExpensePosted = approvedExpenses.filter(e=>e.category === 'Payroll Expense').reduce((s,e)=>s+safeNum(e.amount,0),0)
  const nonPayrollExpenses = approvedExpenses.filter(e=>e.category!== 'Payroll Expense').reduce((s,e)=>s+safeNum(e.amount,0),0)
- const payrollGross = payrollRecords.reduce((s,p)=>s+safeNum(p.total_earnings,0),0)
- const payrollNet = payrollRecords.reduce((s,p)=>s+safeNum(p.net_pay,0),0)
- const payrollExpense = payrollGross > 0? payrollGross: payrollExpensePosted
- const payrollExpenseSource = payrollGross > 0? 'Payroll records': (payrollExpensePosted > 0? 'Posted payroll expense': 'No payroll data yet')
+ const payrollGross = releasedPayrollRecords.reduce((s,p)=>s+safeNum(p.total_earnings,0),0)
+ const payrollNet = releasedPayrollRecords.reduce((s,p)=>s+safeNum(p.net_pay,0),0)
+ const payrollExpense = operatingPayrollExpense > 0? operatingPayrollExpense: (payrollGross > 0? operatingPayrollExpense: payrollExpensePosted)
+ const payrollExpenseSource = payrollGross > 0? 'Released payroll records, production labor separated to COGS': (payrollExpensePosted > 0? 'Posted payroll expense': 'No released payroll data yet')
  const totalOperatingExpenses = nonPayrollExpenses + payrollExpense
  const totalExpenses = totalOperatingExpenses
  const grossProfit = totalSales - totalCOGS
@@ -11251,9 +11392,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  const salaryRatioTrend = trendMonths.map(m => {
  const sales = salesBetweenDates(m.start, m.end, trendSalesRows)
- const payroll = trendPayrollRows
-.filter(p => String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start)
-.reduce((sum,p)=>sum+safeNum(p.total_earnings,0),0)
+ const monthPayrollRows = trendPayrollRows.filter(p => String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
+ const payroll = classifyPayrollRecords(monthPayrollRows, activeEmployees).operatingPayrollExpense
  const ratio = sales > 0? (payroll / sales) * 100: 0
  const status = getSalaryRatioStatus(ratio, sales, payroll)
  return {
@@ -11367,8 +11507,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const mDaily = trendDailySalesRows.filter(r=>String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end).reduce((sum,r)=>sum+safeNum(r.total_revenue?? r.total_amount,0),0)
  const mInvoices = trendInvoiceRows.filter(i=>String(i.delivery_date || '').slice(0,10) >= m.start && String(i.delivery_date || '').slice(0,10) <= m.end)
  const mCollected = mInvoices.reduce((sum,i)=>sum+safeNum(i.paid_amount,0),0)
- const mPayroll = trendPayrollRows.filter(p=>String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start).reduce((sum,p)=>sum+safeNum(p.total_earnings,0),0)
- const mCOGS = trendProductionLogRows.filter(p=>String(p.production_date || '').slice(0,10) >= m.start && String(p.production_date || '').slice(0,10) <= m.end).reduce((sum,p)=>sum+safeNum(p.total_cost,0),0)
+ const mPayrollRows = trendPayrollRows.filter(p=>String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
+ const mPayrollClass = classifyPayrollRecords(mPayrollRows, activeEmployees)
+ const mPayroll = mPayrollClass.operatingPayrollExpense
+ const mCOGS = trendProductionLogRows.filter(p=>String(p.production_date || '').slice(0,10) >= m.start && String(p.production_date || '').slice(0,10) <= m.end).reduce((sum,p)=>sum+safeNum(p.total_cost,0),0) + mPayrollClass.productionLaborCOGS
  const mCashIn = mDaily + mCollected
  const mCashOut = mPayroll + mCOGS
  const mNet = mCashIn - mCashOut
@@ -11564,9 +11706,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
 .filter(w => String(w.wastage_date || w.created_at || '').slice(0,10) >= m.start && String(w.wastage_date || w.created_at || '').slice(0,10) <= m.end)
  const cost = monthWastage.reduce((sum,w)=>sum+safeNum(w.total_cost?? w.amount?? w.charge_amount, safeNum(w.quantity?? w.qty,0)*safeNum(w.unit_cost,0)),0)
  const qty = monthWastage.reduce((sum,w)=>sum+safeNum(w.quantity?? w.qty,0),0)
+ const monthPayrollRowsForCOGS = trendPayrollRows.filter(p => String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
+ const monthProductionLaborCOGS = classifyPayrollRecords(monthPayrollRowsForCOGS, activeEmployees).productionLaborCOGS
  const cogs = trendProductionLogRows
 .filter(l => String(l.production_date || '').slice(0,10) >= m.start && String(l.production_date || '').slice(0,10) <= m.end)
-.reduce((sum,l)=>sum+safeNum(l.total_cost,0),0)
+.reduce((sum,l)=>sum+safeNum(l.total_cost,0),0) + monthProductionLaborCOGS
  const pct = cogs > 0? (cost / cogs) * 100: 0
  const status = getWastageCostStatus(pct, cost, cogs)
  return { month:m.key, label:m.label, start:m.start, end:m.end, cost, qty, cogs, ratio:pct, status:status.label, color:status.color }
@@ -11842,9 +11986,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  const foodCostTrend = trendMonths.map(m => {
  const sales = salesBetweenDates(m.start, m.end, trendSalesRows)
+ const monthPayrollRowsForFoodCost = trendPayrollRows.filter(p => String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
+ const monthProductionLaborForFoodCost = classifyPayrollRecords(monthPayrollRowsForFoodCost, activeEmployees).productionLaborCOGS
  const cogs = trendProductionLogRows
 .filter(l => String(l.production_date || '').slice(0,10) >= m.start && String(l.production_date || '').slice(0,10) <= m.end)
-.reduce((sum,l)=>sum+safeNum(l.total_cost,0),0)
+.reduce((sum,l)=>sum+safeNum(l.total_cost,0),0) + monthProductionLaborForFoodCost
  const ratio = sales > 0? (cogs / sales) * 100: 0
  const status = getFoodCostStatus(ratio, sales, cogs)
  return {
@@ -12190,7 +12336,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  loadedAt,
  start, end, errors, grossSales, salesReturns, netSales, totalSales, walkinMessengerSales, walkinSales, messengerSales, resellerSales,
  collectedInvoices, totalReturnsAmount, totalReturnsQty, returnsRate, returnsQtyRate, totalDeliveredQty, returnsAnalysis, returnsActionPlan, returnRecords, returnResellerRows, returnProductRows, returnDailyRows, returnsTrend, highReturnInvoices, totalCOGS, grossProfit, operatingProfitBeforePayroll, netProfit,
- foodCostPct, foodCost, foodCostTrend, foodCostActionPlan, productionCostRows, productCOGSRows, salaryToSalesRatio, salaryRatio, salaryRatioPeriodRows, salaryRatioEmployeeRows, salaryRatioTrend, salaryRatioActionPlan, operatingExpenseRatio, totalExpenseRatio, grossMarginPct, netMarginPct, nonPayrollExpenses, totalOperatingExpenses, totalExpenses, payrollExpense,
+ foodCostPct, foodCost, foodCostTrend, foodCostActionPlan, productionCostRows, productCOGSRows, productionLogCOGS, productionLaborCOGS, payrollClassification, salaryToSalesRatio, salaryRatio, salaryRatioPeriodRows, salaryRatioEmployeeRows, salaryRatioTrend, salaryRatioActionPlan, operatingExpenseRatio, totalExpenseRatio, grossMarginPct, netMarginPct, nonPayrollExpenses, totalOperatingExpenses, totalExpenses, payrollExpense,
  payrollExpensePosted, payrollExpenseSource, payrollGross, payrollNet, expenseByCategory, payrollAnalysis, cashIn, cashOut,
  netCashFlow, cashFlow, cashFlowTrend, cashFlowActionPlan, cashVarianceTotal, expectedCashTotal, actualCashTotal, totalAR, arAging, receivableRows, receivablePriorityRows, receivableStatus, receivableSummary, receivableActionPlan, overdueAR, criticalAR, arOverduePct, collectionRate, resellerRanking, resellerPerformanceRows, resellerPerformanceActionPlan, productProfitability, productProfitabilityRows, productProfitabilitySummary, productProfitabilityActionPlan, productionForecast, productionForecastRows, productionForecastActionPlan, outletForecastRows, dailyClosingRows, dailyClosingActionPlan, deliveryRoute, deliveryRouteRows, deliveryRouteActionPlan, inventoryControl, inventoryReorderRows, inventoryReorderActionPlan, batchCosting, batchCostRows, batchCostingActionPlan, actualVsStandard, actualVsStandardRows, actualVsStandardActionPlan, inventoryUsageRows, yieldMonitoring, productionYieldRows, productionYieldActionPlan, wastageReport, wastageActionPlan, wastageDetailRows, wastageItemRows, wastageReasonRows, wastageEmployeeRows, wastageDailyRows, wastageTrend, missingClosingDays, cashVarianceDays, lowStockItems, inventoryValue,
  stockInMovement, stockOutMovement, productionLogsCount:productionLogsRows.length, productionReportsCount:productionReportsRows.length,
@@ -12662,7 +12808,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const eligible = hasOneYearService(editFields.hireDate)
  const currentSIL = eligible? Math.max(0, safeNum(editFields.sil, 0)): 0
 
- const { error } = await supabase.from('employees').update({
+ const employeeUpdatePayload = {
  employee_code:editFields.code,
  full_name:editFields.name,
  position:editFields.position,
@@ -12686,10 +12832,17 @@ This recovery button creates one approved expense record using GROSS payroll ear
  emergency_contact_name:editFields.emergency_name||'',
  emergency_contact_number:editFields.emergency_contact||'',
  employment_type:editFields.employment_type||'regular',
+ payroll_cost_type:editFields.payroll_cost_type||'auto',
  department:editFields.department||'',
  admin_role:editFields.admin_role||null,
  extra_roles:editFields.extra_roles||null
- }).eq('id', editingEmployeeId)
+ }
+ let { error } = await supabase.from('employees').update(employeeUpdatePayload).eq('id', editingEmployeeId)
+ if (error && isMissingPayrollCostColumnError(error)) {
+ const { payroll_cost_type, ...fallbackEmployeeUpdatePayload } = employeeUpdatePayload
+ ;({ error } = await supabase.from('employees').update(fallbackEmployeeUpdatePayload).eq('id', editingEmployeeId))
+ if (!error) console.warn('Employee saved without payroll_cost_type. Run Payroll_COGS_Allocation_Supabase_Update.sql to enable the field.')
+ }
 
  setSaveEmployeeLoading(false)
 
@@ -12710,7 +12863,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const eligible = hasOneYearService(f.hire_date)
  const startingSIL = eligible? 5: 0
 
- const { data:newEmployee, error } = await supabase.from('employees').insert({
+ const employeeInsertPayload = {
  employee_code:f.code.toUpperCase(),
  full_name:f.name,
  position:f.position,
@@ -12735,6 +12888,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  emergency_contact_name:f.emergency_name||'',
  emergency_contact_number:f.emergency_contact||'',
  employment_type:f.employment_type||'probationary',
+ payroll_cost_type:f.payroll_cost_type||'auto',
  department:f.department||'',
  sss_no:f.sss_no||'',
  pagibig_no:f.pagibig_no||'',
@@ -12747,7 +12901,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  bank_name:f.bank_name||'',
  bank_account_number:f.bank_account_number||'',
  bank_account_name:f.bank_account_name||''
- }).select('*').single()
+ }
+ let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select('*').single()
+ if (error && isMissingPayrollCostColumnError(error)) {
+ const { payroll_cost_type, ...fallbackEmployeeInsertPayload } = employeeInsertPayload
+ ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select('*').single())
+ if (!error) console.warn('Employee added without payroll_cost_type. Run Payroll_COGS_Allocation_Supabase_Update.sql to enable the field.')
+ }
 
  if (error) { showToast('Failed: '+error.message,'red'); return }
 
@@ -12762,7 +12922,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
  }
 
- setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'' })
+ setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
  loadEmployees()
  }
  async function deactivateEmployee(empId, empName) {
@@ -13773,7 +13933,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const totalDeductions=caDeduction+nonCADeductions
  const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
  const undertimeMinutesInfo=logs?.reduce((s,l)=>s+Number(l.undertime_minutes||0),0)||0
- results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
+ const payrollCostType = getEmployeePayrollCostType(emp)
+ const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
+ results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -13801,14 +13963,24 @@ This recovery button creates one approved expense record using GROSS payroll ear
  net_pay:moneyRound(pay.netPay),
  employee_acknowledgement:'pending',
  payslip_serial:genSerial(payrollStart,idx),
+ payroll_cost_type:pay.payrollCostType || 'auto',
+ payroll_cost_label:pay.payrollCostLabel || getPayrollCostTypeInfo(pay.payrollCostType || 'auto').shortLabel,
  bank_name:pay.bankName,
  bank_account:pay.bankAccount,
  bank_account_name:pay.bankAccountName
  }))
 
  if (payrollPayload.length > 0) {
- const { error:insertError } = await supabase.from('payroll_records').insert(payrollPayload)
- if (insertError) throw insertError
+ const { error:firstInsertError } = await supabase.from('payroll_records').insert(payrollPayload)
+ if (firstInsertError && isMissingPayrollCostColumnError(firstInsertError)) {
+ const fallbackPayload = payrollPayload.map(row => {
+  const { payroll_cost_type, payroll_cost_label, ...safeRow } = row
+  return safeRow
+ })
+ const { error:fallbackInsertError } = await supabase.from('payroll_records').insert(fallbackPayload)
+ if (fallbackInsertError) throw fallbackInsertError
+ console.warn('Payroll records saved without cost classification columns. Run Payroll_COGS_Allocation_Supabase_Update.sql to store classifications in payroll history.')
+ } else if (firstInsertError) throw firstInsertError
  }
 
  const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
@@ -14813,6 +14985,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={cps}>{php(emp.daily_rate)}/day | {emp.gender||' '} | {emp.civil_status||' '}</p>
  <p style={cps}> {emp.contact_number||' '} | {emp.home_address||' '}</p>
  <p style={cps}> {emp.emergency_contact_name||' '} {emp.emergency_contact_number||' '}</p>
+ <p style={cps}>Payroll Cost: <Badge label={getPayrollCostTypeInfo(getEmployeePayrollCostType(emp)).shortLabel} color={isProductionPayrollCostType(getEmployeePayrollCostType(emp))?'orange':'gray'} /> {isProductionPayrollCostType(getEmployeePayrollCostType(emp))? 'Counts under COGS when payroll is released':'Counts under operating payroll expense when payroll is released'}</p>
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
  {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
@@ -14846,6 +15019,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <select value={newEmpFields.employment_type} onChange={e=>setNewEmpFields(p=>({...p,employment_type:e.target.value}))} style={inputStyle}>
  <option value="regular">Regular</option><option value="probationary">Probationary</option><option value="part-time">Part-Time</option><option value="contractual">Contractual</option>
  </select>
+ <label style={lblS}>Payroll Cost Classification:</label>
+ <select value={newEmpFields.payroll_cost_type||'auto'} onChange={e=>setNewEmpFields(p=>({...p,payroll_cost_type:e.target.value}))} style={{...inputStyle, borderColor:(newEmpFields.payroll_cost_type||'auto')==='production_cogs'?'#ca1b1b':'#e8e8e8', fontWeight:(newEmpFields.payroll_cost_type||'auto')==='production_cogs'?'bold':'normal' }}>
+ {PAYROLL_COST_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+ </select>
+ <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Production Labor / COGS will be included in COGS after payroll is released. Other classifications remain operating payroll expense.</p>
  {adminRole==='owner' && (<>
  <label style={lblS}> Admin Role (Owner only grants system access):</label>
  <select value={newEmpFields.admin_role||''} onChange={e=>setNewEmpFields(p=>({...p,admin_role:e.target.value||null}))} style={{...inputStyle, borderColor:newEmpFields.admin_role?'#ca1b1b':'#ddd', fontWeight:newEmpFields.admin_role?'bold':'normal' }}>
@@ -14932,7 +15110,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -14958,6 +15136,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </select>
  <label style={lblS}>Employment Type:</label>
  <select value={editFields.employment_type||'regular'} onChange={e=>setEditFields(p=>({...p,employment_type:e.target.value}))} style={inputStyle}><option value="regular">Regular</option><option value="probationary">Probationary</option><option value="part-time">Part-Time</option><option value="contractual">Contractual</option></select>
+ <label style={lblS}>Payroll Cost Classification:</label>
+ <select value={editFields.payroll_cost_type||'auto'} onChange={e=>setEditFields(p=>({...p,payroll_cost_type:e.target.value}))} style={{...inputStyle, borderColor:(editFields.payroll_cost_type||'auto')==='production_cogs'?'#ca1b1b':'#e8e8e8', fontWeight:(editFields.payroll_cost_type||'auto')==='production_cogs'?'bold':'normal' }}>
+ {PAYROLL_COST_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+ </select>
+ <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Use Production Labor / COGS for mixers, frymen, bakers, finishers, and packers directly making products.</p>
  {adminRole==='owner'||adminRole==='manager'? (<>
  <label style={lblS}> Primary Role (grants system access):</label>
  <select value={editFields.admin_role||''} onChange={e=>setEditFields(p=>({...p,admin_role:e.target.value||null}))} style={{...inputStyle, borderColor:editFields.admin_role?'#ca1b1b':'#ddd', fontWeight:editFields.admin_role?'bold':'normal' }}>
@@ -19158,7 +19341,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {/* P&L Cards */}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
- { label:'Total COGS', value:php(financialData.totalCOGS), color:'#ca1b1b', sub:'From production logs' },
+ { label:'Total COGS', value:php(financialData.totalCOGS), color:'#ca1b1b', sub:`Production ${php(financialData.productionLogCOGS||0)} + Labor ${php(financialData.productionLaborCOGS||0)}` },
  { label:'Gross Profit', value:php(financialData.grossProfit), color:financialData.grossProfit>=0?'#2d8a4e':'#ca1b1b', sub:`${financialData.grossMarginPct.toFixed(1)}% margin` },
  { label:'Add\'l Expenses', value:php(financialData.totalExpenses), color:'#f57c00', sub:'Fuel, misc, supplies' },
  { label:'Net Profit', value:php(financialData.netProfit), color:financialData.netProfit>=0?'#2d8a4e':'#ca1b1b', sub:`${financialData.netMarginPct.toFixed(1)}% net margin` },
@@ -21373,7 +21556,7 @@ onClick={async ()=>{
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'14px' }}>
  {[
  ['Food Cost %', `${safeNum(foundationData.foodCost?.ratio,0).toFixed(1)}%`, foundationData.foodCost?.color || '#777', foundationData.foodCost?.status || 'NO DATA'],
- ['COGS / Production Cost', php(foundationData.foodCost?.cogs || 0), '#ca1b1b', foundationData.foodCost?.source || 'Production logs'],
+ ['COGS / Production Cost', php(foundationData.foodCost?.cogs || 0), '#ca1b1b', foundationData.foodCost?.source || 'Production logs + direct labor'],
  ['Net Sales Basis', php(foundationData.foodCost?.sales || 0), '#1a1a2e', 'After returns'],
  ['Max COGS @ 40%', php(foundationData.foodCost?.maxCOGSAt40 || 0), '#2d8a4e', 'Upper healthy limit'],
  ['Gap vs 40%', php(foundationData.foodCost?.excessCOGSVs40 || 0), (foundationData.foodCost?.excessCOGSVs40 || 0)>0?'#ca1b1b':'#2d8a4e', (foundationData.foodCost?.excessCOGSVs40 || 0)>0?'Needs action':'Within target'],
