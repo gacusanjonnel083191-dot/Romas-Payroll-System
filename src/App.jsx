@@ -1252,6 +1252,12 @@ export default function App() {
  const [onlinePaymentsLoading, setOnlinePaymentsLoading] = useState(false)
  const [onlinePaymentsMonth, setOnlinePaymentsMonth] = useState(today.slice(0,7))
  const [onlinePaymentsSearch, setOnlinePaymentsSearch] = useState('')
+ const [dailySalesOnlinePayments, setDailySalesOnlinePayments] = useState([])
+ const [dailySalesOnlinePaymentsLoading, setDailySalesOnlinePaymentsLoading] = useState(false)
+ const [dailySalesOnlinePaymentsMonth, setDailySalesOnlinePaymentsMonth] = useState(today.slice(0,7))
+ const [dailySalesOnlinePaymentsSearch, setDailySalesOnlinePaymentsSearch] = useState('')
+ const [savingDailySalesOnlinePayment, setSavingDailySalesOnlinePayment] = useState(false)
+ const [dailySalesOnlinePaymentForm, setDailySalesOnlinePaymentForm] = useState({ payment_date:today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'' })
  const [invoicesLoading, setInvoicesLoading] = useState(false)
  const [showCreateInvoice, setShowCreateInvoice] = useState(false)
  const [invoiceResellerId, setInvoiceResellerId] = useState('')
@@ -1284,6 +1290,8 @@ export default function App() {
  const [adjustmentSaving, setAdjustmentSaving] = useState(false)
  const PAYMENT_METHODS = ['Cash','GCash','Bank Transfer']
  const ONLINE_PAYMENT_METHODS = ['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Check','Other Online Payment']
+ const DAILY_SALES_ONLINE_PAYMENT_METHODS = ['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Debit/Credit Card','QR PH','Other Online Payment']
+ const DAILY_SALES_ONLINE_CHANNELS = ['Walk-in','Messenger / Online Order','Facebook Order','Phone Order','Other Daily Sales']
  const [arFilter, setArFilter] = useState('all')
  const [dailySales, setDailySales] = useState([])
  const [dailySalesLoading, setDailySalesLoading] = useState(false)
@@ -4942,6 +4950,114 @@ export default function App() {
  showToast(' GCash / online payments CSV exported.')
  }
 
+ async function loadDailySalesOnlinePayments(monthKey = dailySalesOnlinePaymentsMonth) {
+ const month = String(monthKey || today.slice(0,7)).slice(0, 7)
+ setDailySalesOnlinePaymentsLoading(true)
+ try {
+ const startDate = `${month}-01`
+ const endDate = getNextMonthStart(month)
+ const { data, error } = await supabase
+ .from('daily_sales_online_payments')
+ .select('*')
+ .gte('payment_date', startDate)
+ .lt('payment_date', endDate)
+ .neq('status', 'void')
+ .order('payment_date', { ascending:false })
+ .order('created_at', { ascending:false })
+ .limit(1000)
+ if (error) {
+ console.warn('loadDailySalesOnlinePayments:', error)
+ setDailySalesOnlinePayments([])
+ showToast(' Failed to load Daily Sales GCash / online payments. Run the Supabase setup SQL if this is the first time.', 'red')
+ return
+ }
+ setDailySalesOnlinePayments(data || [])
+ } catch(e) {
+ console.warn('loadDailySalesOnlinePayments:', e)
+ setDailySalesOnlinePayments([])
+ showToast(' Failed to load Daily Sales GCash / online payments.', 'red')
+ } finally {
+ setDailySalesOnlinePaymentsLoading(false)
+ }
+ }
+
+ function getVisibleDailySalesOnlinePayments() {
+ const term = String(dailySalesOnlinePaymentsSearch || '').trim().toLowerCase()
+ const rows = dailySalesOnlinePayments || []
+ if (!term) return rows
+ return rows.filter(payment => [payment.payment_date, payment.sales_channel, payment.customer_name, payment.payment_method, payment.reference_number, payment.notes, payment.recorded_by, payment.amount].filter(Boolean).join(' ').toLowerCase().includes(term))
+ }
+
+ function getDailySalesOnlinePaymentSummary(rows = dailySalesOnlinePayments) {
+ const summary = (rows || []).reduce((acc, payment) => {
+ const amt = safeNum(payment.amount, 0)
+ const method = String(payment.payment_method || 'Online Payment')
+ acc.total += amt
+ acc.count += 1
+ acc.byMethod[method] = (acc.byMethod[method] || 0) + amt
+ return acc
+ }, { total:0, count:0, byMethod:{} })
+ summary.gcash = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('gcash')).reduce((sum, [,v])=>sum+v, 0)
+ summary.bank = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('bank') || m.toLowerCase().includes('online')).reduce((sum, [,v])=>sum+v, 0)
+ summary.maya = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('maya')).reduce((sum, [,v])=>sum+v, 0)
+ summary.cardQrOther = Math.max(0, summary.total - summary.gcash - summary.bank - summary.maya)
+ return summary
+ }
+
+ async function saveDailySalesOnlinePayment() {
+ const form = dailySalesOnlinePaymentForm || {}
+ const amt = safeNum(form.amount, 0)
+ if (!form.payment_date) { showToast(' Please select payment date.', 'red'); return }
+ if (!amt || amt <= 0) { showToast(' Please enter a valid payment amount.', 'red'); return }
+ if (!form.payment_method) { showToast(' Please select payment method.', 'red'); return }
+ if (['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Debit/Credit Card','QR PH'].includes(form.payment_method) && !String(form.reference_number || '').trim()) {
+ showToast(' Please enter reference number for non-cash payment tracking.', 'red')
+ return
+ }
+ setSavingDailySalesOnlinePayment(true)
+ try {
+ const { error } = await supabase.from('daily_sales_online_payments').insert({
+ payment_date:form.payment_date,
+ sales_channel:form.sales_channel || 'Daily Sales',
+ payment_method:form.payment_method || 'GCash',
+ reference_number:String(form.reference_number || '').trim() || null,
+ customer_name:String(form.customer_name || '').trim() || null,
+ amount:amt,
+ notes:String(form.notes || '').trim() || null,
+ recorded_by:adminRole || adminEmployee?.full_name || 'admin',
+ status:'active'
+ })
+ if (error) throw error
+ await logAudit('DAILY SALES ONLINE PAYMENT RECORDED', adminRole, 'Daily Sales', `${form.payment_date} ${form.payment_method} ${php(amt)} Ref: ${form.reference_number || '-'}`)
+ showToast(` Daily Sales ${form.payment_method} payment recorded: ${php(amt)}`)
+ setDailySalesOnlinePaymentForm({ payment_date:form.payment_date || today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'' })
+ loadDailySalesOnlinePayments(String(form.payment_date || today).slice(0,7))
+ loadDailySales()
+ refreshFoundationAfterDataChange('daily-sales-online-payment-saved')
+ } catch(err) {
+ console.warn('saveDailySalesOnlinePayment:', err)
+ showToast(' Failed to save Daily Sales GCash / online payment: ' + (err?.message || err), 'red')
+ }
+ setSavingDailySalesOnlinePayment(false)
+ }
+
+ function exportDailySalesOnlinePaymentsCSV() {
+ const rows = getVisibleDailySalesOnlinePayments().map(payment => ({
+ Date: payment.payment_date || '',
+ 'Sales Channel': payment.sales_channel || '',
+ Customer: payment.customer_name || '',
+ Method: payment.payment_method || '',
+ 'Reference Number': payment.reference_number || '',
+ Amount: safeNum(payment.amount, 0),
+ Notes: payment.notes || '',
+ 'Recorded By': payment.recorded_by || '',
+ 'Created At': payment.created_at || ''
+ }))
+ if (rows.length === 0) { showToast(' No Daily Sales GCash / online payment records to export.', 'red'); return }
+ downloadTextFile(`romas-daily-sales-gcash-online-${dailySalesOnlinePaymentsMonth}.csv`, rowsToCSV(rows), 'text/csv')
+ showToast(' Daily Sales GCash / online payments CSV exported.')
+ }
+
  async function createDeliveryInvoice() {
  const customerType = invoiceCustomerType === 'non_reseller' ? 'non_reseller' : 'reseller'
  const discountPercent = safeNum(invoiceDiscountPct, customerType === 'reseller' ? 20 : 0)
@@ -6022,6 +6138,7 @@ function buildDeliveryInvoicePrintCSS() {
  setPaymentMethod(p=>({...p,[invoice.id]:'Cash'}))
  loadDeliveryInvoices()
  loadOnlinePayments()
+ loadDailySalesOnlinePayments()
  refreshFoundationAfterDataChange('reseller-payment-recorded')
  }
  function printDeliveryInvoice(invoice) {
@@ -14833,7 +14950,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
- if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+ if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
  if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
  if(key==='franchise') { loadFranchises() }
@@ -19598,8 +19715,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  {/* Sub-navigation */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
- {[['dashboard','\uD83D\uDCCA Dashboard'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCF2 GCash and Online Payments'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
- <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadOnlinePayments() }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
+ {[['dashboard','\uD83D\uDCCA Dashboard'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
+ <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments() }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
 
@@ -21237,64 +21354,85 @@ onClick={async ()=>{
  </div>
  )}
 
- {/* GCASH AND ONLINE PAYMENTS VIEW */}
+ {/* DAILY SALES GCASH AND ONLINE PAYMENTS VIEW */}
  {salesView==='onlinePayments' && (() => {
- const rows = getVisibleOnlinePayments()
- const summary = getOnlinePaymentSummary(rows)
+ const rows = getVisibleDailySalesOnlinePayments()
+ const summary = getDailySalesOnlinePaymentSummary(rows)
  const methodRows = Object.entries(summary.byMethod).sort((a,b)=>b[1]-a[1])
  return (
  <div>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'14px' }}> GCash and Online Payments</h3>
- <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Monitor non-cash payments from reseller invoices and settlements.</p>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'14px' }}> Daily Sales - GCash and Online Payments</h3>
+ <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Record non-cash daily sales here. This is for walk-in, Messenger, Facebook, phone, or other daily sales payments — not reseller invoice payments.</p>
  </div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>loadOnlinePayments()}>{onlinePaymentsLoading?'LOADING...':'REFRESH'}</button>
- <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={exportOnlinePaymentsCSV}>EXPORT CSV</button>
+ <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>loadDailySalesOnlinePayments()}>{dailySalesOnlinePaymentsLoading?'LOADING...':'REFRESH'}</button>
+ <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={exportDailySalesOnlinePaymentsCSV}>EXPORT CSV</button>
  </div>
  </div>
+
+ <div style={{ background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+ <p style={{ color:'#8a6d00', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>Important recording rule</p>
+ <p style={{ color:'#555', fontSize:'11px', margin:0 }}>Use this tab to trace daily sales paid through GCash, Maya, bank transfer, QR, or card. This separates online collections from cash-on-hand and prevents mixing daily sales with reseller receivables.</p>
+ </div>
+
+ <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+ <h4 style={{ color:'#2d8a4e', margin:'0 0 12px', fontSize:'13px' }}> Record Daily Sales Online Payment</h4>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px' }}>
+ <div><label style={lblS}>Payment Date:</label><input type="date" value={dailySalesOnlinePaymentForm.payment_date} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,payment_date:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Daily Sales Source:</label><select value={dailySalesOnlinePaymentForm.sales_channel} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,sales_channel:e.target.value}))} style={{...inputStyle, marginBottom:0 }}>{DAILY_SALES_ONLINE_CHANNELS.map(c=><option key={c}>{c}</option>)}</select></div>
+ <div><label style={lblS}>Payment Method:</label><select value={dailySalesOnlinePaymentForm.payment_method} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,payment_method:e.target.value}))} style={{...inputStyle, marginBottom:0 }}>{DAILY_SALES_ONLINE_PAYMENT_METHODS.map(m=><option key={m}>{m}</option>)}</select></div>
+ <div><label style={lblS}>Amount:</label><input type="number" min="0" step="0.01" value={dailySalesOnlinePaymentForm.amount} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,amount:e.target.value}))} placeholder="0.00" style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Reference Number:</label><input value={dailySalesOnlinePaymentForm.reference_number} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,reference_number:e.target.value}))} placeholder="GCash / bank ref no." style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Customer / Source:</label><input value={dailySalesOnlinePaymentForm.customer_name} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,customer_name:e.target.value}))} placeholder="Customer name, FB order, walk-in QR" style={{...inputStyle, marginBottom:0 }} /></div>
+ <div style={{ gridColumn:isMobile?'auto':'1 / span 3' }}><label style={lblS}>Notes:</label><input value={dailySalesOnlinePaymentForm.notes} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,notes:e.target.value}))} placeholder="Any remarks, order details, or verification note" style={{...inputStyle, marginBottom:0 }} /></div>
+ </div>
+ <button disabled={savingDailySalesOnlinePayment} style={{...btnGreen, opacity:savingDailySalesOnlinePayment?0.6:1, marginTop:'12px' }} onClick={saveDailySalesOnlinePayment}>{savingDailySalesOnlinePayment?'SAVING...':'SAVE DAILY SALES ONLINE PAYMENT'}</button>
+ </div>
+
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4, 1fr)', gap:'10px', marginBottom:'12px' }}>
- <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>TOTAL ONLINE PAYMENTS</p><h3 style={{ color:'#ca1b1b', margin:'6px 0 2px' }}>{php(summary.total)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{summary.count} payment(s)</p></div>
- <div style={{ background:'#f0fff4', border:'1px solid #2d8a4e33', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>GCASH</p><h3 style={{ color:'#2d8a4e', margin:'6px 0 2px' }}>{php(summary.gcash)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{onlinePaymentsMonth}</p></div>
+ <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>TOTAL DAILY SALES ONLINE</p><h3 style={{ color:'#ca1b1b', margin:'6px 0 2px' }}>{php(summary.total)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{summary.count} record(s)</p></div>
+ <div style={{ background:'#f0fff4', border:'1px solid #2d8a4e33', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>GCASH</p><h3 style={{ color:'#2d8a4e', margin:'6px 0 2px' }}>{php(summary.gcash)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{dailySalesOnlinePaymentsMonth}</p></div>
  <div style={{ background:'#f8fbff', border:'1px solid #4a90d933', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>BANK / ONLINE TRANSFER</p><h3 style={{ color:'#4a90d9', margin:'6px 0 2px' }}>{php(summary.bank)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Bank-based payments</p></div>
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>MAYA / OTHER</p><h3 style={{ color:'#1a1a2e', margin:'6px 0 2px' }}>{php(summary.maya + summary.other)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Other non-cash</p></div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>MAYA / CARD / QR / OTHER</p><h3 style={{ color:'#1a1a2e', margin:'6px 0 2px' }}>{php(summary.maya + summary.cardQrOther)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Other non-cash</p></div>
  </div>
+
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'12px', marginBottom:'12px' }}>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'180px 1fr auto', gap:'8px', alignItems:'center' }}>
- <div><label style={lblS}>Month:</label><input type="month" value={onlinePaymentsMonth} onChange={e=>{ setOnlinePaymentsMonth(e.target.value); loadOnlinePayments(e.target.value) }} style={{...inputStyle, marginBottom:0 }} /></div>
- <div><label style={lblS}>Search:</label><input value={onlinePaymentsSearch} onChange={e=>setOnlinePaymentsSearch(e.target.value)} placeholder="Search reseller, invoice, method, reference number, recorded by..." style={{...inputStyle, marginBottom:0 }} /></div>
- <div style={{ alignSelf:'end' }}><button style={{...btnGray, width:'auto', padding:'10px 14px', marginTop:0 }} onClick={()=>setOnlinePaymentsSearch('')}>CLEAR</button></div>
+ <div><label style={lblS}>Month:</label><input type="month" value={dailySalesOnlinePaymentsMonth} onChange={e=>{ setDailySalesOnlinePaymentsMonth(e.target.value); loadDailySalesOnlinePayments(e.target.value) }} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Search:</label><input value={dailySalesOnlinePaymentsSearch} onChange={e=>setDailySalesOnlinePaymentsSearch(e.target.value)} placeholder="Search source, customer, method, reference number, amount, notes..." style={{...inputStyle, marginBottom:0 }} /></div>
+ <div style={{ alignSelf:'end' }}><button style={{...btnGray, width:'auto', padding:'10px 14px', marginTop:0 }} onClick={()=>setDailySalesOnlinePaymentsSearch('')}>CLEAR</button></div>
  </div>
  </div>
+
  {methodRows.length > 0 && (
  <div style={{ background:'#f8f8f8', border:'1px solid #eee', borderRadius:'14px', padding:'12px', marginBottom:'12px' }}>
- <p style={{ color:'#555', fontSize:'11px', fontWeight:'bold', margin:'0 0 8px' }}>Payment Method Breakdown</p>
+ <p style={{ color:'#555', fontSize:'11px', fontWeight:'bold', margin:'0 0 8px' }}>Daily Sales Payment Method Breakdown</p>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  {methodRows.map(([method,total])=><span key={method} style={{ background:'white', border:'1px solid #ddd', borderRadius:'20px', padding:'6px 10px', fontSize:'11px', fontWeight:'bold', color:'#333' }}>{method}: {php(total)}</span>)}
  </div>
  </div>
  )}
+
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', overflowX:'auto' }}>
  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
- <thead><tr style={{ background:'#1a1a2e', color:'white' }}>{['Date','Reseller / Customer','Invoice','Method','Amount','Reference / Notes','Recorded By'].map(h=><th key={h} style={{ padding:'10px 8px', textAlign:h==='Amount'?'right':'left' }}>{h}</th>)}</tr></thead>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}>{['Date','Source','Customer','Method','Reference #','Amount','Notes','Recorded By'].map(h=><th key={h} style={{ padding:'10px 8px', textAlign:h==='Amount'?'right':'left' }}>{h}</th>)}</tr></thead>
  <tbody>
- {onlinePaymentsLoading && <tr><td colSpan="7" style={{ padding:'18px', textAlign:'center', color:'#777' }}>Loading GCash and online payments...</td></tr>}
- {!onlinePaymentsLoading && rows.length === 0 && <tr><td colSpan="7" style={{ padding:'18px', textAlign:'center', color:'#777' }}>No GCash or online payments found for this filter.</td></tr>}
- {!onlinePaymentsLoading && rows.map(payment => {
- const inv = getOnlinePaymentInvoice(payment)
- return (
- <tr key={payment.id || `${payment.invoice_id}-${payment.payment_date}-${payment.amount}`} style={{ borderBottom:'1px solid #eee' }}>
+ {dailySalesOnlinePaymentsLoading && <tr><td colSpan="8" style={{ padding:'18px', textAlign:'center', color:'#777' }}>Loading daily sales GCash and online payments...</td></tr>}
+ {!dailySalesOnlinePaymentsLoading && rows.length === 0 && <tr><td colSpan="8" style={{ padding:'18px', textAlign:'center', color:'#777' }}>No daily sales GCash or online payments found for this filter.</td></tr>}
+ {!dailySalesOnlinePaymentsLoading && rows.map(payment => (
+ <tr key={payment.id || `${payment.payment_date}-${payment.amount}-${payment.reference_number}`} style={{ borderBottom:'1px solid #eee' }}>
  <td style={{ padding:'9px 8px', fontWeight:'bold' }}>{payment.payment_date || '-'}</td>
- <td style={{ padding:'9px 8px' }}>{payment.reseller_name || inv?.reseller_name || inv?.customer_name || '-'}</td>
- <td style={{ padding:'9px 8px' }}><div style={{ fontWeight:'bold', color:'#1a1a2e' }}>{inv?.invoice_number || 'Invoice record'}</div><div style={{ color:'#888', fontSize:'10px' }}>{inv?.delivery_date? `Delivery: ${inv.delivery_date}`: payment.invoice_id || ''}</div></td>
+ <td style={{ padding:'9px 8px' }}>{payment.sales_channel || 'Daily Sales'}</td>
+ <td style={{ padding:'9px 8px' }}>{payment.customer_name || '-'}</td>
  <td style={{ padding:'9px 8px' }}><span style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'20px', padding:'4px 9px', fontWeight:'bold', color:'#1a1a2e' }}>{payment.payment_method || 'Online Payment'}</span></td>
+ <td style={{ padding:'9px 8px', color:'#555' }}>{payment.reference_number || '-'}</td>
  <td style={{ padding:'9px 8px', textAlign:'right', color:'#2d8a4e', fontWeight:'900' }}>{php(payment.amount)}</td>
  <td style={{ padding:'9px 8px', color:'#555', maxWidth:'320px' }}>{payment.notes || '-'}</td>
  <td style={{ padding:'9px 8px', color:'#777' }}>{payment.recorded_by || '-'}</td>
  </tr>
- )
- })}
+ ))}
  </tbody>
  </table>
  </div>
