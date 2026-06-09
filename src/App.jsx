@@ -1173,6 +1173,10 @@ export default function App() {
  const [crateAdjustmentQty, setCrateAdjustmentQty] = useState('')
  const [crateAdjustmentReason, setCrateAdjustmentReason] = useState('Correction')
  const [crateAdjustmentNotes, setCrateAdjustmentNotes] = useState('')
+ const [companyCrateDate, setCompanyCrateDate] = useState(today)
+ const [companyCrateAction, setCompanyCrateAction] = useState('add_purchased')
+ const [companyCrateQty, setCompanyCrateQty] = useState('')
+ const [companyCrateNotes, setCompanyCrateNotes] = useState('')
  const [editingItemId, setEditingItemId] = useState(null)
  const [editItemFields, setEditItemFields] = useState({})
  // Suppliers
@@ -2132,6 +2136,26 @@ export default function App() {
  return (deliveryInvoices || []).find(inv => String(inv.id) === String(invoiceId)) || null
  }
 
+ function isCompanyCrateStockMovement(movement) {
+ const type = String(movement?.movement_type || '').toLowerCase()
+ const resellerName = String(movement?.reseller_name || '').trim().toLowerCase()
+ return type.startsWith('company_') || resellerName === 'company inventory'
+ }
+
+ function getCompanyCrateSignedQty(movement) {
+ if (!isCompanyCrateStockMovement(movement)) return 0
+ const qty = safeNum(movement?.quantity, 0)
+ const direction = String(movement?.direction || '').toLowerCase()
+ const type = String(movement?.movement_type || '').toLowerCase()
+
+ // Positive means crates owned by the company increased. Negative means damaged/lost/deducted.
+ if (direction === 'in' || direction === 'increase_stock') return qty
+ if (direction === 'out' || direction === 'reduce_stock') return -qty
+ if (type.includes('add') || type.includes('purchase') || type.includes('initial') || type.includes('increase')) return qty
+ if (type.includes('deduct') || type.includes('damage') || type.includes('lost') || type.includes('writeoff') || type.includes('decrease')) return -qty
+ return qty
+ }
+
  function getCrateBalanceRows(ignoreSearch = false) {
  const map = {}
  ;(resellers || []).forEach(r => {
@@ -2148,6 +2172,7 @@ export default function App() {
  })
 
  ;(crateMovements || []).forEach(m => {
+ if (isCompanyCrateStockMovement(m)) return
  const key = String(m.reseller_id || m.reseller_name || 'unknown')
  if (!map[key]) {
  map[key] = {
@@ -2186,11 +2211,16 @@ export default function App() {
  function getCrateDashboardData() {
  const rows = getCrateBalanceRows()
  const allRows = getCrateBalanceRows(true)
- const totalReleased = (crateMovements || []).filter(m => ['dispatch','released','settlement_dispatch'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
- const totalCollected = (crateMovements || []).filter(m => ['collection','returned','return','settlement_collection'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
+ const totalReleased = (crateMovements || []).filter(m => !isCompanyCrateStockMovement(m) && ['dispatch','released','settlement_dispatch'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
+ const totalCollected = (crateMovements || []).filter(m => !isCompanyCrateStockMovement(m) && ['collection','returned','return','settlement_collection'].includes(String(m.movement_type || '').toLowerCase())).reduce((s,m)=>s+safeNum(m.quantity,0),0)
  const totalWithResellers = allRows.reduce((s,r)=>s+Math.max(0, safeNum(r.balance,0)),0)
  const resellersWithBalance = allRows.filter(r => safeNum(r.balance,0) > 0).length
- return { rows, allRows, totalReleased, totalCollected, totalWithResellers, resellersWithBalance }
+ const companyMovements = (crateMovements || []).filter(isCompanyCrateStockMovement)
+ const totalCompanyCrates = companyMovements.reduce((s,m)=>s+getCompanyCrateSignedQty(m),0)
+ const totalCompanyAdded = companyMovements.reduce((s,m)=>s+Math.max(0, getCompanyCrateSignedQty(m)),0)
+ const totalCompanyDeducted = companyMovements.reduce((s,m)=>s+Math.abs(Math.min(0, getCompanyCrateSignedQty(m))),0)
+ const availableCrates = totalCompanyCrates - totalWithResellers
+ return { rows, allRows, totalReleased, totalCollected, totalWithResellers, resellersWithBalance, totalCompanyCrates, totalCompanyAdded, totalCompanyDeducted, availableCrates }
  }
 
  async function loadCrateMovements() {
@@ -2212,6 +2242,70 @@ export default function App() {
  setCratesLoadError('Crates table is not ready yet. Please run the Supabase setup SQL once.')
  } finally {
  setCratesLoading(false)
+ }
+ }
+
+ async function saveCompanyCrateStockAdjustment() {
+ const qtyInput = safeNum(companyCrateQty, 0)
+ if (!companyCrateDate) { showToast('Please select crate stock date.','red'); return }
+ if (qtyInput < 0) { showToast('Please enter a valid crate quantity.','red'); return }
+ if (qtyInput <= 0) { showToast('Please enter crate quantity.','red'); return }
+
+ const crateData = getCrateDashboardData()
+ const currentTotal = safeNum(crateData.totalCompanyCrates, 0)
+ const action = String(companyCrateAction || 'add_purchased')
+ const actionMap = {
+ set_exact:'Set exact company crate count',
+ add_purchased:'Add newly purchased crates',
+ correction_increase:'Correction increase',
+ deduct_damaged:'Deduct damaged crates',
+ deduct_lost:'Deduct lost crates',
+ correction_decrease:'Correction decrease'
+ }
+
+ let movementType = `company_${action}`
+ let direction = ['deduct_damaged','deduct_lost','correction_decrease'].includes(action) ? 'out' : 'in'
+ let quantity = qtyInput
+ let stockNote = `${actionMap[action] || 'Company crate stock adjustment'}: ${qtyInput} crate(s).`
+
+ if (action === 'set_exact') {
+ const diff = qtyInput - currentTotal
+ if (Math.abs(diff) < 0.0001) {
+ showToast('Company crate count is already set to this number.','green')
+ return
+ }
+ quantity = Math.abs(diff)
+ direction = diff > 0 ? 'in' : 'out'
+ movementType = 'company_set_exact_adjustment'
+ stockNote = `Set exact company crate count to ${qtyInput}. Previous count: ${currentTotal}. Adjustment difference: ${diff > 0 ? '+' : ''}${diff}.`
+ }
+
+ try {
+ const payload = {
+ movement_date:companyCrateDate,
+ related_delivery_date:null,
+ reseller_id:null,
+ reseller_name:'Company Inventory',
+ invoice_id:null,
+ invoice_number:'',
+ movement_type:movementType,
+ direction,
+ quantity,
+ dispatcher_name:'',
+ driver_name:'',
+ recorded_by:adminEmployee?.full_name || adminRole || 'Admin',
+ notes:[stockNote, String(companyCrateNotes || '').trim()].filter(Boolean).join(' '),
+ is_deleted:false
+ }
+ const { error } = await supabase.from('crate_movements').insert(payload)
+ if (error) throw error
+ await logAudit('COMPANY CRATE STOCK UPDATED', adminRole || 'Admin', 'Company Inventory', `${stockNote}${companyCrateNotes ? ' '+companyCrateNotes : ''}`)
+ showToast(' Company crate stock updated!')
+ setCompanyCrateQty(''); setCompanyCrateNotes('')
+ loadCrateMovements()
+ } catch (err) {
+ console.warn('saveCompanyCrateStockAdjustment:', err)
+ showToast('Company crate stock update failed. Run the crate_movements SQL setup first.','red')
  }
  }
 
@@ -16470,11 +16564,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </div>
  )}
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
+ { label:'Total Company Crates', value:crateData.totalCompanyCrates, sub:'Company-owned count', color:'#1a1a2e', bg:'#f4f4f8' },
+ { label:'Available In-House', value:crateData.availableCrates, sub:crateData.availableCrates < 0 ? 'Check company count' : 'Not with resellers', color:crateData.availableCrates < 0 ? '#ca1b1b' : '#2d8a4e', bg:crateData.availableCrates < 0 ? '#fff5f5' : '#f0fff4' },
+ { label:'With Resellers', value:crateData.totalWithResellers, sub:'Current unreturned crates', color:crateData.totalWithResellers>0?'#ca1b1b':'#2d8a4e', bg:crateData.totalWithResellers>0?'#fff5f5':'#f0fff4' },
  { label:'Crates Released', value:crateData.totalReleased, sub:'All dispatch records', color:'#4a90d9', bg:'#e8f0fe' },
  { label:'Crates Collected', value:crateData.totalCollected, sub:'All return records', color:'#2d8a4e', bg:'#f0fff4' },
- { label:'With Resellers', value:crateData.totalWithResellers, sub:'Current unreturned crates', color:crateData.totalWithResellers>0?'#ca1b1b':'#2d8a4e', bg:crateData.totalWithResellers>0?'#fff5f5':'#f0fff4' },
  { label:'Resellers w/ Balance', value:crateData.resellersWithBalance, sub:'Need follow-up', color:crateData.resellersWithBalance>0?'#f57c00':'#2d8a4e', bg:'#fff8e1' },
  ].map(c => (
  <div key={c.label} style={{ background:c.bg, border:`2px solid ${c.color}22`, borderRadius:'12px', padding:'12px' }}>
@@ -16483,6 +16579,55 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={{ color:'#999', fontSize:'10px', margin:0 }}>{c.sub}</p>
  </div>
  ))}
+ </div>
+
+ <div style={{ background:'#f8fbff', border:'2px solid #dbe7ff', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
+ <div>
+ <p style={{ color:'#1a1a2e', fontWeight:'bold', fontSize:'14px', margin:'0 0 4px' }}>Company Crate Stock Control</p>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Use this to set the total crates owned by the company, add newly purchased crates, or deduct damaged/lost crates.</p>
+ </div>
+ <div style={{ textAlign:'right' }}>
+ <p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', textTransform:'uppercase', fontWeight:'bold' }}>Current Company Count</p>
+ <p style={{ color:'#1a1a2e', fontSize:'24px', fontWeight:'bold', margin:0 }}>{crateData.totalCompanyCrates}</p>
+ </div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1.4fr 1fr 2fr auto', gap:'10px', alignItems:'end' }}>
+ <div>
+ <label style={lblS}>Date:</label>
+ <input type="date" value={companyCrateDate} onChange={e=>setCompanyCrateDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Action:</label>
+ <select value={companyCrateAction} onChange={e=>setCompanyCrateAction(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+ <option value="set_exact">Set exact total company crates</option>
+ <option value="add_purchased">Add newly purchased crates</option>
+ <option value="correction_increase">Correction increase</option>
+ <option value="deduct_damaged">Deduct damaged crates</option>
+ <option value="deduct_lost">Deduct lost crates</option>
+ <option value="correction_decrease">Correction decrease</option>
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>{companyCrateAction === 'set_exact' ? 'New Total Count:' : 'Qty:'}</label>
+ <input type="number" min="0" step="1" value={companyCrateQty} onChange={e=>setCompanyCrateQty(e.target.value)} placeholder={companyCrateAction === 'set_exact' ? 'e.g. 300' : 'e.g. 20'} style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Notes / OR / Approval Details:</label>
+ <input value={companyCrateNotes} onChange={e=>setCompanyCrateNotes(e.target.value)} placeholder="Example: bought 50 new crates / 3 damaged crates approved by owner" style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <button style={{...btnBlack, marginTop:0, whiteSpace:'nowrap' }} onClick={saveCompanyCrateStockAdjustment}>SAVE STOCK</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'8px', marginTop:'12px' }}>
+ <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', fontWeight:'bold' }}>TOTAL OWNED</p><p style={{ color:'#1a1a2e', fontWeight:'bold', fontSize:'18px', margin:0 }}>{crateData.totalCompanyCrates}</p></div>
+ <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', fontWeight:'bold' }}>CURRENTLY WITH RESELLERS</p><p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'18px', margin:0 }}>{crateData.totalWithResellers}</p></div>
+ <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#888', fontSize:'10px', margin:'0 0 2px', fontWeight:'bold' }}>AVAILABLE IN-HOUSE</p><p style={{ color:crateData.availableCrates < 0 ? '#ca1b1b' : '#2d8a4e', fontWeight:'bold', fontSize:'18px', margin:0 }}>{crateData.availableCrates}</p></div>
+ </div>
+ {crateData.availableCrates < 0 && (
+ <div style={{ background:'#fff5f5', border:'1px solid #ffcdd2', borderRadius:'10px', padding:'10px', marginTop:'10px' }}>
+ <p style={{ color:'#ca1b1b', fontSize:'12px', fontWeight:'bold', margin:0 }}>Warning: crates with resellers are higher than the total company crate count. Set the exact company crate count or review old crate records.</p>
+ </div>
+ )}
  </div>
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'16px' }}>
