@@ -664,7 +664,7 @@ export default function App() {
  const [breakTimerSeconds, setBreakTimerSeconds] = useState(0)
  const [breakTimerInterval, setBreakTimerInterval] = useState(null)
  const [editFields, setEditFields] = useState({})
- const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'' })
+ const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'' })
  const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
  const [finalPayReason, setFinalPayReason] = useState('resigned')
  const [finalPayLastDate, setFinalPayLastDate] = useState(today)
@@ -734,6 +734,7 @@ export default function App() {
  const [viewingContract, setViewingContract] = useState(null)
  const [contractStorageType, setContractStorageType] = useState('digital')
  const [contractPhysicalLocation, setContractPhysicalLocation] = useState('')
+ const [autoContractGenerating, setAutoContractGenerating] = useState(false)
  // SOP Library / Company Standards
  const [sops, setSops] = useState([])
  const [sopsLoading, setSopsLoading] = useState(false)
@@ -2001,6 +2002,215 @@ export default function App() {
  pw.document.close()
  setTimeout(() => { pw.focus(); pw.print() }, 600)
  }
+
+ function getRegularizationDueDate(emp) {
+ if (!emp?.hire_date) return ''
+ return addMonthsClampedDateString(emp.hire_date, 6)
+ }
+ function getDaysUntilContractDate(dateStr) {
+ const d = parseLocalDate(dateStr)
+ const t = parseLocalDate(today)
+ if (!d ||!t) return null
+ return Math.ceil((d.getTime() - t.getTime()) / (1000 * 60 * 60 * 24))
+ }
+ function getEmployeeContractRows(empId, list = contracts) {
+ return (list || []).filter(c => String(c.employee_id) === String(empId))
+ }
+ function contractIsUsable(c) {
+ const st = String(c?.status || '').toLowerCase()
+ return !['terminated','deleted','cancelled','voided'].includes(st)
+ }
+ function hasEmployeeContractType(emp, type, list = contracts) {
+ return getEmployeeContractRows(emp?.id, list).some(c => String(c.contract_type || '').toLowerCase() === String(type || '').toLowerCase() && contractIsUsable(c))
+ }
+ function getRecommendedContractTypeForEmployee(emp) {
+ const t = String(emp?.employment_type || '').toLowerCase()
+ if (t === 'regular') return 'regular'
+ return 'probationary'
+ }
+ function getRegularizationStatus(emp, list = contracts) {
+ const dueDate = getRegularizationDueDate(emp)
+ const days = getDaysUntilContractDate(dueDate)
+ const type = String(emp?.employment_type || '').toLowerCase()
+ const hasRegularContract = hasEmployeeContractType(emp, 'regular', list)
+ const hasProbationaryContract = hasEmployeeContractType(emp, 'probationary', list)
+ if (type === 'regular') {
+ return { label:'Regular', color:'green', dueDate, days, hasRegularContract, hasProbationaryContract, needsReview:false, message:hasRegularContract? 'Regular contract on file.': 'Regular employee missing regular contract.' }
+ }
+ if (days === null) return { label:'No Hire Date', color:'red', dueDate:'', days:null, hasRegularContract, hasProbationaryContract, needsReview:false, message:'Add hire date to compute regularization.' }
+ if (hasRegularContract) return { label:'Regular Contract Drafted', color:'blue', dueDate, days, hasRegularContract, hasProbationaryContract, needsReview:true, message:'Regular contract exists. Review and approve regularization.' }
+ if (days <= 0) return { label:'Due for Review', color:'red', dueDate, days, hasRegularContract, hasProbationaryContract, needsReview:true, message:'Six-month review is due. Do not silently regularize; approve after review.' }
+ if (days <= 30) return { label:'Review Soon', color:'orange', dueDate, days, hasRegularContract, hasProbationaryContract, needsReview:false, message:`${days} day(s) before regularization review.` }
+ return { label:'Probationary', color:'blue', dueDate, days, hasRegularContract, hasProbationaryContract, needsReview:false, message:`${days} day(s) remaining before review.` }
+ }
+ function getContractStatusForEmployee(emp, list = contracts) {
+ const rows = getEmployeeContractRows(emp?.id, list).filter(contractIsUsable)
+ const activeRegular = rows.find(c => String(c.contract_type || '').toLowerCase() === 'regular' && String(c.status || '').toLowerCase() === 'active')
+ const reviewRegular = rows.find(c => String(c.contract_type || '').toLowerCase() === 'regular' && ['for_review','draft'].includes(String(c.status || '').toLowerCase()))
+ const activeProbationary = rows.find(c => String(c.contract_type || '').toLowerCase() === 'probationary' && String(c.status || '').toLowerCase() === 'active')
+ if (activeRegular) return { label:'Regular Contract Active', color:'green' }
+ if (reviewRegular) return { label:'Regular Contract Draft', color:'orange' }
+ if (activeProbationary) return { label:'Probationary Contract Active', color:'blue' }
+ if (rows.length > 0) return { label:'Contract Logged', color:'gray' }
+ return { label:'Missing Contract', color:'red' }
+ }
+ async function createGeneratedContractForEmployee(emp, contractKind = null, options = {}) {
+ if (!emp?.id) return null
+ const type = contractKind || getRecommendedContractTypeForEmployee(emp)
+ const existingStatuses = ['active','draft','for_review','completed']
+ const { data:existing, error:existingError } = await supabase
+ .from('employee_contracts')
+ .select('*')
+ .eq('employee_id', emp.id)
+ .eq('contract_type', type)
+ .in('status', existingStatuses)
+ .limit(1)
+ if (existingError) throw existingError
+ if (existing && existing.length > 0) return existing[0]
+ const regularizationDue = getRegularizationDueDate(emp)
+ const startDate = options.startDate || (type === 'regular'? (String(emp.employment_type || '').toLowerCase() === 'regular'? (emp.hire_date || today): (regularizationDue || today)): (emp.hire_date || today))
+ const endDate = Object.prototype.hasOwnProperty.call(options, 'endDate')? options.endDate: (type === 'probationary'? (regularizationDue || null): null)
+ const status = options.status || (type === 'regular' && String(emp.employment_type || '').toLowerCase() !== 'regular'? 'for_review': 'active')
+ const { data, error } = await supabase.from('employee_contracts').insert({
+ employee_id: emp.id,
+ employee_code: emp.employee_code || '',
+ employee_name: emp.full_name || '',
+ contract_type: type,
+ start_date: startDate,
+ end_date: endDate || null,
+ status,
+ file_url: null,
+ file_name: null,
+ storage_type: 'system_generated',
+ physical_location: status === 'for_review'? 'System-generated regular contract draft for owner/admin approval': 'System-generated printable contract'
+ }).select('*').single()
+ if (error) throw error
+ await logAudit('CONTRACT AUTO-GENERATED', currentAdminLabel || 'System', emp.full_name || '', `${type} contract ${status}`)
+ return data
+ }
+ async function autoGenerateMissingContracts(options = {}) {
+ if (autoContractGenerating) return
+ setAutoContractGenerating(true)
+ try {
+ const [{ data:employeeRows, error:empError }, { data:contractRows, error:contractError }] = await Promise.all([
+ supabase.from('employees').select('*').eq('is_active', true).order('full_name'),
+ supabase.from('employee_contracts').select('*')
+ ])
+ if (empError) throw empError
+ if (contractError) throw contractError
+ let created = 0
+ const workingContracts = [...(contractRows || [])]
+ for (const emp of (employeeRows || [])) {
+ const recommendedType = getRecommendedContractTypeForEmployee(emp)
+ if (!hasEmployeeContractType(emp, recommendedType, workingContracts)) {
+ const newRow = await createGeneratedContractForEmployee(emp, recommendedType, { status:recommendedType === 'regular'? 'active': 'active' })
+ if (newRow) { workingContracts.push(newRow); created += 1 }
+ }
+ const reg = getRegularizationStatus(emp, workingContracts)
+ if (String(emp.employment_type || '').toLowerCase() !== 'regular' && reg.days !== null && reg.days <= 0 && !hasEmployeeContractType(emp, 'regular', workingContracts)) {
+ const draftRow = await createGeneratedContractForEmployee(emp, 'regular', { status:'for_review', startDate:reg.dueDate || today, endDate:null })
+ if (draftRow) { workingContracts.push(draftRow); created += 1 }
+ }
+ }
+ await loadContracts()
+ await loadEmployees()
+ if (!options.silent) showToast(created > 0? ` ${created} contract record(s) generated.`: ' All active employees already have the required contract records.')
+ } catch(err) {
+ if (!options.silent) showToast('Failed to generate contracts: ' + err.message, 'red')
+ console.warn('autoGenerateMissingContracts:', err)
+ } finally {
+ setAutoContractGenerating(false)
+ }
+ }
+ async function approveRegularization(emp) {
+ const reg = getRegularizationStatus(emp)
+ if (!emp?.id) return
+ if (reg.days !== null && reg.days > 0 && !window.confirm(`${emp.full_name} is not yet at the six-month review date. Continue early approval?`)) return
+ if (!window.confirm(`Approve regularization for ${emp.full_name}?\n\nThis will change Employment Type to Regular and activate/prepare the regular employment contract.`)) return
+ try {
+ let regularContract = getEmployeeContractRows(emp.id).find(c => String(c.contract_type || '').toLowerCase() === 'regular' && contractIsUsable(c))
+ if (!regularContract) {
+ regularContract = await createGeneratedContractForEmployee(emp, 'regular', { status:'active', startDate:reg.dueDate || today, endDate:null })
+ } else if (String(regularContract.status || '').toLowerCase() !== 'active') {
+ const { error:contractError } = await supabase.from('employee_contracts').update({ status:'active', start_date:regularContract.start_date || reg.dueDate || today, end_date:null }).eq('id', regularContract.id)
+ if (contractError) throw contractError
+ }
+ const { error:empError } = await supabase.from('employees').update({ employment_type:'regular' }).eq('id', emp.id)
+ if (empError) throw empError
+ await supabase.from('employee_contracts').update({ status:'completed' }).eq('employee_id', emp.id).eq('contract_type', 'probationary').eq('status', 'active')
+ await logAudit('EMPLOYEE REGULARIZED', currentAdminLabel || 'Admin', emp.full_name || '', `Regularization approved. Effective ${reg.dueDate || today}`)
+ showToast(` ${emp.full_name} regularization approved.`)
+ await loadEmployees()
+ await loadContracts()
+ } catch(err) {
+ showToast('Failed to approve regularization: ' + err.message, 'red')
+ }
+ }
+ function printEmploymentContract(emp, contractKind = null) {
+ if (!emp) { showToast('Employee not found.', 'red'); return }
+ const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]))
+ const type = contractKind || getRecommendedContractTypeForEmployee(emp)
+ const dueDate = getRegularizationDueDate(emp)
+ const isRegular = type === 'regular'
+ const title = isRegular? 'REGULAR EMPLOYMENT CONTRACT': 'PROBATIONARY EMPLOYMENT CONTRACT'
+ const startDate = isRegular? (String(emp.employment_type || '').toLowerCase() === 'regular'? (emp.hire_date || today): (dueDate || today)): (emp.hire_date || today)
+ const endDate = isRegular? 'Open-ended, subject to company policies and applicable labor laws': (dueDate || 'Six months from hire date')
+ const rateText = emp.daily_rate? php(emp.daily_rate) + ' per day': 'As stated in the employee compensation record'
+ const position = emp.position || 'Crew / Staff'
+ const department = emp.department || 'Operations'
+ const workLocation = emp.work_location || 'Roma\'s Donuts assigned work location / branch / production area'
+ const probationaryClauses = isRegular? '' : `
+ <h3>PROBATIONARY PERIOD AND REGULARIZATION STANDARDS</h3>
+ <p>The Employee is engaged on a probationary basis starting from the commencement date stated above. The Employee shall be evaluated based on attendance, punctuality, work quality, productivity, teamwork, honesty, discipline, food safety compliance, customer service, obedience to lawful company instructions, care of company property, and compliance with Roma's Donuts SOPs and handbook.</p>
+ <p>The probationary review date is <strong>${esc(dueDate || 'to be computed from hire date')}</strong>. Regularization is subject to management review and written approval. If the Employee continues working after the probationary period without lawful termination or extension allowed by law, the Employee may be treated according to applicable labor standards.</p>`
+ const regularClauses = isRegular? `
+ <h3>REGULAR EMPLOYMENT STATUS</h3>
+ <p>The Employee is engaged as a regular employee effective on the start date stated above, subject to continued compliance with company standards, attendance rules, payroll policies, food safety requirements, lawful instructions, and the Roma's Donuts employee handbook and SOPs.</p>` : ''
+ const html = `<!DOCTYPE html><html><head><title>${esc(title)} - ${esc(emp.full_name)}</title>
+ <style>
+ *{box-sizing:border-box;} body{font-family:Arial,sans-serif;color:#111;margin:0;background:#e5e5e5;font-size:11px;line-height:1.38;} .page{width:210mm;min-height:297mm;margin:0 auto;background:white;padding:17mm 18mm;} .brand{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px;} .brand h1{margin:0;color:#ca1b1b;font-size:24px;letter-spacing:.5px;} .brand p{margin:3px 0;color:#555;font-size:11px;} h2{text-align:center;margin:10px 0 14px;font-size:16px;letter-spacing:.6px;text-decoration:underline;} h3{background:#ca1b1b;color:white;padding:5px 8px;font-size:11px;margin:12px 0 7px;letter-spacing:.3px;} p{margin:5px 0;text-align:justify;} table{width:100%;border-collapse:collapse;margin:8px 0 12px;} td{border:1px solid #ddd;padding:6px 8px;vertical-align:top;} td:first-child{width:31%;background:#fff8dc;font-weight:bold;color:#333;} .note{border:1px solid #f5c518;background:#fff8dc;padding:8px;margin:10px 0;font-size:10px;color:#555;} .sig-wrap{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:26px;} .sig{border-top:1px solid #000;text-align:center;padding-top:5px;font-size:10px;} .footer{text-align:center;color:#777;font-size:9px;margin-top:14px;} .no-print{text-align:center;margin:18px;} button{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 22px;font-weight:bold;cursor:pointer;} @media print{@page{size:A4;margin:0;} body{background:white;} .page{margin:0;box-shadow:none;} .no-print{display:none;}}
+ </style></head><body><div class="page">
+ <div class="brand"><h1>Roma's Donuts</h1><p>Employment Contract Record</p><p>Generated by Roma's Donuts Business System</p></div>
+ <h2>${esc(title)}</h2>
+ <p>This Employment Contract is entered into by and between <strong>Roma's Donuts</strong> (the "Company") and the employee named below (the "Employee").</p>
+ <h3>EMPLOYEE INFORMATION</h3>
+ <table>
+ <tr><td>Employee Name</td><td>${esc(emp.full_name || '')}</td></tr>
+ <tr><td>Employee Code</td><td>${esc(emp.employee_code || '')}</td></tr>
+ <tr><td>Position</td><td>${esc(position)}</td></tr>
+ <tr><td>Department</td><td>${esc(department)}</td></tr>
+ <tr><td>Work Location</td><td>${esc(workLocation)}</td></tr>
+ <tr><td>Hire Date</td><td>${esc(emp.hire_date || '')}</td></tr>
+ <tr><td>Contract Start Date</td><td>${esc(startDate)}</td></tr>
+ <tr><td>Contract End / Review Date</td><td>${esc(endDate)}</td></tr>
+ <tr><td>Compensation</td><td>${esc(rateText)}</td></tr>
+ </table>
+ <h3>DUTIES AND RESPONSIBILITIES</h3>
+ <p>The Employee shall perform all duties related to the position and any reasonable work assignment given by the Company, including tasks connected to production, packing, dispatch, delivery, selling, customer service, cleaning, inventory, food safety, documentation, and other operational needs depending on the assigned role.</p>
+ <h3>WORK SCHEDULE, ATTENDANCE, AND PAYROLL</h3>
+ <p>The Employee shall follow the work schedule, attendance rules, time-in/time-out procedures, overtime approval process, leave procedures, and payroll policies implemented by the Company. Overtime, undertime, absences, tardiness, holiday pay, cash advances, deductions, and adjustments shall be processed based on company records and applicable labor rules.</p>
+ ${probationaryClauses}
+ ${regularClauses}
+ <h3>COMPANY RULES, FOOD SAFETY, AND CONFIDENTIALITY</h3>
+ <p>The Employee agrees to follow all company SOPs, food safety rules, hygiene standards, cash handling procedures, production standards, inventory controls, delivery policies, reseller policies, and lawful instructions from authorized managers or supervisors.</p>
+ <p>The Employee shall keep confidential all company recipes, formulas, costing, supplier information, customer/reseller records, employee records, prices, business systems, reports, and other internal information. Unauthorized disclosure or misuse may lead to disciplinary action and other lawful remedies.</p>
+ <h3>COMPANY PROPERTY AND ACCOUNTABILITY</h3>
+ <p>The Employee shall properly use and safeguard all company property, including equipment, tools, uniforms, delivery items, crates, crate covers, documents, cash, ingredients, finished goods, vehicles, devices, and system access credentials. Loss, damage, negligence, or unauthorized use shall be handled according to company policy, investigation, and applicable law.</p>
+ <h3>DISCIPLINE, SEPARATION, AND ACKNOWLEDGMENT</h3>
+ <p>Violation of company policy, misconduct, negligence, dishonesty, abandonment, repeated attendance issues, unsafe practices, insubordination, theft, fraud, or failure to meet reasonable work standards may result in disciplinary action, up to termination, subject to due process and applicable labor laws.</p>
+ <div class="note"><strong>Legal/HR Review Note:</strong> This is a system-generated company template. For official signing and enforcement, management should ensure the contract matches current Philippine labor requirements and company policy.</div>
+ <p>By signing below, the Employee confirms that the terms have been explained, read, understood, and accepted.</p>
+ <div class="sig-wrap"><div><div class="sig">Employee Signature over Printed Name / Date</div></div><div><div class="sig">Authorized Company Representative / Date</div></div></div>
+ <div class="sig-wrap"><div><div class="sig">Witness / HR Representative / Date</div></div><div><div class="sig">Government ID Presented / ID Number</div></div></div>
+ <div class="footer">Roma's Donuts | ${esc(title)} | Generated ${new Date().toLocaleDateString('en-PH', {year:'numeric', month:'long', day:'numeric'})}</div>
+ </div><div class="no-print"><button onclick="window.print()">PRINT CONTRACT</button></div></body></html>`
+ const pw = window.open('', '_blank', 'width=900,height=700')
+ if (!pw) { showToast('Popup blocked. Please allow popups to print the contract.', 'red'); return }
+ pw.document.write(html)
+ pw.document.close()
+ setTimeout(() => { pw.focus(); pw.print() }, 700)
+ }
+
 
  // Inventory Functions 
  // Feature 3: Item Transaction History 
@@ -12500,7 +12710,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const eligible = hasOneYearService(f.hire_date)
  const startingSIL = eligible? 5: 0
 
- const { error } = await supabase.from('employees').insert({
+ const { data:newEmployee, error } = await supabase.from('employees').insert({
  employee_code:f.code.toUpperCase(),
  full_name:f.name,
  position:f.position,
@@ -12524,7 +12734,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  contact_number:f.contact||'',
  emergency_contact_name:f.emergency_name||'',
  emergency_contact_number:f.emergency_contact||'',
- employment_type:f.employment_type||'regular',
+ employment_type:f.employment_type||'probationary',
  department:f.department||'',
  sss_no:f.sss_no||'',
  pagibig_no:f.pagibig_no||'',
@@ -12537,14 +12747,22 @@ This recovery button creates one approved expense record using GROSS payroll ear
  bank_name:f.bank_name||'',
  bank_account_number:f.bank_account_number||'',
  bank_account_name:f.bank_account_name||''
- })
+ }).select('*').single()
 
  if (error) { showToast('Failed: '+error.message,'red'); return }
 
  await logAudit('EMPLOYEE ADDED','Admin',f.name,`New employee ${f.code}`)
  showToast(' Employee added successfully!')
+ if (newEmployee?.id) {
+ try {
+ await createGeneratedContractForEmployee(newEmployee, getRecommendedContractTypeForEmployee(newEmployee), { status:getRecommendedContractTypeForEmployee(newEmployee)==='regular'? 'active': 'active' })
+ } catch(contractErr) {
+ console.warn('Auto contract creation failed:', contractErr)
+ showToast('Employee saved, but auto-contract was not created: ' + contractErr.message, 'red')
+ }
+ }
 
- setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'regular', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'' })
+ setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'' })
  loadEmployees()
  }
  async function deactivateEmployee(empId, empName) {
@@ -14041,7 +14259,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if(key==='adjustment') loadSILCashouts()
  if(key==='remittance') loadPayrollHistory()
  if(key==='dtr') loadEmployees()
- if(key==='contracts') { loadContracts(); loadEmployees() }
+ if(key==='contracts') { loadContracts(); loadEmployees(); setTimeout(()=>autoGenerateMissingContracts({ silent:true }), 800) }
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
@@ -14596,6 +14814,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={cps}> {emp.contact_number||' '} | {emp.home_address||' '}</p>
  <p style={cps}> {emp.emergency_contact_name||' '} {emp.emergency_contact_number||' '}</p>
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
+ {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
  </div>
  </div>
@@ -14706,10 +14925,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={cps}> {emp.contact_number||' '} | {emp.home_address||' '}</p>
  <p style={cps}> {emp.emergency_contact_name||' '} {emp.emergency_contact_number||' '}</p>
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
+ {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
  </div>
  </div>
- <div style={{ display:'flex', gap:'5px', flexShrink:0 }}>
+ <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
+ <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
+ {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
  <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
@@ -16402,7 +16624,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {activeTab==='contracts' && (
  <div>
  <h2 style={h2s}> Employee Contracts</h2>
- <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>Upload, store, and track PDF employment contracts per employee. Supports contract type, start/end dates, and status tracking.</p>
+ <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>Generate, print, store, and track employment contracts per employee. Supports probationary contracts, regular contracts, six-month regularization review, and signed PDF/physical copy tracking.</p>
 
  {/* Required Supabase setup note */}
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'14px', marginBottom:'20px', fontSize:'13px' }}>
@@ -16410,6 +16632,49 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={{ color:'#555', margin:'8px 0 4px' }}>1. Create a table <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'4px' }}>employee_contracts</code> with columns: id (uuid PK), employee_id (uuid), employee_code (text), employee_name (text), contract_type (text), start_date (date), end_date (date, nullable), status (text), file_url (text, nullable), file_name (text, nullable), storage_type (text), physical_location (text, nullable), created_at (timestamptz default now())</p>
  <p style={{ color:'#555', margin:'4px 0' }}>2. For digital uploads: Create a Supabase Storage bucket named <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'4px' }}>contracts</code> with public access enabled.</p>
  </div>
+
+ {(()=>{
+ const activeEmployees = employees.filter(e => e.is_active !== false)
+ const missingContracts = activeEmployees.filter(e => !hasEmployeeContractType(e, getRecommendedContractTypeForEmployee(e)))
+ const dueForReview = activeEmployees.filter(e => getRegularizationStatus(e).needsReview)
+ const reviewSoon = activeEmployees.filter(e => {
+ const r = getRegularizationStatus(e)
+ return String(e.employment_type || '').toLowerCase() !== 'regular' && r.days !== null && r.days > 0 && r.days <= 30
+ })
+ const regularizedCount = activeEmployees.filter(e => String(e.employment_type || '').toLowerCase() === 'regular').length
+ return (
+ <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'16px', marginBottom:'20px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'14px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Contracts & Regularization Control Center</h3>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>The system creates missing probationary/regular contract records and prepares regular contract drafts when employees reach their six-month review date.</p>
+ </div>
+ <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0, opacity:autoContractGenerating?0.7:1 }} disabled={autoContractGenerating} onClick={()=>autoGenerateMissingContracts({ silent:false })}>{autoContractGenerating? 'GENERATING...': 'GENERATE MISSING / DUE CONTRACTS'}</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div style={{ background:'#fff8dc', borderRadius:'12px', padding:'12px', border:'1px solid #f5c518' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'11px', fontWeight:'bold' }}>MISSING CONTRACTS</p><p style={{ margin:0, color:'#ca1b1b', fontSize:'22px', fontWeight:'900' }}>{missingContracts.length}</p></div>
+ <div style={{ background:'#fff5f5', borderRadius:'12px', padding:'12px', border:'1px solid #ffcdd2' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'11px', fontWeight:'bold' }}>DUE FOR REVIEW</p><p style={{ margin:0, color:'#ca1b1b', fontSize:'22px', fontWeight:'900' }}>{dueForReview.length}</p></div>
+ <div style={{ background:'#fff8dc', borderRadius:'12px', padding:'12px', border:'1px solid #f5a623' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'11px', fontWeight:'bold' }}>REVIEW WITHIN 30 DAYS</p><p style={{ margin:0, color:'#f5a623', fontSize:'22px', fontWeight:'900' }}>{reviewSoon.length}</p></div>
+ <div style={{ background:'#e8f5e9', borderRadius:'12px', padding:'12px', border:'1px solid #c8e6c9' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'11px', fontWeight:'bold' }}>REGULAR EMPLOYEES</p><p style={{ margin:0, color:'#2d8a4e', fontSize:'22px', fontWeight:'900' }}>{regularizedCount}</p></div>
+ </div>
+ {dueForReview.length > 0 && (
+ <div style={{ background:'#fff5f5', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'12px' }}>
+ <p style={{ margin:'0 0 8px', color:'#ca1b1b', fontWeight:'bold', fontSize:'13px' }}>Regularization Review Needed</p>
+ {dueForReview.slice(0,8).map(emp=>{
+ const r = getRegularizationStatus(emp)
+ return <div key={emp.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', borderTop:'1px solid #ffd0d0', padding:'8px 0', flexWrap:'wrap' }}>
+ <div><strong style={{ color:'#333' }}>{emp.full_name}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>Hire: {emp.hire_date || 'N/A'} | Review date: {r.dueDate || 'N/A'} | {r.message}</p></div>
+ <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+ <button style={{...btnBlack, width:'auto', padding:'7px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>printEmploymentContract(emp, 'regular')}>PRINT REGULAR CONTRACT</button>
+ <button style={{...btnGreen, width:'auto', padding:'7px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULARIZATION</button>
+ </div>
+ </div>
+ })}
+ </div>
+ )}
+ </div>
+ )
+ })()}
 
  {/* Upload Form */}
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'20px', marginBottom:'20px' }}>
@@ -16538,8 +16803,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return c.employee_name?.toLowerCase().includes(q) || c.employee_code?.toLowerCase().includes(q)
  })
 .map(c => {
- const statusColor = c.status==='active'?'green':c.status==='expired'?'red':'gray'
- const statusLabel = c.status==='active'?' Active':c.status==='expired'?' Expired':' Terminated'
+ const statusKey = String(c.status || '').toLowerCase()
+ const statusColor = statusKey==='active'?'green':statusKey==='expired'?'red':statusKey==='for_review'?'orange':statusKey==='draft'?'yellow':statusKey==='completed'?'blue':'gray'
+ const statusLabel = statusKey==='active'?' Active':statusKey==='expired'?' Expired':statusKey==='for_review'?' For Review':statusKey==='draft'?' Draft':statusKey==='completed'?' Completed':' Terminated'
  const isExpiringSoon = c.end_date && c.status==='active' && (new Date(c.end_date).getTime()-Date.now())/(1000*60*60*24) <= 30
  return (
  <div key={c.id} style={{...cardS, border:`2px solid ${c.status==='active'?'#c8e6c9':c.status==='expired'?'#ffcdd2':'#eee'}`, background:c.status==='active'?'#f0fff4':c.status==='expired'?'#fff5f5':'#fafafa', marginBottom:'12px' }}>
@@ -16549,7 +16815,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={{ color:'#888', fontSize:'12px', margin:0 }}>{c.employee_code}</p>
  </div>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}>
- <Badge label={c.storage_type==='physical'?' Physical':' Digital'} color={c.storage_type==='physical'?'yellow':'blue'} />
+ <Badge label={c.storage_type==='physical'?' Physical':c.storage_type==='system_generated'?' System Generated':' Digital'} color={c.storage_type==='physical'?'yellow':c.storage_type==='system_generated'?'green':'blue'} />
  <Badge label={statusLabel} color={statusColor} />
  </div>
  </div>
@@ -16566,6 +16832,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printContractSummary(c)}> PRINT SUMMARY</button>
+ <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ const emp = employees.find(e=>String(e.id)===String(c.employee_id)); if(emp) printEmploymentContract(emp, String(c.contract_type||'').toLowerCase().includes('regular')?'regular':'probationary'); else showToast('Employee record not loaded. Click Refresh first.', 'red') }}> PRINT CONTRACT</button>
  {c.storage_type==='digital' && c.file_url && (
  <a href={c.file_url} target="_blank" rel="noopener noreferrer" style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px', textDecoration:'none', display:'inline-block', textAlign:'center' }}>
  VIEW PDF
