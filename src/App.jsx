@@ -495,6 +495,180 @@ function isMissingPayrollCostColumnError(error) {
 }
 
 
+function normalizeProductCostKey(value) {
+ return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim()
+}
+
+function getProductionReportActualQty(item = {}) {
+ return safeNum(item.actual_qty ?? item.actual_quantity ?? item.quantity ?? item.pieces ?? item.produced_qty ?? item.total_produced, 0)
+}
+
+function getProductionReportForecastQty(item = {}) {
+ return safeNum(item.forecast_qty ?? item.expected_quantity ?? item.default_quantity ?? item.standard_quantity ?? item.forecast_quantity, 0)
+}
+
+function getRecipeCostPerPiece(recipe = {}) {
+ const direct = safeNum(recipe.cost_per_piece ?? recipe.recipe_cost_per_piece ?? recipe.standard_cost_per_piece, 0)
+ if (direct > 0) return moneyRound(direct)
+ const batchCost = safeNum(recipe.batch_cost ?? recipe.total_cost ?? recipe.estimated_batch_cost, 0)
+ const yieldPieces = safeNum(recipe.batch_yield_pieces ?? recipe.yield_pieces ?? recipe.batch_yield, 0)
+ return batchCost > 0 && yieldPieces > 0 ? moneyRound(batchCost / yieldPieces) : 0
+}
+
+function buildRecipeCostLookup(recipeRows = []) {
+ const lookup = { byVariant:{}, byName:{}, rows:[] }
+ const statusRank = status => {
+  const s = String(status || '').toLowerCase()
+  if (s === 'active' || s === 'approved') return 0
+  if (s === 'test' || s === 'draft') return 1
+  return 2
+ }
+ const rows = (recipeRows || [])
+ .map(recipe => ({ ...recipe, _costPerPiece:getRecipeCostPerPiece(recipe), _statusRank:statusRank(recipe.status), _date:String(recipe.updated_at || recipe.created_at || '') }))
+ .filter(recipe => safeNum(recipe._costPerPiece, 0) > 0)
+ .sort((a,b)=>(a._statusRank-b._statusRank) || String(b._date).localeCompare(String(a._date)))
+ rows.forEach(recipe => {
+  const info = {
+   recipe_id:recipe.id || '',
+   product_name:recipe.product_name || recipe.name || '',
+   recipe_code:recipe.recipe_code || '',
+   costPerPiece:moneyRound(recipe._costPerPiece),
+   status:recipe.status || '',
+   source:`Recipe Vault${recipe.product_name? ` - ${recipe.product_name}`:''}`
+  }
+  const variantKey = recipe.linked_variant_id? String(recipe.linked_variant_id): ''
+  if (variantKey && !lookup.byVariant[variantKey]) lookup.byVariant[variantKey] = info
+  ;[recipe.product_name, recipe.name, recipe.variant_name, recipe.recipe_code].forEach(name => {
+   const key = normalizeProductCostKey(name)
+   if (key && !lookup.byName[key]) lookup.byName[key] = info
+  })
+  lookup.rows.push(info)
+ })
+ return lookup
+}
+
+function getProductCostInfo(item = {}, lookup = {}) {
+ const variantId = item.variant_id || item.linked_variant_id || item.product_variant_id || ''
+ if (variantId && lookup.byVariant?.[String(variantId)]) return lookup.byVariant[String(variantId)]
+ const names = [item.variant_name, item.product_name, item.item_name, item.name, item.recipe_code]
+ for (const name of names) {
+  const key = normalizeProductCostKey(name)
+  if (key && lookup.byName?.[key]) return lookup.byName[key]
+ }
+ return null
+}
+
+function addCOGSProductRow(map, item = {}, qty = 0, revenue = 0, lookup = {}, source = '') {
+ const name = item.variant_name || item.product_name || item.item_name || item.name || 'Unassigned Product'
+ const key = normalizeProductCostKey(name) || name
+ if (!map[key]) map[key] = { key, name, qty:0, revenue:0, returnsQty:0, returnsAmount:0, cogs:0, missingCostQty:0, costPerPiece:0, sourceSet:new Set() }
+ const row = map[key]
+ const cleanQty = safeNum(qty, 0)
+ const cleanRevenue = safeNum(revenue, 0)
+ row.qty += cleanQty
+ row.revenue += cleanRevenue
+ if (source) row.sourceSet.add(source)
+ const costInfo = getProductCostInfo(item, lookup)
+ if (costInfo?.costPerPiece > 0 && cleanQty > 0) {
+  row.costPerPiece = costInfo.costPerPiece
+  row.cogs = moneyRound(row.cogs + cleanQty * costInfo.costPerPiece)
+  row.cogsSource = costInfo.source
+ } else if (cleanQty > 0) {
+  row.missingCostQty += cleanQty
+ }
+ return row
+}
+
+function calculateSoldProductCOGS({ dailySalesRows = [], invoices = [], returnItemMap = {}, recipeRows = [] } = {}) {
+ const lookup = buildRecipeCostLookup(recipeRows)
+ const productMap = {}
+ ;(dailySalesRows || []).forEach(sale => {
+  const items = Array.isArray(sale.daily_sales_items) ? sale.daily_sales_items : []
+  if (items.length) {
+   items.forEach(item => {
+    const qty = safeNum(item.quantity ?? item.qty ?? item.sold_qty, 0)
+    const revenue = safeNum(item.total_price ?? item.total_amount ?? item.total_revenue, qty * safeNum(item.unit_price ?? item.selling_price, 0))
+    addCOGSProductRow(productMap, item, qty, revenue, lookup, item.channel || sale.channel || 'Daily Sales')
+   })
+  } else {
+   const qty = safeNum(sale.quantity ?? sale.qty ?? sale.sold_qty, 0)
+   const name = sale.variant_name || sale.product_name || sale.item_name || sale.product || ''
+   if (name && qty > 0) {
+    const revenue = safeNum(sale.total_price ?? sale.total_amount ?? sale.total_revenue ?? sale.amount, qty * safeNum(sale.unit_price ?? sale.selling_price, 0))
+    addCOGSProductRow(productMap, sale, qty, revenue, lookup, sale.channel || 'Daily Sales')
+   }
+  }
+ })
+ ;(invoices || []).forEach(inv => {
+  ;(inv.delivery_invoice_items || []).forEach(item => {
+   const qty = safeNum(item.quantity ?? item.qty ?? item.delivered_qty ?? item.actual_quantity, 0)
+   const revenue = safeNum(item.total_price ?? item.total_amount ?? item.subtotal, qty * safeNum(item.reseller_price ?? item.unit_price ?? item.price, 0))
+   addCOGSProductRow(productMap, item, qty, revenue, lookup, 'Reseller Invoice')
+  })
+ })
+ Object.values(returnItemMap || {}).forEach(ret => {
+  const key = normalizeProductCostKey(ret.name)
+  const row = productMap[key]
+  const qty = safeNum(ret.qty, 0)
+  if (row) {
+   row.returnsQty += qty
+   row.returnsAmount += safeNum(ret.amount, 0)
+   const returnedCOGS = row.costPerPiece > 0 ? moneyRound(qty * row.costPerPiece) : 0
+   row.cogs = moneyRound(Math.max(0, row.cogs - returnedCOGS))
+   row.qty = Math.max(0, row.qty - qty)
+   row.revenue = Math.max(0, row.revenue - safeNum(ret.amount, 0))
+  }
+ })
+ const productRows = Object.values(productMap).map(row => ({
+  ...row,
+  source:Array.from(row.sourceSet || []).join(' + '),
+  cogs:moneyRound(row.cogs),
+  grossProfit:moneyRound(safeNum(row.revenue,0) - safeNum(row.cogs,0)),
+  marginPct:safeNum(row.revenue,0) > 0? moneyRound(((safeNum(row.revenue,0)-safeNum(row.cogs,0))/safeNum(row.revenue,0))*100):0,
+  foodCostPct:safeNum(row.revenue,0) > 0? moneyRound((safeNum(row.cogs,0)/safeNum(row.revenue,0))*100):0
+ })).sort((a,b)=>safeNum(b.cogs,0)-safeNum(a.cogs,0))
+ const totalCOGS = productRows.reduce((sum,row)=>sum+safeNum(row.cogs,0),0)
+ const totalQty = productRows.reduce((sum,row)=>sum+safeNum(row.qty,0),0)
+ const missingCostQty = productRows.reduce((sum,row)=>sum+safeNum(row.missingCostQty,0),0)
+ return { totalCOGS:moneyRound(totalCOGS), totalQty, missingCostQty, productRows, lookup, source:totalCOGS > 0? 'Sold products × Recipe Vault cost per piece':'No sold-product recipe cost' }
+}
+
+function calculateProductionReportCOGS(productionReportsRows = [], recipeRowsOrLookup = []) {
+ const lookup = Array.isArray(recipeRowsOrLookup)? buildRecipeCostLookup(recipeRowsOrLookup): recipeRowsOrLookup
+ const productMap = {}
+ ;(productionReportsRows || []).forEach(report => {
+  ;(report.production_report_items || []).forEach(item => {
+   const qty = getProductionReportActualQty(item)
+   const costInfo = getProductCostInfo(item, lookup)
+   const storedCost = safeNum(item.estimated_cogs ?? item.total_cogs ?? item.material_cogs, 0)
+   const itemCost = storedCost > 0 ? storedCost : (costInfo?.costPerPiece > 0 ? qty * costInfo.costPerPiece : 0)
+   const name = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+   const key = normalizeProductCostKey(name) || name
+   if (!productMap[key]) productMap[key] = { key, name, qty:0, cogs:0, missingCostQty:0, costPerPiece:costInfo?.costPerPiece || 0, sourceSet:new Set() }
+   productMap[key].qty += qty
+   productMap[key].cogs = moneyRound(productMap[key].cogs + itemCost)
+   if (costInfo?.costPerPiece > 0 || storedCost > 0) productMap[key].sourceSet.add(storedCost > 0? 'Production report saved cost':'Production report × Recipe Vault')
+   else if (qty > 0) productMap[key].missingCostQty += qty
+  })
+ })
+ const productRows = Object.values(productMap).map(row => ({ ...row, source:Array.from(row.sourceSet || []).join(' + '), cogs:moneyRound(row.cogs) })).sort((a,b)=>safeNum(b.cogs,0)-safeNum(a.cogs,0))
+ const totalCOGS = productRows.reduce((sum,row)=>sum+safeNum(row.cogs,0),0)
+ const totalQty = productRows.reduce((sum,row)=>sum+safeNum(row.qty,0),0)
+ const missingCostQty = productRows.reduce((sum,row)=>sum+safeNum(row.missingCostQty,0),0)
+ return { totalCOGS:moneyRound(totalCOGS), totalQty, missingCostQty, productRows, lookup, source:totalCOGS > 0? 'Production report actual qty × Recipe Vault cost per piece':'No production report recipe cost' }
+}
+
+function chooseDirectProductCOGS({ soldProductCOGS = 0, productionReportCOGS = 0, productionLogCOGS = 0 } = {}) {
+ const sold = safeNum(soldProductCOGS, 0)
+ const report = safeNum(productionReportCOGS, 0)
+ const logs = safeNum(productionLogCOGS, 0)
+ if (sold > 0) return { amount:moneyRound(sold), source:'Sold products × Recipe Vault cost per piece', method:'sold_recipe' }
+ if (report > 0) return { amount:moneyRound(report), source:'Production report actual qty × Recipe Vault cost per piece', method:'production_report_recipe' }
+ if (logs > 0) return { amount:moneyRound(logs), source:'Production logs total cost', method:'production_logs' }
+ return { amount:0, source:'No product COGS source yet', method:'none' }
+}
+
+
 // Passkey / Fingerprint Login Helpers 
 // Uses WebAuthn. The app never receives or stores the actual fingerprint.
 function browserSupportsPasskeys() {
@@ -6042,7 +6216,11 @@ function buildDeliveryInvoicePrintCSS() {
  const items = Object.values(forecastMap)
  if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
  // Also load all variants for items not in forecast
- const { data:variants } = await supabase.from('donut_variants').select('*').eq('is_active',true).order('name')
+ const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+  supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+  supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+ ])
+ if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
  const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
  setProductionReportItems(variantItems)
  setProductionReportDeliveryDate(deliveryDate)
@@ -6071,7 +6249,43 @@ function buildDeliveryInvoicePrintCSS() {
  notes: productionReportNotes||null
  }).select().single()
  if (error) throw error
- await supabase.from('production_report_items').insert(validItems.map(i=>({ report_id:report.id, variant_id:i.variant_id, variant_name:i.variant_name, forecast_qty:Number(i.forecast_qty||0), actual_qty:Number(i.actual_qty||0), variance:Number(i.actual_qty||0)-Number(i.forecast_qty||0), variance_reason:i.variance_reason||null })))
+ const { data:recipeCostRowsForReport } = await supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+ const recipeLookupForReport = buildRecipeCostLookup(recipeCostRowsForReport || recipeVault || [])
+ const reportItemRowsWithCost = validItems.map(i => {
+  const actualQty = Number(i.actual_qty || 0)
+  const forecastQty = Number(i.forecast_qty || 0)
+  const costInfo = getProductCostInfo(i, recipeLookupForReport)
+  const costPerPiece = safeNum(costInfo?.costPerPiece, 0)
+  return {
+   report_id:report.id,
+   variant_id:i.variant_id,
+   variant_name:i.variant_name,
+   forecast_qty:forecastQty,
+   actual_qty:actualQty,
+   variance:actualQty - forecastQty,
+   variance_reason:i.variance_reason || null,
+   cost_per_piece:costPerPiece,
+   estimated_cogs:moneyRound(actualQty * costPerPiece),
+   cogs_source:costInfo?.source || ''
+  }
+ })
+ let { error:reportItemErr } = await supabase.from('production_report_items').insert(reportItemRowsWithCost)
+ if (reportItemErr && String(reportItemErr.message || '').toLowerCase().includes('column')) {
+  const fallbackRows = reportItemRowsWithCost.map(row => {
+   const clean = {...row}
+   delete clean.cost_per_piece
+   delete clean.estimated_cogs
+   delete clean.cogs_source
+   return clean
+  })
+  ;({ error:reportItemErr } = await supabase.from('production_report_items').insert(fallbackRows))
+ }
+ if (reportItemErr) throw reportItemErr
+ const reportEstimatedCOGS = reportItemRowsWithCost.reduce((s,row)=>s+safeNum(row.estimated_cogs,0),0)
+ if (reportEstimatedCOGS > 0) {
+  const { error:updateReportCostErr } = await supabase.from('production_reports').update({ estimated_material_cogs:reportEstimatedCOGS, cogs_source:'Recipe Vault cost snapshot' }).eq('id', report.id)
+  if (updateReportCostErr && !String(updateReportCostErr.message || '').toLowerCase().includes('column')) console.warn('production report cogs update:', updateReportCostErr)
+ }
  // Alert if significant variance
  if (Math.abs(variance) > 50) {
  await supabase.from('suspicious_alerts').insert({ alert_type:'production_variance', severity:Math.abs(variance)>200?'high':'medium', description:`Production variance of ${variance} pieces for delivery on ${productionReportDeliveryDate}. Forecast: ${totalForecast}, Actual: ${totalProduced}. Reason: ${productionVarianceReason}`, related_to:'Production Report' })
@@ -8026,36 +8240,59 @@ function buildDeliveryInvoicePrintCSS() {
  try {
  const monthStart = financialMonth + '-01'
  const monthEnd = new Date(Number(financialMonth.split('-')[0]), Number(financialMonth.split('-')[1]), 0).toISOString().slice(0,10)
- const [salesRes, prodLogsRes, expensesRes, invoicesRes, payrollRes, employeesRes] = await Promise.all([
- supabase.from('daily_sales').select('*').gte('sale_date', monthStart).lte('sale_date', monthEnd),
+ const [salesRes, prodLogsRes, productionReportsRes, expensesRes, invoicesRes, returnsRes, payrollRes, employeesRes, recipeRes] = await Promise.all([
+ supabase.from('daily_sales').select('*, daily_sales_items(*)').gte('sale_date', monthStart).lte('sale_date', monthEnd),
  supabase.from('production_logs').select('*').gte('production_date', monthStart).lte('production_date', monthEnd),
+ supabase.from('production_reports').select('*, production_report_items(*)').gte('report_date', monthStart).lte('report_date', monthEnd),
  supabase.from('daily_expenses').select('*').gte('expense_date', monthStart).lte('expense_date', monthEnd),
- supabase.from('delivery_invoices').select('*').gte('delivery_date', monthStart).lte('delivery_date', monthEnd),
+ supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').gte('delivery_date', monthStart).lte('delivery_date', monthEnd),
+ supabase.from('reseller_returns').select('*, reseller_return_items(*)').gte('return_date', monthStart).lte('return_date', monthEnd),
  supabase.from('payroll_records').select('*').gte('payroll_start', monthStart).lte('payroll_end', monthEnd),
- supabase.from('employees').select('id,employee_code,full_name,position,department,payroll_cost_type')
+ supabase.from('employees').select('id,employee_code,full_name,position,department,payroll_cost_type'),
+ supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
  ])
  if (salesRes.error) console.warn('daily_sales query failed:', salesRes.error)
  if (prodLogsRes.error) console.warn('production_logs query failed:', prodLogsRes.error)
+ if (productionReportsRes.error) console.warn('production_reports query failed:', productionReportsRes.error)
  if (expensesRes.error) console.warn('daily_expenses query failed:', expensesRes.error)
  if (invoicesRes.error) console.warn('delivery_invoices query failed:', invoicesRes.error)
+ if (returnsRes.error) console.warn('reseller_returns query failed:', returnsRes.error)
  if (payrollRes.error) console.warn('payroll_records query failed:', payrollRes.error)
  if (employeesRes.error) console.warn('employees query failed:', employeesRes.error)
+ if (recipeRes.error) console.warn('recipe_vault query failed:', recipeRes.error)
  const sales = salesRes.data || []
  const prodLogs = prodLogsRes.data || []
+ const productionReportsForMonth = productionReportsRes.data || []
  const expenses = expensesRes.data || []
  const invoices = invoicesRes.data || []
+ const returnsForMonth = returnsRes.data || []
  const payrollRecordsForMonth = payrollRes.data || []
  const employeesForPayroll = employeesRes.data || []
+ const recipeCostRowsForMonth = recipeRes.data || []
  const releasedPayrollForMonth = payrollRecordsForMonth.filter(isReleasedPayrollRecord)
  const payrollClassification = classifyPayrollRecords(releasedPayrollForMonth, employeesForPayroll)
  const productionLogCOGS = prodLogs.reduce((s,l)=>s+safeNum(l.total_cost,0),0)
+ const returnItemMapForFinancial = {}
+ returnsForMonth.forEach(ret => (ret.reseller_return_items || []).forEach(item => {
+  const name = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+  if (!returnItemMapForFinancial[name]) returnItemMapForFinancial[name] = { name, qty:0, amount:0 }
+  const qty = safeNum(item.returned_quantity ?? item.returned_qty,0)
+  returnItemMapForFinancial[name].qty += qty
+  returnItemMapForFinancial[name].amount += safeNum(item.total_credit ?? item.total_amount, qty * safeNum(item.reseller_price ?? item.unit_price,0))
+ }))
+ const soldProductCOGSInfo = calculateSoldProductCOGS({ dailySalesRows:sales, invoices, returnItemMap:returnItemMapForFinancial, recipeRows:recipeCostRowsForMonth })
+ const productionReportCOGSInfo = calculateProductionReportCOGS(productionReportsForMonth, soldProductCOGSInfo.lookup)
+ const directCOGSChoice = chooseDirectProductCOGS({ soldProductCOGS:soldProductCOGSInfo.totalCOGS, productionReportCOGS:productionReportCOGSInfo.totalCOGS, productionLogCOGS })
+ const soldProductCOGS = soldProductCOGSInfo.totalCOGS
+ const productionReportCOGS = productionReportCOGSInfo.totalCOGS
+ const directProductCOGS = directCOGSChoice.amount
  const productionLaborCOGS = payrollClassification.productionLaborCOGS
  const operatingPayrollExpense = payrollClassification.operatingPayrollExpense
  const totalRevenue = sales.reduce((s,d)=>s+Number(d.total_revenue||0),0)
  const walkinRevenue = sales.reduce((s,d)=>s+Number(d.total_walkin||0),0)
  const messengerRevenue = sales.reduce((s,d)=>s+Number(d.total_messenger||0),0)
  const resellerRevenue = invoices.reduce((s,i)=>s+Number(i.total_amount||0),0)
- const totalCOGS = productionLogCOGS + productionLaborCOGS
+ const totalCOGS = directProductCOGS + productionLaborCOGS
  const nonPayrollExpenses = expenses.filter(e=>e.status!== 'rejected' && e.category !== 'Payroll Expense').reduce((s,e)=>s+safeNum(e.amount,0),0)
  const totalExpenses = nonPayrollExpenses + operatingPayrollExpense
  const grossProfit = totalRevenue - totalCOGS
@@ -8069,7 +8306,7 @@ function buildDeliveryInvoicePrintCSS() {
  const overdueAR = allUnpaid.filter(i=>i.due_date && i.due_date<today).reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
  const expenseByCategory = EXPENSE_CATEGORIES.map(cat=>({ cat, total:cat==='Payroll Expense'? operatingPayrollExpense: expenses.filter(e=>e.status!== 'rejected' && e.category===cat).reduce((s,e)=>s+safeNum(e.amount,0),0) })).filter(c=>c.total>0)
  const salesByDay = sales.map(d=>({ date:d.sale_date, revenue:Number(d.total_revenue||0) })).sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')))
- setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, productionLogCOGS, productionLaborCOGS, operatingPayrollExpense, nonPayrollExpenses, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length })
+ setFinancialData({ totalRevenue, walkinRevenue, messengerRevenue, resellerRevenue, totalCOGS, directProductCOGS, soldProductCOGS, productionReportCOGS, productionLogCOGS, productionLaborCOGS, operatingPayrollExpense, nonPayrollExpenses, totalExpenses, grossProfit, netProfit, grossMarginPct, netMarginPct, totalAR, overdueAR, expenseByCategory, salesByDay, salesDays:sales.length, productionDays:prodLogs.length + productionReportsForMonth.length, cogsSource:directCOGSChoice.source, cogsMethod:directCOGSChoice.method, missingCostQty:soldProductCOGSInfo.missingCostQty + productionReportCOGSInfo.missingCostQty })
  } catch(e) {
  console.warn('loadFinancialData:', e)
  setFinancialData({ totalRevenue:0, walkinRevenue:0, messengerRevenue:0, resellerRevenue:0, totalCOGS:0, totalExpenses:0, grossProfit:0, netProfit:0, grossMarginPct:0, netMarginPct:0, totalAR:0, overdueAR:0, expenseByCategory:[], salesByDay:[], salesDays:0, productionDays:0 })
@@ -8106,7 +8343,7 @@ function buildDeliveryInvoicePrintCSS() {
  <tr><td class="label">Ingredient Costs</td><td class="val">Included in production</td></tr>
  <tr><td class="label">Labor Costs</td><td class="val">Included in production</td></tr>
  <tr><td class="label">Overhead (Rent, Electricity, Loans, Depreciation)</td><td class="val">Included in production</td></tr>
- <tr class="total"><td>TOTAL COGS (production logs + direct production labor)</td><td class="val">${php(financialData.totalCOGS)}</td></tr>
+ <tr class="total"><td>TOTAL COGS (product COGS + direct production labor)</td><td class="val">${php(financialData.totalCOGS)}</td></tr>
  <tr class="${financialData.grossProfit>=0?'profit':'loss'}"><td>GROSS PROFIT (${financialData.grossMarginPct.toFixed(1)}%)</td><td class="val">${php(financialData.grossProfit)}</td></tr>
  <tr><td colspan="2" class="section">ADDITIONAL EXPENSES</td></tr>
  ${financialData.expenseByCategory.map(c=>`<tr><td class="label">${c.cat}</td><td class="val">${php(c.total)}</td></tr>`).join('')}
@@ -8115,7 +8352,7 @@ function buildDeliveryInvoicePrintCSS() {
  </table>
  <div style="margin-top:20px;background:#fff8dc;border:1px solid #f5c518;border-radius:6px;padding:12px;">
  <p style="font-weight:bold;color:#ca1b1b;margin:0 0 6px;"> Notes</p>
- <p style="font-size:10px;color:#555;margin:0;"> COGS pulls production logs plus released payroll classified as Production Labor / COGS. Accurate only when production logs and payroll classifications are maintained.</p>
+ <p style="font-size:10px;color:#555;margin:0;"> COGS pulls Recipe Vault product cost, production reports/logs, and released payroll classified as Production Labor / COGS. Accurate only when product recipes and payroll classifications are maintained.</p>
  <p style="font-size:10px;color:#555;margin:0;"> Reseller revenue = total invoiced. Collected amount may differ check AR report.</p>
  <p style="font-size:10px;color:#555;"> Outstanding AR: <strong>${php(financialData.totalAR)}</strong> | Overdue: <strong>${php(financialData.overdueAR)}</strong></p>
  </div>
@@ -10872,11 +11109,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
  productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes,
  contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes,
  bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes,
- trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendWastageRes
+ recipeVaultCostRes, trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes
  ] = await Promise.all([
  foundationSelect('employees', '*', q=>q.eq('is_active', true)),
  foundationSelect('attendance_logs', '*', q=>q.gte('attendance_date', start).lte('attendance_date', end)),
- foundationSelect('daily_sales', '*', q=>q.gte('sale_date', start).lte('sale_date', end)),
+ foundationSelect('daily_sales', '*, daily_sales_items(*)', q=>q.gte('sale_date', start).lte('sale_date', end)),
  foundationSelect('delivery_invoices', '*, delivery_invoice_items(*)', q=>q.gte('delivery_date', start).lte('delivery_date', end)),
  foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', start).lte('return_date', end)),
  foundationSelect('daily_expenses', '*', q=>q.gte('expense_date', start).lte('expense_date', end)),
@@ -10897,16 +11134,18 @@ This recovery button creates one approved expense record using GROSS payroll ear
  foundationSelect('reseller_disputes', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
  foundationSelect('stock_adjustments', '*', q=>q.gte('adjustment_date', start).lte('adjustment_date', end)),
  foundationSelect('resellers', '*'),
- foundationSelect('daily_sales', '*', q=>q.gte('sale_date', trendStart).lte('sale_date', end)),
- foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', trendStart).lte('delivery_date', end)),
+ foundationSelect('recipe_vault', 'id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at'),
+ foundationSelect('daily_sales', '*, daily_sales_items(*)', q=>q.gte('sale_date', trendStart).lte('sale_date', end)),
+ foundationSelect('delivery_invoices', '*, delivery_invoice_items(*)', q=>q.gte('delivery_date', trendStart).lte('delivery_date', end)),
  foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', trendStart).lte('return_date', end)),
  foundationSelect('payroll_records', '*', q=>q.gte('payroll_start', trendStart).lte('payroll_end', end)),
  foundationSelect('production_logs', '*', q=>q.gte('production_date', trendStart).lte('production_date', end)),
+ foundationSelect('production_reports', '*, production_report_items(*)', q=>q.gte('report_date', trendStart).lte('report_date', end)),
  foundationSelect('wastage_logs', '*', q=>q.gte('wastage_date', trendStart).lte('wastage_date', end))
  ])
 
  let invoices = invoicesWithItemsRes.data || []
- const errors = [employeesRes, attendanceRes, dailySalesRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
+ const errors = [employeesRes, attendanceRes, dailySalesRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, recipeVaultCostRes, trendDailySalesRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
  if (invoicesWithItemsRes.error) {
  const fallbackInv = await foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', start).lte('delivery_date', end))
  invoices = fallbackInv.data || []
@@ -10935,11 +11174,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const resellerDisputesRows = resellerDisputesRes.data || []
  const stockAdjustmentsRows = stockAdjustmentsRes.data || []
  const resellersRows = resellersRes.data || []
+ const recipeCostRowsForFoundation = recipeVaultCostRes.data || []
  const trendDailySalesRows = trendDailySalesRes.data || []
  const trendInvoiceRows = trendInvoicesRes.data || []
  const trendReturnRows = trendReturnsRes.data || []
  const trendPayrollRows = trendPayrollRes.data || []
  const trendProductionLogRows = trendProductionLogsRes.data || []
+ const trendProductionReportRows = trendProductionReportsRes.data || []
  const trendWastageRows = trendWastageRes.data || []
 
  const walkinMessengerSales = dailySalesRows.reduce((s,r)=>s+safeNum(r.total_revenue?? r.total_amount,0),0)
@@ -11060,14 +11301,20 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const returnsQtyRate = totalDeliveredQty > 0? (totalReturnsQty / totalDeliveredQty) * 100: 0
 
  const productionLogCOGS = productionLogsRows.reduce((s,l)=>s+safeNum(l.total_cost,0),0)
+ const soldProductCOGSInfo = calculateSoldProductCOGS({ dailySalesRows, invoices, returnItemMap, recipeRows:recipeCostRowsForFoundation })
+ const productionReportCOGSInfo = calculateProductionReportCOGS(productionReportsRows, soldProductCOGSInfo.lookup)
+ const directCOGSChoice = chooseDirectProductCOGS({ soldProductCOGS:soldProductCOGSInfo.totalCOGS, productionReportCOGS:productionReportCOGSInfo.totalCOGS, productionLogCOGS })
+ const soldProductCOGS = soldProductCOGSInfo.totalCOGS
+ const productionReportCOGS = productionReportCOGSInfo.totalCOGS
+ const directProductCOGS = directCOGSChoice.amount
  const releasedPayrollRecords = payrollRecords.filter(isReleasedPayrollRecord)
  const payrollClassification = classifyPayrollRecords(releasedPayrollRecords, activeEmployees)
  const productionLaborCOGS = payrollClassification.productionLaborCOGS
  const operatingPayrollExpense = payrollClassification.operatingPayrollExpense
- const totalCOGS = productionLogCOGS + productionLaborCOGS
+ const totalCOGS = directProductCOGS + productionLaborCOGS
  const totalPiecesProduced = productionLogsRows.reduce((s,l)=>s+safeNum(l.total_pieces?? l.pieces_produced?? l.quantity,0),0)
- const totalProductionReportPieces = productionReportsRows.reduce((s,r)=>s+(r.production_report_items||[]).reduce((a,it)=>a+safeNum(it.quantity?? it.pieces?? it.produced_qty,0),0),0)
- const expectedOutput = productionReportsRows.reduce((s,r)=>s+(r.production_report_items||[]).reduce((a,it)=>a+safeNum(it.expected_quantity?? it.default_quantity,0),0),0)
+ const totalProductionReportPieces = productionReportsRows.reduce((s,r)=>s+(r.production_report_items||[]).reduce((a,it)=>a+getProductionReportActualQty(it),0),0)
+ const expectedOutput = productionReportsRows.reduce((s,r)=>s+(r.production_report_items||[]).reduce((a,it)=>a+getProductionReportForecastQty(it),0),0)
  const actualOutput = totalProductionReportPieces || totalPiecesProduced
  const yieldVariance = expectedOutput > 0? actualOutput - expectedOutput: 0
  const yieldPct = expectedOutput > 0? (actualOutput / expectedOutput) * 100: 0
@@ -11232,6 +11479,19 @@ This recovery button creates one approved expense record using GROSS payroll ear
  })
  })
  dailySalesRows.forEach(row => {
+ const items = Array.isArray(row.daily_sales_items)? row.daily_sales_items: []
+ if (items.length) {
+  items.forEach(item => {
+   const key = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+   const revenue = safeNum(item.total_price ?? item.total_amount ?? item.total_revenue, safeNum(item.quantity?? item.qty?? item.sold_qty,0) * safeNum(item.unit_price?? item.selling_price,0))
+   const qty = safeNum(item.quantity?? item.qty?? item.sold_qty,0)
+   const prod = ensureProductRow(key)
+   prod.qty += qty
+   prod.revenue += revenue
+   prod.channelSales += revenue
+  })
+  return
+ }
  const key = row.variant_name || row.product_name || row.item_name || row.product || ''
  const revenue = safeNum(row.total_revenue?? row.total_amount?? row.amount,0)
  const qty = safeNum(row.quantity?? row.qty?? row.sold_qty,0)
@@ -11510,7 +11770,21 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const mPayrollRows = trendPayrollRows.filter(p=>String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
  const mPayrollClass = classifyPayrollRecords(mPayrollRows, activeEmployees)
  const mPayroll = mPayrollClass.operatingPayrollExpense
- const mCOGS = trendProductionLogRows.filter(p=>String(p.production_date || '').slice(0,10) >= m.start && String(p.production_date || '').slice(0,10) <= m.end).reduce((sum,p)=>sum+safeNum(p.total_cost,0),0) + mPayrollClass.productionLaborCOGS
+ const mProductionLogs = trendProductionLogRows.filter(p=>String(p.production_date || '').slice(0,10) >= m.start && String(p.production_date || '').slice(0,10) <= m.end)
+ const mProductionReports = trendProductionReportRows.filter(r=>String(r.report_date || r.created_at || '').slice(0,10) >= m.start && String(r.report_date || r.created_at || '').slice(0,10) <= m.end)
+ const mSalesRows = trendDailySalesRows.filter(r=>String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end)
+ const mReturnItemMap = {}
+ trendReturnRows.filter(r=>String(r.return_date || r.created_at || '').slice(0,10) >= m.start && String(r.return_date || r.created_at || '').slice(0,10) <= m.end).forEach(ret => (ret.reseller_return_items || []).forEach(item => {
+  const name = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+  if (!mReturnItemMap[name]) mReturnItemMap[name] = { name, qty:0, amount:0 }
+  const qty = safeNum(item.returned_quantity ?? item.returned_qty,0)
+  mReturnItemMap[name].qty += qty
+  mReturnItemMap[name].amount += safeNum(item.total_credit ?? item.total_amount, qty * safeNum(item.reseller_price ?? item.unit_price,0))
+ }))
+ const mSoldCOGS = calculateSoldProductCOGS({ dailySalesRows:mSalesRows, invoices:mInvoices, returnItemMap:mReturnItemMap, recipeRows:recipeCostRowsForFoundation })
+ const mReportCOGS = calculateProductionReportCOGS(mProductionReports, mSoldCOGS.lookup)
+ const mLogCOGS = mProductionLogs.reduce((sum,p)=>sum+safeNum(p.total_cost,0),0)
+ const mCOGS = chooseDirectProductCOGS({ soldProductCOGS:mSoldCOGS.totalCOGS, productionReportCOGS:mReportCOGS.totalCOGS, productionLogCOGS:mLogCOGS }).amount + mPayrollClass.productionLaborCOGS
  const mCashIn = mDaily + mCollected
  const mCashOut = mPayroll + mCOGS
  const mNet = mCashIn - mCashOut
@@ -11708,9 +11982,22 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const qty = monthWastage.reduce((sum,w)=>sum+safeNum(w.quantity?? w.qty,0),0)
  const monthPayrollRowsForCOGS = trendPayrollRows.filter(p => String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
  const monthProductionLaborCOGS = classifyPayrollRecords(monthPayrollRowsForCOGS, activeEmployees).productionLaborCOGS
- const cogs = trendProductionLogRows
-.filter(l => String(l.production_date || '').slice(0,10) >= m.start && String(l.production_date || '').slice(0,10) <= m.end)
-.reduce((sum,l)=>sum+safeNum(l.total_cost,0),0) + monthProductionLaborCOGS
+ const monthProductionLogsForWaste = trendProductionLogRows.filter(l => String(l.production_date || '').slice(0,10) >= m.start && String(l.production_date || '').slice(0,10) <= m.end)
+ const monthProductionReportsForWaste = trendProductionReportRows.filter(r => String(r.report_date || r.created_at || '').slice(0,10) >= m.start && String(r.report_date || r.created_at || '').slice(0,10) <= m.end)
+ const monthSalesRowsForWaste = trendDailySalesRows.filter(r => String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end)
+ const monthInvoiceRowsForWaste = trendInvoiceRows.filter(i => String(i.delivery_date || '').slice(0,10) >= m.start && String(i.delivery_date || '').slice(0,10) <= m.end)
+ const monthReturnItemMapForWaste = {}
+ trendReturnRows.filter(r => String(r.return_date || r.created_at || '').slice(0,10) >= m.start && String(r.return_date || r.created_at || '').slice(0,10) <= m.end).forEach(ret => (ret.reseller_return_items || []).forEach(item => {
+  const name = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+  if (!monthReturnItemMapForWaste[name]) monthReturnItemMapForWaste[name] = { name, qty:0, amount:0 }
+  const rQty = safeNum(item.returned_quantity ?? item.returned_qty,0)
+  monthReturnItemMapForWaste[name].qty += rQty
+  monthReturnItemMapForWaste[name].amount += safeNum(item.total_credit ?? item.total_amount, rQty * safeNum(item.reseller_price ?? item.unit_price,0))
+ }))
+ const monthSoldCOGSForWaste = calculateSoldProductCOGS({ dailySalesRows:monthSalesRowsForWaste, invoices:monthInvoiceRowsForWaste, returnItemMap:monthReturnItemMapForWaste, recipeRows:recipeCostRowsForFoundation })
+ const monthReportCOGSForWaste = calculateProductionReportCOGS(monthProductionReportsForWaste, monthSoldCOGSForWaste.lookup)
+ const monthLogCOGSForWaste = monthProductionLogsForWaste.reduce((sum,l)=>sum+safeNum(l.total_cost,0),0)
+ const cogs = chooseDirectProductCOGS({ soldProductCOGS:monthSoldCOGSForWaste.totalCOGS, productionReportCOGS:monthReportCOGSForWaste.totalCOGS, productionLogCOGS:monthLogCOGSForWaste }).amount + monthProductionLaborCOGS
  const pct = cogs > 0? (cost / cogs) * 100: 0
  const status = getWastageCostStatus(pct, cost, cogs)
  return { month:m.key, label:m.label, start:m.start, end:m.end, cost, qty, cogs, ratio:pct, status:status.label, color:status.color }
@@ -11904,8 +12191,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const actualVsStandardRows = []
  productionReportsRows.forEach((report, reportIdx) => {
 ;(report.production_report_items || []).forEach((it, idx) => {
- const standardQty = safeNum(it.expected_quantity?? it.default_quantity?? it.standard_quantity,0)
- const actualQty = safeNum(it.quantity?? it.pieces?? it.produced_qty?? it.actual_quantity,0)
+ const standardQty = getProductionReportForecastQty(it)
+ const actualQty = getProductionReportActualQty(it)
  const varianceQty = actualQty - standardQty
  const pct = standardQty > 0? (actualQty / standardQty) * 100: 0
  const st = standardQty <= 0? { label:'NO STANDARD', color:'#777' }: pct >= 95? { label:'ON STANDARD', color:'#2d8a4e' }: pct >= 90? { label:'WATCH', color:'#f5a623' }: { label:'UNDER STANDARD', color:'#ca1b1b' }
@@ -11956,9 +12243,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (yieldMonitoring.wastageQty > 0 || wastageCost > 0) productionYieldActionPlan.push(`Recorded wastage is ${yieldMonitoring.wastageQty} unit(s) / ${php(wastageCost)}. Review wastage reasons and employee charge logs where applicable.`)
 
  const foodCostStatus = getFoodCostStatus(foodCostPct, totalSales, totalCOGS)
- const foodCostSource = productionLogsRows.length > 0
-? `Production logs (${productionLogsRows.length} record${productionLogsRows.length === 1? '': 's'})`
-: 'No COGS data yet'
+ const foodCostSource = directCOGSChoice.source + (productionLaborCOGS > 0 ? ' + released production labor payroll' : '')
  const productionCostPerPiece = actualOutput > 0? totalCOGS / actualOutput: 0
  const foodCost = {
  sales:totalSales,
@@ -11988,9 +12273,23 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const sales = salesBetweenDates(m.start, m.end, trendSalesRows)
  const monthPayrollRowsForFoodCost = trendPayrollRows.filter(p => String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
  const monthProductionLaborForFoodCost = classifyPayrollRecords(monthPayrollRowsForFoodCost, activeEmployees).productionLaborCOGS
- const cogs = trendProductionLogRows
-.filter(l => String(l.production_date || '').slice(0,10) >= m.start && String(l.production_date || '').slice(0,10) <= m.end)
-.reduce((sum,l)=>sum+safeNum(l.total_cost,0),0) + monthProductionLaborForFoodCost
+ const monthProductionLogs = trendProductionLogRows.filter(l => String(l.production_date || '').slice(0,10) >= m.start && String(l.production_date || '').slice(0,10) <= m.end)
+ const monthProductionReports = trendProductionReportRows.filter(r => String(r.report_date || r.created_at || '').slice(0,10) >= m.start && String(r.report_date || r.created_at || '').slice(0,10) <= m.end)
+ const monthSalesRows = trendDailySalesRows.filter(r => String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end)
+ const monthInvoiceRows = trendInvoiceRows.filter(i => String(i.delivery_date || '').slice(0,10) >= m.start && String(i.delivery_date || '').slice(0,10) <= m.end)
+ const monthReturnItemMap = {}
+ trendReturnRows.filter(r => String(r.return_date || r.created_at || '').slice(0,10) >= m.start && String(r.return_date || r.created_at || '').slice(0,10) <= m.end).forEach(ret => (ret.reseller_return_items || []).forEach(item => {
+  const name = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+  if (!monthReturnItemMap[name]) monthReturnItemMap[name] = { name, qty:0, amount:0 }
+  const qty = safeNum(item.returned_quantity ?? item.returned_qty, 0)
+  monthReturnItemMap[name].qty += qty
+  monthReturnItemMap[name].amount += safeNum(item.total_credit ?? item.total_amount, qty * safeNum(item.reseller_price ?? item.unit_price,0))
+ }))
+ const monthSoldCOGS = calculateSoldProductCOGS({ dailySalesRows:monthSalesRows, invoices:monthInvoiceRows, returnItemMap:monthReturnItemMap, recipeRows:recipeCostRowsForFoundation })
+ const monthReportCOGS = calculateProductionReportCOGS(monthProductionReports, monthSoldCOGS.lookup)
+ const monthLogCOGS = monthProductionLogs.reduce((sum,l)=>sum+safeNum(l.total_cost,0),0)
+ const monthDirectChoice = chooseDirectProductCOGS({ soldProductCOGS:monthSoldCOGS.totalCOGS, productionReportCOGS:monthReportCOGS.totalCOGS, productionLogCOGS:monthLogCOGS })
+ const cogs = monthDirectChoice.amount + monthProductionLaborForFoodCost
  const ratio = sales > 0? (cogs / sales) * 100: 0
  const status = getFoodCostStatus(ratio, sales, cogs)
  return {
@@ -12021,15 +12320,20 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }).sort((a,b)=>b.cost-a.cost).slice(0,10)
 
  const totalProductRevenue = productProfitability.reduce((s,p)=>s+safeNum(p.revenue,0),0)
+ const directProductCOGSRowMap = {}
+ ;(soldProductCOGSInfo.productRows || []).forEach(row => { directProductCOGSRowMap[normalizeProductCostKey(row.name)] = row })
  const productCOGSRows = productProfitability.map(p => {
  const share = totalProductRevenue > 0? safeNum(p.revenue,0) / totalProductRevenue: 0
- const estimatedCOGS = totalCOGS * share
+ const directRow = directProductCOGSRowMap[normalizeProductCostKey(p.name)]
+ const estimatedCOGS = directRow? safeNum(directRow.cogs,0): totalCOGS * share
  const estimatedGrossProfit = safeNum(p.revenue,0) - estimatedCOGS
  return {
 ...p,
  revenueShare:share * 100,
  estimatedCOGS,
  estimatedGrossProfit,
+ costPerPiece:directRow?.costPerPiece || 0,
+ cogsSource:directRow?.cogsSource || directRow?.source || (directRow? 'Recipe Vault direct product cost':'Allocated by revenue share'),
  foodCostPct:safeNum(p.revenue,0) > 0? (estimatedCOGS / safeNum(p.revenue,0)) * 100: 0,
  grossMarginPct:safeNum(p.revenue,0) > 0? (estimatedGrossProfit / safeNum(p.revenue,0)) * 100: 0
  }
@@ -12037,7 +12341,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  const productProfitabilityRows = productProfitability.map(p => {
  const share = totalProductRevenue > 0? safeNum(p.revenue,0) / totalProductRevenue: 0
- const estimatedCOGS = totalCOGS * share
+ const directRow = directProductCOGSRowMap[normalizeProductCostKey(p.name)]
+ const estimatedCOGS = directRow? safeNum(directRow.cogs,0): totalCOGS * share
  const returnsAmount = safeNum(p.returnsAmount,0)
  const netRevenueAfterReturns = Math.max(0, safeNum(p.revenue,0) - returnsAmount)
  const grossProfitValue = netRevenueAfterReturns - estimatedCOGS
@@ -12064,6 +12369,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  foodCostPct:foodCostPctValue,
  returnRatePct,
  revenueShare:share * 100,
+ costPerPiece:directRow?.costPerPiece || 0,
+ cogsSource:directRow?.cogsSource || directRow?.source || (directRow? 'Recipe Vault direct product cost':'Allocated by revenue share'),
  status:status.label,
  color:status.color,
  recommendation
@@ -12336,7 +12643,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  loadedAt,
  start, end, errors, grossSales, salesReturns, netSales, totalSales, walkinMessengerSales, walkinSales, messengerSales, resellerSales,
  collectedInvoices, totalReturnsAmount, totalReturnsQty, returnsRate, returnsQtyRate, totalDeliveredQty, returnsAnalysis, returnsActionPlan, returnRecords, returnResellerRows, returnProductRows, returnDailyRows, returnsTrend, highReturnInvoices, totalCOGS, grossProfit, operatingProfitBeforePayroll, netProfit,
- foodCostPct, foodCost, foodCostTrend, foodCostActionPlan, productionCostRows, productCOGSRows, productionLogCOGS, productionLaborCOGS, payrollClassification, salaryToSalesRatio, salaryRatio, salaryRatioPeriodRows, salaryRatioEmployeeRows, salaryRatioTrend, salaryRatioActionPlan, operatingExpenseRatio, totalExpenseRatio, grossMarginPct, netMarginPct, nonPayrollExpenses, totalOperatingExpenses, totalExpenses, payrollExpense,
+ foodCostPct, foodCost, foodCostTrend, foodCostActionPlan, productionCostRows, productCOGSRows, directProductCOGS, soldProductCOGS, productionReportCOGS, productionLogCOGS, productionLaborCOGS, cogsSource:directCOGSChoice.source, cogsMethod:directCOGSChoice.method, cogsMissingCostQty:soldProductCOGSInfo.missingCostQty + productionReportCOGSInfo.missingCostQty, payrollClassification, salaryToSalesRatio, salaryRatio, salaryRatioPeriodRows, salaryRatioEmployeeRows, salaryRatioTrend, salaryRatioActionPlan, operatingExpenseRatio, totalExpenseRatio, grossMarginPct, netMarginPct, nonPayrollExpenses, totalOperatingExpenses, totalExpenses, payrollExpense,
  payrollExpensePosted, payrollExpenseSource, payrollGross, payrollNet, expenseByCategory, payrollAnalysis, cashIn, cashOut,
  netCashFlow, cashFlow, cashFlowTrend, cashFlowActionPlan, cashVarianceTotal, expectedCashTotal, actualCashTotal, totalAR, arAging, receivableRows, receivablePriorityRows, receivableStatus, receivableSummary, receivableActionPlan, overdueAR, criticalAR, arOverduePct, collectionRate, resellerRanking, resellerPerformanceRows, resellerPerformanceActionPlan, productProfitability, productProfitabilityRows, productProfitabilitySummary, productProfitabilityActionPlan, productionForecast, productionForecastRows, productionForecastActionPlan, outletForecastRows, dailyClosingRows, dailyClosingActionPlan, deliveryRoute, deliveryRouteRows, deliveryRouteActionPlan, inventoryControl, inventoryReorderRows, inventoryReorderActionPlan, batchCosting, batchCostRows, batchCostingActionPlan, actualVsStandard, actualVsStandardRows, actualVsStandardActionPlan, inventoryUsageRows, yieldMonitoring, productionYieldRows, productionYieldActionPlan, wastageReport, wastageActionPlan, wastageDetailRows, wastageItemRows, wastageReasonRows, wastageEmployeeRows, wastageDailyRows, wastageTrend, missingClosingDays, cashVarianceDays, lowStockItems, inventoryValue,
  stockInMovement, stockOutMovement, productionLogsCount:productionLogsRows.length, productionReportsCount:productionReportsRows.length,
@@ -12346,7 +12653,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  employeesMissingContracts, expiredContracts, finalPayReady, pendingApprovals, totalPendingApprovals,
  employeeDocumentSummary, employeeDocumentRows, employeeDocumentActionPlan, approvalWorkflowSummary, approvalRows, approvalWorkflowActionPlan, rolePermissionSummary, rolePermissionRows, roleRiskRows, rolePermissionActionPlan, auditReviewSummary, auditActionRows, auditSecurityRows, auditReviewActionPlan, testDataRows, dataExportSummary, deviceControlSummary, deviceControlRows, deviceControlActionPlan, businessHealthGrade, businessHealthRows, businessHealthActionPlan,
  auditRedFlags, testDataCandidates, healthChecks, healthScore, recommendations, moduleChecklist,
- rows:{ activeEmployees, attendance, dailySalesRows, invoices, returnRows, expenses, payrollRecords, productionLogsRows, productionReportsRows, trendProductionLogRows, trendWastageRows, inventoryRows, inventoryTxRows, wastageRows, contracts, auditRows, cashReconRows, resellersRows, stockAdjustmentsRows }
+ rows:{ activeEmployees, attendance, dailySalesRows, invoices, returnRows, expenses, payrollRecords, productionLogsRows, productionReportsRows, trendProductionLogRows, trendProductionReportRows, trendWastageRows, inventoryRows, inventoryTxRows, wastageRows, contracts, auditRows, cashReconRows, resellersRows, stockAdjustmentsRows, recipeCostRowsForFoundation }
  })
  setFoundationLastUpdated(loadedAt)
  } catch(e) {
@@ -19270,11 +19577,18 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const totalF = productionReportItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
  const totalA = productionReportItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
  const v = totalA - totalF
+ const recipeLookupForPreview = buildRecipeCostLookup(recipeVault || [])
+ const totalEstimatedCOGS = productionReportItems.reduce((s,item)=>{
+  const costInfo = getProductCostInfo(item, recipeLookupForPreview)
+  return s + Number(item.actual_qty || 0) * safeNum(costInfo?.costPerPiece,0)
+ },0)
+ const missingCostCount = productionReportItems.filter(item=>Number(item.actual_qty||0)>0 && !getProductCostInfo(item, recipeLookupForPreview)?.costPerPiece).length
  return (
  <div style={{ background:Math.abs(v)===0?'#e8f5e9':Math.abs(v)<=20?'#fff3cd':'#fff5f5', borderRadius:'10px', padding:'10px 14px', marginBottom:'14px', border:`1px solid ${Math.abs(v)===0?'#2d8a4e':Math.abs(v)<=20?'#ffc107':'#ca1b1b'}` }}>
  <p style={{ fontWeight:'bold', margin:0, fontSize:'13px', color:Math.abs(v)===0?'#2d8a4e':Math.abs(v)<=20?'#856404':'#ca1b1b' }}>
- Forecast: {totalF} pcs | Produced: {totalA} pcs | Variance: {v>0?'+':''}{v} pcs {Math.abs(v)===0?' ':Math.abs(v)<=20?' ':' '}
+ Forecast: {totalF} pcs | Produced: {totalA} pcs | Variance: {v>0?'+':''}{v} pcs | Est. Product COGS: {php(totalEstimatedCOGS)} {Math.abs(v)===0?' ':Math.abs(v)<=20?' ':' '}
  </p>
+ {missingCostCount>0 && <p style={{ margin:'5px 0 0', color:'#ca1b1b', fontSize:'11px', fontWeight:'bold' }}>{missingCostCount} produced item(s) still have no Recipe Vault cost. Add/approve recipe costing to complete COGS.</p>}
  </div>
  )
  })()}
@@ -19285,11 +19599,15 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </div>
  {productionReportItems.map((item,i)=>{
  const v = Number(item.actual_qty||0) - Number(item.forecast_qty||0)
+ const recipeLookupForRow = buildRecipeCostLookup(recipeVault || [])
+ const rowCostInfo = getProductCostInfo(item, recipeLookupForRow)
+ const rowCost = Number(item.actual_qty || 0) * safeNum(rowCostInfo?.costPerPiece,0)
  return (
- <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center', gap:'6px' }}>
+ <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1.2fr 2fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center', gap:'6px' }}>
  <span style={{ fontSize:'11px', fontWeight:'bold' }}>{item.variant_name}</span>
  <span style={{ fontSize:'12px', color:'#4a90d9', fontWeight:'bold' }}>{item.forecast_qty}</span>
  <input type="number" min="0" value={item.actual_qty||''} onChange={e=>{ const upd=[...productionReportItems]; upd[i]={...upd[i],actual_qty:e.target.value}; setProductionReportItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'4px 6px', border:v!==0&&item.actual_qty!==''?'2px solid #f5a623':'1.5px solid #e8e8e8', textAlign:'center' }} placeholder="0" />
+ <span style={{ fontSize:'11px', textAlign:'right', fontWeight:'bold', color:rowCostInfo?.costPerPiece?'#2d8a4e':'#ca1b1b' }}>{Number(item.actual_qty||0)>0 ? (rowCostInfo?.costPerPiece ? php(rowCost) : 'No cost') : '-'}</span>
  {v!==0&&item.actual_qty!==''?<input placeholder="Reason..." value={item.variance_reason||''} onChange={e=>{ const upd=[...productionReportItems]; upd[i]={...upd[i],variance_reason:e.target.value}; setProductionReportItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'10px', padding:'4px 6px' }} />:<span style={{ fontSize:'10px', color:'#aaa' }}> </span>}
  </div>
  )
@@ -19341,7 +19659,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {/* P&L Cards */}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
- { label:'Total COGS', value:php(financialData.totalCOGS), color:'#ca1b1b', sub:`Production ${php(financialData.productionLogCOGS||0)} + Labor ${php(financialData.productionLaborCOGS||0)}` },
+ { label:'Total COGS', value:php(financialData.totalCOGS), color:'#ca1b1b', sub:`Product ${php(financialData.directProductCOGS||0)} + Labor ${php(financialData.productionLaborCOGS||0)} | ${financialData.cogsSource || 'No source yet'}` },
  { label:'Gross Profit', value:php(financialData.grossProfit), color:financialData.grossProfit>=0?'#2d8a4e':'#ca1b1b', sub:`${financialData.grossMarginPct.toFixed(1)}% margin` },
  { label:'Add\'l Expenses', value:php(financialData.totalExpenses), color:'#f57c00', sub:'Fuel, misc, supplies' },
  { label:'Net Profit', value:php(financialData.netProfit), color:financialData.netProfit>=0?'#2d8a4e':'#ca1b1b', sub:`${financialData.netMarginPct.toFixed(1)}% net margin` },
