@@ -16618,7 +16618,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </thead>
  <tbody>
  {crateData.rows.length === 0 && (
- <tr><td colSpan="7" style={{ padding:'18px', textAlign:'center', color:'#888' }}>No crate balance records yet.</td></tr>
+ <tr><td colSpan={7} style={{ padding:'18px', textAlign:'center', color:'#888' }}>No crate balance records yet.</td></tr>
  )}
  {crateData.rows.map((r,idx) => {
  const balance = safeNum(r.balance,0)
@@ -19676,43 +19676,40 @@ onClick={async ()=>{
  <td style={{ padding:'7px', textAlign:'right', fontWeight:'bold' }}>{php(amount)}</td>
  </tr>
  })}
- <tr style={{ background:'#f7f7f7', fontWeight:'bold' }}><td style={{ padding:'8px' }}>TOTAL</td><td style={{ padding:'8px', textAlign:'right' }}>{summary.originalQty}</td><td style={{ padding:'8px', textAlign:'right' }}>{summary.actualQty}</td><td style={{ padding:'8px', textAlign:'right', color:'#ca1b1b' }}>{summary.returnedQty}</td><td style={{ padding:'8px', textAlign:'right', color:'#2d8a4e' }}>{summary.billableQty}</td><td></td><td style={{ padding:'8px', textAlign:'right' }}>{php(summary.finalTotal)}</td></tr>
- </tbody>
- </table>
- </div>
- <div style={{ background:'#f8fbff', border:'2px solid #4a90d933', borderRadius:'12px', padding:'12px', marginBottom:'12px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
- <div>
- <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'13px', margin:'0 0 3px' }}>Crates Settlement</p>
- <p style={{ color:'#666', fontSize:'11px', margin:0 }}>Record crates delivered/released and crates returned/collected here. This updates Inventory → Crates Inventory automatically.</p>
- </div>
+ <tr style={{ background:'#f7f7f7', fontWeight:'bold' }}><td style={{ padding:'8px' }}>TOTAL DONUTS</td><td style={{ padding:'8px', textAlign:'right' }}>{summary.originalQty}</td><td style={{ padding:'8px', textAlign:'right' }}>{summary.actualQty}</td><td style={{ padding:'8px', textAlign:'right', color:'#ca1b1b' }}>{summary.returnedQty}</td><td style={{ padding:'8px', textAlign:'right', color:'#2d8a4e' }}>{summary.billableQty}</td><td></td><td style={{ padding:'8px', textAlign:'right' }}>{php(summary.finalTotal)}</td></tr>
+ <tr style={{ background:'#fff8dc', borderTop:'2px solid #FDD412' }}>
+ <td colSpan={7} style={{ padding:'9px 8px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+ <span style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'12px' }}>CRATES SETTLEMENT — same reseller, same invoice</span>
  <span style={{ background:crateSummary.variance>0?'#fff5f5':crateSummary.variance<0?'#e8f0fe':'#f0fff4', color:crateSummary.variance>0?'#ca1b1b':crateSummary.variance<0?'#4a90d9':'#2d8a4e', border:`1px solid ${crateSummary.variance>0?'#ca1b1b33':crateSummary.variance<0?'#4a90d933':'#2d8a4e33'}`, borderRadius:'20px', padding:'4px 10px', fontSize:'11px', fontWeight:'bold' }}>{crateSummary.status}</span>
  </div>
- <div style={{ overflowX:'auto', background:'white', borderRadius:'10px', border:'1px solid #e8eef8', marginBottom:'10px' }}>
- <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'620px', fontSize:'11px' }}>
- <thead><tr style={{ background:'#1a1a2e', color:'white' }}>
- <th style={{ padding:'8px', textAlign:'left' }}>Crate Item</th>
- <th style={{ padding:'8px', textAlign:'right' }}>Delivered / Released</th>
- <th style={{ padding:'8px', textAlign:'right' }}>Returned / Collected</th>
- <th style={{ padding:'8px', textAlign:'right' }}>Variance</th>
- <th style={{ padding:'8px', textAlign:'right' }}>Projected Balance</th>
- </tr></thead>
- <tbody>
- <tr>
- <td style={{ padding:'8px', fontWeight:'bold', color:'#333' }}>Plastic Crates</td>
- <td style={{ padding:'8px', textAlign:'right' }}><input type="number" min="0" step="1" value={crateEntry.delivered} onChange={e=>updateSettlementCrates(inv.id, 'delivered', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #4a90d966' }} placeholder="0" /></td>
- <td style={{ padding:'8px', textAlign:'right' }}><input type="number" min="0" step="1" value={crateEntry.returned} onChange={e=>updateSettlementCrates(inv.id, 'returned', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #2d8a4e66' }} placeholder="0" /></td>
+ </td>
+ </tr>
+ <tr style={{ background:'#f8fbff', borderBottom:'1px solid #e8eef8' }}>
+ <td style={{ padding:'8px', fontWeight:'900', color:'#333' }}>Plastic Crates</td>
+ <td style={{ padding:'8px', textAlign:'right', color:'#777', fontWeight:'bold' }}>Crates</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>
+ <input type="number" min="0" step="1" value={crateEntry.delivered} onChange={e=>updateSettlementCrates(inv.id, 'delivered', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #4a90d966' }} placeholder="Released" />
+ <div style={{ color:'#4a90d9', fontSize:'10px', fontWeight:'bold', marginTop:'3px' }}>Delivered / Released</div>
+ </td>
+ <td style={{ padding:'8px', textAlign:'right' }}>
+ <input type="number" min="0" step="1" value={crateEntry.returned} onChange={e=>updateSettlementCrates(inv.id, 'returned', e.target.value)} style={{...inputStyle, marginBottom:0, width:'100px', padding:'6px 8px', textAlign:'right', fontWeight:'bold', border:'2px solid #2d8a4e66' }} placeholder="Returned" />
+ <div style={{ color:'#2d8a4e', fontSize:'10px', fontWeight:'bold', marginTop:'3px' }}>Returned / Collected</div>
+ </td>
  <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:crateSummary.variance>0?'#ca1b1b':crateSummary.variance<0?'#4a90d9':'#2d8a4e' }}>{crateSummary.variance}</td>
+ <td style={{ padding:'8px', textAlign:'right', color:'#777' }}>Projected Balance</td>
  <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:crateSummary.projectedBalance>0?'#ca1b1b':'#2d8a4e' }}>{Math.max(0, crateSummary.projectedBalance)}</td>
  </tr>
  </tbody>
  </table>
  </div>
+ <div style={{ background:'#f8fbff', border:'1px solid #e8eef8', borderRadius:'10px', padding:'10px', marginBottom:'12px' }}>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1.5fr', gap:'8px' }}>
  <div><label style={lblS}>Dispatcher / Released By:</label><input value={crateEntry.dispatcher || ''} onChange={e=>updateSettlementCrates(inv.id, 'dispatcher', e.target.value)} placeholder="Name or initials" style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Driver / Collected By:</label><input value={crateEntry.driver || ''} onChange={e=>updateSettlementCrates(inv.id, 'driver', e.target.value)} placeholder="Name or initials" style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Crate Notes:</label><input value={crateEntry.notes || ''} onChange={e=>updateSettlementCrates(inv.id, 'notes', e.target.value)} placeholder="e.g. 2 crates left at reseller, 1 old crate returned" style={{...inputStyle, marginBottom:0 }} /></div>
  </div>
+ <p style={{ color:'#666', fontSize:'11px', margin:'8px 0 0' }}>This same settlement updates Inventory → Crates Inventory automatically when saved.</p>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5, 1fr)', gap:'8px', marginBottom:'12px' }}>
  <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Actual Delivered</p><p style={{ color:'#1a1a2e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.adjustedGross)}</p></div>
