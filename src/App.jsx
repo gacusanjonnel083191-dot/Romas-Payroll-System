@@ -14815,10 +14815,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  tabs:[{key:'dashboard',label:'Overview'}],
  roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
  { key:'hr', icon:'\uD83D\uDC65', label:'HR & Attendance',
- tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
+ tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'leaveRequests',label:'Leaves \uD83D\uDD14'},{key:'announcements',label:'Announcements'},{key:'contracts',label:'Contracts & Regularization'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
  { key:'payroll', icon:'\uD83D\uDCB0', label:'Payroll',
- tabs:[{key:'payroll',label:'Payroll'},{key:'cashAdvanceCoverage',label:'CA Coverage'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'announcements',label:'Announcements'},{key:'leaveRequests',label:'Leave \uD83D\uDD14'},{key:'cashRequests',label:'Cash Adv \uD83D\uDD14'},{key:'disputes',label:'Disputes \uD83D\uDD14'},{key:'contracts',label:'Contracts'}],
+ tabs:[{key:'payroll',label:'Payroll'},{key:'cashAdvanceCoverage',label:'CA Coverage'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'cashRequests',label:'Cash Adv \uD83D\uDD14'},{key:'disputes',label:'Disputes \uD83D\uDD14'}],
  roles:['owner','manager','hr','payroll'] },
  { key:'inventory', icon:'\uD83D\uDCE6', label:'Inventory',
  tabs:[{key:'inventory',label:'Inventory'}],
@@ -15126,7 +15126,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {visibleSections.map(section => {
  const isActive = currentSection.key === section.key
                   const shouldBlinkThisPayablesButton = section.key==='payablesMain' && shouldBlinkPayablesMainButton
- const hasBadge = (section.key==='payroll' && (leaveRequests.filter(r=>r.status==='pending').length>0||cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
+ const hasBadge = (section.key==='hr' && leaveRequests.filter(r=>r.status==='pending').length>0) ||
+ (section.key==='payroll' && (cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
  (section.key==='sales' && (pendingExpenses>0 && adminRole==='owner')) || (section.key==='payablesMain' && ownerDeadlineSummary.warningCount>0)
  return (
  <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:shouldBlinkThisPayablesButton?'#fdd412':isActive?'#ca1b1b':'transparent', color:shouldBlinkThisPayablesButton?'#1a1a2e':isActive?'white':'rgba(255,255,255,0.65)', animation:shouldBlinkThisPayablesButton?'payablesSidebarBlink 0.8s ease-in-out infinite':'none', boxShadow:shouldBlinkThisPayablesButton?'0 0 16px rgba(253,212,18,0.9)':'none', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
