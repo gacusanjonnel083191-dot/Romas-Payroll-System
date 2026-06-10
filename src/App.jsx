@@ -1311,6 +1311,13 @@ export default function App() {
  const [salesSummaryEndDate, setSalesSummaryEndDate] = useState(today)
  const [salesSummarySearch, setSalesSummarySearch] = useState('')
  const [selectedSalesSummaryDate, setSelectedSalesSummaryDate] = useState(today)
+ const [outletSalesSummaryRows, setOutletSalesSummaryRows] = useState([])
+ const [outletSalesSummaryDetails, setOutletSalesSummaryDetails] = useState([])
+ const [outletSalesSummaryLoading, setOutletSalesSummaryLoading] = useState(false)
+ const [outletSalesSummaryStartDate, setOutletSalesSummaryStartDate] = useState(today)
+ const [outletSalesSummaryEndDate, setOutletSalesSummaryEndDate] = useState(today)
+ const [outletSalesSummarySearch, setOutletSalesSummarySearch] = useState('')
+ const [selectedOutletSalesSummaryId, setSelectedOutletSalesSummaryId] = useState('')
  const [showSalesForm, setShowSalesForm] = useState(false)
  const [salesDate, setSalesDate] = useState(today)
  const [salesEntries, setSalesEntries] = useState([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])
@@ -5752,6 +5759,182 @@ export default function App() {
  if (rows.length === 0) { showToast(' No Sales Summary rows to export.', 'red'); return }
  downloadTextFile(`romas-sales-summary-${salesSummaryStartDate}-to-${salesSummaryEndDate}.csv`, rowsToCSV(rows), 'text/csv')
  showToast(' Sales Summary CSV exported.')
+ }
+
+ function makeOutletSalesSummaryEmptyRow(resellerId, name = 'Unassigned Outlet / Reseller') {
+ return {
+  resellerId:String(resellerId || name || 'unassigned'), resellerName:name || 'Unassigned Outlet / Reseller', area:'', invoiceCount:0, reportCount:0, donutQty:0, donutSales:0, computedDonutQty:0, computedDonutSales:0, snacksQty:0, snacksSales:0, drinksQty:0, drinksSales:0, otherQty:0, otherSales:0, totalSales:0, paidCollections:0, outletRemittance:0, totalRemitted:0, balanceOrShort:0, encoders:new Set(), details:[]
+ }
+ }
+
+ function getOutletSalesProductBucket(value = '') {
+ const t = String(value || '').toLowerCase()
+ if (t.includes('donut') || t.includes('bites') || t.includes('circlet') || t.includes('premium') || t.includes('filled')) return 'donuts'
+ if (t.includes('drink') || t.includes('beverage') || t.includes('water') || t.includes('juice') || t.includes('softdrink') || t.includes('soda')) return 'drinks'
+ if (t.includes('snack') || t.includes('chips') || t.includes('biscuit') || t.includes('cracker') || t.includes('grocery')) return 'snacks'
+ return 'other'
+ }
+
+ function getInvoiceDonutSoldQty(inv = {}, returnQtyByInvoice = {}) {
+ const itemQty = (inv.delivery_invoice_items || []).reduce((sum, item) => {
+  const actual = safeNum(item.actual_quantity ?? item.billable_quantity ?? item.quantity ?? item.qty ?? item.delivered_qty, 0)
+  const returned = safeNum(item.returned_quantity ?? item.returns_qty ?? item.returned_qty, 0)
+  return sum + Math.max(0, actual - returned)
+ }, 0)
+ const invoiceReturnQty = safeNum(inv.returns_qty ?? inv.returned_qty ?? returnQtyByInvoice[String(inv.id || '')], 0)
+ const originalQty = safeNum(inv.total_qty ?? inv.total_quantity ?? (inv.delivery_invoice_items || []).reduce((sum, item) => sum + safeNum(item.quantity ?? item.qty ?? item.delivered_qty, 0), 0), 0)
+ if (itemQty > 0) return moneyRound(itemQty)
+ return Math.max(0, moneyRound(originalQty - invoiceReturnQty))
+ }
+
+ function setOutletSalesSummaryQuickRange(range) {
+ const base = parseLocalDate(today) || new Date()
+ let start = formatDateLocal(base)
+ let end = formatDateLocal(base)
+ if (range === 'yesterday') { const d = new Date(base); d.setDate(d.getDate() - 1); start = formatDateLocal(d); end = start }
+ else if (range === 'week') { const d = new Date(base); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); start = formatDateLocal(d); end = today }
+ else if (range === 'month') { start = `${today.slice(0,7)}-01`; end = today }
+ setOutletSalesSummaryStartDate(start)
+ setOutletSalesSummaryEndDate(end)
+ loadOutletSalesSummary(start, end)
+ }
+
+ async function loadOutletSalesSummary(startArg = outletSalesSummaryStartDate, endArg = outletSalesSummaryEndDate) {
+ const start = startArg || today
+ const end = endArg || start
+ if (end < start) { showToast(' End date must not be earlier than start date.', 'red'); return }
+ setOutletSalesSummaryLoading(true)
+ try {
+  const [resellerRes, invoiceRes, returnsRes, outletRes] = await Promise.all([
+   supabase.from('resellers').select('*').order('name', { ascending:true }),
+   supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').gte('delivery_date', start).lte('delivery_date', end).order('delivery_date', { ascending:false }),
+   supabase.from('reseller_returns').select('*, reseller_return_items(*)').gte('return_date', start).lte('return_date', end).order('return_date', { ascending:false }),
+   supabase.from('outlet_weekly_remittance_reports').select('*, outlet_weekly_remittance_items(*)').gte('week_end', start).lte('week_end', end).eq('status','approved').order('week_end', { ascending:false })
+  ])
+  ;[resellerRes, invoiceRes, returnsRes, outletRes].forEach(res => { if (res?.error) console.warn('Outlet Sales Summary query warning:', res.error) })
+  const resellerRows = resellerRes.error ? (resellers || []) : (resellerRes.data || [])
+  const invoiceRows = invoiceRes.error ? [] : (invoiceRes.data || [])
+  const returnsRows = returnsRes.error ? [] : (returnsRes.data || [])
+  const outletRows = outletRes.error ? [] : (outletRes.data || [])
+  const returnQtyByInvoice = {}
+  ;(returnsRows || []).forEach(ret => {
+   const key = String(ret.invoice_id || '')
+   if (!key) return
+   const qty = (ret.reseller_return_items || []).reduce((sum, item) => sum + safeNum(item.returned_quantity ?? item.quantity ?? item.qty, 0), 0)
+   returnQtyByInvoice[key] = safeNum(returnQtyByInvoice[key], 0) + qty
+  })
+  const resellerLookup = {}
+  ;(resellerRows || []).forEach(r => { if (r?.id) resellerLookup[String(r.id)] = r })
+  const map = {}
+  const ensureRow = (id, name) => {
+   const key = String(id || name || 'unassigned')
+   if (!map[key]) {
+    const r = resellerLookup[key] || {}
+    map[key] = makeOutletSalesSummaryEmptyRow(key, name || r.name || 'Unassigned Outlet / Reseller')
+    map[key].area = r.area || r.address || ''
+   }
+   return map[key]
+  }
+  invoiceRows.filter(isSalesSummaryInvoiceCounted).forEach(inv => {
+   const row = ensureRow(inv.reseller_id || inv.reseller_name || inv.customer_name, inv.reseller_name || inv.customer_name || resellerLookup[String(inv.reseller_id || '')]?.name)
+   const amount = safeNum(inv.total_amount ?? inv.final_total ?? inv.subtotal, 0)
+   const paid = safeNum(inv.paid_amount, 0)
+   const qty = getInvoiceDonutSoldQty(inv, returnQtyByInvoice)
+   row.invoiceCount += 1
+   row.donutQty += qty
+   row.donutSales += amount
+   row.paidCollections += Math.min(amount, paid)
+   const encoder = getSalesSummaryEncoder(inv)
+   if (encoder) row.encoders.add(encoder)
+   row.details.push({ date:getSalesSummaryDateKey(inv.delivery_date), type:'Donut invoice / receivable', reference:inv.invoice_number || '', product:'Donuts', qty, amount, paid, balance:Math.max(0, amount - paid), encodedBy:encoder, encodedAt:getSalesSummaryCreatedAt(inv), status:inv.status || '' })
+  })
+  outletRows.forEach(report => {
+   const row = ensureRow(report.reseller_id || report.reseller_name, report.reseller_name || resellerLookup[String(report.reseller_id || '')]?.name)
+   row.reportCount += 1
+   const actualRemitted = safeNum(report.actual_remitted_amount, 0)
+   row.outletRemittance += actualRemitted
+   const encoder = getSalesSummaryEncoder(report)
+   if (encoder) row.encoders.add(encoder)
+   ;(report.outlet_weekly_remittance_items || []).forEach(item => {
+    const bucket = getOutletSalesProductBucket(`${item.product_type || ''} ${item.category || ''} ${item.product_name || ''}`)
+    const qty = safeNum(item.estimated_sold_qty, 0)
+    const amount = safeNum(item.sales_amount, 0)
+    if (bucket === 'donuts') { row.computedDonutQty += qty; row.computedDonutSales += amount }
+    else if (bucket === 'drinks') { row.drinksQty += qty; row.drinksSales += amount }
+    else if (bucket === 'snacks') { row.snacksQty += qty; row.snacksSales += amount }
+    else { row.otherQty += qty; row.otherSales += amount }
+    if (qty > 0 || amount > 0) row.details.push({ date:getSalesSummaryDateKey(report.week_end), type:`Outlet weekly ${bucket}`, reference:`${report.week_start || ''} to ${report.week_end || ''}`, product:item.product_name || '', qty, amount, paid:0, balance:0, encodedBy:encoder, encodedAt:getSalesSummaryCreatedAt(report), status:report.posted_to_sales ? 'posted to sales' : 'tracking only' })
+   })
+  })
+  const rows = Object.values(map).map(row => {
+   const donutSalesUsed = safeNum(row.donutSales, 0) > 0 ? safeNum(row.donutSales, 0) : safeNum(row.computedDonutSales, 0)
+   const donutQtyUsed = safeNum(row.donutQty, 0) > 0 ? safeNum(row.donutQty, 0) : safeNum(row.computedDonutQty, 0)
+   const nonDonutSales = moneyRound(row.snacksSales + row.drinksSales + row.otherSales)
+   const nonDonutQty = moneyRound(row.snacksQty + row.drinksQty + row.otherQty)
+   const totalSales = moneyRound(donutSalesUsed + nonDonutSales)
+   const totalRemitted = moneyRound(row.paidCollections + row.outletRemittance)
+   return { ...row, donutSalesUsed, donutQtyUsed, nonDonutSales, nonDonutQty, totalSales, totalRemitted, balanceOrShort:moneyRound(totalRemitted - totalSales), encodersText:Array.from(row.encoders).filter(Boolean).join(', ') || 'No encoder yet' }
+  }).filter(row => safeNum(row.totalSales,0) > 0 || safeNum(row.totalRemitted,0) > 0 || safeNum(row.invoiceCount,0) > 0 || safeNum(row.reportCount,0) > 0).sort((a,b)=>safeNum(b.totalSales,0)-safeNum(a.totalSales,0))
+  setOutletSalesSummaryRows(rows)
+  setOutletSalesSummaryDetails(rows.flatMap(row => (row.details || []).map(d => ({ ...d, resellerName:row.resellerName }))))
+  if (!rows.some(r => String(r.resellerId) === String(selectedOutletSalesSummaryId)) && rows[0]) setSelectedOutletSalesSummaryId(rows[0].resellerId)
+ } catch(err) {
+  console.warn('loadOutletSalesSummary:', err)
+  showToast(' Failed to load Outlet Sales Summary: ' + (err?.message || err), 'red')
+  setOutletSalesSummaryRows([])
+  setOutletSalesSummaryDetails([])
+ } finally {
+  setOutletSalesSummaryLoading(false)
+ }
+ }
+
+ function getVisibleOutletSalesSummaryRows() {
+ const term = String(outletSalesSummarySearch || '').trim().toLowerCase()
+ if (!term) return outletSalesSummaryRows || []
+ return (outletSalesSummaryRows || []).filter(row => [row.resellerName,row.area,row.encodersText,row.totalSales,row.totalRemitted,row.balanceOrShort,...(row.details || []).map(d=>[d.date,d.type,d.reference,d.product,d.encodedBy,d.status].join(' '))].filter(Boolean).join(' ').toLowerCase().includes(term))
+ }
+
+ function getOutletSalesSummaryTotals(rows = getVisibleOutletSalesSummaryRows()) {
+ return (rows || []).reduce((acc,row)=>{
+  acc.totalSales += safeNum(row.totalSales,0)
+  acc.donutSales += safeNum(row.donutSalesUsed,0)
+  acc.donutQty += safeNum(row.donutQtyUsed,0)
+  acc.snacksSales += safeNum(row.snacksSales,0)
+  acc.drinksSales += safeNum(row.drinksSales,0)
+  acc.otherSales += safeNum(row.otherSales,0)
+  acc.nonDonutSales += safeNum(row.nonDonutSales,0)
+  acc.remitted += safeNum(row.totalRemitted,0)
+  acc.balanceOrShort += safeNum(row.balanceOrShort,0)
+  acc.invoiceCount += safeNum(row.invoiceCount,0)
+  acc.reportCount += safeNum(row.reportCount,0)
+  return acc
+ }, { totalSales:0, donutSales:0, donutQty:0, snacksSales:0, drinksSales:0, otherSales:0, nonDonutSales:0, remitted:0, balanceOrShort:0, invoiceCount:0, reportCount:0 })
+ }
+
+ function getSelectedOutletSalesSummaryDetails() {
+ const row = (outletSalesSummaryRows || []).find(r => String(r.resellerId) === String(selectedOutletSalesSummaryId))
+ return row?.details || []
+ }
+
+ function exportOutletSalesSummaryCSV() {
+ const rows = getVisibleOutletSalesSummaryRows().map(row => ({
+  'Outlet / Reseller':row.resellerName,
+  Area:row.area,
+  'Donuts Sold':safeNum(row.donutQtyUsed,0),
+  'Donut Sales':safeNum(row.donutSalesUsed,0),
+  'Snacks Sales':safeNum(row.snacksSales,0),
+  'Drinks Sales':safeNum(row.drinksSales,0),
+  'Other Sales':safeNum(row.otherSales,0),
+  'Total Sales / Earned':safeNum(row.totalSales,0),
+  'Paid / Remitted':safeNum(row.totalRemitted,0),
+  'Short / Over / Balance':safeNum(row.balanceOrShort,0),
+  Invoices:safeNum(row.invoiceCount,0),
+  'Outlet Reports':safeNum(row.reportCount,0),
+  'Encoded By':row.encodersText
+ }))
+ if (!rows.length) { showToast(' No outlet sales summary rows to export.', 'red'); return }
+ downloadTextFile(`romas-outlet-sales-summary-${outletSalesSummaryStartDate}-to-${outletSalesSummaryEndDate}.csv`, rowsToCSV(rows), 'text/csv')
+ showToast(' Outlet Sales Summary CSV exported.')
  }
 
  async function createDeliveryInvoice() {
@@ -20540,8 +20723,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  {/* Sub-navigation */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
- {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
- <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
+ {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletSummary','\uD83C\uDFEA Outlet Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
+ <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
 
@@ -20583,6 +20766,48 @@ This recovery button creates one approved expense record using GROSS payroll ear
  })()}
 
  {/* SALES SUMMARY HISTORY */}
+ {salesView==='outletSummary' && (() => {
+ const rows = getVisibleOutletSalesSummaryRows()
+ const totals = getOutletSalesSummaryTotals(rows)
+ const selectedDetails = getSelectedOutletSalesSummaryDetails()
+ return <div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', marginBottom:'12px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'12px' }}>
+   <div><h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}> Outlet / Reseller Sales Summary</h3><p style={{ color:'#666', margin:0, fontSize:'12px' }}>Review how much every reseller or outlet sold/earned for the selected date range. Donut sales come from invoices/receivables; snacks, drinks, and other outlet items come from approved weekly remittance reports.</p></div>
+   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}><button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>loadOutletSalesSummary()}>REFRESH</button><button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={exportOutletSalesSummaryCSV}>EXPORT CSV</button></div>
+  </div>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1.4fr', gap:'10px', marginBottom:'10px' }}>
+   <div><label style={lblS}>From Date</label><input type="date" value={outletSalesSummaryStartDate} onChange={e=>setOutletSalesSummaryStartDate(e.target.value)} style={inputStyle} /></div>
+   <div><label style={lblS}>To Date</label><input type="date" value={outletSalesSummaryEndDate} onChange={e=>setOutletSalesSummaryEndDate(e.target.value)} style={inputStyle} /></div>
+   <div><label style={lblS}>Search Outlet / Encoder / Reference</label><input value={outletSalesSummarySearch} onChange={e=>setOutletSalesSummarySearch(e.target.value)} placeholder="Search reseller, outlet, invoice, encoded by..." style={inputStyle} /></div>
+  </div>
+  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
+   {[['today','Today'],['yesterday','Yesterday'],['week','This Week'],['month','This Month']].map(([key,label])=><button key={key} style={{...btnGray, width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setOutletSalesSummaryQuickRange(key)}>{label}</button>)}
+   <button style={{...btnRed, width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>loadOutletSalesSummary()}>SEARCH DATE RANGE</button>
+  </div>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px' }}>
+   {[
+    ['Total Outlet Sales / Earned', php(totals.totalSales), '#ca1b1b', `${safeNum(totals.invoiceCount,0)} invoice(s), ${safeNum(totals.reportCount,0)} weekly report(s)`],
+    ['Donuts Sold / Sales', `${safeNum(totals.donutQty,0).toLocaleString('en-PH')} pcs`, '#1a1a2e', php(totals.donutSales)],
+    ['Snacks + Drinks + Others', php(totals.nonDonutSales), '#2d8a4e', `Snacks ${php(totals.snacksSales)} | Drinks ${php(totals.drinksSales)}`],
+    ['Paid / Remitted Difference', php(totals.balanceOrShort), totals.balanceOrShort<0?'#ca1b1b':'#2d8a4e', totals.balanceOrShort<0?'Short / balance to collect':'Over / fully covered']
+   ].map(([label,value,color,sub])=><div key={label} style={{ background:'#fff', border:`1px solid ${color}22`, borderRadius:'14px', padding:'14px', textAlign:'center' }}><div style={{ color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'800' }}>{label}</div><div style={{ color, fontWeight:'900', fontSize:'18px', marginTop:'6px' }}>{value}</div><div style={{ color:'#888', fontSize:'11px', marginTop:'4px' }}>{sub}</div></div>)}
+  </div>
+ </div>
+ {outletSalesSummaryLoading && <p style={{ color:'#888', fontSize:'12px' }}>Loading outlet sales summary...</p>}
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'14px', marginBottom:'12px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)', overflowX:'auto' }}>
+  <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1250px' }}>
+   <thead><tr style={{ background:'#1a1a2e', color:'white' }}>{['Outlet / Reseller','Donuts Sold','Donut Sales','Snacks Sales','Drinks Sales','Other Sales','Total Sales / Earned','Paid / Remitted','Short / Over','Records','Encoded By'].map(h=><th key={h} style={{ padding:'9px', textAlign:h==='Outlet / Reseller'?'left':'right', fontSize:'11px' }}>{h}</th>)}</tr></thead>
+   <tbody>{rows.length===0 && <tr><td colSpan="11" style={{ padding:'22px', textAlign:'center', color:'#888', fontSize:'12px' }}>{outletSalesSummaryLoading?'Loading...':'No outlet/reseller sales found for the selected date range.'}</td></tr>}{rows.map(row => <tr key={row.resellerId} onClick={()=>setSelectedOutletSalesSummaryId(row.resellerId)} style={{ borderBottom:'1px solid #f0f0f0', cursor:'pointer', background:String(selectedOutletSalesSummaryId)===String(row.resellerId)?'#fff8dc':'white' }}><td style={{ padding:'9px', fontWeight:'900', color:'#333', textAlign:'left' }}>{row.resellerName}<div style={{ color:'#888', fontSize:'10px', fontWeight:'500' }}>{row.area || 'No area'} | Click to review details</div></td><td style={{ padding:'9px', textAlign:'right', fontWeight:'800' }}>{safeNum(row.donutQtyUsed,0).toLocaleString('en-PH')}</td><td style={{ padding:'9px', textAlign:'right', fontWeight:'800' }}>{php(row.donutSalesUsed)}</td><td style={{ padding:'9px', textAlign:'right' }}>{php(row.snacksSales)}</td><td style={{ padding:'9px', textAlign:'right' }}>{php(row.drinksSales)}</td><td style={{ padding:'9px', textAlign:'right' }}>{php(row.otherSales)}</td><td style={{ padding:'9px', textAlign:'right', color:'#ca1b1b', fontWeight:'900' }}>{php(row.totalSales)}</td><td style={{ padding:'9px', textAlign:'right', color:'#2d8a4e', fontWeight:'900' }}>{php(row.totalRemitted)}</td><td style={{ padding:'9px', textAlign:'right', color:row.balanceOrShort<0?'#ca1b1b':'#2d8a4e', fontWeight:'900' }}>{php(row.balanceOrShort)}</td><td style={{ padding:'9px', textAlign:'right', fontSize:'11px' }}>{safeNum(row.invoiceCount,0)} inv / {safeNum(row.reportCount,0)} rpt</td><td style={{ padding:'9px', textAlign:'right', fontSize:'11px', color:'#555' }}>{row.encodersText}</td></tr>)}</tbody>
+  </table>
+ </div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)', overflowX:'auto' }}>
+  <h4 style={{ color:'#ca1b1b', margin:'0 0 10px', fontSize:'14px' }}>Selected Outlet Details</h4>
+  <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1050px' }}><thead><tr style={{ background:'#f7f7f7' }}>{['Date','Type','Reference','Product','Qty','Amount','Paid','Balance','Status','Encoded By','Encoded At'].map(h=><th key={h} style={{ padding:'8px', textAlign:['Type','Reference','Product','Status','Encoded By','Encoded At'].includes(h)?'left':'right', fontSize:'10px', color:'#555' }}>{h}</th>)}</tr></thead><tbody>{selectedDetails.length===0 && <tr><td colSpan="11" style={{ padding:'18px', textAlign:'center', color:'#888', fontSize:'12px' }}>Select an outlet/reseller row above to see invoice and weekly remittance details.</td></tr>}{selectedDetails.map((d,idx)=><tr key={idx} style={{ borderBottom:'1px solid #f0f0f0' }}><td style={{ padding:'8px', textAlign:'right', fontSize:'11px' }}>{d.date}</td><td style={{ padding:'8px', textAlign:'left', fontSize:'11px', fontWeight:'800' }}>{d.type}</td><td style={{ padding:'8px', textAlign:'left', fontSize:'11px' }}>{d.reference}</td><td style={{ padding:'8px', textAlign:'left', fontSize:'11px' }}>{d.product}</td><td style={{ padding:'8px', textAlign:'right', fontSize:'11px' }}>{safeNum(d.qty,0).toLocaleString('en-PH')}</td><td style={{ padding:'8px', textAlign:'right', fontSize:'11px', fontWeight:'800' }}>{php(d.amount)}</td><td style={{ padding:'8px', textAlign:'right', fontSize:'11px' }}>{php(d.paid)}</td><td style={{ padding:'8px', textAlign:'right', fontSize:'11px' }}>{php(d.balance)}</td><td style={{ padding:'8px', textAlign:'left', fontSize:'11px' }}>{d.status}</td><td style={{ padding:'8px', textAlign:'left', fontSize:'11px' }}>{d.encodedBy}</td><td style={{ padding:'8px', textAlign:'left', fontSize:'11px' }}>{d.encodedAt?String(d.encodedAt).slice(0,19).replace('T',' '):'-'}</td></tr>)}</tbody></table>
+ </div>
+ </div>
+ })()}
+
  {salesView==='summary' && (() => {
  const rows = getVisibleSalesSummaryRows()
  const totals = getSalesSummaryTotals(rows)
