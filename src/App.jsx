@@ -18689,7 +18689,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const batchItemTerm = String(batchItemSearch || '').trim().toLowerCase()
  const batchFormItems = (inventoryItems || []).filter(isExpiryTrackedItem).filter(i => {
   if (!batchItemTerm) return true
-  const summary = getInventoryBatchSummary(i)
+  const summary = getBatchSummaryForItem(i)
   const haystack = [i.name, i.category, i.unit, i.supplier_name, summary?.nearest?.expiry_date, summary?.nearest?.batch_code].filter(Boolean).join(' ').toLowerCase()
   return haystack.includes(batchItemTerm)
  })
@@ -18721,7 +18721,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <select value={batchForm.item_id} onChange={e=>{ const item = inventoryItems.find(i=>String(i.id)===String(e.target.value)); chooseBatchFormItem(item || null) }} style={{...inputStyle, marginBottom:0 }}><option value="">{batchFormItems.length ? 'Select matching item' : 'No matching item'}</option>{batchFormItems.map(i=><option key={i.id} value={i.id}>{i.name} — {safeNum(i.current_stock,0).toLocaleString('en-PH')} {i.unit}</option>)}</select>
  {batchItemSearch && batchFormItems.length > 0 && (!selectedBatchFormItem || String(selectedBatchFormItem.name || '').toLowerCase() !== String(batchItemSearch || '').trim().toLowerCase()) && (
   <div style={{ marginTop:'6px', border:'1px solid #eee', borderRadius:'10px', maxHeight:'160px', overflowY:'auto', background:'#fff' }}>
-   {batchFormItems.slice(0,8).map(i=>{ const summary=getInventoryBatchSummary(i); return <button key={i.id} type="button" onClick={()=>chooseBatchFormItem(i)} style={{ width:'100%', display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', padding:'8px 10px', background:String(batchForm.item_id)===String(i.id)?'#fff8dc':'white', border:'0', borderBottom:'1px solid #f1f1f1', textAlign:'left', cursor:'pointer' }}><span><b style={{ fontSize:'12px', color:'#1a1a2e' }}>{i.name}</b><br/><small style={{ color:'#777' }}>{i.category || 'No category'} • Stock: {safeNum(i.current_stock,0).toLocaleString('en-PH')} {i.unit || ''}</small></span><small style={{ color:'#ca1b1b', fontWeight:'800' }}>{summary.batchCount || 0} lot(s)</small></button> })}
+   {batchFormItems.slice(0,8).map(i=>{ const summary=getBatchSummaryForItem(i); return <button key={i.id} type="button" onClick={()=>chooseBatchFormItem(i)} style={{ width:'100%', display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', padding:'8px 10px', background:String(batchForm.item_id)===String(i.id)?'#fff8dc':'white', border:'0', borderBottom:'1px solid #f1f1f1', textAlign:'left', cursor:'pointer' }}><span><b style={{ fontSize:'12px', color:'#1a1a2e' }}>{i.name}</b><br/><small style={{ color:'#777' }}>{i.category || 'No category'} • Stock: {safeNum(i.current_stock,0).toLocaleString('en-PH')} {i.unit || ''}</small></span><small style={{ color:'#ca1b1b', fontWeight:'800' }}>{summary.batchCount || 0} lot(s)</small></button> })}
   </div>
  )}
  {selectedBatchFormItem && <div style={{ marginTop:'6px', padding:'7px 9px', background:'#f0fff4', border:'1px solid #b7ebc6', borderRadius:'9px', color:'#1f7a3a', fontSize:'11px', fontWeight:'800' }}>Selected: {selectedBatchFormItem.name} • Current stock: {safeNum(selectedBatchFormItem.current_stock,0).toLocaleString('en-PH')} {selectedBatchFormItem.unit || ''}</div>}
