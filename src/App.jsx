@@ -1482,6 +1482,19 @@ export default function App() {
  const [weeklySnackSaving, setWeeklySnackSaving] = useState(false)
  const [weeklySnackPostToSales, setWeeklySnackPostToSales] = useState(true)
  const [weeklySnackNotes, setWeeklySnackNotes] = useState('')
+ // Outlet Inventory & Weekly Remittance
+ const [outletRemitResellerId, setOutletRemitResellerId] = useState('')
+ const [outletRemitStartDate, setOutletRemitStartDate] = useState(getDateOffsetString(-6))
+ const [outletRemitEndDate, setOutletRemitEndDate] = useState(today)
+ const [outletRemitSearch, setOutletRemitSearch] = useState('')
+ const [outletRemitInputs, setOutletRemitInputs] = useState({})
+ const [outletRemitReports, setOutletRemitReports] = useState([])
+ const [outletRemitLoading, setOutletRemitLoading] = useState(false)
+ const [outletRemitSaving, setOutletRemitSaving] = useState(false)
+ const [outletRemitPostToSales, setOutletRemitPostToSales] = useState(true)
+ const [outletRemitActualAmount, setOutletRemitActualAmount] = useState('')
+ const [outletRemitPaymentMethod, setOutletRemitPaymentMethod] = useState('Cash')
+ const [outletRemitNotes, setOutletRemitNotes] = useState('')
  // Crates Inventory / Reseller Variance Tracking
  const [crateMovements, setCrateMovements] = useState([])
  const [cratesLoading, setCratesLoading] = useState(false)
@@ -3683,7 +3696,9 @@ export default function App() {
   if (!weeklySnackStartDate || !weeklySnackEndDate) { showToast(' Please select week start and end dates.', 'red'); return }
   if (parseLocalDate(weeklySnackEndDate) < parseLocalDate(weeklySnackStartDate)) { showToast(' Week end cannot be earlier than week start.', 'red'); return }
   if (rows.length === 0) { showToast(' No snacks/drinks items found.', 'red'); return }
-  const confirmMsg = `Save weekly snacks/drinks count?\n\nEstimated sold: ${summary.totalSold.toLocaleString('en-PH')} pcs\nEstimated sales: ${php(summary.totalSales)}\n\nThis will update current inventory counts to the physical ending count and log weekly sales movements.`
+  if (weeklySnackPostToSales && summary.missingPriceCount > 0) { showToast('Please enter selling price for all items with estimated sold quantity before posting to sales.', 'red'); return }
+  const postingMode = weeklySnackPostToSales && summary.totalSales > 0 ? 'POST computed sales to Daily Sales revenue' : 'DO NOT post to Daily Sales revenue; inventory tracking only'
+  const confirmMsg = `Approve weekly snacks/drinks count?\n\nEstimated sold: ${summary.totalSold.toLocaleString('en-PH')} pcs\nEstimated sales: ${php(summary.totalSales)}\nMode: ${postingMode}\n\nAfter approval, the system will:\n1. Save and lock this weekly count report.\n2. Update current inventory stock to the This Week Count.\n3. Use this week ending count as next week beginning count.\n4. Record who approved/encoded this weekly count.\n\nProceed?`
   if (!window.confirm(confirmMsg)) return
   setWeeklySnackSaving(true)
   try {
@@ -3709,7 +3724,7 @@ export default function App() {
     }
    }
    await logAudit('WEEKLY SNACKS DRINKS COUNT SAVED', currentAdminLabel, 'Inventory', `${weeklySnackStartDate} to ${weeklySnackEndDate} | Sold ${summary.totalSold} | Sales ${php(summary.totalSales)}`)
-   showToast(`Weekly snacks/drinks count saved. Estimated sales: ${php(summary.totalSales)}`)
+   showToast(`Weekly snacks/drinks count approved. Inventory updated. Estimated sales: ${php(summary.totalSales)}`)
    setWeeklySnackNotes('')
    setWeeklySnackInputs({})
    loadInventoryItems(); loadInventoryTransactions(); loadWeeklySnackData(); loadDailySales(); refreshFoundationAfterDataChange('weekly-snacks-drinks-count-saved')
@@ -3717,6 +3732,145 @@ export default function App() {
    console.warn('saveWeeklySnackCount:', err)
    showToast(' Failed to save weekly count: '+err.message, 'red')
   } finally { setWeeklySnackSaving(false) }
+ }
+
+ // Outlet Inventory & Weekly Remittance Functions
+ function getOutletSelectedReseller() {
+  return (resellers || []).find(r => String(r.id) === String(outletRemitResellerId)) || null
+ }
+ function classifyOutletInventoryProduct(item = {}) {
+  const text = `${item.category || ''} ${item.name || ''}`.toLowerCase()
+  if (text.includes('drink') || text.includes('beverage') || text.includes('water') || text.includes('juice') || text.includes('soda')) return 'Drinks'
+  if (text.includes('snack') || text.includes('chips') || text.includes('biscuit') || text.includes('grocery') || text.includes('groceries')) return 'Snacks'
+  return 'Other Items'
+ }
+ function getOutletProductKey(product = {}) {
+  const source = product.source || product.product_type || 'item'
+  const id = product.product_id || product.id || normalizeProductCostKey(product.product_name || product.name || '')
+  return `${source}:${id}`
+ }
+ function getOutletProductCatalog() {
+  const donutProducts = (donutVariants || []).map(v => ({ source:'donut_variant', product_id:String(v.id || v.name || ''), product_name:v.name || 'Donut Product', product_type:'Donuts', category:v.category || 'Donuts', unit:'pcs', default_price:safeNum(v.reseller_price ?? v.selling_price ?? v.price, 0) }))
+  const snackProducts = (inventoryItems || []).filter(item => isSnackDrinkInventoryItem(item)).map(item => ({ source:'inventory_item', product_id:String(item.id || ''), product_name:item.name || 'Inventory Item', product_type:classifyOutletInventoryProduct(item), category:getInventoryCategoryLabel(item), unit:item.unit || 'pcs', default_price:getSnackDrinkSellingPrice(item) }))
+  const seen = new Set()
+  return [...donutProducts, ...snackProducts].filter(product => { const key = getOutletProductKey(product); if (!key || seen.has(key)) return false; seen.add(key); return true }).sort((a,b)=>String(a.product_type).localeCompare(String(b.product_type)) || String(a.product_name).localeCompare(String(b.product_name)))
+ }
+ function getOutletVisibleProducts() {
+  const term = String(outletRemitSearch || '').trim().toLowerCase()
+  return getOutletProductCatalog().filter(product => !term || [product.product_name, product.product_type, product.category, product.unit, product.default_price].filter(Boolean).join(' ').toLowerCase().includes(term))
+ }
+ function getOutletLatestEndingMap() {
+  const map = {}
+  ;(outletRemitReports || []).forEach(report => {
+   const rows = Array.isArray(report.outlet_weekly_remittance_items) ? report.outlet_weekly_remittance_items : []
+   rows.forEach(row => { const key = row.product_key || `${row.product_source || 'item'}:${row.product_id || normalizeProductCostKey(row.product_name || '')}`; if (!key || map[key] !== undefined) return; map[key] = safeNum(row.ending_count, 0) })
+  })
+  return map
+ }
+ function isOutletDateWithinRange(dateValue) {
+  const d = getSalesSummaryDateKey(dateValue)
+  return d && d >= String(outletRemitStartDate || '') && d <= String(outletRemitEndDate || '')
+ }
+ function getOutletAutoDeliveredMap() {
+  const map = {}
+  if (!outletRemitResellerId) return map
+  ;(deliveryInvoices || []).filter(inv => String(inv.reseller_id || '') === String(outletRemitResellerId) && isOutletDateWithinRange(inv.delivery_date)).forEach(inv => {
+   ;(inv.delivery_invoice_items || []).forEach(item => {
+    const name = item.variant_name || item.product_name || item.item_name || item.name || 'Donut Product'
+    const key = item.variant_id ? `donut_variant:${String(item.variant_id)}` : `donut_variant:${normalizeProductCostKey(name)}`
+    map[key] = moneyRound(safeNum(map[key], 0) + safeNum(item.quantity ?? item.qty ?? item.delivered_qty ?? item.actual_quantity, 0))
+   })
+  })
+  return map
+ }
+ function updateOutletRemitInput(productKey, field, value) {
+  setOutletRemitInputs(prev => ({ ...prev, [productKey]: { ...(prev[productKey] || {}), [field]: value } }))
+ }
+ function getOutletRemittanceRows() {
+  const latestEnding = getOutletLatestEndingMap()
+  const deliveredMap = getOutletAutoDeliveredMap()
+  return getOutletVisibleProducts().map(product => {
+   const productKey = getOutletProductKey(product)
+   const input = outletRemitInputs[productKey] || {}
+   const beginning = input.beginning_count !== undefined && input.beginning_count !== '' ? safeNum(input.beginning_count, 0) : safeNum(latestEnding[productKey], 0)
+   const autoDelivered = safeNum(deliveredMap[productKey], 0)
+   const manualDelivered = input.delivered_qty !== undefined && input.delivered_qty !== '' ? safeNum(input.delivered_qty, 0) : 0
+   const delivered = moneyRound(autoDelivered + manualDelivered)
+   const wastage = input.wastage_qty !== undefined && input.wastage_qty !== '' ? safeNum(input.wastage_qty, 0) : 0
+   const ending = input.ending_count !== undefined && input.ending_count !== '' ? safeNum(input.ending_count, 0) : safeNum(latestEnding[productKey], 0)
+   const soldRaw = beginning + delivered - wastage - ending
+   const estimatedSold = Math.max(0, moneyRound(soldRaw))
+   const varianceQty = soldRaw < 0 ? moneyRound(soldRaw) : 0
+   const sellingPrice = input.selling_price !== undefined && input.selling_price !== '' ? safeNum(input.selling_price, 0) : safeNum(product.default_price, 0)
+   const salesAmount = moneyRound(estimatedSold * sellingPrice)
+   return { ...product, product_key:productKey, beginning_count:beginning, auto_delivered_qty:autoDelivered, manual_delivered_qty:manualDelivered, delivered_qty:delivered, wastage_qty:wastage, ending_count:ending, estimated_sold_qty:estimatedSold, selling_price:sellingPrice, sales_amount:salesAmount, variance_qty:varianceQty }
+  })
+ }
+ function getOutletRemittanceSummary(rows = getOutletRemittanceRows()) {
+  return (rows || []).reduce((acc, row) => {
+   acc.itemCount += 1; acc.beginning += safeNum(row.beginning_count, 0); acc.delivered += safeNum(row.delivered_qty, 0); acc.wastage += safeNum(row.wastage_qty, 0); acc.ending += safeNum(row.ending_count, 0); acc.sold += safeNum(row.estimated_sold_qty, 0); acc.sales += safeNum(row.sales_amount, 0)
+   if (safeNum(row.selling_price, 0) <= 0 && safeNum(row.estimated_sold_qty, 0) > 0) acc.missingPriceCount += 1
+   if (safeNum(row.variance_qty, 0) < 0) acc.reviewCount += 1
+   const group = row.product_type || 'Other Items'
+   if (!acc.byCategory[group]) acc.byCategory[group] = { category:group, sold:0, sales:0 }
+   acc.byCategory[group].sold += safeNum(row.estimated_sold_qty, 0); acc.byCategory[group].sales += safeNum(row.sales_amount, 0)
+   return acc
+  }, { itemCount:0, beginning:0, delivered:0, wastage:0, ending:0, sold:0, sales:0, missingPriceCount:0, reviewCount:0, byCategory:{} })
+ }
+ async function loadOutletRemittanceData(resellerIdArg = outletRemitResellerId) {
+  setOutletRemitLoading(true)
+  try {
+   if (!resellerIdArg) { setOutletRemitReports([]); return }
+   const { data, error } = await supabase.from('outlet_weekly_remittance_reports').select('*, outlet_weekly_remittance_items(*)').eq('reseller_id', resellerIdArg).lte('week_end', outletRemitStartDate || today).order('week_end', { ascending:false }).limit(12)
+   if (error) throw error
+   setOutletRemitReports(data || [])
+  } catch(err) { console.warn('loadOutletRemittanceData:', err); setOutletRemitReports([]); showToast(' Outlet weekly remittance table not found yet. Run the Supabase SQL setup before saving reports.', 'red') }
+  finally { setOutletRemitLoading(false) }
+ }
+ function prefillOutletEndingFromBeginning() {
+  const next = { ...outletRemitInputs }
+  getOutletVisibleProducts().forEach(product => { const key = getOutletProductKey(product); const current = getOutletRemittanceRows().find(r => r.product_key === key); next[key] = { ...(next[key] || {}), ending_count:current?.beginning_count ?? 0 } })
+  setOutletRemitInputs(next)
+  showToast('Ending count prefilled from previous count. Replace with actual physical count before approval.')
+ }
+ function exportOutletRemittanceCSV() {
+  const reseller = getOutletSelectedReseller(); const rows = getOutletRemittanceRows()
+  if (!reseller) { showToast(' Select a reseller/outlet first.', 'red'); return }
+  if (!rows.length) { showToast(' No outlet rows to export.', 'red'); return }
+  const csv = rows.map(row => ({ Outlet:reseller.name, Category:row.product_type, Product:row.product_name, Unit:row.unit, Beginning:row.beginning_count, Delivered:row.delivered_qty, Wastage:row.wastage_qty, Ending:row.ending_count, 'Estimated Sold':row.estimated_sold_qty, 'Selling Price':row.selling_price, 'Expected Sales':row.sales_amount, Variance:row.variance_qty }))
+  downloadTextFile(`outlet-remittance-${reseller.name || 'outlet'}-${outletRemitStartDate}-to-${outletRemitEndDate}.csv`, rowsToCSV(csv), 'text/csv')
+  showToast('Outlet weekly remittance CSV exported.')
+ }
+ async function saveOutletWeeklyRemittance() {
+  const reseller = getOutletSelectedReseller(); const rows = getOutletRemittanceRows(); const summary = getOutletRemittanceSummary(rows)
+  if (!reseller) { showToast(' Please select the outlet/reseller.', 'red'); return }
+  if (!outletRemitStartDate || !outletRemitEndDate) { showToast(' Please select week start and end dates.', 'red'); return }
+  if (parseLocalDate(outletRemitEndDate) < parseLocalDate(outletRemitStartDate)) { showToast(' Week end cannot be earlier than week start.', 'red'); return }
+  if (!rows.length) { showToast(' No products found for weekly outlet remittance.', 'red'); return }
+  if (outletRemitPostToSales && summary.missingPriceCount > 0) { showToast(' Please enter selling price for every product with estimated sold quantity before posting sales.', 'red'); return }
+  const actualRemitted = safeNum(outletRemitActualAmount, 0); const shortOver = moneyRound(actualRemitted - summary.sales)
+  const mode = outletRemitPostToSales && summary.sales > 0 ? 'POST computed outlet sales to Sales Summary' : 'tracking only / do not post to sales'
+  const confirmMsg = `Approve weekly outlet remittance for ${reseller.name}?\n\nEstimated sold: ${summary.sold.toLocaleString('en-PH')} pcs\nExpected sales: ${php(summary.sales)}\nActual remitted: ${php(actualRemitted)}\nShort/Over: ${php(shortOver)}\nMode: ${mode}\n\nAfter approval, this week ending count becomes next week beginning count and the report will be locked for audit trail. Proceed?`
+  if (!window.confirm(confirmMsg)) return
+  setOutletRemitSaving(true)
+  try {
+   let dailySalesId = null
+   if (outletRemitPostToSales && summary.sales > 0) {
+    const { data:saleData, error:saleErr } = await supabase.from('daily_sales').insert({ sale_date:outletRemitEndDate, total_walkin:0, total_messenger:0, total_reseller:moneyRound(summary.sales), total_revenue:moneyRound(summary.sales), notes:`Outlet weekly computed sales for ${reseller.name} (${outletRemitStartDate} to ${outletRemitEndDate}). Expected ${php(summary.sales)} | Remitted ${php(actualRemitted)} | Short/Over ${php(shortOver)}.${outletRemitNotes ? ` Notes: ${outletRemitNotes}` : ''}`, encoded_by:currentAdminLabel }).select().single()
+    if (saleErr) throw saleErr
+    dailySalesId = saleData?.id || null
+   }
+   const { data:reportData, error:reportErr } = await supabase.from('outlet_weekly_remittance_reports').insert({ reseller_id:reseller.id, reseller_name:reseller.name, week_start:outletRemitStartDate, week_end:outletRemitEndDate, total_beginning_qty:moneyRound(summary.beginning), total_delivered_qty:moneyRound(summary.delivered), total_wastage_qty:moneyRound(summary.wastage), total_ending_qty:moneyRound(summary.ending), total_estimated_sold_qty:moneyRound(summary.sold), total_sales_amount:moneyRound(summary.sales), actual_remitted_amount:moneyRound(actualRemitted), short_over_amount:moneyRound(shortOver), payment_method:outletRemitPaymentMethod, posted_to_sales:!!dailySalesId, daily_sales_id:dailySalesId, status:'approved', encoded_by:currentAdminLabel, approved_by:currentAdminLabel, notes:outletRemitNotes || null }).select().single()
+   if (reportErr) throw reportErr
+   const itemRows = rows.map(row => ({ report_id:reportData.id, product_key:row.product_key, product_source:row.source, product_id:String(row.product_id || ''), product_name:row.product_name, product_type:row.product_type, category:row.category, unit:row.unit, beginning_count:moneyRound(row.beginning_count), delivered_qty:moneyRound(row.delivered_qty), auto_delivered_qty:moneyRound(row.auto_delivered_qty), manual_delivered_qty:moneyRound(row.manual_delivered_qty), wastage_qty:moneyRound(row.wastage_qty), ending_count:moneyRound(row.ending_count), estimated_sold_qty:moneyRound(row.estimated_sold_qty), selling_price:moneyRound(row.selling_price), sales_amount:moneyRound(row.sales_amount), variance_qty:moneyRound(row.variance_qty), notes:row.variance_qty < 0 ? 'Ending count is higher than expected. Review beginning, delivered, wastage, or physical count.' : null }))
+   const { error:itemErr } = await supabase.from('outlet_weekly_remittance_items').insert(itemRows)
+   if (itemErr) throw itemErr
+   await logAudit('OUTLET WEEKLY REMITTANCE APPROVED', currentAdminLabel, reseller.name, `${outletRemitStartDate} to ${outletRemitEndDate} | Expected ${php(summary.sales)} | Remitted ${php(actualRemitted)} | Short/Over ${php(shortOver)}`)
+   showToast(`Outlet weekly remittance approved. Expected sales: ${php(summary.sales)} | Short/Over: ${php(shortOver)}`)
+   setOutletRemitInputs({}); setOutletRemitActualAmount(''); setOutletRemitNotes('')
+   loadOutletRemittanceData(reseller.id); loadDailySales(); loadSalesSummaryHistory(); refreshFoundationAfterDataChange('outlet-weekly-remittance-saved')
+  } catch(err) { console.warn('saveOutletWeeklyRemittance:', err); showToast(' Failed to save outlet weekly remittance: ' + (err?.message || err), 'red') }
+  finally { setOutletRemitSaving(false) }
  }
 
  // Employee Portal My Charges 
@@ -5384,16 +5538,17 @@ export default function App() {
  if (end < start) { showToast(' End date must not be earlier than start date.', 'red'); return }
  setSalesSummaryLoading(true)
  try {
-  const [salesRes, onlineRes, invoiceRes, expenseRes, returnsRes, recipeRes] = await Promise.all([
+  const [salesRes, onlineRes, invoiceRes, expenseRes, returnsRes, recipeRes, outletRes] = await Promise.all([
    supabase.from('daily_sales').select('*, daily_sales_items(*)').gte('sale_date', start).lte('sale_date', end).order('sale_date', { ascending:false }),
    supabase.from('daily_sales_online_payments').select('*').gte('payment_date', start).lte('payment_date', end).neq('status','void').order('payment_date', { ascending:false }),
    supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').gte('delivery_date', start).lte('delivery_date', end).order('delivery_date', { ascending:false }),
    supabase.from('daily_expenses').select('*').gte('expense_date', start).lte('expense_date', end).order('expense_date', { ascending:false }),
    supabase.from('reseller_returns').select('*, reseller_return_items(*)').gte('return_date', start).lte('return_date', end).order('return_date', { ascending:false }),
-   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at'),
+   supabase.from('outlet_weekly_remittance_reports').select('*, outlet_weekly_remittance_items(*)').gte('week_end', start).lte('week_end', end).eq('status','approved').order('week_end', { ascending:false })
   ])
 
-  ;[salesRes, onlineRes, invoiceRes, expenseRes, returnsRes, recipeRes].forEach(res => { if (res?.error) console.warn('Sales Summary query warning:', res.error) })
+  ;[salesRes, onlineRes, invoiceRes, expenseRes, returnsRes, recipeRes, outletRes].forEach(res => { if (res?.error) console.warn('Sales Summary query warning:', res.error) })
 
   const dailyRows = salesRes.error ? [] : (salesRes.data || [])
   const onlineRows = onlineRes.error ? [] : (onlineRes.data || [])
@@ -5401,6 +5556,7 @@ export default function App() {
   const expenseRows = expenseRes.error ? [] : (expenseRes.data || [])
   const returnsRows = returnsRes.error ? [] : (returnsRes.data || [])
   const recipeRows = recipeRes.error ? recipeVault : (recipeRes.data || recipeVault || [])
+  const outletRows = outletRes.error ? [] : (outletRes.data || [])
 
   const map = {}
   const startDate = parseLocalDate(start)
@@ -5423,14 +5579,16 @@ export default function App() {
    const row = ensureRow(sale.sale_date)
    const walkin = safeNum(sale.total_walkin, 0)
    const messenger = safeNum(sale.total_messenger, 0)
+   const resellerManual = safeNum(sale.total_reseller, 0)
    row.dailyWalkin += walkin
    row.dailyMessenger += messenger
+   row.resellerSales += resellerManual
    addSalesSummaryDetail(row, {
-    type:'Daily Sales Encoder',
+    type:resellerManual > 0 ? 'Daily Sales / Outlet Weekly Sales' : 'Daily Sales Encoder',
     date:getSalesSummaryDateKey(sale.sale_date),
     description:sale.notes || 'Daily sales record',
-    amount:walkin + messenger,
-    paymentMethod:'Cash / Manual sales entry',
+    amount:walkin + messenger + resellerManual,
+    paymentMethod:resellerManual > 0 ? 'Outlet / Reseller computed sales' : 'Cash / Manual sales entry',
     encodedBy:getSalesSummaryEncoder(sale),
     encodedAt:getSalesSummaryCreatedAt(sale),
     status:'active'
@@ -5472,6 +5630,23 @@ export default function App() {
     encodedBy:getSalesSummaryEncoder(inv),
     encodedAt:getSalesSummaryCreatedAt(inv),
     status:inv.status || ''
+   })
+  })
+
+  outletRows.forEach(report => {
+   const row = ensureRow(report.week_end)
+   const expected = safeNum(report.total_sales_amount, 0)
+   const remitted = safeNum(report.actual_remitted_amount, 0)
+   const shortOver = safeNum(report.short_over_amount, remitted - expected)
+   addSalesSummaryDetail(row, {
+    type:'Outlet Weekly Remittance',
+    date:getSalesSummaryDateKey(report.week_end),
+    description:`${report.reseller_name || 'Outlet'} | Expected ${php(expected)} | Remitted ${php(remitted)} | Short/Over ${php(shortOver)}`,
+    amount:0,
+    paymentMethod:report.payment_method || 'Remittance',
+    encodedBy:getSalesSummaryEncoder(report),
+    encodedAt:getSalesSummaryCreatedAt(report),
+    status:report.posted_to_sales ? 'posted to sales' : 'tracking only'
    })
   })
 
@@ -15491,7 +15666,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
- if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+ if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
  if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
  if(key==='franchise') { loadFranchises() }
@@ -18133,7 +18308,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div><label style={lblS}>Week Start</label><input type="date" value={weeklySnackStartDate} onChange={e=>setWeeklySnackStartDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Week End / Count Date</label><input type="date" value={weeklySnackEndDate} onChange={e=>setWeeklySnackEndDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Search Item</label><input placeholder="Search snacks, drinks, groceries..." value={weeklySnackSearch} onChange={e=>setWeeklySnackSearch(e.target.value)} style={{...inputStyle, marginBottom:0 }} /></div>
- <div><label style={lblS}>Sales Posting</label><button style={{...btnBase, background:weeklySnackPostToSales?'#2d8a4e':'#f0f0f0', color:weeklySnackPostToSales?'white':'#333', marginTop:0 }} onClick={()=>setWeeklySnackPostToSales(!weeklySnackPostToSales)}>{weeklySnackPostToSales?'POST TO SALES REVENUE':'TRACK INVENTORY ONLY'}</button></div>
+ <div><label style={lblS}>Sales Posting After Approval</label><button style={{...btnBase, background:weeklySnackPostToSales?'#2d8a4e':'#f0f0f0', color:weeklySnackPostToSales?'white':'#333', marginTop:0 }} onClick={()=>setWeeklySnackPostToSales(!weeklySnackPostToSales)}>{weeklySnackPostToSales?'POST TO SALES REVENUE':'TRACK INVENTORY ONLY'}</button></div>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'10px', marginBottom:'12px' }}>
  {[
@@ -18164,7 +18339,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </tbody></table></div>
  <label style={lblS}>Weekly Review Notes</label><textarea placeholder="Example: Weekly inventory counted after closing. Possible variance reviewed by admin." value={weeklySnackNotes} onChange={e=>setWeeklySnackNotes(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
  <div style={{ background:'#f7f9fc', border:'1px solid #e2e8f0', borderRadius:'12px', padding:'12px', marginBottom:'12px', color:'#555', fontSize:'12px', lineHeight:1.5 }}><strong>Formula:</strong> Estimated Sold = Last Week Count + Stock In - Wastage - This Week Count. This is computed sales, so any missing/unlogged item will also appear as sold unless logged as wastage, free item, damaged item, or correction.</div>
- <button style={{...btnBlack, background:'#ca1b1b', opacity:weeklySnackSaving?0.6:1 }} disabled={weeklySnackSaving} onClick={saveWeeklySnackCount}>{weeklySnackSaving?'SAVING WEEKLY COUNT...':'APPROVE & SAVE WEEKLY SNACKS/DRINKS COUNT'}</button>
+ <div style={{ background:'#fff8dc', border:'1px solid #f0e2a0', borderRadius:'12px', padding:'12px', marginBottom:'12px', color:'#5b4a00', fontSize:'12px', lineHeight:1.5 }}><strong>Final approval action:</strong> Typing the new count only previews computed sold pieces and sales amount. Inventory stock is updated only after clicking the approval button below. After approval, This Week Count becomes the current inventory count and the beginning count for the next weekly inventory.</div>
+ <button style={{...btnBlack, background:'#ca1b1b', opacity:weeklySnackSaving?0.6:1 }} disabled={weeklySnackSaving} onClick={saveWeeklySnackCount}>{weeklySnackSaving?'POSTING & UPDATING INVENTORY...':(weeklySnackPostToSales?'APPROVE, POST SALES & UPDATE INVENTORY':'APPROVE & UPDATE INVENTORY ONLY')}</button>
  </div>
  )
  })()}
@@ -20362,10 +20538,47 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  {/* Sub-navigation */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
- {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
- <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory() }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
+ {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
+ <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
+
+
+ {/* OUTLET INVENTORY & WEEKLY REMITTANCE */}
+ {salesView==='outletRemittance' && (() => {
+ const reseller = getOutletSelectedReseller()
+ const rows = getOutletRemittanceRows()
+ const summary = getOutletRemittanceSummary(rows)
+ const actualRemitted = safeNum(outletRemitActualAmount, 0)
+ const shortOver = moneyRound(actualRemitted - summary.sales)
+ const categoryRows = Object.values(summary.byCategory || {})
+ return (
+ <div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'12px', marginBottom:'14px' }}>
+ <div><h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>Outlet Inventory & Weekly Remittance</h3><p style={{ color:'#777', fontSize:'12px', margin:0, lineHeight:1.5 }}>For consignment or special outlet/reseller inventory. The system computes donuts, snacks, drinks, and other item sales from beginning count + delivered - wastage - ending count, then compares it against weekly remittance.</p></div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}><button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'12px' }} onClick={prefillOutletEndingFromBeginning}>PREFILL ENDING</button><button style={{...btnBlack, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'12px' }} onClick={exportOutletRemittanceCSV}>EXPORT CSV</button><button style={{...btnGreen, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'12px' }} onClick={()=>{ loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData(); showToast('Outlet weekly remittance refreshed.') }}>REFRESH</button></div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.3fr .9fr .9fr .8fr', gap:'10px', marginBottom:'12px' }}>
+ <div><label style={lblS}>Outlet / Reseller</label><select value={outletRemitResellerId} onChange={e=>{ setOutletRemitResellerId(e.target.value); setOutletRemitInputs({}); loadOutletRemittanceData(e.target.value) }} style={inputStyle}><option value="">Select outlet/reseller</option>{resellers.map(r=><option key={r.id} value={r.id}>{r.name} {r.area?`- ${r.area}`:''}</option>)}</select></div>
+ <div><label style={lblS}>Week Start</label><input type="date" value={outletRemitStartDate} onChange={e=>setOutletRemitStartDate(e.target.value)} style={inputStyle} /></div>
+ <div><label style={lblS}>Week End</label><input type="date" value={outletRemitEndDate} onChange={e=>setOutletRemitEndDate(e.target.value)} style={inputStyle} /></div>
+ <div><label style={lblS}>Search Product</label><input value={outletRemitSearch} onChange={e=>setOutletRemitSearch(e.target.value)} placeholder="Donut, C2, Piattos..." style={inputStyle} /></div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'12px' }}>{[['Estimated Sold', `${summary.sold.toLocaleString('en-PH')} pcs`, '#ca1b1b'], ['Expected Sales', php(summary.sales), '#2d8a4e'], ['Actual Remitted', php(actualRemitted), '#1a1a2e'], ['Short / Over', php(shortOver), shortOver<0?'#ca1b1b':'#2d8a4e']].map(([label,value,color])=><div key={label} style={{ background:'#fff', border:'1px solid #eee', borderRadius:'12px', padding:'12px' }}><p style={{ color:'#777', fontSize:'10px', margin:'0 0 4px', fontWeight:'700', textTransform:'uppercase' }}>{label}</p><p style={{ color, fontSize:'18px', fontWeight:'900', margin:0 }}>{value}</p></div>)}</div>
+ {categoryRows.length>0 && <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'8px', marginBottom:'12px' }}>{categoryRows.map(c=><div key={c.category} style={{ background:'#f8fafc', border:'1px solid #e2e8f0', borderRadius:'10px', padding:'10px' }}><p style={{ fontSize:'11px', fontWeight:'900', margin:'0 0 3px', color:'#555' }}>{c.category}</p><p style={{ fontSize:'11px', margin:'0', color:'#777' }}>Sold: <strong>{safeNum(c.sold,0).toLocaleString('en-PH')}</strong> pcs</p><p style={{ fontSize:'11px', margin:'2px 0 0', color:'#2d8a4e', fontWeight:'900' }}>{php(c.sales)}</p></div>)}</div>}
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'12px' }}><div><label style={lblS}>Actual Remitted Amount</label><input type="number" min="0" step="0.01" value={outletRemitActualAmount} onChange={e=>setOutletRemitActualAmount(e.target.value)} placeholder="Amount actually remitted" style={inputStyle} /></div><div><label style={lblS}>Remittance Method</label><select value={outletRemitPaymentMethod} onChange={e=>setOutletRemitPaymentMethod(e.target.value)} style={inputStyle}>{['Cash','GCash','Bank Transfer','Mixed Cash/Online','Other'].map(m=><option key={m} value={m}>{m}</option>)}</select></div><div style={{ display:'flex', alignItems:'center', gap:'8px', paddingTop:isMobile?0:'20px' }}><input type="checkbox" checked={outletRemitPostToSales} onChange={e=>setOutletRemitPostToSales(e.target.checked)} /><span style={{ fontSize:'12px', color:'#555', fontWeight:'700' }}>Post computed weekly outlet sales to Sales Summary</span></div></div>
+ {!reseller && <div style={{ background:'#fff8dc', border:'1px solid #f0e2a0', borderRadius:'12px', padding:'12px', color:'#5b4a00', fontSize:'12px', marginBottom:'12px' }}>Select the special outlet/reseller first. The latest approved ending count for that outlet will become the next beginning count.</div>}
+ <div style={{ overflowX:'auto', border:'1px solid #eee', borderRadius:'12px', marginBottom:'12px' }}><table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1180px' }}><thead><tr style={{ background:'#ca1b1b', color:'white' }}>{['Product','Category','Beginning','Auto Delivered','Manual Added','Wastage','Ending Count','Est. Sold','Price','Expected Sales','Status'].map(h=><th key={h} style={{ padding:'8px', textAlign:h==='Product'?'left':'right', fontSize:'10px' }}>{h}</th>)}</tr></thead><tbody>{rows.length===0 && <tr><td colSpan="11" style={{ padding:'20px', textAlign:'center', color:'#888', fontSize:'12px' }}>{reseller?'No products found. Add donut variants or snacks/drinks inventory items first.':'Select an outlet/reseller to begin.'}</td></tr>}{rows.map(row => { const key = row.product_key; const input = outletRemitInputs[key] || {}; const noPrice = safeNum(row.selling_price,0)<=0 && safeNum(row.estimated_sold_qty,0)>0; const review = safeNum(row.variance_qty,0)<0; return <tr key={key} style={{ borderBottom:'1px solid #f0f0f0', background:noPrice?'#fff5f5':review?'#fff8dc':'white' }}><td style={{ padding:'8px', textAlign:'left', fontSize:'12px', fontWeight:'800', color:'#333' }}>{row.product_name}<div style={{ color:'#999', fontSize:'10px', fontWeight:'500' }}>{row.unit}</div></td><td style={{ padding:'8px', textAlign:'right', fontSize:'11px' }}>{row.product_type}</td><td style={{ padding:'8px', textAlign:'right' }}><input type="number" value={input.beginning_count ?? row.beginning_count} onChange={e=>updateOutletRemitInput(key,'beginning_count',e.target.value)} style={{...inputStyle, marginBottom:0, padding:'7px 8px', fontSize:'11px', textAlign:'right' }} /></td><td style={{ padding:'8px', textAlign:'right', fontSize:'12px', fontWeight:'800', color:'#4a90d9' }}>{safeNum(row.auto_delivered_qty,0).toLocaleString('en-PH')}</td><td style={{ padding:'8px', textAlign:'right' }}><input type="number" value={input.delivered_qty ?? ''} onChange={e=>updateOutletRemitInput(key,'delivered_qty',e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0, padding:'7px 8px', fontSize:'11px', textAlign:'right' }} /></td><td style={{ padding:'8px', textAlign:'right' }}><input type="number" value={input.wastage_qty ?? ''} onChange={e=>updateOutletRemitInput(key,'wastage_qty',e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0, padding:'7px 8px', fontSize:'11px', textAlign:'right' }} /></td><td style={{ padding:'8px', textAlign:'right' }}><input type="number" value={input.ending_count ?? row.ending_count} onChange={e=>updateOutletRemitInput(key,'ending_count',e.target.value)} style={{...inputStyle, marginBottom:0, padding:'7px 8px', fontSize:'11px', textAlign:'right', border:'2px solid #ca1b1b' }} /></td><td style={{ padding:'8px', textAlign:'right', fontSize:'12px', color:'#ca1b1b', fontWeight:'900' }}>{safeNum(row.estimated_sold_qty,0).toLocaleString('en-PH')}</td><td style={{ padding:'8px', textAlign:'right' }}><input type="number" value={input.selling_price ?? row.selling_price} onChange={e=>updateOutletRemitInput(key,'selling_price',e.target.value)} style={{...inputStyle, marginBottom:0, padding:'7px 8px', fontSize:'11px', textAlign:'right' }} min="0" step="0.01" /></td><td style={{ padding:'8px', textAlign:'right', fontSize:'12px', color:'#2d8a4e', fontWeight:'900' }}>{php(row.sales_amount)}</td><td style={{ padding:'8px', textAlign:'center' }}>{noPrice?<Badge label="NO PRICE" color="red"/>:review?<Badge label="REVIEW" color="orange"/>:<Badge label="OK" color="green"/>}</td></tr> })}</tbody></table></div>
+ <label style={lblS}>Weekly Remittance Notes</label><textarea value={outletRemitNotes} onChange={e=>setOutletRemitNotes(e.target.value)} placeholder="Example: Counted after closing. Remittance verified by cashier/driver/admin." style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
+ <div style={{ background:'#f7f9fc', border:'1px solid #e2e8f0', borderRadius:'12px', padding:'12px', marginBottom:'12px', color:'#555', fontSize:'12px', lineHeight:1.5 }}><strong>Formula:</strong> Estimated Sold = Beginning Count + Delivered/Added Stocks - Wastage - Ending Count. The system posts sales only after approval, not while admin is typing.</div>
+ <button style={{...btnBlack, background:'#ca1b1b', opacity:outletRemitSaving?0.6:1 }} disabled={outletRemitSaving || !reseller} onClick={saveOutletWeeklyRemittance}>{outletRemitSaving?'APPROVING WEEKLY REMITTANCE...':(outletRemitPostToSales?'APPROVE WEEKLY OUTLET REMITTANCE & POST SALES':'APPROVE WEEKLY OUTLET REMITTANCE ONLY')}</button>
+ </div>
+ {outletRemitLoading && <p style={{ color:'#888', fontSize:'12px' }}>Loading outlet remittance history...</p>}
+ {outletRemitReports.length>0 && <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}><h4 style={{ color:'#ca1b1b', margin:'0 0 10px', fontSize:'14px' }}>Recent Approved Outlet Reports</h4>{outletRemitReports.slice(0,6).map(r=><div key={r.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr 1fr 1fr', gap:'8px', alignItems:'center', borderTop:'1px solid #f0f0f0', padding:'8px 0', fontSize:'12px' }}><strong>{r.week_start} to {r.week_end}</strong><span>Expected: <strong>{php(r.total_sales_amount)}</strong></span><span>Remitted: <strong>{php(r.actual_remitted_amount)}</strong></span><span style={{ color:safeNum(r.short_over_amount,0)<0?'#ca1b1b':'#2d8a4e', fontWeight:'900' }}>Short/Over: {php(r.short_over_amount)}</span><span>{r.encoded_by || 'Admin'}</span></div>)}</div>}
+ </div>
+ )
+ })()}
 
  {/* SALES SUMMARY HISTORY */}
  {salesView==='summary' && (() => {
