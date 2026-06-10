@@ -1467,6 +1467,7 @@ export default function App() {
  const [inventoryBatchesError, setInventoryBatchesError] = useState('')
  const [batchSearch, setBatchSearch] = useState('')
  const [batchItemFilter, setBatchItemFilter] = useState('')
+ const [batchItemSearch, setBatchItemSearch] = useState('')
  const [showBatchForm, setShowBatchForm] = useState(false)
  const [batchForm, setBatchForm] = useState({ item_id:'', batch_code:'', received_date:today, expiry_date:'', quantity_received:'', quantity_remaining:'', supplier_id:'', cost_per_unit:'', notes:'' })
  const [savingBatch, setSavingBatch] = useState(false)
@@ -2836,6 +2837,7 @@ Cancel = create batch record only for existing stock.`)
    }
    await logAudit('INVENTORY BATCH CREATED','Admin',item.name,`Batch ${batch.batch_code} | ${qty} ${item.unit} | Expiry ${batchForm.expiry_date || 'N/A'}`)
    setBatchForm({ item_id:'', batch_code:'', received_date:today, expiry_date:'', quantity_received:'', quantity_remaining:'', supplier_id:'', cost_per_unit:'', notes:'' })
+   setBatchItemSearch('')
    setShowBatchForm(false)
    await loadInventoryItems(); await loadInventoryBatches(); await loadInventoryTransactions()
    showToast('Batch / expiry lot saved successfully.')
@@ -18684,6 +18686,18 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const expiredQty = activeRows.filter(b=>getBatchDaysLeft(b)!==null && getBatchDaysLeft(b)<0).reduce((sum,b)=>sum+safeNum(b.quantity_remaining,0),0)
  const nearQty = activeRows.filter(b=>{ const d=getBatchDaysLeft(b); return d!==null && d>=0 && d<=7 }).reduce((sum,b)=>sum+safeNum(b.quantity_remaining,0),0)
  const totalQty = activeRows.reduce((sum,b)=>sum+safeNum(b.quantity_remaining,0),0)
+ const batchItemTerm = String(batchItemSearch || '').trim().toLowerCase()
+ const batchFormItems = (inventoryItems || []).filter(isExpiryTrackedItem).filter(i => {
+  if (!batchItemTerm) return true
+  const summary = getInventoryBatchSummary(i)
+  const haystack = [i.name, i.category, i.unit, i.supplier_name, summary?.nearest?.expiry_date, summary?.nearest?.batch_code].filter(Boolean).join(' ').toLowerCase()
+  return haystack.includes(batchItemTerm)
+ })
+ const selectedBatchFormItem = (inventoryItems || []).find(i => String(i.id) === String(batchForm.item_id)) || null
+ const chooseBatchFormItem = (item = null) => {
+  setBatchForm(prev => ({ ...prev, item_id:item?.id ? String(item.id) : '', cost_per_unit:item?.cost_per_unit || prev.cost_per_unit, supplier_id:item?.supplier_id || prev.supplier_id }))
+  if (item?.name) setBatchItemSearch(item.name)
+ }
  return (
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
@@ -18701,7 +18715,17 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ background:'#fffdf0', border:'1.5px solid #FDD412', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
  <h4 style={{ color:'#ca1b1b', fontSize:'13px', margin:'0 0 10px' }}>Add New Batch / Opening Lot</h4>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.5fr 1fr 1fr 1fr', gap:'10px' }}>
- <div><label style={lblS}>Item *</label><select value={batchForm.item_id} onChange={e=>{ const item = inventoryItems.find(i=>String(i.id)===String(e.target.value)); setBatchForm(p=>({...p,item_id:e.target.value,cost_per_unit:item?.cost_per_unit || p.cost_per_unit,supplier_id:item?.supplier_id || p.supplier_id})) }} style={{...inputStyle, marginBottom:0 }}><option value="">Select item</option>{inventoryItems.filter(isExpiryTrackedItem).map(i=><option key={i.id} value={i.id}>{i.name} — {safeNum(i.current_stock,0).toLocaleString('en-PH')} {i.unit}</option>)}</select></div>
+ <div>
+ <label style={lblS}>Search Item *</label>
+ <input placeholder="Type item name, category, supplier, or expiry..." value={batchItemSearch} onChange={e=>{ const val=e.target.value; setBatchItemSearch(val); if(!String(val).trim()) setBatchForm(p=>({...p,item_id:''})) }} style={{...inputStyle, marginBottom:'6px' }} />
+ <select value={batchForm.item_id} onChange={e=>{ const item = inventoryItems.find(i=>String(i.id)===String(e.target.value)); chooseBatchFormItem(item || null) }} style={{...inputStyle, marginBottom:0 }}><option value="">{batchFormItems.length ? 'Select matching item' : 'No matching item'}</option>{batchFormItems.map(i=><option key={i.id} value={i.id}>{i.name} — {safeNum(i.current_stock,0).toLocaleString('en-PH')} {i.unit}</option>)}</select>
+ {batchItemSearch && batchFormItems.length > 0 && (!selectedBatchFormItem || String(selectedBatchFormItem.name || '').toLowerCase() !== String(batchItemSearch || '').trim().toLowerCase()) && (
+  <div style={{ marginTop:'6px', border:'1px solid #eee', borderRadius:'10px', maxHeight:'160px', overflowY:'auto', background:'#fff' }}>
+   {batchFormItems.slice(0,8).map(i=>{ const summary=getInventoryBatchSummary(i); return <button key={i.id} type="button" onClick={()=>chooseBatchFormItem(i)} style={{ width:'100%', display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', padding:'8px 10px', background:String(batchForm.item_id)===String(i.id)?'#fff8dc':'white', border:'0', borderBottom:'1px solid #f1f1f1', textAlign:'left', cursor:'pointer' }}><span><b style={{ fontSize:'12px', color:'#1a1a2e' }}>{i.name}</b><br/><small style={{ color:'#777' }}>{i.category || 'No category'} • Stock: {safeNum(i.current_stock,0).toLocaleString('en-PH')} {i.unit || ''}</small></span><small style={{ color:'#ca1b1b', fontWeight:'800' }}>{summary.batchCount || 0} lot(s)</small></button> })}
+  </div>
+ )}
+ {selectedBatchFormItem && <div style={{ marginTop:'6px', padding:'7px 9px', background:'#f0fff4', border:'1px solid #b7ebc6', borderRadius:'9px', color:'#1f7a3a', fontSize:'11px', fontWeight:'800' }}>Selected: {selectedBatchFormItem.name} • Current stock: {safeNum(selectedBatchFormItem.current_stock,0).toLocaleString('en-PH')} {selectedBatchFormItem.unit || ''}</div>}
+ </div>
  <div><label style={lblS}>Batch Code</label><input placeholder="Auto if blank" value={batchForm.batch_code} onChange={e=>setBatchForm(p=>({...p,batch_code:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Received Date</label><input type="date" value={batchForm.received_date} onChange={e=>setBatchForm(p=>({...p,received_date:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Expiry Date</label><input type="date" value={batchForm.expiry_date} onChange={e=>setBatchForm(p=>({...p,expiry_date:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
