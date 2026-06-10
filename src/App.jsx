@@ -1303,6 +1303,13 @@ export default function App() {
  const [arFilter, setArFilter] = useState('all')
  const [dailySales, setDailySales] = useState([])
  const [dailySalesLoading, setDailySalesLoading] = useState(false)
+ const [salesSummaryRows, setSalesSummaryRows] = useState([])
+ const [salesSummaryDetails, setSalesSummaryDetails] = useState([])
+ const [salesSummaryLoading, setSalesSummaryLoading] = useState(false)
+ const [salesSummaryStartDate, setSalesSummaryStartDate] = useState(today)
+ const [salesSummaryEndDate, setSalesSummaryEndDate] = useState(today)
+ const [salesSummarySearch, setSalesSummarySearch] = useState('')
+ const [selectedSalesSummaryDate, setSelectedSalesSummaryDate] = useState(today)
  const [showSalesForm, setShowSalesForm] = useState(false)
  const [salesDate, setSalesDate] = useState(today)
  const [salesEntries, setSalesEntries] = useState([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])
@@ -5040,7 +5047,7 @@ export default function App() {
  customer_name:String(form.customer_name || '').trim() || null,
  amount:amt,
  notes:String(form.notes || '').trim() || null,
- recorded_by:adminRole || adminEmployee?.full_name || 'admin',
+ recorded_by:currentAdminLabel || adminRole || adminEmployee?.full_name || 'Admin',
  count_as_revenue:form.count_as_revenue !== false,
  status:'active'
  })
@@ -5076,6 +5083,287 @@ export default function App() {
  if (rows.length === 0) { showToast(' No Daily Sales GCash / online payment records to export.', 'red'); return }
  downloadTextFile(`romas-daily-sales-gcash-online-${dailySalesOnlinePaymentsMonth}.csv`, rowsToCSV(rows), 'text/csv')
  showToast(' Daily Sales GCash / online payments CSV exported.')
+ }
+
+ function getSalesSummaryEncoder(row = {}, fallback = '') {
+ return row.encoded_by || row.recorded_by || row.created_by || row.prepared_by || row.submitted_by || row.approved_by || row.updated_by || fallback || 'Unassigned'
+ }
+
+ function getSalesSummaryCreatedAt(row = {}) {
+ return row.created_at || row.updated_at || row.approved_at || row.paid_at || ''
+ }
+
+ function isSalesSummaryExpenseCounted(exp = {}) {
+ const status = String(exp.status || 'approved').toLowerCase()
+ return !['voided','rejected','cancelled','deleted'].includes(status)
+ }
+
+ function isSalesSummaryInvoiceCounted(inv = {}) {
+ const status = String(inv.status || '').toLowerCase()
+ return !['cancelled','void','voided','deleted'].includes(status)
+ }
+
+ function getSalesSummaryDateKey(value) {
+ return String(value || '').slice(0, 10)
+ }
+
+ function makeSalesSummaryEmptyRow(dateKey) {
+ return {
+  date:dateKey,
+  dailyWalkin:0,
+  dailyMessenger:0,
+  onlineRevenue:0,
+  onlineTrackingOnly:0,
+  resellerSales:0,
+  paidCollections:0,
+  accountsReceivable:0,
+  expenses:0,
+  cogs:0,
+  missingCostQty:0,
+  transactionCount:0,
+  encoders:new Set(),
+  details:[]
+ }
+ }
+
+ function addSalesSummaryDetail(row, detail) {
+ if (!row || !detail) return
+ row.details.push(detail)
+ row.transactionCount += 1
+ const encoder = detail.encodedBy || detail.recordedBy || detail.createdBy
+ if (encoder) row.encoders.add(encoder)
+ }
+
+ function buildSalesSummaryReturnMap(returnsRows = []) {
+ const map = {}
+ ;(returnsRows || []).forEach(ret => {
+  ;(ret.reseller_return_items || []).forEach(item => {
+   const name = item.variant_name || item.product_name || item.item_name || 'Returned Product'
+   const key = normalizeProductCostKey(name)
+   if (!map[key]) map[key] = { name, qty:0, amount:0 }
+   map[key].qty += safeNum(item.returned_quantity ?? item.quantity ?? item.qty, 0)
+   map[key].amount += safeNum(item.total_credit ?? item.total_amount ?? item.amount, 0)
+  })
+ })
+ return map
+ }
+
+ function setSalesSummaryQuickRange(range) {
+ const base = parseLocalDate(today) || new Date()
+ let start = formatDateLocal(base)
+ let end = formatDateLocal(base)
+ if (range === 'yesterday') {
+  const d = new Date(base); d.setDate(d.getDate() - 1); start = formatDateLocal(d); end = start
+ } else if (range === 'week') {
+  const d = new Date(base); const day = d.getDay() || 7; d.setDate(d.getDate() - day + 1); start = formatDateLocal(d); end = today
+ } else if (range === 'month') {
+  start = `${today.slice(0,7)}-01`; end = today
+ }
+ setSalesSummaryStartDate(start)
+ setSalesSummaryEndDate(end)
+ setSelectedSalesSummaryDate(end)
+ loadSalesSummaryHistory(start, end)
+ }
+
+ async function loadSalesSummaryHistory(startArg = salesSummaryStartDate, endArg = salesSummaryEndDate) {
+ const start = startArg || today
+ const end = endArg || start
+ if (end < start) { showToast(' End date must not be earlier than start date.', 'red'); return }
+ setSalesSummaryLoading(true)
+ try {
+  const [salesRes, onlineRes, invoiceRes, expenseRes, returnsRes, recipeRes] = await Promise.all([
+   supabase.from('daily_sales').select('*, daily_sales_items(*)').gte('sale_date', start).lte('sale_date', end).order('sale_date', { ascending:false }),
+   supabase.from('daily_sales_online_payments').select('*').gte('payment_date', start).lte('payment_date', end).neq('status','void').order('payment_date', { ascending:false }),
+   supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').gte('delivery_date', start).lte('delivery_date', end).order('delivery_date', { ascending:false }),
+   supabase.from('daily_expenses').select('*').gte('expense_date', start).lte('expense_date', end).order('expense_date', { ascending:false }),
+   supabase.from('reseller_returns').select('*, reseller_return_items(*)').gte('return_date', start).lte('return_date', end).order('return_date', { ascending:false }),
+   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+  ])
+
+  ;[salesRes, onlineRes, invoiceRes, expenseRes, returnsRes, recipeRes].forEach(res => { if (res?.error) console.warn('Sales Summary query warning:', res.error) })
+
+  const dailyRows = salesRes.error ? [] : (salesRes.data || [])
+  const onlineRows = onlineRes.error ? [] : (onlineRes.data || [])
+  const invoiceRows = invoiceRes.error ? [] : (invoiceRes.data || [])
+  const expenseRows = expenseRes.error ? [] : (expenseRes.data || [])
+  const returnsRows = returnsRes.error ? [] : (returnsRes.data || [])
+  const recipeRows = recipeRes.error ? recipeVault : (recipeRes.data || recipeVault || [])
+
+  const map = {}
+  const startDate = parseLocalDate(start)
+  const endDate = parseLocalDate(end)
+  if (startDate && endDate) {
+   const d = new Date(startDate)
+   while (d <= endDate) {
+    const key = formatDateLocal(d)
+    map[key] = makeSalesSummaryEmptyRow(key)
+    d.setDate(d.getDate() + 1)
+   }
+  }
+  const ensureRow = dateKey => {
+   const key = getSalesSummaryDateKey(dateKey) || today
+   if (!map[key]) map[key] = makeSalesSummaryEmptyRow(key)
+   return map[key]
+  }
+
+  dailyRows.forEach(sale => {
+   const row = ensureRow(sale.sale_date)
+   const walkin = safeNum(sale.total_walkin, 0)
+   const messenger = safeNum(sale.total_messenger, 0)
+   row.dailyWalkin += walkin
+   row.dailyMessenger += messenger
+   addSalesSummaryDetail(row, {
+    type:'Daily Sales Encoder',
+    date:getSalesSummaryDateKey(sale.sale_date),
+    description:sale.notes || 'Daily sales record',
+    amount:walkin + messenger,
+    paymentMethod:'Cash / Manual sales entry',
+    encodedBy:getSalesSummaryEncoder(sale),
+    encodedAt:getSalesSummaryCreatedAt(sale),
+    status:'active'
+   })
+  })
+
+  onlineRows.forEach(payment => {
+   const row = ensureRow(payment.payment_date)
+   const amount = safeNum(payment.amount, 0)
+   const counted = isDailySalesOnlinePaymentRevenue(payment)
+   if (counted) row.onlineRevenue += amount
+   else row.onlineTrackingOnly += amount
+   addSalesSummaryDetail(row, {
+    type:counted ? 'Daily Sales GCash/Online Revenue' : 'GCash/Online Tracking Only',
+    date:getSalesSummaryDateKey(payment.payment_date),
+    description:[payment.sales_channel, payment.customer_name, payment.reference_number].filter(Boolean).join(' | ') || 'Online payment',
+    amount,
+    paymentMethod:payment.payment_method || 'Online Payment',
+    encodedBy:getSalesSummaryEncoder(payment),
+    encodedAt:getSalesSummaryCreatedAt(payment),
+    status:counted ? 'counted as revenue' : 'tracking only'
+   })
+  })
+
+  invoiceRows.filter(isSalesSummaryInvoiceCounted).forEach(inv => {
+   const row = ensureRow(inv.delivery_date)
+   const amount = safeNum(inv.total_amount, 0)
+   const paid = safeNum(inv.paid_amount, 0)
+   const balance = Math.max(0, amount - paid)
+   row.resellerSales += amount
+   row.paidCollections += Math.min(amount, paid)
+   row.accountsReceivable += balance
+   addSalesSummaryDetail(row, {
+    type:'Reseller / Invoice Sales',
+    date:getSalesSummaryDateKey(inv.delivery_date),
+    description:[inv.invoice_number, inv.reseller_name || inv.customer_name].filter(Boolean).join(' | '),
+    amount,
+    paymentMethod:String(inv.status || 'unpaid').toUpperCase(),
+    encodedBy:getSalesSummaryEncoder(inv),
+    encodedAt:getSalesSummaryCreatedAt(inv),
+    status:inv.status || ''
+   })
+  })
+
+  expenseRows.filter(isSalesSummaryExpenseCounted).forEach(exp => {
+   const row = ensureRow(exp.expense_date)
+   const amount = safeNum(exp.amount, 0)
+   row.expenses += amount
+   addSalesSummaryDetail(row, {
+    type:'Expense',
+    date:getSalesSummaryDateKey(exp.expense_date),
+    description:[exp.category, exp.description].filter(Boolean).join(' | '),
+    amount:-amount,
+    paymentMethod:exp.payment_method || exp.status || 'expense',
+    encodedBy:getSalesSummaryEncoder(exp),
+    encodedAt:getSalesSummaryCreatedAt(exp),
+    status:exp.status || 'approved'
+   })
+  })
+
+  Object.values(map).forEach(row => {
+   const dayDaily = dailyRows.filter(s=>getSalesSummaryDateKey(s.sale_date)===row.date)
+   const dayInvoices = invoiceRows.filter(inv=>getSalesSummaryDateKey(inv.delivery_date)===row.date && isSalesSummaryInvoiceCounted(inv))
+   const dayReturns = returnsRows.filter(ret=>getSalesSummaryDateKey(ret.return_date)===row.date)
+   const cogsInfo = calculateSoldProductCOGS({ dailySalesRows:dayDaily, invoices:dayInvoices, returnItemMap:buildSalesSummaryReturnMap(dayReturns), recipeRows })
+   row.cogs = safeNum(cogsInfo.totalCOGS, 0)
+   row.missingCostQty = safeNum(cogsInfo.missingCostQty, 0)
+  })
+
+  const rows = Object.values(map).map(row => {
+   const totalRevenue = moneyRound(row.dailyWalkin + row.dailyMessenger + row.onlineRevenue + row.resellerSales)
+   const grossProfit = moneyRound(totalRevenue - row.cogs)
+   const netProfit = moneyRound(grossProfit - row.expenses)
+   return {
+    ...row,
+    totalRevenue,
+    grossProfit,
+    netProfit,
+    encodersText:Array.from(row.encoders).filter(Boolean).join(', ') || 'No encoder yet',
+    details:row.details.sort((a,b)=>String(b.encodedAt || '').localeCompare(String(a.encodedAt || '')))
+   }
+  }).sort((a,b)=>String(b.date).localeCompare(String(a.date)))
+
+  setSalesSummaryRows(rows)
+  setSalesSummaryDetails(rows.flatMap(row => row.details.map(detail => ({...detail, date:row.date}))))
+  if (!rows.some(r=>r.date===selectedSalesSummaryDate) && rows[0]) setSelectedSalesSummaryDate(rows[0].date)
+ } catch(err) {
+  console.warn('loadSalesSummaryHistory:', err)
+  showToast(' Failed to load Sales Summary History: ' + (err?.message || err), 'red')
+  setSalesSummaryRows([])
+  setSalesSummaryDetails([])
+ } finally {
+  setSalesSummaryLoading(false)
+ }
+ }
+
+ function getVisibleSalesSummaryRows() {
+ const term = String(salesSummarySearch || '').trim().toLowerCase()
+ if (!term) return salesSummaryRows || []
+ return (salesSummaryRows || []).filter(row => [
+  row.date, row.totalRevenue, row.dailyWalkin, row.dailyMessenger, row.onlineRevenue, row.resellerSales, row.expenses, row.cogs, row.netProfit, row.encodersText,
+  ...(row.details || []).map(d=>[d.type,d.description,d.paymentMethod,d.encodedBy,d.status].join(' '))
+ ].filter(Boolean).join(' ').toLowerCase().includes(term))
+ }
+
+ function getSalesSummaryTotals(rows = getVisibleSalesSummaryRows()) {
+ return (rows || []).reduce((acc, row) => {
+  acc.totalRevenue += safeNum(row.totalRevenue, 0)
+  acc.walkin += safeNum(row.dailyWalkin, 0)
+  acc.messenger += safeNum(row.dailyMessenger, 0)
+  acc.online += safeNum(row.onlineRevenue, 0)
+  acc.reseller += safeNum(row.resellerSales, 0)
+  acc.ar += safeNum(row.accountsReceivable, 0)
+  acc.expenses += safeNum(row.expenses, 0)
+  acc.cogs += safeNum(row.cogs, 0)
+  acc.grossProfit += safeNum(row.grossProfit, 0)
+  acc.netProfit += safeNum(row.netProfit, 0)
+  acc.transactions += safeNum(row.transactionCount, 0)
+  return acc
+ }, { totalRevenue:0, walkin:0, messenger:0, online:0, reseller:0, ar:0, expenses:0, cogs:0, grossProfit:0, netProfit:0, transactions:0 })
+ }
+
+ function getSelectedSalesSummaryDetails() {
+ return (salesSummaryRows || []).find(row => row.date === selectedSalesSummaryDate)?.details || []
+ }
+
+ function exportSalesSummaryHistoryCSV() {
+ const rows = getVisibleSalesSummaryRows().map(row => ({
+  Date:row.date,
+  'Total Sales Revenue':safeNum(row.totalRevenue,0),
+  'Walk-in / Daily Sales Encoder':safeNum(row.dailyWalkin,0),
+  'Messenger / Daily Sales Encoder':safeNum(row.dailyMessenger,0),
+  'GCash / Online Revenue':safeNum(row.onlineRevenue,0),
+  'Online Tracking Only':safeNum(row.onlineTrackingOnly,0),
+  'Reseller Sales':safeNum(row.resellerSales,0),
+  'Accounts Receivable':safeNum(row.accountsReceivable,0),
+  COGS:safeNum(row.cogs,0),
+  Expenses:safeNum(row.expenses,0),
+  'Gross Profit':safeNum(row.grossProfit,0),
+  'Net Profit Estimate':safeNum(row.netProfit,0),
+  'Transaction Count':safeNum(row.transactionCount,0),
+  'Encoded By':row.encodersText
+ }))
+ if (rows.length === 0) { showToast(' No Sales Summary rows to export.', 'red'); return }
+ downloadTextFile(`romas-sales-summary-${salesSummaryStartDate}-to-${salesSummaryEndDate}.csv`, rowsToCSV(rows), 'text/csv')
+ showToast(' Sales Summary CSV exported.')
  }
 
  async function createDeliveryInvoice() {
@@ -5165,7 +5453,7 @@ export default function App() {
  total_amount:subtotal,
  status:'unpaid',
  notes:finalNotes,
- created_by:adminRole,
+ created_by:currentAdminLabel,
  prepared_by:invoicePreparedBy||null,
  dispatched_by:invoiceDispatchedBy||null,
  crates_used:Number(invoiceCrates||0),
@@ -6350,7 +6638,7 @@ function buildDeliveryInvoicePrintCSS() {
  const { data:saleData, error:sErr } = await supabase.from('daily_sales').insert({
  sale_date:salesDate, total_walkin:walkinTotal, total_messenger:messengerTotal,
  total_reseller:resellerInvoicesDay, total_revenue:totalRevenue,
- notes:combinedNotes||null, encoded_by:adminRole
+ notes:combinedNotes||null, encoded_by:currentAdminLabel
  }).select().single()
  if (sErr) throw sErr
  const itemRows = valid.map(e => {
@@ -8231,7 +8519,7 @@ function buildDeliveryInvoicePrintCSS() {
  setSavingExpense(true)
  const amt = Number(expenseForm.amount)
  const status = amt >= EXPENSE_APPROVAL_THRESHOLD? 'pending': 'approved'
- const { error } = await supabase.from('daily_expenses').insert({...expenseForm, expense_date:expenseForm.expense_date || today, amount:amt, status, encoded_by:adminRole })
+ const { error } = await supabase.from('daily_expenses').insert({...expenseForm, expense_date:expenseForm.expense_date || today, amount:amt, status, encoded_by:currentAdminLabel })
  if (error) { showToast(' Failed: '+error.message,'red'); setSavingExpense(false); return }
  showToast(status==='pending'?` Expense submitted awaiting Owner approval (${php(amt)} PHP 500.00)`:` Expense of ${php(amt)} recorded!`)
  setExpenseForm({ expense_date:today, category:'Transportation/Fuel', amount:'', description:'' })
@@ -14815,10 +15103,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  tabs:[{key:'dashboard',label:'Overview'}],
  roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
  { key:'hr', icon:'\uD83D\uDC65', label:'HR & Attendance',
- tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'leaveRequests',label:'Leaves \uD83D\uDD14'},{key:'announcements',label:'Announcements'},{key:'contracts',label:'Contracts & Regularization'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
+ tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
  { key:'payroll', icon:'\uD83D\uDCB0', label:'Payroll',
- tabs:[{key:'payroll',label:'Payroll'},{key:'cashAdvanceCoverage',label:'CA Coverage'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'cashRequests',label:'Cash Adv \uD83D\uDD14'},{key:'disputes',label:'Disputes \uD83D\uDD14'}],
+ tabs:[{key:'payroll',label:'Payroll'},{key:'cashAdvanceCoverage',label:'CA Coverage'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'announcements',label:'Announcements'},{key:'leaveRequests',label:'Leave \uD83D\uDD14'},{key:'cashRequests',label:'Cash Adv \uD83D\uDD14'},{key:'disputes',label:'Disputes \uD83D\uDD14'},{key:'contracts',label:'Contracts'}],
  roles:['owner','manager','hr','payroll'] },
  { key:'inventory', icon:'\uD83D\uDCE6', label:'Inventory',
  tabs:[{key:'inventory',label:'Inventory'}],
@@ -15126,8 +15414,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {visibleSections.map(section => {
  const isActive = currentSection.key === section.key
                   const shouldBlinkThisPayablesButton = section.key==='payablesMain' && shouldBlinkPayablesMainButton
- const hasBadge = (section.key==='hr' && leaveRequests.filter(r=>r.status==='pending').length>0) ||
- (section.key==='payroll' && (cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
+ const hasBadge = (section.key==='payroll' && (leaveRequests.filter(r=>r.status==='pending').length>0||cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
  (section.key==='sales' && (pendingExpenses>0 && adminRole==='owner')) || (section.key==='payablesMain' && ownerDeadlineSummary.warningCount>0)
  return (
  <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:shouldBlinkThisPayablesButton?'#fdd412':isActive?'#ca1b1b':'transparent', color:shouldBlinkThisPayablesButton?'#1a1a2e':isActive?'white':'rgba(255,255,255,0.65)', animation:shouldBlinkThisPayablesButton?'payablesSidebarBlink 0.8s ease-in-out infinite':'none', boxShadow:shouldBlinkThisPayablesButton?'0 0 16px rgba(253,212,18,0.9)':'none', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
@@ -19756,10 +20043,110 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  {/* Sub-navigation */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
- {[['dashboard','\uD83D\uDCCA Dashboard'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
- <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments() }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
+ {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
+ <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory() }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
+
+ {/* SALES SUMMARY HISTORY */}
+ {salesView==='summary' && (() => {
+ const rows = getVisibleSalesSummaryRows()
+ const totals = getSalesSummaryTotals(rows)
+ const details = getSelectedSalesSummaryDetails()
+ return (
+ <div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'12px', marginBottom:'14px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}> Sales Summary History</h3>
+ <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Review past sales, expenses, COGS, collections, and who encoded each record.</p>
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>loadSalesSummaryHistory()}>{salesSummaryLoading?'LOADING...':'SEARCH / REFRESH'}</button>
+ <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={exportSalesSummaryHistoryCSV}>EXPORT CSV</button>
+ </div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1.5fr auto auto auto auto', gap:'8px', alignItems:'end' }}>
+ <div><label style={lblS}>From Date:</label><input type="date" value={salesSummaryStartDate} onChange={e=>setSalesSummaryStartDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>To Date:</label><input type="date" value={salesSummaryEndDate} onChange={e=>setSalesSummaryEndDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Search:</label><input value={salesSummarySearch} onChange={e=>setSalesSummarySearch(e.target.value)} placeholder="Search date, encoder, source, payment, reseller..." style={{...inputStyle, marginBottom:0 }} /></div>
+ <button style={{...btnGray, width:'auto', padding:'10px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setSalesSummaryQuickRange('today')}>Today</button>
+ <button style={{...btnGray, width:'auto', padding:'10px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setSalesSummaryQuickRange('yesterday')}>Yesterday</button>
+ <button style={{...btnGray, width:'auto', padding:'10px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setSalesSummaryQuickRange('week')}>This Week</button>
+ <button style={{...btnGray, width:'auto', padding:'10px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setSalesSummaryQuickRange('month')}>This Month</button>
+ </div>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
+ <div style={{ background:'linear-gradient(135deg,#1a1a2e,#30304d)', color:'white', borderRadius:'14px', padding:'14px' }}><p style={{ fontSize:'10px', opacity:.75, margin:0 }}>TOTAL SALES REVENUE</p><h3 style={{ margin:'6px 0 2px', fontSize:'20px' }}>{php(totals.totalRevenue)}</h3><p style={{ fontSize:'10px', opacity:.75, margin:0 }}>{totals.transactions} record(s)</p></div>
+ <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e33', borderRadius:'14px', padding:'14px' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>GROSS PROFIT</p><h3 style={{ color:'#2d8a4e', margin:'6px 0 2px', fontSize:'20px' }}>{php(totals.grossProfit)}</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Sales - COGS</p></div>
+ <div style={{ background:'#fff5f5', border:'1px solid #ca1b1b33', borderRadius:'14px', padding:'14px' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>NET PROFIT ESTIMATE</p><h3 style={{ color:totals.netProfit>=0?'#2d8a4e':'#ca1b1b', margin:'6px 0 2px', fontSize:'20px' }}>{php(totals.netProfit)}</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Gross profit - expenses</p></div>
+ <div style={{ background:'#fffbe6', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>ACCOUNTS RECEIVABLE</p><h3 style={{ color:'#8a6d00', margin:'6px 0 2px', fontSize:'20px' }}>{php(totals.ar)}</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Open reseller balance</p></div>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'10px', marginBottom:'16px' }}>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'12px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Walk-in / Manual</p><h4 style={{ margin:'5px 0 0', color:'#333' }}>{php(totals.walkin)}</h4></div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'12px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Messenger / Manual</p><h4 style={{ margin:'5px 0 0', color:'#333' }}>{php(totals.messenger)}</h4></div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'12px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>GCash / Online Revenue</p><h4 style={{ margin:'5px 0 0', color:'#4a90d9' }}>{php(totals.online)}</h4></div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'12px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Reseller Sales</p><h4 style={{ margin:'5px 0 0', color:'#ca1b1b' }}>{php(totals.reseller)}</h4></div>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'12px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>COGS + Expenses</p><h4 style={{ margin:'5px 0 0', color:'#333' }}>{php(totals.cogs + totals.expenses)}</h4></div>
+ </div>
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'16px', overflowX:'auto' }}>
+ <h4 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'13px' }}>Daily Summary Table</h4>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'11px', minWidth:'980px' }}>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}>
+ {['Date','Total Sales','Walk-in','Messenger','GCash/Online','Reseller','A/R','COGS','Expenses','Net Est.','Encoded By'].map(h=><th key={h} style={{ padding:'8px', textAlign:h==='Encoded By'||h==='Date'?'left':'right' }}>{h}</th>)}
+ </tr></thead>
+ <tbody>
+ {salesSummaryLoading && <tr><td colSpan="11" style={{ padding:'18px', textAlign:'center', color:'#777' }}>Loading sales summary history...</td></tr>}
+ {!salesSummaryLoading && rows.length===0 && <tr><td colSpan="11" style={{ padding:'18px', textAlign:'center', color:'#777' }}>No sales summary records found for this search.</td></tr>}
+ {!salesSummaryLoading && rows.map(row=>(
+ <tr key={row.date} onClick={()=>setSelectedSalesSummaryDate(row.date)} style={{ borderBottom:'1px solid #eee', background:selectedSalesSummaryDate===row.date?'#fff8dc':'white', cursor:'pointer' }}>
+ <td style={{ padding:'8px', fontWeight:'bold', color:'#ca1b1b' }}>{row.date}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'bold' }}>{php(row.totalRevenue)}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{php(row.dailyWalkin)}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{php(row.dailyMessenger)}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{php(row.onlineRevenue)}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{php(row.resellerSales)}</td>
+ <td style={{ padding:'8px', textAlign:'right', color:row.accountsReceivable>0?'#ca1b1b':'#777' }}>{php(row.accountsReceivable)}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{php(row.cogs)}{row.missingCostQty>0 && <div style={{ color:'#ca1b1b', fontSize:'9px' }}>{row.missingCostQty} pcs no cost</div>}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{php(row.expenses)}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'bold', color:row.netProfit>=0?'#2d8a4e':'#ca1b1b' }}>{php(row.netProfit)}</td>
+ <td style={{ padding:'8px', textAlign:'left', maxWidth:'220px', whiteSpace:'normal' }}>{row.encodersText}</td>
+ </tr>
+ ))}
+ </tbody>
+ </table>
+ </div>
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', overflowX:'auto' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'10px' }}>
+ <h4 style={{ color:'#1a1a2e', margin:0, fontSize:'13px' }}>Detailed Records {selectedSalesSummaryDate ? `- ${selectedSalesSummaryDate}` : ''}</h4>
+ <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Click a date above to review sales, expenses, COGS source, and encoder accountability.</p>
+ </div>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'11px', minWidth:'920px' }}>
+ <thead><tr style={{ background:'#ca1b1b', color:'white' }}>
+ {['Type','Description','Amount','Method / Status','Encoded By','Encoded At'].map(h=><th key={h} style={{ padding:'8px', textAlign:h==='Amount'?'right':'left' }}>{h}</th>)}
+ </tr></thead>
+ <tbody>
+ {details.length===0 && <tr><td colSpan="6" style={{ padding:'18px', textAlign:'center', color:'#777' }}>No detailed records for this date.</td></tr>}
+ {details.map((d,i)=>(
+ <tr key={`${d.type}-${i}`} style={{ borderBottom:'1px solid #eee' }}>
+ <td style={{ padding:'8px', fontWeight:'bold', color:d.type==='Expense'?'#ca1b1b':'#1a1a2e' }}>{d.type}</td>
+ <td style={{ padding:'8px' }}>{d.description || '-'}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'bold', color:safeNum(d.amount,0)<0?'#ca1b1b':'#2d8a4e' }}>{php(d.amount)}</td>
+ <td style={{ padding:'8px' }}>{d.paymentMethod || d.status || '-'}</td>
+ <td style={{ padding:'8px' }}>{d.encodedBy || 'Unassigned'}</td>
+ <td style={{ padding:'8px', color:'#777' }}>{d.encodedAt ? new Date(d.encodedAt).toLocaleString('en-PH') : '-'}</td>
+ </tr>
+ ))}
+ </tbody>
+ </table>
+ </div>
+ </div>
+ )
+ })()}
 
  {/* FINANCIAL DASHBOARD */}
  {salesView==='dashboard' && (
