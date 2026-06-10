@@ -1520,7 +1520,21 @@ export default function App() {
  const PAYMENT_TERMS = ['COD (Cash on Delivery)','Net 7 Days','Net 15 Days','Net 30 Days','Net 60 Days','50% Down, 50% on Delivery','Down Payment + Balance','Others']
  const INVENTORY_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Snacks, Drinks and Others','Equipment & Supplies']
  const EXPIRY_TRACKED_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Snacks, Drinks and Others']
- const isExpiryTrackedItem = (item = {}) => EXPIRY_TRACKED_CATEGORIES.includes(String(item.category || '').trim())
+ const normalizeInventoryCategory = (category = '') => {
+  const raw = String(category || '').trim()
+  const lower = raw.toLowerCase()
+  if (!raw) return 'Snacks, Drinks and Others'
+  if (INVENTORY_CATEGORIES.includes(raw)) return raw
+  if (lower.includes('snack') || lower.includes('drink') || lower.includes('beverage') || lower.includes('grocery') || lower.includes('groceries') || lower.includes('others') || lower === 'drinks') return 'Snacks, Drinks and Others'
+  if (lower.includes('raw') || lower.includes('ingredient') || lower.includes('flour') || lower.includes('filling') || lower.includes('glaze')) return 'Raw Ingredients'
+  if (lower.includes('packag') || lower.includes('box') || lower.includes('bag') || lower.includes('label') || lower.includes('ribbon')) return 'Packaging Materials'
+  if (lower.includes('finished') || lower.includes('donut') || lower.includes('product')) return 'Finished Products'
+  if (lower.includes('equipment') || lower.includes('tool') || lower.includes('suppl')) return 'Equipment & Supplies'
+  return 'Snacks, Drinks and Others'
+ }
+ const getInventoryCategoryLabel = (item = {}) => normalizeInventoryCategory(item.category)
+ const getInventoryCategoryGroups = (items = [], categories = INVENTORY_CATEGORIES) => categories.map(cat => ({ cat, items:(items || []).filter(i => getInventoryCategoryLabel(i) === cat) })).filter(g => g.items.length > 0)
+ const isExpiryTrackedItem = (item = {}) => EXPIRY_TRACKED_CATEGORIES.includes(getInventoryCategoryLabel(item))
  const getExpiryDaysLeft = (item = {}) => {
   if (!item.expiry_date) return null
   const expiry = parseLocalDate(item.expiry_date)
@@ -3155,7 +3169,7 @@ export default function App() {
  function printInventoryReport() {
  const lowStock = inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0)
  const totalValue = inventoryItems.reduce((s,i)=>s+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0)
- const byCategory = INVENTORY_CATEGORIES.map(cat=>({ cat, items: inventoryItems.filter(i=>i.category===cat) })).filter(g=>g.items.length>0)
+ const byCategory = getInventoryCategoryGroups(inventoryItems)
  const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Inventory Report</title>
  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:11px;color:#000;}
@@ -3564,7 +3578,7 @@ export default function App() {
 
  // Physical Count Sheet Print 
  function printPhysicalCountSheet() {
- const byCategory = INVENTORY_CATEGORIES.map(cat=>({ cat, items: inventoryItems.filter(i=>i.category===cat) })).filter(g=>g.items.length>0)
+ const byCategory = getInventoryCategoryGroups(inventoryItems)
  const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Physical Count Sheet</title>
  <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:12mm;font-size:10px;}
@@ -18510,7 +18524,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  // Category breakdown
  const catData = INVENTORY_CATEGORIES.map(cat=>{
- const items = inventoryItems.filter(i=>i.category===cat)
+ const items = inventoryItems.filter(i=>getInventoryCategoryLabel(i)===cat)
  const value = items.reduce((s,i)=>s+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0)
  const count = items.length
  const lowCount = items.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0).length
@@ -18598,7 +18612,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px' }}>
  <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 14px' }}> Stock Health by Category</p>
  {catData.map((c,idx)=>{
- const items = inventoryItems.filter(i=>i.category===c.cat)
+ const items = inventoryItems.filter(i=>getInventoryCategoryLabel(i)===c.cat)
  const okItems = items.filter(i=>Number(i.current_stock||0)>Number(i.min_stock||0)||Number(i.min_stock||0)===0)
  const pct = items.length>0?Math.round((okItems.length/items.length)*100):100
  const hColor = pct>=80?'#2d8a4e':pct>=50?'#f57c00':'#ca1b1b'
@@ -18742,7 +18756,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <select value={wastageItemId} onChange={e=>setWastageItemId(e.target.value)} style={inputStyle}>
  <option value=""> Select item </option>
  {INVENTORY_CATEGORIES.map(cat=>{
- const catItems = inventoryItems.filter(i=>i.category===cat)
+ const catItems = inventoryItems.filter(i=>getInventoryCategoryLabel(i)===cat)
  if (!catItems.length) return null
  return <optgroup key={cat} label={cat}>{catItems.map(i=><option key={i.id} value={i.id}>{i.name} {Number(i.current_stock||0).toFixed(2)} {i.unit} on hand</option>)}</optgroup>
  }) }
@@ -18876,7 +18890,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {fefoRows.map(i=>{ const ex = getExpiryStatusInfo(i); return (
  <div key={i.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr 1fr', gap:'6px', alignItems:'center', padding:'6px 0', borderBottom:'1px solid #f2f2f2' }}>
  <span style={{ fontWeight:'bold', color:'#333', fontSize:'12px' }}>{i.name}</span>
- <span style={{ fontSize:'11px', color:'#777' }}>{i.category}</span>
+ <span style={{ fontSize:'11px', color:'#777' }}>{getInventoryCategoryLabel(i)}</span>
  <span style={{ fontSize:'11px', color:'#333' }}>{Number(i.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })} {i.unit}</span>
  <span style={{ fontSize:'11px', fontWeight:'bold', color:ex.color }}>{ex.label}</span>
  </div>
@@ -18897,7 +18911,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div key={item.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', borderBottom:'1px solid #eee', flexWrap:'wrap', gap:'8px' }}>
  <div style={{ flex:1 }}>
  <span style={{ fontWeight:'bold', fontSize:'13px', color:'#333' }}>{item.name}</span>
- <span style={{ fontSize:'11px', color:'#888', marginLeft:'8px' }}>{item.category}</span>
+ <span style={{ fontSize:'11px', color:'#888', marginLeft:'8px' }}>{getInventoryCategoryLabel(item)}</span>
  {item.expiry_date && (
  <span style={{ fontSize:'11px', fontWeight:'bold', color:expiryColor, marginLeft:'8px' }}>
  {expiryInfo.label}
@@ -19201,7 +19215,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <select value={stockTxItemId} onChange={e=>setStockTxItemId(e.target.value)} style={inputStyle}>
  <option value=""> Select item </option>
  {INVENTORY_CATEGORIES.map(cat=>{
- const catItems = inventoryItems.filter(i=>i.category===cat)
+ const catItems = inventoryItems.filter(i=>getInventoryCategoryLabel(i)===cat)
  if (!catItems.length) return null
  return <optgroup key={cat} label={cat}>{catItems.map(i=><option key={i.id} value={i.id}>{i.name} {Number(i.current_stock||0).toFixed(2)} {i.unit} on hand</option>)}</optgroup>
  }) }
@@ -19350,10 +19364,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const todayDate = getTodayDate()
  const searchTerm = String(inventorySearch || '').trim().toLowerCase()
  const movementByItem = {}
- const displayCategoryName = (category) => {
- const raw = String(category || '').trim()
- return INVENTORY_CATEGORIES.includes(raw) ? raw : 'Snacks, Drinks and Others'
- }
+ const displayCategoryName = (category) => normalizeInventoryCategory(category)
 
  ;(inventoryTransactions || [])
  .filter(tx => String(tx.created_at || '').slice(0,10) === todayDate)
