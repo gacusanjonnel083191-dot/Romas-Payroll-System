@@ -1440,6 +1440,7 @@ export default function App() {
  const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
  const [newItemCurrentStock, setNewItemCurrentStock] = useState('')
  const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
+ const [newItemExpiryDate, setNewItemExpiryDate] = useState('')
  const [newItemSupplierId, setNewItemSupplierId] = useState('')
  const [inventoryTransactions, setInventoryTransactions] = useState([])
  const [inventoryTxLoading, setInventoryTxLoading] = useState(false)
@@ -1449,6 +1450,7 @@ export default function App() {
  const [stockTxItemId, setStockTxItemId] = useState('')
  const [stockTxQty, setStockTxQty] = useState('')
  const [stockTxReference, setStockTxReference] = useState('')
+ const [stockTxExpiryDate, setStockTxExpiryDate] = useState('')
  const [stockTxNotes, setStockTxNotes] = useState('')
  const [stockTxLoading, setStockTxLoading] = useState(false)
  // New inventory features
@@ -1517,6 +1519,23 @@ export default function App() {
  const [savingPO, setSavingPO] = useState(false)
  const PAYMENT_TERMS = ['COD (Cash on Delivery)','Net 7 Days','Net 15 Days','Net 30 Days','Net 60 Days','50% Down, 50% on Delivery','Down Payment + Balance','Others']
  const INVENTORY_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Snacks, Drinks and Others','Equipment & Supplies']
+ const EXPIRY_TRACKED_CATEGORIES = ['Raw Ingredients','Packaging Materials','Finished Products','Snacks, Drinks and Others']
+ const isExpiryTrackedItem = (item = {}) => EXPIRY_TRACKED_CATEGORIES.includes(String(item.category || '').trim())
+ const getExpiryDaysLeft = (item = {}) => {
+  if (!item.expiry_date) return null
+  const expiry = parseLocalDate(item.expiry_date)
+  const base = parseLocalDate(today)
+  if (!expiry || !base) return null
+  return Math.ceil((expiry.getTime() - base.getTime()) / (1000 * 60 * 60 * 24))
+ }
+ const getExpiryStatusInfo = (item = {}) => {
+  const daysLeft = getExpiryDaysLeft(item)
+  if (daysLeft === null) return { label:'No expiry set', color:'#888', bg:'#f7f7f7', priority:99 }
+  if (daysLeft < 0) return { label:'EXPIRED', color:'#ca1b1b', bg:'#fff5f5', priority:0 }
+  if (daysLeft === 0) return { label:'Expires today', color:'#ca1b1b', bg:'#fff5f5', priority:1 }
+  if (daysLeft <= 7) return { label:`Expires in ${daysLeft} day(s)`, color:'#f57c00', bg:'#fff8e1', priority:2 }
+  return { label:`Expires ${item.expiry_date}`, color:'#2d8a4e', bg:'#f0fff4', priority:3 }
+ }
  const [payrollStart, setPayrollStart] = useState(today)
  const [payrollEnd, setPayrollEnd] = useState(today)
  const [payrollMonth, setPayrollMonth] = useState(today.slice(0,7))
@@ -3037,6 +3056,7 @@ export default function App() {
  min_stock: Number(newItemMinStock||0),
  cost_per_unit: Number(newItemCostPerUnit||0),
  selling_price: Number(newItemSellingPrice||0),
+ expiry_date: newItemExpiryDate || null,
  supplier_id: newItemSupplierId||null,
  is_active: true
  })
@@ -3052,6 +3072,7 @@ export default function App() {
  setNewItemCostPerUnit('')
  setNewItemCurrentStock('')
  setNewItemSellingPrice('')
+ setNewItemExpiryDate('')
  setNewItemSupplierId('')
  setNewItemCategory('Raw Ingredients')
  setNewItemUnit('kg')
@@ -3077,11 +3098,13 @@ export default function App() {
  const f = editItemFields
  const { error } = await supabase.from('inventory_items').update({
  name: f.name||item.name,
+ category: f.category||item.category,
  unit: f.unit||item.unit,
  current_stock: Number(f.current_stock??item.current_stock??0),
  min_stock: Number(f.min_stock??item.min_stock),
  cost_per_unit: Number(f.cost_per_unit??item.cost_per_unit),
  selling_price: Number(f.selling_price??item.selling_price??0),
+ expiry_date: f.expiry_date!==undefined? (f.expiry_date||null): (item.expiry_date||null),
  supplier_id: f.supplier_id!==undefined? (f.supplier_id||null): (item.supplier_id||null)
  }).eq('id', item.id)
  if (error) { showToast(' Failed: '+error.message,'red'); return }
@@ -3108,11 +3131,13 @@ export default function App() {
  stock_before: stockBefore,
  stock_after: stockAfter,
  reference: stockTxReference.trim()||null,
- notes: stockTxNotes.trim()||null,
+ notes: [stockTxNotes.trim(), stockTxType==='in' && stockTxExpiryDate ? `Expiry date: ${stockTxExpiryDate}` : ''].filter(Boolean).join(' | ') || null,
  performed_by: `Admin (${adminRole})`
  })
  if (txError) throw txError
- const { error: updateError } = await supabase.from('inventory_items').update({ current_stock: stockAfter }).eq('id', stockTxItemId)
+ const updatePayload = { current_stock: stockAfter }
+ if (stockTxType === 'in' && stockTxExpiryDate) updatePayload.expiry_date = stockTxExpiryDate
+ const { error: updateError } = await supabase.from('inventory_items').update(updatePayload).eq('id', stockTxItemId)
  if (updateError) throw updateError
  await logAudit(`STOCK ${stockTxType.toUpperCase()}`,'Admin',item.name,`${stockTxType==='in'?'+':'-'}${qty} ${item.unit} | Stock: ${stockBefore} ${stockAfter}`)
  showToast(` Stock ${stockTxType==='in'?'added':'deducted'} ${item.name}: ${stockBefore} ${stockAfter} ${item.unit}`)
@@ -3120,7 +3145,7 @@ export default function App() {
  if (stockTxType==='out' && stockAfter <= Number(item.min_stock||0)) {
  await createNotification(null, 'System', 'inventory', ` Low Stock: ${item.name}`, `${item.name} dropped to ${stockAfter} ${item.unit}. Minimum is ${item.min_stock} ${item.unit}. Please reorder.`)
  }
- setStockTxItemId(''); setStockTxQty(''); setStockTxReference(''); setStockTxNotes('')
+ setStockTxItemId(''); setStockTxQty(''); setStockTxReference(''); setStockTxExpiryDate(''); setStockTxNotes('')
  setShowStockForm(false); loadInventoryItems()
  } catch(err) {
  showToast(' Failed: '+err.message,'red')
@@ -3385,8 +3410,10 @@ export default function App() {
  status: wastageChargeEmployee? 'pending_approval': 'approved'
  }).select().single()
  if (wErr) throw wErr
- // Update stock
- const { error:sErr } = await supabase.from('inventory_items').update({ current_stock: stockAfter }).eq('id', wastageItemId)
+ // Update stock. If all stock was removed due to expiry, clear the expiry alert for this item.
+ const wastageUpdatePayload = { current_stock: stockAfter }
+ if (finalReason === 'Expired / Spoiled' && stockAfter <= 0) wastageUpdatePayload.expiry_date = null
+ const { error:sErr } = await supabase.from('inventory_items').update(wastageUpdatePayload).eq('id', wastageItemId)
  if (sErr) throw sErr
  // Log transaction
  await supabase.from('inventory_transactions').insert({
@@ -3416,7 +3443,7 @@ export default function App() {
  showToast(` Wastage logged ${qty} ${item.unit} of ${item.name} deducted.${wastageChargeEmployee?` Charge sent to owner for approval.`:''}`)
  setShowWastageForm(false); setWastageItemId(''); setWastageQty(''); setWastageReason('')
  setWastageReasonOther(''); setWastageNotes(''); setWastageChargeEmployee(false); setWastageEmployeeId('')
- loadInventoryItems(); loadWastageLogs(); refreshFoundationAfterDataChange('wastage-logged')
+ loadInventoryItems(); loadWastageLogs(); loadExpiryItems(); refreshFoundationAfterDataChange('wastage-logged')
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setWastageSaving(false)
  }
@@ -3490,7 +3517,7 @@ export default function App() {
  // Expiry Tracking Functions 
  async function loadExpiryItems() {
  setExpiryLoading(true)
- const { data } = await supabase.from('inventory_items').select('id,name,category,unit,current_stock,expiry_date').eq('is_active',true).not('expiry_date','is',null).order('expiry_date')
+ const { data } = await supabase.from('inventory_items').select('id,name,category,unit,current_stock,cost_per_unit,expiry_date').eq('is_active',true).not('expiry_date','is',null).order('expiry_date')
  setExpiryItems(data || [])
  setExpiryLoading(false)
  }
@@ -3504,6 +3531,21 @@ export default function App() {
  if (!window.confirm('Clear expiry date for this item?')) return
  await supabase.from('inventory_items').update({ expiry_date: null }).eq('id', itemId)
  showToast(' Expiry date cleared.'); loadExpiryItems(); loadInventoryItems()
+ }
+ function startExpiredItemWastage(item) {
+  if (!item?.id) return
+  setWastageItemId(item.id)
+  setWastageQty(String(Number(item.current_stock || 0) > 0 ? Number(item.current_stock || 0) : ''))
+  setWastageReason('Expired / Spoiled')
+  setWastageReasonOther('')
+  setWastageDate(today)
+  setWastageNotes(`FEFO expiry action: ${item.name} expired on ${item.expiry_date || 'no date'}. Remove from selling area and log as expired stock.`)
+  setWastageChargeEmployee(false)
+  setWastageEmployeeId('')
+  setShowWastageForm(true)
+  setShowStockForm(false)
+  setShowExpirySection(true)
+  showToast('Expired item loaded into Wastage form. Review quantity, then confirm.')
  }
 
  // Employee Portal My Charges 
@@ -18450,7 +18492,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {/* Supabase setup note */}
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'12px' }}>
  <strong style={{ color:'#ca1b1b' }}> Required Supabase Tables (one-time):</strong>
- <p style={{ color:'#555', margin:'6px 0 2px' }}>1. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>inventory_items</code> id (uuid PK), name, category, unit, current_stock (numeric default 0), min_stock (numeric default 0), cost_per_unit (numeric default 0), selling_price (numeric default 0), supplier_id (uuid nullable), is_active (bool default true), created_at</p>
+ <p style={{ color:'#555', margin:'6px 0 2px' }}>1. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>inventory_items</code> id (uuid PK), name, category, unit, current_stock (numeric default 0), min_stock (numeric default 0), cost_per_unit (numeric default 0), selling_price (numeric default 0), expiry_date (date nullable), supplier_id (uuid nullable), is_active (bool default true), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}>2. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>inventory_transactions</code> id, item_id, item_name, category, transaction_type, quantity, unit, stock_before, stock_after, reference, notes, performed_by, created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}>3. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>inventory_suppliers</code> id (uuid PK), name, contact_person, phone, email, address, payment_terms, notes, created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}>4. <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>purchase_orders</code> id (uuid PK), po_number, supplier_id, supplier_name, payment_terms, status, notes, total_amount, created_at</p>
@@ -18816,21 +18858,41 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  {/* EXPIRY TRACKING */}
  <button style={{ background:'white', color:'#f57c00', border:'1.5px solid #f57c00', borderRadius:'8px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }} onClick={()=>{ if(!showExpirySection) loadExpiryItems(); setShowExpirySection(!showExpirySection) }}>
- {showExpirySection?' HIDE':' VIEW'} EXPIRY MONITOR
+ {showExpirySection?' HIDE':' VIEW'} FEFO EXPIRY MONITOR
  </button>
  {showExpirySection && (
  <div style={{ background:'white', border:'2px solid #f57c00', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
  <h3 style={{ color:'#f57c00', margin:'0 0 6px', fontSize:'14px' }}> Expiry Date Monitor</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Set expiry dates per item. Items are flagged automatically when expiring soon or already expired.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Set expiry dates per item. FEFO priority automatically puts expired and nearest-expiry snacks, drinks, ingredients, packaging, and finished products first.</p>
  {expiryLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading...</p>}
+ {(() => {
+ const fefoRows = inventoryItems.filter(i=>isExpiryTrackedItem(i) && Number(i.current_stock||0)>0 && i.expiry_date).sort((a,b)=>(getExpiryDaysLeft(a) ?? 9999) - (getExpiryDaysLeft(b) ?? 9999)).slice(0,8)
+ return fefoRows.length>0 ? (
+ <div style={{ background:'#fffdf6', border:'1px solid #FDD412', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}>
+ <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>FEFO Priority List — sell/use/remove these first</p>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr 1fr', gap:'6px', fontSize:'11px', fontWeight:'bold', color:'#555', borderBottom:'1px solid #eee', paddingBottom:'6px', marginBottom:'6px' }}>
+ <span>Item</span><span>Category</span><span>Stock</span><span>Expiry Status</span>
+ </div>
+ {fefoRows.map(i=>{ const ex = getExpiryStatusInfo(i); return (
+ <div key={i.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr 1fr', gap:'6px', alignItems:'center', padding:'6px 0', borderBottom:'1px solid #f2f2f2' }}>
+ <span style={{ fontWeight:'bold', color:'#333', fontSize:'12px' }}>{i.name}</span>
+ <span style={{ fontSize:'11px', color:'#777' }}>{i.category}</span>
+ <span style={{ fontSize:'11px', color:'#333' }}>{Number(i.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })} {i.unit}</span>
+ <span style={{ fontSize:'11px', fontWeight:'bold', color:ex.color }}>{ex.label}</span>
+ </div>
+ )})}
+ </div>
+ ) : null
+ })()}
 
  {/* All items set expiry */}
  <div style={{ marginBottom:'16px' }}>
  <p style={{ fontWeight:'bold', fontSize:'13px', color:'#f57c00', margin:'0 0 8px' }}> Set / Update Expiry Dates:</p>
- {inventoryItems.filter(i=>['Raw Ingredients','Packaging Materials'].includes(i.category)).map(item=>{
+ {inventoryItems.filter(i=>isExpiryTrackedItem(i) && Number(i.current_stock||0)>0).sort((a,b)=>(getExpiryDaysLeft(a) ?? 9999) - (getExpiryDaysLeft(b) ?? 9999)).map(item=>{
  const isEditing = editingExpiryId===item.id
- const daysLeft = item.expiry_date? Math.ceil((new Date(item.expiry_date).getTime()-Date.now())/(1000*60*60*24)): null
- const expiryColor = daysLeft===null?'#888':daysLeft<=0?'#ca1b1b':daysLeft<=7?'#f57c00':'#2d8a4e'
+ const daysLeft = getExpiryDaysLeft(item)
+ const expiryInfo = getExpiryStatusInfo(item)
+ const expiryColor = expiryInfo.color
  return (
  <div key={item.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 10px', borderBottom:'1px solid #eee', flexWrap:'wrap', gap:'8px' }}>
  <div style={{ flex:1 }}>
@@ -18838,7 +18900,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <span style={{ fontSize:'11px', color:'#888', marginLeft:'8px' }}>{item.category}</span>
  {item.expiry_date && (
  <span style={{ fontSize:'11px', fontWeight:'bold', color:expiryColor, marginLeft:'8px' }}>
- {daysLeft<=0?' EXPIRED':daysLeft<=7?` Expires in ${daysLeft} day(s)`:` Expires ${item.expiry_date}`}
+ {expiryInfo.label}
  </span>
  )}
  </div>
@@ -18851,7 +18913,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  ): (
  <div style={{ display:'flex', gap:'6px' }}>
  <button style={{...btnBlack, background:'#f57c00', width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingExpiryId(item.id); setExpiryDate(item.expiry_date||'') }}>{item.expiry_date?' EDIT':'+ SET DATE'}</button>
- {item.expiry_date && <button style={{...btnGray, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>clearExpiryDate(item.id)}> </button>}
+ {item.expiry_date && <button style={{...btnGray, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>clearExpiryDate(item.id)}>CLEAR</button>}
+ {item.expiry_date && daysLeft < 0 && <button style={{...btnRed, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>startExpiredItemWastage(item)}>LOG WASTAGE</button>}
  </div>
  )}
  </div>
@@ -18861,22 +18924,27 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  {/* Expiry alerts */}
  {(() => {
- const expired = inventoryItems.filter(i=>i.expiry_date && new Date(i.expiry_date)<new Date())
- const expiringSoon = inventoryItems.filter(i=>i.expiry_date && new Date(i.expiry_date)>=new Date() && Math.ceil((new Date(i.expiry_date).getTime()-Date.now())/(1000*60*60*24))<=7)
+ const expired = inventoryItems.filter(i=>isExpiryTrackedItem(i) && Number(i.current_stock||0)>0 && getExpiryDaysLeft(i)!==null && getExpiryDaysLeft(i)<0).sort((a,b)=>(getExpiryDaysLeft(a)??0)-(getExpiryDaysLeft(b)??0))
+ const expiringSoon = inventoryItems.filter(i=>isExpiryTrackedItem(i) && Number(i.current_stock||0)>0 && getExpiryDaysLeft(i)!==null && getExpiryDaysLeft(i)>=0 && getExpiryDaysLeft(i)<=7).sort((a,b)=>(getExpiryDaysLeft(a)??0)-(getExpiryDaysLeft(b)??0))
  return (expired.length>0||expiringSoon.length>0)? (
  <div>
  {expired.length>0 && (
  <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'10px', padding:'12px', marginBottom:'10px' }}>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}> EXPIRED Log Wastage Immediately</p>
- {expired.map(i=><p key={i.id} style={{...cps, color:'#ca1b1b', fontWeight:'bold' }}>{i.name} expired {i.expiry_date}</p>)}
+ {expired.map(i=>(
+ <div key={i.id} style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap', borderTop:'1px solid #ffd0d0', padding:'7px 0' }}>
+ <p style={{...cps, color:'#ca1b1b', fontWeight:'bold', margin:0 }}>{i.name} expired {i.expiry_date} | Stock: {Number(i.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })} {i.unit}</p>
+ <button style={{...btnRed, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>startExpiredItemWastage(i)}>LOG AS WASTAGE</button>
+ </div>
+ ))}
  </div>
  )}
  {expiringSoon.length>0 && (
  <div style={{ background:'#fff8e1', border:'2px solid #f57c00', borderRadius:'10px', padding:'12px' }}>
  <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:'0 0 8px' }}> EXPIRING WITHIN 7 DAYS Use Soon</p>
  {expiringSoon.map(i=>{
- const days = Math.ceil((new Date(i.expiry_date).getTime()-Date.now())/(1000*60*60*24))
- return <p key={i.id} style={cps}>{i.name} expires in <strong style={{ color:'#f57c00' }}>{days} day(s)</strong> ({i.expiry_date})</p>
+ const days = getExpiryDaysLeft(i)
+ return <p key={i.id} style={cps}>{i.name} expires in <strong style={{ color:'#f57c00' }}>{days} day(s)</strong> ({i.expiry_date}) | Stock: {Number(i.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })} {i.unit}</p>
  }) }
  </div>
  )}
@@ -19142,6 +19210,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <input type="number" placeholder="Enter quantity" value={stockTxQty} onChange={e=>setStockTxQty(e.target.value)} style={inputStyle} min="0.01" step="0.01" />
  <label style={lblS}>Reference <span style={{ color:'#aaa', fontWeight:'normal' }}>(e.g. DR#, PO#, batch no.)</span>:</label>
  <input type="text" placeholder="Optional reference number" value={stockTxReference} onChange={e=>setStockTxReference(e.target.value)} style={inputStyle} />
+ {stockTxType==='in' && stockTxItemId && isExpiryTrackedItem(inventoryItems.find(i=>i.id===stockTxItemId)) && (
+ <div style={{ background:'#fff8e1', border:'1px solid #f57c00', borderRadius:'10px', padding:'10px 12px', marginBottom:'10px' }}>
+ <label style={{...lblS, color:'#f57c00' }}>Expiry Date / FEFO Date <span style={{ color:'#999', fontWeight:'normal' }}>(for snacks, drinks, ingredients and finished products)</span>:</label>
+ <input type="date" value={stockTxExpiryDate} onChange={e=>setStockTxExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+ <p style={{ color:'#8a6d00', fontSize:'11px', margin:'6px 0 0' }}>This updates the item's expiry monitor so the oldest expiry is prioritized first.</p>
+ </div>
+ )}
  <label style={lblS}>Notes <span style={{ color:'#aaa', fontWeight:'normal' }}>(optional)</span>:</label>
  <input type="text" placeholder="e.g. Morning production, Spoilage" value={stockTxNotes} onChange={e=>setStockTxNotes(e.target.value)} style={inputStyle} />
  <button
@@ -19252,6 +19327,12 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <label style={lblS}>Min Stock Level:</label>
  <input type="number" placeholder="e.g. 5" value={newItemMinStock} onChange={e=>setNewItemMinStock(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
  </div>
+ {EXPIRY_TRACKED_CATEGORIES.includes(newItemCategory) && (
+ <div>
+ <label style={lblS}>Expiry Date / FEFO Date:</label>
+ <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ )}
  {newItemCategory==='Finished Products' && (
  <div>
  <label style={lblS}>Selling Price (PHP):</label>
@@ -19372,11 +19453,15 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <option value="">No supplier</option>
  {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
  </select>
+ {EXPIRY_TRACKED_CATEGORIES.includes(editItemFields.category??item.category) && (
+ <input type="date" title="Expiry / FEFO date" value={editItemFields.expiry_date??item.expiry_date??''} onChange={e=>setEditItemFields(p=>({...p,expiry_date:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }} />
+ )}
  </div>
  ): (
  <div>
  <div style={{ fontWeight:'700', color:'#1a1a2e', fontSize:'11.5px', lineHeight:1.2, textTransform:'none' }}>{item.name}</div>
  <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', lineHeight:1.15 }}>{suppliers.find(s=>s.id===item.supplier_id)?.name || 'No supplier'}</div>
+ {item.expiry_date && (()=>{ const ex = getExpiryStatusInfo(item); return <div style={{ fontSize:'9.5px', color:ex.color, marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>FEFO: {ex.label}</div> })()}
  </div>
  )}
  </td>
