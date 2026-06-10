@@ -1107,6 +1107,7 @@ export default function App() {
  // Wastage / Spoilage 
  const [showWastageForm, setShowWastageForm] = useState(false)
  const [wastageItemId, setWastageItemId] = useState('')
+ const [wastageItemSearch, setWastageItemSearch] = useState('')
  const [wastageQty, setWastageQty] = useState('')
  const [wastageReason, setWastageReason] = useState('')
  const [wastageReasonOther, setWastageReasonOther] = useState('')
@@ -18753,14 +18754,29 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555' }} onClick={()=>setShowWastageForm(false)}> CLOSE</button>
  </div>
  <label style={lblS}>Item:</label>
+ <input
+ type="text"
+ placeholder="Search item name, category, unit, or stock..."
+ value={wastageItemSearch}
+ onChange={e=>setWastageItemSearch(e.target.value)}
+ style={{...inputStyle, marginBottom:'8px' }}
+ />
  <select value={wastageItemId} onChange={e=>setWastageItemId(e.target.value)} style={inputStyle}>
  <option value=""> Select item </option>
  {INVENTORY_CATEGORIES.map(cat=>{
- const catItems = inventoryItems.filter(i=>getInventoryCategoryLabel(i)===cat)
+ const searchText = String(wastageItemSearch || '').trim().toLowerCase()
+ const catItems = inventoryItems.filter(i=>{
+  if (getInventoryCategoryLabel(i)!==cat) return false
+  if (!searchText) return true
+  return `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(searchText)
+ })
  if (!catItems.length) return null
  return <optgroup key={cat} label={cat}>{catItems.map(i=><option key={i.id} value={i.id}>{i.name} {Number(i.current_stock||0).toFixed(2)} {i.unit} on hand</option>)}</optgroup>
  }) }
  </select>
+ {wastageItemSearch && !INVENTORY_CATEGORIES.some(cat=>inventoryItems.some(i=>getInventoryCategoryLabel(i)===cat && `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(String(wastageItemSearch || '').trim().toLowerCase()))) && (
+ <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'-8px 0 10px', fontWeight:'bold' }}>No matching item found. Try another keyword or check the item category.</p>
+ )}
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
  <div>
  <label style={lblS}>Quantity ({wastageItemId?(inventoryItems.find(i=>i.id===wastageItemId)?.unit||'units'):'units'}):</label>
