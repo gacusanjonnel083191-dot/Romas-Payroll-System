@@ -1461,6 +1461,16 @@ export default function App() {
  const [stockTxExpiryDate, setStockTxExpiryDate] = useState('')
  const [stockTxNotes, setStockTxNotes] = useState('')
  const [stockTxLoading, setStockTxLoading] = useState(false)
+ // Inventory batch / lot expiry tracking
+ const [inventoryBatches, setInventoryBatches] = useState([])
+ const [inventoryBatchesLoading, setInventoryBatchesLoading] = useState(false)
+ const [inventoryBatchesError, setInventoryBatchesError] = useState('')
+ const [batchSearch, setBatchSearch] = useState('')
+ const [batchItemFilter, setBatchItemFilter] = useState('')
+ const [showBatchForm, setShowBatchForm] = useState(false)
+ const [batchForm, setBatchForm] = useState({ item_id:'', batch_code:'', received_date:today, expiry_date:'', quantity_received:'', quantity_remaining:'', supplier_id:'', cost_per_unit:'', notes:'' })
+ const [savingBatch, setSavingBatch] = useState(false)
+ const [wastageBatchId, setWastageBatchId] = useState('')
  // New inventory features
  const [inventorySubView, setInventorySubView] = useState('items')
  const [selectedItemHistory, setSelectedItemHistory] = useState(null)
@@ -2710,6 +2720,178 @@ export default function App() {
  setInventoryTxLoading(false)
  }
 
+ async function loadInventoryBatches() {
+ setInventoryBatchesLoading(true)
+ setInventoryBatchesError('')
+ try {
+  const { data, error } = await supabase.from('inventory_item_batches').select('*').order('expiry_date', { ascending:true, nullsFirst:false }).order('received_date', { ascending:false })
+  if (error) throw error
+  setInventoryBatches(data || [])
+ } catch(err) {
+  console.warn('inventory batches load:', err)
+  setInventoryBatches([])
+  setInventoryBatchesError(String(err?.message || err || 'Unable to load batch/lot records. Run the Batch/Lot Supabase SQL setup first.'))
+ } finally {
+  setInventoryBatchesLoading(false)
+ }
+ }
+
+ function getBatchItem(batch = {}) {
+  return (inventoryItems || []).find(i => String(i.id) === String(batch.item_id)) || null
+ }
+ function getBatchesForItem(itemId, includeEmpty = false) {
+  return (inventoryBatches || [])
+   .filter(b => String(b.item_id || '') === String(itemId || ''))
+   .filter(b => includeEmpty || safeNum(b.quantity_remaining, 0) > 0)
+   .sort((a,b)=>{
+    const ea = String(a.expiry_date || '9999-12-31')
+    const eb = String(b.expiry_date || '9999-12-31')
+    if (ea !== eb) return ea.localeCompare(eb)
+    return String(a.received_date || '').localeCompare(String(b.received_date || ''))
+   })
+ }
+ function getBatchDaysLeft(batch = {}) {
+  if (!batch.expiry_date) return null
+  const expiry = parseLocalDate(batch.expiry_date)
+  const base = parseLocalDate(today)
+  if (!expiry || !base) return null
+  return Math.ceil((expiry.getTime() - base.getTime()) / (1000 * 60 * 60 * 24))
+ }
+ function getBatchStatusInfo(batch = {}) {
+  const qty = safeNum(batch.quantity_remaining, 0)
+  if (qty <= 0) return { label:'Consumed', color:'#777', bg:'#f7f7f7', priority:9 }
+  const daysLeft = getBatchDaysLeft(batch)
+  if (daysLeft === null) return { label:'No expiry set', color:'#777', bg:'#f7f7f7', priority:8 }
+  if (daysLeft < 0) return { label:'EXPIRED', color:'#ca1b1b', bg:'#fff5f5', priority:0 }
+  if (daysLeft === 0) return { label:'Expires today', color:'#ca1b1b', bg:'#fff5f5', priority:1 }
+  if (daysLeft <= 7) return { label:`Expires in ${daysLeft} day(s)`, color:'#f57c00', bg:'#fff8e1', priority:2 }
+  if (daysLeft <= 30) return { label:`Expires in ${daysLeft} days`, color:'#f5a623', bg:'#fffaf0', priority:3 }
+  return { label:`Expires ${batch.expiry_date}`, color:'#2d8a4e', bg:'#f0fff4', priority:4 }
+ }
+ function getBatchSummaryForItem(item = {}) {
+  const batches = getBatchesForItem(item.id, false)
+  const totalBatchQty = batches.reduce((sum,b)=>sum + safeNum(b.quantity_remaining, 0), 0)
+  const nearest = batches.find(b => b.expiry_date) || null
+  const expiredQty = batches.filter(b => getBatchDaysLeft(b)!==null && getBatchDaysLeft(b) < 0).reduce((sum,b)=>sum + safeNum(b.quantity_remaining, 0), 0)
+  const nearQty = batches.filter(b => { const d = getBatchDaysLeft(b); return d!==null && d >= 0 && d <= 7 }).reduce((sum,b)=>sum + safeNum(b.quantity_remaining, 0), 0)
+  return { batches, batchCount:batches.length, totalBatchQty:moneyRound(totalBatchQty), nearest, nearestInfo:nearest?getBatchStatusInfo(nearest):null, expiredQty:moneyRound(expiredQty), nearQty:moneyRound(nearQty), unbatchedQty:moneyRound(Math.max(0, safeNum(item.current_stock,0) - totalBatchQty)) }
+ }
+ function getFilteredInventoryBatches() {
+  const term = String(batchSearch || '').trim().toLowerCase()
+  return (inventoryBatches || []).filter(batch => {
+   if (batchItemFilter && String(batch.item_id || '') !== String(batchItemFilter)) return false
+   const item = getBatchItem(batch)
+   const haystack = [batch.batch_code, batch.item_name, item?.name, batch.category, item?.category, batch.supplier_name, batch.expiry_date, batch.received_date, batch.notes].filter(Boolean).join(' ').toLowerCase()
+   return !term || haystack.includes(term)
+  }).sort((a,b)=>{
+   const ia = getBatchStatusInfo(a).priority - getBatchStatusInfo(b).priority
+   if (ia) return ia
+   return String(a.expiry_date || '9999-12-31').localeCompare(String(b.expiry_date || '9999-12-31'))
+  })
+ }
+ async function createInventoryBatchRecord(item, qty, options = {}) {
+  if (!item?.id || safeNum(qty, 0) <= 0) return null
+  const supplier = suppliers.find(s => String(s.id) === String(options.supplier_id || item.supplier_id || '')) || null
+  const batchCode = String(options.batch_code || '').trim() || `LOT-${String(item.name || 'ITEM').replace(/[^A-Z0-9]+/gi,'').slice(0,8).toUpperCase()}-${Date.now().toString().slice(-6)}`
+  const payload = {
+   item_id:item.id,
+   item_name:item.name,
+   category:getInventoryCategoryLabel(item),
+   batch_code:batchCode,
+   received_date:options.received_date || today,
+   expiry_date:options.expiry_date || null,
+   quantity_received:moneyRound(qty),
+   quantity_remaining:moneyRound(options.quantity_remaining !== undefined && options.quantity_remaining !== '' ? safeNum(options.quantity_remaining, qty) : qty),
+   unit:item.unit || options.unit || 'pcs',
+   cost_per_unit:safeNum(options.cost_per_unit, safeNum(item.cost_per_unit, 0)),
+   supplier_id:options.supplier_id || item.supplier_id || null,
+   supplier_name:options.supplier_name || supplier?.name || null,
+   status:'active',
+   notes:options.notes || null,
+   created_by:currentAdminLabel
+  }
+  const { data, error } = await supabase.from('inventory_item_batches').insert(payload).select().single()
+  if (error) throw error
+  return data
+ }
+ async function saveManualInventoryBatch() {
+  if (!batchForm.item_id) { showToast('Select an item for this batch.', 'red'); return }
+  if (!batchForm.quantity_received || safeNum(batchForm.quantity_received, 0) <= 0) { showToast('Enter a valid batch quantity.', 'red'); return }
+  const item = inventoryItems.find(i => String(i.id) === String(batchForm.item_id))
+  if (!item) { showToast('Item not found.', 'red'); return }
+  setSavingBatch(true)
+  try {
+   const qty = safeNum(batchForm.quantity_received, 0)
+   const remaining = batchForm.quantity_remaining !== '' ? safeNum(batchForm.quantity_remaining, qty) : qty
+   const stockBefore = safeNum(item.current_stock, 0)
+   const shouldAddToStock = window.confirm(`Add this batch quantity to current inventory stock?
+
+OK = add ${qty} ${item.unit} to stock.
+Cancel = create batch record only for existing stock.`)
+   const batch = await createInventoryBatchRecord(item, qty, { ...batchForm, quantity_remaining:remaining, supplier_id:batchForm.supplier_id || item.supplier_id || null })
+   if (shouldAddToStock) {
+    const stockAfter = moneyRound(stockBefore + qty)
+    await supabase.from('inventory_items').update({ current_stock:stockAfter, expiry_date:batchForm.expiry_date || item.expiry_date || null }).eq('id', item.id)
+    await supabase.from('inventory_transactions').insert({ item_id:item.id, item_name:item.name, category:item.category, transaction_type:'in', quantity:qty, unit:item.unit, stock_before:stockBefore, stock_after:stockAfter, reference:`BATCH-${String(batch?.batch_code || '').slice(0,18)}`, notes:`Batch/Lot stock-in${batchForm.expiry_date?` | Expiry: ${batchForm.expiry_date}`:''}`, performed_by:`Admin (${adminRole})` })
+   }
+   await logAudit('INVENTORY BATCH CREATED','Admin',item.name,`Batch ${batch.batch_code} | ${qty} ${item.unit} | Expiry ${batchForm.expiry_date || 'N/A'}`)
+   setBatchForm({ item_id:'', batch_code:'', received_date:today, expiry_date:'', quantity_received:'', quantity_remaining:'', supplier_id:'', cost_per_unit:'', notes:'' })
+   setShowBatchForm(false)
+   await loadInventoryItems(); await loadInventoryBatches(); await loadInventoryTransactions()
+   showToast('Batch / expiry lot saved successfully.')
+  } catch(err) { showToast('Failed to save batch: ' + err.message, 'red') }
+  finally { setSavingBatch(false) }
+ }
+ async function deductInventoryBatchesFEFO(itemId, qty, options = {}) {
+  const amount = safeNum(qty, 0)
+  if (!itemId || amount <= 0) return []
+  let batches = getBatchesForItem(itemId, false)
+  if (!batches.length) return []
+  let remaining = amount
+  const consumed = []
+  for (const batch of batches) {
+   if (remaining <= 0) break
+   const before = safeNum(batch.quantity_remaining, 0)
+   if (before <= 0) continue
+   const take = Math.min(before, remaining)
+   const after = moneyRound(before - take)
+   const status = after <= 0 ? 'consumed' : 'active'
+   const { error } = await supabase.from('inventory_item_batches').update({ quantity_remaining:after, status, last_movement_type:options.movement_type || 'out', last_movement_date:options.movement_date || today, updated_at:new Date().toISOString() }).eq('id', batch.id)
+   if (error) throw error
+   consumed.push({ ...batch, quantity_used:moneyRound(take), quantity_before:before, quantity_after:after })
+   remaining = moneyRound(remaining - take)
+  }
+  if (consumed.length) await loadInventoryBatches()
+  return consumed
+ }
+ async function deductSpecificInventoryBatch(batchId, qty, options = {}) {
+  const batch = (inventoryBatches || []).find(b => String(b.id) === String(batchId))
+  if (!batch || safeNum(qty,0) <= 0) return null
+  const before = safeNum(batch.quantity_remaining, 0)
+  if (safeNum(qty,0) > before) throw new Error(`Selected batch has only ${before} ${batch.unit || ''} remaining.`)
+  const after = moneyRound(before - safeNum(qty,0))
+  const { error } = await supabase.from('inventory_item_batches').update({ quantity_remaining:after, status:after<=0?'consumed':'active', last_movement_type:options.movement_type || 'out', last_movement_date:options.movement_date || today, updated_at:new Date().toISOString() }).eq('id', batchId)
+  if (error) throw error
+  await loadInventoryBatches()
+  return { ...batch, quantity_used:moneyRound(qty), quantity_before:before, quantity_after:after }
+ }
+ function startExpiredBatchWastage(batch) {
+  if (!batch?.id) return
+  setWastageItemId(batch.item_id)
+  setWastageBatchId(batch.id)
+  setWastageQty(String(safeNum(batch.quantity_remaining, 0) > 0 ? safeNum(batch.quantity_remaining, 0) : ''))
+  setWastageReason('Expired / Spoiled')
+  setWastageReasonOther('')
+  setWastageDate(today)
+  setWastageNotes(`FEFO batch expiry action: ${batch.item_name || 'Item'} | Batch ${batch.batch_code || batch.id} | Expired on ${batch.expiry_date || 'no date'}.`)
+  setWastageChargeEmployee(false)
+  setWastageEmployeeId('')
+  setShowWastageForm(true)
+  setShowStockForm(false)
+  setInventorySubView('items')
+  showToast('Expired batch loaded into Wastage form. Review quantity, then confirm.')
+ }
+
  function getCrateMovementSignedQty(movement) {
  const qty = safeNum(movement?.quantity, 0)
  const direction = String(movement?.direction || '').toLowerCase()
@@ -3186,6 +3368,12 @@ export default function App() {
  if (stockTxType === 'in' && stockTxExpiryDate) updatePayload.expiry_date = stockTxExpiryDate
  const { error: updateError } = await supabase.from('inventory_items').update(updatePayload).eq('id', stockTxItemId)
  if (updateError) throw updateError
+ if (stockTxType === 'in' && isExpiryTrackedItem(item)) {
+  await createInventoryBatchRecord(item, qty, { expiry_date:stockTxExpiryDate || null, received_date:today, supplier_id:item.supplier_id || null, cost_per_unit:item.cost_per_unit || 0, notes:[stockTxReference.trim()?`Ref: ${stockTxReference.trim()}`:'', stockTxNotes.trim()].filter(Boolean).join(' | ') || null })
+ }
+ if (stockTxType === 'out') {
+  try { await deductInventoryBatchesFEFO(stockTxItemId, qty, { movement_type:'stock_out', movement_date:today }) } catch(batchErr) { console.warn('FEFO batch deduction warning:', batchErr) }
+ }
  await logAudit(`STOCK ${stockTxType.toUpperCase()}`,'Admin',item.name,`${stockTxType==='in'?'+':'-'}${qty} ${item.unit} | Stock: ${stockBefore} ${stockAfter}`)
  showToast(` Stock ${stockTxType==='in'?'added':'deducted'} ${item.name}: ${stockBefore} ${stockAfter} ${item.unit}`)
  // Low stock alert notification
@@ -3193,7 +3381,7 @@ export default function App() {
  await createNotification(null, 'System', 'inventory', ` Low Stock: ${item.name}`, `${item.name} dropped to ${stockAfter} ${item.unit}. Minimum is ${item.min_stock} ${item.unit}. Please reorder.`)
  }
  setStockTxItemId(''); setStockTxQty(''); setStockTxReference(''); setStockTxExpiryDate(''); setStockTxNotes('')
- setShowStockForm(false); loadInventoryItems()
+ setShowStockForm(false); loadInventoryItems(); loadInventoryBatches(); loadInventoryTransactions()
  } catch(err) {
  showToast(' Failed: '+err.message,'red')
  }
@@ -3432,7 +3620,10 @@ export default function App() {
  const item = inventoryItems.find(i=>i.id===wastageItemId)
  if (!item) { showToast(' Item not found.','red'); return }
  const qty = Number(wastageQty)
+ const selectedBatch = wastageBatchId ? (inventoryBatches || []).find(b=>String(b.id)===String(wastageBatchId)) : null
  const stockBefore = Number(item.current_stock||0)
+ const batchBefore = selectedBatch ? safeNum(selectedBatch.quantity_remaining, 0) : null
+ if (selectedBatch && qty > batchBefore) { showToast(` Cannot waste more than selected batch balance (${batchBefore} ${selectedBatch.unit || item.unit}).`,'red'); return }
  if (qty > stockBefore) { showToast(` Cannot waste more than current stock (${stockBefore} ${item.unit}).`,'red'); return }
  const stockAfter = stockBefore - qty
  const totalCost = qty * Number(item.cost_per_unit||0)
@@ -3449,7 +3640,10 @@ export default function App() {
  cost_per_unit: Number(item.cost_per_unit||0),
  total_cost: totalCost,
  reason: finalReason,
- notes: wastageNotes.trim()||null,
+ notes: [wastageNotes.trim(), selectedBatch ? `Batch/Lot: ${selectedBatch.batch_code || selectedBatch.id}${selectedBatch.expiry_date ? ` | Expiry: ${selectedBatch.expiry_date}` : ''}` : ''].filter(Boolean).join(' | ') || null,
+ batch_id: selectedBatch?.id || null,
+ batch_code: selectedBatch?.batch_code || null,
+ expiry_date: selectedBatch?.expiry_date || null,
  wastage_date: wastageDate||today,
  logged_by: `${adminRole==='supervisor'?'Supervisor':'Admin'} (${adminRole})`,
  employee_id: emp?.id||null,
@@ -3462,13 +3656,15 @@ export default function App() {
  if (finalReason === 'Expired / Spoiled' && stockAfter <= 0) wastageUpdatePayload.expiry_date = null
  const { error:sErr } = await supabase.from('inventory_items').update(wastageUpdatePayload).eq('id', wastageItemId)
  if (sErr) throw sErr
+ if (selectedBatch) await deductSpecificInventoryBatch(selectedBatch.id, qty, { movement_type:'wastage', movement_date:wastageDate||today })
+ else { try { await deductInventoryBatchesFEFO(wastageItemId, qty, { movement_type:'wastage', movement_date:wastageDate||today }) } catch(batchErr) { console.warn('FEFO wastage batch deduction warning:', batchErr) } }
  // Log transaction
  await supabase.from('inventory_transactions').insert({
  item_id: wastageItemId, item_name: item.name, category: item.category,
  transaction_type: 'out', quantity: qty, unit: item.unit,
  stock_before: stockBefore, stock_after: stockAfter,
  reference: `WASTAGE-${wlog.id?.slice(0,8).toUpperCase()}`,
- notes: `Wastage: ${finalReason}${emp?` | Charged to: ${emp.full_name}`:''}`,
+ notes: `Wastage: ${finalReason}${selectedBatch?` | Batch: ${selectedBatch.batch_code || selectedBatch.id}`:''}${emp?` | Charged to: ${emp.full_name}`:''}`,
  performed_by: `${adminRole} (Wastage Log)`
  })
  // Create employee charge if applicable
@@ -3488,9 +3684,9 @@ export default function App() {
  }
  await logAudit('WASTAGE LOGGED', adminRole, item.name, `${qty} ${item.unit} | ${finalReason}${emp?` | Charged to: ${emp.full_name}`:''}`)
  showToast(` Wastage logged ${qty} ${item.unit} of ${item.name} deducted.${wastageChargeEmployee?` Charge sent to owner for approval.`:''}`)
- setShowWastageForm(false); setWastageItemId(''); setWastageQty(''); setWastageReason('')
+ setShowWastageForm(false); setWastageItemId(''); setWastageBatchId(''); setWastageQty(''); setWastageReason('')
  setWastageReasonOther(''); setWastageNotes(''); setWastageChargeEmployee(false); setWastageEmployeeId('')
- loadInventoryItems(); loadWastageLogs(); loadExpiryItems(); refreshFoundationAfterDataChange('wastage-logged')
+ loadInventoryItems(); loadInventoryBatches(); loadWastageLogs(); loadExpiryItems(); refreshFoundationAfterDataChange('wastage-logged')
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setWastageSaving(false)
  }
@@ -3582,6 +3778,7 @@ export default function App() {
  function startExpiredItemWastage(item) {
   if (!item?.id) return
   setWastageItemId(item.id)
+  setWastageBatchId('')
   setWastageQty(String(Number(item.current_stock || 0) > 0 ? Number(item.current_stock || 0) : ''))
   setWastageReason('Expired / Spoiled')
   setWastageReasonOther('')
@@ -18458,7 +18655,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
  <h2 style={h2s}> Inventory Management</h2>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); loadCrateMovements(); loadResellers(); loadDeliveryInvoices(); if(inventorySubView==='snacks_weekly') loadWeeklySnackData(); showToast(' Refreshed!') }}>REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); loadInventoryBatches(); loadCrateMovements(); loadResellers(); loadDeliveryInvoices(); if(inventorySubView==='snacks_weekly') loadWeeklySnackData(); showToast(' Refreshed!') }}>REFRESH</button>
  <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printInventoryReport}> PRINT REPORT</button>
  </div>
  </div>
@@ -18469,15 +18666,75 @@ This recovery button creates one approved expense record using GROSS payroll ear
  ['items',' Items'],
  ['adjust',' Adjust Stock'],
  ['receiving',' Receiving'],
+ ['batches',' Batch/Lot Expiry'],
  ['snacks_weekly',' Snacks/Drinks Weekly Count'],
  ['crates',' Crates Inventory'],
  ['valuation',' Valuation'],
  ['movement',' Movement Report'],
  ['history',' Item History'],
  ].map(([v,l])=>(
- <button key={v} onClick={()=>{ setInventorySubView(v); if(v==='valuation') computeInventoryValuation(); if(v==='snacks_weekly') { loadInventoryItems(); loadInventoryTransactions(); loadWastageLogs(); loadWeeklySnackData() } if(v==='crates') { loadCrateMovements(); loadResellers(); loadDeliveryInvoices() } }} style={{ padding:'8px 14px', borderRadius:'20px', border:'none', background:inventorySubView===v?'#ca1b1b':'#f4f4f4', color:inventorySubView===v?'white':'#555', fontWeight:inventorySubView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:inventorySubView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
+ <button key={v} onClick={()=>{ setInventorySubView(v); if(v==='valuation') computeInventoryValuation(); if(v==='batches') { loadInventoryItems(); loadInventoryBatches(); loadSuppliers(); } if(v==='snacks_weekly') { loadInventoryItems(); loadInventoryTransactions(); loadWastageLogs(); loadWeeklySnackData() } if(v==='crates') { loadCrateMovements(); loadResellers(); loadDeliveryInvoices() } }} style={{ padding:'8px 14px', borderRadius:'20px', border:'none', background:inventorySubView===v?'#ca1b1b':'#f4f4f4', color:inventorySubView===v?'white':'#555', fontWeight:inventorySubView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:inventorySubView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
  ))}
  </div>
+
+ {/* Inventory Batch / Lot Expiry View */}
+ {inventorySubView==='batches' && (() => {
+ const rows = getFilteredInventoryBatches()
+ const activeRows = (inventoryBatches || []).filter(b=>safeNum(b.quantity_remaining,0)>0)
+ const expiredQty = activeRows.filter(b=>getBatchDaysLeft(b)!==null && getBatchDaysLeft(b)<0).reduce((sum,b)=>sum+safeNum(b.quantity_remaining,0),0)
+ const nearQty = activeRows.filter(b=>{ const d=getBatchDaysLeft(b); return d!==null && d>=0 && d<=7 }).reduce((sum,b)=>sum+safeNum(b.quantity_remaining,0),0)
+ const totalQty = activeRows.reduce((sum,b)=>sum+safeNum(b.quantity_remaining,0),0)
+ return (
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div><h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>Batch / Lot Expiry Tracking</h3><p style={{ color:'#666', fontSize:'12px', margin:0, lineHeight:1.5 }}>Use this when one product has different expiration dates. Stock-in creates a batch/lot, and stock-out/wastage can deduct by FEFO.</p></div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={loadInventoryBatches} disabled={inventoryBatchesLoading}>{inventoryBatchesLoading?'LOADING...':'REFRESH BATCHES'}</button>
+ <button style={{...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowBatchForm(!showBatchForm); if(!showBatchForm) loadSuppliers() }}>{showBatchForm?'CANCEL':'ADD / OPENING BATCH'}</button>
+ </div>
+ </div>
+ {inventoryBatchesError && <div style={{ background:'#fff5f5', border:'1px solid #ca1b1b', color:'#ca1b1b', borderRadius:'10px', padding:'10px', fontSize:'12px', marginBottom:'12px', fontWeight:'700' }}>{inventoryBatchesError}</div>}
+ <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'10px', marginBottom:'12px' }}>
+ {[['Active Batches', activeRows.length, '#1a1a2e'], ['Batch Qty On Hand', safeNum(totalQty,0).toLocaleString('en-PH'), '#2d8a4e'], ['Expired Qty', safeNum(expiredQty,0).toLocaleString('en-PH'), expiredQty>0?'#ca1b1b':'#2d8a4e'], ['Near Expiry Qty', safeNum(nearQty,0).toLocaleString('en-PH'), nearQty>0?'#f57c00':'#2d8a4e']].map(([label,value,color])=><div key={label} style={{ background:'#fff8dc', border:'1px solid #f0e2a0', borderRadius:'12px', padding:'12px' }}><p style={{ margin:'0 0 4px', fontSize:'10px', color:'#777', textTransform:'uppercase', fontWeight:'800' }}>{label}</p><p style={{ margin:0, fontSize:'16px', color, fontWeight:'900' }}>{value}</p></div>)}
+ </div>
+ {showBatchForm && (
+ <div style={{ background:'#fffdf0', border:'1.5px solid #FDD412', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
+ <h4 style={{ color:'#ca1b1b', fontSize:'13px', margin:'0 0 10px' }}>Add New Batch / Opening Lot</h4>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.5fr 1fr 1fr 1fr', gap:'10px' }}>
+ <div><label style={lblS}>Item *</label><select value={batchForm.item_id} onChange={e=>{ const item = inventoryItems.find(i=>String(i.id)===String(e.target.value)); setBatchForm(p=>({...p,item_id:e.target.value,cost_per_unit:item?.cost_per_unit || p.cost_per_unit,supplier_id:item?.supplier_id || p.supplier_id})) }} style={{...inputStyle, marginBottom:0 }}><option value="">Select item</option>{inventoryItems.filter(isExpiryTrackedItem).map(i=><option key={i.id} value={i.id}>{i.name} — {safeNum(i.current_stock,0).toLocaleString('en-PH')} {i.unit}</option>)}</select></div>
+ <div><label style={lblS}>Batch Code</label><input placeholder="Auto if blank" value={batchForm.batch_code} onChange={e=>setBatchForm(p=>({...p,batch_code:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Received Date</label><input type="date" value={batchForm.received_date} onChange={e=>setBatchForm(p=>({...p,received_date:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Expiry Date</label><input type="date" value={batchForm.expiry_date} onChange={e=>setBatchForm(p=>({...p,expiry_date:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Qty Received *</label><input type="number" value={batchForm.quantity_received} onChange={e=>setBatchForm(p=>({...p,quantity_received:e.target.value,quantity_remaining:p.quantity_remaining || e.target.value}))} style={{...inputStyle, marginBottom:0 }} min="0.01" step="0.01" /></div>
+ <div><label style={lblS}>Qty Remaining</label><input type="number" value={batchForm.quantity_remaining} onChange={e=>setBatchForm(p=>({...p,quantity_remaining:e.target.value}))} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
+ <div><label style={lblS}>Cost / Unit</label><input type="number" value={batchForm.cost_per_unit} onChange={e=>setBatchForm(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" /></div>
+ <div><label style={lblS}>Supplier</label><select value={batchForm.supplier_id} onChange={e=>setBatchForm(p=>({...p,supplier_id:e.target.value}))} style={{...inputStyle, marginBottom:0 }}><option value="">No supplier</option>{suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+ </div>
+ <label style={{...lblS, marginTop:'10px' }}>Notes</label><input placeholder="e.g. Opening stock, delivery receipt, supplier lot no." value={batchForm.notes} onChange={e=>setBatchForm(p=>({...p,notes:e.target.value}))} style={inputStyle} />
+ <button style={{...btnGreen, opacity:savingBatch?0.6:1 }} disabled={savingBatch} onClick={saveManualInventoryBatch}>{savingBatch?'SAVING...':'SAVE BATCH / LOT'}</button>
+ </div>
+ )}
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.5fr 1fr', gap:'10px', marginBottom:'12px' }}>
+ <input placeholder="Search item, batch code, supplier, expiry date..." value={batchSearch} onChange={e=>setBatchSearch(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+ <select value={batchItemFilter} onChange={e=>setBatchItemFilter(e.target.value)} style={{...inputStyle, marginBottom:0 }}><option value="">All batch-tracked items</option>{inventoryItems.filter(isExpiryTrackedItem).map(i=><option key={i.id} value={i.id}>{i.name}</option>)}</select>
+ </div>
+ <div style={{ overflowX:'auto', border:'1px solid #ddd', borderRadius:'12px' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'980px', background:'white' }}><thead><tr style={{ background:'#1a1a2e', color:'white' }}><th style={{ padding:'8px', fontSize:'10px', textAlign:'left' }}>Item / Batch</th><th style={{ padding:'8px', fontSize:'10px', textAlign:'right' }}>Remaining</th><th style={{ padding:'8px', fontSize:'10px', textAlign:'right' }}>Received</th><th style={{ padding:'8px', fontSize:'10px', textAlign:'center' }}>Expiry</th><th style={{ padding:'8px', fontSize:'10px', textAlign:'center' }}>Status</th><th style={{ padding:'8px', fontSize:'10px', textAlign:'left' }}>Supplier / Notes</th><th style={{ padding:'8px', fontSize:'10px', textAlign:'right' }}>Action</th></tr></thead><tbody>
+ {rows.length===0 && <tr><td colSpan="7" style={{ padding:'18px', textAlign:'center', color:'#888', fontSize:'12px' }}>No batch/lot records yet. Use Stock In with expiry date or add an opening batch.</td></tr>}
+ {rows.map(batch=>{ const item=getBatchItem(batch); const info=getBatchStatusInfo(batch); return <tr key={batch.id} style={{ borderBottom:'1px solid #eee', background:info.bg }}>
+ <td style={{ padding:'8px', fontSize:'11px', fontWeight:'800', color:'#1a1a2e' }}>{batch.item_name || item?.name}<div style={{ fontSize:'9.5px', color:'#777', fontWeight:'600' }}>Batch: {batch.batch_code || String(batch.id).slice(0,8)} | {batch.category || item?.category}</div></td>
+ <td style={{ padding:'8px', textAlign:'right', fontSize:'11px', fontWeight:'900', color:'#2d8a4e' }}>{safeNum(batch.quantity_remaining,0).toLocaleString('en-PH')} {batch.unit || item?.unit}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontSize:'11px', color:'#555' }}>{safeNum(batch.quantity_received,0).toLocaleString('en-PH')} {batch.unit || item?.unit}<div style={{ fontSize:'9px', color:'#999' }}>{batch.received_date || ''}</div></td>
+ <td style={{ padding:'8px', textAlign:'center', fontSize:'11px', color:'#555' }}>{batch.expiry_date || 'No expiry'}</td>
+ <td style={{ padding:'8px', textAlign:'center' }}><span style={{ display:'inline-block', borderRadius:'999px', padding:'4px 8px', background:'white', color:info.color, border:`1px solid ${info.color}`, fontSize:'9px', fontWeight:'900' }}>{info.label}</span></td>
+ <td style={{ padding:'8px', fontSize:'10.5px', color:'#555' }}>{batch.supplier_name || 'No supplier'}{batch.notes && <div style={{ color:'#888', fontSize:'9.5px' }}>{batch.notes}</div>}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{safeNum(batch.quantity_remaining,0)>0 && getBatchDaysLeft(batch)!==null && getBatchDaysLeft(batch)<0 && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9.5px' }} onClick={()=>startExpiredBatchWastage(batch)}>LOG WASTAGE</button>}</td>
+ </tr> })}
+ </tbody></table>
+ </div>
+ </div>
+ )
+ })()}
 
  {/* Snacks & Drinks Weekly Count View */}
  {inventorySubView==='snacks_weekly' && (() => {
@@ -19329,7 +19586,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  onChange={e=>setWastageItemSearch(e.target.value)}
  style={{...inputStyle, marginBottom:'8px' }}
  />
- <select value={wastageItemId} onChange={e=>setWastageItemId(e.target.value)} style={inputStyle}>
+ <select value={wastageItemId} onChange={e=>{ setWastageItemId(e.target.value); setWastageBatchId('') }} style={inputStyle}>
  <option value=""> Select item </option>
  {INVENTORY_CATEGORIES.map(cat=>{
  const searchText = String(wastageItemSearch || '').trim().toLowerCase()
@@ -19344,6 +19601,16 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </select>
  {wastageItemSearch && !INVENTORY_CATEGORIES.some(cat=>inventoryItems.some(i=>getInventoryCategoryLabel(i)===cat && `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(String(wastageItemSearch || '').trim().toLowerCase()))) && (
  <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'-8px 0 10px', fontWeight:'bold' }}>No matching item found. Try another keyword or check the item category.</p>
+ )}
+ {wastageItemId && getBatchesForItem(wastageItemId, false).length > 0 && (
+ <div style={{ background:'#fffdf0', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
+ <label style={lblS}>Batch / Lot to deduct <span style={{ color:'#999', fontWeight:'normal' }}>(optional, FEFO if blank)</span>:</label>
+ <select value={wastageBatchId} onChange={e=>setWastageBatchId(e.target.value)} style={{...inputStyle, marginBottom:'6px' }}>
+ <option value="">Auto FEFO — deduct earliest expiry first</option>
+ {getBatchesForItem(wastageItemId, false).map(b=>{ const info=getBatchStatusInfo(b); return <option key={b.id} value={b.id}>{b.batch_code || String(b.id).slice(0,8)} | Exp: {b.expiry_date || 'No expiry'} | {safeNum(b.quantity_remaining,0)} {b.unit} | {info.label}</option> })}
+ </select>
+ <p style={{ color:'#777', fontSize:'10.5px', margin:0 }}>For expired items, select the exact expired batch to keep records accurate.</p>
+ </div>
  )}
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
  <div>
@@ -20057,6 +20324,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ fontWeight:'700', color:'#1a1a2e', fontSize:'11.5px', lineHeight:1.2, textTransform:'none' }}>{item.name}</div>
  <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', lineHeight:1.15 }}>{suppliers.find(s=>s.id===item.supplier_id)?.name || 'No supplier'}</div>
  {item.expiry_date && (()=>{ const ex = getExpiryStatusInfo(item); return <div style={{ fontSize:'9.5px', color:ex.color, marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>FEFO: {ex.label}</div> })()}
+ {(() => { const bs = getBatchSummaryForItem(item); return bs.batchCount > 0 ? <div style={{ fontSize:'9.5px', color:bs.expiredQty>0?'#ca1b1b':bs.nearQty>0?'#f57c00':'#4a90d9', marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>Lots: {bs.batchCount} | Batch qty: {safeNum(bs.totalBatchQty,0).toLocaleString('en-PH')} | Nearest: {bs.nearest?.expiry_date || 'No expiry'}</div> : null })()}
  </div>
  )}
  </td>
