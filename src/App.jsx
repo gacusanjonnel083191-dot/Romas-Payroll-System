@@ -1470,6 +1470,18 @@ export default function App() {
  const [inventoryValuation, setInventoryValuation] = useState(null)
  const [stockMovementMonth, setStockMovementMonth] = useState(today.slice(0,7))
  const [stockMovementData, setStockMovementData] = useState([])
+ // Snacks & Drinks Weekly Count / Computed Sales
+ const [weeklySnackStartDate, setWeeklySnackStartDate] = useState(getDateOffsetString(-6))
+ const [weeklySnackEndDate, setWeeklySnackEndDate] = useState(today)
+ const [weeklySnackSearch, setWeeklySnackSearch] = useState('')
+ const [weeklySnackInputs, setWeeklySnackInputs] = useState({})
+ const [weeklySnackTxRows, setWeeklySnackTxRows] = useState([])
+ const [weeklySnackWastageRows, setWeeklySnackWastageRows] = useState([])
+ const [weeklySnackReports, setWeeklySnackReports] = useState([])
+ const [weeklySnackLoading, setWeeklySnackLoading] = useState(false)
+ const [weeklySnackSaving, setWeeklySnackSaving] = useState(false)
+ const [weeklySnackPostToSales, setWeeklySnackPostToSales] = useState(true)
+ const [weeklySnackNotes, setWeeklySnackNotes] = useState('')
  // Crates Inventory / Reseller Variance Tracking
  const [crateMovements, setCrateMovements] = useState([])
  const [cratesLoading, setCratesLoading] = useState(false)
@@ -3561,6 +3573,150 @@ export default function App() {
   setShowStockForm(false)
   setShowExpirySection(true)
   showToast('Expired item loaded into Wastage form. Review quantity, then confirm.')
+ }
+
+ // Snacks & Drinks Weekly Count / Computed Sales Functions
+ function isSnackDrinkInventoryItem(item = {}) {
+  return getInventoryCategoryLabel(item) === 'Snacks, Drinks and Others'
+ }
+ function getSnackDrinkSellingPrice(item = {}) {
+  return safeNum(item.selling_price ?? item.sale_price ?? item.unit_price ?? item.price ?? item.retail_price, 0)
+ }
+ function getWeeklySnackItems() {
+  const term = String(weeklySnackSearch || '').trim().toLowerCase()
+  return (inventoryItems || [])
+  .filter(item => isSnackDrinkInventoryItem(item))
+  .filter(item => !term || [item.name, item.category, getInventoryCategoryLabel(item), item.unit, item.selling_price, item.current_stock].filter(Boolean).join(' ').toLowerCase().includes(term))
+  .sort((a,b)=>String(a.name || '').localeCompare(String(b.name || '')))
+ }
+ function getWeeklySnackLatestEndingMap() {
+  const map = {}
+  ;(weeklySnackReports || []).forEach(report => {
+   const rows = Array.isArray(report.weekly_snacks_drinks_count_items) ? report.weekly_snacks_drinks_count_items : []
+   rows.forEach(row => {
+    const id = String(row.item_id || '')
+    if (!id || map[id] !== undefined) return
+    map[id] = safeNum(row.ending_count, 0)
+   })
+  })
+  return map
+ }
+ function getWeeklySnackRows() {
+  const latestEnding = getWeeklySnackLatestEndingMap()
+  const txRows = weeklySnackTxRows || []
+  const wastageRows = weeklySnackWastageRows || []
+  return getWeeklySnackItems().map(item => {
+   const id = String(item.id)
+   const input = weeklySnackInputs[id] || {}
+   const beginning = input.beginning_count !== undefined && input.beginning_count !== ''
+    ? safeNum(input.beginning_count, 0)
+    : (latestEnding[id] !== undefined ? safeNum(latestEnding[id], 0) : safeNum(item.current_stock, 0))
+   const ending = input.ending_count !== undefined && input.ending_count !== '' ? safeNum(input.ending_count, 0) : safeNum(item.current_stock, 0)
+   const stockIn = txRows.filter(tx => String(tx.item_id || '') === id && String(tx.transaction_type || '').toLowerCase().includes('in')).reduce((sum, tx)=>sum + safeNum(tx.quantity, 0), 0)
+   const wastage = wastageRows.filter(w => String(w.item_id || '') === id).reduce((sum, w)=>sum + safeNum(w.quantity, 0), 0)
+   const computedSoldRaw = beginning + stockIn - wastage - ending
+   const estimatedSold = Math.max(0, moneyRound(computedSoldRaw))
+   const varianceQty = computedSoldRaw < 0 ? moneyRound(computedSoldRaw) : 0
+   const sellingPrice = input.selling_price !== undefined && input.selling_price !== '' ? safeNum(input.selling_price, 0) : getSnackDrinkSellingPrice(item)
+   const salesAmount = moneyRound(estimatedSold * sellingPrice)
+   return { item, item_id:item.id, item_name:item.name, category:getInventoryCategoryLabel(item), unit:item.unit || 'pcs', beginning_count:beginning, stock_in_qty:moneyRound(stockIn), wastage_qty:moneyRound(wastage), ending_count:ending, estimated_sold_qty:estimatedSold, variance_qty:varianceQty, selling_price:sellingPrice, sales_amount:salesAmount, current_stock:safeNum(item.current_stock, 0) }
+  })
+ }
+ function getWeeklySnackSummary(rows = getWeeklySnackRows()) {
+  return (rows || []).reduce((acc, row) => {
+   acc.itemCount += 1
+   acc.totalBeginning += safeNum(row.beginning_count, 0)
+   acc.totalStockIn += safeNum(row.stock_in_qty, 0)
+   acc.totalWastage += safeNum(row.wastage_qty, 0)
+   acc.totalEnding += safeNum(row.ending_count, 0)
+   acc.totalSold += safeNum(row.estimated_sold_qty, 0)
+   acc.totalSales += safeNum(row.sales_amount, 0)
+   acc.negativeVariance += Math.abs(Math.min(0, safeNum(row.variance_qty, 0)))
+   if (safeNum(row.selling_price, 0) <= 0 && safeNum(row.estimated_sold_qty, 0) > 0) acc.missingPriceCount += 1
+   return acc
+  }, { itemCount:0, totalBeginning:0, totalStockIn:0, totalWastage:0, totalEnding:0, totalSold:0, totalSales:0, negativeVariance:0, missingPriceCount:0 })
+ }
+ async function loadWeeklySnackData() {
+  setWeeklySnackLoading(true)
+  try {
+   const startDate = weeklySnackStartDate || getDateOffsetString(-6)
+   const endDate = weeklySnackEndDate || today
+   const [txRes, wastageRes, reportsRes] = await Promise.all([
+    supabase.from('inventory_transactions').select('*').gte('created_at', `${startDate}T00:00:00`).lte('created_at', `${endDate}T23:59:59`).order('created_at', { ascending:false }).limit(3000),
+    supabase.from('wastage_logs').select('*').gte('wastage_date', startDate).lte('wastage_date', endDate).order('wastage_date', { ascending:false }).limit(3000),
+    supabase.from('weekly_snacks_drinks_counts').select('*, weekly_snacks_drinks_count_items(*)').lte('week_end', startDate).order('week_end', { ascending:false }).limit(8)
+   ])
+   if (txRes.error) console.warn('weekly snack tx load:', txRes.error)
+   if (wastageRes.error) console.warn('weekly snack wastage load:', wastageRes.error)
+   if (reportsRes.error) console.warn('weekly snack reports load:', reportsRes.error)
+   setWeeklySnackTxRows(txRes.data || [])
+   setWeeklySnackWastageRows(wastageRes.data || [])
+   setWeeklySnackReports(reportsRes.data || [])
+   if (reportsRes.error) showToast(' Weekly count history table not found yet. Run the Supabase SQL setup before saving reports.', 'red')
+  } catch(err) {
+   console.warn('loadWeeklySnackData:', err)
+   showToast(' Failed to load weekly snacks/drinks data.', 'red')
+  } finally { setWeeklySnackLoading(false) }
+ }
+ function updateWeeklySnackInput(itemId, field, value) {
+  setWeeklySnackInputs(prev => ({ ...prev, [itemId]: { ...(prev[itemId] || {}), [field]: value } }))
+ }
+ function prefillWeeklySnackCountsFromCurrent() {
+  const next = { ...weeklySnackInputs }
+  getWeeklySnackItems().forEach(item => {
+   const id = String(item.id)
+   next[id] = { ...(next[id] || {}), ending_count:safeNum(item.current_stock, 0) }
+  })
+  setWeeklySnackInputs(next)
+  showToast('This week count prefilled from current stock. Review physical count before saving.')
+ }
+ function exportWeeklySnackCSV() {
+  const rows = getWeeklySnackRows()
+  if (rows.length === 0) { showToast(' No snacks/drinks rows to export.', 'red'); return }
+  const csvRows = rows.map(row => ({ Item:row.item_name, Unit:row.unit, 'Last Week Count':row.beginning_count, 'Stock In':row.stock_in_qty, Wastage:row.wastage_qty, 'This Week Count':row.ending_count, 'Estimated Sold':row.estimated_sold_qty, 'Selling Price':row.selling_price, 'Sales Amount':row.sales_amount, Variance:row.variance_qty }))
+  downloadTextFile(`snacks-drinks-weekly-count-${weeklySnackStartDate}-to-${weeklySnackEndDate}.csv`, rowsToCSV(csvRows), 'text/csv')
+  showToast('Weekly snacks/drinks CSV exported.')
+ }
+ async function saveWeeklySnackCount() {
+  const rows = getWeeklySnackRows()
+  const summary = getWeeklySnackSummary(rows)
+  if (!weeklySnackStartDate || !weeklySnackEndDate) { showToast(' Please select week start and end dates.', 'red'); return }
+  if (parseLocalDate(weeklySnackEndDate) < parseLocalDate(weeklySnackStartDate)) { showToast(' Week end cannot be earlier than week start.', 'red'); return }
+  if (rows.length === 0) { showToast(' No snacks/drinks items found.', 'red'); return }
+  const confirmMsg = `Save weekly snacks/drinks count?\n\nEstimated sold: ${summary.totalSold.toLocaleString('en-PH')} pcs\nEstimated sales: ${php(summary.totalSales)}\n\nThis will update current inventory counts to the physical ending count and log weekly sales movements.`
+  if (!window.confirm(confirmMsg)) return
+  setWeeklySnackSaving(true)
+  try {
+   let dailySalesId = null
+   if (weeklySnackPostToSales && summary.totalSales > 0) {
+    const { data:saleData, error:saleErr } = await supabase.from('daily_sales').insert({ sale_date:weeklySnackEndDate, total_walkin:summary.totalSales, total_messenger:0, total_reseller:0, total_revenue:summary.totalSales, notes:`Weekly computed snacks/drinks sales ${weeklySnackStartDate} to ${weeklySnackEndDate}. Based on inventory count, not daily item-by-item sales.${weeklySnackNotes ? ` Notes: ${weeklySnackNotes}` : ''}`, encoded_by:currentAdminLabel }).select().single()
+    if (saleErr) throw saleErr
+    dailySalesId = saleData?.id || null
+   }
+   const { data:countData, error:countErr } = await supabase.from('weekly_snacks_drinks_counts').insert({ week_start:weeklySnackStartDate, week_end:weeklySnackEndDate, total_beginning_qty:moneyRound(summary.totalBeginning), total_stock_in_qty:moneyRound(summary.totalStockIn), total_wastage_qty:moneyRound(summary.totalWastage), total_ending_qty:moneyRound(summary.totalEnding), total_estimated_sold_qty:moneyRound(summary.totalSold), total_sales_amount:moneyRound(summary.totalSales), posted_to_sales:!!dailySalesId, daily_sales_id:dailySalesId, status:'approved', encoded_by:currentAdminLabel, approved_by:currentAdminLabel, notes:weeklySnackNotes || null }).select().single()
+   if (countErr) throw countErr
+   const itemRows = rows.map(row => ({ count_id:countData.id, item_id:row.item_id, item_name:row.item_name, category:row.category, unit:row.unit, beginning_count:moneyRound(row.beginning_count), stock_in_qty:moneyRound(row.stock_in_qty), wastage_qty:moneyRound(row.wastage_qty), ending_count:moneyRound(row.ending_count), estimated_sold_qty:moneyRound(row.estimated_sold_qty), selling_price:moneyRound(row.selling_price), sales_amount:moneyRound(row.sales_amount), variance_qty:moneyRound(row.variance_qty), notes:row.variance_qty < 0 ? 'Ending count is higher than expected. Review stock-in, last week count, or physical count.' : null }))
+   const { error:itemErr } = await supabase.from('weekly_snacks_drinks_count_items').insert(itemRows)
+   if (itemErr) throw itemErr
+   for (const row of rows) {
+    const item = row.item
+    const before = safeNum(item.current_stock, 0)
+    const after = moneyRound(row.ending_count)
+    if (Math.abs(before - after) > 0.0001) {
+     const txType = after < before ? 'out' : 'in'
+     await supabase.from('inventory_transactions').insert({ item_id:row.item_id, item_name:row.item_name, category:row.category, transaction_type:txType, quantity:moneyRound(Math.abs(before - after)), unit:row.unit, stock_before:before, stock_after:after, reference:`WEEKLY-SNACKS-${String(countData.id).slice(0,8).toUpperCase()}`, notes:`Weekly snacks/drinks count adjustment. Estimated sold: ${row.estimated_sold_qty} ${row.unit}. Sales amount: ${php(row.sales_amount)}.`, performed_by:`${currentAdminLabel} (Weekly Count)` })
+     await supabase.from('inventory_items').update({ current_stock:after }).eq('id', row.item_id)
+    }
+   }
+   await logAudit('WEEKLY SNACKS DRINKS COUNT SAVED', currentAdminLabel, 'Inventory', `${weeklySnackStartDate} to ${weeklySnackEndDate} | Sold ${summary.totalSold} | Sales ${php(summary.totalSales)}`)
+   showToast(`Weekly snacks/drinks count saved. Estimated sales: ${php(summary.totalSales)}`)
+   setWeeklySnackNotes('')
+   setWeeklySnackInputs({})
+   loadInventoryItems(); loadInventoryTransactions(); loadWeeklySnackData(); loadDailySales(); refreshFoundationAfterDataChange('weekly-snacks-drinks-count-saved')
+  } catch(err) {
+   console.warn('saveWeeklySnackCount:', err)
+   showToast(' Failed to save weekly count: '+err.message, 'red')
+  } finally { setWeeklySnackSaving(false) }
  }
 
  // Employee Portal My Charges 
@@ -17942,7 +18098,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'12px' }}>
  <h2 style={h2s}> Inventory Management</h2>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); loadCrateMovements(); loadResellers(); loadDeliveryInvoices(); showToast(' Refreshed!') }}>REFRESH</button>
+ <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); loadCrateMovements(); loadResellers(); loadDeliveryInvoices(); if(inventorySubView==='snacks_weekly') loadWeeklySnackData(); showToast(' Refreshed!') }}>REFRESH</button>
  <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printInventoryReport}> PRINT REPORT</button>
  </div>
  </div>
@@ -17953,14 +18109,65 @@ This recovery button creates one approved expense record using GROSS payroll ear
  ['items',' Items'],
  ['adjust',' Adjust Stock'],
  ['receiving',' Receiving'],
+ ['snacks_weekly',' Snacks/Drinks Weekly Count'],
  ['crates',' Crates Inventory'],
  ['valuation',' Valuation'],
  ['movement',' Movement Report'],
  ['history',' Item History'],
  ].map(([v,l])=>(
- <button key={v} onClick={()=>{ setInventorySubView(v); if(v==='valuation') computeInventoryValuation(); if(v==='crates') { loadCrateMovements(); loadResellers(); loadDeliveryInvoices() } }} style={{ padding:'8px 14px', borderRadius:'20px', border:'none', background:inventorySubView===v?'#ca1b1b':'#f4f4f4', color:inventorySubView===v?'white':'#555', fontWeight:inventorySubView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:inventorySubView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
+ <button key={v} onClick={()=>{ setInventorySubView(v); if(v==='valuation') computeInventoryValuation(); if(v==='snacks_weekly') { loadInventoryItems(); loadInventoryTransactions(); loadWastageLogs(); loadWeeklySnackData() } if(v==='crates') { loadCrateMovements(); loadResellers(); loadDeliveryInvoices() } }} style={{ padding:'8px 14px', borderRadius:'20px', border:'none', background:inventorySubView===v?'#ca1b1b':'#f4f4f4', color:inventorySubView===v?'white':'#555', fontWeight:inventorySubView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:inventorySubView===v?'0 2px 8px rgba(202,27,27,0.25)':'none' }}>{l}</button>
  ))}
  </div>
+
+ {/* Snacks & Drinks Weekly Count View */}
+ {inventorySubView==='snacks_weekly' && (() => {
+ const rows = getWeeklySnackRows()
+ const summary = getWeeklySnackSummary(rows)
+ return (
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div><h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>Snacks & Drinks Weekly Count / Computed Sales</h3><p style={{ color:'#666', fontSize:'12px', margin:0, lineHeight:1.5 }}>Use this when staff do not record daily snack/drink sales. The app computes estimated sold pieces from last week count + stock-in - wastage - this week physical count.</p></div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}><button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={loadWeeklySnackData} disabled={weeklySnackLoading}>{weeklySnackLoading?'LOADING...':'LOAD / REFRESH'}</button><button style={{...btnYellow, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={exportWeeklySnackCSV}>EXPORT CSV</button></div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))', gap:'10px', marginBottom:'12px' }}>
+ <div><label style={lblS}>Week Start</label><input type="date" value={weeklySnackStartDate} onChange={e=>setWeeklySnackStartDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Week End / Count Date</label><input type="date" value={weeklySnackEndDate} onChange={e=>setWeeklySnackEndDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Search Item</label><input placeholder="Search snacks, drinks, groceries..." value={weeklySnackSearch} onChange={e=>setWeeklySnackSearch(e.target.value)} style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>Sales Posting</label><button style={{...btnBase, background:weeklySnackPostToSales?'#2d8a4e':'#f0f0f0', color:weeklySnackPostToSales?'white':'#333', marginTop:0 }} onClick={()=>setWeeklySnackPostToSales(!weeklySnackPostToSales)}>{weeklySnackPostToSales?'POST TO SALES REVENUE':'TRACK INVENTORY ONLY'}</button></div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'10px', marginBottom:'12px' }}>
+ {[
+  ['Items', summary.itemCount, '#1a1a2e'],
+  ['Estimated Sold', `${safeNum(summary.totalSold,0).toLocaleString('en-PH')} pcs`, '#ca1b1b'],
+  ['Estimated Sales', php(summary.totalSales), '#2d8a4e'],
+  ['Stock In', safeNum(summary.totalStockIn,0).toLocaleString('en-PH'), '#4a90d9'],
+  ['Wastage', safeNum(summary.totalWastage,0).toLocaleString('en-PH'), '#f57c00'],
+  ['Review Flags', `${summary.missingPriceCount} no price`, summary.missingPriceCount>0?'#ca1b1b':'#2d8a4e'],
+ ].map(([label,value,color])=><div key={label} style={{ background:'#fff8dc', border:'1px solid #f0e2a0', borderRadius:'12px', padding:'12px' }}><p style={{ margin:'0 0 4px', fontSize:'10px', color:'#777', textTransform:'uppercase', fontWeight:'800' }}>{label}</p><p style={{ margin:0, fontSize:'16px', color, fontWeight:'900' }}>{value}</p></div>)}
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px', alignItems:'center' }}><button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={prefillWeeklySnackCountsFromCurrent}>PREFILL THIS WEEK COUNT FROM CURRENT STOCK</button><span style={{ color:'#777', fontSize:'11px' }}>Review actual physical count before saving. Last Week Count auto-uses the latest saved weekly ending count when available.</span></div>
+ <div style={{ overflowX:'auto', border:'1px solid #ddd', borderRadius:'12px', marginBottom:'12px' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1080px', background:'white' }}><thead><tr style={{ background:'#ca1b1b', color:'white' }}><th style={{ padding:'8px', textAlign:'left', fontSize:'10px' }}>Item</th><th style={{ padding:'8px', textAlign:'right', fontSize:'10px' }}>Last Week Count</th><th style={{ padding:'8px', textAlign:'right', fontSize:'10px' }}>Stock In</th><th style={{ padding:'8px', textAlign:'right', fontSize:'10px' }}>Wastage</th><th style={{ padding:'8px', textAlign:'right', fontSize:'10px' }}>This Week Count</th><th style={{ padding:'8px', textAlign:'right', fontSize:'10px' }}>Estimated Sold</th><th style={{ padding:'8px', textAlign:'right', fontSize:'10px' }}>Selling Price</th><th style={{ padding:'8px', textAlign:'right', fontSize:'10px' }}>Sales Amount</th><th style={{ padding:'8px', textAlign:'center', fontSize:'10px' }}>Status</th></tr></thead>
+ <tbody>
+ {rows.length===0 && <tr><td colSpan="9" style={{ padding:'18px', textAlign:'center', color:'#888', fontSize:'12px' }}>No snacks/drinks items found. Add items under category Snacks, Drinks and Others.</td></tr>}
+ {rows.map(row=>{ const noPrice = safeNum(row.selling_price,0)<=0 && safeNum(row.estimated_sold_qty,0)>0; const negative = safeNum(row.variance_qty,0)<0; return (<tr key={row.item_id} style={{ borderBottom:'1px solid #eee', background:noPrice||negative?'#fff8f8':'white' }}>
+ <td style={{ padding:'8px', fontSize:'11px', fontWeight:'700', color:'#1a1a2e' }}>{row.item_name}<div style={{ fontSize:'9px', color:'#888', fontWeight:'500' }}>{row.unit} | Current app stock: {safeNum(row.current_stock,0).toLocaleString('en-PH')}</div></td>
+ <td style={{ padding:'8px', textAlign:'right' }}><input type="number" value={weeklySnackInputs[String(row.item_id)]?.beginning_count ?? row.beginning_count} onChange={e=>updateWeeklySnackInput(String(row.item_id),'beginning_count',e.target.value)} style={{...inputStyle, marginBottom:0, textAlign:'right', padding:'7px 8px', fontSize:'11px' }} min="0" step="1" /></td>
+ <td style={{ padding:'8px', textAlign:'right', fontSize:'11px', color:'#4a90d9', fontWeight:'800' }}>{safeNum(row.stock_in_qty,0).toLocaleString('en-PH')}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontSize:'11px', color:'#f57c00', fontWeight:'800' }}>{safeNum(row.wastage_qty,0).toLocaleString('en-PH')}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}><input type="number" value={weeklySnackInputs[String(row.item_id)]?.ending_count ?? row.ending_count} onChange={e=>updateWeeklySnackInput(String(row.item_id),'ending_count',e.target.value)} style={{...inputStyle, marginBottom:0, textAlign:'right', padding:'7px 8px', fontSize:'11px', border:'1.5px solid #ca1b1b' }} min="0" step="1" /></td>
+ <td style={{ padding:'8px', textAlign:'right', fontSize:'12px', color:'#ca1b1b', fontWeight:'900' }}>{safeNum(row.estimated_sold_qty,0).toLocaleString('en-PH')}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}><input type="number" value={weeklySnackInputs[String(row.item_id)]?.selling_price ?? row.selling_price} onChange={e=>updateWeeklySnackInput(String(row.item_id),'selling_price',e.target.value)} style={{...inputStyle, marginBottom:0, textAlign:'right', padding:'7px 8px', fontSize:'11px' }} min="0" step="0.01" /></td>
+ <td style={{ padding:'8px', textAlign:'right', fontSize:'12px', color:'#2d8a4e', fontWeight:'900' }}>{php(row.sales_amount)}</td>
+ <td style={{ padding:'8px', textAlign:'center', fontSize:'10px' }}>{noPrice?<Badge label="NO PRICE" color="red"/>:negative?<Badge label="REVIEW" color="orange"/>:<Badge label="OK" color="green"/>}</td>
+ </tr>)})}
+ </tbody></table></div>
+ <label style={lblS}>Weekly Review Notes</label><textarea placeholder="Example: Weekly inventory counted after closing. Possible variance reviewed by admin." value={weeklySnackNotes} onChange={e=>setWeeklySnackNotes(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'vertical' }} />
+ <div style={{ background:'#f7f9fc', border:'1px solid #e2e8f0', borderRadius:'12px', padding:'12px', marginBottom:'12px', color:'#555', fontSize:'12px', lineHeight:1.5 }}><strong>Formula:</strong> Estimated Sold = Last Week Count + Stock In - Wastage - This Week Count. This is computed sales, so any missing/unlogged item will also appear as sold unless logged as wastage, free item, damaged item, or correction.</div>
+ <button style={{...btnBlack, background:'#ca1b1b', opacity:weeklySnackSaving?0.6:1 }} disabled={weeklySnackSaving} onClick={saveWeeklySnackCount}>{weeklySnackSaving?'SAVING WEEKLY COUNT...':'APPROVE & SAVE WEEKLY SNACKS/DRINKS COUNT'}</button>
+ </div>
+ )
+ })()}
 
  {/* Stock Adjustment View */}
  {inventorySubView==='adjust' && (
