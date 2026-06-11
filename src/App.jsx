@@ -15577,10 +15577,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  employee_acknowledgement:'pending',
  payslip_serial:genSerial(payrollStart,idx),
  payroll_cost_type:pay.payrollCostType || 'auto',
- payroll_cost_label:pay.payrollCostLabel || getPayrollCostTypeInfo(pay.payrollCostType || 'auto').shortLabel,
- bank_name:pay.bankName,
- bank_account:pay.bankAccount,
- bank_account_name:pay.bankAccountName
+ payroll_cost_label:pay.payrollCostLabel || getPayrollCostTypeInfo(pay.payrollCostType || 'auto').shortLabel
  }))
 
  if (payrollPayload.length > 0) {
