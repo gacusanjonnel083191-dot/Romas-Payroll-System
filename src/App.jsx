@@ -15205,9 +15205,24 @@ This recovery button creates one approved expense record using GROSS payroll ear
  showToast(' Schedule removed')
  }
  function applyPayrollCutoff() {
- const [y,m] = payrollMonth.split('-').map(Number)
- if (payrollCutoff==='11-25') { setPayrollStart(`${y}-${String(m).padStart(2,'0')}-11`); setPayrollEnd(`${y}-${String(m).padStart(2,'0')}-25`) }
- else { const s=new Date(y,m-1,26),e=new Date(y,m,10); setPayrollStart(s.toISOString().slice(0,10)); setPayrollEnd(e.toISOString().slice(0,10)) }
+ const [y,m] = String(payrollMonth || '').split('-').map(Number)
+ if (!y || !m) { showToast('Please select a payroll month first.', 'red'); return }
+ const pad = n => String(n).padStart(2, '0')
+ const ymDate = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`
+
+ if (payrollCutoff === '11-25') {
+  // Same-month cutoff: selected month 11th to selected month 25th.
+  setPayrollStart(ymDate(y, m, 11))
+  setPayrollEnd(ymDate(y, m, 25))
+  return
+ }
+
+ // Cross-month cutoff: selected month 26th to next month 10th.
+ // Do not use toISOString() here because PH timezone can shift local midnight to the previous UTC date.
+ const nextYear = m === 12 ? y + 1 : y
+ const nextMonth = m === 12 ? 1 : m + 1
+ setPayrollStart(ymDate(y, m, 26))
+ setPayrollEnd(ymDate(nextYear, nextMonth, 10))
  }
  async function computeFinalPay() {
  if (!finalPayEmployeeId||!finalPayLastDate) { showToast('Please select employee and last working date.','red'); return }
@@ -17935,11 +17950,11 @@ async function computePayroll() {
  <div>
  <h2 style={h2s}>Payroll Computation</h2>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'15px', fontSize:'13px', color:'#666' }}>
- <strong style={{ color:'#ca1b1b' }}>Rules:</strong> Daily-rate basic pay = completed workdays × daily rate. Birthday pay = no work, no pay. OT/UT are minute-based only when approved. Night differential excludes break time inside 10PM-6AM. Workflow: Compute Draft → Send Payslips for Review → Release Payroll.
+ <strong style={{ color:'#ca1b1b' }}>Rules:</strong> Cutoffs: 26th–10th next month and 11th–25th same month. Daily-rate basic pay = completed workdays × daily rate. Birthday pay = no work, no pay. OT/UT are minute-based only when approved. Night differential excludes break time inside 10PM-6AM. Workflow: Compute Draft → Send Payslips for Review → Release Payroll.
  </div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'10px', alignItems:'flex-end' }}>
  <input type="month" value={payrollMonth} onChange={e=>setPayrollMonth(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} />
- <select value={payrollCutoff} onChange={e=>setPayrollCutoff(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }}><option value="11-25">11th 25th (SSS)</option><option value="26-10">26th 10th (PagIBIG+PhilHealth)</option></select>
+ <select value={payrollCutoff} onChange={e=>setPayrollCutoff(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }}><option value="26-10">26th to 10th next month (Pag-IBIG + PhilHealth)</option><option value="11-25">11th to 25th same month (SSS)</option></select>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={applyPayrollCutoff}>APPLY DATES</button>
  </div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'15px' }}>
