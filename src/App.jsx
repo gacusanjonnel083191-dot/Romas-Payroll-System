@@ -648,6 +648,38 @@ function getPayrollReviewStatusText(record = {}) {
  return 'Draft - admin only'
 }
 
+function getPayslipDisputeKey(dispute = {}) {
+ const recordId = String(dispute.payroll_record_id || '').trim()
+ if (recordId) return `record:${recordId}`
+ return [
+  dispute.employee_id || dispute.employee_code || dispute.employee_name || '',
+  dispute.payroll_start || '',
+  dispute.payroll_end || '',
+  dispute.reason || ''
+ ].map(v=>String(v).trim().toLowerCase()).join('|')
+}
+
+function dedupePayslipDisputes(rows = []) {
+ const byKey = new Map()
+ ;(rows || []).forEach(row => {
+  const key = getPayslipDisputeKey(row)
+  const existing = byKey.get(key)
+  if (!existing) {
+   byKey.set(key, { ...row, duplicate_count:0, duplicate_ids:[] })
+   return
+  }
+  const rowTime = new Date(row.created_at || 0).getTime() || 0
+  const existingTime = new Date(existing.created_at || 0).getTime() || 0
+  if (rowTime > existingTime) {
+   byKey.set(key, { ...row, duplicate_count:safeNum(existing.duplicate_count,0) + 1, duplicate_ids:[...(existing.duplicate_ids || []), existing.id, ...(row.duplicate_ids || [])].filter(Boolean) })
+  } else {
+   existing.duplicate_count = safeNum(existing.duplicate_count,0) + 1
+   existing.duplicate_ids = [...(existing.duplicate_ids || []), row.id].filter(Boolean)
+  }
+ })
+ return Array.from(byKey.values()).sort((a,b)=>String(b.created_at || '').localeCompare(String(a.created_at || '')))
+}
+
 function isMissingPayrollWorkflowColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
  return msg.includes('payroll_status') || msg.includes('employee_acknowledgement') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('payslip_serial') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes') || msg.includes('requested_cash_advance_deduction') || msg.includes('deferred_cash_advance_deduction') || msg.includes('non_ca_deduction_overflow') || (msg.includes('schema cache') && msg.includes('payroll_records')) || (msg.includes('could not find') && msg.includes('payroll_records'))
@@ -1161,6 +1193,7 @@ export default function App() {
  const [leaveReason, setLeaveReason] = useState('')
  const [disputeReasons, setDisputeReasons] = useState({})
  const [showDisputeBox, setShowDisputeBox] = useState({})
+ const [submittingPayslipDisputes, setSubmittingPayslipDisputes] = useState({})
  // Reason dropdown presets
  const [requestCashReasonPreset, setRequestCashReasonPreset] = useState('')
  const [otRequestReasonPreset, setOtRequestReasonPreset] = useState('')
@@ -10310,12 +10343,52 @@ function buildDeliveryInvoicePrintCSS() {
  alert('Payslip acknowledged!'); loadMyPayslips(employee)
  }
  async function submitPayslipDispute(pay) {
- const reason = disputeReasons[pay.id]
+ const payId = pay?.id
+ if (!payId || submittingPayslipDisputes[payId]) return
+ const reason = disputeReasons[payId]
  if (!reason?.trim()) { alert('Please enter your reason.'); return }
- const { error } = await supabase.from('payslip_disputes').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, payroll_record_id:String(pay.id), payroll_start:pay.payroll_start, payroll_end:pay.payroll_end, reason, status:'pending' })
- if (error) { alert('Failed: '+error.message); return }
- await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', pay.id)
- alert('Dispute submitted.'); setShowDisputeBox(p=>({...p,[pay.id]:false})); setDisputeReasons(p=>({...p,[pay.id]:''})); setDisputeReasonPresets(p=>({...p,[pay.id]:''})); loadMyPayslips(employee)
+ setSubmittingPayslipDisputes(p=>({...p,[payId]:true}))
+ try {
+  const { data:existing, error:existingError } = await supabase
+   .from('payslip_disputes')
+   .select('id,status')
+   .eq('payroll_record_id', String(payId))
+   .eq('employee_id', employee.id)
+   .eq('status','pending')
+   .limit(1)
+
+  if (existingError) console.warn('Existing payslip dispute check failed:', existingError)
+
+  if ((existing || []).length > 0 || normalizePayrollAcknowledgement(pay.employee_acknowledgement) === 'disputed') {
+   await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', payId)
+   alert('Dispute already submitted. It is now waiting for admin review.')
+   setShowDisputeBox(p=>({...p,[payId]:false}))
+   setDisputeReasons(p=>({...p,[payId]:''}))
+   setDisputeReasonPresets(p=>({...p,[payId]:''}))
+   loadMyPayslips(employee)
+   return
+  }
+
+  const { error } = await supabase.from('payslip_disputes').insert({
+   employee_id:employee.id,
+   employee_code:employee.employee_code,
+   employee_name:employee.full_name,
+   payroll_record_id:String(payId),
+   payroll_start:pay.payroll_start,
+   payroll_end:pay.payroll_end,
+   reason,
+   status:'pending'
+  })
+  if (error) { alert('Failed: '+error.message); return }
+  await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', payId)
+  alert('Dispute submitted. Waiting for admin review.')
+  setShowDisputeBox(p=>({...p,[payId]:false}))
+  setDisputeReasons(p=>({...p,[payId]:''}))
+  setDisputeReasonPresets(p=>({...p,[payId]:''}))
+  loadMyPayslips(employee)
+ } finally {
+  setSubmittingPayslipDisputes(p=>({...p,[payId]:false}))
+ }
  }
 
  // Admin Functions 
@@ -15103,7 +15176,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  async function loadPayslipDisputes() {
  const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'pending').order('created_at', { ascending:false })
- setPayslipDisputes(data || [])
+ setPayslipDisputes(dedupePayslipDisputes(data || []))
  }
  async function loadResolvedDisputes() {
  const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'resolved').order('created_at', { ascending:false })
@@ -15113,13 +15186,15 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const reason = (disputeAdminReason[id] || '').trim()
  if (!reason) { showToast(' Please enter admin response before resolving.','red'); return }
  const dispute = payslipDisputes.find(d=>d.id===id)
- const { error } = await supabase.from('payslip_disputes').update({ status:'resolved', admin_reason:reason }).eq('id', id)
+ const idsToResolve = Array.from(new Set([id, ...(dispute?.duplicate_ids || [])].filter(Boolean)))
+ const updateQuery = supabase.from('payslip_disputes').update({ status:'resolved', admin_reason:reason })
+ const { error } = idsToResolve.length > 1 ? await updateQuery.in('id', idsToResolve) : await updateQuery.eq('id', id)
  if (error) { showToast(' Failed: '+error.message,'red'); console.error(error); return }
- await logAudit('DISPUTE RESOLVED','Admin','',`Dispute ID ${id} ${reason}`)
+ await logAudit('DISPUTE RESOLVED','Admin','',`Dispute ID ${id}${idsToResolve.length>1?` plus ${idsToResolve.length-1} duplicate(s)`:''} ${reason}`)
  if (dispute) await createNotification(dispute.employee_id, dispute.employee_name, 'dispute', ' Dispute Resolved', `Your payslip dispute has been resolved. Response: ${reason}`)
  setDisputeAdminReason(p=>({...p,[id]:'' }))
- setPayslipDisputes(prev=>prev.filter(d=>d.id!==id))
- showToast(' Dispute resolved and removed successfully!')
+ setPayslipDisputes(prev=>prev.filter(d=>!idsToResolve.includes(d.id)))
+ showToast(idsToResolve.length>1 ? ` Dispute resolved. ${idsToResolve.length-1} duplicate submission(s) were resolved together.` : ' Dispute resolved and removed successfully!')
  loadResolvedDisputes()
  }
  async function saveAdjustment() {
@@ -19636,6 +19711,7 @@ async function computePayroll() {
  <p style={cps}>Cutoff: {d.payroll_start} to {d.payroll_end}</p>
  <p style={cps}>Employee Reason: <em>"{d.reason}"</em></p>
  <p style={cps}>Filed: {new Date(d.created_at).toLocaleDateString()}</p>
+ {safeNum(d.duplicate_count,0)>0 && <p style={{...cps, color:'#ca1b1b', fontWeight:'bold' }}>Duplicate submissions hidden: {d.duplicate_count}. Resolving this item will resolve its duplicate(s) too.</p>}
  <label style={lblS}>Admin Response (required to resolve):</label>
  <textarea placeholder="Enter your response or resolution..." value={disputeAdminReason[d.id]||''} onChange={e=>setDisputeAdminReason(p=>({...p,[d.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:'8px', opacity:processingItems['res_'+d.id]?0.6:1 }} disabled={processingItems['res_'+d.id]} onClick={async()=>{ setProcessingItems(p=>({...p,['res_'+d.id]:true})); await resolveDispute(d.id); setProcessingItems(p=>({...p,['res_'+d.id]:false})) }}>{processingItems['res_'+d.id]?' Resolving...':' MARK AS RESOLVED'}</button>
@@ -27426,6 +27502,12 @@ onClick={async ()=>{
  {pay.employee_acknowledgement==='auto-acknowledged' && (
  <p style={{ fontSize:'11px', color:'#888', margin:'2px 0' }}> Auto-acknowledged after 5-day deadline</p>
  )}
+ {pay.employee_acknowledgement==='disputed' && (
+ <div style={{ margin:'8px 0' }}>
+ <button style={{...btnGray, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'13px', opacity:0.75, cursor:'not-allowed' }} disabled>SUBMITTED</button>
+ <p style={{ fontSize:'11px', color:'#ca1b1b', margin:'5px 0 0', fontWeight:'bold' }}>Dispute already submitted. Waiting for admin review.</p>
+ </div>
+ )}
  <p style={cps}>Basic: {php(pay.basic_pay)} | Earnings: {php(pay.total_earnings)} | Deductions: {php(pay.total_deductions)}</p>
  <h3 style={{ color:'#ca1b1b', margin:'6px 0' }}>Net Pay: {php(pay.net_pay)}</h3>
  {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement)&&(
@@ -27465,7 +27547,11 @@ onClick={async ()=>{
  style={{...inputStyle, minHeight:'70px', resize:'none' }}
  />
  )}
- <button style={btnRed} onClick={()=>submitPayslipDispute(pay)}>SUBMIT DISPUTE</button>
+ <button
+ style={{...btnRed, opacity:submittingPayslipDisputes[pay.id]?0.65:1, cursor:submittingPayslipDisputes[pay.id]?'not-allowed':'pointer' }}
+ disabled={!!submittingPayslipDisputes[pay.id]}
+ onClick={()=>submitPayslipDispute(pay)}
+ >{submittingPayslipDisputes[pay.id]?'SUBMITTED':'SUBMIT DISPUTE'}</button>
  </div>
  )}
  </div>
