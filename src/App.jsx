@@ -15044,9 +15044,12 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const empName = adj.employee_name || 'this employee'
  const amountText = php(adj.amount)
  try {
+  // Use only stable columns here. Some older Supabase payroll_records tables
+  // do not have review_status/payroll_status yet, and selecting those optional
+  // columns blocks adjustment undo with a schema-cache error.
   const { data:coveringPayroll, error:coverErr } = await supabase
   .from('payroll_records')
-  .select('id, payroll_start, payroll_end, payroll_approved, approved_at, payroll_status, review_status, employee_name')
+  .select('id, payroll_start, payroll_end, payroll_approved, approved_at, employee_name')
   .eq('employee_id', adj.employee_id)
   .lte('payroll_start', adjDate)
   .gte('payroll_end', adjDate)
