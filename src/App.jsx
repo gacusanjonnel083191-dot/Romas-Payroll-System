@@ -512,7 +512,7 @@ function getPayrollReviewStatusText(record = {}) {
 
 function isMissingPayrollWorkflowColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
- return msg.includes('payroll_status') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes')
+ return msg.includes('payroll_status') || msg.includes('employee_acknowledgement') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('payslip_serial') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes') || msg.includes('requested_cash_advance_deduction') || msg.includes('deferred_cash_advance_deduction') || msg.includes('non_ca_deduction_overflow') || (msg.includes('schema cache') && msg.includes('payroll_records')) || (msg.includes('could not find') && msg.includes('payroll_records'))
 }
 
 function isMissingCashAdvanceDetailColumnError(error) {
