@@ -300,6 +300,144 @@ function daysInclusive(startDate, endDate) {
  return Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1
 }
 
+
+function addDaysToDateString(dateStr, days = 0) {
+ const date = parseLocalDate(dateStr)
+ if (!date) return ''
+ date.setDate(date.getDate() + safeNum(days, 0))
+ return formatDateLocal(date)
+}
+
+function buildDateRangeRows(startDate, endDate, mapper = null) {
+ const totalDays = daysInclusive(startDate, endDate)
+ return Array.from({ length: totalDays }, (_, i) => {
+  const dateStr = addDaysToDateString(startDate, i)
+  const date = parseLocalDate(dateStr)
+  const row = {
+   dateStr,
+   day: date? date.getDate(): i + 1,
+   dayName: date? date.toLocaleDateString('en-US', { weekday:'short' }): '',
+   index:i
+  }
+  return typeof mapper === 'function'? mapper(row, i): row
+ })
+}
+
+function pad2(value) {
+ return String(value).padStart(2, '0')
+}
+
+function yearMonthFromParts(year, month) {
+ return `${year}-${pad2(month)}`
+}
+
+function shiftYearMonth(yearMonth, monthOffset = 0) {
+ const [y, m] = String(yearMonth || '').split('-').map(Number)
+ if (!y || !m) return ''
+ const date = new Date(y, m - 1 + safeNum(monthOffset, 0), 1)
+ return yearMonthFromParts(date.getFullYear(), date.getMonth() + 1)
+}
+
+function getPayrollCutoffPeriodFromParts(yearMonth, cutoffType = '11-25') {
+ const [y, m] = String(yearMonth || '').split('-').map(Number)
+ if (!y || !m) return null
+ const ymDate = (year, month, day) => `${year}-${pad2(month)}-${pad2(day)}`
+ if (cutoffType === '26-10') {
+  const nextYear = m === 12? y + 1: y
+  const nextMonth = m === 12? 1: m + 1
+  return {
+   key:`${yearMonth}|26-10`,
+   type:'26-10',
+   start:ymDate(y, m, 26),
+   end:ymDate(nextYear, nextMonth, 10),
+   label:`${formatDateForDisplay(ymDate(y, m, 26))} – ${formatDateForDisplay(ymDate(nextYear, nextMonth, 10))} (26th–10th)`
+  }
+ }
+ return {
+  key:`${yearMonth}|11-25`,
+  type:'11-25',
+  start:ymDate(y, m, 11),
+  end:ymDate(y, m, 25),
+  label:`${formatDateForDisplay(ymDate(y, m, 11))} – ${formatDateForDisplay(ymDate(y, m, 25))} (11th–25th)`
+ }
+}
+
+function getDTRCutoffPeriodFromKey(key) {
+ const [yearMonth, type] = String(key || '').split('|')
+ return getPayrollCutoffPeriodFromParts(yearMonth, type || '11-25')
+}
+
+function getCurrentDTRCutoffKey(todayDate = getTodayDate()) {
+ const date = parseLocalDate(todayDate)
+ if (!date) return `${String(todayDate).slice(0, 7)}|11-25`
+ const y = date.getFullYear()
+ const m = date.getMonth() + 1
+ const d = date.getDate()
+ if (d >= 11 && d <= 25) return `${yearMonthFromParts(y, m)}|11-25`
+ if (d >= 26) return `${yearMonthFromParts(y, m)}|26-10`
+ return `${shiftYearMonth(yearMonthFromParts(y, m), -1)}|26-10`
+}
+
+function getPreviousDTRCutoffKey(key) {
+ const [yearMonth, type] = String(key || '').split('|')
+ if (type === '11-25') return `${shiftYearMonth(yearMonth, -1)}|26-10`
+ return `${yearMonth}|11-25`
+}
+
+function getDTRCutoffOptions(count = 36, todayDate = getTodayDate()) {
+ const options = []
+ let key = getCurrentDTRCutoffKey(todayDate)
+ for (let i = 0; i < count; i++) {
+  const period = getDTRCutoffPeriodFromKey(key)
+  if (period) options.push(period)
+  key = getPreviousDTRCutoffKey(key)
+ }
+ return options
+}
+
+function formatDateForDisplay(dateStr) {
+ const date = parseLocalDate(dateStr)
+ if (!date) return dateStr || ''
+ return date.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
+}
+
+function mergeDTRDayLogs(dayLogs = []) {
+ const logs = (dayLogs || []).filter(Boolean)
+ if (!logs.length) return null
+ const hasAbsent = logs.some(l => l.status === 'Absent')
+ const timeInLogs = logs.filter(l => l.time_in)
+ const timeOutLogs = logs.filter(l => l.time_out)
+ const earliestIn = timeInLogs.map(l => l.time_in).sort()[0] || ''
+ const latestOut = timeOutLogs.map(l => l.time_out).sort().slice(-1)[0] || ''
+ const approvedOT = logs.filter(l => l.overtime_approved === true).reduce((sum,l)=>sum+safeNum(l.overtime_minutes,0),0)
+ const lateMinutes = logs.reduce((sum,l)=>sum+safeNum(l.late_minutes,0),0)
+ const breakMinutes = logs.reduce((sum,l)=>sum+safeNum(l.total_break_minutes,0),0)
+ const status = hasAbsent? 'Absent': lateMinutes > 0? 'Late': earliestIn? 'Present': (logs[0]?.status || '')
+ return {
+  ...logs[0],
+  time_in:earliestIn,
+  time_out:latestOut,
+  late_minutes:lateMinutes,
+  total_break_minutes:breakMinutes,
+  overtime_minutes:approvedOT,
+  overtime_approved:approvedOT > 0,
+  status,
+  _logs:logs,
+  duplicateCount:logs.length
+ }
+}
+
+function groupDTRLogsByDate(logs = []) {
+ const grouped = {}
+ ;(logs || []).forEach(log => {
+  const key = String(log.attendance_date || '').slice(0, 10)
+  if (!key) return
+  if (!grouped[key]) grouped[key] = []
+  grouped[key].push(log)
+ })
+ return grouped
+}
+
 function getLeaveOverlapDays(leave, periodStart, periodEnd) {
  const start = parseLocalDate(leave?.leave_start)
  const end = parseLocalDate(leave?.leave_end)
@@ -1756,7 +1894,8 @@ export default function App() {
  const [remittancePeriod, setRemittancePeriod] = useState('')
  const [remittanceData, setRemittanceData] = useState(null)
  const [dtrEmployeeId, setDtrEmployeeId] = useState('')
- const [dtrMonth, setDtrMonth] = useState(today.slice(0,7))
+ const [dtrMonth, setDtrMonth] = useState(today.slice(0,7)) // kept for backward compatibility with older print/history calls
+ const [dtrCutoffKey, setDtrCutoffKey] = useState(getCurrentDTRCutoffKey(today))
  const [dtrRecords, setDtrRecords] = useState([])
  const [dtrStats, setDtrStats] = useState(null)
  const [announcements, setAnnouncements] = useState([])
@@ -15705,43 +15844,54 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
  }
 
- async function printDTR(empId, empName, empCode, month) {
- // month format: YYYY-MM
- const startDate = `${month}-01`
- const endDate = new Date(Number(month.split('-')[0]), Number(month.split('-')[1]), 0).toISOString().slice(0,10)
+ async function printDTR(empId, empName, empCode, startOrMonth, endDateArg = null, periodLabelArg = '') {
+ let startDate = startOrMonth
+ let endDate = endDateArg
+ let periodLabel = periodLabelArg
+
+ // Backward compatible: old callers pass month format YYYY-MM.
+ if (!endDate && /^\d{4}-\d{2}$/.test(String(startOrMonth || ''))) {
+  const [y, m] = String(startOrMonth).split('-').map(Number)
+  startDate = `${startOrMonth}-01`
+  endDate = `${y}-${pad2(m)}-${pad2(new Date(y, m, 0).getDate())}`
+  periodLabel = new Date(`${startOrMonth}-01`).toLocaleString('default', { month:'long', year:'numeric' })
+ }
+ if (!startDate || !endDate) { showToast('Please select a valid DTR cutoff period.', 'red'); return }
+ if (!periodLabel) periodLabel = `${formatDateForDisplay(startDate)} – ${formatDateForDisplay(endDate)}`
+
  const { data: logs } = await supabase.from('attendance_logs').select('*')
 .eq('employee_id', empId).gte('attendance_date', startDate).lte('attendance_date', endDate)
 .order('attendance_date')
  const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
- const daysInMonth = new Date(Number(month.split('-')[0]), Number(month.split('-')[1]), 0).getDate()
- const monthName = new Date(month+'-01').toLocaleString('default', { month:'long', year:'numeric' })
- const totalDaysWorked = logs?.filter(l=>l.time_in).length || 0
- const totalAbsent = logs?.filter(l=>l.status==='Absent').length || 0
- const totalLate = logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0) || 0
- const totalOT = logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0) || 0
+ const grouped = groupDTRLogsByDate(logs || [])
+ const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
+ const totalDaysWorked = new Set(mergedLogs.filter(l=>l.time_in && l.time_out).map(l=>String(l.attendance_date || '').slice(0,10))).size
+ const totalAbsent = new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size
+ const totalLate = mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0) || 0
+ const totalOT = mergedLogs.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0) || 0
+ const totalBreak = mergedLogs.reduce((s,l)=>s+Number(l.total_break_minutes||0),0) || 0
+ const duplicateDays = Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
 
- const rows = Array.from({length: daysInMonth}, (_,i) => {
- const dateStr = `${month}-${String(i+1).padStart(2,'0')}`
- const log = logs?.find(l=>l.attendance_date===dateStr)
- const dayName = new Date(dateStr).toLocaleDateString('en-US', {weekday:'short'})
+ const rows = buildDateRangeRows(startDate, endDate, ({ dateStr, day, dayName }) => {
+ const log = mergeDTRDayLogs(grouped[dateStr] || [])
  return `<tr style="border-bottom:1px solid #eee;">
  <td style="padding:5px 8px;font-size:10px;color:#888;">${dayName}</td>
- <td style="padding:5px 8px;font-size:10px;text-align:center;">${i+1}</td>
+ <td style="padding:5px 8px;font-size:10px;text-align:center;">${formatDateForDisplay(dateStr)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_in?'#000':'#ccc'}">${log?.time_in||' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_out?'#000':'#ccc'}">${log?.time_out||' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;">${log?.total_break_minutes||0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.late_minutes>0?'#ca1b1b':'#000'}">${log?.late_minutes||0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.overtime_minutes>0?'#2d8a4e':'#000'}">${log?.overtime_approved?log.overtime_minutes:0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;">
- ${!log?'':log.status==='Absent'?'<span style="color:#ca1b1b;font-weight:bold;">ABS</span>':
+ ${!log?'':log.duplicateCount>1?'<span style="color:#f5a623;font-weight:bold;">DUP</span>':log.status==='Absent'?'<span style="color:#ca1b1b;font-weight:bold;">ABS</span>':
  log.status==='Late'?'<span style="color:#f5a623;">LATE</span>':
- log.time_in?'<span style="color:#2d8a4e;"> </span>':''}
+ log.time_in?'<span style="color:#2d8a4e;">PRESENT</span>':''}
  </td>
  </tr>`
  }).join('')
 
  const pw = window.open('','_blank','width=420,height=660')
- pw.document.write(`<!DOCTYPE html><html><head><title>DTR - ${empName} - ${monthName}</title>
+ pw.document.write(`<!DOCTYPE html><html><head><title>DTR - ${empName} - ${periodLabel}</title>
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
  body{font-family:Arial,sans-serif;padding:15mm;font-size:12px;color:#000;}
@@ -15753,19 +15903,22 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
  <div style="font-size:11px;color:#666;">Payroll &amp; Attendance System</div>
  <div style="font-size:15px;font-weight:bold;margin-top:6px;">DAILY TIME RECORD (DTR)</div>
- <div style="font-size:12px;margin-top:2px;">${monthName}</div>
+ <div style="font-size:12px;margin-top:2px;">${periodLabel}</div>
+ <div style="font-size:10px;color:#666;margin-top:2px;">Cutoff Period: ${startDate} to ${endDate}</div>
  </div>
  <div style="background:#fff8dc;border:1px solid #ca1b1b;border-radius:6px;padding:10px;margin-bottom:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
  <div>
  <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${empName}</div>
  <div style="font-size:11px;color:#555;">Employee Code: ${empCode}</div>
  <div style="font-size:11px;color:#555;">Position: ${emp?.position||' '} | Department: ${emp?.department||' '}</div>
+ ${duplicateDays>0?`<div style="font-size:10px;color:#f5a623;font-weight:bold;margin-top:4px;">Warning: ${duplicateDays} day(s) have duplicate attendance logs.</div>`:''}
  </div>
  <div style="text-align:right;">
  <div style="font-size:11px;">Days Worked: <strong>${totalDaysWorked}</strong></div>
  <div style="font-size:11px;">Absences: <strong style="color:#ca1b1b;">${totalAbsent}</strong></div>
  <div style="font-size:11px;">Total Late: <strong style="color:#f5a623;">${totalLate} min</strong></div>
  <div style="font-size:11px;">Total OT: <strong style="color:#2d8a4e;">${totalOT} min</strong></div>
+ <div style="font-size:11px;">Total Break: <strong>${totalBreak} min</strong></div>
  </div>
  </div>
  <table>
@@ -15777,8 +15930,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <tfoot>
  <tr style="background:#f5f5f5;font-weight:bold;">
  <td colspan="2" style="padding:6px 8px;font-size:10px;">TOTALS</td>
- <td></td><td></td>
- <td style="padding:6px 8px;font-size:10px;text-align:center;">${logs?.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0}</td>
+ <td style="padding:6px 8px;font-size:10px;text-align:center;">${totalDaysWorked} day(s)</td><td></td>
+ <td style="padding:6px 8px;font-size:10px;text-align:center;">${totalBreak}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#ca1b1b;">${totalLate}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#2d8a4e;">${totalOT}</td>
  <td></td>
@@ -18676,7 +18829,7 @@ async function computePayroll() {
  if(!empId) return
  const emp = employees.find(e=>e.employee_code===empId.toUpperCase()||e.id===empId)
  if(!emp){ showToast('Employee not found.','red'); return }
- await printDTR(emp.id, emp.full_name, emp.employee_code, selectedHistoryPeriod.start.slice(0,7))
+ await printDTR(emp.id, emp.full_name, emp.employee_code, selectedHistoryPeriod.start, selectedHistoryPeriod.end, `${formatDateForDisplay(selectedHistoryPeriod.start)} – ${formatDateForDisplay(selectedHistoryPeriod.end)}`)
  }}>
  PRINT DTR
  </button>
@@ -19023,53 +19176,63 @@ async function computePayroll() {
  {activeTab==='dtr' && (
  <div>
  <h2 style={h2s}> DTR Daily Time Record</h2>
- <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>View and print the official Daily Time Record for any employee filtered by month.</p>
+ <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>View and print the official Daily Time Record by payroll cutoff, not by calendar month.</p>
 
  <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', marginBottom:'20px' }}>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end' }}>
- <div style={{ flex:1, minWidth:'180px' }}>
+ <div style={{ flex:1, minWidth:'220px' }}>
  <label style={lblS}>Select Employee:</label>
  <EmployeeSelect value={dtrEmployeeId} onChange={v=>{ setDtrEmployeeId(v); setDtrRecords([]); setDtrStats(null) }} employees={employees} />
  </div>
- <div>
- <label style={lblS}>Month:</label>
- <input type="month" value={dtrMonth} onChange={e=>{ setDtrMonth(e.target.value); setDtrRecords([]); setDtrStats(null) }} style={{...inputStyle, width:'auto', marginBottom:0 }} />
+ <div style={{ flex:1, minWidth:'280px' }}>
+ <label style={lblS}>Cutoff Period:</label>
+ <select value={dtrCutoffKey} onChange={e=>{ setDtrCutoffKey(e.target.value); setDtrRecords([]); setDtrStats(null) }} style={{...inputStyle, marginBottom:0 }}>
+ {getDTRCutoffOptions(36, today).map(period=>(
+ <option key={period.key} value={period.key}>{period.label}</option>
+ ))}
+ </select>
  </div>
+ </div>
+ <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'10px 12px', marginTop:'12px', fontSize:'12px', color:'#555', lineHeight:1.5 }}>
+ <strong style={{ color:'#ca1b1b' }}>DTR rule:</strong> This view follows your payroll cutoffs: <strong>26th–10th next month</strong> and <strong>11th–25th same month</strong>. Overnight shifts are counted by the attendance/shift start date.
  </div>
  <div style={{ display:'flex', gap:'10px', marginTop:'12px', flexWrap:'wrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
  if(!dtrEmployeeId){ showToast('Please select an employee.','red'); return }
  const emp = employees.find(e=>e.id===dtrEmployeeId)
  if(!emp) return
- const startDate = `${dtrMonth}-01`
- const endDate = new Date(Number(dtrMonth.split('-')[0]), Number(dtrMonth.split('-')[1]), 0).toISOString().slice(0,10)
+ const period = getDTRCutoffPeriodFromKey(dtrCutoffKey)
+ if(!period){ showToast('Please select a valid cutoff period.','red'); return }
  const { data: logs } = await supabase.from('attendance_logs').select('*')
 .eq('employee_id', dtrEmployeeId)
-.gte('attendance_date', startDate)
-.lte('attendance_date', endDate)
+.gte('attendance_date', period.start)
+.lte('attendance_date', period.end)
 .order('attendance_date')
- const daysInMonth = new Date(Number(dtrMonth.split('-')[0]), Number(dtrMonth.split('-')[1]), 0).getDate()
- const allDays = Array.from({length: daysInMonth}, (_,i)=>{
- const dateStr = `${dtrMonth}-${String(i+1).padStart(2,'0')}`
- const log = logs?.find(l=>l.attendance_date===dateStr)
- const dayName = new Date(dateStr).toLocaleDateString('en-US',{weekday:'short'})
- return { dateStr, day: i+1, dayName, log }
+ const grouped = groupDTRLogsByDate(logs || [])
+ const allDays = buildDateRangeRows(period.start, period.end, ({ dateStr, day, dayName })=>{
+ const log = mergeDTRDayLogs(grouped[dateStr] || [])
+ return { dateStr, day, dayName, log }
  })
+ const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
  setDtrRecords(allDays)
  setDtrStats({
  emp,
- totalWorked: logs?.filter(l=>l.time_in).length||0,
- totalAbsent: logs?.filter(l=>l.status==='Absent').length||0,
- totalLate: logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0,
- totalOT: logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0,
- totalBreak: logs?.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0,
+ period,
+ totalWorked: new Set(mergedLogs.filter(l=>l.time_in && l.time_out).map(l=>String(l.attendance_date || '').slice(0,10))).size,
+ totalAbsent: new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size,
+ totalLate: mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0,
+ totalOT: mergedLogs.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0,
+ totalBreak: mergedLogs.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0,
+ duplicateDays: Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
  })
  }}> VIEW DTR</button>
  <button style={{...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
  if(!dtrEmployeeId){ showToast('Please select an employee.','red'); return }
  const emp = employees.find(e=>e.id===dtrEmployeeId)
  if(!emp){ showToast('Employee not found.','red'); return }
- await printDTR(emp.id, emp.full_name, emp.employee_code, dtrMonth)
+ const period = getDTRCutoffPeriodFromKey(dtrCutoffKey)
+ if(!period){ showToast('Please select a valid cutoff period.','red'); return }
+ await printDTR(emp.id, emp.full_name, emp.employee_code, period.start, period.end, period.label)
  }}> PRINT DTR</button>
  </div>
  </div>
@@ -19088,7 +19251,7 @@ async function computePayroll() {
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:0 }}>{dtrStats.emp.full_name}</p>
  <p style={cps}>{dtrStats.emp.employee_code} | {dtrStats.emp.position}</p>
- <p style={cps}>{dtrStats.emp.department||' '} | {new Date(dtrMonth+'-01').toLocaleString('default',{month:'long',year:'numeric'})}</p>
+ <p style={cps}>{dtrStats.emp.department||' '} | {dtrStats.period?.label || `${formatDateForDisplay(dtrStats.period?.start)} – ${formatDateForDisplay(dtrStats.period?.end)}`}</p>
  </div>
  </div>
  {/* Monthly Summary */}
@@ -19099,6 +19262,7 @@ async function computePayroll() {
  ['Late (min)', dtrStats.totalLate, '#f5a623'],
  ['OT (min)', dtrStats.totalOT, '#4a90d9'],
  ['Break (min)', dtrStats.totalBreak, '#888'],
+ ['Duplicate Days', dtrStats.duplicateDays || 0, '#f5a623'],
  ].map(([label, value, color])=>(
  <div key={label} style={{ background:'white', borderRadius:'8px', padding:'8px', textAlign:'center', minWidth:'80px' }}>
  <p style={{ fontSize:'10px', color:'#888', margin:'0 0 2px' }}>{label}</p>
@@ -19131,7 +19295,7 @@ async function computePayroll() {
  return (
  <tr key={dateStr} style={{ background:rowBg, borderBottom:'1px solid #eee' }}>
  <td style={{ padding:'7px 10px', fontWeight:'bold', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{dayName}</td>
- <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{day}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{formatDateForDisplay(dateStr)}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_in?'#2d8a4e':'#ccc', fontSize:'12px', fontWeight:log?.time_in?'bold':'normal' }}>{log?.time_in||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_out?'#333':'#ccc', fontSize:'12px' }}>{log?.time_out||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:'#888' }}>{log?.total_break_minutes||0}</td>
@@ -19140,9 +19304,10 @@ async function computePayroll() {
  <td style={{ padding:'7px 10px', textAlign:'center' }}>
  {!log && isWeekend? <span style={{ fontSize:'11px', color:'#aaa' }}>REST</span>:
 !log? <span style={{ fontSize:'11px', color:'#ccc' }}> </span>:
+ log.duplicateCount>1? <Badge label="DUP" color="orange" />:
  log.status==='Absent'? <Badge label="ABS" color="red" />:
  log.status==='Late'? <Badge label="LATE" color="orange" />:
- log.time_in? <Badge label=" " color="green" />: <span style={{ color:'#ccc' }}> </span>}
+ log.time_in? <Badge label="PRESENT" color="green" />: <span style={{ color:'#ccc' }}> </span>}
  </td>
  </tr>
  )
