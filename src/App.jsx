@@ -919,11 +919,13 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  ${pay.undertimeDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime (${pay.undertimeMinutes} min)</td><td style="padding:3px 8px;text-align:right;">${php(pay.undertimeDeduction)}</td></tr>`:''}
  ${(pay.excessBreakDeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Excess Break</td><td style="padding:3px 8px;text-align:right;">${php(pay.excessBreakDeduction)}</td></tr>`:''}
  ${pay.cashAdvanceDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;">${php(pay.cashAdvanceDeduction)}</td></tr>`:''}
+ ${(pay.deferredCADeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;color:#f5a623;">CA not deducted this cutoff; remains in CA balance</td><td style="padding:3px 8px;text-align:right;color:#f5a623;">${php(pay.deferredCADeduction)}</td></tr>`:''}
  ${pay.sssDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS</td><td style="padding:3px 8px;text-align:right;">${php(pay.sssDeduction)}</td></tr>`:''}
  ${pay.pagibigDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG</td><td style="padding:3px 8px;text-align:right;">${php(pay.pagibigDeduction)}</td></tr>`:''}
  ${pay.philhealthDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth</td><td style="padding:3px 8px;text-align:right;">${php(pay.philhealthDeduction)}</td></tr>`:''}
  ${pay.adjustmentDeductions>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Deductions</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentDeductions)}</td></tr>`:''}
  <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Deductions</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalDeductions)}</td></tr>
+ ${(pay.nonCADeductionOverflow||0)>0?`<tr><td colspan="2" style="padding:5px 8px;background:#fff5f5;color:#ca1b1b;font-weight:bold;font-size:10px;">WARNING: Deductions exceed earnings by ${php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until corrected.</td></tr>`:''}
  </table>
  <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
  <span style="font-weight:bold;font-size:13px;">NET PAY</span>
@@ -11386,7 +11388,7 @@ function buildDeliveryInvoicePrintCSS() {
 
  const { data: records, error:recordsError } = await supabase
  .from('payroll_records')
- .select('id,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction')
+ .select('id,employee_name,employee_code,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction,total_earnings,total_deductions,non_ca_deduction_overflow')
  .eq('payroll_start', start)
  .eq('payroll_end', end)
  .limit(1000)
@@ -11409,6 +11411,14 @@ function buildDeliveryInvoicePrintCSS() {
  if (disputedCount > 0) {
   showToast(`Release blocked: ${disputedCount} payslip dispute(s) must be resolved before final payroll release.`, 'red')
   await logAudit('PAYROLL RELEASE BLOCKED - DISPUTES', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Disputed rows: ${disputedCount}`)
+  return
+ }
+
+ const overDeductedRows = records.filter(r => safeNum(r.non_ca_deduction_overflow, 0) > 0.009 || safeNum(r.total_deductions,0) - safeNum(r.total_earnings,0) > 0.009)
+ if (overDeductedRows.length > 0) {
+  const names = overDeductedRows.slice(0, 5).map(r => r.employee_name || r.employee_code || 'Employee').join(', ')
+  showToast(`Release blocked: ${overDeductedRows.length} payslip(s) have deductions higher than earnings. Review/correct first: ${names}${overDeductedRows.length>5?'...':''}`, 'red')
+  await logAudit('PAYROLL RELEASE BLOCKED - OVER DEDUCTION', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Rows: ${overDeductedRows.length} | ${names}`)
   return
  }
 
@@ -15513,6 +15523,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
   adjustmentEarnings: safeNum(record.other_earnings, 0),
   totalEarnings: safeNum(record.total_earnings, 0),
   cashAdvanceDeduction: safeNum(record.cash_advance_deduction, 0),
+  requestedCashAdvanceDeduction: safeNum(record.requested_cash_advance_deduction, safeNum(record.cash_advance_deduction, 0)),
+  deferredCADeduction: safeNum(record.deferred_cash_advance_deduction, 0),
+  nonCADeductionOverflow: safeNum(record.non_ca_deduction_overflow, Math.max(0, safeNum(record.total_deductions,0)-safeNum(record.total_earnings,0))),
   sssDeduction: safeNum(record.sss_deduction, 0),
   pagibigDeduction: safeNum(record.pagibig_deduction, 0),
   philhealthDeduction: safeNum(record.philhealth_deduction, 0),
@@ -16098,17 +16111,29 @@ async function computePayroll() {
   const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
   const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
   const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
-  const totalEarnings=basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings
-  const nonCADeductions=undertimeDeduction+sssDeduction+pagibigDeduction+philhealthDeduction+adjDeductions
-  const availableForCA=Math.max(0, moneyRound(totalEarnings-nonCADeductions))
-  const rawCADeduction=(cas||[]).filter(isOutstandingCashAdvance).reduce((s,ca)=>s+getCashAdvancePayrollDeduction(ca),0)
-  const caDeduction=Math.min(moneyRound(rawCADeduction), availableForCA)
-  const totalDeductions=caDeduction+nonCADeductions
+  const totalEarnings=moneyRound(basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings)
+  const undertimeDeductionRounded=moneyRound(undertimeDeduction)
+  const sssDeductionRounded=moneyRound(sssDeduction)
+  const pagibigDeductionRounded=moneyRound(pagibigDeduction)
+  const philhealthDeductionRounded=moneyRound(philhealthDeduction)
+  const adjDeductionsRounded=moneyRound(adjDeductions)
+  const nonCADeductions=moneyRound(undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
+
+  // Payroll safety rule: deductions must never create negative net pay.
+  // Cash advance is flexible and is always applied last. Any unpaid CA stays in the CA balance.
+  // If non-CA deductions alone exceed earnings, release is blocked until admin reviews/corrects it.
+  const nonCADeductionOverflow=moneyRound(Math.max(0, nonCADeductions-totalEarnings))
+  const availableForCA=moneyRound(Math.max(0, totalEarnings-nonCADeductions))
+  const rawCADeduction=moneyRound((cas||[]).filter(isOutstandingCashAdvance).reduce((s,ca)=>s+getCashAdvancePayrollDeduction(ca),0))
+  const caDeduction=moneyRound(Math.min(rawCADeduction, availableForCA))
+  const deferredCADeduction=moneyRound(Math.max(0, rawCADeduction-caDeduction))
+  const totalDeductions=moneyRound(nonCADeductionOverflow>0?nonCADeductions:nonCADeductions+caDeduction)
+  const netPay=moneyRound(Math.max(0,totalEarnings-totalDeductions))
   const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
   const undertimeMinutesInfo=undertimeMinutesApproved
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, lateDeduction:0, undertimeDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -16139,6 +16164,9 @@ async function computePayroll() {
   late_deduction:0,
   undertime_deduction:moneyRound(pay.undertimeDeduction||0),
   cash_advance_deduction:moneyRound(pay.cashAdvanceDeduction),
+  requested_cash_advance_deduction:moneyRound(pay.requestedCashAdvanceDeduction||0),
+  deferred_cash_advance_deduction:moneyRound(pay.deferredCADeduction||0),
+  non_ca_deduction_overflow:moneyRound(pay.nonCADeductionOverflow||0),
   sss_deduction:moneyRound(pay.sssDeduction),
   pagibig_deduction:moneyRound(pay.pagibigDeduction),
   philhealth_deduction:moneyRound(pay.philhealthDeduction),
@@ -16166,6 +16194,7 @@ async function computePayroll() {
      absent_days, paid_leave_days, unpaid_leave_days, paid_leave_pay, worked_basic_pay,
      total_worked_minutes, regular_paid_minutes, overtime_minutes, night_diff_minutes,
      late_deduction, undertime_deduction,
+     requested_cash_advance_deduction, deferred_cash_advance_deduction, non_ca_deduction_overflow,
      ...safeRow
     } = row
     return safeRow
@@ -16416,6 +16445,100 @@ async function computePayroll() {
  releasedAt: null,
  releasedBy: ''
  })
+ }
+
+
+ const otUtAnalytics = (() => {
+ const employeeLookup = {}
+ ;(employees || []).forEach(emp => {
+  if (!emp) return
+  if (emp.id) employeeLookup[`id:${emp.id}`] = emp
+  if (emp.employee_code) employeeLookup[`code:${String(emp.employee_code).toLowerCase()}`] = emp
+  if (emp.full_name) employeeLookup[`name:${String(emp.full_name).toLowerCase()}`] = emp
+ })
+
+ const rows = Array.isArray(timeAdjRequests)? timeAdjRequests: []
+ const summary = {
+  totalRows:rows.length,
+  pendingOTCount:0,
+  pendingUTCount:0,
+  approvedOTCount:0,
+  approvedUTCount:0,
+  rejectedCount:0,
+  voidedCount:0,
+  totalApprovedOTMinutes:0,
+  totalApprovedUTMinutes:0,
+  employeeMap:{},
+  totalRegularBasisMinutes:0,
+  topOT:[],
+  topUT:[],
+  perEmployeeRows:[],
+  highOTRows:[]
+ }
+
+ rows.forEach(req => {
+  const status = String(req?.status || 'pending').toLowerCase()
+  const type = String(req?.request_type || '').toLowerCase()
+  const minutes = Math.max(0, safeNum(req?.minutes, 0))
+  const emp = employeeLookup[`id:${req?.employee_id}`] || employeeLookup[`name:${String(req?.employee_name || '').toLowerCase()}`] || {}
+  const employeeId = String(req?.employee_id || emp.id || req?.employee_name || 'unknown')
+  const employeeName = req?.employee_name || emp.full_name || 'Unknown Employee'
+  const employeeCode = req?.employee_code || emp.employee_code || ''
+  const attendanceDate = String(req?.attendance_date || '').slice(0, 10)
+
+  if (status === 'pending') {
+   if (type === 'overtime') summary.pendingOTCount += 1
+   if (type === 'undertime') summary.pendingUTCount += 1
+  } else if (status === 'approved') {
+   if (!summary.employeeMap[employeeId]) {
+    summary.employeeMap[employeeId] = { employeeId, employeeName, employeeCode, otMinutes:0, utMinutes:0, otCount:0, utCount:0, approvedDates:new Set(), regularBasisMinutes:0, otPct:0, utPct:0 }
+   }
+   const row = summary.employeeMap[employeeId]
+   if (attendanceDate) row.approvedDates.add(attendanceDate)
+   if (type === 'overtime') {
+    summary.approvedOTCount += 1
+    summary.totalApprovedOTMinutes += minutes
+    row.otMinutes += minutes
+    row.otCount += 1
+   }
+   if (type === 'undertime') {
+    summary.approvedUTCount += 1
+    summary.totalApprovedUTMinutes += minutes
+    row.utMinutes += minutes
+    row.utCount += 1
+   }
+  } else if (status === 'rejected') summary.rejectedCount += 1
+  else if (status === 'voided') summary.voidedCount += 1
+ })
+
+ const perEmployeeRows = Object.values(summary.employeeMap).map(row => {
+  const dateCount = row.approvedDates?.size || Math.max(1, row.otCount + row.utCount)
+  const regularBasisMinutes = Math.max(480, dateCount * 480)
+  const otPct = regularBasisMinutes > 0? moneyRound((row.otMinutes / regularBasisMinutes) * 100):0
+  const utPct = regularBasisMinutes > 0? moneyRound((row.utMinutes / regularBasisMinutes) * 100):0
+  return { ...row, dateCount, regularBasisMinutes, otPct, utPct }
+ })
+ .sort((a,b)=>(b.otMinutes + b.utMinutes) - (a.otMinutes + a.utMinutes) || String(a.employeeName).localeCompare(String(b.employeeName)))
+
+ summary.perEmployeeRows = perEmployeeRows
+ summary.topOT = [...perEmployeeRows].filter(r=>r.otMinutes>0).sort((a,b)=>b.otMinutes-a.otMinutes).slice(0,5)
+ summary.topUT = [...perEmployeeRows].filter(r=>r.utMinutes>0).sort((a,b)=>b.utMinutes-a.utMinutes).slice(0,5)
+ summary.highOTRows = perEmployeeRows.filter(r=>r.otPct > 10)
+ summary.totalRegularBasisMinutes = perEmployeeRows.reduce((sum,row)=>sum+safeNum(row.regularBasisMinutes,0),0)
+ summary.totalOTPct = summary.totalRegularBasisMinutes > 0? moneyRound((summary.totalApprovedOTMinutes / summary.totalRegularBasisMinutes) * 100):0
+ summary.totalUTPct = summary.totalRegularBasisMinutes > 0? moneyRound((summary.totalApprovedUTMinutes / summary.totalRegularBasisMinutes) * 100):0
+ summary.highestOTEmployee = summary.topOT[0] || null
+ summary.highestUTEmployee = summary.topUT[0] || null
+ summary.pendingTotal = summary.pendingOTCount + summary.pendingUTCount
+ summary.approvedTotal = summary.approvedOTCount + summary.approvedUTCount
+ return summary
+ })()
+
+ function getOtUtWarningInfo(otPct) {
+  const pct = safeNum(otPct, 0)
+  if (pct > 10) return { label:'HIGH OT', color:'red', message:'High overtime. Review manpower, schedule, or branch workload.' }
+  if (pct > 5) return { label:'WATCH', color:'orange', message:'Overtime is noticeable. Monitor before it becomes expensive.' }
+  return { label:'NORMAL', color:'green', message:'Overtime level is within normal range.' }
  }
 
 
@@ -17818,6 +17941,91 @@ async function computePayroll() {
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>OT/UT Control Center</strong>
  <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>Use <strong>Void / Undo</strong> for wrong OT/UT before payroll release. If payroll was already released, the system blocks the undo and you should use Payroll Adjustment for the next payroll correction.</p>
  </div>
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.04)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>OT / UT Analytics</h3>
+ <p style={{ margin:0, color:'#666', fontSize:'12px', lineHeight:1.5 }}>Based on the currently loaded OT/UT view. Official payroll totals count approved OT/UT only. Percent basis = approved minutes ÷ affected approved attendance days × 480 minutes.</p>
+ </div>
+ <Badge label={getOtUtWarningInfo(otUtAnalytics.totalOTPct).label} color={getOtUtWarningInfo(otUtAnalytics.totalOTPct).color} />
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(6, 1fr)', gap:'10px', marginBottom:'14px' }}>
+ {[
+  {label:'Approved OT', value:`${Math.round((otUtAnalytics.totalApprovedOTMinutes/60)*10)/10}h`, note:`${otUtAnalytics.approvedOTCount} approved request(s)`, color:'#2d8a4e'},
+  {label:'Approved UT', value:`${Math.round((otUtAnalytics.totalApprovedUTMinutes/60)*10)/10}h`, note:`${otUtAnalytics.approvedUTCount} approved request(s)`, color:'#f5a623'},
+  {label:'OT %', value:`${otUtAnalytics.totalOTPct}%`, note:getOtUtWarningInfo(otUtAnalytics.totalOTPct).message, color:otUtAnalytics.totalOTPct>10?'#ca1b1b':otUtAnalytics.totalOTPct>5?'#f5a623':'#2d8a4e'},
+  {label:'UT %', value:`${otUtAnalytics.totalUTPct}%`, note:'Approved undertime ratio', color:'#f5a623'},
+  {label:'Pending OT/UT', value:String(otUtAnalytics.pendingTotal), note:`OT ${otUtAnalytics.pendingOTCount} / UT ${otUtAnalytics.pendingUTCount}`, color:otUtAnalytics.pendingTotal>0?'#f5a623':'#2d8a4e'},
+  {label:'High OT Warning', value:String(otUtAnalytics.highOTRows.length), note:'Employees above 10% OT', color:otUtAnalytics.highOTRows.length>0?'#ca1b1b':'#2d8a4e'}
+ ].map(card=>(
+  <div key={card.label} style={{ border:`2px solid ${card.color}`, borderRadius:'12px', padding:'12px', background:'#fff', minHeight:'88px' }}>
+  <p style={{ margin:'0 0 5px', color:'#666', fontSize:'11px', fontWeight:'800', textTransform:'uppercase', letterSpacing:'.4px' }}>{card.label}</p>
+  <div style={{ color:card.color, fontSize:'21px', fontWeight:'900', lineHeight:1.1 }}>{card.value}</div>
+  <p style={{ margin:'6px 0 0', color:'#777', fontSize:'11px', lineHeight:1.35 }}>{card.note}</p>
+  </div>
+ ))}
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+ <div style={{ border:'1px solid #e5f3e9', borderRadius:'12px', overflow:'hidden' }}>
+ <div style={{ background:'#e8f5e9', color:'#2d8a4e', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Top 5 Employees With Most OT</div>
+ {otUtAnalytics.topOT.length===0? <p style={{ margin:'12px', color:'#888', fontSize:'12px' }}>No approved overtime in this view.</p>:
+  otUtAnalytics.topOT.map((row,idx)=>(
+   <div key={`topot-${row.employeeId}`} style={{ display:'grid', gridTemplateColumns:'32px 1fr auto', gap:'8px', alignItems:'center', padding:'9px 12px', borderTop:idx?'1px solid #eee':'none' }}>
+   <strong style={{ color:'#2d8a4e' }}>#{idx+1}</strong>
+   <div><strong style={{ color:'#333', fontSize:'12px' }}>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · {row.otCount} approved OT request(s)</p></div>
+   <div style={{ textAlign:'right' }}><strong style={{ color:'#2d8a4e' }}>{Math.round((row.otMinutes/60)*10)/10}h</strong><p style={{ margin:'2px 0 0', color:row.otPct>10?'#ca1b1b':'#777', fontSize:'11px' }}>{row.otPct}%</p></div>
+   </div>
+  ))}
+ </div>
+
+ <div style={{ border:'1px solid #fff0cf', borderRadius:'12px', overflow:'hidden' }}>
+ <div style={{ background:'#fff8dc', color:'#b36b00', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Top 5 Employees With Most UT</div>
+ {otUtAnalytics.topUT.length===0? <p style={{ margin:'12px', color:'#888', fontSize:'12px' }}>No approved undertime in this view.</p>:
+  otUtAnalytics.topUT.map((row,idx)=>(
+   <div key={`toput-${row.employeeId}`} style={{ display:'grid', gridTemplateColumns:'32px 1fr auto', gap:'8px', alignItems:'center', padding:'9px 12px', borderTop:idx?'1px solid #eee':'none' }}>
+   <strong style={{ color:'#f5a623' }}>#{idx+1}</strong>
+   <div><strong style={{ color:'#333', fontSize:'12px' }}>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · {row.utCount} approved UT request(s)</p></div>
+   <div style={{ textAlign:'right' }}><strong style={{ color:'#f5a623' }}>{Math.round((row.utMinutes/60)*10)/10}h</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.utPct}%</p></div>
+   </div>
+  ))}
+ </div>
+ </div>
+
+ <div style={{ border:'1px solid #eee', borderRadius:'12px', overflowX:'auto' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+ <thead>
+ <tr style={{ background:'#fafafa', color:'#555' }}>
+ <th style={{ padding:'9px', textAlign:'left', borderBottom:'1px solid #eee' }}>Employee</th>
+ <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>OT</th>
+ <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>OT %</th>
+ <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>UT</th>
+ <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>UT %</th>
+ <th style={{ padding:'9px', textAlign:'center', borderBottom:'1px solid #eee' }}>Warning</th>
+ </tr>
+ </thead>
+ <tbody>
+ {otUtAnalytics.perEmployeeRows.length===0? (
+  <tr><td colSpan="6" style={{ padding:'12px', color:'#888', textAlign:'center' }}>No approved OT/UT records to calculate employee percentages.</td></tr>
+ ) : otUtAnalytics.perEmployeeRows.slice(0, 20).map(row=>{
+  const warn = getOtUtWarningInfo(row.otPct)
+  return (
+   <tr key={`otutrow-${row.employeeId}`}>
+   <td style={{ padding:'9px', borderBottom:'1px solid #f1f1f1' }}><strong>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · basis {Math.round(row.regularBasisMinutes/60)}h</p></td>
+   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1' }}>{row.otMinutes} min</td>
+   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1', color:row.otPct>10?'#ca1b1b':row.otPct>5?'#f5a623':'#2d8a4e', fontWeight:'800' }}>{row.otPct}%</td>
+   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1' }}>{row.utMinutes} min</td>
+   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1', color:'#f5a623', fontWeight:'800' }}>{row.utPct}%</td>
+   <td style={{ padding:'9px', textAlign:'center', borderBottom:'1px solid #f1f1f1' }}><Badge label={warn.label} color={warn.color} /></td>
+   </tr>
+  )
+ })}
+ </tbody>
+ </table>
+ </div>
+ </div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'15px' }}>
  {[{key:'active',label:'Pending + Approved'},{key:'pending',label:'Pending Only'},{key:'approved',label:'Approved / Can Undo'},{key:'history',label:'History'}].map(v=>(
  <button key={v.key} style={{...(timeAdjView===v.key?btnRed:btnGray), width:'auto', padding:'9px 13px', marginTop:0, fontSize:'12px' }} onClick={async()=>{ setTimeAdjView(v.key); await loadTimeAdjRequests(v.key) }}>{v.label}</button>
@@ -18019,12 +18227,14 @@ async function computePayroll() {
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Earnings</span><span style={{ color:'#2d8a4e' }}>{php(pay.totalEarnings)}</span></div>
  <div style={{ color:'#ca1b1b', fontWeight:'bold', margin:'8px 0 4px' }}>DEDUCTIONS</div>
  {pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
+ {(pay.deferredCADeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>CA not deducted this cutoff; remains in CA balance</span><span>{php(pay.deferredCADeduction)}</span></div>}
  {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Approved Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
  {pay.sssDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>SSS</span><span>{php(pay.sssDeduction)}</span></div>}
  {pay.pagibigDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Pag-IBIG</span><span>{php(pay.pagibigDeduction)}</span></div>}
  {pay.philhealthDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>PhilHealth</span><span>{php(pay.philhealthDeduction)}</span></div>}
  {pay.adjustmentDeductions>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Other Deductions</span><span>{php(pay.adjustmentDeductions)}</span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Deductions</span><span style={{ color:'#ca1b1b' }}>{php(pay.totalDeductions)}</span></div>
+ {(pay.nonCADeductionOverflow||0)>0&&<div style={{ marginTop:'6px', padding:'8px', border:'1px solid #ca1b1b', borderRadius:'8px', background:'#fff5f5', color:'#ca1b1b', fontWeight:'bold', fontSize:'12px' }}>⚠ Deductions exceed earnings by {php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until this is corrected.</div>}
  <div style={{ background:'#ca1b1b', color:'white', padding:'10px 14px', borderRadius:'8px', marginTop:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
  <span style={{ fontWeight:'bold', fontSize:'14px' }}>NET PAY</span>
  <span style={{ fontWeight:'bold', fontSize:'18px' }}>{php(pay.netPay)}</span>
