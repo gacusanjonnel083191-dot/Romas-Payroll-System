@@ -515,6 +515,48 @@ function isMissingPayrollWorkflowColumnError(error) {
  return msg.includes('payroll_status') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes')
 }
 
+function isMissingCashAdvanceDetailColumnError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('approved_at') || msg.includes('approved_by') || msg.includes('disapproved_at') || msg.includes('processed_at') || msg.includes('processed_by') || msg.includes('ca_ledger_id') || msg.includes('source_request_id') || msg.includes('cash_advance_request_id') || msg.includes('request_installments_total') || msg.includes('request_per_payroll_deduction') || msg.includes('column') || msg.includes('schema cache') || msg.includes('could not find')
+}
+
+function formatDateTimeForAdmin(value) {
+ if (!value) return 'Not recorded'
+ try {
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return String(value)
+  return d.toLocaleString('en-PH', { year:'numeric', month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+ } catch(e) { return String(value) }
+}
+
+function getCAFiledDate(req = {}) {
+ return req.created_at || req.filed_at || req.request_date || req.advance_date || ''
+}
+
+function getCAApprovedDate(req = {}, ledger = null) {
+ return req.approved_at || req.processed_at || ledger?.approved_at || ledger?.created_at || ledger?.advance_date || ''
+}
+
+function getCAProcessedBy(req = {}, ledger = null) {
+ return req.approved_by || req.processed_by || ledger?.approved_by || ledger?.created_by || ledger?.recorded_by || 'Admin'
+}
+
+function getCAInstallmentInfo(ca = {}, req = {}) {
+ const total = Math.max(0, safeNum(ca.installments_total ?? req.request_installments_total ?? req.installments_total, 0))
+ const remaining = Math.max(0, safeNum(ca.installments_remaining ?? req.installments_remaining, 0))
+ const completed = total > 0 ? Math.max(0, total - remaining) : 0
+ const perPayroll = safeNum(ca.per_payroll_deduction ?? req.request_per_payroll_deduction ?? req.per_payroll_deduction, 0)
+ return { total, remaining, completed, perPayroll }
+}
+
+function getCashAdvanceStatusColor(status) {
+ const s = String(status || '').toLowerCase()
+ if (s.includes('paid') || s === 'approved') return 'green'
+ if (s.includes('disapproved') || s.includes('rejected')) return 'red'
+ if (s.includes('pending')) return 'orange'
+ return 'gray'
+}
+
 
 
 function getEmployeeLookupForPayroll(employeeRows = []) {
@@ -14717,8 +14759,50 @@ This recovery button creates one approved expense record using GROSS payroll ear
  setCashAdvanceRequests(data || [])
  }
  async function loadResolvedCARequests() {
- const { data } = await supabase.from('cash_advance_requests').select('*').in('status', ['approved','disapproved']).order('created_at', { ascending:false })
- setResolvedCARequests(data || [])
+ const { data, error } = await supabase.from('cash_advance_requests').select('*').in('status', ['approved','disapproved']).order('created_at', { ascending:false })
+ if (error) { showToast('Failed to load resolved CA requests: ' + error.message, 'red'); return }
+ const requests = data || []
+
+ let caRows = []
+ try {
+  const caRes = await supabase.from('cash_advances').select('*').order('created_at', { ascending:false })
+  if (!caRes.error) caRows = caRes.data || []
+ } catch(e) { console.warn('Resolved CA ledger lookup skipped:', e) }
+
+ const usedLedgerIds = new Set()
+ const findLedgerForRequest = (req) => {
+  if (!req) return null
+  const reqId = String(req.id || '')
+  const direct = caRows.find(ca => {
+   if (usedLedgerIds.has(String(ca.id))) return false
+   return String(ca.id || '') === String(req.ca_ledger_id || '')
+    || String(ca.source_request_id || '') === reqId
+    || String(ca.cash_advance_request_id || '') === reqId
+    || String(ca.approved_request_id || '') === reqId
+  })
+  if (direct) { usedLedgerIds.add(String(direct.id)); return direct }
+
+  const byNotes = caRows.find(ca => {
+   if (usedLedgerIds.has(String(ca.id))) return false
+   const notes = String(ca.notes || '').toLowerCase()
+   return reqId && notes.includes(`ca request ${reqId.toLowerCase()}`)
+  })
+  if (byNotes) { usedLedgerIds.add(String(byNotes.id)); return byNotes }
+
+  const requestedAmount = moneyRound(req.amount)
+  const requestedAt = String(getCAFiledDate(req) || '').slice(0,10)
+  const fuzzy = caRows.find(ca => {
+   if (usedLedgerIds.has(String(ca.id))) return false
+   if (String(ca.employee_id || '') !== String(req.employee_id || '')) return false
+   if (moneyRound(ca.amount) !== requestedAmount) return false
+   const caDate = String(ca.created_at || ca.advance_date || '').slice(0,10)
+   return !requestedAt || !caDate || caDate >= requestedAt
+  })
+  if (fuzzy) { usedLedgerIds.add(String(fuzzy.id)); return fuzzy }
+  return null
+ }
+
+ setResolvedCARequests(requests.map(req => ({ ...req, cashAdvanceLedger: findLedgerForRequest(req) })))
  }
  async function updateCashAdvanceStatus(id, newStatus) {
  const req = cashAdvanceRequests.find(r=>r.id===id); if (!req) return
@@ -14730,9 +14814,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (newStatus==='disapproved') {
  const reason = caDisapproveReason[id]
  if (!reason?.trim()) { showToast('Please enter a reason for disapproval.','red'); return }
- const { error } = await supabase.from('cash_advance_requests').update({ status:'disapproved', admin_reason:reason }).eq('id', id)
+ const disapprovePayload = { status:'disapproved', admin_reason:reason, disapproved_at:new Date().toISOString(), processed_at:new Date().toISOString(), processed_by:currentAdminLabel }
+ let { error } = await supabase.from('cash_advance_requests').update(disapprovePayload).eq('id', id)
+ if (error && isMissingCashAdvanceDetailColumnError(error)) {
+  ;({ error } = await supabase.from('cash_advance_requests').update({ status:'disapproved', admin_reason:reason }).eq('id', id))
+ }
  if (error) { showToast('Failed: '+error.message,'red'); return }
- await logAudit('CA DISAPPROVED','Admin',req.employee_name,`Reason: ${reason}`)
+ await logAudit('CA DISAPPROVED',currentAdminLabel,req.employee_name,`Reason: ${reason}`)
  await createNotification(req.employee_id, req.employee_name, 'cash_advance', ' Cash Advance Disapproved', `Your cash advance request of ${php(req.amount)} was disapproved. Reason: ${reason}`)
  setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
  showToast(' Cash advance disapproved.','red'); return
@@ -14754,13 +14842,23 @@ This recovery button creates one approved expense record using GROSS payroll ear
  per_payroll_deduction:perPayroll,
  installments_total:installments,
  installments_remaining:installments,
- notes:`AUTO-RECORDED FROM CA REQUEST ${id} | ${req.reason || ''}`,
+ source_request_id:id,
+ approved_by:currentAdminLabel,
+ approved_at:new Date().toISOString(),
+ notes:`AUTO-RECORDED FROM CA REQUEST ${id} | FILED ${formatDateTimeForAdmin(getCAFiledDate(req))} | APPROVED BY ${currentAdminLabel} | ${req.reason || ''}`,
  status:'Unpaid'
  }
 
  // Important: create the actual cash advance record first.
  // This prevents a request from becoming approved without a collectible CA ledger record.
- const { data:createdCA, error:insertError } = await supabase.from('cash_advances').insert(caPayload).select().single()
+ let { data:createdCA, error:insertError } = await supabase.from('cash_advances').insert(caPayload).select().single()
+ if (insertError && isMissingCashAdvanceDetailColumnError(insertError)) {
+  const fallbackPayload = {...caPayload}
+  delete fallbackPayload.source_request_id
+  delete fallbackPayload.approved_by
+  delete fallbackPayload.approved_at
+  ;({ data:createdCA, error:insertError } = await supabase.from('cash_advances').insert(fallbackPayload).select().single())
+ }
  if (insertError) { showToast('Failed to record cash advance: '+insertError.message,'red'); return }
 
  // Hard safety: a newly approved cash advance must start ACTIVE/UNPAID.
@@ -14779,7 +14877,20 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return
  }
 
- const { error:updateError } = await supabase.from('cash_advance_requests').update({ status:'approved' }).eq('id', id)
+ const requestApprovePayload = {
+  status:'approved',
+  approved_at:new Date().toISOString(),
+  approved_by:currentAdminLabel,
+  processed_at:new Date().toISOString(),
+  processed_by:currentAdminLabel,
+  ca_ledger_id:createdCA?.id || null,
+  request_installments_total:installments,
+  request_per_payroll_deduction:perPayroll
+ }
+ let { error:updateError } = await supabase.from('cash_advance_requests').update(requestApprovePayload).eq('id', id)
+ if (updateError && isMissingCashAdvanceDetailColumnError(updateError)) {
+  ;({ error:updateError } = await supabase.from('cash_advance_requests').update({ status:'approved' }).eq('id', id))
+ }
  if (updateError) {
  // Roll back the ledger record where possible so request and CA ledger do not mismatch.
  if (createdCA?.id) await supabase.from('cash_advances').delete().eq('id', createdCA.id)
@@ -14787,7 +14898,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return
  }
 
- await logAudit('CA APPROVED AND AUTO-RECORDED','Admin',req.employee_name,`${php(totalAmount)} in ${installments} installment(s) | ${php(perPayroll)} per payroll | CA ID: ${createdCA?.id || ''}`)
+ await logAudit('CA APPROVED AND AUTO-RECORDED',currentAdminLabel,req.employee_name,`${php(totalAmount)} in ${installments} installment(s) | ${php(perPayroll)} per payroll | CA ID: ${createdCA?.id || ''}`)
  await createNotification(req.employee_id, req.employee_name, 'cash_advance', ' Cash Advance Approved', `Your cash advance of ${php(totalAmount)} has been approved and recorded. ${php(perPayroll)} will be automatically deducted per payroll for ${installments} payroll(s).`)
  setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
  loadResolvedCARequests()
@@ -18015,24 +18126,36 @@ async function computePayroll() {
  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
  <thead>
  <tr style={{ background:'#f8f8f8', color:'#555' }}>
- <th style={{ padding:'7px', textAlign:'left', borderBottom:'1px solid #eee' }}>Advance Date</th>
+ <th style={{ padding:'7px', textAlign:'left', borderBottom:'1px solid #eee', minWidth:'190px' }}>CA Details</th>
+ <th style={{ padding:'7px', textAlign:'left', borderBottom:'1px solid #eee', minWidth:'170px' }}>Approval / Source</th>
  <th style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #eee' }}>Amount</th>
  <th style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #eee' }}>Per Payroll</th>
+ <th style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #eee' }}>Payroll Deductions</th>
  <th style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #eee' }}>Paid/Deducted</th>
  <th style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #eee' }}>Balance</th>
- <th style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #eee' }}>Installments Left</th>
  <th style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #eee' }}>Status</th>
  </tr>
  </thead>
  <tbody>
- {row.caItems.map(ca => (
+ {row.caItems.map(ca => {
+ const inst = getCAInstallmentInfo(ca, {})
+ const sourceReq = ca.source_request_id || ca.cash_advance_request_id || ca.approved_request_id || ''
+ return (
  <tr key={ca.id}>
- <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0' }}>{ca.advance_date || String(ca.created_at||'').slice(0,10) || ' '}<br/><span style={{ color:'#888', fontSize:'11px' }}>{ca.notes || ' '}</span></td>
+ <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0' }}>
+  <strong>{ca.advance_date || String(ca.created_at||'').slice(0,10) || 'No date'}</strong><br/>
+  <span style={{ color:'#888', fontSize:'11px' }}>CA ID: {String(ca.id || '').slice(0,8)} {sourceReq ? `| Request: ${String(sourceReq).slice(0,8)}` : ''}</span><br/>
+  <span style={{ color:'#777', fontSize:'11px' }}>{ca.notes || 'No notes'}</span>
+ </td>
+ <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', fontSize:'11px', color:'#555' }}>
+  Approved/Recorded: <strong>{formatDateTimeForAdmin(ca.approved_at || ca.created_at || ca.advance_date)}</strong><br/>
+  By: <strong>{ca.approved_by || ca.created_by || ca.recorded_by || 'Admin / old record'}</strong>
+ </td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount)}</td>
- <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.per_payroll_deduction)}</td>
+ <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(inst.perPayroll)}</td>
+ <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>{inst.total? `${inst.completed}/${inst.total} done · ${inst.remaining} left` : `${ca.installments_remaining?? 'Not recorded'} left`}</td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount_paid)}</td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:safeNum(ca.balance,0)>0?'#ca1b1b':'#2d8a4e' }}>{php(ca.balance)}</td>
- <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>{ca.installments_remaining?? ' '}</td>
  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>
  <Badge label={String(ca.status||'Unknown')} color={String(ca.status||'').toLowerCase()==='paid'?'green':'orange'} />
  {adminRole==='owner' && String(ca.status||'').toLowerCase()==='paid' && safeNum(ca.balance,0)<=0 && safeNum(ca.amount,0)>0 && safeNum(ca.amount_paid,0)>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
@@ -18044,7 +18167,8 @@ async function computePayroll() {
  )}
  </td>
  </tr>
- ))}
+ )
+ })}
  </tbody>
  </table>
  </div>
@@ -18724,16 +18848,38 @@ async function computePayroll() {
  <h2 style={h2s}>Cash Advance Requests</h2>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadCashAdvanceRequests(); showToast(' Cash advance requests refreshed!') }}>REFRESH</button>
  {cashAdvanceRequests.length===0 && <p style={{ color:'#888' }}>No pending requests.</p>}
- {cashAdvanceRequests.map(req=>(
+ {cashAdvanceRequests.map(req=>{
+ const deductionCount = Math.max(1, installmentCounts[req.id] || 1)
+ const perPayroll = Math.ceil((safeNum(req.amount,0) / deductionCount) * 100) / 100
+ return (
  <div key={req.id} style={{...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
+ <div>
  <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
- <p style={cps}>Code: {req.employee_code} | Reason: <em>"{req.reason}"</em></p>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'17px', margin:'6px 0' }}>Amount: {php(req.amount)}</p>
+ <p style={cps}>Code: {req.employee_code || 'No code'}</p>
+ <p style={cps}>Filed: <strong>{formatDateTimeForAdmin(getCAFiledDate(req))}</strong></p>
+ <p style={cps}>Reason: <em>"{req.reason}"</em></p>
+ </div>
+ <Badge label="PENDING REVIEW" color="orange" />
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', margin:'10px 0' }}>
+ {[
+  ['Requested Amount', php(req.amount)],
+  ['Payroll Deductions', `${deductionCount} cutoff(s)`],
+  ['Deduction / Cutoff', php(perPayroll)],
+  ['Balance After Approval', php(req.amount)]
+ ].map(([label,value])=>(
+  <div key={label} style={{ background:'white', border:'1px solid #eee', borderRadius:'10px', padding:'10px' }}>
+  <p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+  <p style={{ margin:0, color:'#ca1b1b', fontWeight:'bold', fontSize:'13px' }}>{value}</p>
+  </div>
+ ))}
+ </div>
  <label style={lblS}>Number of Payroll Deductions:</label>
- <input type="number" min="1" max="24" value={installmentCounts[req.id]||1} onChange={e=>{ const v=parseInt(e.target.value)||1; setInstallmentCounts(p=>({...p,[req.id]:Math.max(1,v)})) }} style={{...inputStyle, marginBottom:'4px' }} />
- <p style={{ color:'#888', fontSize:'12px', marginBottom:'10px' }}>{php(Number(req.amount)/Math.max(1,installmentCounts[req.id]||1))} per payroll cutoff</p>
+ <input type="number" min="1" max="24" value={deductionCount} onChange={e=>{ const v=parseInt(e.target.value)||1; setInstallmentCounts(p=>({...p,[req.id]:Math.max(1,v)})) }} style={{...inputStyle, marginBottom:'4px' }} />
+ <p style={{ color:'#888', fontSize:'12px', marginBottom:'10px' }}>The employee will be deducted {php(perPayroll)} per payroll cutoff for {deductionCount} payroll cutoff(s), unless owner edits the CA ledger later.</p>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:processingItems[req.id]?0.6:1 }} disabled={processingItems[req.id]} onClick={async()=>{ setProcessingItems(p=>({...p,[req.id]:true})); await updateCashAdvanceStatus(req.id,'approved'); setProcessingItems(p=>({...p,[req.id]:false})) }}>{processingItems[req.id]?' Processing...':' APPROVE'}</button>
+ <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:processingItems[req.id]?0.6:1 }} disabled={processingItems[req.id]} onClick={async()=>{ setProcessingItems(p=>({...p,[req.id]:true})); await updateCashAdvanceStatus(req.id,'approved'); setProcessingItems(p=>({...p,[req.id]:false})) }}>{processingItems[req.id]?' Processing...':' APPROVE & CREATE CA LEDGER'}</button>
  <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={(e)=>{ e.stopPropagation(); setShowCADisapproveBox(p=>({...p,[req.id]:!p[req.id]})) }}> DISAPPROVE</button>
  </div>
  {showCADisapproveBox[req.id] && (
@@ -18743,16 +18889,77 @@ async function computePayroll() {
  </div>
  )}
  </div>
- ))}
+ )
+ })}
  <button style={{...btnBlack, marginTop:'20px' }} onClick={async()=>{ await loadResolvedCARequests(); setShowResolvedCA(!showResolvedCA) }}>{showResolvedCA?' HIDE':' VIEW'} RESOLVED REQUESTS</button>
- {showResolvedCA && resolvedCARequests.map(req=>(
- <div key={req.id} style={{...cardS, border:'1px solid #ccc', marginTop:'8px' }}>
- <strong>{req.employee_name}</strong>
- <p style={cps}>Amount: {php(req.amount)} | Reason: {req.reason}</p>
- {req.admin_reason && <p style={cps}>Admin Reason: <em>"{req.admin_reason}"</em></p>}
- <p style={{ fontWeight:'bold', color:req.status==='approved'?'#2d8a4e':'#ca1b1b', margin:'4px 0' }}>Status: {req.status}</p>
+ {showResolvedCA && resolvedCARequests.map(req=>{
+ const ledger = req.cashAdvanceLedger || null
+ const inst = getCAInstallmentInfo(ledger || {}, req)
+ const approved = String(req.status || '').toLowerCase() === 'approved'
+ const disapproved = String(req.status || '').toLowerCase() === 'disapproved'
+ return (
+ <div key={req.id} style={{...cardS, border:approved?'2px solid #2d8a4e':'2px solid #ca1b1b', marginTop:'10px', background:approved?'#f6fff8':'#fff5f5' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
+ <div>
+ <strong style={{ color:approved?'#2d8a4e':'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
+ <p style={cps}>Code: {req.employee_code || 'No code'}</p>
+ <p style={cps}>Reason: <em>"{req.reason}"</em></p>
  </div>
+ <Badge label={String(req.status || 'unknown').toUpperCase()} color={getCashAdvanceStatusColor(req.status)} />
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'10px' }}>
+ {[
+  ['Requested Amount', php(req.amount)],
+  ['Filed', formatDateTimeForAdmin(getCAFiledDate(req))],
+  [approved?'Approved':'Processed', formatDateTimeForAdmin(approved ? getCAApprovedDate(req, ledger) : (req.disapproved_at || req.processed_at))],
+  ['Processed By', approved ? getCAProcessedBy(req, ledger) : (req.processed_by || 'Admin')]
+ ].map(([label,value])=>(
+  <div key={label} style={{ background:'white', border:'1px solid #eee', borderRadius:'10px', padding:'10px' }}>
+  <p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+  <p style={{ margin:0, color:'#333', fontWeight:'bold', fontSize:'12px' }}>{value}</p>
+  </div>
  ))}
+ </div>
+ {approved && (
+ <div style={{ marginTop:'10px', background:'white', border:'1px solid #d9f2df', borderRadius:'10px', padding:'10px' }}>
+ <p style={{ margin:'0 0 8px', color:'#2d8a4e', fontWeight:'bold', fontSize:'13px' }}>Cash Advance Ledger / Payroll Deduction Plan</p>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px' }}>
+ {[
+  ['CA Ledger ID', ledger?.id ? String(ledger.id).slice(0,8) : (req.ca_ledger_id ? String(req.ca_ledger_id).slice(0,8) : 'Not linked')],
+  ['Deduction / Payroll', php(inst.perPayroll)],
+  ['Total Deductions', inst.total || 'Not recorded'],
+  ['Deducted Count', inst.total ? inst.completed : 'Not recorded'],
+  ['Remaining Count', inst.total ? inst.remaining : 'Not recorded']
+ ].map(([label,value])=>(
+  <div key={label} style={{ background:'#f8fff9', border:'1px solid #e2f5e6', borderRadius:'8px', padding:'8px' }}>
+  <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+  <p style={{ margin:0, fontWeight:'bold', fontSize:'12px' }}>{value}</p>
+  </div>
+ ))}
+ </div>
+ {ledger && (
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'8px' }}>
+  {[
+   ['Original Amount', php(ledger.amount)],
+   ['Already Paid/Deducted', php(ledger.amount_paid)],
+   ['Current Balance', php(ledger.balance)],
+   ['Ledger Status', ledger.status || 'Unknown']
+  ].map(([label,value])=>(
+   <div key={label} style={{ background:'#fff', border:'1px solid #eee', borderRadius:'8px', padding:'8px' }}>
+   <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+   <p style={{ margin:0, fontWeight:'bold', color:label==='Current Balance' && safeNum(ledger.balance,0)>0?'#ca1b1b':'#333', fontSize:'12px' }}>{value}</p>
+   </div>
+  ))}
+  </div>
+ )}
+ {ledger?.notes && <p style={{...cps, marginTop:'8px' }}>Ledger Notes: {ledger.notes}</p>}
+ {!ledger && <p style={{...cps, marginTop:'8px', color:'#ca1b1b' }}>No linked CA ledger found. This may be an old approved request before the ledger-link update.</p>}
+ </div>
+ )}
+ {disapproved && req.admin_reason && <p style={{...cps, color:'#ca1b1b', marginTop:'10px' }}>Disapproval Reason: <em>"{req.admin_reason}"</em></p>}
+ </div>
+ )
+ })}
  </div>
  )}
 
