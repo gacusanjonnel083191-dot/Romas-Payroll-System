@@ -1136,6 +1136,12 @@ export default function App() {
  const [adjustmentCategory, setAdjustmentCategory] = useState('')
  const [adjustmentAmount, setAdjustmentAmount] = useState('')
  const [adjustmentNotes, setAdjustmentNotes] = useState('')
+ const [payrollAdjustmentHistory, setPayrollAdjustmentHistory] = useState([])
+ const [payrollAdjustmentLoading, setPayrollAdjustmentLoading] = useState(false)
+ const [payrollAdjustmentSearch, setPayrollAdjustmentSearch] = useState('')
+ const [payrollAdjustmentTypeFilter, setPayrollAdjustmentTypeFilter] = useState('all')
+ const [payrollAdjustmentFrom, setPayrollAdjustmentFrom] = useState(today)
+ const [payrollAdjustmentTo, setPayrollAdjustmentTo] = useState(today)
  const [silCashouts, setSilCashouts] = useState([])
  const [silCashoutsLoading, setSilCashoutsLoading] = useState(false)
  const [manualSILClaimEmployeeId, setManualSILClaimEmployeeId] = useState('')
@@ -14999,6 +15005,92 @@ This recovery button creates one approved expense record using GROSS payroll ear
  showToast(` ${adjustmentType==='addition'?'Bonus':'Deduction'} of ${php(adjustmentAmount)} saved for ${emp.full_name}!`)
  setAdjustmentEmployeeId(''); setAdjustmentCategory(''); setAdjustmentAmount(''); setAdjustmentNotes('')
  if (adjustmentCategory.trim() === 'Unused SIL Conversion') loadSILCashouts()
+ loadPayrollAdjustmentHistory({ silent:true })
+ }
+
+ async function loadPayrollAdjustmentHistory(options = {}) {
+ setPayrollAdjustmentLoading(true)
+ try {
+  const from = options.from || payrollAdjustmentFrom || payrollStart || ''
+  const to = options.to || payrollAdjustmentTo || payrollEnd || ''
+  let query = supabase
+  .from('payroll_adjustments')
+  .select('*')
+  .order('adjustment_date', { ascending:false })
+  .order('created_at', { ascending:false })
+  .limit(1000)
+
+  if (from) query = query.gte('adjustment_date', from)
+  if (to) query = query.lte('adjustment_date', to)
+
+  const { data, error } = await query
+  if (error) throw error
+  setPayrollAdjustmentHistory(data || [])
+  if (!options.silent) showToast(`Loaded ${(data || []).length} payroll adjustment record(s).`)
+  return data || []
+ } catch(err) {
+  console.error('Payroll adjustment history load failed:', err)
+  setPayrollAdjustmentHistory([])
+  if (!options.silent) showToast('Failed to load payroll adjustments: ' + (err?.message || err), 'red')
+  return []
+ } finally {
+  setPayrollAdjustmentLoading(false)
+ }
+ }
+
+ async function undoPayrollAdjustment(adj) {
+ if (!adj?.id) { showToast('Adjustment record not found.', 'red'); return }
+ const adjDate = String(adj.adjustment_date || '').slice(0, 10)
+ const empName = adj.employee_name || 'this employee'
+ const amountText = php(adj.amount)
+ try {
+  const { data:coveringPayroll, error:coverErr } = await supabase
+  .from('payroll_records')
+  .select('id, payroll_start, payroll_end, payroll_approved, approved_at, payroll_status, review_status, employee_name')
+  .eq('employee_id', adj.employee_id)
+  .lte('payroll_start', adjDate)
+  .gte('payroll_end', adjDate)
+
+  if (coverErr) throw coverErr
+
+  const released = (coveringPayroll || []).find(r => isReleasedPayrollRecord(r))
+  if (released) {
+   showToast(`Blocked: this adjustment is already inside released payroll ${released.payroll_start} to ${released.payroll_end}. Create an opposite adjustment in the next cutoff instead.`, 'red')
+   return
+  }
+
+  const draft = (coveringPayroll || []).find(r => r)
+  const msg = draft
+   ? `Undo this adjustment for ${empName}?\n\n${adj.adjustment_type || 'adjustment'}: ${amountText}\nDate: ${adjDate}\nCategory: ${adj.category || 'Uncategorized'}\n\nThis adjustment is already inside a computed draft payroll (${draft.payroll_start} to ${draft.payroll_end}). After deleting it, go to Payroll, click LOAD SAVED PAYROLL, then UNDO DRAFT PAYROLL, then COMPUTE DRAFT PAYROLL so the payslip updates.`
+   : `Undo this adjustment for ${empName}?\n\n${adj.adjustment_type || 'adjustment'}: ${amountText}\nDate: ${adjDate}\nCategory: ${adj.category || 'Uncategorized'}\n\nThis will delete the adjustment record.`
+
+  if (!window.confirm(msg)) return
+
+  const { error } = await supabase.from('payroll_adjustments').delete().eq('id', adj.id)
+  if (error) throw error
+
+  setPayrollAdjustmentHistory(prev => (prev || []).filter(row => String(row.id) !== String(adj.id)))
+  await logAudit('PAYROLL ADJUSTMENT UNDONE', currentAdminLabel || adminRole || 'Admin', empName, `${adj.adjustment_type || 'adjustment'} ${amountText} dated ${adjDate}. Category: ${adj.category || 'Uncategorized'}. Notes: ${adj.notes || ''}`)
+  showToast(draft ? 'Adjustment deleted. Now undo the draft payroll and recompute so the payslip updates.' : 'Adjustment deleted successfully.')
+ } catch(err) {
+  console.error('Undo payroll adjustment failed:', err)
+  showToast('Failed to undo adjustment: ' + (err?.message || err), 'red')
+ }
+ }
+
+ async function openAdjustmentFinderForPayslip(pay, type = 'all') {
+ const start = payrollStart || pay?.payrollStart || today
+ const end = payrollEnd || pay?.payrollEnd || today
+ setActiveTab('adjustment')
+ setSidebarOpen(false)
+ setPayrollAdjustmentFrom(start)
+ setPayrollAdjustmentTo(end)
+ setPayrollAdjustmentTypeFilter(type)
+ setPayrollAdjustmentSearch(pay?.employeeName || pay?.employeeCode || '')
+ await loadPayrollAdjustmentHistory({ from:start, to:end, silent:true })
+ setTimeout(() => {
+  try { document.getElementById('payroll-adjustment-finder')?.scrollIntoView({ behavior:'smooth', block:'start' }) } catch(e) {}
+ }, 100)
  }
  async function silReleaseMarkerExists(adjustmentId) {
  if (!adjustmentId) return false
@@ -16708,6 +16800,19 @@ async function computePayroll() {
       .join('|')
     const shouldBlinkPayablesMainButton = isOwnerRole && ownerDeadlineSummary.warningCount > 0 && payablesBlinkSeenKey !== payablesWarningKey
  const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
+ const filteredPayrollAdjustmentHistory = (payrollAdjustmentHistory || []).filter(adj => {
+ const q = payrollAdjustmentSearch.trim().toLowerCase()
+ const matchesSearch = !q || [adj.employee_name, adj.employee_code, adj.category, adj.notes, adj.adjustment_type, adj.amount, adj.adjustment_date].some(v => String(v || '').toLowerCase().includes(q))
+ const matchesType = payrollAdjustmentTypeFilter === 'all' || String(adj.adjustment_type || '').toLowerCase() === payrollAdjustmentTypeFilter
+ return matchesSearch && matchesType
+ })
+ const payrollAdjustmentHistoryTotals = filteredPayrollAdjustmentHistory.reduce((acc, adj) => {
+  const amount = safeNum(adj.amount, 0)
+  if (String(adj.adjustment_type || '').toLowerCase() === 'addition') acc.additions += amount
+  else acc.deductions += amount
+  acc.count += 1
+  return acc
+ }, { count:0, additions:0, deductions:0 })
  const cashAdvanceCoveragePeriodOptions = (() => {
  const map = {}
  if (payrollStart && payrollEnd) map[`${payrollStart}|${payrollEnd}`] = { value:`${payrollStart}|${payrollEnd}`, label:`Current selected dates: ${payrollStart} ${payrollEnd}` }
@@ -16743,7 +16848,12 @@ async function computePayroll() {
  if(key==='auditTrail') loadAuditTrail()
  if(key==='payrollHistory') loadPayrollHistory()
  if(key==='cashAdvanceCoverage') { loadPayrollHistory(); loadCashAdvanceCoverage(payrollStart, payrollEnd) }
- if(key==='adjustment') loadSILCashouts()
+ if(key==='adjustment') {
+  setPayrollAdjustmentFrom(payrollStart || today)
+  setPayrollAdjustmentTo(payrollEnd || today)
+  loadPayrollAdjustmentHistory({ from:payrollStart || today, to:payrollEnd || today, silent:true })
+  loadSILCashouts()
+ }
  if(key==='remittance') loadPayrollHistory()
  if(key==='dtr') loadEmployees()
  if(key==='contracts') { loadContracts(); loadEmployees(); setTimeout(()=>autoGenerateMissingContracts({ silent:true }), 800) }
@@ -18075,6 +18185,70 @@ async function computePayroll() {
  <input placeholder="Notes (optional)" value={adjustmentNotes} onChange={e=>setAdjustmentNotes(e.target.value)} style={inputStyle} />
  <button style={btnGreen} onClick={saveAdjustment}> SAVE ADJUSTMENT</button>
 
+ <div id="payroll-adjustment-finder" style={{ marginTop:'24px', padding:'16px', background:'#f8fbff', border:'2px solid #4a90d9', borderRadius:'14px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'16px' }}>Adjustment History / Source Finder</h3>
+ <p style={{ margin:0, color:'#666', fontSize:'12px' }}>Use this to find where payslip “Other Earnings” or “Other Deductions” came from. It searches the payroll_adjustments records used by payroll computation.</p>
+ </div>
+ <button style={{...btnBlack, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setPayrollAdjustmentFrom(payrollStart || today); setPayrollAdjustmentTo(payrollEnd || today); loadPayrollAdjustmentHistory({ from:payrollStart || today, to:payrollEnd || today }) }}>USE CURRENT PAYROLL PERIOD</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.4fr 1fr 1fr 1fr auto', gap:'10px', alignItems:'end' }}>
+ <div>
+ <label style={lblS}>Search employee / category / notes / amount</label>
+ <input placeholder="Example: Pablo, Bonus, 5500, SIL" value={payrollAdjustmentSearch} onChange={e=>setPayrollAdjustmentSearch(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>From</label>
+ <input type="date" value={payrollAdjustmentFrom} onChange={e=>setPayrollAdjustmentFrom(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>To</label>
+ <input type="date" value={payrollAdjustmentTo} onChange={e=>setPayrollAdjustmentTo(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>Type</label>
+ <select value={payrollAdjustmentTypeFilter} onChange={e=>setPayrollAdjustmentTypeFilter(e.target.value)} style={inputStyle}>
+ <option value="all">All</option>
+ <option value="addition">Addition / Other Earnings</option>
+ <option value="deduction">Deduction / Other Deductions</option>
+ </select>
+ </div>
+ <button style={{...btnGreen, width:isMobile?'100%':'auto', padding:'11px 16px', marginTop:0, marginBottom:'12px', fontSize:'12px' }} onClick={()=>loadPayrollAdjustmentHistory()}>LOAD / SEARCH</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'8px', margin:'4px 0 12px' }}>
+ <div style={{ background:'white', border:'1px solid #e5eaf5', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Records Found</p><strong style={{ color:'#1a1a2e' }}>{payrollAdjustmentHistoryTotals.count}</strong></div>
+ <div style={{ background:'white', border:'1px solid #d5efd9', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Total Additions / Earnings</p><strong style={{ color:'#2d8a4e' }}>{php(payrollAdjustmentHistoryTotals.additions)}</strong></div>
+ <div style={{ background:'white', border:'1px solid #ffd6d6', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Total Deductions</p><strong style={{ color:'#ca1b1b' }}>{php(payrollAdjustmentHistoryTotals.deductions)}</strong></div>
+ </div>
+ {payrollAdjustmentLoading && <p style={{ color:'#888', fontSize:'13px' }}>Loading adjustments...</p>}
+ {!payrollAdjustmentLoading && filteredPayrollAdjustmentHistory.length===0 && <p style={{ color:'#888', fontSize:'13px', margin:'10px 0 0' }}>No adjustment records found for the selected search and date range.</p>}
+ {!payrollAdjustmentLoading && filteredPayrollAdjustmentHistory.slice(0, 100).map(adj => {
+  const isAddition = String(adj.adjustment_type || '').toLowerCase() === 'addition'
+  return (
+  <div key={adj.id} style={{ background:'white', border:`1px solid ${isAddition?'#d5efd9':'#ffd6d6'}`, borderRadius:'12px', padding:'12px', marginTop:'8px' }}>
+  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap' }}>
+  <div style={{ flex:1, minWidth:'220px' }}>
+  <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>{adj.employee_name || 'Unknown Employee'}</strong>
+  <Badge label={isAddition?'ADDITION / EARNINGS':'DEDUCTION'} color={isAddition?'green':'red'} />
+  </div>
+  <p style={cps}>Code: {adj.employee_code || 'No code'} | Date applied: <strong>{adj.adjustment_date}</strong> | Created: {adj.created_at? new Date(adj.created_at).toLocaleString(): 'No timestamp'}</p>
+  <p style={cps}>Category: <strong>{adj.category || 'Uncategorized'}</strong></p>
+  {adj.notes && <p style={cps}>Notes: <em>"{adj.notes}"</em></p>}
+  </div>
+  <div style={{ textAlign:'right', minWidth:'120px' }}>
+  <p style={{ margin:0, color:isAddition?'#2d8a4e':'#ca1b1b', fontWeight:'900', fontSize:'15px' }}>{php(adj.amount)}</p>
+  <p style={{ margin:'3px 0 0', color:'#888', fontSize:'11px' }}>Adjustment ID: {String(adj.id || '').slice(0,8)}</p>
+  <button style={{...btnRed, width:'auto', padding:'7px 10px', marginTop:'8px', fontSize:'11px' }} onClick={()=>undoPayrollAdjustment(adj)}>UNDO / DELETE</button>
+  </div>
+  </div>
+  </div>
+  )
+ })}
+ {filteredPayrollAdjustmentHistory.length>100 && <p style={{ color:'#888', fontSize:'12px', marginTop:'8px' }}>Showing first 100 records. Narrow the search for more exact results.</p>}
+ </div>
+
  <div style={{ marginTop:'24px', padding:'16px', background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
  <div>
@@ -18221,7 +18395,7 @@ async function computePayroll() {
  {pay.overtimePay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Overtime Pay ({pay.overtimeMinutes}min)</span><span>{php(pay.overtimePay)}</span></div>}
  {pay.nightDiffPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Night Differential</span><span>{php(pay.nightDiffPay)}</span></div>}
  {pay.holidayPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Holiday Pay</span><span>{php(pay.holidayPay)}</span></div>}
- {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Other Earnings</span><span>{php(pay.adjustmentEarnings)}</span></div>}
+ {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Earnings <button style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #bfe5ca', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'addition')}>FIND SOURCE</button></span><span>{php(pay.adjustmentEarnings)}</span></div>}
  {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late recorded: {pay.lateMinutes}min (no automatic deduction)</span><span> </span></div>}
  {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Approved Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Earnings</span><span style={{ color:'#2d8a4e' }}>{php(pay.totalEarnings)}</span></div>
@@ -18232,7 +18406,7 @@ async function computePayroll() {
  {pay.sssDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>SSS</span><span>{php(pay.sssDeduction)}</span></div>}
  {pay.pagibigDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Pag-IBIG</span><span>{php(pay.pagibigDeduction)}</span></div>}
  {pay.philhealthDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>PhilHealth</span><span>{php(pay.philhealthDeduction)}</span></div>}
- {pay.adjustmentDeductions>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Other Deductions</span><span>{php(pay.adjustmentDeductions)}</span></div>}
+ {pay.adjustmentDeductions>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Deductions <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ffd0d0', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'deduction')}>FIND SOURCE</button></span><span>{php(pay.adjustmentDeductions)}</span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Deductions</span><span style={{ color:'#ca1b1b' }}>{php(pay.totalDeductions)}</span></div>
  {(pay.nonCADeductionOverflow||0)>0&&<div style={{ marginTop:'6px', padding:'8px', border:'1px solid #ca1b1b', borderRadius:'8px', background:'#fff5f5', color:'#ca1b1b', fontWeight:'bold', fontSize:'12px' }}>⚠ Deductions exceed earnings by {php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until this is corrected.</div>}
  <div style={{ background:'#ca1b1b', color:'white', padding:'10px 14px', borderRadius:'8px', marginTop:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
