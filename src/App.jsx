@@ -751,6 +751,7 @@ function EmployeeSelect({ value, onChange, employees }) {
 
 // Print helpers (outside App so they have no stale closure issues) 
 function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
+ const serialNo = pay?.payslipSerial || pay?.payslip_serial || genSerial(payrollStart, idx)
  return `
  <div class="payslip-wrap">
  <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
@@ -758,7 +759,7 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
  <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
  <div style="font-size:13px;font-weight:bold;margin-top:4px;">EMPLOYEE PAYSLIP</div>
- <div style="font-size:10px;margin-top:2px;">Serial No: ${genSerial(payrollStart, idx)}</div>
+ <div style="font-size:10px;margin-top:2px;">Serial No: ${serialNo}</div>
  <div style="font-size:10px;color:#666;">Period: ${payrollStart} to ${payrollEnd}</div>
  </div>
  <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:10px;">
@@ -799,7 +800,7 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Employee Signature</div></div>
  <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
  </div>
- <div style="text-align:center;font-size:9px;color:#999;margin-top:8px;">${genSerial(payrollStart,idx)}</div>
+ <div style="text-align:center;font-size:9px;color:#999;margin-top:8px;">${serialNo}</div>
  </div>
  </div>`
 }
@@ -15167,6 +15168,131 @@ This recovery button creates one approved expense record using GROSS payroll ear
  setHistoryRecords(data || [])
  }
 
+
+ function buildPayrollSummaryFromResults(results = []) {
+ return {
+  totalEmployees: results.length,
+  totalBasicPay: results.reduce((a,p)=>a+safeNum(p.basicPay,0),0),
+  totalBirthdayPay: results.reduce((a,p)=>a+safeNum(p.birthdayPay,0),0),
+  totalOvertimePay: results.reduce((a,p)=>a+safeNum(p.overtimePay,0),0),
+  totalNightDiff: results.reduce((a,p)=>a+safeNum(p.nightDiffPay,0),0),
+  totalHolidayPay: results.reduce((a,p)=>a+safeNum(p.holidayPay,0),0),
+  totalEarnings: results.reduce((a,p)=>a+safeNum(p.totalEarnings,0),0),
+  totalDeductions: results.reduce((a,p)=>a+safeNum(p.totalDeductions,0),0),
+  totalNetPay: results.reduce((a,p)=>a+safeNum(p.netPay,0),0),
+  totalSSS: results.reduce((a,p)=>a+safeNum(p.sssDeduction,0),0),
+  totalPagibig: results.reduce((a,p)=>a+safeNum(p.pagibigDeduction,0),0),
+  totalPhilhealth: results.reduce((a,p)=>a+safeNum(p.philhealthDeduction,0),0),
+  totalCA: results.reduce((a,p)=>a+safeNum(p.cashAdvanceDeduction,0),0)
+ }
+ }
+
+ function mapSavedPayrollRecordToResult(record = {}, employeeLookup = {}) {
+ const emp = employeeLookup[String(record.employee_id || '')] || {}
+ const dailyRate = safeNum(emp.daily_rate, 0)
+ return {
+  id: record.id,
+  savedRecordId: record.id,
+  employeeId: record.employee_id,
+  employeeCode: record.employee_code || emp.employee_code || '',
+  employeeName: record.employee_name || emp.full_name || '',
+  position: emp.position || record.position || '',
+  workedDays: safeNum(record.worked_days, 0),
+  absentDays: safeNum(record.absent_days, 0),
+  paidLeaveDays: safeNum(record.paid_leave_days, 0),
+  unpaidLeaveDays: safeNum(record.unpaid_leave_days, 0),
+  paidLeavePay: safeNum(record.paid_leave_pay, 0),
+  workedBasicPay: safeNum(record.worked_basic_pay ?? record.basic_pay, 0),
+  totalWorkedMinutes: safeNum(record.total_worked_minutes, 0),
+  hourlyRate: dailyRate > 0? dailyRate / 8: 0,
+  basicPay: safeNum(record.basic_pay, 0),
+  birthdayPay: safeNum(record.birthday_pay, 0),
+  overtimePay: safeNum(record.overtime_pay, 0),
+  overtimeMinutes: safeNum(record.overtime_minutes, 0),
+  nightDiffPay: safeNum(record.night_diff_pay, 0),
+  holidayPay: safeNum(record.holiday_pay, 0),
+  adjustmentEarnings: safeNum(record.other_earnings, 0),
+  totalEarnings: safeNum(record.total_earnings, 0),
+  cashAdvanceDeduction: safeNum(record.cash_advance_deduction, 0),
+  sssDeduction: safeNum(record.sss_deduction, 0),
+  pagibigDeduction: safeNum(record.pagibig_deduction, 0),
+  philhealthDeduction: safeNum(record.philhealth_deduction, 0),
+  adjustmentDeductions: safeNum(record.other_deductions, 0),
+  totalDeductions: safeNum(record.total_deductions, 0),
+  netPay: safeNum(record.net_pay, 0),
+  lateMinutes: safeNum(record.late_minutes, 0),
+  undertimeMinutes: safeNum(record.undertime_minutes, 0),
+  payrollCostType: record.payroll_cost_type || 'auto',
+  payrollCostLabel: record.payroll_cost_label || '',
+  bankName: emp.bank_name || '',
+  bankAccount: emp.bank_account_number || '',
+  bankAccountName: emp.bank_account_name || '',
+  mobileNumber: emp.contact_number || '',
+  payslipSerial: record.payslip_serial || '',
+  employeeAcknowledgement: record.employee_acknowledgement || 'pending',
+  payrollApproved: record.payroll_approved === true,
+  approvedAt: record.approved_at || null
+ }
+ }
+
+ async function loadSavedPayrollForPeriod(start = payrollStart, end = payrollEnd, options = {}) {
+ if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return [] }
+ if (parseLocalDate(end) < parseLocalDate(start)) { showToast('Payroll end date must be after start date.', 'red'); return [] }
+
+ setPayrollComputing(true)
+ try {
+  const { data:records, error } = await supabase
+  .from('payroll_records')
+  .select('*')
+  .eq('payroll_start', start)
+  .eq('payroll_end', end)
+  .order('employee_name', { ascending:true })
+
+  if (error) throw error
+  if (!records || records.length === 0) {
+   setPayrollResults([])
+   setPayrollSummary(null)
+   if (!options.silent) showToast('No saved payroll found for this exact period. Check the From/To dates or open Payroll History.', 'red')
+   return []
+  }
+
+  const employeeIds = [...new Set(records.map(r=>r.employee_id).filter(Boolean))]
+  let employeeLookup = {}
+  if (employeeIds.length > 0) {
+   const { data:empRows, error:empError } = await supabase
+   .from('employees')
+   .select('*')
+   .in('id', employeeIds)
+   if (!empError) {
+    ;(empRows || []).forEach(emp => { employeeLookup[String(emp.id)] = emp })
+   }
+  }
+
+  const results = records.map(r => mapSavedPayrollRecordToResult(r, employeeLookup))
+  const uniqueEmployees = new Set(results.map(r=>String(r.employeeId || r.employeeCode || r.employeeName))).size
+  const duplicateCount = results.length - uniqueEmployees
+
+  setPayrollStart(start)
+  setPayrollEnd(end)
+  setPayrollResults(results)
+  setPayrollSummary(buildPayrollSummaryFromResults(results))
+  setPayrollApproved(results.some(r=>r.payrollApproved || !!r.approvedAt))
+
+  if (!options.silent) {
+   showToast(`Saved payroll loaded: ${results.length} payslip${results.length === 1? '': 's'} for ${start} to ${end}.${duplicateCount > 0? ' Warning: duplicate employee payslips detected.': ''}`, duplicateCount > 0? 'red':'green')
+  }
+  return results
+ } catch(err) {
+  console.error('Saved payroll load failed:', err)
+  setPayrollResults([])
+  setPayrollSummary(null)
+  showToast('Failed to load saved payroll: ' + (err?.message || err), 'red')
+  return []
+ } finally {
+  setPayrollComputing(false)
+ }
+ }
+
  async function printDTR(empId, empName, empCode, month) {
  // month format: YYYY-MM
  const startDate = `${month}-01`
@@ -15405,31 +15531,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (existingError) throw existingError
 
  if (existing && existing.length > 0) {
- const alreadyApproved = existing.some(r => r.payroll_approved === true ||!!r.approved_at)
- if (alreadyApproved) {
- showToast(' This payroll period is already approved/released. It cannot be recomputed because CA deductions and payroll expenses may already be posted.', 'red')
+ await loadSavedPayrollForPeriod(payrollStart, payrollEnd, { silent:true })
+ showToast(`Saved payroll already exists for ${payrollStart} to ${payrollEnd}. It was loaded instead of recomputing, to prevent duplicate employee payslips.`, 'green')
  return
- }
-
- // Check if locked (all agreed or any agreed)
- const hasAgreed = existing.some(r => r.employee_acknowledgement === 'agreed')
- const allDone = existing.every(r => r.employee_acknowledgement === 'agreed' || r.employee_acknowledgement === 'disputed')
- if (allDone) {
- showToast(' This payroll period is locked all employees have acknowledged.', 'red')
- return
- }
- if (hasAgreed) {
- if (!window.confirm(' WARNING: Some employees have already acknowledged this payroll. Overwriting will reset their acknowledgements. Are you sure?')) return
- } else {
- if (!window.confirm('Payroll for this period already exists. Overwrite?')) return
- }
-
- const { error:deleteError } = await supabase
-.from('payroll_records')
-.delete()
-.eq('payroll_start', payrollStart)
-.eq('payroll_end', payrollEnd)
- if (deleteError) throw deleteError
  }
 
  const { data:empList, error:empError } = await supabase.from('employees').select('*').eq('is_active', true)
@@ -17380,7 +17484,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
  </div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'20px' }}>
- <button style={{...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?' COMPUTING...':' COMPUTE PAYROLL'}</button>
+ <button style={{...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?' LOADING...':' COMPUTE PAYROLL'}</button>
+ <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollComputing?0.5:1 }} onClick={()=>loadSavedPayrollForPeriod(payrollStart, payrollEnd)} disabled={payrollComputing}> LOAD SAVED PAYROLL</button>
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT CSV</button>
  <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> RELEASE PAYROLL</button>
@@ -17401,13 +17506,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
  {payrollResults.length>0 && <input placeholder=" Search employee..." value={payrollSearch} onChange={e=>setPayrollSearch(e.target.value)} style={{...inputStyle, marginBottom:'16px' }} />}
  {filteredResults.map((pay,idx)=>(
- <div key={pay.employeeCode} style={{...cardS, marginBottom:'20px', border:'1px solid #ddd' }}>
+ <div key={pay.savedRecordId || pay.employeeCode} style={{...cardS, marginBottom:'20px', border:'1px solid #ddd' }}>
  <div style={{ padding:'16px', fontSize:'13px' }}>
  <div style={{ textAlign:'center', marginBottom:'10px', borderBottom:'2px solid #ca1b1b', paddingBottom:'8px' }}>
  <img src="/logo.png" alt="" style={{ width:'44px', height:'44px', objectFit:'contain' }} />
  <div style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>Roma's Donuts</div>
  <div style={{ fontWeight:'bold' }}>EMPLOYEE PAYSLIP</div>
- <div style={{ color:'#666', fontSize:'11px' }}>Serial: {genSerial(payrollStart,payrollResults.indexOf(pay))} | {payrollStart} to {payrollEnd}</div>
+ <div style={{ color:'#666', fontSize:'11px' }}>Serial: {pay.payslipSerial || genSerial(payrollStart,payrollResults.indexOf(pay))} | {payrollStart} to {payrollEnd}</div>
  </div>
  <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'8px', padding:'10px', marginBottom:'10px' }}>
  <div style={{ fontSize:'16px', fontWeight:'bold', color:'#ca1b1b' }}>{pay.employeeName}</div>
