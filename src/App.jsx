@@ -1052,6 +1052,107 @@ function EmployeeSelect({ value, onChange, employees }) {
  )
 }
 
+
+function EmployeePortalPayslipBreakdown({ pay }) {
+ const value = key => safeNum(pay?.[key], 0)
+ const totalWorkedHours = value('total_worked_minutes') > 0 ? moneyRound(value('total_worked_minutes') / 60) : 0
+ const regularPaidHours = value('regular_paid_minutes') > 0 ? moneyRound(value('regular_paid_minutes') / 60) : 0
+ const hourlyRate = value('hourly_rate')
+ const statusText = getPayrollReviewStatusText(pay)
+ const rowStyle = { display:'flex', justifyContent:'space-between', gap:'10px', padding:'6px 0', borderBottom:'1px solid #f0f0f0', fontSize:'12px' }
+ const mutedText = { color:'#777', fontSize:'11px', margin:'2px 0' }
+ const SectionRow = ({ label, amount, note, highlight }) => (
+  <div style={rowStyle}>
+   <div>
+    <span style={{ color:'#444' }}>{label}</span>
+    {note && <p style={mutedText}>{note}</p>}
+   </div>
+   <strong style={{ color:highlight || '#222', whiteSpace:'nowrap' }}>{php(amount)}</strong>
+  </div>
+ )
+ const BasisItem = ({ label, value }) => (
+  <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'10px', padding:'8px' }}>
+   <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', textTransform:'uppercase', letterSpacing:'0.4px', fontWeight:'bold' }}>{label}</p>
+   <p style={{ margin:0, color:'#222', fontSize:'13px', fontWeight:'bold' }}>{value}</p>
+  </div>
+ )
+
+ return (
+  <div style={{ marginTop:'10px', border:'1px solid #f1d0d0', borderRadius:'14px', overflow:'hidden', background:'#fff' }}>
+   <div style={{ background:'#ca1b1b', color:'white', padding:'12px 14px' }}>
+    <h3 style={{ margin:0, fontSize:'15px' }}>Full Payslip Breakdown</h3>
+    <p style={{ margin:'4px 0 0', fontSize:'11px', opacity:0.9 }}>Status: {statusText}</p>
+   </div>
+
+   <div style={{ padding:'12px 14px', background:'#fff8dc', borderBottom:'1px solid #f1d0d0' }}>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px', fontSize:'12px' }}>
+     <div><strong>Employee:</strong> {pay.employee_name || 'Employee'}</div>
+     <div><strong>Code:</strong> {pay.employee_code || '-'}</div>
+     <div><strong>Period:</strong> {formatDateForDisplay(pay.payroll_start)} to {formatDateForDisplay(pay.payroll_end)}</div>
+     <div><strong>Serial:</strong> {pay.payslip_serial || '-'}</div>
+    </div>
+   </div>
+
+   <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
+    <h4 style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'13px' }}>Attendance / Payroll Basis</h4>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
+     <BasisItem label="Worked Days" value={`${value('worked_days')} day(s)`} />
+     <BasisItem label="Absent Days" value={`${value('absent_days')} day(s)`} />
+     <BasisItem label="Paid SIL" value={`${value('paid_leave_days')} day(s)`} />
+     <BasisItem label="Unpaid Leave" value={`${value('unpaid_leave_days')} day(s)`} />
+     <BasisItem label="Worked Hours" value={`${totalWorkedHours} hr(s)`} />
+     <BasisItem label="Paid Regular Hours" value={`${regularPaidHours} hr(s)`} />
+     <BasisItem label="OT Minutes" value={`${value('overtime_minutes')} min`} />
+     <BasisItem label="Night Diff Minutes" value={`${value('night_diff_minutes')} min`} />
+    </div>
+    {hourlyRate > 0 && <p style={{ ...mutedText, marginTop:'8px' }}>Computed hourly rate: {php(hourlyRate)}</p>}
+   </div>
+
+   <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
+    <h4 style={{ margin:'0 0 8px', color:'#2d8a4e', fontSize:'13px' }}>Earnings</h4>
+    <SectionRow label="Basic / Regular Pay" amount={value('worked_basic_pay') || value('basic_pay')} note={`${value('worked_days')} paid workday(s)`} />
+    <SectionRow label="Birthday Pay" amount={value('birthday_pay')} />
+    <SectionRow label="Overtime Pay" amount={value('overtime_pay')} note={`${value('overtime_minutes')} approved OT minute(s)`} />
+    <SectionRow label="Night Differential Pay" amount={value('night_diff_pay')} note={`${value('night_diff_minutes')} night differential minute(s)`} />
+    <SectionRow label="Holiday Pay" amount={value('holiday_pay')} />
+    <SectionRow label="Paid SIL Leave" amount={value('paid_leave_pay')} note={`${value('paid_leave_days')} paid leave day(s)`} />
+    <SectionRow label="Other Earnings / Adjustments" amount={value('other_earnings')} />
+    <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0 0', fontWeight:'bold', fontSize:'13px' }}>
+     <span>Total Earnings / Gross Pay</span>
+     <span style={{ color:'#2d8a4e' }}>{php(value('total_earnings'))}</span>
+    </div>
+   </div>
+
+   <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
+    <h4 style={{ margin:'0 0 8px', color:'#ca1b1b', fontSize:'13px' }}>Deductions</h4>
+    <SectionRow label="Late Deduction" amount={value('late_deduction')} note={`${value('late_minutes')} late minute(s)`} />
+    <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} approved undertime minute(s)`} />
+    <SectionRow label="Cash Advance Deduction" amount={value('cash_advance_deduction')} />
+    <SectionRow label="Requested CA Deduction" amount={value('requested_cash_advance_deduction')} note="Original CA amount requested for this cutoff before payroll safety cap." />
+    <SectionRow label="Deferred CA Deduction" amount={value('deferred_cash_advance_deduction')} note="Not deducted this cutoff; remains in CA balance." highlight="#f5a623" />
+    <SectionRow label="SSS" amount={value('sss_deduction')} />
+    <SectionRow label="Pag-IBIG" amount={value('pagibig_deduction')} />
+    <SectionRow label="PhilHealth" amount={value('philhealth_deduction')} />
+    <SectionRow label="Other Deductions / Adjustments" amount={value('other_deductions')} />
+    <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0 0', fontWeight:'bold', fontSize:'13px' }}>
+     <span>Total Deductions</span>
+     <span style={{ color:'#ca1b1b' }}>{php(value('total_deductions'))}</span>
+    </div>
+    {value('non_ca_deduction_overflow') > 0 && (
+     <div style={{ marginTop:'8px', padding:'8px', border:'1px solid #ca1b1b', borderRadius:'8px', background:'#fff5f5', color:'#ca1b1b', fontWeight:'bold', fontSize:'11px' }}>
+      Warning: Non-CA deductions exceeded earnings by {php(value('non_ca_deduction_overflow'))}. Payroll release should be reviewed by admin.
+     </div>
+    )}
+   </div>
+
+   <div style={{ background:'#1a1a2e', color:'white', padding:'12px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px' }}>
+    <span style={{ fontWeight:'bold', fontSize:'14px' }}>NET PAY / TAKE HOME PAY</span>
+    <span style={{ fontWeight:'bold', fontSize:'18px' }}>{php(value('net_pay'))}</span>
+   </div>
+  </div>
+ )
+}
+
 // Print helpers (outside App so they have no stale closure issues) 
 function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  const serialNo = pay?.payslipSerial || pay?.payslip_serial || genSerial(payrollStart, idx)
@@ -27508,8 +27609,7 @@ onClick={async ()=>{
  <p style={{ fontSize:'11px', color:'#ca1b1b', margin:'5px 0 0', fontWeight:'bold' }}>Dispute already submitted. Waiting for admin review.</p>
  </div>
  )}
- <p style={cps}>Basic: {php(pay.basic_pay)} | Earnings: {php(pay.total_earnings)} | Deductions: {php(pay.total_deductions)}</p>
- <h3 style={{ color:'#ca1b1b', margin:'6px 0' }}>Net Pay: {php(pay.net_pay)}</h3>
+ <EmployeePortalPayslipBreakdown pay={pay} />
  {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement)&&(
  <div style={{ marginTop:'10px' }}>
  <p style={{ color:'#888', fontSize:'13px', margin:'0 0 8px' }}>Please review and acknowledge this payslip.</p>
