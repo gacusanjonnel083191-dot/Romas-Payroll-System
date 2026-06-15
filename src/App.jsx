@@ -1,4 +1,5 @@
 import { Component, useEffect, useRef, useState } from 'react'
+import { jsPDF } from 'jspdf'
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
@@ -285,21 +286,165 @@ function normalizePayslipForPrint(pay = {}) {
 }
 
 function downloadEmployeePayslip(pay = {}) {
- if (typeof window === 'undefined' || typeof document === 'undefined') return
+ if (typeof window === 'undefined') return
  const printablePay = normalizePayslipForPrint(pay)
  const start = printablePay.payrollStart || pay.payroll_start || ''
  const end = printablePay.payrollEnd || pay.payroll_end || ''
- const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Payslip - ${printablePay.employeeName}</title>${printCSS}</head><body>${buildPayslipHTML(printablePay, start, end, 0)}</body></html>`
- const blob = new Blob([html], { type:'text/html;charset=utf-8' })
- const url = URL.createObjectURL(blob)
  const safeName = String(`${printablePay.employeeName}-${start}-to-${end}`).replace(/[^a-z0-9\-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'payslip'
- const link = document.createElement('a')
- link.href = url
- link.download = `${safeName}.html`
- document.body.appendChild(link)
- link.click()
- document.body.removeChild(link)
- setTimeout(() => URL.revokeObjectURL(url), 1200)
+
+ const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' })
+ const pageWidth = doc.internal.pageSize.getWidth()
+ const pageHeight = doc.internal.pageSize.getHeight()
+ const marginX = 14
+ let y = 14
+
+ const addText = (text, x, yy, options = {}) => {
+  doc.text(String(text ?? ''), x, yy, options)
+ }
+ const addSectionTitle = title => {
+  if (y > pageHeight - 24) { doc.addPage(); y = 14 }
+  doc.setFillColor(202, 27, 27)
+  doc.rect(marginX, y, pageWidth - marginX * 2, 8, 'F')
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(10)
+  doc.setTextColor(255, 255, 255)
+  addText(title, marginX + 2, y + 5.4)
+  doc.setTextColor(0, 0, 0)
+  y += 10
+ }
+ const addRow = (label, amount, note = '') => {
+  if (y > pageHeight - 18) { doc.addPage(); y = 14 }
+  doc.setDrawColor(230, 230, 230)
+  doc.line(marginX, y + 3, pageWidth - marginX, y + 3)
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(9)
+  doc.setTextColor(30, 30, 30)
+  addText(label, marginX, y)
+  doc.setFont('helvetica', 'bold')
+  addText(php(amount), pageWidth - marginX, y, { align:'right' })
+  y += 5
+  if (note) {
+   doc.setFont('helvetica', 'normal')
+   doc.setFontSize(7)
+   doc.setTextColor(110, 110, 110)
+   const wrapped = doc.splitTextToSize(String(note), pageWidth - marginX * 2 - 10)
+   addText(wrapped, marginX + 2, y)
+   y += Math.max(4, wrapped.length * 3.5)
+   doc.setTextColor(0, 0, 0)
+  }
+ }
+ const addBasis = (label, value) => {
+  if (y > pageHeight - 12) { doc.addPage(); y = 14 }
+  doc.setFont('helvetica', 'normal')
+  doc.setFontSize(8)
+  doc.setTextColor(95, 95, 95)
+  addText(label, marginX, y)
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(9)
+  doc.setTextColor(0, 0, 0)
+  addText(String(value), pageWidth - marginX, y, { align:'right' })
+  y += 5
+ }
+
+ doc.setFont('helvetica', 'bold')
+ doc.setFontSize(18)
+ doc.setTextColor(202, 27, 27)
+ addText("Roma's Donuts", pageWidth / 2, y, { align:'center' })
+ y += 6
+ doc.setFontSize(11)
+ doc.setTextColor(0, 0, 0)
+ addText('EMPLOYEE PAYSLIP', pageWidth / 2, y, { align:'center' })
+ y += 5
+ doc.setFont('helvetica', 'normal')
+ doc.setFontSize(8)
+ doc.setTextColor(90, 90, 90)
+ addText(`Period: ${formatDateForDisplay(start)} to ${formatDateForDisplay(end)}`, pageWidth / 2, y, { align:'center' })
+ y += 4
+ addText(`Serial: ${printablePay.payslipSerial || '-'}`, pageWidth / 2, y, { align:'center' })
+ y += 8
+
+ doc.setDrawColor(202, 27, 27)
+ doc.setLineWidth(0.4)
+ doc.line(marginX, y, pageWidth - marginX, y)
+ y += 7
+
+ doc.setFont('helvetica', 'bold')
+ doc.setFontSize(12)
+ doc.setTextColor(202, 27, 27)
+ addText(printablePay.employeeName || 'Employee', marginX, y)
+ y += 5
+ doc.setFont('helvetica', 'normal')
+ doc.setFontSize(9)
+ doc.setTextColor(50, 50, 50)
+ addText(`Code: ${printablePay.employeeCode || '-'}   Position: ${printablePay.position || '-'}`, marginX, y)
+ y += 8
+
+ addSectionTitle('ATTENDANCE / PAYROLL BASIS')
+ addBasis('Worked Days', `${printablePay.workedDays} day(s)`)
+ addBasis('Absent Days', `${printablePay.absentDays} day(s)`)
+ addBasis('Paid SIL Leave', `${printablePay.paidLeaveDays} day(s)`)
+ addBasis('OT Minutes', `${printablePay.overtimeMinutes} min`)
+ addBasis('Night Differential Minutes', `${printablePay.nightDiffMinutes} min`)
+ y += 3
+
+ addSectionTitle('EARNINGS')
+ addRow('Basic / Regular Pay', printablePay.workedBasicPay || printablePay.basicPay, `${printablePay.workedDays} paid workday(s)`)
+ addRow('Birthday Pay', printablePay.birthdayPay)
+ addRow('Overtime Pay', printablePay.overtimePay, `${printablePay.overtimeMinutes} approved OT minute(s)`)
+ addRow('Night Differential Pay', printablePay.nightDiffPay, `${printablePay.nightDiffMinutes} night differential minute(s)`)
+ addRow('Holiday Pay', printablePay.holidayPay)
+ addRow('Paid SIL Leave', printablePay.paidLeavePay, `${printablePay.paidLeaveDays} paid leave day(s)`)
+ addRow('Other Earnings / Adjustments', printablePay.adjustmentEarnings)
+ doc.setFillColor(232, 245, 233)
+ doc.rect(marginX, y - 2, pageWidth - marginX * 2, 8, 'F')
+ doc.setFont('helvetica', 'bold')
+ doc.setFontSize(10)
+ doc.setTextColor(45, 138, 78)
+ addText('TOTAL EARNINGS / GROSS PAY', marginX + 2, y + 3)
+ addText(php(printablePay.totalEarnings), pageWidth - marginX - 2, y + 3, { align:'right' })
+ y += 11
+
+ addSectionTitle('DEDUCTIONS')
+ addRow('Late Deduction', printablePay.lateDeduction, `${printablePay.lateMinutes} late minute(s)`)
+ addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} approved undertime minute(s)`)
+ addRow('Excess Break Deduction', printablePay.excessBreakDeduction)
+ addRow('Cash Advance Deduction', printablePay.cashAdvanceDeduction)
+ addRow('Deferred CA Deduction', printablePay.deferredCADeduction, 'Not deducted this cutoff; remains in CA balance.')
+ addRow('SSS', printablePay.sssDeduction)
+ addRow('Pag-IBIG', printablePay.pagibigDeduction)
+ addRow('PhilHealth', printablePay.philhealthDeduction)
+ addRow('Other Deductions / Adjustments', printablePay.adjustmentDeductions)
+ doc.setFillColor(255, 240, 240)
+ doc.rect(marginX, y - 2, pageWidth - marginX * 2, 8, 'F')
+ doc.setFont('helvetica', 'bold')
+ doc.setFontSize(10)
+ doc.setTextColor(202, 27, 27)
+ addText('TOTAL DEDUCTIONS', marginX + 2, y + 3)
+ addText(php(printablePay.totalDeductions), pageWidth - marginX - 2, y + 3, { align:'right' })
+ y += 13
+
+ doc.setFillColor(26, 26, 46)
+ doc.rect(marginX, y, pageWidth - marginX * 2, 12, 'F')
+ doc.setFont('helvetica', 'bold')
+ doc.setFontSize(12)
+ doc.setTextColor(255, 255, 255)
+ addText('NET PAY / TAKE HOME PAY', marginX + 3, y + 8)
+ addText(php(printablePay.netPay), pageWidth - marginX - 3, y + 8, { align:'right' })
+ y += 18
+
+ if (printablePay.nonCADeductionOverflow > 0) {
+  doc.setTextColor(202, 27, 27)
+  doc.setFontSize(8)
+  doc.setFont('helvetica', 'bold')
+  addText(`Warning: Non-CA deductions exceeded earnings by ${php(printablePay.nonCADeductionOverflow)}.`, marginX, y)
+ }
+
+ doc.setTextColor(120, 120, 120)
+ doc.setFont('helvetica', 'normal')
+ doc.setFontSize(7)
+ addText(`Generated: ${new Date().toLocaleString('en-PH')}`, marginX, pageHeight - 10)
+
+ doc.save(`${safeName}.pdf`)
 }
 
 function getDateOffsetString(days) {
