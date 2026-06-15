@@ -203,6 +203,105 @@ function calculateNightDifferentialMinutes(timeIn, timeOut, breakRows = []) {
 }
 
 
+
+function getDTRDutyMinutes(log = {}) {
+ if (!log || !log.time_in || !log.time_out || log.status === 'Absent') return 0
+ if (Array.isArray(log._logs) && log._logs.length > 1) {
+  return log._logs.reduce((sum, row) => sum + getDTRDutyMinutes(row), 0)
+ }
+ const rawMinutes = diffMinutesAcrossMidnight(log.time_in, log.time_out)
+ const breakMinutes = safeNum(log.total_break_minutes, 0)
+ return Math.max(0, Math.round(rawMinutes - breakMinutes))
+}
+
+function formatDutyHours(minutes = 0) {
+ const total = Math.max(0, Math.round(safeNum(minutes, 0)))
+ const hours = Math.floor(total / 60)
+ const mins = total % 60
+ return `${hours}h ${mins}m`
+}
+
+function isHolidayPayEligible(emp = {}, holidayType = '') {
+ const type = String(holidayType || '').trim().toLowerCase()
+ if (type === 'regular') return emp?.regular_holiday_pay_eligible !== false
+ if (type === 'special') return emp?.special_holiday_pay_eligible !== false
+ return true
+}
+
+function isMissingEmployeeHolidayEligibilityColumnError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('regular_holiday_pay_eligible') || msg.includes('special_holiday_pay_eligible') || ((msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')) && msg.includes('holiday'))
+}
+
+function stripUnsupportedEmployeeOptionalColumns(payload = {}, error = null) {
+ const clean = { ...payload }
+ if (!error || isMissingPayrollCostColumnError(error)) delete clean.payroll_cost_type
+ if (!error || isMissingEmployeeHolidayEligibilityColumnError(error)) {
+  delete clean.regular_holiday_pay_eligible
+  delete clean.special_holiday_pay_eligible
+ }
+ return clean
+}
+
+function normalizePayslipForPrint(pay = {}) {
+ const start = pay.payroll_start || pay.payrollStart || ''
+ const end = pay.payroll_end || pay.payrollEnd || ''
+ return {
+  employeeName:pay.employeeName || pay.employee_name || 'Employee',
+  employeeCode:pay.employeeCode || pay.employee_code || '',
+  position:pay.position || '',
+  workedDays:safeNum(pay.workedDays ?? pay.worked_days, 0),
+  absentDays:safeNum(pay.absentDays ?? pay.absent_days, 0),
+  paidLeaveDays:safeNum(pay.paidLeaveDays ?? pay.paid_leave_days, 0),
+  paidLeavePay:safeNum(pay.paidLeavePay ?? pay.paid_leave_pay, 0),
+  workedBasicPay:safeNum(pay.workedBasicPay ?? pay.worked_basic_pay ?? pay.basic_pay, 0),
+  basicPay:safeNum(pay.basicPay ?? pay.basic_pay, 0),
+  birthdayPay:safeNum(pay.birthdayPay ?? pay.birthday_pay, 0),
+  overtimePay:safeNum(pay.overtimePay ?? pay.overtime_pay, 0),
+  overtimeMinutes:safeNum(pay.overtimeMinutes ?? pay.overtime_minutes, 0),
+  nightDiffPay:safeNum(pay.nightDiffPay ?? pay.night_diff_pay, 0),
+  nightDiffMinutes:safeNum(pay.nightDiffMinutes ?? pay.night_diff_minutes, 0),
+  holidayPay:safeNum(pay.holidayPay ?? pay.holiday_pay, 0),
+  adjustmentEarnings:safeNum(pay.adjustmentEarnings ?? pay.other_earnings, 0),
+  totalEarnings:safeNum(pay.totalEarnings ?? pay.total_earnings, 0),
+  lateDeduction:safeNum(pay.lateDeduction ?? pay.late_deduction, 0),
+  lateMinutes:safeNum(pay.lateMinutes ?? pay.late_minutes, 0),
+  undertimeDeduction:safeNum(pay.undertimeDeduction ?? pay.undertime_deduction, 0),
+  undertimeMinutes:safeNum(pay.undertimeMinutes ?? pay.undertime_minutes, 0),
+  excessBreakDeduction:safeNum(pay.excessBreakDeduction ?? pay.excess_break_deduction, 0),
+  cashAdvanceDeduction:safeNum(pay.cashAdvanceDeduction ?? pay.cash_advance_deduction, 0),
+  deferredCADeduction:safeNum(pay.deferredCADeduction ?? pay.deferred_cash_advance_deduction, 0),
+  nonCADeductionOverflow:safeNum(pay.nonCADeductionOverflow ?? pay.non_ca_deduction_overflow, 0),
+  sssDeduction:safeNum(pay.sssDeduction ?? pay.sss_deduction, 0),
+  pagibigDeduction:safeNum(pay.pagibigDeduction ?? pay.pagibig_deduction, 0),
+  philhealthDeduction:safeNum(pay.philhealthDeduction ?? pay.philhealth_deduction, 0),
+  adjustmentDeductions:safeNum(pay.adjustmentDeductions ?? pay.other_deductions, 0),
+  totalDeductions:safeNum(pay.totalDeductions ?? pay.total_deductions, 0),
+  netPay:safeNum(pay.netPay ?? pay.net_pay, 0),
+  payslipSerial:pay.payslipSerial || pay.payslip_serial || '',
+  payrollStart:start,
+  payrollEnd:end
+ }
+}
+
+function downloadEmployeePayslip(pay = {}) {
+ if (typeof window === 'undefined' || typeof document === 'undefined') return
+ const printablePay = normalizePayslipForPrint(pay)
+ const start = printablePay.payrollStart || pay.payroll_start || ''
+ const end = printablePay.payrollEnd || pay.payroll_end || ''
+ const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Payslip - ${printablePay.employeeName}</title>${printCSS}</head><body>${buildPayslipHTML(printablePay, start, end, 0)}</body></html>`
+ const blob = new Blob([html], { type:'text/html;charset=utf-8' })
+ const url = URL.createObjectURL(blob)
+ const safeName = String(`${printablePay.employeeName}-${start}-to-${end}`).replace(/[^a-z0-9\-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'payslip'
+ const link = document.createElement('a')
+ link.href = url
+ link.download = `${safeName}.html`
+ document.body.appendChild(link)
+ link.click()
+ document.body.removeChild(link)
+ setTimeout(() => URL.revokeObjectURL(url), 1200)
+}
+
 function getDateOffsetString(days) {
  const d = new Date()
  d.setDate(d.getDate() + days)
@@ -1359,7 +1458,7 @@ export default function App() {
  const [breakTimerSeconds, setBreakTimerSeconds] = useState(0)
  const [breakTimerInterval, setBreakTimerInterval] = useState(null)
  const [editFields, setEditFields] = useState({})
- const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
+ const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, regularHolidayEligible:true, specialHolidayEligible:true, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
  const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
  const [finalPayReason, setFinalPayReason] = useState('resigned')
  const [finalPayLastDate, setFinalPayLastDate] = useState(today)
@@ -5384,13 +5483,15 @@ Cancel = create batch record only for existing stock.`)
  setInvoiceItems([])
  return
  }
- const defaults = resellerDefaultOrders[resellerId] || []
- const rows = await getAllOrderVariantRows(defaults)
+ let defaults = resellerDefaultOrders[resellerId] || []
+ const { data, error } = await supabase.from('reseller_default_orders').select('*').eq('reseller_id', resellerId)
+ if (!error) defaults = data || defaults
+ const rows = await getAllOrderVariantRows(defaults, invoiceDiscountPct)
  setInvoiceItems(rows)
  }
 
 
- async function loadAllInvoiceVariants(defaultQuantity = '') {
+ async function loadAllInvoiceVariants(defaultQuantity = '', discountPctOverride = null) {
  let variants = donutVariants
  if (!variants || variants.length === 0) {
  const { data, error } = await supabase.from('donut_variants').select('*').order('name')
@@ -5405,12 +5506,13 @@ Cancel = create batch record only for existing stock.`)
  showToast('No donut varieties found. Go to Costing / Recipes and load variants first.', 'red')
  return
  }
+ const discountForRows = discountPctOverride !== null ? discountPctOverride : invoiceDiscountPct
  setInvoiceItems(variants.map(v => ({
  variant_id:v.id,
  variant_name:v.name,
  quantity:defaultQuantity,
  retail_price:safeNum(v.selling_price, 0),
- reseller_price:moneyRound(safeNum(v.selling_price, 0) * (1 - safeNum(invoiceDiscountPct, 0) / 100))
+ reseller_price:moneyRound(safeNum(v.selling_price, 0) * (1 - safeNum(discountForRows, 0) / 100))
  })))
  showToast(`${variants.length} donut varieties loaded.`)
  }
@@ -9052,7 +9154,7 @@ function buildDeliveryInvoicePrintCSS() {
  setLoading(false)
  }
 
- async function getAllOrderVariantRows(defaultRows = []) {
+ async function getAllOrderVariantRows(defaultRows = [], discountPct = 20) {
  let variants = Array.isArray(donutVariants)? donutVariants: []
 
  if (!variants || variants.length === 0) {
@@ -9082,12 +9184,13 @@ function buildDeliveryInvoicePrintCSS() {
  const rows = variants.map(v => {
  const saved = defaultMap.get(String(v.id))
  const retail = safeNum(v.selling_price, safeNum(saved?.retail_price, 0))
+ const price = moneyRound(retail * (1 - safeNum(discountPct, 20) / 100))
  return {
  variant_id:v.id,
  variant_name:v.name || saved?.variant_name || 'Product',
  quantity:saved?.default_quantity? String(saved.default_quantity): '',
  retail_price:retail,
- reseller_price:Math.round(retail * 0.80 * 100) / 100
+ reseller_price:price
  }
  })
 
@@ -9096,12 +9199,13 @@ function buildDeliveryInvoicePrintCSS() {
 ;(defaultRows || []).forEach(saved => {
  if (!rows.some(row => String(row.variant_id) === String(saved.variant_id))) {
  const retail = safeNum(saved.retail_price, 0)
+ const price = moneyRound(retail * (1 - safeNum(discountPct, 20) / 100))
  rows.push({
  variant_id:saved.variant_id,
  variant_name:saved.variant_name || 'Archived Product',
  quantity:saved?.default_quantity? String(saved.default_quantity): '',
  retail_price:retail,
- reseller_price:Math.round(retail * 0.80 * 100) / 100
+ reseller_price:price
  })
  }
  })
@@ -9138,7 +9242,7 @@ function buildDeliveryInvoicePrintCSS() {
  return false
  }
 
- const items = await getAllOrderVariantRows(data || [])
+ const items = await getAllOrderVariantRows(data || [], target === 'invoice' ? invoiceDiscountPct : 20)
  if (target === 'portal') setResellerOrderItems(items)
  else setInvoiceItems(items)
 
@@ -14968,6 +15072,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  has_sss:editFields.hasSss,
  has_pagibig:editFields.hasPagibig,
  has_philhealth:editFields.hasPhilhealth,
+ regular_holiday_pay_eligible:editFields.regularHolidayEligible !== false,
+ special_holiday_pay_eligible:editFields.specialHolidayEligible !== false,
  hire_date:editFields.hireDate,
  sick_leave_balance:0,
  vacation_leave_balance:0,
@@ -14989,10 +15095,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  extra_roles:editFields.extra_roles||null
  }
  let { error } = await supabase.from('employees').update(employeeUpdatePayload).eq('id', editingEmployeeId)
- if (error && isMissingPayrollCostColumnError(error)) {
- const { payroll_cost_type, ...fallbackEmployeeUpdatePayload } = employeeUpdatePayload
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error))) {
+ const fallbackEmployeeUpdatePayload = stripUnsupportedEmployeeOptionalColumns(employeeUpdatePayload, error)
  ;({ error } = await supabase.from('employees').update(fallbackEmployeeUpdatePayload).eq('id', editingEmployeeId))
- if (!error) console.warn('Employee saved without payroll_cost_type. Run Payroll_COGS_Allocation_Supabase_Update.sql to enable the field.')
+ if (!error) console.warn('Employee saved with optional payroll/holiday columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
  }
 
  setSaveEmployeeLoading(false)
@@ -15024,6 +15130,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  has_sss:f.hasSss,
  has_pagibig:f.hasPagibig,
  has_philhealth:f.hasPhilhealth,
+ regular_holiday_pay_eligible:f.regularHolidayEligible !== false,
+ special_holiday_pay_eligible:f.specialHolidayEligible !== false,
  hire_date:f.hire_date,
  sick_leave_balance:0,
  vacation_leave_balance:0,
@@ -15054,10 +15162,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  bank_account_name:f.bank_account_name||''
  }
  let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select('*').single()
- if (error && isMissingPayrollCostColumnError(error)) {
- const { payroll_cost_type, ...fallbackEmployeeInsertPayload } = employeeInsertPayload
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error))) {
+ const fallbackEmployeeInsertPayload = stripUnsupportedEmployeeOptionalColumns(employeeInsertPayload, error)
  ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select('*').single())
- if (!error) console.warn('Employee added without payroll_cost_type. Run Payroll_COGS_Allocation_Supabase_Update.sql to enable the field.')
+ if (!error) console.warn('Employee added with optional payroll/holiday columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
  }
 
  if (error) { showToast('Failed: '+error.message,'red'); return }
@@ -15073,7 +15181,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
  }
 
- setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
+ setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, regularHolidayEligible:true, specialHolidayEligible:true, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
  loadEmployees()
  }
  async function deactivateEmployee(empId, empName) {
@@ -16046,6 +16154,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const totalLate = mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0) || 0
  const totalOT = mergedLogs.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0) || 0
  const totalBreak = mergedLogs.reduce((s,l)=>s+Number(l.total_break_minutes||0),0) || 0
+ const totalDutyMinutes = mergedLogs.reduce((s,l)=>s+getDTRDutyMinutes(l),0) || 0
  const duplicateDays = Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
 
  const rows = buildDateRangeRows(startDate, endDate, ({ dateStr, day, dayName }) => {
@@ -16056,6 +16165,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_in?'#000':'#ccc'}">${log?.time_in||' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_out?'#000':'#ccc'}">${log?.time_out||' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;">${log?.total_break_minutes||0}</td>
+ <td style="padding:5px 8px;font-size:10px;text-align:center;font-weight:bold;color:${getDTRDutyMinutes(log)>0?'#1a1a2e':'#ccc'}">${log?formatDutyHours(getDTRDutyMinutes(log)):' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.late_minutes>0?'#ca1b1b':'#000'}">${log?.late_minutes||0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.overtime_minutes>0?'#2d8a4e':'#000'}">${log?.overtime_approved?log.overtime_minutes:0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;">
@@ -16095,12 +16205,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style="font-size:11px;">Total Late: <strong style="color:#f5a623;">${totalLate} min</strong></div>
  <div style="font-size:11px;">Total OT: <strong style="color:#2d8a4e;">${totalOT} min</strong></div>
  <div style="font-size:11px;">Total Break: <strong>${totalBreak} min</strong></div>
+ <div style="font-size:11px;">Duty Hours: <strong>${formatDutyHours(totalDutyMinutes)}</strong></div>
  </div>
  </div>
  <table>
  <thead><tr>
  <th>Day</th><th>Date</th><th>Time In</th><th>Time Out</th>
- <th>Break (min)</th><th>Late (min)</th><th>OT (min)</th><th>Status</th>
+ <th>Break (min)</th><th>Duty Hours</th><th>Late (min)</th><th>OT (min)</th><th>Status</th>
  </tr></thead>
  <tbody>${rows}</tbody>
  <tfoot>
@@ -16108,6 +16219,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <td colspan="2" style="padding:6px 8px;font-size:10px;">TOTALS</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;">${totalDaysWorked} day(s)</td><td></td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;">${totalBreak}</td>
+ <td style="padding:6px 8px;font-size:10px;text-align:center;color:#1a1a2e;">${formatDutyHours(totalDutyMinutes)}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#ca1b1b;">${totalLate}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#2d8a4e;">${totalOT}</td>
  <td></td>
@@ -16526,8 +16638,9 @@ async function computePayroll() {
   for (const h of holidayList||[]) {
    const workedInfo=workDetailByDate[String(h.holiday_date||'').slice(0,10)]
    const holidayBasePay=workedInfo?dailyRate:0
-   if (h.holiday_type==='regular') holidayPay+=holidayBasePay
-   else if (h.holiday_type==='special') holidayPay+=holidayBasePay*0.3
+   const holidayType = String(h.holiday_type || '').toLowerCase()
+   if (holidayType === 'regular' && isHolidayPayEligible(emp, 'regular')) holidayPay+=holidayBasePay
+   else if (holidayType === 'special' && isHolidayPayEligible(emp, 'special')) holidayPay+=holidayBasePay*0.3
   }
 
   let adjEarnings=0,adjDeductions=0
@@ -17783,6 +17896,12 @@ async function computePayroll() {
  {PAYROLL_COST_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Production Labor / COGS will be included in COGS after payroll is released. Other classifications remain operating payroll expense.</p>
+ <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+ <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
+ <label style={lblS}><input type="checkbox" checked={newEmpFields.regularHolidayEligible !== false} onChange={e=>setNewEmpFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
+ <label style={lblS}><input type="checkbox" checked={newEmpFields.specialHolidayEligible !== false} onChange={e=>setNewEmpFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Uncheck for supervisors or employees you want exempted from holiday premium computation.</p>
+ </div>
  {adminRole==='owner' && (<>
  <label style={lblS}> Admin Role (Owner only grants system access):</label>
  <select value={newEmpFields.admin_role||''} onChange={e=>setNewEmpFields(p=>({...p,admin_role:e.target.value||null}))} style={{...inputStyle, borderColor:newEmpFields.admin_role?'#ca1b1b':'#ddd', fontWeight:newEmpFields.admin_role?'bold':'normal' }}>
@@ -17864,12 +17983,13 @@ async function computePayroll() {
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
  {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
+ <p style={cps}>Holiday Pay: <Badge label={emp.regular_holiday_pay_eligible === false?'Regular Exempt':'Regular Eligible'} color={emp.regular_holiday_pay_eligible === false?'red':'green'} /> <Badge label={emp.special_holiday_pay_eligible === false?'Special Exempt':'Special Eligible'} color={emp.special_holiday_pay_eligible === false?'red':'green'} /></p>
  </div>
  </div>
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -17900,6 +18020,12 @@ async function computePayroll() {
  {PAYROLL_COST_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Use Production Labor / COGS for mixers, frymen, bakers, finishers, and packers directly making products.</p>
+ <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+ <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
+ <label style={lblS}><input type="checkbox" checked={editFields.regularHolidayEligible !== false} onChange={e=>setEditFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
+ <label style={lblS}><input type="checkbox" checked={editFields.specialHolidayEligible !== false} onChange={e=>setEditFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Uncheck Regular and/or Special if this employee should not receive that holiday premium.</p>
+ </div>
  {adminRole==='owner'||adminRole==='manager'? (<>
  <label style={lblS}> Primary Role (grants system access):</label>
  <select value={editFields.admin_role||''} onChange={e=>setEditFields(p=>({...p,admin_role:e.target.value||null}))} style={{...inputStyle, borderColor:editFields.admin_role?'#ca1b1b':'#ddd', fontWeight:editFields.admin_role?'bold':'normal' }}>
@@ -19399,6 +19525,7 @@ async function computePayroll() {
  totalLate: mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0,
  totalOT: mergedLogs.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0,
  totalBreak: mergedLogs.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0,
+ totalDutyMinutes: mergedLogs.reduce((s,l)=>s+getDTRDutyMinutes(l),0)||0,
  duplicateDays: Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
  })
  }}> VIEW DTR</button>
@@ -19438,6 +19565,7 @@ async function computePayroll() {
  ['Late (min)', dtrStats.totalLate, '#f5a623'],
  ['OT (min)', dtrStats.totalOT, '#4a90d9'],
  ['Break (min)', dtrStats.totalBreak, '#888'],
+ ['Duty Hours', formatDutyHours(dtrStats.totalDutyMinutes || 0), '#1a1a2e'],
  ['Duplicate Days', dtrStats.duplicateDays || 0, '#f5a623'],
  ].map(([label, value, color])=>(
  <div key={label} style={{ background:'white', borderRadius:'8px', padding:'8px', textAlign:'center', minWidth:'80px' }}>
@@ -19459,6 +19587,7 @@ async function computePayroll() {
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Time In</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Time Out</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Break</th>
+ <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Duty Hours</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Late</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>OT</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Status</th>
@@ -19475,6 +19604,7 @@ async function computePayroll() {
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_in?'#2d8a4e':'#ccc', fontSize:'12px', fontWeight:log?.time_in?'bold':'normal' }}>{log?.time_in||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_out?'#333':'#ccc', fontSize:'12px' }}>{log?.time_out||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:'#888' }}>{log?.total_break_minutes||0}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTRDutyMinutes(log)>0?'#1a1a2e':'#ccc', fontWeight:getDTRDutyMinutes(log)>0?'bold':'normal' }}>{log?formatDutyHours(getDTRDutyMinutes(log)):' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:Number(log?.late_minutes||0)>0?'#ca1b1b':'#888', fontWeight:Number(log?.late_minutes||0)>0?'bold':'normal' }}>{log?.late_minutes||0}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:log?.overtime_approved?'#2d8a4e':'#888', fontWeight:log?.overtime_approved?'bold':'normal' }}>{log?.overtime_approved?log.overtime_minutes:0}</td>
  <td style={{ padding:'7px 10px', textAlign:'center' }}>
@@ -19495,6 +19625,7 @@ async function computePayroll() {
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>{dtrStats.totalWorked} days</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}></td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>{dtrStats.totalBreak} min</td>
+ <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#4ade80' }}>{formatDutyHours(dtrStats.totalDutyMinutes || 0)}</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#f5a623' }}>{dtrStats.totalLate} min</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#4ade80' }}>{dtrStats.totalOT} min</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#ca1b1b' }}>{dtrStats.totalAbsent} ABS</td>
@@ -23197,7 +23328,7 @@ async function computePayroll() {
  setInvoiceCustomerAddress('')
  setInvoiceCustomerContact('')
  setInvoiceDiscountPct(type === 'reseller' ? '20' : '0')
- if (type === 'non_reseller') await loadAllInvoiceVariants('')
+ if (type === 'non_reseller') await loadAllInvoiceVariants('', 0)
 }} style={inputStyle}>
 <option value="reseller">Reseller Invoice</option>
 <option value="non_reseller">Non-reseller / Online Customer</option>
@@ -23298,22 +23429,8 @@ async function computePayroll() {
 <button style={{ background: invoiceResellerId? '#2d8a4e': '#aaa', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor: invoiceResellerId? 'pointer': 'not-allowed', fontWeight:'bold', fontSize:'11px' }}
 onClick={async ()=>{
  if (!invoiceResellerId) { showToast('Select a reseller first.','red'); return }
- const { data } = await supabase.from('reseller_default_orders').select('*').eq('reseller_id', invoiceResellerId)
- if (!data || data.length === 0) { showToast('No default order set. Go to Resellers tab EDIT to set one.','red'); return }
- let variants = donutVariants
- if (!variants || variants.length === 0) {
- const { data:vd } = await supabase.from('donut_variants').select('*')
- variants = vd || []
- setDonutVariants(variants)
- }
- const items = data.map(d => {
- const v = variants.find(vv=>vv.id===d.variant_id)
- const retail = safeNum(v?.selling_price, 0)
- const price = moneyRound(retail * (1 - safeNum(invoiceDiscountPct, 0) / 100))
- return { variant_id:d.variant_id, variant_name:d.variant_name||v?.name||'', quantity:d.default_quantity, retail_price:retail, reseller_price:price }
- })
- setInvoiceItems(items)
- showToast(`Default order loaded ${items.length} variants`)
+ await buildInvoiceFromReseller(invoiceResellerId)
+ showToast('Default order loaded. All variants remain visible; saved quantities were copied where available.')
 }}>USE DEFAULT ORDER</button>
 )}
 <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'8px', padding:'6px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>loadAllInvoiceVariants('')}>LOAD ALL VARIANTS</button>
@@ -27609,6 +27726,7 @@ onClick={async ()=>{
  <p style={{ fontSize:'11px', color:'#ca1b1b', margin:'5px 0 0', fontWeight:'bold' }}>Dispute already submitted. Waiting for admin review.</p>
  </div>
  )}
+ <button style={{...btnBlack, width:'auto', padding:'8px 14px', margin:'8px 0 0', fontSize:'12px' }} onClick={()=>downloadEmployeePayslip(pay)}> DOWNLOAD MY PAYSLIP</button>
  <EmployeePortalPayslipBreakdown pay={pay} />
  {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement)&&(
  <div style={{ marginTop:'10px' }}>
