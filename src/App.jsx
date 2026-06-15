@@ -682,7 +682,7 @@ function dedupePayslipDisputes(rows = []) {
 
 function isMissingPayrollWorkflowColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
- return msg.includes('payroll_status') || msg.includes('employee_acknowledgement') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('payslip_serial') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes') || msg.includes('requested_cash_advance_deduction') || msg.includes('deferred_cash_advance_deduction') || msg.includes('non_ca_deduction_overflow') || msg.includes('holiday_pay_exempted') || msg.includes('holiday_pay_exemption_note') || (msg.includes('schema cache') && msg.includes('payroll_records')) || (msg.includes('could not find') && msg.includes('payroll_records'))
+ return msg.includes('payroll_status') || msg.includes('employee_acknowledgement') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('payslip_serial') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes') || msg.includes('requested_cash_advance_deduction') || msg.includes('deferred_cash_advance_deduction') || msg.includes('non_ca_deduction_overflow') || (msg.includes('schema cache') && msg.includes('payroll_records')) || (msg.includes('could not find') && msg.includes('payroll_records'))
 }
 
 function isMissingCashAdvanceDetailColumnError(error) {
@@ -795,21 +795,6 @@ function classifyPayrollRecords(records = [], employeeRows = [], options = {}) {
 function isMissingPayrollCostColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
  return msg.includes('payroll_cost_type') || msg.includes('payroll_cost_label') || msg.includes('column') && msg.includes('cost')
-}
-
-function isMissingHolidayEligibilityColumnError(error) {
- const msg = String(error?.message || error || '').toLowerCase()
- return msg.includes('regular_holiday_pay_eligible') || msg.includes('special_holiday_pay_eligible') || (msg.includes('schema cache') && msg.includes('employees')) || (msg.includes('could not find') && msg.includes('employees'))
-}
-
-function stripEmployeeOptionalColumns(payload = {}) {
- const {
-  payroll_cost_type,
-  regular_holiday_pay_eligible,
-  special_holiday_pay_eligible,
-  ...fallbackPayload
- } = payload
- return fallbackPayload
 }
 
 
@@ -1130,7 +1115,6 @@ function EmployeePortalPayslipBreakdown({ pay }) {
     <SectionRow label="Overtime Pay" amount={value('overtime_pay')} note={`${value('overtime_minutes')} approved OT minute(s)`} />
     <SectionRow label="Night Differential Pay" amount={value('night_diff_pay')} note={`${value('night_diff_minutes')} night differential minute(s)`} />
     <SectionRow label="Holiday Pay" amount={value('holiday_pay')} />
-    <SectionRow label="Holiday Pay Excluded / Exempted" amount={value('holiday_pay_exempted')} note={pay.holiday_pay_exemption_note || ''} highlight={value('holiday_pay_exempted') > 0 ? '#ca1b1b' : undefined} />
     <SectionRow label="Paid SIL Leave" amount={value('paid_leave_pay')} note={`${value('paid_leave_days')} paid leave day(s)`} />
     <SectionRow label="Other Earnings / Adjustments" amount={value('other_earnings')} />
     <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0 0', fontWeight:'bold', fontSize:'13px' }}>
@@ -1375,7 +1359,7 @@ export default function App() {
  const [breakTimerSeconds, setBreakTimerSeconds] = useState(0)
  const [breakTimerInterval, setBreakTimerInterval] = useState(null)
  const [editFields, setEditFields] = useState({})
- const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto', regular_holiday_pay_eligible:true, special_holiday_pay_eligible:true })
+ const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
  const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
  const [finalPayReason, setFinalPayReason] = useState('resigned')
  const [finalPayLastDate, setFinalPayLastDate] = useState(today)
@@ -15000,17 +14984,15 @@ This recovery button creates one approved expense record using GROSS payroll ear
  emergency_contact_number:editFields.emergency_contact||'',
  employment_type:editFields.employment_type||'regular',
  payroll_cost_type:editFields.payroll_cost_type||'auto',
- regular_holiday_pay_eligible:editFields.regular_holiday_pay_eligible !== false,
- special_holiday_pay_eligible:editFields.special_holiday_pay_eligible !== false,
  department:editFields.department||'',
  admin_role:editFields.admin_role||null,
  extra_roles:editFields.extra_roles||null
  }
  let { error } = await supabase.from('employees').update(employeeUpdatePayload).eq('id', editingEmployeeId)
- if (error && (isMissingPayrollCostColumnError(error) || isMissingHolidayEligibilityColumnError(error))) {
- const fallbackEmployeeUpdatePayload = stripEmployeeOptionalColumns(employeeUpdatePayload)
+ if (error && isMissingPayrollCostColumnError(error)) {
+ const { payroll_cost_type, ...fallbackEmployeeUpdatePayload } = employeeUpdatePayload
  ;({ error } = await supabase.from('employees').update(fallbackEmployeeUpdatePayload).eq('id', editingEmployeeId))
- if (!error) console.warn('Employee saved without optional employee columns. Run the payroll/holiday Supabase SQL updates to enable these fields.')
+ if (!error) console.warn('Employee saved without payroll_cost_type. Run Payroll_COGS_Allocation_Supabase_Update.sql to enable the field.')
  }
 
  setSaveEmployeeLoading(false)
@@ -15058,8 +15040,6 @@ This recovery button creates one approved expense record using GROSS payroll ear
  emergency_contact_number:f.emergency_contact||'',
  employment_type:f.employment_type||'probationary',
  payroll_cost_type:f.payroll_cost_type||'auto',
- regular_holiday_pay_eligible:f.regular_holiday_pay_eligible !== false,
- special_holiday_pay_eligible:f.special_holiday_pay_eligible !== false,
  department:f.department||'',
  sss_no:f.sss_no||'',
  pagibig_no:f.pagibig_no||'',
@@ -15074,10 +15054,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  bank_account_name:f.bank_account_name||''
  }
  let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select('*').single()
- if (error && (isMissingPayrollCostColumnError(error) || isMissingHolidayEligibilityColumnError(error))) {
- const fallbackEmployeeInsertPayload = stripEmployeeOptionalColumns(employeeInsertPayload)
+ if (error && isMissingPayrollCostColumnError(error)) {
+ const { payroll_cost_type, ...fallbackEmployeeInsertPayload } = employeeInsertPayload
  ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select('*').single())
- if (!error) console.warn('Employee added without optional employee columns. Run the payroll/holiday Supabase SQL updates to enable these fields.')
+ if (!error) console.warn('Employee added without payroll_cost_type. Run Payroll_COGS_Allocation_Supabase_Update.sql to enable the field.')
  }
 
  if (error) { showToast('Failed: '+error.message,'red'); return }
@@ -15093,7 +15073,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
  }
 
- setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto', regular_holiday_pay_eligible:true, special_holiday_pay_eligible:true })
+ setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
  loadEmployees()
  }
  async function deactivateEmployee(empId, empName) {
@@ -16542,24 +16522,13 @@ async function computePayroll() {
   const nightDiffPay=nightDiffMinutes*minuteRate*0.10
 
   // Holiday premium based on worked holiday attendance date.
-  // Employee-level holiday eligibility lets owner exempt supervisors or other non-entitled roles.
-  const regularHolidayPayEligible = emp.regular_holiday_pay_eligible !== false
-  const specialHolidayPayEligible = emp.special_holiday_pay_eligible !== false
   let holidayPay=0
-  let holidayPayExempted=0
   for (const h of holidayList||[]) {
    const workedInfo=workDetailByDate[String(h.holiday_date||'').slice(0,10)]
    const holidayBasePay=workedInfo?dailyRate:0
-   if (h.holiday_type==='regular') {
-    if (regularHolidayPayEligible) holidayPay+=holidayBasePay
-    else holidayPayExempted+=holidayBasePay
-   } else if (h.holiday_type==='special') {
-    if (specialHolidayPayEligible) holidayPay+=holidayBasePay*0.3
-    else holidayPayExempted+=holidayBasePay*0.3
-   }
+   if (h.holiday_type==='regular') holidayPay+=holidayBasePay
+   else if (h.holiday_type==='special') holidayPay+=holidayBasePay*0.3
   }
-  holidayPay=moneyRound(holidayPay)
-  holidayPayExempted=moneyRound(holidayPayExempted)
 
   let adjEarnings=0,adjDeductions=0
   for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
@@ -16588,7 +16557,7 @@ async function computePayroll() {
   const undertimeMinutesInfo=undertimeMinutesApproved
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayPayExempted, holidayPayExemptionNote:holidayPayExempted>0?'Holiday premium excluded because employee is marked not entitled.':'', adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -16612,8 +16581,6 @@ async function computePayroll() {
   night_diff_pay:moneyRound(pay.nightDiffPay),
   night_diff_minutes:pay.nightDiffMinutes||0,
   holiday_pay:moneyRound(pay.holidayPay),
-  holiday_pay_exempted:moneyRound(pay.holidayPayExempted||0),
-  holiday_pay_exemption_note:pay.holidayPayExemptionNote||'',
   other_earnings:moneyRound(pay.adjustmentEarnings),
   total_earnings:moneyRound(pay.totalEarnings),
   late_minutes:pay.lateMinutes||0,
@@ -16652,7 +16619,6 @@ async function computePayroll() {
      total_worked_minutes, regular_paid_minutes, overtime_minutes, night_diff_minutes,
      late_deduction, undertime_deduction,
      requested_cash_advance_deduction, deferred_cash_advance_deduction, non_ca_deduction_overflow,
-     holiday_pay_exempted, holiday_pay_exemption_note,
      ...safeRow
     } = row
     return safeRow
@@ -17779,7 +17745,6 @@ async function computePayroll() {
  <p style={cps}> {emp.contact_number||' '} | {emp.home_address||' '}</p>
  <p style={cps}> {emp.emergency_contact_name||' '} {emp.emergency_contact_number||' '}</p>
  <p style={cps}>Payroll Cost: <Badge label={getPayrollCostTypeInfo(getEmployeePayrollCostType(emp)).shortLabel} color={isProductionPayrollCostType(getEmployeePayrollCostType(emp))?'orange':'gray'} /> {isProductionPayrollCostType(getEmployeePayrollCostType(emp))? 'Counts under COGS when payroll is released':'Counts under operating payroll expense when payroll is released'}</p>
- <p style={cps}>Holiday Pay: <Badge label={(emp.regular_holiday_pay_eligible === false && emp.special_holiday_pay_eligible === false)?'Exempt':'Eligible'} color={(emp.regular_holiday_pay_eligible === false && emp.special_holiday_pay_eligible === false)?'red':'green'} /> Regular: {emp.regular_holiday_pay_eligible === false?'No':'Yes'} | Special: {emp.special_holiday_pay_eligible === false?'No':'Yes'}</p>
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
  {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
@@ -17818,12 +17783,6 @@ async function computePayroll() {
  {PAYROLL_COST_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Production Labor / COGS will be included in COGS after payroll is released. Other classifications remain operating payroll expense.</p>
- <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
-  <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>Holiday Pay Eligibility</p>
-  <label style={lblS}><input type="checkbox" checked={newEmpFields.regular_holiday_pay_eligible !== false} onChange={e=>setNewEmpFields(p=>({...p,regular_holiday_pay_eligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
-  <label style={lblS}><input type="checkbox" checked={newEmpFields.special_holiday_pay_eligible !== false} onChange={e=>setNewEmpFields(p=>({...p,special_holiday_pay_eligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
-  <p style={{ color:'#777', fontSize:'11px', margin:'4px 0 0' }}>Uncheck both for supervisors or employees you decide are not entitled to holiday premium.</p>
- </div>
  {adminRole==='owner' && (<>
  <label style={lblS}> Admin Role (Owner only grants system access):</label>
  <select value={newEmpFields.admin_role||''} onChange={e=>setNewEmpFields(p=>({...p,admin_role:e.target.value||null}))} style={{...inputStyle, borderColor:newEmpFields.admin_role?'#ca1b1b':'#ddd', fontWeight:newEmpFields.admin_role?'bold':'normal' }}>
@@ -17910,7 +17869,7 @@ async function computePayroll() {
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', regular_holiday_pay_eligible:emp.regular_holiday_pay_eligible !== false, special_holiday_pay_eligible:emp.special_holiday_pay_eligible !== false, department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -17941,12 +17900,6 @@ async function computePayroll() {
  {PAYROLL_COST_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Use Production Labor / COGS for mixers, frymen, bakers, finishers, and packers directly making products.</p>
- <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
-  <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>Holiday Pay Eligibility</p>
-  <label style={lblS}><input type="checkbox" checked={editFields.regular_holiday_pay_eligible !== false} onChange={e=>setEditFields(p=>({...p,regular_holiday_pay_eligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
-  <label style={lblS}><input type="checkbox" checked={editFields.special_holiday_pay_eligible !== false} onChange={e=>setEditFields(p=>({...p,special_holiday_pay_eligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
-  <p style={{ color:'#777', fontSize:'11px', margin:'4px 0 0' }}>Uncheck both for supervisors or employees you decide are not entitled to holiday premium.</p>
- </div>
  {adminRole==='owner'||adminRole==='manager'? (<>
  <label style={lblS}> Primary Role (grants system access):</label>
  <select value={editFields.admin_role||''} onChange={e=>setEditFields(p=>({...p,admin_role:e.target.value||null}))} style={{...inputStyle, borderColor:editFields.admin_role?'#ca1b1b':'#ddd', fontWeight:editFields.admin_role?'bold':'normal' }}>
@@ -18774,7 +18727,6 @@ async function computePayroll() {
  {pay.overtimePay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Overtime Pay ({pay.overtimeMinutes}min)</span><span>{php(pay.overtimePay)}</span></div>}
  {pay.nightDiffPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Night Differential</span><span>{php(pay.nightDiffPay)}</span></div>}
  {pay.holidayPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Holiday Pay</span><span>{php(pay.holidayPay)}</span></div>}
- {(pay.holidayPayExempted||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', color:'#ca1b1b', fontSize:'12px' }}><span>Holiday Pay Excluded</span><span>{php(pay.holidayPayExempted)}</span></div>}
  {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Earnings <button style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #bfe5ca', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'addition')}>FIND SOURCE</button></span><span>{php(pay.adjustmentEarnings)}</span></div>}
  {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late recorded: {pay.lateMinutes}min (no automatic deduction)</span><span> </span></div>}
  {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Approved Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
