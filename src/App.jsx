@@ -149,6 +149,60 @@ function diffFromShiftEndMinutes(shiftStart, shiftEnd, clockOutTime, actualTimeI
  if ((start!== null && out < start) || actualCrossedMidnight) out += 24 * 60
  return out - end
 }
+
+function getShiftRelativeMinute(timeValue, shiftStartMinute, shiftEndMinute) {
+ let minute = minutesFromTime(timeValue)
+ if (shiftEndMinute > 24 * 60 && minute < shiftStartMinute) minute += 24 * 60
+ return minute
+}
+
+function getMinuteOverlap(startA, endA, startB, endB) {
+ const start = Math.max(startA, startB)
+ const end = Math.min(endA, endB)
+ return end > start ? end - start : 0
+}
+
+function calculateNightDifferentialMinutes(timeIn, timeOut, breakRows = []) {
+ if (!timeIn || !timeOut) return 0
+ const shiftStart = minutesFromTime(timeIn)
+ let shiftEnd = minutesFromTime(timeOut)
+ if (shiftEnd < shiftStart) shiftEnd += 24 * 60
+ if (shiftEnd <= shiftStart) return 0
+
+ // Night differential window is 10:00 PM to 6:00 AM.
+ // Break minutes inside this window are excluded from night differential pay.
+ const nightWindows = [
+  [0, 6 * 60],
+  [22 * 60, 30 * 60],
+  [46 * 60, 54 * 60]
+ ]
+
+ let paidNightMinutes = 0
+ nightWindows.forEach(([start, end]) => {
+  paidNightMinutes += getMinuteOverlap(shiftStart, shiftEnd, start, end)
+ })
+
+ let breakNightMinutes = 0
+ ;(breakRows || []).forEach(breakRow => {
+  if (!breakRow?.break_out || !breakRow?.break_in) return
+  const breakStartRaw = minutesFromTime(breakRow.break_out)
+  let breakStart = getShiftRelativeMinute(breakRow.break_out, shiftStart, shiftEnd)
+  let breakEnd = minutesFromTime(breakRow.break_in)
+  if (shiftEnd > 24 * 60 && breakEnd < shiftStart) breakEnd += 24 * 60
+  if (breakEnd <= breakStart || breakEnd < breakStartRaw) breakEnd += 24 * 60
+  if (breakEnd <= breakStart) return
+  const cappedBreakStart = Math.max(breakStart, shiftStart)
+  const cappedBreakEnd = Math.min(breakEnd, shiftEnd)
+  if (cappedBreakEnd <= cappedBreakStart) return
+  nightWindows.forEach(([start, end]) => {
+   breakNightMinutes += getMinuteOverlap(cappedBreakStart, cappedBreakEnd, start, end)
+  })
+ })
+
+ return Math.max(0, Math.round(paidNightMinutes - breakNightMinutes))
+}
+
+
 function getDateOffsetString(days) {
  const d = new Date()
  d.setDate(d.getDate() + days)
@@ -244,6 +298,144 @@ function daysInclusive(startDate, endDate) {
  const end = parseLocalDate(endDate)
  if (!start ||!end || end < start) return 0
  return Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1
+}
+
+
+function addDaysToDateString(dateStr, days = 0) {
+ const date = parseLocalDate(dateStr)
+ if (!date) return ''
+ date.setDate(date.getDate() + safeNum(days, 0))
+ return formatDateLocal(date)
+}
+
+function buildDateRangeRows(startDate, endDate, mapper = null) {
+ const totalDays = daysInclusive(startDate, endDate)
+ return Array.from({ length: totalDays }, (_, i) => {
+  const dateStr = addDaysToDateString(startDate, i)
+  const date = parseLocalDate(dateStr)
+  const row = {
+   dateStr,
+   day: date? date.getDate(): i + 1,
+   dayName: date? date.toLocaleDateString('en-US', { weekday:'short' }): '',
+   index:i
+  }
+  return typeof mapper === 'function'? mapper(row, i): row
+ })
+}
+
+function pad2(value) {
+ return String(value).padStart(2, '0')
+}
+
+function yearMonthFromParts(year, month) {
+ return `${year}-${pad2(month)}`
+}
+
+function shiftYearMonth(yearMonth, monthOffset = 0) {
+ const [y, m] = String(yearMonth || '').split('-').map(Number)
+ if (!y || !m) return ''
+ const date = new Date(y, m - 1 + safeNum(monthOffset, 0), 1)
+ return yearMonthFromParts(date.getFullYear(), date.getMonth() + 1)
+}
+
+function getPayrollCutoffPeriodFromParts(yearMonth, cutoffType = '11-25') {
+ const [y, m] = String(yearMonth || '').split('-').map(Number)
+ if (!y || !m) return null
+ const ymDate = (year, month, day) => `${year}-${pad2(month)}-${pad2(day)}`
+ if (cutoffType === '26-10') {
+  const nextYear = m === 12? y + 1: y
+  const nextMonth = m === 12? 1: m + 1
+  return {
+   key:`${yearMonth}|26-10`,
+   type:'26-10',
+   start:ymDate(y, m, 26),
+   end:ymDate(nextYear, nextMonth, 10),
+   label:`${formatDateForDisplay(ymDate(y, m, 26))} – ${formatDateForDisplay(ymDate(nextYear, nextMonth, 10))} (26th–10th)`
+  }
+ }
+ return {
+  key:`${yearMonth}|11-25`,
+  type:'11-25',
+  start:ymDate(y, m, 11),
+  end:ymDate(y, m, 25),
+  label:`${formatDateForDisplay(ymDate(y, m, 11))} – ${formatDateForDisplay(ymDate(y, m, 25))} (11th–25th)`
+ }
+}
+
+function getDTRCutoffPeriodFromKey(key) {
+ const [yearMonth, type] = String(key || '').split('|')
+ return getPayrollCutoffPeriodFromParts(yearMonth, type || '11-25')
+}
+
+function getCurrentDTRCutoffKey(todayDate = getTodayDate()) {
+ const date = parseLocalDate(todayDate)
+ if (!date) return `${String(todayDate).slice(0, 7)}|11-25`
+ const y = date.getFullYear()
+ const m = date.getMonth() + 1
+ const d = date.getDate()
+ if (d >= 11 && d <= 25) return `${yearMonthFromParts(y, m)}|11-25`
+ if (d >= 26) return `${yearMonthFromParts(y, m)}|26-10`
+ return `${shiftYearMonth(yearMonthFromParts(y, m), -1)}|26-10`
+}
+
+function getPreviousDTRCutoffKey(key) {
+ const [yearMonth, type] = String(key || '').split('|')
+ if (type === '11-25') return `${shiftYearMonth(yearMonth, -1)}|26-10`
+ return `${yearMonth}|11-25`
+}
+
+function getDTRCutoffOptions(count = 36, todayDate = getTodayDate()) {
+ const options = []
+ let key = getCurrentDTRCutoffKey(todayDate)
+ for (let i = 0; i < count; i++) {
+  const period = getDTRCutoffPeriodFromKey(key)
+  if (period) options.push(period)
+  key = getPreviousDTRCutoffKey(key)
+ }
+ return options
+}
+
+function formatDateForDisplay(dateStr) {
+ const date = parseLocalDate(dateStr)
+ if (!date) return dateStr || ''
+ return date.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })
+}
+
+function mergeDTRDayLogs(dayLogs = []) {
+ const logs = (dayLogs || []).filter(Boolean)
+ if (!logs.length) return null
+ const hasAbsent = logs.some(l => l.status === 'Absent')
+ const timeInLogs = logs.filter(l => l.time_in)
+ const timeOutLogs = logs.filter(l => l.time_out)
+ const earliestIn = timeInLogs.map(l => l.time_in).sort()[0] || ''
+ const latestOut = timeOutLogs.map(l => l.time_out).sort().slice(-1)[0] || ''
+ const approvedOT = logs.filter(l => l.overtime_approved === true).reduce((sum,l)=>sum+safeNum(l.overtime_minutes,0),0)
+ const lateMinutes = logs.reduce((sum,l)=>sum+safeNum(l.late_minutes,0),0)
+ const breakMinutes = logs.reduce((sum,l)=>sum+safeNum(l.total_break_minutes,0),0)
+ const status = hasAbsent? 'Absent': lateMinutes > 0? 'Late': earliestIn? 'Present': (logs[0]?.status || '')
+ return {
+  ...logs[0],
+  time_in:earliestIn,
+  time_out:latestOut,
+  late_minutes:lateMinutes,
+  total_break_minutes:breakMinutes,
+  overtime_minutes:approvedOT,
+  overtime_approved:approvedOT > 0,
+  status,
+  _logs:logs,
+  duplicateCount:logs.length
+ }
+}
+
+function groupDTRLogsByDate(logs = []) {
+ const grouped = {}
+ ;(logs || []).forEach(log => {
+  const key = String(log.attendance_date || '').slice(0, 10)
+  if (!key) return
+  if (!grouped[key]) grouped[key] = []
+  grouped[key].push(log)
+ })
+ return grouped
 }
 
 function getLeaveOverlapDays(leave, periodStart, periodEnd) {
@@ -426,6 +618,117 @@ function isReleasedPayrollRecord(record = {}) {
  return record.payroll_approved === true || !!record.approved_at
 }
 
+function normalizePayrollAcknowledgement(value) {
+ return String(value || '').trim().toLowerCase()
+}
+
+function normalizePayrollStatus(value) {
+ return String(value || '').trim().toLowerCase()
+}
+
+function isDraftPayrollRecord(record = {}) {
+ const ack = normalizePayrollAcknowledgement(record.employee_acknowledgement)
+ const status = normalizePayrollStatus(record.payroll_status)
+ return ack === 'draft' || status === 'draft'
+}
+
+function isPayrollSentForEmployeeReview(record = {}) {
+ if (isReleasedPayrollRecord(record)) return true
+ const ack = normalizePayrollAcknowledgement(record.employee_acknowledgement)
+ const status = normalizePayrollStatus(record.payroll_status)
+ return !!record.review_sent_at || ['pending','agreed','disputed','auto-acknowledged'].includes(ack) || ['under_review','released','approved'].includes(status)
+}
+
+function getPayrollReviewStatusText(record = {}) {
+ if (isReleasedPayrollRecord(record)) return 'Released'
+ if (isDraftPayrollRecord(record)) return 'Draft - admin only'
+ if (normalizePayrollAcknowledgement(record.employeeAcknowledgement || record.employee_acknowledgement) === 'disputed') return 'Disputed'
+ if (normalizePayrollAcknowledgement(record.employeeAcknowledgement || record.employee_acknowledgement) === 'agreed') return 'Agreed'
+ if (isPayrollSentForEmployeeReview(record)) return 'Sent for employee review'
+ return 'Draft - admin only'
+}
+
+function getPayslipDisputeKey(dispute = {}) {
+ const recordId = String(dispute.payroll_record_id || '').trim()
+ if (recordId) return `record:${recordId}`
+ return [
+  dispute.employee_id || dispute.employee_code || dispute.employee_name || '',
+  dispute.payroll_start || '',
+  dispute.payroll_end || '',
+  dispute.reason || ''
+ ].map(v=>String(v).trim().toLowerCase()).join('|')
+}
+
+function dedupePayslipDisputes(rows = []) {
+ const byKey = new Map()
+ ;(rows || []).forEach(row => {
+  const key = getPayslipDisputeKey(row)
+  const existing = byKey.get(key)
+  if (!existing) {
+   byKey.set(key, { ...row, duplicate_count:0, duplicate_ids:[] })
+   return
+  }
+  const rowTime = new Date(row.created_at || 0).getTime() || 0
+  const existingTime = new Date(existing.created_at || 0).getTime() || 0
+  if (rowTime > existingTime) {
+   byKey.set(key, { ...row, duplicate_count:safeNum(existing.duplicate_count,0) + 1, duplicate_ids:[...(existing.duplicate_ids || []), existing.id, ...(row.duplicate_ids || [])].filter(Boolean) })
+  } else {
+   existing.duplicate_count = safeNum(existing.duplicate_count,0) + 1
+   existing.duplicate_ids = [...(existing.duplicate_ids || []), row.id].filter(Boolean)
+  }
+ })
+ return Array.from(byKey.values()).sort((a,b)=>String(b.created_at || '').localeCompare(String(a.created_at || '')))
+}
+
+function isMissingPayrollWorkflowColumnError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('payroll_status') || msg.includes('employee_acknowledgement') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('payslip_serial') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes') || msg.includes('requested_cash_advance_deduction') || msg.includes('deferred_cash_advance_deduction') || msg.includes('non_ca_deduction_overflow') || msg.includes('holiday_pay_exempted') || msg.includes('holiday_pay_exemption_note') || (msg.includes('schema cache') && msg.includes('payroll_records')) || (msg.includes('could not find') && msg.includes('payroll_records'))
+}
+
+function isMissingCashAdvanceDetailColumnError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('approved_at') || msg.includes('approved_by') || msg.includes('disapproved_at') || msg.includes('processed_at') || msg.includes('processed_by') || msg.includes('ca_ledger_id') || msg.includes('source_request_id') || msg.includes('cash_advance_request_id') || msg.includes('request_installments_total') || msg.includes('request_per_payroll_deduction') || msg.includes('column') || msg.includes('schema cache') || msg.includes('could not find')
+}
+
+function formatDateTimeForAdmin(value) {
+ if (!value) return 'Not recorded'
+ try {
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return String(value)
+  return d.toLocaleString('en-PH', { year:'numeric', month:'short', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+ } catch(e) { return String(value) }
+}
+
+function getCAFiledDate(req = {}) {
+ return req.created_at || req.filed_at || req.request_date || req.advance_date || ''
+}
+
+function getCAApprovedDate(req = {}, ledger = null) {
+ return req.approved_at || req.processed_at || ledger?.approved_at || ledger?.created_at || ledger?.advance_date || ''
+}
+
+function getCAProcessedBy(req = {}, ledger = null) {
+ return req.approved_by || req.processed_by || ledger?.approved_by || ledger?.created_by || ledger?.recorded_by || 'Admin'
+}
+
+function getCAInstallmentInfo(ca = {}, req = {}) {
+ const total = Math.max(0, safeNum(ca.installments_total ?? req.request_installments_total ?? req.installments_total, 0))
+ const remaining = Math.max(0, safeNum(ca.installments_remaining ?? req.installments_remaining, 0))
+ const completed = total > 0 ? Math.max(0, total - remaining) : 0
+ const perPayroll = safeNum(ca.per_payroll_deduction ?? req.request_per_payroll_deduction ?? req.per_payroll_deduction, 0)
+ return { total, remaining, completed, perPayroll }
+}
+
+function getCashAdvanceStatusColor(status) {
+ const s = String(status || '').toLowerCase()
+ if (s.includes('paid') || s === 'approved') return 'green'
+ if (s.includes('disapproved') || s.includes('rejected')) return 'red'
+ if (s.includes('pending')) return 'orange'
+ return 'gray'
+}
+
+
+
 function getEmployeeLookupForPayroll(employeeRows = []) {
  const lookup = {}
  ;(employeeRows || []).forEach(emp => {
@@ -492,6 +795,21 @@ function classifyPayrollRecords(records = [], employeeRows = [], options = {}) {
 function isMissingPayrollCostColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
  return msg.includes('payroll_cost_type') || msg.includes('payroll_cost_label') || msg.includes('column') && msg.includes('cost')
+}
+
+function isMissingHolidayEligibilityColumnError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('regular_holiday_pay_eligible') || msg.includes('special_holiday_pay_eligible') || (msg.includes('schema cache') && msg.includes('employees')) || (msg.includes('could not find') && msg.includes('employees'))
+}
+
+function stripEmployeeOptionalColumns(payload = {}) {
+ const {
+  payroll_cost_type,
+  regular_holiday_pay_eligible,
+  special_holiday_pay_eligible,
+  ...fallbackPayload
+ } = payload
+ return fallbackPayload
 }
 
 
@@ -749,6 +1067,108 @@ function EmployeeSelect({ value, onChange, employees }) {
  )
 }
 
+
+function EmployeePortalPayslipBreakdown({ pay }) {
+ const value = key => safeNum(pay?.[key], 0)
+ const totalWorkedHours = value('total_worked_minutes') > 0 ? moneyRound(value('total_worked_minutes') / 60) : 0
+ const regularPaidHours = value('regular_paid_minutes') > 0 ? moneyRound(value('regular_paid_minutes') / 60) : 0
+ const hourlyRate = value('hourly_rate')
+ const statusText = getPayrollReviewStatusText(pay)
+ const rowStyle = { display:'flex', justifyContent:'space-between', gap:'10px', padding:'6px 0', borderBottom:'1px solid #f0f0f0', fontSize:'12px' }
+ const mutedText = { color:'#777', fontSize:'11px', margin:'2px 0' }
+ const SectionRow = ({ label, amount, note, highlight }) => (
+  <div style={rowStyle}>
+   <div>
+    <span style={{ color:'#444' }}>{label}</span>
+    {note && <p style={mutedText}>{note}</p>}
+   </div>
+   <strong style={{ color:highlight || '#222', whiteSpace:'nowrap' }}>{php(amount)}</strong>
+  </div>
+ )
+ const BasisItem = ({ label, value }) => (
+  <div style={{ background:'#fff', border:'1px solid #eee', borderRadius:'10px', padding:'8px' }}>
+   <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', textTransform:'uppercase', letterSpacing:'0.4px', fontWeight:'bold' }}>{label}</p>
+   <p style={{ margin:0, color:'#222', fontSize:'13px', fontWeight:'bold' }}>{value}</p>
+  </div>
+ )
+
+ return (
+  <div style={{ marginTop:'10px', border:'1px solid #f1d0d0', borderRadius:'14px', overflow:'hidden', background:'#fff' }}>
+   <div style={{ background:'#ca1b1b', color:'white', padding:'12px 14px' }}>
+    <h3 style={{ margin:0, fontSize:'15px' }}>Full Payslip Breakdown</h3>
+    <p style={{ margin:'4px 0 0', fontSize:'11px', opacity:0.9 }}>Status: {statusText}</p>
+   </div>
+
+   <div style={{ padding:'12px 14px', background:'#fff8dc', borderBottom:'1px solid #f1d0d0' }}>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px', fontSize:'12px' }}>
+     <div><strong>Employee:</strong> {pay.employee_name || 'Employee'}</div>
+     <div><strong>Code:</strong> {pay.employee_code || '-'}</div>
+     <div><strong>Period:</strong> {formatDateForDisplay(pay.payroll_start)} to {formatDateForDisplay(pay.payroll_end)}</div>
+     <div><strong>Serial:</strong> {pay.payslip_serial || '-'}</div>
+    </div>
+   </div>
+
+   <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
+    <h4 style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'13px' }}>Attendance / Payroll Basis</h4>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
+     <BasisItem label="Worked Days" value={`${value('worked_days')} day(s)`} />
+     <BasisItem label="Absent Days" value={`${value('absent_days')} day(s)`} />
+     <BasisItem label="Paid SIL" value={`${value('paid_leave_days')} day(s)`} />
+     <BasisItem label="Unpaid Leave" value={`${value('unpaid_leave_days')} day(s)`} />
+     <BasisItem label="Worked Hours" value={`${totalWorkedHours} hr(s)`} />
+     <BasisItem label="Paid Regular Hours" value={`${regularPaidHours} hr(s)`} />
+     <BasisItem label="OT Minutes" value={`${value('overtime_minutes')} min`} />
+     <BasisItem label="Night Diff Minutes" value={`${value('night_diff_minutes')} min`} />
+    </div>
+    {hourlyRate > 0 && <p style={{ ...mutedText, marginTop:'8px' }}>Computed hourly rate: {php(hourlyRate)}</p>}
+   </div>
+
+   <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
+    <h4 style={{ margin:'0 0 8px', color:'#2d8a4e', fontSize:'13px' }}>Earnings</h4>
+    <SectionRow label="Basic / Regular Pay" amount={value('worked_basic_pay') || value('basic_pay')} note={`${value('worked_days')} paid workday(s)`} />
+    <SectionRow label="Birthday Pay" amount={value('birthday_pay')} />
+    <SectionRow label="Overtime Pay" amount={value('overtime_pay')} note={`${value('overtime_minutes')} approved OT minute(s)`} />
+    <SectionRow label="Night Differential Pay" amount={value('night_diff_pay')} note={`${value('night_diff_minutes')} night differential minute(s)`} />
+    <SectionRow label="Holiday Pay" amount={value('holiday_pay')} />
+    <SectionRow label="Holiday Pay Excluded / Exempted" amount={value('holiday_pay_exempted')} note={pay.holiday_pay_exemption_note || ''} highlight={value('holiday_pay_exempted') > 0 ? '#ca1b1b' : undefined} />
+    <SectionRow label="Paid SIL Leave" amount={value('paid_leave_pay')} note={`${value('paid_leave_days')} paid leave day(s)`} />
+    <SectionRow label="Other Earnings / Adjustments" amount={value('other_earnings')} />
+    <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0 0', fontWeight:'bold', fontSize:'13px' }}>
+     <span>Total Earnings / Gross Pay</span>
+     <span style={{ color:'#2d8a4e' }}>{php(value('total_earnings'))}</span>
+    </div>
+   </div>
+
+   <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
+    <h4 style={{ margin:'0 0 8px', color:'#ca1b1b', fontSize:'13px' }}>Deductions</h4>
+    <SectionRow label="Late Deduction" amount={value('late_deduction')} note={`${value('late_minutes')} late minute(s)`} />
+    <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} approved undertime minute(s)`} />
+    <SectionRow label="Cash Advance Deduction" amount={value('cash_advance_deduction')} />
+    <SectionRow label="Requested CA Deduction" amount={value('requested_cash_advance_deduction')} note="Original CA amount requested for this cutoff before payroll safety cap." />
+    <SectionRow label="Deferred CA Deduction" amount={value('deferred_cash_advance_deduction')} note="Not deducted this cutoff; remains in CA balance." highlight="#f5a623" />
+    <SectionRow label="SSS" amount={value('sss_deduction')} />
+    <SectionRow label="Pag-IBIG" amount={value('pagibig_deduction')} />
+    <SectionRow label="PhilHealth" amount={value('philhealth_deduction')} />
+    <SectionRow label="Other Deductions / Adjustments" amount={value('other_deductions')} />
+    <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0 0', fontWeight:'bold', fontSize:'13px' }}>
+     <span>Total Deductions</span>
+     <span style={{ color:'#ca1b1b' }}>{php(value('total_deductions'))}</span>
+    </div>
+    {value('non_ca_deduction_overflow') > 0 && (
+     <div style={{ marginTop:'8px', padding:'8px', border:'1px solid #ca1b1b', borderRadius:'8px', background:'#fff5f5', color:'#ca1b1b', fontWeight:'bold', fontSize:'11px' }}>
+      Warning: Non-CA deductions exceeded earnings by {php(value('non_ca_deduction_overflow'))}. Payroll release should be reviewed by admin.
+     </div>
+    )}
+   </div>
+
+   <div style={{ background:'#1a1a2e', color:'white', padding:'12px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px' }}>
+    <span style={{ fontWeight:'bold', fontSize:'14px' }}>NET PAY / TAKE HOME PAY</span>
+    <span style={{ fontWeight:'bold', fontSize:'18px' }}>{php(value('net_pay'))}</span>
+   </div>
+  </div>
+ )
+}
+
 // Print helpers (outside App so they have no stale closure issues) 
 function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  const serialNo = pay?.payslipSerial || pay?.payslip_serial || genSerial(payrollStart, idx)
@@ -773,7 +1193,7 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  <th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th>
  </tr>
  <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
- <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${Math.round((pay.totalWorkedMinutes||0)/60*10)/10} worked hrs)</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(pay.workedBasicPay?? pay.basicPay)}</td></tr>
+ <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${pay.workedDays||0} paid workday(s))</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(pay.workedBasicPay?? pay.basicPay)}</td></tr>
  ${(pay.birthdayPay||0)>0?`<tr style="background:#fff8dc;"><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;"> Birthday Pay (200%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.birthdayPay)}</td></tr>`:''}
  ${pay.overtimePay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay (${pay.overtimeMinutes} min 1.25x)</td><td style="padding:3px 8px;text-align:right;">${php(pay.overtimePay)}</td></tr>`:''}
  ${pay.nightDiffPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential (10%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.nightDiffPay)}</td></tr>`:''}
@@ -786,11 +1206,13 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  ${pay.undertimeDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime (${pay.undertimeMinutes} min)</td><td style="padding:3px 8px;text-align:right;">${php(pay.undertimeDeduction)}</td></tr>`:''}
  ${(pay.excessBreakDeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Excess Break</td><td style="padding:3px 8px;text-align:right;">${php(pay.excessBreakDeduction)}</td></tr>`:''}
  ${pay.cashAdvanceDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;">${php(pay.cashAdvanceDeduction)}</td></tr>`:''}
+ ${(pay.deferredCADeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;color:#f5a623;">CA not deducted this cutoff; remains in CA balance</td><td style="padding:3px 8px;text-align:right;color:#f5a623;">${php(pay.deferredCADeduction)}</td></tr>`:''}
  ${pay.sssDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS</td><td style="padding:3px 8px;text-align:right;">${php(pay.sssDeduction)}</td></tr>`:''}
  ${pay.pagibigDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG</td><td style="padding:3px 8px;text-align:right;">${php(pay.pagibigDeduction)}</td></tr>`:''}
  ${pay.philhealthDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth</td><td style="padding:3px 8px;text-align:right;">${php(pay.philhealthDeduction)}</td></tr>`:''}
  ${pay.adjustmentDeductions>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Deductions</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentDeductions)}</td></tr>`:''}
  <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Deductions</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalDeductions)}</td></tr>
+ ${(pay.nonCADeductionOverflow||0)>0?`<tr><td colspan="2" style="padding:5px 8px;background:#fff5f5;color:#ca1b1b;font-weight:bold;font-size:10px;">WARNING: Deductions exceed earnings by ${php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until corrected.</td></tr>`:''}
  </table>
  <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
  <span style="font-weight:bold;font-size:13px;">NET PAY</span>
@@ -888,6 +1310,7 @@ export default function App() {
  const [leaveReason, setLeaveReason] = useState('')
  const [disputeReasons, setDisputeReasons] = useState({})
  const [showDisputeBox, setShowDisputeBox] = useState({})
+ const [submittingPayslipDisputes, setSubmittingPayslipDisputes] = useState({})
  // Reason dropdown presets
  const [requestCashReasonPreset, setRequestCashReasonPreset] = useState('')
  const [otRequestReasonPreset, setOtRequestReasonPreset] = useState('')
@@ -952,7 +1375,7 @@ export default function App() {
  const [breakTimerSeconds, setBreakTimerSeconds] = useState(0)
  const [breakTimerInterval, setBreakTimerInterval] = useState(null)
  const [editFields, setEditFields] = useState({})
- const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
+ const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto', regular_holiday_pay_eligible:true, special_holiday_pay_eligible:true })
  const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
  const [finalPayReason, setFinalPayReason] = useState('resigned')
  const [finalPayLastDate, setFinalPayLastDate] = useState(today)
@@ -1001,6 +1424,12 @@ export default function App() {
  const [adjustmentCategory, setAdjustmentCategory] = useState('')
  const [adjustmentAmount, setAdjustmentAmount] = useState('')
  const [adjustmentNotes, setAdjustmentNotes] = useState('')
+ const [payrollAdjustmentHistory, setPayrollAdjustmentHistory] = useState([])
+ const [payrollAdjustmentLoading, setPayrollAdjustmentLoading] = useState(false)
+ const [payrollAdjustmentSearch, setPayrollAdjustmentSearch] = useState('')
+ const [payrollAdjustmentTypeFilter, setPayrollAdjustmentTypeFilter] = useState('all')
+ const [payrollAdjustmentFrom, setPayrollAdjustmentFrom] = useState(today)
+ const [payrollAdjustmentTo, setPayrollAdjustmentTo] = useState(today)
  const [silCashouts, setSilCashouts] = useState([])
  const [silCashoutsLoading, setSilCashoutsLoading] = useState(false)
  const [manualSILClaimEmployeeId, setManualSILClaimEmployeeId] = useState('')
@@ -1615,7 +2044,8 @@ export default function App() {
  const [remittancePeriod, setRemittancePeriod] = useState('')
  const [remittanceData, setRemittanceData] = useState(null)
  const [dtrEmployeeId, setDtrEmployeeId] = useState('')
- const [dtrMonth, setDtrMonth] = useState(today.slice(0,7))
+ const [dtrMonth, setDtrMonth] = useState(today.slice(0,7)) // kept for backward compatibility with older print/history calls
+ const [dtrCutoffKey, setDtrCutoffKey] = useState(getCurrentDTRCutoffKey(today))
  const [dtrRecords, setDtrRecords] = useState([])
  const [dtrStats, setDtrStats] = useState(null)
  const [announcements, setAnnouncements] = useState([])
@@ -9707,8 +10137,18 @@ function buildDeliveryInvoicePrintCSS() {
  setTodayBreaks(data || [])
  }
  async function loadMyPayslips(emp) {
- const { data } = await supabase.from('payroll_records').select('*').eq('employee_id', emp.id).order('payroll_start', { ascending:false })
- setMyPayslips(data || [])
+ const { data, error } = await supabase
+ .from('payroll_records')
+ .select('*')
+ .eq('employee_id', emp.id)
+ .order('payroll_start', { ascending:false })
+ if (error) {
+  console.error('Payslip load failed:', error)
+  setMyPayslips([])
+  return
+ }
+ const visiblePayslips = (data || []).filter(pay => !isDraftPayrollRecord(pay))
+ setMyPayslips(visiblePayslips)
  }
  async function loadMyCashAdvances(emp) {
  if (!emp?.id) return
@@ -10020,12 +10460,52 @@ function buildDeliveryInvoicePrintCSS() {
  alert('Payslip acknowledged!'); loadMyPayslips(employee)
  }
  async function submitPayslipDispute(pay) {
- const reason = disputeReasons[pay.id]
+ const payId = pay?.id
+ if (!payId || submittingPayslipDisputes[payId]) return
+ const reason = disputeReasons[payId]
  if (!reason?.trim()) { alert('Please enter your reason.'); return }
- const { error } = await supabase.from('payslip_disputes').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, payroll_record_id:String(pay.id), payroll_start:pay.payroll_start, payroll_end:pay.payroll_end, reason, status:'pending' })
- if (error) { alert('Failed: '+error.message); return }
- await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', pay.id)
- alert('Dispute submitted.'); setShowDisputeBox(p=>({...p,[pay.id]:false})); setDisputeReasons(p=>({...p,[pay.id]:''})); setDisputeReasonPresets(p=>({...p,[pay.id]:''})); loadMyPayslips(employee)
+ setSubmittingPayslipDisputes(p=>({...p,[payId]:true}))
+ try {
+  const { data:existing, error:existingError } = await supabase
+   .from('payslip_disputes')
+   .select('id,status')
+   .eq('payroll_record_id', String(payId))
+   .eq('employee_id', employee.id)
+   .eq('status','pending')
+   .limit(1)
+
+  if (existingError) console.warn('Existing payslip dispute check failed:', existingError)
+
+  if ((existing || []).length > 0 || normalizePayrollAcknowledgement(pay.employee_acknowledgement) === 'disputed') {
+   await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', payId)
+   alert('Dispute already submitted. It is now waiting for admin review.')
+   setShowDisputeBox(p=>({...p,[payId]:false}))
+   setDisputeReasons(p=>({...p,[payId]:''}))
+   setDisputeReasonPresets(p=>({...p,[payId]:''}))
+   loadMyPayslips(employee)
+   return
+  }
+
+  const { error } = await supabase.from('payslip_disputes').insert({
+   employee_id:employee.id,
+   employee_code:employee.employee_code,
+   employee_name:employee.full_name,
+   payroll_record_id:String(payId),
+   payroll_start:pay.payroll_start,
+   payroll_end:pay.payroll_end,
+   reason,
+   status:'pending'
+  })
+  if (error) { alert('Failed: '+error.message); return }
+  await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', payId)
+  alert('Dispute submitted. Waiting for admin review.')
+  setShowDisputeBox(p=>({...p,[payId]:false}))
+  setDisputeReasons(p=>({...p,[payId]:''}))
+  setDisputeReasonPresets(p=>({...p,[payId]:''}))
+  loadMyPayslips(employee)
+ } finally {
+  setSubmittingPayslipDisputes(p=>({...p,[payId]:false}))
+ }
  }
 
  // Admin Functions 
@@ -11242,57 +11722,91 @@ function buildDeliveryInvoicePrintCSS() {
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
 
  const { data: records, error:recordsError } = await supabase
-.from('payroll_records')
-.select('id,payroll_approved,approved_at,cash_advance_deduction')
-.eq('payroll_start', start)
-.eq('payroll_end', end)
-.limit(500)
+ .from('payroll_records')
+ .select('id,employee_name,employee_code,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction,total_earnings,total_deductions,non_ca_deduction_overflow')
+ .eq('payroll_start', start)
+ .eq('payroll_end', end)
+ .limit(1000)
 
  if (recordsError) { showToast('Failed: '+recordsError.message, 'red'); return }
 
  if (!records || records.length === 0) {
- showToast('No payroll records found for this period. Compute payroll first.', 'red')
- return
+  showToast('No payroll records found for this period. Compute payroll first.', 'red')
+  return
  }
+
+ const draftCount = records.filter(isDraftPayrollRecord).length
+ if (draftCount > 0) {
+  showToast(`Release blocked: ${draftCount} payslip(s) are still draft/admin-only. Click SEND PAYSLIPS TO EMPLOYEES FOR REVIEW first.`, 'red')
+  await logAudit('PAYROLL RELEASE BLOCKED - NOT SENT FOR REVIEW', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Draft rows: ${draftCount}`)
+  return
+ }
+
+ const disputedCount = records.filter(r => normalizePayrollAcknowledgement(r.employee_acknowledgement) === 'disputed').length
+ if (disputedCount > 0) {
+  showToast(`Release blocked: ${disputedCount} payslip dispute(s) must be resolved before final payroll release.`, 'red')
+  await logAudit('PAYROLL RELEASE BLOCKED - DISPUTES', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Disputed rows: ${disputedCount}`)
+  return
+ }
+
+ const overDeductedRows = records.filter(r => safeNum(r.non_ca_deduction_overflow, 0) > 0.009 || safeNum(r.total_deductions,0) - safeNum(r.total_earnings,0) > 0.009)
+ if (overDeductedRows.length > 0) {
+  const names = overDeductedRows.slice(0, 5).map(r => r.employee_name || r.employee_code || 'Employee').join(', ')
+  showToast(`Release blocked: ${overDeductedRows.length} payslip(s) have deductions higher than earnings. Review/correct first: ${names}${overDeductedRows.length>5?'...':''}`, 'red')
+  await logAudit('PAYROLL RELEASE BLOCKED - OVER DEDUCTION', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Rows: ${overDeductedRows.length} | ${names}`)
+  return
+ }
+
+ const pendingCount = records.filter(r => {
+  const ack = normalizePayrollAcknowledgement(r.employee_acknowledgement)
+  return !ack || ack === 'pending'
+ }).length
+ if (pendingCount > 0 && !window.confirm(`${pendingCount} payslip(s) are still pending employee acknowledgement. Continue final payroll release?`)) return
 
  const alreadyReleased = records.some(r => r.payroll_approved === true ||!!r.approved_at)
  if (alreadyReleased) {
- const hasCADeductions = records.some(r => safeNum(r.cash_advance_deduction, 0) > 0)
- const caExisting = hasCADeductions? await caPayrollDeductionsAlreadyApplied(start, end): { exists:true, none:true }
- const expenseExisting = await payrollExpenseAlreadyPosted(start, end)
+  const hasCADeductions = records.some(r => safeNum(r.cash_advance_deduction, 0) > 0)
+  const caExisting = hasCADeductions? await caPayrollDeductionsAlreadyApplied(start, end): { exists:true, none:true }
+  const expenseExisting = await payrollExpenseAlreadyPosted(start, end)
 
- if ((!hasCADeductions || caExisting.exists) && expenseExisting.exists) {
- showToast(' This payroll period is already fully released. Releasing it again is blocked to prevent duplicate CA deductions or expense posting.', 'red')
- await logAudit('DUPLICATE PAYROLL RELEASE BLOCKED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end}`)
- return
- }
+  if ((!hasCADeductions || caExisting.exists) && expenseExisting.exists) {
+   showToast(' This payroll period is already fully released. Releasing it again is blocked to prevent duplicate CA deductions or expense posting.', 'red')
+   await logAudit('DUPLICATE PAYROLL RELEASE BLOCKED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end}`)
+   return
+  }
 
- showToast(' Payroll was already marked released, but one release step is missing. The system will safely recover only the missing CA/expense step.', 'red')
- await logAudit('PAYROLL RELEASE RECOVERY STARTED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | CA done: ${!hasCADeductions || caExisting.exists} | Expense done: ${expenseExisting.exists}`)
+  showToast(' Payroll was already marked released, but one release step is missing. The system will safely recover only the missing CA/expense step.', 'red')
+  await logAudit('PAYROLL RELEASE RECOVERY STARTED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | CA done: ${!hasCADeductions || caExisting.exists} | Expense done: ${expenseExisting.exists}`)
  } else {
- const { error } = await supabase.from('payroll_records')
-.update({ payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString() })
-.eq('payroll_start', start).eq('payroll_end', end)
- if (error) { showToast('Failed: '+error.message,'red'); return }
+  let updatePayload = { payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString(), payroll_status:'released' }
+  const { error:firstUpdateError } = await supabase.from('payroll_records')
+  .update(updatePayload)
+  .eq('payroll_start', start).eq('payroll_end', end)
+  if (firstUpdateError && isMissingPayrollWorkflowColumnError(firstUpdateError)) {
+   const { error:fallbackUpdateError } = await supabase.from('payroll_records')
+   .update({ payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString() })
+   .eq('payroll_start', start).eq('payroll_end', end)
+   if (fallbackUpdateError) { showToast('Failed: '+fallbackUpdateError.message,'red'); return }
+  } else if (firstUpdateError) { showToast('Failed: '+firstUpdateError.message,'red'); return }
  }
 
  const releasedSILCount = await markSILCashoutsReleasedForPayrollPeriod(start, end, { auto:true, silent:true })
  const caDeductionResult = await applyCashAdvanceDeductionsForPayrollPeriod(start, end, { auto:true, silent:true })
  if (caDeductionResult.error) {
- setPayrollApproved(true)
- await logAudit('PAYROLL RELEASE CA DEDUCTION FAILED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Error: ${caDeductionResult.error}`)
- showToast('Payroll was marked released, but CA deduction update failed: ' + caDeductionResult.error + '. Fix the database issue, then click RELEASE PAYROLL again to recover the missing step safely.', 'red')
- return
+  setPayrollApproved(true)
+  await logAudit('PAYROLL RELEASE CA DEDUCTION FAILED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Error: ${caDeductionResult.error}`)
+  showToast('Payroll was marked released, but CA deduction update failed: ' + caDeductionResult.error + '. Fix the database issue, then click RELEASE PAYROLL again to recover the missing step safely.', 'red')
+  return
  }
 
  const expenseResult = await postPayrollToExpenses(start, end, { auto:true, silent:true })
 
  setPayrollApproved(true)
  await logAudit(
- 'PAYROLL APPROVED',
- currentAdminLabel,
- 'ALL',
- `Period: ${start} to ${end} | SIL cashouts auto-released: ${releasedSILCount} | CA deductions: ${caDeductionResult.applied? 'applied ' + php(caDeductionResult.amount): caDeductionResult.existing? 'already applied': caDeductionResult.none? 'none': 'not applied'} | Expense: ${expenseResult.posted? 'posted ' + php(expenseResult.amount): expenseResult.existing? 'already posted': 'not posted'}`
+  'PAYROLL APPROVED',
+  currentAdminLabel,
+  'ALL',
+  `Period: ${start} to ${end} | SIL cashouts auto-released: ${releasedSILCount} | CA deductions: ${caDeductionResult.applied? 'applied ' + php(caDeductionResult.amount): caDeductionResult.existing? 'already applied': caDeductionResult.none? 'none': 'not applied'} | Expense: ${expenseResult.posted? 'posted ' + php(expenseResult.amount): expenseResult.existing? 'already posted': 'not posted'}`
  )
 
  const messages = [' Payroll approved and released!']
@@ -14353,15 +14867,54 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  async function approveTimeAdj(req) {
  const reviewNote = adjAdminReason[req.id]||''
+ const targetDate = String(req.attendance_date || '').slice(0,10)
+ const requestType = String(req.request_type || '').toLowerCase()
+
+ const { data:coveredPayroll, error:coveredPayrollError } = await supabase
+ .from('payroll_records')
+ .select('id,payroll_start,payroll_end,payroll_approved,approved_at,employee_acknowledgement')
+ .eq('employee_id', req.employee_id)
+ .lte('payroll_start', targetDate)
+ .gte('payroll_end', targetDate)
+ .limit(20)
+ if (coveredPayrollError) { showToast('Failed to check payroll guard: '+coveredPayrollError.message, 'red'); return }
+ if ((coveredPayroll || []).length > 0) {
+  const released = coveredPayroll.some(isReleasedPayrollRecord)
+  const periodText = coveredPayroll.map(r=>`${r.payroll_start} to ${r.payroll_end}`).join(', ')
+  if (released) {
+   showToast(`Approval blocked: ${targetDate} is inside released payroll (${periodText}). Use payroll adjustment next cutoff.`, 'red')
+  } else {
+   showToast(`Approval blocked: ${targetDate} is inside already computed draft/review payroll (${periodText}). Undo that draft payroll first, approve OT/UT, then recompute.`, 'red')
+  }
+  await logAudit('OT/UT APPROVAL BLOCKED BY PAYROLL GUARD', currentAdminLabel, req.employee_name, `${requestType} ${req.minutes} min on ${targetDate} | Payroll: ${periodText}`)
+  return
+ }
+
+ const { data:duplicateApproved, error:duplicateError } = await supabase
+ .from('time_adjustment_requests')
+ .select('id,minutes,reviewed_at')
+ .eq('employee_id', req.employee_id)
+ .eq('attendance_date', targetDate)
+ .eq('request_type', requestType)
+ .eq('status', 'approved')
+ .neq('id', req.id)
+ .limit(1)
+ if (duplicateError) { showToast('Failed to check duplicate OT/UT: '+duplicateError.message, 'red'); return }
+ if (duplicateApproved && duplicateApproved.length > 0) {
+  showToast(`Approval blocked: this employee already has an approved ${requestType} request for ${targetDate}. Reject or correct the duplicate first.`, 'red')
+  await logAudit('DUPLICATE OT/UT APPROVAL BLOCKED', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate}`)
+  return
+ }
+
  const { error } = await supabase.from('time_adjustment_requests').update({ status:'approved', reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reviewNote }).eq('id', req.id)
  if (error) { showToast('Failed: '+error.message,'red'); return }
- if (req.request_type==='overtime') {
- await supabase.from('attendance_logs').update({ overtime_minutes:req.minutes, overtime_approved:true, status:'Overtime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+ if (requestType==='overtime') {
+  await supabase.from('attendance_logs').update({ overtime_minutes:req.minutes, overtime_approved:true, status:'Overtime' }).eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
  } else {
- await supabase.from('attendance_logs').update({ undertime_minutes:req.minutes, status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+  await supabase.from('attendance_logs').update({ undertime_minutes:req.minutes, status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
  }
- await logAudit(`${req.request_type.toUpperCase()} APPROVED`,currentAdminLabel,req.employee_name,`${req.minutes} min on ${req.attendance_date}`)
- await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Approved`, `Your ${req.request_type} request of ${req.minutes} minutes on ${req.attendance_date} has been approved.`)
+ await logAudit(`${requestType.toUpperCase()} APPROVED`,currentAdminLabel,req.employee_name,`${req.minutes} min on ${targetDate}`)
+ await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${requestType==='overtime'?'Overtime':'Undertime'} Approved`, `Your ${requestType} request of ${req.minutes} minutes on ${targetDate} has been approved.`)
  setTimeAdjRequests(prev=>prev.map(r=>r.id===req.id? {...r, status:'approved', reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reviewNote}: r))
  showToast(' OT/UT Approved successfully!')
  }
@@ -14447,15 +15000,17 @@ This recovery button creates one approved expense record using GROSS payroll ear
  emergency_contact_number:editFields.emergency_contact||'',
  employment_type:editFields.employment_type||'regular',
  payroll_cost_type:editFields.payroll_cost_type||'auto',
+ regular_holiday_pay_eligible:editFields.regular_holiday_pay_eligible !== false,
+ special_holiday_pay_eligible:editFields.special_holiday_pay_eligible !== false,
  department:editFields.department||'',
  admin_role:editFields.admin_role||null,
  extra_roles:editFields.extra_roles||null
  }
  let { error } = await supabase.from('employees').update(employeeUpdatePayload).eq('id', editingEmployeeId)
- if (error && isMissingPayrollCostColumnError(error)) {
- const { payroll_cost_type, ...fallbackEmployeeUpdatePayload } = employeeUpdatePayload
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingHolidayEligibilityColumnError(error))) {
+ const fallbackEmployeeUpdatePayload = stripEmployeeOptionalColumns(employeeUpdatePayload)
  ;({ error } = await supabase.from('employees').update(fallbackEmployeeUpdatePayload).eq('id', editingEmployeeId))
- if (!error) console.warn('Employee saved without payroll_cost_type. Run Payroll_COGS_Allocation_Supabase_Update.sql to enable the field.')
+ if (!error) console.warn('Employee saved without optional employee columns. Run the payroll/holiday Supabase SQL updates to enable these fields.')
  }
 
  setSaveEmployeeLoading(false)
@@ -14503,6 +15058,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  emergency_contact_number:f.emergency_contact||'',
  employment_type:f.employment_type||'probationary',
  payroll_cost_type:f.payroll_cost_type||'auto',
+ regular_holiday_pay_eligible:f.regular_holiday_pay_eligible !== false,
+ special_holiday_pay_eligible:f.special_holiday_pay_eligible !== false,
  department:f.department||'',
  sss_no:f.sss_no||'',
  pagibig_no:f.pagibig_no||'',
@@ -14517,10 +15074,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  bank_account_name:f.bank_account_name||''
  }
  let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select('*').single()
- if (error && isMissingPayrollCostColumnError(error)) {
- const { payroll_cost_type, ...fallbackEmployeeInsertPayload } = employeeInsertPayload
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingHolidayEligibilityColumnError(error))) {
+ const fallbackEmployeeInsertPayload = stripEmployeeOptionalColumns(employeeInsertPayload)
  ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select('*').single())
- if (!error) console.warn('Employee added without payroll_cost_type. Run Payroll_COGS_Allocation_Supabase_Update.sql to enable the field.')
+ if (!error) console.warn('Employee added without optional employee columns. Run the payroll/holiday Supabase SQL updates to enable these fields.')
  }
 
  if (error) { showToast('Failed: '+error.message,'red'); return }
@@ -14536,7 +15093,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
  }
 
- setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
+ setNewEmpFields({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto', regular_holiday_pay_eligible:true, special_holiday_pay_eligible:true })
  loadEmployees()
  }
  async function deactivateEmployee(empId, empName) {
@@ -14551,8 +15108,50 @@ This recovery button creates one approved expense record using GROSS payroll ear
  setCashAdvanceRequests(data || [])
  }
  async function loadResolvedCARequests() {
- const { data } = await supabase.from('cash_advance_requests').select('*').in('status', ['approved','disapproved']).order('created_at', { ascending:false })
- setResolvedCARequests(data || [])
+ const { data, error } = await supabase.from('cash_advance_requests').select('*').in('status', ['approved','disapproved']).order('created_at', { ascending:false })
+ if (error) { showToast('Failed to load resolved CA requests: ' + error.message, 'red'); return }
+ const requests = data || []
+
+ let caRows = []
+ try {
+  const caRes = await supabase.from('cash_advances').select('*').order('created_at', { ascending:false })
+  if (!caRes.error) caRows = caRes.data || []
+ } catch(e) { console.warn('Resolved CA ledger lookup skipped:', e) }
+
+ const usedLedgerIds = new Set()
+ const findLedgerForRequest = (req) => {
+  if (!req) return null
+  const reqId = String(req.id || '')
+  const direct = caRows.find(ca => {
+   if (usedLedgerIds.has(String(ca.id))) return false
+   return String(ca.id || '') === String(req.ca_ledger_id || '')
+    || String(ca.source_request_id || '') === reqId
+    || String(ca.cash_advance_request_id || '') === reqId
+    || String(ca.approved_request_id || '') === reqId
+  })
+  if (direct) { usedLedgerIds.add(String(direct.id)); return direct }
+
+  const byNotes = caRows.find(ca => {
+   if (usedLedgerIds.has(String(ca.id))) return false
+   const notes = String(ca.notes || '').toLowerCase()
+   return reqId && notes.includes(`ca request ${reqId.toLowerCase()}`)
+  })
+  if (byNotes) { usedLedgerIds.add(String(byNotes.id)); return byNotes }
+
+  const requestedAmount = moneyRound(req.amount)
+  const requestedAt = String(getCAFiledDate(req) || '').slice(0,10)
+  const fuzzy = caRows.find(ca => {
+   if (usedLedgerIds.has(String(ca.id))) return false
+   if (String(ca.employee_id || '') !== String(req.employee_id || '')) return false
+   if (moneyRound(ca.amount) !== requestedAmount) return false
+   const caDate = String(ca.created_at || ca.advance_date || '').slice(0,10)
+   return !requestedAt || !caDate || caDate >= requestedAt
+  })
+  if (fuzzy) { usedLedgerIds.add(String(fuzzy.id)); return fuzzy }
+  return null
+ }
+
+ setResolvedCARequests(requests.map(req => ({ ...req, cashAdvanceLedger: findLedgerForRequest(req) })))
  }
  async function updateCashAdvanceStatus(id, newStatus) {
  const req = cashAdvanceRequests.find(r=>r.id===id); if (!req) return
@@ -14564,9 +15163,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (newStatus==='disapproved') {
  const reason = caDisapproveReason[id]
  if (!reason?.trim()) { showToast('Please enter a reason for disapproval.','red'); return }
- const { error } = await supabase.from('cash_advance_requests').update({ status:'disapproved', admin_reason:reason }).eq('id', id)
+ const disapprovePayload = { status:'disapproved', admin_reason:reason, disapproved_at:new Date().toISOString(), processed_at:new Date().toISOString(), processed_by:currentAdminLabel }
+ let { error } = await supabase.from('cash_advance_requests').update(disapprovePayload).eq('id', id)
+ if (error && isMissingCashAdvanceDetailColumnError(error)) {
+  ;({ error } = await supabase.from('cash_advance_requests').update({ status:'disapproved', admin_reason:reason }).eq('id', id))
+ }
  if (error) { showToast('Failed: '+error.message,'red'); return }
- await logAudit('CA DISAPPROVED','Admin',req.employee_name,`Reason: ${reason}`)
+ await logAudit('CA DISAPPROVED',currentAdminLabel,req.employee_name,`Reason: ${reason}`)
  await createNotification(req.employee_id, req.employee_name, 'cash_advance', ' Cash Advance Disapproved', `Your cash advance request of ${php(req.amount)} was disapproved. Reason: ${reason}`)
  setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
  showToast(' Cash advance disapproved.','red'); return
@@ -14588,13 +15191,23 @@ This recovery button creates one approved expense record using GROSS payroll ear
  per_payroll_deduction:perPayroll,
  installments_total:installments,
  installments_remaining:installments,
- notes:`AUTO-RECORDED FROM CA REQUEST ${id} | ${req.reason || ''}`,
+ source_request_id:id,
+ approved_by:currentAdminLabel,
+ approved_at:new Date().toISOString(),
+ notes:`AUTO-RECORDED FROM CA REQUEST ${id} | FILED ${formatDateTimeForAdmin(getCAFiledDate(req))} | APPROVED BY ${currentAdminLabel} | ${req.reason || ''}`,
  status:'Unpaid'
  }
 
  // Important: create the actual cash advance record first.
  // This prevents a request from becoming approved without a collectible CA ledger record.
- const { data:createdCA, error:insertError } = await supabase.from('cash_advances').insert(caPayload).select().single()
+ let { data:createdCA, error:insertError } = await supabase.from('cash_advances').insert(caPayload).select().single()
+ if (insertError && isMissingCashAdvanceDetailColumnError(insertError)) {
+  const fallbackPayload = {...caPayload}
+  delete fallbackPayload.source_request_id
+  delete fallbackPayload.approved_by
+  delete fallbackPayload.approved_at
+  ;({ data:createdCA, error:insertError } = await supabase.from('cash_advances').insert(fallbackPayload).select().single())
+ }
  if (insertError) { showToast('Failed to record cash advance: '+insertError.message,'red'); return }
 
  // Hard safety: a newly approved cash advance must start ACTIVE/UNPAID.
@@ -14613,7 +15226,20 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return
  }
 
- const { error:updateError } = await supabase.from('cash_advance_requests').update({ status:'approved' }).eq('id', id)
+ const requestApprovePayload = {
+  status:'approved',
+  approved_at:new Date().toISOString(),
+  approved_by:currentAdminLabel,
+  processed_at:new Date().toISOString(),
+  processed_by:currentAdminLabel,
+  ca_ledger_id:createdCA?.id || null,
+  request_installments_total:installments,
+  request_per_payroll_deduction:perPayroll
+ }
+ let { error:updateError } = await supabase.from('cash_advance_requests').update(requestApprovePayload).eq('id', id)
+ if (updateError && isMissingCashAdvanceDetailColumnError(updateError)) {
+  ;({ error:updateError } = await supabase.from('cash_advance_requests').update({ status:'approved' }).eq('id', id))
+ }
  if (updateError) {
  // Roll back the ledger record where possible so request and CA ledger do not mismatch.
  if (createdCA?.id) await supabase.from('cash_advances').delete().eq('id', createdCA.id)
@@ -14621,7 +15247,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return
  }
 
- await logAudit('CA APPROVED AND AUTO-RECORDED','Admin',req.employee_name,`${php(totalAmount)} in ${installments} installment(s) | ${php(perPayroll)} per payroll | CA ID: ${createdCA?.id || ''}`)
+ await logAudit('CA APPROVED AND AUTO-RECORDED',currentAdminLabel,req.employee_name,`${php(totalAmount)} in ${installments} installment(s) | ${php(perPayroll)} per payroll | CA ID: ${createdCA?.id || ''}`)
  await createNotification(req.employee_id, req.employee_name, 'cash_advance', ' Cash Advance Approved', `Your cash advance of ${php(totalAmount)} has been approved and recorded. ${php(perPayroll)} will be automatically deducted per payroll for ${installments} payroll(s).`)
  setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
  loadResolvedCARequests()
@@ -14671,7 +15297,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  async function loadPayslipDisputes() {
  const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'pending').order('created_at', { ascending:false })
- setPayslipDisputes(data || [])
+ setPayslipDisputes(dedupePayslipDisputes(data || []))
  }
  async function loadResolvedDisputes() {
  const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'resolved').order('created_at', { ascending:false })
@@ -14681,13 +15307,15 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const reason = (disputeAdminReason[id] || '').trim()
  if (!reason) { showToast(' Please enter admin response before resolving.','red'); return }
  const dispute = payslipDisputes.find(d=>d.id===id)
- const { error } = await supabase.from('payslip_disputes').update({ status:'resolved', admin_reason:reason }).eq('id', id)
+ const idsToResolve = Array.from(new Set([id, ...(dispute?.duplicate_ids || [])].filter(Boolean)))
+ const updateQuery = supabase.from('payslip_disputes').update({ status:'resolved', admin_reason:reason })
+ const { error } = idsToResolve.length > 1 ? await updateQuery.in('id', idsToResolve) : await updateQuery.eq('id', id)
  if (error) { showToast(' Failed: '+error.message,'red'); console.error(error); return }
- await logAudit('DISPUTE RESOLVED','Admin','',`Dispute ID ${id} ${reason}`)
+ await logAudit('DISPUTE RESOLVED','Admin','',`Dispute ID ${id}${idsToResolve.length>1?` plus ${idsToResolve.length-1} duplicate(s)`:''} ${reason}`)
  if (dispute) await createNotification(dispute.employee_id, dispute.employee_name, 'dispute', ' Dispute Resolved', `Your payslip dispute has been resolved. Response: ${reason}`)
  setDisputeAdminReason(p=>({...p,[id]:'' }))
- setPayslipDisputes(prev=>prev.filter(d=>d.id!==id))
- showToast(' Dispute resolved and removed successfully!')
+ setPayslipDisputes(prev=>prev.filter(d=>!idsToResolve.includes(d.id)))
+ showToast(idsToResolve.length>1 ? ` Dispute resolved. ${idsToResolve.length-1} duplicate submission(s) were resolved together.` : ' Dispute resolved and removed successfully!')
  loadResolvedDisputes()
  }
  async function saveAdjustment() {
@@ -14712,6 +15340,95 @@ This recovery button creates one approved expense record using GROSS payroll ear
  showToast(` ${adjustmentType==='addition'?'Bonus':'Deduction'} of ${php(adjustmentAmount)} saved for ${emp.full_name}!`)
  setAdjustmentEmployeeId(''); setAdjustmentCategory(''); setAdjustmentAmount(''); setAdjustmentNotes('')
  if (adjustmentCategory.trim() === 'Unused SIL Conversion') loadSILCashouts()
+ loadPayrollAdjustmentHistory({ silent:true })
+ }
+
+ async function loadPayrollAdjustmentHistory(options = {}) {
+ setPayrollAdjustmentLoading(true)
+ try {
+  const from = options.from || payrollAdjustmentFrom || payrollStart || ''
+  const to = options.to || payrollAdjustmentTo || payrollEnd || ''
+  let query = supabase
+  .from('payroll_adjustments')
+  .select('*')
+  .order('adjustment_date', { ascending:false })
+  .order('created_at', { ascending:false })
+  .limit(1000)
+
+  if (from) query = query.gte('adjustment_date', from)
+  if (to) query = query.lte('adjustment_date', to)
+
+  const { data, error } = await query
+  if (error) throw error
+  setPayrollAdjustmentHistory(data || [])
+  if (!options.silent) showToast(`Loaded ${(data || []).length} payroll adjustment record(s).`)
+  return data || []
+ } catch(err) {
+  console.error('Payroll adjustment history load failed:', err)
+  setPayrollAdjustmentHistory([])
+  if (!options.silent) showToast('Failed to load payroll adjustments: ' + (err?.message || err), 'red')
+  return []
+ } finally {
+  setPayrollAdjustmentLoading(false)
+ }
+ }
+
+ async function undoPayrollAdjustment(adj) {
+ if (!adj?.id) { showToast('Adjustment record not found.', 'red'); return }
+ const adjDate = String(adj.adjustment_date || '').slice(0, 10)
+ const empName = adj.employee_name || 'this employee'
+ const amountText = php(adj.amount)
+ try {
+  // Use only stable columns here. Some older Supabase payroll_records tables
+  // do not have review_status/payroll_status yet, and selecting those optional
+  // columns blocks adjustment undo with a schema-cache error.
+  const { data:coveringPayroll, error:coverErr } = await supabase
+  .from('payroll_records')
+  .select('id, payroll_start, payroll_end, payroll_approved, approved_at, employee_name')
+  .eq('employee_id', adj.employee_id)
+  .lte('payroll_start', adjDate)
+  .gte('payroll_end', adjDate)
+
+  if (coverErr) throw coverErr
+
+  const released = (coveringPayroll || []).find(r => isReleasedPayrollRecord(r))
+  if (released) {
+   showToast(`Blocked: this adjustment is already inside released payroll ${released.payroll_start} to ${released.payroll_end}. Create an opposite adjustment in the next cutoff instead.`, 'red')
+   return
+  }
+
+  const draft = (coveringPayroll || []).find(r => r)
+  const msg = draft
+   ? `Undo this adjustment for ${empName}?\n\n${adj.adjustment_type || 'adjustment'}: ${amountText}\nDate: ${adjDate}\nCategory: ${adj.category || 'Uncategorized'}\n\nThis adjustment is already inside a computed draft payroll (${draft.payroll_start} to ${draft.payroll_end}). After deleting it, go to Payroll, click LOAD SAVED PAYROLL, then UNDO DRAFT PAYROLL, then COMPUTE DRAFT PAYROLL so the payslip updates.`
+   : `Undo this adjustment for ${empName}?\n\n${adj.adjustment_type || 'adjustment'}: ${amountText}\nDate: ${adjDate}\nCategory: ${adj.category || 'Uncategorized'}\n\nThis will delete the adjustment record.`
+
+  if (!window.confirm(msg)) return
+
+  const { error } = await supabase.from('payroll_adjustments').delete().eq('id', adj.id)
+  if (error) throw error
+
+  setPayrollAdjustmentHistory(prev => (prev || []).filter(row => String(row.id) !== String(adj.id)))
+  await logAudit('PAYROLL ADJUSTMENT UNDONE', currentAdminLabel || adminRole || 'Admin', empName, `${adj.adjustment_type || 'adjustment'} ${amountText} dated ${adjDate}. Category: ${adj.category || 'Uncategorized'}. Notes: ${adj.notes || ''}`)
+  showToast(draft ? 'Adjustment deleted. Now undo the draft payroll and recompute so the payslip updates.' : 'Adjustment deleted successfully.')
+ } catch(err) {
+  console.error('Undo payroll adjustment failed:', err)
+  showToast('Failed to undo adjustment: ' + (err?.message || err), 'red')
+ }
+ }
+
+ async function openAdjustmentFinderForPayslip(pay, type = 'all') {
+ const start = payrollStart || pay?.payrollStart || today
+ const end = payrollEnd || pay?.payrollEnd || today
+ setActiveTab('adjustment')
+ setSidebarOpen(false)
+ setPayrollAdjustmentFrom(start)
+ setPayrollAdjustmentTo(end)
+ setPayrollAdjustmentTypeFilter(type)
+ setPayrollAdjustmentSearch(pay?.employeeName || pay?.employeeCode || '')
+ await loadPayrollAdjustmentHistory({ from:start, to:end, silent:true })
+ setTimeout(() => {
+  try { document.getElementById('payroll-adjustment-finder')?.scrollIntoView({ behavior:'smooth', block:'start' }) } catch(e) {}
+ }, 100)
  }
  async function silReleaseMarkerExists(adjustmentId) {
  if (!adjustmentId) return false
@@ -14928,9 +15645,24 @@ This recovery button creates one approved expense record using GROSS payroll ear
  showToast(' Schedule removed')
  }
  function applyPayrollCutoff() {
- const [y,m] = payrollMonth.split('-').map(Number)
- if (payrollCutoff==='11-25') { setPayrollStart(`${y}-${String(m).padStart(2,'0')}-11`); setPayrollEnd(`${y}-${String(m).padStart(2,'0')}-25`) }
- else { const s=new Date(y,m-1,26),e=new Date(y,m,10); setPayrollStart(s.toISOString().slice(0,10)); setPayrollEnd(e.toISOString().slice(0,10)) }
+ const [y,m] = String(payrollMonth || '').split('-').map(Number)
+ if (!y || !m) { showToast('Please select a payroll month first.', 'red'); return }
+ const pad = n => String(n).padStart(2, '0')
+ const ymDate = (year, month, day) => `${year}-${pad(month)}-${pad(day)}`
+
+ if (payrollCutoff === '11-25') {
+  // Same-month cutoff: selected month 11th to selected month 25th.
+  setPayrollStart(ymDate(y, m, 11))
+  setPayrollEnd(ymDate(y, m, 25))
+  return
+ }
+
+ // Cross-month cutoff: selected month 26th to next month 10th.
+ // Do not use toISOString() here because PH timezone can shift local midnight to the previous UTC date.
+ const nextYear = m === 12 ? y + 1 : y
+ const nextMonth = m === 12 ? 1 : m + 1
+ setPayrollStart(ymDate(y, m, 26))
+ setPayrollEnd(ymDate(nextYear, nextMonth, 10))
  }
  async function computeFinalPay() {
  if (!finalPayEmployeeId||!finalPayLastDate) { showToast('Please select employee and last working date.','red'); return }
@@ -15000,22 +15732,25 @@ This recovery button creates one approved expense record using GROSS payroll ear
  setHistoryLoading(true)
  // Get distinct payroll periods
  const { data } = await supabase
-.from('payroll_records')
-.select('payroll_start, payroll_end, employee_acknowledgement')
-.order('payroll_start', { ascending: false })
+ .from('payroll_records')
+ .select('*')
+ .order('payroll_start', { ascending: false })
  setHistoryLoading(false)
  if (!data) return
  // Group by period
  const periods = {}
  for (const rec of data) {
- const key = `${rec.payroll_start}|${rec.payroll_end}`
- if (!periods[key]) {
- periods[key] = { payroll_start: rec.payroll_start, payroll_end: rec.payroll_end, total: 0, agreed: 0, disputed: 0, pending: 0 }
- }
- periods[key].total++
- if (rec.employee_acknowledgement === 'agreed') periods[key].agreed++
- else if (rec.employee_acknowledgement === 'disputed') periods[key].disputed++
- else periods[key].pending++
+  const key = `${rec.payroll_start}|${rec.payroll_end}`
+  if (!periods[key]) {
+   periods[key] = { payroll_start: rec.payroll_start, payroll_end: rec.payroll_end, total: 0, draft:0, reviewSent:0, released:0, agreed: 0, disputed: 0, pending: 0 }
+  }
+  periods[key].total++
+  if (isReleasedPayrollRecord(rec)) periods[key].released++
+  if (isDraftPayrollRecord(rec)) periods[key].draft++
+  if (isPayrollSentForEmployeeReview(rec)) periods[key].reviewSent++
+  if (rec.employee_acknowledgement === 'agreed') periods[key].agreed++
+  else if (rec.employee_acknowledgement === 'disputed') periods[key].disputed++
+  else if (!isDraftPayrollRecord(rec)) periods[key].pending++
  }
  setPayrollHistory(Object.values(periods).sort((a,b) => b.payroll_start.localeCompare(a.payroll_start)))
  }
@@ -15190,6 +15925,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  function mapSavedPayrollRecordToResult(record = {}, employeeLookup = {}) {
  const emp = employeeLookup[String(record.employee_id || '')] || {}
  const dailyRate = safeNum(emp.daily_rate, 0)
+ const ack = record.employee_acknowledgement || 'draft'
+ const status = record.payroll_status || (isReleasedPayrollRecord(record)? 'released': (ack === 'draft'? 'draft':'under_review'))
  return {
   id: record.id,
   savedRecordId: record.id,
@@ -15204,19 +15941,26 @@ This recovery button creates one approved expense record using GROSS payroll ear
   paidLeavePay: safeNum(record.paid_leave_pay, 0),
   workedBasicPay: safeNum(record.worked_basic_pay ?? record.basic_pay, 0),
   totalWorkedMinutes: safeNum(record.total_worked_minutes, 0),
+  regularPaidMinutes: safeNum(record.regular_paid_minutes, safeNum(record.worked_days, 0) * 8 * 60),
   hourlyRate: dailyRate > 0? dailyRate / 8: 0,
   basicPay: safeNum(record.basic_pay, 0),
   birthdayPay: safeNum(record.birthday_pay, 0),
   overtimePay: safeNum(record.overtime_pay, 0),
   overtimeMinutes: safeNum(record.overtime_minutes, 0),
   nightDiffPay: safeNum(record.night_diff_pay, 0),
+  nightDiffMinutes: safeNum(record.night_diff_minutes, 0),
   holidayPay: safeNum(record.holiday_pay, 0),
   adjustmentEarnings: safeNum(record.other_earnings, 0),
   totalEarnings: safeNum(record.total_earnings, 0),
   cashAdvanceDeduction: safeNum(record.cash_advance_deduction, 0),
+  requestedCashAdvanceDeduction: safeNum(record.requested_cash_advance_deduction, safeNum(record.cash_advance_deduction, 0)),
+  deferredCADeduction: safeNum(record.deferred_cash_advance_deduction, 0),
+  nonCADeductionOverflow: safeNum(record.non_ca_deduction_overflow, Math.max(0, safeNum(record.total_deductions,0)-safeNum(record.total_earnings,0))),
   sssDeduction: safeNum(record.sss_deduction, 0),
   pagibigDeduction: safeNum(record.pagibig_deduction, 0),
   philhealthDeduction: safeNum(record.philhealth_deduction, 0),
+  lateDeduction: safeNum(record.late_deduction, 0),
+  undertimeDeduction: safeNum(record.undertime_deduction, 0),
   adjustmentDeductions: safeNum(record.other_deductions, 0),
   totalDeductions: safeNum(record.total_deductions, 0),
   netPay: safeNum(record.net_pay, 0),
@@ -15229,7 +15973,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
   bankAccountName: emp.bank_account_name || '',
   mobileNumber: emp.contact_number || '',
   payslipSerial: record.payslip_serial || '',
-  employeeAcknowledgement: record.employee_acknowledgement || 'pending',
+  employeeAcknowledgement: ack,
+  payrollStatus: status,
+  reviewSentAt: record.review_sent_at || null,
+  reviewSentBy: record.review_sent_by || '',
   payrollApproved: record.payroll_approved === true,
   approvedAt: record.approved_at || null
  }
@@ -15293,43 +16040,54 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
  }
 
- async function printDTR(empId, empName, empCode, month) {
- // month format: YYYY-MM
- const startDate = `${month}-01`
- const endDate = new Date(Number(month.split('-')[0]), Number(month.split('-')[1]), 0).toISOString().slice(0,10)
+ async function printDTR(empId, empName, empCode, startOrMonth, endDateArg = null, periodLabelArg = '') {
+ let startDate = startOrMonth
+ let endDate = endDateArg
+ let periodLabel = periodLabelArg
+
+ // Backward compatible: old callers pass month format YYYY-MM.
+ if (!endDate && /^\d{4}-\d{2}$/.test(String(startOrMonth || ''))) {
+  const [y, m] = String(startOrMonth).split('-').map(Number)
+  startDate = `${startOrMonth}-01`
+  endDate = `${y}-${pad2(m)}-${pad2(new Date(y, m, 0).getDate())}`
+  periodLabel = new Date(`${startOrMonth}-01`).toLocaleString('default', { month:'long', year:'numeric' })
+ }
+ if (!startDate || !endDate) { showToast('Please select a valid DTR cutoff period.', 'red'); return }
+ if (!periodLabel) periodLabel = `${formatDateForDisplay(startDate)} – ${formatDateForDisplay(endDate)}`
+
  const { data: logs } = await supabase.from('attendance_logs').select('*')
 .eq('employee_id', empId).gte('attendance_date', startDate).lte('attendance_date', endDate)
 .order('attendance_date')
  const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
- const daysInMonth = new Date(Number(month.split('-')[0]), Number(month.split('-')[1]), 0).getDate()
- const monthName = new Date(month+'-01').toLocaleString('default', { month:'long', year:'numeric' })
- const totalDaysWorked = logs?.filter(l=>l.time_in).length || 0
- const totalAbsent = logs?.filter(l=>l.status==='Absent').length || 0
- const totalLate = logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0) || 0
- const totalOT = logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0) || 0
+ const grouped = groupDTRLogsByDate(logs || [])
+ const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
+ const totalDaysWorked = new Set(mergedLogs.filter(l=>l.time_in && l.time_out).map(l=>String(l.attendance_date || '').slice(0,10))).size
+ const totalAbsent = new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size
+ const totalLate = mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0) || 0
+ const totalOT = mergedLogs.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0) || 0
+ const totalBreak = mergedLogs.reduce((s,l)=>s+Number(l.total_break_minutes||0),0) || 0
+ const duplicateDays = Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
 
- const rows = Array.from({length: daysInMonth}, (_,i) => {
- const dateStr = `${month}-${String(i+1).padStart(2,'0')}`
- const log = logs?.find(l=>l.attendance_date===dateStr)
- const dayName = new Date(dateStr).toLocaleDateString('en-US', {weekday:'short'})
+ const rows = buildDateRangeRows(startDate, endDate, ({ dateStr, day, dayName }) => {
+ const log = mergeDTRDayLogs(grouped[dateStr] || [])
  return `<tr style="border-bottom:1px solid #eee;">
  <td style="padding:5px 8px;font-size:10px;color:#888;">${dayName}</td>
- <td style="padding:5px 8px;font-size:10px;text-align:center;">${i+1}</td>
+ <td style="padding:5px 8px;font-size:10px;text-align:center;">${formatDateForDisplay(dateStr)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_in?'#000':'#ccc'}">${log?.time_in||' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_out?'#000':'#ccc'}">${log?.time_out||' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;">${log?.total_break_minutes||0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.late_minutes>0?'#ca1b1b':'#000'}">${log?.late_minutes||0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.overtime_minutes>0?'#2d8a4e':'#000'}">${log?.overtime_approved?log.overtime_minutes:0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;">
- ${!log?'':log.status==='Absent'?'<span style="color:#ca1b1b;font-weight:bold;">ABS</span>':
+ ${!log?'':log.duplicateCount>1?'<span style="color:#f5a623;font-weight:bold;">DUP</span>':log.status==='Absent'?'<span style="color:#ca1b1b;font-weight:bold;">ABS</span>':
  log.status==='Late'?'<span style="color:#f5a623;">LATE</span>':
- log.time_in?'<span style="color:#2d8a4e;"> </span>':''}
+ log.time_in?'<span style="color:#2d8a4e;">PRESENT</span>':''}
  </td>
  </tr>`
  }).join('')
 
  const pw = window.open('','_blank','width=420,height=660')
- pw.document.write(`<!DOCTYPE html><html><head><title>DTR - ${empName} - ${monthName}</title>
+ pw.document.write(`<!DOCTYPE html><html><head><title>DTR - ${empName} - ${periodLabel}</title>
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
  body{font-family:Arial,sans-serif;padding:15mm;font-size:12px;color:#000;}
@@ -15341,19 +16099,22 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
  <div style="font-size:11px;color:#666;">Payroll &amp; Attendance System</div>
  <div style="font-size:15px;font-weight:bold;margin-top:6px;">DAILY TIME RECORD (DTR)</div>
- <div style="font-size:12px;margin-top:2px;">${monthName}</div>
+ <div style="font-size:12px;margin-top:2px;">${periodLabel}</div>
+ <div style="font-size:10px;color:#666;margin-top:2px;">Cutoff Period: ${startDate} to ${endDate}</div>
  </div>
  <div style="background:#fff8dc;border:1px solid #ca1b1b;border-radius:6px;padding:10px;margin-bottom:14px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
  <div>
  <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${empName}</div>
  <div style="font-size:11px;color:#555;">Employee Code: ${empCode}</div>
  <div style="font-size:11px;color:#555;">Position: ${emp?.position||' '} | Department: ${emp?.department||' '}</div>
+ ${duplicateDays>0?`<div style="font-size:10px;color:#f5a623;font-weight:bold;margin-top:4px;">Warning: ${duplicateDays} day(s) have duplicate attendance logs.</div>`:''}
  </div>
  <div style="text-align:right;">
  <div style="font-size:11px;">Days Worked: <strong>${totalDaysWorked}</strong></div>
  <div style="font-size:11px;">Absences: <strong style="color:#ca1b1b;">${totalAbsent}</strong></div>
  <div style="font-size:11px;">Total Late: <strong style="color:#f5a623;">${totalLate} min</strong></div>
  <div style="font-size:11px;">Total OT: <strong style="color:#2d8a4e;">${totalOT} min</strong></div>
+ <div style="font-size:11px;">Total Break: <strong>${totalBreak} min</strong></div>
  </div>
  </div>
  <table>
@@ -15365,8 +16126,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <tfoot>
  <tr style="background:#f5f5f5;font-weight:bold;">
  <td colspan="2" style="padding:6px 8px;font-size:10px;">TOTALS</td>
- <td></td><td></td>
- <td style="padding:6px 8px;font-size:10px;text-align:center;">${logs?.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0}</td>
+ <td style="padding:6px 8px;font-size:10px;text-align:center;">${totalDaysWorked} day(s)</td><td></td>
+ <td style="padding:6px 8px;font-size:10px;text-align:center;">${totalBreak}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#ca1b1b;">${totalLate}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#2d8a4e;">${totalOT}</td>
  <td></td>
@@ -15516,33 +16277,169 @@ This recovery button creates one approved expense record using GROSS payroll ear
  showToast(' Payroll exported to CSV!')
  }
 
- async function computePayroll() {
+ async function sendPayslipsForEmployeeReview(start = payrollStart, end = payrollEnd) {
+ if (!requireOwnerOrPayrollAction('send payslips for review')) return
+ if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
+ const { data:records, error } = await supabase
+ .from('payroll_records')
+ .select('id,employee_id,employee_name,employee_acknowledgement,payroll_approved,approved_at')
+ .eq('payroll_start', start)
+ .eq('payroll_end', end)
+ .limit(1000)
+ if (error) { showToast('Failed to check payroll: '+error.message, 'red'); return }
+ if (!records || records.length === 0) { showToast('No payroll records found. Compute payroll first.', 'red'); return }
+ if (records.some(isReleasedPayrollRecord)) { showToast('This payroll is already released. Employee review sending is closed.', 'red'); return }
+
+ const alreadySentCount = records.filter(isPayrollSentForEmployeeReview).length
+ if (alreadySentCount === records.length && !window.confirm('Payslips were already sent for review. Send review notifications again?')) return
+
+ const primaryUpdate = {
+  employee_acknowledgement:'pending',
+  payroll_status:'under_review',
+  review_sent_at:new Date().toISOString(),
+  review_sent_by:currentAdminLabel
+ }
+ let updateError = null
+ const { error:firstError } = await supabase.from('payroll_records')
+ .update(primaryUpdate)
+ .eq('payroll_start', start)
+ .eq('payroll_end', end)
+ if (firstError && isMissingPayrollWorkflowColumnError(firstError)) {
+  const { error:fallbackError } = await supabase.from('payroll_records')
+  .update({ employee_acknowledgement:'pending' })
+  .eq('payroll_start', start)
+  .eq('payroll_end', end)
+  updateError = fallbackError
+ } else {
+  updateError = firstError
+ }
+ if (updateError) { showToast('Failed to send payslips for review: '+updateError.message, 'red'); return }
+
+ for (const rec of records || []) {
+  if (rec.employee_id) {
+   await createNotification(
+    rec.employee_id,
+    rec.employee_name || 'Employee',
+    'payroll',
+    'Payslip Ready for Review',
+    `Your payslip for ${start} to ${end} is ready for review. Please open My Payslips, then agree or submit a dispute before payroll is finalized.`
+   )
+  }
+ }
+
+ const deadline = new Date(); deadline.setDate(deadline.getDate()+5)
+ try { await supabase.from('payroll_periods').upsert({
+  payroll_start:start,
+  payroll_end:end,
+  acknowledge_deadline:deadline.toISOString().slice(0,10),
+  review_sent_at:new Date().toISOString(),
+  review_sent_by:currentAdminLabel
+ }, { onConflict:'payroll_start,payroll_end' }) } catch(e) {}
+
+ await logAudit('PAYSLIPS SENT FOR EMPLOYEE REVIEW', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Records: ${records.length}`)
+ await loadSavedPayrollForPeriod(start, end, { silent:true })
+ showToast(`Payslips sent to ${records.length} employee${records.length===1?'':'s'} for review.`, 'green')
+ }
+
+ async function undoDraftPayroll(start = payrollStart, end = payrollEnd) {
+ if (!requireOwnerOrPayrollAction('undo draft payroll')) return
+ if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
+ const { data:records, error } = await supabase
+ .from('payroll_records')
+ .select('id,employee_id,employee_name,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction')
+ .eq('payroll_start', start)
+ .eq('payroll_end', end)
+ .limit(1000)
+ if (error) { showToast('Failed to check payroll: '+error.message, 'red'); return }
+ if (!records || records.length === 0) { showToast('No saved payroll found for this exact period.', 'red'); return }
+
+ const released = records.filter(isReleasedPayrollRecord)
+ if (released.length > 0) {
+  showToast('Undo blocked: this payroll was already released. Use a payroll adjustment or reversal workflow instead of deleting records.', 'red')
+  await logAudit('PAYROLL UNDO BLOCKED - RELEASED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Released rows: ${released.length}`)
+  return
+ }
+
+ const disputedCount = records.filter(r => normalizePayrollAcknowledgement(r.employee_acknowledgement) === 'disputed').length
+ const agreedCount = records.filter(r => normalizePayrollAcknowledgement(r.employee_acknowledgement) === 'agreed').length
+ const reviewSentCount = records.filter(isPayrollSentForEmployeeReview).length
+ const warning = [
+  `Undo ${records.length} unreleased payroll record(s) for ${start} to ${end}?`,
+  'This removes these payslips from employee portals so you can recompute cleanly.',
+  reviewSentCount > 0 ? `Review already sent: ${reviewSentCount} record(s).` : '',
+  agreedCount > 0 ? `Employees already agreed: ${agreedCount}.` : '',
+  disputedCount > 0 ? `Employees disputed: ${disputedCount}. Related disputes will be marked voided if possible.` : ''
+ ].filter(Boolean).join('\n')
+ if (!window.confirm(warning)) return
+
+ try {
+  await supabase.from('payslip_disputes')
+  .update({ status:'voided', admin_reason:`Payroll draft undone for recomputation by ${currentAdminLabel}`, reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString() })
+  .eq('payroll_start', start)
+  .eq('payroll_end', end)
+  .neq('status','resolved')
+ } catch(e) {
+  console.warn('Dispute voiding skipped:', e)
+ }
+
+ const { error:deleteError } = await supabase.from('payroll_records')
+ .delete()
+ .eq('payroll_start', start)
+ .eq('payroll_end', end)
+ if (deleteError) { showToast('Undo failed: '+deleteError.message, 'red'); return }
+
+ try { await supabase.from('payroll_periods').delete().eq('payroll_start', start).eq('payroll_end', end) } catch(e) {}
+ setPayrollResults([])
+ setPayrollSummary(null)
+ setPayrollApproved(false)
+ await logAudit('DRAFT PAYROLL UNDONE', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Deleted records: ${records.length}`)
+ loadPayrollHistory()
+ showToast('Draft payroll undone. You can now compute payroll again using the new rules.', 'green')
+ }
+
+
+async function computePayroll() {
  if (!payrollStart ||!payrollEnd) { showToast('Please select payroll start and end dates.', 'red'); return }
  if (parseLocalDate(payrollEnd) < parseLocalDate(payrollStart)) { showToast('Payroll end date must be after start date.', 'red'); return }
 
  setPayrollComputing(true)
  try {
  const { data:existing, error:existingError } = await supabase
-.from('payroll_records')
-.select('id,employee_acknowledgement,payroll_approved,approved_at')
-.eq('payroll_start', payrollStart)
-.eq('payroll_end', payrollEnd)
+ .from('payroll_records')
+ .select('id,employee_id,employee_name,employee_acknowledgement,payroll_approved,approved_at')
+ .eq('payroll_start', payrollStart)
+ .eq('payroll_end', payrollEnd)
 
  if (existingError) throw existingError
 
  if (existing && existing.length > 0) {
- await loadSavedPayrollForPeriod(payrollStart, payrollEnd, { silent:true })
- showToast(`Saved payroll already exists for ${payrollStart} to ${payrollEnd}. It was loaded instead of recomputing, to prevent duplicate employee payslips.`, 'green')
- return
+  await loadSavedPayrollForPeriod(payrollStart, payrollEnd, { silent:true })
+  showToast(`Saved payroll already exists for ${payrollStart} to ${payrollEnd}. It was loaded instead of recomputing. Use Undo Draft Payroll first if this unreleased payroll must be recomputed.`, 'green')
+  return
+ }
+
+ const { data:overlaps, error:overlapError } = await supabase
+ .from('payroll_records')
+ .select('id,employee_id,employee_name,payroll_start,payroll_end,payroll_approved,approved_at')
+ .lte('payroll_start', payrollEnd)
+ .gte('payroll_end', payrollStart)
+ .limit(1000)
+ if (overlapError) throw overlapError
+ const overlappingDifferentPeriods = (overlaps || []).filter(r => String(r.payroll_start) !== payrollStart || String(r.payroll_end) !== payrollEnd)
+ if (overlappingDifferentPeriods.length > 0) {
+  const sample = overlappingDifferentPeriods.slice(0,3).map(r=>`${r.employee_name || 'Employee'}: ${r.payroll_start} to ${r.payroll_end}`).join(' | ')
+  showToast(`Payroll blocked: ${overlappingDifferentPeriods.length} saved payslip(s) overlap this period. Example: ${sample}. Use the exact period or undo the overlapping draft first.`, 'red')
+  await logAudit('PAYROLL COMPUTE BLOCKED - OVERLAP', currentAdminLabel, 'Payroll', `Requested: ${payrollStart} to ${payrollEnd} | Overlaps: ${overlappingDifferentPeriods.length}`)
+  return
  }
 
  const { data:empList, error:empError } = await supabase.from('employees').select('*').eq('is_active', true)
  if (empError) throw empError
  if (!empList || empList.length === 0) {
- setPayrollResults([])
- setPayrollSummary(null)
- showToast('No active employees found for payroll.', 'red')
- return
+  setPayrollResults([])
+  setPayrollSummary(null)
+  showToast('No active employees found for payroll.', 'red')
+  return
  }
 
  const { data:holidayList, error:holidayError } = await supabase.from('holidays').select('*').gte('holiday_date', payrollStart).lte('holiday_date', payrollEnd)
@@ -15552,162 +16449,230 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const startDay = Number(payrollStart.split('-')[2])
  const isFirstCutoff = startDay>=11&&startDay<=25
  for (const emp of empList||[]) {
- const { data:logs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', payrollStart).lte('attendance_date', payrollEnd)
- if (logsError) throw logsError
- const { data:leaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', payrollEnd).gte('leave_end', payrollStart)
- if (leavesError) throw leavesError
- const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id)
- if (caError) throw caError
- const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
- if (adjsError) throw adjsError
+  const { data:logs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', payrollStart).lte('attendance_date', payrollEnd)
+  if (logsError) throw logsError
+  const { data:leaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', payrollEnd).gte('leave_end', payrollStart)
+  if (leavesError) throw leavesError
+  const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id)
+  if (caError) throw caError
+  const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
+  if (adjsError) throw adjsError
+  const { data:approvedTimeAdjs, error:timeAdjError } = await supabase
+  .from('time_adjustment_requests')
+  .select('*')
+  .eq('employee_id', emp.id)
+  .eq('status', 'approved')
+  .gte('attendance_date', payrollStart)
+  .lte('attendance_date', payrollEnd)
+  if (timeAdjError) throw timeAdjError
 
- const workedDays=logs?.filter(l=>l.time_in).length||0
- const absentDays=logs?.filter(l=>l.status==='Absent').length||0
- const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
- const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
- const dailyRate=Number(emp.daily_rate||0)
- const hourlyRate=dailyRate/8
- const minuteRate=hourlyRate/60
+  const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
+  let breakRowsByLogId={}
+  if (workedLogs.length>0) {
+   const logIds = workedLogs.map(l=>l.id).filter(Boolean)
+   if (logIds.length > 0) {
+    const { data:breakRows, error:breakRowsError } = await supabase
+    .from('break_logs')
+    .select('*')
+    .in('attendance_log_id', logIds)
+    if (breakRowsError) throw breakRowsError
+    ;(breakRows||[]).forEach(row => {
+     const key=String(row.attendance_log_id||'')
+     if (!breakRowsByLogId[key]) breakRowsByLogId[key]=[]
+     breakRowsByLogId[key].push(row)
+    })
+   }
+  }
 
- // Hourly-based Basic Pay (computed from actual clock-in/out) 
- const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
- let workedBasicPay=0, basicPay=0, totalWorkedMinutes=0
- for (const log of workedLogs) {
- const inM=minutesFromTime(log.time_in)
- const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
- const rawMins=outM-inM
- const recordedBreak=Number(log.total_break_minutes||0)
- // If no break was recorded AND shift is 9+ hours assume 1-hour break was taken
- // Only exception: if OT is approved (employee worked through break intentionally)
- const effectiveBreak = recordedBreak > 0
-? recordedBreak
-: (rawMins >= 9*60? ALLOWED_BREAK_MINUTES: 0)
- const actualMins=Math.max(0,rawMins-effectiveBreak)
- totalWorkedMinutes+=actualMins
- workedBasicPay+=actualMins*minuteRate
- basicPay+=actualMins*minuteRate
- }
- // Add approved SIL as paid leave at full daily rate. Unpaid leave is not added to earnings.
- const paidLeavePay=paidLeaveDays*dailyRate
- basicPay+=paidLeavePay
+  const workedDays=workedLogs.length||0
+  const absentDays=logs?.filter(l=>l.status==='Absent').length||0
+  const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
+  const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
+  const rawDailyRate=safeNum(emp.daily_rate, 0)
+  const savedHourlyRate=safeNum(emp.hourly_rate, 0)
+  const dailyRate=rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0)
+  const hourlyRate=dailyRate>0?dailyRate/8:savedHourlyRate
+  const minuteRate=hourlyRate/60
 
- // Birthday Pay 
- let birthdayPay=0
- if (emp.date_of_birth) {
- const bdMMDD=emp.date_of_birth.slice(5) // MM-DD
- // Check dates in both the payroll year and next year (for Jan cutoffs)
- const years=[payrollStart.slice(0,4), String(Number(payrollStart.slice(0,4))+1)]
- for (const yr of years) {
- const bdFull=`${yr}-${bdMMDD}`
- if (bdFull>=payrollStart&&bdFull<=payrollEnd) {
- const workedLog=workedLogs.find(l=>l.attendance_date===bdFull)
- if (workedLog) {
- // Worked on birthday 200% = base already counted above, add extra 100%
- const inM=minutesFromTime(workedLog.time_in)
- const outM=minutesFromTime(workedLog.time_out)+(minutesFromTime(workedLog.time_out)<minutesFromTime(workedLog.time_in)?24*60:0)
- const brkMins=Number(workedLog.total_break_minutes||0)
- const actualMins=Math.max(0,outM-inM-brkMins)
- birthdayPay+=actualMins*minuteRate // extra 100% on top total 200%
- } else {
- // Didn't work but birthday falls in period give full day pay
- birthdayPay+=dailyRate
- }
- }
- }
- }
+  // Daily-rate rule: one completed attendance day earns one full daily rate.
+  // Time-in/time-out minutes do not reduce basic pay automatically.
+  // Minutes are used only for approved OT, approved UT, and night differential premium.
+  let totalWorkedMinutes=0
+  let nightDiffMinutes=0
+  const workDetailByDate={}
+  for (const log of workedLogs) {
+   const inM=minutesFromTime(log.time_in)
+   const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
+   const rawMins=Math.max(0,outM-inM)
+   const logBreakRows=breakRowsByLogId[String(log.id||'')]||[]
+   const recordedBreak=safeNum(log.total_break_minutes, 0)
+   const effectiveBreak=recordedBreak>0?recordedBreak:(rawMins>=9*60?ALLOWED_BREAK_MINUTES:0)
+   const actualMins=Math.max(0,rawMins-effectiveBreak)
+   const computedNightDiffMinutes=calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows)
+   nightDiffMinutes+=computedNightDiffMinutes
+   totalWorkedMinutes+=actualMins
+   workDetailByDate[String(log.attendance_date||'').slice(0,10)]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes }
+  }
 
- // Overtime 
- const overtimeMinutes=logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0
- const overtimePay=overtimeMinutes*minuteRate*1.25
+  const workedBasicPay=workedDays*dailyRate
+  const paidLeavePay=paidLeaveDays*dailyRate
+  const basicPay=workedBasicPay+paidLeavePay
+  const regularPaidMinutes=(workedDays+paidLeaveDays)*8*60
 
- // Night Differential (10%) 
- let nightDiffPay=0
- for (const log of workedLogs) {
- const inM=minutesFromTime(log.time_in),outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
- const os=Math.max(inM,22*60),oe=Math.min(outM,30*60)
- if (oe>os) nightDiffPay+=(oe-os)*minuteRate*0.10
- }
+  // Birthday Pay: no work, no pay. If employee worked on birthday, add extra 100%.
+  let birthdayPay=0
+  if (emp.date_of_birth) {
+   const bdMMDD=emp.date_of_birth.slice(5)
+   const years=[payrollStart.slice(0,4), String(Number(payrollStart.slice(0,4))+1)]
+   for (const yr of years) {
+    const bdFull=`${yr}-${bdMMDD}`
+    if (bdFull>=payrollStart&&bdFull<=payrollEnd) {
+     const workedInfo=workDetailByDate[bdFull]
+     if (workedInfo) birthdayPay+=dailyRate
+    }
+   }
+  }
 
- // Holiday Pay 
- let holidayPay=0
- for (const h of holidayList||[]) {
- const worked=workedLogs.find(l=>l.attendance_date===h.holiday_date)
- if (h.holiday_type==='regular') holidayPay+=worked?dailyRate:0 // extra 100% on top of hourly pay 200% total
- else if (h.holiday_type==='special') holidayPay+=worked?dailyRate*0.3:0 // 30% premium
- }
+  const overtimeMinutes=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='overtime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
+  const overtimePay=overtimeMinutes*minuteRate*1.25
+  const undertimeMinutesApproved=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='undertime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
+  const undertimeDeduction=undertimeMinutesApproved*minuteRate
 
- // Cash Advance, Adjustments, Government Contributions 
- let adjEarnings=0,adjDeductions=0
- for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
- const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
- const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
- const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
- const totalEarnings=basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings
- const nonCADeductions=sssDeduction+pagibigDeduction+philhealthDeduction+adjDeductions
- const availableForCA=Math.max(0, moneyRound(totalEarnings-nonCADeductions))
- const rawCADeduction=(cas||[]).filter(isOutstandingCashAdvance).reduce((s,ca)=>s+getCashAdvancePayrollDeduction(ca),0)
- const caDeduction=Math.min(moneyRound(rawCADeduction), availableForCA)
- const totalDeductions=caDeduction+nonCADeductions
- const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
- const undertimeMinutesInfo=logs?.reduce((s,l)=>s+Number(l.undertime_minutes||0),0)||0
- const payrollCostType = getEmployeePayrollCostType(emp)
- const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
- results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, sssDeduction, pagibigDeduction, philhealthDeduction, adjustmentDeductions:adjDeductions, totalDeductions, netPay:Math.max(0,totalEarnings-totalDeductions), lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'' })
+  // Night differential premium: break time inside 10PM-6AM is excluded.
+  const nightDiffPay=nightDiffMinutes*minuteRate*0.10
+
+  // Holiday premium based on worked holiday attendance date.
+  // Employee-level holiday eligibility lets owner exempt supervisors or other non-entitled roles.
+  const regularHolidayPayEligible = emp.regular_holiday_pay_eligible !== false
+  const specialHolidayPayEligible = emp.special_holiday_pay_eligible !== false
+  let holidayPay=0
+  let holidayPayExempted=0
+  for (const h of holidayList||[]) {
+   const workedInfo=workDetailByDate[String(h.holiday_date||'').slice(0,10)]
+   const holidayBasePay=workedInfo?dailyRate:0
+   if (h.holiday_type==='regular') {
+    if (regularHolidayPayEligible) holidayPay+=holidayBasePay
+    else holidayPayExempted+=holidayBasePay
+   } else if (h.holiday_type==='special') {
+    if (specialHolidayPayEligible) holidayPay+=holidayBasePay*0.3
+    else holidayPayExempted+=holidayBasePay*0.3
+   }
+  }
+  holidayPay=moneyRound(holidayPay)
+  holidayPayExempted=moneyRound(holidayPayExempted)
+
+  let adjEarnings=0,adjDeductions=0
+  for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
+  const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
+  const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
+  const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
+  const totalEarnings=moneyRound(basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings)
+  const undertimeDeductionRounded=moneyRound(undertimeDeduction)
+  const sssDeductionRounded=moneyRound(sssDeduction)
+  const pagibigDeductionRounded=moneyRound(pagibigDeduction)
+  const philhealthDeductionRounded=moneyRound(philhealthDeduction)
+  const adjDeductionsRounded=moneyRound(adjDeductions)
+  const nonCADeductions=moneyRound(undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
+
+  // Payroll safety rule: deductions must never create negative net pay.
+  // Cash advance is flexible and is always applied last. Any unpaid CA stays in the CA balance.
+  // If non-CA deductions alone exceed earnings, release is blocked until admin reviews/corrects it.
+  const nonCADeductionOverflow=moneyRound(Math.max(0, nonCADeductions-totalEarnings))
+  const availableForCA=moneyRound(Math.max(0, totalEarnings-nonCADeductions))
+  const rawCADeduction=moneyRound((cas||[]).filter(isOutstandingCashAdvance).reduce((s,ca)=>s+getCashAdvancePayrollDeduction(ca),0))
+  const caDeduction=moneyRound(Math.min(rawCADeduction, availableForCA))
+  const deferredCADeduction=moneyRound(Math.max(0, rawCADeduction-caDeduction))
+  const totalDeductions=moneyRound(nonCADeductionOverflow>0?nonCADeductions:nonCADeductions+caDeduction)
+  const netPay=moneyRound(Math.max(0,totalEarnings-totalDeductions))
+  const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
+  const undertimeMinutesInfo=undertimeMinutesApproved
+  const payrollCostType = getEmployeePayrollCostType(emp)
+  const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayPayExempted, holidayPayExemptionNote:holidayPayExempted>0?'Holiday premium excluded because employee is marked not entitled.':'', adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
- employee_id:pay.employeeId,
- employee_code:pay.employeeCode,
- employee_name:pay.employeeName,
- payroll_start:payrollStart,
- payroll_end:payrollEnd,
- worked_days:pay.workedDays,
- basic_pay:moneyRound(pay.basicPay),
- birthday_pay:moneyRound(pay.birthdayPay||0),
- overtime_pay:moneyRound(pay.overtimePay),
- night_diff_pay:moneyRound(pay.nightDiffPay),
- holiday_pay:moneyRound(pay.holidayPay),
- other_earnings:moneyRound(pay.adjustmentEarnings),
- total_earnings:moneyRound(pay.totalEarnings),
- late_minutes:pay.lateMinutes||0,
- undertime_minutes:pay.undertimeMinutes||0,
- cash_advance_deduction:moneyRound(pay.cashAdvanceDeduction),
- sss_deduction:moneyRound(pay.sssDeduction),
- pagibig_deduction:moneyRound(pay.pagibigDeduction),
- philhealth_deduction:moneyRound(pay.philhealthDeduction),
- other_deductions:moneyRound(pay.adjustmentDeductions),
- total_deductions:moneyRound(pay.totalDeductions),
- net_pay:moneyRound(pay.netPay),
- employee_acknowledgement:'pending',
- payslip_serial:genSerial(payrollStart,idx),
- payroll_cost_type:pay.payrollCostType || 'auto',
- payroll_cost_label:pay.payrollCostLabel || getPayrollCostTypeInfo(pay.payrollCostType || 'auto').shortLabel
+  employee_id:pay.employeeId,
+  employee_code:pay.employeeCode,
+  employee_name:pay.employeeName,
+  payroll_start:payrollStart,
+  payroll_end:payrollEnd,
+  worked_days:pay.workedDays,
+  absent_days:pay.absentDays,
+  paid_leave_days:pay.paidLeaveDays,
+  unpaid_leave_days:pay.unpaidLeaveDays,
+  paid_leave_pay:moneyRound(pay.paidLeavePay||0),
+  worked_basic_pay:moneyRound(pay.workedBasicPay||0),
+  total_worked_minutes:pay.totalWorkedMinutes||0,
+  regular_paid_minutes:pay.regularPaidMinutes||0,
+  basic_pay:moneyRound(pay.basicPay),
+  birthday_pay:moneyRound(pay.birthdayPay||0),
+  overtime_pay:moneyRound(pay.overtimePay),
+  overtime_minutes:pay.overtimeMinutes||0,
+  night_diff_pay:moneyRound(pay.nightDiffPay),
+  night_diff_minutes:pay.nightDiffMinutes||0,
+  holiday_pay:moneyRound(pay.holidayPay),
+  holiday_pay_exempted:moneyRound(pay.holidayPayExempted||0),
+  holiday_pay_exemption_note:pay.holidayPayExemptionNote||'',
+  other_earnings:moneyRound(pay.adjustmentEarnings),
+  total_earnings:moneyRound(pay.totalEarnings),
+  late_minutes:pay.lateMinutes||0,
+  undertime_minutes:pay.undertimeMinutes||0,
+  late_deduction:0,
+  undertime_deduction:moneyRound(pay.undertimeDeduction||0),
+  cash_advance_deduction:moneyRound(pay.cashAdvanceDeduction),
+  requested_cash_advance_deduction:moneyRound(pay.requestedCashAdvanceDeduction||0),
+  deferred_cash_advance_deduction:moneyRound(pay.deferredCADeduction||0),
+  non_ca_deduction_overflow:moneyRound(pay.nonCADeductionOverflow||0),
+  sss_deduction:moneyRound(pay.sssDeduction),
+  pagibig_deduction:moneyRound(pay.pagibigDeduction),
+  philhealth_deduction:moneyRound(pay.philhealthDeduction),
+  other_deductions:moneyRound(pay.adjustmentDeductions),
+  total_deductions:moneyRound(pay.totalDeductions),
+  net_pay:moneyRound(pay.netPay),
+  employee_acknowledgement:'draft',
+  payroll_status:'draft',
+  payslip_serial:genSerial(payrollStart,idx),
+  payroll_cost_type:pay.payrollCostType || 'auto',
+  payroll_cost_label:pay.payrollCostLabel || getPayrollCostTypeInfo(pay.payrollCostType || 'auto').shortLabel
  }))
 
+ async function insertPayrollRows(rows) {
+  const { error } = await supabase.from('payroll_records').insert(rows)
+  return error
+ }
+
  if (payrollPayload.length > 0) {
- const { error:firstInsertError } = await supabase.from('payroll_records').insert(payrollPayload)
- if (firstInsertError && isMissingPayrollCostColumnError(firstInsertError)) {
- const fallbackPayload = payrollPayload.map(row => {
-  const { payroll_cost_type, payroll_cost_label, ...safeRow } = row
-  return safeRow
- })
- const { error:fallbackInsertError } = await supabase.from('payroll_records').insert(fallbackPayload)
- if (fallbackInsertError) throw fallbackInsertError
- console.warn('Payroll records saved without cost classification columns. Run Payroll_COGS_Allocation_Supabase_Update.sql to store classifications in payroll history.')
- } else if (firstInsertError) throw firstInsertError
+  let insertError = await insertPayrollRows(payrollPayload)
+  if (insertError && (isMissingPayrollCostColumnError(insertError) || isMissingPayrollWorkflowColumnError(insertError))) {
+   const fallbackPayload = payrollPayload.map(row => {
+    const {
+     payroll_cost_type, payroll_cost_label, payroll_status,
+     absent_days, paid_leave_days, unpaid_leave_days, paid_leave_pay, worked_basic_pay,
+     total_worked_minutes, regular_paid_minutes, overtime_minutes, night_diff_minutes,
+     late_deduction, undertime_deduction,
+     requested_cash_advance_deduction, deferred_cash_advance_deduction, non_ca_deduction_overflow,
+     holiday_pay_exempted, holiday_pay_exemption_note,
+     ...safeRow
+    } = row
+    return safeRow
+   })
+   insertError = await insertPayrollRows(fallbackPayload)
+   if (!insertError) console.warn('Payroll saved with compatibility fallback. Run the latest Supabase payroll update SQL to store full workflow and breakdown details.')
+  }
+  if (insertError) throw insertError
  }
 
  const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
  setPayrollResults(results)
  setPayrollSummary(s)
- await logAudit('PAYROLL COMPUTED','Admin','ALL',`${payrollStart} to ${payrollEnd} ${results.length} employees`)
- showToast(' Payroll computed successfully!')
- // Schedule auto-acknowledge after 5 days (stored in DB as a flag)
- const deadline = new Date(); deadline.setDate(deadline.getDate()+5)
+ setPayrollApproved(false)
+ await logAudit('DRAFT PAYROLL COMPUTED',currentAdminLabel,'Payroll',`${payrollStart} to ${payrollEnd} ${results.length} employees | Status: draft/admin review only`)
+ showToast('Draft payroll computed. Review it first, then click SEND PAYSLIPS TO EMPLOYEES FOR REVIEW.')
  try { await supabase.from('payroll_periods').upsert({
- payroll_start: payrollStart, payroll_end: payrollEnd,
- acknowledge_deadline: deadline.toISOString().slice(0,10),
- computed_at: new Date().toISOString()
+  payroll_start: payrollStart, payroll_end: payrollEnd,
+  computed_at: new Date().toISOString(),
+  payroll_status:'draft'
  }, { onConflict:'payroll_start,payroll_end' }) } catch(e) {}
  } catch(err) {
  console.error('Payroll computation failed:', err)
@@ -15941,6 +16906,100 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
 
 
+ const otUtAnalytics = (() => {
+ const employeeLookup = {}
+ ;(employees || []).forEach(emp => {
+  if (!emp) return
+  if (emp.id) employeeLookup[`id:${emp.id}`] = emp
+  if (emp.employee_code) employeeLookup[`code:${String(emp.employee_code).toLowerCase()}`] = emp
+  if (emp.full_name) employeeLookup[`name:${String(emp.full_name).toLowerCase()}`] = emp
+ })
+
+ const rows = Array.isArray(timeAdjRequests)? timeAdjRequests: []
+ const summary = {
+  totalRows:rows.length,
+  pendingOTCount:0,
+  pendingUTCount:0,
+  approvedOTCount:0,
+  approvedUTCount:0,
+  rejectedCount:0,
+  voidedCount:0,
+  totalApprovedOTMinutes:0,
+  totalApprovedUTMinutes:0,
+  employeeMap:{},
+  totalRegularBasisMinutes:0,
+  topOT:[],
+  topUT:[],
+  perEmployeeRows:[],
+  highOTRows:[]
+ }
+
+ rows.forEach(req => {
+  const status = String(req?.status || 'pending').toLowerCase()
+  const type = String(req?.request_type || '').toLowerCase()
+  const minutes = Math.max(0, safeNum(req?.minutes, 0))
+  const emp = employeeLookup[`id:${req?.employee_id}`] || employeeLookup[`name:${String(req?.employee_name || '').toLowerCase()}`] || {}
+  const employeeId = String(req?.employee_id || emp.id || req?.employee_name || 'unknown')
+  const employeeName = req?.employee_name || emp.full_name || 'Unknown Employee'
+  const employeeCode = req?.employee_code || emp.employee_code || ''
+  const attendanceDate = String(req?.attendance_date || '').slice(0, 10)
+
+  if (status === 'pending') {
+   if (type === 'overtime') summary.pendingOTCount += 1
+   if (type === 'undertime') summary.pendingUTCount += 1
+  } else if (status === 'approved') {
+   if (!summary.employeeMap[employeeId]) {
+    summary.employeeMap[employeeId] = { employeeId, employeeName, employeeCode, otMinutes:0, utMinutes:0, otCount:0, utCount:0, approvedDates:new Set(), regularBasisMinutes:0, otPct:0, utPct:0 }
+   }
+   const row = summary.employeeMap[employeeId]
+   if (attendanceDate) row.approvedDates.add(attendanceDate)
+   if (type === 'overtime') {
+    summary.approvedOTCount += 1
+    summary.totalApprovedOTMinutes += minutes
+    row.otMinutes += minutes
+    row.otCount += 1
+   }
+   if (type === 'undertime') {
+    summary.approvedUTCount += 1
+    summary.totalApprovedUTMinutes += minutes
+    row.utMinutes += minutes
+    row.utCount += 1
+   }
+  } else if (status === 'rejected') summary.rejectedCount += 1
+  else if (status === 'voided') summary.voidedCount += 1
+ })
+
+ const perEmployeeRows = Object.values(summary.employeeMap).map(row => {
+  const dateCount = row.approvedDates?.size || Math.max(1, row.otCount + row.utCount)
+  const regularBasisMinutes = Math.max(480, dateCount * 480)
+  const otPct = regularBasisMinutes > 0? moneyRound((row.otMinutes / regularBasisMinutes) * 100):0
+  const utPct = regularBasisMinutes > 0? moneyRound((row.utMinutes / regularBasisMinutes) * 100):0
+  return { ...row, dateCount, regularBasisMinutes, otPct, utPct }
+ })
+ .sort((a,b)=>(b.otMinutes + b.utMinutes) - (a.otMinutes + a.utMinutes) || String(a.employeeName).localeCompare(String(b.employeeName)))
+
+ summary.perEmployeeRows = perEmployeeRows
+ summary.topOT = [...perEmployeeRows].filter(r=>r.otMinutes>0).sort((a,b)=>b.otMinutes-a.otMinutes).slice(0,5)
+ summary.topUT = [...perEmployeeRows].filter(r=>r.utMinutes>0).sort((a,b)=>b.utMinutes-a.utMinutes).slice(0,5)
+ summary.highOTRows = perEmployeeRows.filter(r=>r.otPct > 10)
+ summary.totalRegularBasisMinutes = perEmployeeRows.reduce((sum,row)=>sum+safeNum(row.regularBasisMinutes,0),0)
+ summary.totalOTPct = summary.totalRegularBasisMinutes > 0? moneyRound((summary.totalApprovedOTMinutes / summary.totalRegularBasisMinutes) * 100):0
+ summary.totalUTPct = summary.totalRegularBasisMinutes > 0? moneyRound((summary.totalApprovedUTMinutes / summary.totalRegularBasisMinutes) * 100):0
+ summary.highestOTEmployee = summary.topOT[0] || null
+ summary.highestUTEmployee = summary.topUT[0] || null
+ summary.pendingTotal = summary.pendingOTCount + summary.pendingUTCount
+ summary.approvedTotal = summary.approvedOTCount + summary.approvedUTCount
+ return summary
+ })()
+
+ function getOtUtWarningInfo(otPct) {
+  const pct = safeNum(otPct, 0)
+  if (pct > 10) return { label:'HIGH OT', color:'red', message:'High overtime. Review manpower, schedule, or branch workload.' }
+  if (pct > 5) return { label:'WATCH', color:'orange', message:'Overtime is noticeable. Monitor before it becomes expensive.' }
+  return { label:'NORMAL', color:'green', message:'Overtime level is within normal range.' }
+ }
+
+
  // Camera Screen 
  if (cameraMode) {
  return (
@@ -16107,6 +17166,19 @@ This recovery button creates one approved expense record using GROSS payroll ear
       .join('|')
     const shouldBlinkPayablesMainButton = isOwnerRole && ownerDeadlineSummary.warningCount > 0 && payablesBlinkSeenKey !== payablesWarningKey
  const filteredResults = payrollResults.filter(p=>p.employeeName.toLowerCase().includes(payrollSearch.toLowerCase())||p.employeeCode.toLowerCase().includes(payrollSearch.toLowerCase()))
+ const filteredPayrollAdjustmentHistory = (payrollAdjustmentHistory || []).filter(adj => {
+ const q = payrollAdjustmentSearch.trim().toLowerCase()
+ const matchesSearch = !q || [adj.employee_name, adj.employee_code, adj.category, adj.notes, adj.adjustment_type, adj.amount, adj.adjustment_date].some(v => String(v || '').toLowerCase().includes(q))
+ const matchesType = payrollAdjustmentTypeFilter === 'all' || String(adj.adjustment_type || '').toLowerCase() === payrollAdjustmentTypeFilter
+ return matchesSearch && matchesType
+ })
+ const payrollAdjustmentHistoryTotals = filteredPayrollAdjustmentHistory.reduce((acc, adj) => {
+  const amount = safeNum(adj.amount, 0)
+  if (String(adj.adjustment_type || '').toLowerCase() === 'addition') acc.additions += amount
+  else acc.deductions += amount
+  acc.count += 1
+  return acc
+ }, { count:0, additions:0, deductions:0 })
  const cashAdvanceCoveragePeriodOptions = (() => {
  const map = {}
  if (payrollStart && payrollEnd) map[`${payrollStart}|${payrollEnd}`] = { value:`${payrollStart}|${payrollEnd}`, label:`Current selected dates: ${payrollStart} ${payrollEnd}` }
@@ -16142,7 +17214,12 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if(key==='auditTrail') loadAuditTrail()
  if(key==='payrollHistory') loadPayrollHistory()
  if(key==='cashAdvanceCoverage') { loadPayrollHistory(); loadCashAdvanceCoverage(payrollStart, payrollEnd) }
- if(key==='adjustment') loadSILCashouts()
+ if(key==='adjustment') {
+  setPayrollAdjustmentFrom(payrollStart || today)
+  setPayrollAdjustmentTo(payrollEnd || today)
+  loadPayrollAdjustmentHistory({ from:payrollStart || today, to:payrollEnd || today, silent:true })
+  loadSILCashouts()
+ }
  if(key==='remittance') loadPayrollHistory()
  if(key==='dtr') loadEmployees()
  if(key==='contracts') { loadContracts(); loadEmployees(); setTimeout(()=>autoGenerateMissingContracts({ silent:true }), 800) }
@@ -16702,6 +17779,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={cps}> {emp.contact_number||' '} | {emp.home_address||' '}</p>
  <p style={cps}> {emp.emergency_contact_name||' '} {emp.emergency_contact_number||' '}</p>
  <p style={cps}>Payroll Cost: <Badge label={getPayrollCostTypeInfo(getEmployeePayrollCostType(emp)).shortLabel} color={isProductionPayrollCostType(getEmployeePayrollCostType(emp))?'orange':'gray'} /> {isProductionPayrollCostType(getEmployeePayrollCostType(emp))? 'Counts under COGS when payroll is released':'Counts under operating payroll expense when payroll is released'}</p>
+ <p style={cps}>Holiday Pay: <Badge label={(emp.regular_holiday_pay_eligible === false && emp.special_holiday_pay_eligible === false)?'Exempt':'Eligible'} color={(emp.regular_holiday_pay_eligible === false && emp.special_holiday_pay_eligible === false)?'red':'green'} /> Regular: {emp.regular_holiday_pay_eligible === false?'No':'Yes'} | Special: {emp.special_holiday_pay_eligible === false?'No':'Yes'}</p>
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
  {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
@@ -16740,6 +17818,12 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {PAYROLL_COST_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Production Labor / COGS will be included in COGS after payroll is released. Other classifications remain operating payroll expense.</p>
+ <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+  <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>Holiday Pay Eligibility</p>
+  <label style={lblS}><input type="checkbox" checked={newEmpFields.regular_holiday_pay_eligible !== false} onChange={e=>setNewEmpFields(p=>({...p,regular_holiday_pay_eligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
+  <label style={lblS}><input type="checkbox" checked={newEmpFields.special_holiday_pay_eligible !== false} onChange={e=>setNewEmpFields(p=>({...p,special_holiday_pay_eligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
+  <p style={{ color:'#777', fontSize:'11px', margin:'4px 0 0' }}>Uncheck both for supervisors or employees you decide are not entitled to holiday premium.</p>
+ </div>
  {adminRole==='owner' && (<>
  <label style={lblS}> Admin Role (Owner only grants system access):</label>
  <select value={newEmpFields.admin_role||''} onChange={e=>setNewEmpFields(p=>({...p,admin_role:e.target.value||null}))} style={{...inputStyle, borderColor:newEmpFields.admin_role?'#ca1b1b':'#ddd', fontWeight:newEmpFields.admin_role?'bold':'normal' }}>
@@ -16826,7 +17910,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', regular_holiday_pay_eligible:emp.regular_holiday_pay_eligible !== false, special_holiday_pay_eligible:emp.special_holiday_pay_eligible !== false, department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -16857,6 +17941,12 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {PAYROLL_COST_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Use Production Labor / COGS for mixers, frymen, bakers, finishers, and packers directly making products.</p>
+ <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+  <p style={{ fontWeight:'bold', color:'#ca1b1b', margin:'0 0 8px', fontSize:'13px' }}>Holiday Pay Eligibility</p>
+  <label style={lblS}><input type="checkbox" checked={editFields.regular_holiday_pay_eligible !== false} onChange={e=>setEditFields(p=>({...p,regular_holiday_pay_eligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
+  <label style={lblS}><input type="checkbox" checked={editFields.special_holiday_pay_eligible !== false} onChange={e=>setEditFields(p=>({...p,special_holiday_pay_eligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
+  <p style={{ color:'#777', fontSize:'11px', margin:'4px 0 0' }}>Uncheck both for supervisors or employees you decide are not entitled to holiday premium.</p>
+ </div>
  {adminRole==='owner'||adminRole==='manager'? (<>
  <label style={lblS}> Primary Role (grants system access):</label>
  <select value={editFields.admin_role||''} onChange={e=>setEditFields(p=>({...p,admin_role:e.target.value||null}))} style={{...inputStyle, borderColor:editFields.admin_role?'#ca1b1b':'#ddd', fontWeight:editFields.admin_role?'bold':'normal' }}>
@@ -17340,6 +18430,91 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>OT/UT Control Center</strong>
  <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>Use <strong>Void / Undo</strong> for wrong OT/UT before payroll release. If payroll was already released, the system blocks the undo and you should use Payroll Adjustment for the next payroll correction.</p>
  </div>
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.04)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>OT / UT Analytics</h3>
+ <p style={{ margin:0, color:'#666', fontSize:'12px', lineHeight:1.5 }}>Based on the currently loaded OT/UT view. Official payroll totals count approved OT/UT only. Percent basis = approved minutes ÷ affected approved attendance days × 480 minutes.</p>
+ </div>
+ <Badge label={getOtUtWarningInfo(otUtAnalytics.totalOTPct).label} color={getOtUtWarningInfo(otUtAnalytics.totalOTPct).color} />
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(6, 1fr)', gap:'10px', marginBottom:'14px' }}>
+ {[
+  {label:'Approved OT', value:`${Math.round((otUtAnalytics.totalApprovedOTMinutes/60)*10)/10}h`, note:`${otUtAnalytics.approvedOTCount} approved request(s)`, color:'#2d8a4e'},
+  {label:'Approved UT', value:`${Math.round((otUtAnalytics.totalApprovedUTMinutes/60)*10)/10}h`, note:`${otUtAnalytics.approvedUTCount} approved request(s)`, color:'#f5a623'},
+  {label:'OT %', value:`${otUtAnalytics.totalOTPct}%`, note:getOtUtWarningInfo(otUtAnalytics.totalOTPct).message, color:otUtAnalytics.totalOTPct>10?'#ca1b1b':otUtAnalytics.totalOTPct>5?'#f5a623':'#2d8a4e'},
+  {label:'UT %', value:`${otUtAnalytics.totalUTPct}%`, note:'Approved undertime ratio', color:'#f5a623'},
+  {label:'Pending OT/UT', value:String(otUtAnalytics.pendingTotal), note:`OT ${otUtAnalytics.pendingOTCount} / UT ${otUtAnalytics.pendingUTCount}`, color:otUtAnalytics.pendingTotal>0?'#f5a623':'#2d8a4e'},
+  {label:'High OT Warning', value:String(otUtAnalytics.highOTRows.length), note:'Employees above 10% OT', color:otUtAnalytics.highOTRows.length>0?'#ca1b1b':'#2d8a4e'}
+ ].map(card=>(
+  <div key={card.label} style={{ border:`2px solid ${card.color}`, borderRadius:'12px', padding:'12px', background:'#fff', minHeight:'88px' }}>
+  <p style={{ margin:'0 0 5px', color:'#666', fontSize:'11px', fontWeight:'800', textTransform:'uppercase', letterSpacing:'.4px' }}>{card.label}</p>
+  <div style={{ color:card.color, fontSize:'21px', fontWeight:'900', lineHeight:1.1 }}>{card.value}</div>
+  <p style={{ margin:'6px 0 0', color:'#777', fontSize:'11px', lineHeight:1.35 }}>{card.note}</p>
+  </div>
+ ))}
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+ <div style={{ border:'1px solid #e5f3e9', borderRadius:'12px', overflow:'hidden' }}>
+ <div style={{ background:'#e8f5e9', color:'#2d8a4e', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Top 5 Employees With Most OT</div>
+ {otUtAnalytics.topOT.length===0? <p style={{ margin:'12px', color:'#888', fontSize:'12px' }}>No approved overtime in this view.</p>:
+  otUtAnalytics.topOT.map((row,idx)=>(
+   <div key={`topot-${row.employeeId}`} style={{ display:'grid', gridTemplateColumns:'32px 1fr auto', gap:'8px', alignItems:'center', padding:'9px 12px', borderTop:idx?'1px solid #eee':'none' }}>
+   <strong style={{ color:'#2d8a4e' }}>#{idx+1}</strong>
+   <div><strong style={{ color:'#333', fontSize:'12px' }}>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · {row.otCount} approved OT request(s)</p></div>
+   <div style={{ textAlign:'right' }}><strong style={{ color:'#2d8a4e' }}>{Math.round((row.otMinutes/60)*10)/10}h</strong><p style={{ margin:'2px 0 0', color:row.otPct>10?'#ca1b1b':'#777', fontSize:'11px' }}>{row.otPct}%</p></div>
+   </div>
+  ))}
+ </div>
+
+ <div style={{ border:'1px solid #fff0cf', borderRadius:'12px', overflow:'hidden' }}>
+ <div style={{ background:'#fff8dc', color:'#b36b00', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Top 5 Employees With Most UT</div>
+ {otUtAnalytics.topUT.length===0? <p style={{ margin:'12px', color:'#888', fontSize:'12px' }}>No approved undertime in this view.</p>:
+  otUtAnalytics.topUT.map((row,idx)=>(
+   <div key={`toput-${row.employeeId}`} style={{ display:'grid', gridTemplateColumns:'32px 1fr auto', gap:'8px', alignItems:'center', padding:'9px 12px', borderTop:idx?'1px solid #eee':'none' }}>
+   <strong style={{ color:'#f5a623' }}>#{idx+1}</strong>
+   <div><strong style={{ color:'#333', fontSize:'12px' }}>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · {row.utCount} approved UT request(s)</p></div>
+   <div style={{ textAlign:'right' }}><strong style={{ color:'#f5a623' }}>{Math.round((row.utMinutes/60)*10)/10}h</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.utPct}%</p></div>
+   </div>
+  ))}
+ </div>
+ </div>
+
+ <div style={{ border:'1px solid #eee', borderRadius:'12px', overflowX:'auto' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+ <thead>
+ <tr style={{ background:'#fafafa', color:'#555' }}>
+ <th style={{ padding:'9px', textAlign:'left', borderBottom:'1px solid #eee' }}>Employee</th>
+ <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>OT</th>
+ <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>OT %</th>
+ <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>UT</th>
+ <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>UT %</th>
+ <th style={{ padding:'9px', textAlign:'center', borderBottom:'1px solid #eee' }}>Warning</th>
+ </tr>
+ </thead>
+ <tbody>
+ {otUtAnalytics.perEmployeeRows.length===0? (
+  <tr><td colSpan="6" style={{ padding:'12px', color:'#888', textAlign:'center' }}>No approved OT/UT records to calculate employee percentages.</td></tr>
+ ) : otUtAnalytics.perEmployeeRows.slice(0, 20).map(row=>{
+  const warn = getOtUtWarningInfo(row.otPct)
+  return (
+   <tr key={`otutrow-${row.employeeId}`}>
+   <td style={{ padding:'9px', borderBottom:'1px solid #f1f1f1' }}><strong>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · basis {Math.round(row.regularBasisMinutes/60)}h</p></td>
+   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1' }}>{row.otMinutes} min</td>
+   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1', color:row.otPct>10?'#ca1b1b':row.otPct>5?'#f5a623':'#2d8a4e', fontWeight:'800' }}>{row.otPct}%</td>
+   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1' }}>{row.utMinutes} min</td>
+   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1', color:'#f5a623', fontWeight:'800' }}>{row.utPct}%</td>
+   <td style={{ padding:'9px', textAlign:'center', borderBottom:'1px solid #f1f1f1' }}><Badge label={warn.label} color={warn.color} /></td>
+   </tr>
+  )
+ })}
+ </tbody>
+ </table>
+ </div>
+ </div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'15px' }}>
  {[{key:'active',label:'Pending + Approved'},{key:'pending',label:'Pending Only'},{key:'approved',label:'Approved / Can Undo'},{key:'history',label:'History'}].map(v=>(
  <button key={v.key} style={{...(timeAdjView===v.key?btnRed:btnGray), width:'auto', padding:'9px 13px', marginTop:0, fontSize:'12px' }} onClick={async()=>{ setTimeAdjView(v.key); await loadTimeAdjRequests(v.key) }}>{v.label}</button>
@@ -17388,6 +18563,70 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <input type="number" placeholder="Amount (PHP)" value={adjustmentAmount} onChange={e=>setAdjustmentAmount(e.target.value)} style={inputStyle} />
  <input placeholder="Notes (optional)" value={adjustmentNotes} onChange={e=>setAdjustmentNotes(e.target.value)} style={inputStyle} />
  <button style={btnGreen} onClick={saveAdjustment}> SAVE ADJUSTMENT</button>
+
+ <div id="payroll-adjustment-finder" style={{ marginTop:'24px', padding:'16px', background:'#f8fbff', border:'2px solid #4a90d9', borderRadius:'14px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'16px' }}>Adjustment History / Source Finder</h3>
+ <p style={{ margin:0, color:'#666', fontSize:'12px' }}>Use this to find where payslip “Other Earnings” or “Other Deductions” came from. It searches the payroll_adjustments records used by payroll computation.</p>
+ </div>
+ <button style={{...btnBlack, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setPayrollAdjustmentFrom(payrollStart || today); setPayrollAdjustmentTo(payrollEnd || today); loadPayrollAdjustmentHistory({ from:payrollStart || today, to:payrollEnd || today }) }}>USE CURRENT PAYROLL PERIOD</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.4fr 1fr 1fr 1fr auto', gap:'10px', alignItems:'end' }}>
+ <div>
+ <label style={lblS}>Search employee / category / notes / amount</label>
+ <input placeholder="Example: Pablo, Bonus, 5500, SIL" value={payrollAdjustmentSearch} onChange={e=>setPayrollAdjustmentSearch(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>From</label>
+ <input type="date" value={payrollAdjustmentFrom} onChange={e=>setPayrollAdjustmentFrom(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>To</label>
+ <input type="date" value={payrollAdjustmentTo} onChange={e=>setPayrollAdjustmentTo(e.target.value)} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>Type</label>
+ <select value={payrollAdjustmentTypeFilter} onChange={e=>setPayrollAdjustmentTypeFilter(e.target.value)} style={inputStyle}>
+ <option value="all">All</option>
+ <option value="addition">Addition / Other Earnings</option>
+ <option value="deduction">Deduction / Other Deductions</option>
+ </select>
+ </div>
+ <button style={{...btnGreen, width:isMobile?'100%':'auto', padding:'11px 16px', marginTop:0, marginBottom:'12px', fontSize:'12px' }} onClick={()=>loadPayrollAdjustmentHistory()}>LOAD / SEARCH</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'8px', margin:'4px 0 12px' }}>
+ <div style={{ background:'white', border:'1px solid #e5eaf5', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Records Found</p><strong style={{ color:'#1a1a2e' }}>{payrollAdjustmentHistoryTotals.count}</strong></div>
+ <div style={{ background:'white', border:'1px solid #d5efd9', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Total Additions / Earnings</p><strong style={{ color:'#2d8a4e' }}>{php(payrollAdjustmentHistoryTotals.additions)}</strong></div>
+ <div style={{ background:'white', border:'1px solid #ffd6d6', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Total Deductions</p><strong style={{ color:'#ca1b1b' }}>{php(payrollAdjustmentHistoryTotals.deductions)}</strong></div>
+ </div>
+ {payrollAdjustmentLoading && <p style={{ color:'#888', fontSize:'13px' }}>Loading adjustments...</p>}
+ {!payrollAdjustmentLoading && filteredPayrollAdjustmentHistory.length===0 && <p style={{ color:'#888', fontSize:'13px', margin:'10px 0 0' }}>No adjustment records found for the selected search and date range.</p>}
+ {!payrollAdjustmentLoading && filteredPayrollAdjustmentHistory.slice(0, 100).map(adj => {
+  const isAddition = String(adj.adjustment_type || '').toLowerCase() === 'addition'
+  return (
+  <div key={adj.id} style={{ background:'white', border:`1px solid ${isAddition?'#d5efd9':'#ffd6d6'}`, borderRadius:'12px', padding:'12px', marginTop:'8px' }}>
+  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap' }}>
+  <div style={{ flex:1, minWidth:'220px' }}>
+  <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>{adj.employee_name || 'Unknown Employee'}</strong>
+  <Badge label={isAddition?'ADDITION / EARNINGS':'DEDUCTION'} color={isAddition?'green':'red'} />
+  </div>
+  <p style={cps}>Code: {adj.employee_code || 'No code'} | Date applied: <strong>{adj.adjustment_date}</strong> | Created: {adj.created_at? new Date(adj.created_at).toLocaleString(): 'No timestamp'}</p>
+  <p style={cps}>Category: <strong>{adj.category || 'Uncategorized'}</strong></p>
+  {adj.notes && <p style={cps}>Notes: <em>"{adj.notes}"</em></p>}
+  </div>
+  <div style={{ textAlign:'right', minWidth:'120px' }}>
+  <p style={{ margin:0, color:isAddition?'#2d8a4e':'#ca1b1b', fontWeight:'900', fontSize:'15px' }}>{php(adj.amount)}</p>
+  <p style={{ margin:'3px 0 0', color:'#888', fontSize:'11px' }}>Adjustment ID: {String(adj.id || '').slice(0,8)}</p>
+  <button style={{...btnRed, width:'auto', padding:'7px 10px', marginTop:'8px', fontSize:'11px' }} onClick={()=>undoPayrollAdjustment(adj)}>UNDO / DELETE</button>
+  </div>
+  </div>
+  </div>
+  )
+ })}
+ {filteredPayrollAdjustmentHistory.length>100 && <p style={{ color:'#888', fontSize:'12px', marginTop:'8px' }}>Showing first 100 records. Narrow the search for more exact results.</p>}
+ </div>
 
  <div style={{ marginTop:'24px', padding:'16px', background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
@@ -17472,11 +18711,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div>
  <h2 style={h2s}>Payroll Computation</h2>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'15px', fontSize:'13px', color:'#666' }}>
- <strong style={{ color:'#ca1b1b' }}>Rules:</strong> 11 25 SSS (PHP 375) | 26 10 Pag-IBIG (PHP 200) + PhilHealth (PHP 250) | Only approved OT/UT computed
+ <strong style={{ color:'#ca1b1b' }}>Rules:</strong> Cutoffs: 26th–10th next month and 11th–25th same month. Daily-rate basic pay = completed workdays × daily rate. Birthday pay = no work, no pay. OT/UT are minute-based only when approved. Night differential excludes break time inside 10PM-6AM. Workflow: Compute Draft → Send Payslips for Review → Release Payroll.
  </div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'10px', alignItems:'flex-end' }}>
  <input type="month" value={payrollMonth} onChange={e=>setPayrollMonth(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} />
- <select value={payrollCutoff} onChange={e=>setPayrollCutoff(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }}><option value="11-25">11th 25th (SSS)</option><option value="26-10">26th 10th (PagIBIG+PhilHealth)</option></select>
+ <select value={payrollCutoff} onChange={e=>setPayrollCutoff(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }}><option value="26-10">26th to 10th next month (Pag-IBIG + PhilHealth)</option><option value="11-25">11th to 25th same month (SSS)</option></select>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={applyPayrollCutoff}>APPLY DATES</button>
  </div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'15px' }}>
@@ -17484,16 +18723,23 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
  </div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'20px' }}>
- <button style={{...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?' LOADING...':' COMPUTE PAYROLL'}</button>
+ <button style={{...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?' LOADING...':' COMPUTE DRAFT PAYROLL'}</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollComputing?0.5:1 }} onClick={()=>loadSavedPayrollForPeriod(payrollStart, payrollEnd)} disabled={payrollComputing}> LOAD SAVED PAYROLL</button>
+ <button style={{ background:'#0ea5e9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>sendPayslipsForEmployeeReview(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> SEND PAYSLIPS TO EMPLOYEES FOR REVIEW</button>
+ <button style={{ background:'#ef4444', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>undoDraftPayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> UNDO DRAFT PAYROLL</button>
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT CSV</button>
- <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> RELEASE PAYROLL</button>
+ <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> RELEASE FINAL PAYROLL</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
  {payrollSummary && (
  <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'22px' }}>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 12px' }}> Summary {payrollStart} to {payrollEnd}</h3>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'10px', padding:'10px', marginBottom:'12px', fontSize:'12px', color:'#555', display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+ <strong>Status:</strong>
+ <Badge label={payrollResults.some(p=>p.payrollApproved)?'RELEASED':payrollResults.some(p=>String(p.employeeAcknowledgement||'').toLowerCase()==='draft' || String(p.payrollStatus||'').toLowerCase()==='draft')?'DRAFT - ADMIN ONLY':'SENT FOR EMPLOYEE REVIEW'} color={payrollResults.some(p=>p.payrollApproved)?'green':payrollResults.some(p=>String(p.employeeAcknowledgement||'').toLowerCase()==='draft' || String(p.payrollStatus||'').toLowerCase()==='draft')?'orange':'blue'} />
+ <span>Draft payslips are hidden from employee portals until you click Send Payslips to Employees for Review.</span>
+ </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
  {[['Employees',payrollSummary.totalEmployees],['Basic Pay',php(payrollSummary.totalBasicPay)],[' Birthday Pay',php(payrollSummary.totalBirthdayPay||0)],['Overtime',php(payrollSummary.totalOvertimePay)],['Night Diff',php(payrollSummary.totalNightDiff)],['Holiday Pay',php(payrollSummary.totalHolidayPay)],['Total Earnings',php(payrollSummary.totalEarnings)],['SSS',php(payrollSummary.totalSSS)],['Pag-IBIG',php(payrollSummary.totalPagibig)],['PhilHealth',php(payrollSummary.totalPhilhealth)],['Cash Advance',php(payrollSummary.totalCA)],['Total Deductions',php(payrollSummary.totalDeductions)],['TOTAL NET PAY',php(payrollSummary.totalNetPay)]].map(([l,v])=>(
  <div key={l} style={{ background:'white', borderRadius:'8px', padding:'10px', border:'1px solid #eee' }}>
@@ -17521,24 +18767,28 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </div>
  <div style={{ color:'#2d8a4e', fontWeight:'bold', marginBottom:'4px' }}>EARNINGS</div>
  <div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#888', marginBottom:'6px' }}>
- <span>Hourly Rate: {php(pay.hourlyRate)}/hr | Hours Worked: {Math.floor((pay.totalWorkedMinutes||0)/60)}h {(pay.totalWorkedMinutes||0)%60}m</span>
+ <span>Daily Rate: {php((pay.hourlyRate||0)*8)} | Paid Workdays: {pay.workedDays} | Tracked Hours: {Math.floor((pay.totalWorkedMinutes||0)/60)}h {(pay.totalWorkedMinutes||0)%60}m</span>
  </div>
  <div style={{ display:'flex', justifyContent:'space-between' }}><span>Basic Pay</span><span>{php(pay.basicPay)}</span></div>
  {(pay.birthdayPay||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', color:'#e91e63' }}><span> Birthday Pay (200%)</span><span>{php(pay.birthdayPay)}</span></div>}
  {pay.overtimePay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Overtime Pay ({pay.overtimeMinutes}min)</span><span>{php(pay.overtimePay)}</span></div>}
  {pay.nightDiffPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Night Differential</span><span>{php(pay.nightDiffPay)}</span></div>}
  {pay.holidayPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Holiday Pay</span><span>{php(pay.holidayPay)}</span></div>}
- {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Other Earnings</span><span>{php(pay.adjustmentEarnings)}</span></div>}
- {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late: {pay.lateMinutes}min (embedded in hours)</span><span> </span></div>}
- {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Undertime: {pay.undertimeMinutes}min (embedded in hours)</span><span> </span></div>}
+ {(pay.holidayPayExempted||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', color:'#ca1b1b', fontSize:'12px' }}><span>Holiday Pay Excluded</span><span>{php(pay.holidayPayExempted)}</span></div>}
+ {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Earnings <button style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #bfe5ca', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'addition')}>FIND SOURCE</button></span><span>{php(pay.adjustmentEarnings)}</span></div>}
+ {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late recorded: {pay.lateMinutes}min (no automatic deduction)</span><span> </span></div>}
+ {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Approved Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Earnings</span><span style={{ color:'#2d8a4e' }}>{php(pay.totalEarnings)}</span></div>
  <div style={{ color:'#ca1b1b', fontWeight:'bold', margin:'8px 0 4px' }}>DEDUCTIONS</div>
  {pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
+ {(pay.deferredCADeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>CA not deducted this cutoff; remains in CA balance</span><span>{php(pay.deferredCADeduction)}</span></div>}
+ {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Approved Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
  {pay.sssDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>SSS</span><span>{php(pay.sssDeduction)}</span></div>}
  {pay.pagibigDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Pag-IBIG</span><span>{php(pay.pagibigDeduction)}</span></div>}
  {pay.philhealthDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>PhilHealth</span><span>{php(pay.philhealthDeduction)}</span></div>}
- {pay.adjustmentDeductions>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Other Deductions</span><span>{php(pay.adjustmentDeductions)}</span></div>}
+ {pay.adjustmentDeductions>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Deductions <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ffd0d0', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'deduction')}>FIND SOURCE</button></span><span>{php(pay.adjustmentDeductions)}</span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Deductions</span><span style={{ color:'#ca1b1b' }}>{php(pay.totalDeductions)}</span></div>
+ {(pay.nonCADeductionOverflow||0)>0&&<div style={{ marginTop:'6px', padding:'8px', border:'1px solid #ca1b1b', borderRadius:'8px', background:'#fff5f5', color:'#ca1b1b', fontWeight:'bold', fontSize:'12px' }}>⚠ Deductions exceed earnings by {php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until this is corrected.</div>}
  <div style={{ background:'#ca1b1b', color:'white', padding:'10px 14px', borderRadius:'8px', marginTop:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
  <span style={{ fontWeight:'bold', fontSize:'14px' }}>NET PAY</span>
  <span style={{ fontWeight:'bold', fontSize:'18px' }}>{php(pay.netPay)}</span>
@@ -17655,24 +18905,36 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
  <thead>
  <tr style={{ background:'#f8f8f8', color:'#555' }}>
- <th style={{ padding:'7px', textAlign:'left', borderBottom:'1px solid #eee' }}>Advance Date</th>
+ <th style={{ padding:'7px', textAlign:'left', borderBottom:'1px solid #eee', minWidth:'190px' }}>CA Details</th>
+ <th style={{ padding:'7px', textAlign:'left', borderBottom:'1px solid #eee', minWidth:'170px' }}>Approval / Source</th>
  <th style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #eee' }}>Amount</th>
  <th style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #eee' }}>Per Payroll</th>
+ <th style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #eee' }}>Payroll Deductions</th>
  <th style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #eee' }}>Paid/Deducted</th>
  <th style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #eee' }}>Balance</th>
- <th style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #eee' }}>Installments Left</th>
  <th style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #eee' }}>Status</th>
  </tr>
  </thead>
  <tbody>
- {row.caItems.map(ca => (
+ {row.caItems.map(ca => {
+ const inst = getCAInstallmentInfo(ca, {})
+ const sourceReq = ca.source_request_id || ca.cash_advance_request_id || ca.approved_request_id || ''
+ return (
  <tr key={ca.id}>
- <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0' }}>{ca.advance_date || String(ca.created_at||'').slice(0,10) || ' '}<br/><span style={{ color:'#888', fontSize:'11px' }}>{ca.notes || ' '}</span></td>
+ <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0' }}>
+  <strong>{ca.advance_date || String(ca.created_at||'').slice(0,10) || 'No date'}</strong><br/>
+  <span style={{ color:'#888', fontSize:'11px' }}>CA ID: {String(ca.id || '').slice(0,8)} {sourceReq ? `| Request: ${String(sourceReq).slice(0,8)}` : ''}</span><br/>
+  <span style={{ color:'#777', fontSize:'11px' }}>{ca.notes || 'No notes'}</span>
+ </td>
+ <td style={{ padding:'7px', borderBottom:'1px solid #f0f0f0', fontSize:'11px', color:'#555' }}>
+  Approved/Recorded: <strong>{formatDateTimeForAdmin(ca.approved_at || ca.created_at || ca.advance_date)}</strong><br/>
+  By: <strong>{ca.approved_by || ca.created_by || ca.recorded_by || 'Admin / old record'}</strong>
+ </td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount)}</td>
- <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.per_payroll_deduction)}</td>
+ <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(inst.perPayroll)}</td>
+ <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>{inst.total? `${inst.completed}/${inst.total} done · ${inst.remaining} left` : `${ca.installments_remaining?? 'Not recorded'} left`}</td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount_paid)}</td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:safeNum(ca.balance,0)>0?'#ca1b1b':'#2d8a4e' }}>{php(ca.balance)}</td>
- <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>{ca.installments_remaining?? ' '}</td>
  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>
  <Badge label={String(ca.status||'Unknown')} color={String(ca.status||'').toLowerCase()==='paid'?'green':'orange'} />
  {adminRole==='owner' && String(ca.status||'').toLowerCase()==='paid' && safeNum(ca.balance,0)<=0 && safeNum(ca.amount,0)>0 && safeNum(ca.amount_paid,0)>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
@@ -17684,7 +18946,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  )}
  </td>
  </tr>
- ))}
+ )
+ })}
  </tbody>
  </table>
  </div>
@@ -17790,7 +19053,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if(!empId) return
  const emp = employees.find(e=>e.employee_code===empId.toUpperCase()||e.id===empId)
  if(!emp){ showToast('Employee not found.','red'); return }
- await printDTR(emp.id, emp.full_name, emp.employee_code, selectedHistoryPeriod.start.slice(0,7))
+ await printDTR(emp.id, emp.full_name, emp.employee_code, selectedHistoryPeriod.start, selectedHistoryPeriod.end, `${formatDateForDisplay(selectedHistoryPeriod.start)} – ${formatDateForDisplay(selectedHistoryPeriod.end)}`)
  }}>
  PRINT DTR
  </button>
@@ -18137,53 +19400,63 @@ This recovery button creates one approved expense record using GROSS payroll ear
  {activeTab==='dtr' && (
  <div>
  <h2 style={h2s}> DTR Daily Time Record</h2>
- <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>View and print the official Daily Time Record for any employee filtered by month.</p>
+ <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>View and print the official Daily Time Record by payroll cutoff, not by calendar month.</p>
 
  <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', marginBottom:'20px' }}>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end' }}>
- <div style={{ flex:1, minWidth:'180px' }}>
+ <div style={{ flex:1, minWidth:'220px' }}>
  <label style={lblS}>Select Employee:</label>
  <EmployeeSelect value={dtrEmployeeId} onChange={v=>{ setDtrEmployeeId(v); setDtrRecords([]); setDtrStats(null) }} employees={employees} />
  </div>
- <div>
- <label style={lblS}>Month:</label>
- <input type="month" value={dtrMonth} onChange={e=>{ setDtrMonth(e.target.value); setDtrRecords([]); setDtrStats(null) }} style={{...inputStyle, width:'auto', marginBottom:0 }} />
+ <div style={{ flex:1, minWidth:'280px' }}>
+ <label style={lblS}>Cutoff Period:</label>
+ <select value={dtrCutoffKey} onChange={e=>{ setDtrCutoffKey(e.target.value); setDtrRecords([]); setDtrStats(null) }} style={{...inputStyle, marginBottom:0 }}>
+ {getDTRCutoffOptions(36, today).map(period=>(
+ <option key={period.key} value={period.key}>{period.label}</option>
+ ))}
+ </select>
  </div>
+ </div>
+ <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'10px 12px', marginTop:'12px', fontSize:'12px', color:'#555', lineHeight:1.5 }}>
+ <strong style={{ color:'#ca1b1b' }}>DTR rule:</strong> This view follows your payroll cutoffs: <strong>26th–10th next month</strong> and <strong>11th–25th same month</strong>. Overnight shifts are counted by the attendance/shift start date.
  </div>
  <div style={{ display:'flex', gap:'10px', marginTop:'12px', flexWrap:'wrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
  if(!dtrEmployeeId){ showToast('Please select an employee.','red'); return }
  const emp = employees.find(e=>e.id===dtrEmployeeId)
  if(!emp) return
- const startDate = `${dtrMonth}-01`
- const endDate = new Date(Number(dtrMonth.split('-')[0]), Number(dtrMonth.split('-')[1]), 0).toISOString().slice(0,10)
+ const period = getDTRCutoffPeriodFromKey(dtrCutoffKey)
+ if(!period){ showToast('Please select a valid cutoff period.','red'); return }
  const { data: logs } = await supabase.from('attendance_logs').select('*')
 .eq('employee_id', dtrEmployeeId)
-.gte('attendance_date', startDate)
-.lte('attendance_date', endDate)
+.gte('attendance_date', period.start)
+.lte('attendance_date', period.end)
 .order('attendance_date')
- const daysInMonth = new Date(Number(dtrMonth.split('-')[0]), Number(dtrMonth.split('-')[1]), 0).getDate()
- const allDays = Array.from({length: daysInMonth}, (_,i)=>{
- const dateStr = `${dtrMonth}-${String(i+1).padStart(2,'0')}`
- const log = logs?.find(l=>l.attendance_date===dateStr)
- const dayName = new Date(dateStr).toLocaleDateString('en-US',{weekday:'short'})
- return { dateStr, day: i+1, dayName, log }
+ const grouped = groupDTRLogsByDate(logs || [])
+ const allDays = buildDateRangeRows(period.start, period.end, ({ dateStr, day, dayName })=>{
+ const log = mergeDTRDayLogs(grouped[dateStr] || [])
+ return { dateStr, day, dayName, log }
  })
+ const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
  setDtrRecords(allDays)
  setDtrStats({
  emp,
- totalWorked: logs?.filter(l=>l.time_in).length||0,
- totalAbsent: logs?.filter(l=>l.status==='Absent').length||0,
- totalLate: logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0,
- totalOT: logs?.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0,
- totalBreak: logs?.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0,
+ period,
+ totalWorked: new Set(mergedLogs.filter(l=>l.time_in && l.time_out).map(l=>String(l.attendance_date || '').slice(0,10))).size,
+ totalAbsent: new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size,
+ totalLate: mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0,
+ totalOT: mergedLogs.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0,
+ totalBreak: mergedLogs.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0,
+ duplicateDays: Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
  })
  }}> VIEW DTR</button>
  <button style={{...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
  if(!dtrEmployeeId){ showToast('Please select an employee.','red'); return }
  const emp = employees.find(e=>e.id===dtrEmployeeId)
  if(!emp){ showToast('Employee not found.','red'); return }
- await printDTR(emp.id, emp.full_name, emp.employee_code, dtrMonth)
+ const period = getDTRCutoffPeriodFromKey(dtrCutoffKey)
+ if(!period){ showToast('Please select a valid cutoff period.','red'); return }
+ await printDTR(emp.id, emp.full_name, emp.employee_code, period.start, period.end, period.label)
  }}> PRINT DTR</button>
  </div>
  </div>
@@ -18202,7 +19475,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:0 }}>{dtrStats.emp.full_name}</p>
  <p style={cps}>{dtrStats.emp.employee_code} | {dtrStats.emp.position}</p>
- <p style={cps}>{dtrStats.emp.department||' '} | {new Date(dtrMonth+'-01').toLocaleString('default',{month:'long',year:'numeric'})}</p>
+ <p style={cps}>{dtrStats.emp.department||' '} | {dtrStats.period?.label || `${formatDateForDisplay(dtrStats.period?.start)} – ${formatDateForDisplay(dtrStats.period?.end)}`}</p>
  </div>
  </div>
  {/* Monthly Summary */}
@@ -18213,6 +19486,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  ['Late (min)', dtrStats.totalLate, '#f5a623'],
  ['OT (min)', dtrStats.totalOT, '#4a90d9'],
  ['Break (min)', dtrStats.totalBreak, '#888'],
+ ['Duplicate Days', dtrStats.duplicateDays || 0, '#f5a623'],
  ].map(([label, value, color])=>(
  <div key={label} style={{ background:'white', borderRadius:'8px', padding:'8px', textAlign:'center', minWidth:'80px' }}>
  <p style={{ fontSize:'10px', color:'#888', margin:'0 0 2px' }}>{label}</p>
@@ -18245,7 +19519,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return (
  <tr key={dateStr} style={{ background:rowBg, borderBottom:'1px solid #eee' }}>
  <td style={{ padding:'7px 10px', fontWeight:'bold', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{dayName}</td>
- <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{day}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{formatDateForDisplay(dateStr)}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_in?'#2d8a4e':'#ccc', fontSize:'12px', fontWeight:log?.time_in?'bold':'normal' }}>{log?.time_in||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_out?'#333':'#ccc', fontSize:'12px' }}>{log?.time_out||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:'#888' }}>{log?.total_break_minutes||0}</td>
@@ -18254,9 +19528,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <td style={{ padding:'7px 10px', textAlign:'center' }}>
  {!log && isWeekend? <span style={{ fontSize:'11px', color:'#aaa' }}>REST</span>:
 !log? <span style={{ fontSize:'11px', color:'#ccc' }}> </span>:
+ log.duplicateCount>1? <Badge label="DUP" color="orange" />:
  log.status==='Absent'? <Badge label="ABS" color="red" />:
  log.status==='Late'? <Badge label="LATE" color="orange" />:
- log.time_in? <Badge label=" " color="green" />: <span style={{ color:'#ccc' }}> </span>}
+ log.time_in? <Badge label="PRESENT" color="green" />: <span style={{ color:'#ccc' }}> </span>}
  </td>
  </tr>
  )
@@ -18364,16 +19639,38 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <h2 style={h2s}>Cash Advance Requests</h2>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadCashAdvanceRequests(); showToast(' Cash advance requests refreshed!') }}>REFRESH</button>
  {cashAdvanceRequests.length===0 && <p style={{ color:'#888' }}>No pending requests.</p>}
- {cashAdvanceRequests.map(req=>(
+ {cashAdvanceRequests.map(req=>{
+ const deductionCount = Math.max(1, installmentCounts[req.id] || 1)
+ const perPayroll = Math.ceil((safeNum(req.amount,0) / deductionCount) * 100) / 100
+ return (
  <div key={req.id} style={{...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
+ <div>
  <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
- <p style={cps}>Code: {req.employee_code} | Reason: <em>"{req.reason}"</em></p>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'17px', margin:'6px 0' }}>Amount: {php(req.amount)}</p>
+ <p style={cps}>Code: {req.employee_code || 'No code'}</p>
+ <p style={cps}>Filed: <strong>{formatDateTimeForAdmin(getCAFiledDate(req))}</strong></p>
+ <p style={cps}>Reason: <em>"{req.reason}"</em></p>
+ </div>
+ <Badge label="PENDING REVIEW" color="orange" />
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', margin:'10px 0' }}>
+ {[
+  ['Requested Amount', php(req.amount)],
+  ['Payroll Deductions', `${deductionCount} cutoff(s)`],
+  ['Deduction / Cutoff', php(perPayroll)],
+  ['Balance After Approval', php(req.amount)]
+ ].map(([label,value])=>(
+  <div key={label} style={{ background:'white', border:'1px solid #eee', borderRadius:'10px', padding:'10px' }}>
+  <p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+  <p style={{ margin:0, color:'#ca1b1b', fontWeight:'bold', fontSize:'13px' }}>{value}</p>
+  </div>
+ ))}
+ </div>
  <label style={lblS}>Number of Payroll Deductions:</label>
- <input type="number" min="1" max="24" value={installmentCounts[req.id]||1} onChange={e=>{ const v=parseInt(e.target.value)||1; setInstallmentCounts(p=>({...p,[req.id]:Math.max(1,v)})) }} style={{...inputStyle, marginBottom:'4px' }} />
- <p style={{ color:'#888', fontSize:'12px', marginBottom:'10px' }}>{php(Number(req.amount)/Math.max(1,installmentCounts[req.id]||1))} per payroll cutoff</p>
+ <input type="number" min="1" max="24" value={deductionCount} onChange={e=>{ const v=parseInt(e.target.value)||1; setInstallmentCounts(p=>({...p,[req.id]:Math.max(1,v)})) }} style={{...inputStyle, marginBottom:'4px' }} />
+ <p style={{ color:'#888', fontSize:'12px', marginBottom:'10px' }}>The employee will be deducted {php(perPayroll)} per payroll cutoff for {deductionCount} payroll cutoff(s), unless owner edits the CA ledger later.</p>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:processingItems[req.id]?0.6:1 }} disabled={processingItems[req.id]} onClick={async()=>{ setProcessingItems(p=>({...p,[req.id]:true})); await updateCashAdvanceStatus(req.id,'approved'); setProcessingItems(p=>({...p,[req.id]:false})) }}>{processingItems[req.id]?' Processing...':' APPROVE'}</button>
+ <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:processingItems[req.id]?0.6:1 }} disabled={processingItems[req.id]} onClick={async()=>{ setProcessingItems(p=>({...p,[req.id]:true})); await updateCashAdvanceStatus(req.id,'approved'); setProcessingItems(p=>({...p,[req.id]:false})) }}>{processingItems[req.id]?' Processing...':' APPROVE & CREATE CA LEDGER'}</button>
  <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={(e)=>{ e.stopPropagation(); setShowCADisapproveBox(p=>({...p,[req.id]:!p[req.id]})) }}> DISAPPROVE</button>
  </div>
  {showCADisapproveBox[req.id] && (
@@ -18383,16 +19680,77 @@ This recovery button creates one approved expense record using GROSS payroll ear
  </div>
  )}
  </div>
- ))}
+ )
+ })}
  <button style={{...btnBlack, marginTop:'20px' }} onClick={async()=>{ await loadResolvedCARequests(); setShowResolvedCA(!showResolvedCA) }}>{showResolvedCA?' HIDE':' VIEW'} RESOLVED REQUESTS</button>
- {showResolvedCA && resolvedCARequests.map(req=>(
- <div key={req.id} style={{...cardS, border:'1px solid #ccc', marginTop:'8px' }}>
- <strong>{req.employee_name}</strong>
- <p style={cps}>Amount: {php(req.amount)} | Reason: {req.reason}</p>
- {req.admin_reason && <p style={cps}>Admin Reason: <em>"{req.admin_reason}"</em></p>}
- <p style={{ fontWeight:'bold', color:req.status==='approved'?'#2d8a4e':'#ca1b1b', margin:'4px 0' }}>Status: {req.status}</p>
+ {showResolvedCA && resolvedCARequests.map(req=>{
+ const ledger = req.cashAdvanceLedger || null
+ const inst = getCAInstallmentInfo(ledger || {}, req)
+ const approved = String(req.status || '').toLowerCase() === 'approved'
+ const disapproved = String(req.status || '').toLowerCase() === 'disapproved'
+ return (
+ <div key={req.id} style={{...cardS, border:approved?'2px solid #2d8a4e':'2px solid #ca1b1b', marginTop:'10px', background:approved?'#f6fff8':'#fff5f5' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
+ <div>
+ <strong style={{ color:approved?'#2d8a4e':'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
+ <p style={cps}>Code: {req.employee_code || 'No code'}</p>
+ <p style={cps}>Reason: <em>"{req.reason}"</em></p>
  </div>
+ <Badge label={String(req.status || 'unknown').toUpperCase()} color={getCashAdvanceStatusColor(req.status)} />
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'10px' }}>
+ {[
+  ['Requested Amount', php(req.amount)],
+  ['Filed', formatDateTimeForAdmin(getCAFiledDate(req))],
+  [approved?'Approved':'Processed', formatDateTimeForAdmin(approved ? getCAApprovedDate(req, ledger) : (req.disapproved_at || req.processed_at))],
+  ['Processed By', approved ? getCAProcessedBy(req, ledger) : (req.processed_by || 'Admin')]
+ ].map(([label,value])=>(
+  <div key={label} style={{ background:'white', border:'1px solid #eee', borderRadius:'10px', padding:'10px' }}>
+  <p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+  <p style={{ margin:0, color:'#333', fontWeight:'bold', fontSize:'12px' }}>{value}</p>
+  </div>
  ))}
+ </div>
+ {approved && (
+ <div style={{ marginTop:'10px', background:'white', border:'1px solid #d9f2df', borderRadius:'10px', padding:'10px' }}>
+ <p style={{ margin:'0 0 8px', color:'#2d8a4e', fontWeight:'bold', fontSize:'13px' }}>Cash Advance Ledger / Payroll Deduction Plan</p>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px' }}>
+ {[
+  ['CA Ledger ID', ledger?.id ? String(ledger.id).slice(0,8) : (req.ca_ledger_id ? String(req.ca_ledger_id).slice(0,8) : 'Not linked')],
+  ['Deduction / Payroll', php(inst.perPayroll)],
+  ['Total Deductions', inst.total || 'Not recorded'],
+  ['Deducted Count', inst.total ? inst.completed : 'Not recorded'],
+  ['Remaining Count', inst.total ? inst.remaining : 'Not recorded']
+ ].map(([label,value])=>(
+  <div key={label} style={{ background:'#f8fff9', border:'1px solid #e2f5e6', borderRadius:'8px', padding:'8px' }}>
+  <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+  <p style={{ margin:0, fontWeight:'bold', fontSize:'12px' }}>{value}</p>
+  </div>
+ ))}
+ </div>
+ {ledger && (
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'8px' }}>
+  {[
+   ['Original Amount', php(ledger.amount)],
+   ['Already Paid/Deducted', php(ledger.amount_paid)],
+   ['Current Balance', php(ledger.balance)],
+   ['Ledger Status', ledger.status || 'Unknown']
+  ].map(([label,value])=>(
+   <div key={label} style={{ background:'#fff', border:'1px solid #eee', borderRadius:'8px', padding:'8px' }}>
+   <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+   <p style={{ margin:0, fontWeight:'bold', color:label==='Current Balance' && safeNum(ledger.balance,0)>0?'#ca1b1b':'#333', fontSize:'12px' }}>{value}</p>
+   </div>
+  ))}
+  </div>
+ )}
+ {ledger?.notes && <p style={{...cps, marginTop:'8px' }}>Ledger Notes: {ledger.notes}</p>}
+ {!ledger && <p style={{...cps, marginTop:'8px', color:'#ca1b1b' }}>No linked CA ledger found. This may be an old approved request before the ledger-link update.</p>}
+ </div>
+ )}
+ {disapproved && req.admin_reason && <p style={{...cps, color:'#ca1b1b', marginTop:'10px' }}>Disapproval Reason: <em>"{req.admin_reason}"</em></p>}
+ </div>
+ )
+ })}
  </div>
  )}
 
@@ -18502,6 +19860,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  <p style={cps}>Cutoff: {d.payroll_start} to {d.payroll_end}</p>
  <p style={cps}>Employee Reason: <em>"{d.reason}"</em></p>
  <p style={cps}>Filed: {new Date(d.created_at).toLocaleDateString()}</p>
+ {safeNum(d.duplicate_count,0)>0 && <p style={{...cps, color:'#ca1b1b', fontWeight:'bold' }}>Duplicate submissions hidden: {d.duplicate_count}. Resolving this item will resolve its duplicate(s) too.</p>}
  <label style={lblS}>Admin Response (required to resolve):</label>
  <textarea placeholder="Enter your response or resolution..." value={disputeAdminReason[d.id]||''} onChange={e=>setDisputeAdminReason(p=>({...p,[d.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:'8px', opacity:processingItems['res_'+d.id]?0.6:1 }} disabled={processingItems['res_'+d.id]} onClick={async()=>{ setProcessingItems(p=>({...p,['res_'+d.id]:true})); await resolveDispute(d.id); setProcessingItems(p=>({...p,['res_'+d.id]:false})) }}>{processingItems['res_'+d.id]?' Resolving...':' MARK AS RESOLVED'}</button>
@@ -26287,13 +27646,18 @@ onClick={async ()=>{
  </div>
  <p style={cps}>Period: {pay.payroll_start} to {pay.payroll_end}</p>
  {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement) && (
- <p style={{ fontSize:'11px', color:'#ca1b1b', margin:'2px 0', fontWeight:'bold' }}> Please acknowledge within 5 days of release</p>
+ <p style={{ fontSize:'11px', color:'#ca1b1b', margin:'2px 0', fontWeight:'bold' }}> Please review within 5 days after review notice</p>
  )}
  {pay.employee_acknowledgement==='auto-acknowledged' && (
  <p style={{ fontSize:'11px', color:'#888', margin:'2px 0' }}> Auto-acknowledged after 5-day deadline</p>
  )}
- <p style={cps}>Basic: {php(pay.basic_pay)} | Earnings: {php(pay.total_earnings)} | Deductions: {php(pay.total_deductions)}</p>
- <h3 style={{ color:'#ca1b1b', margin:'6px 0' }}>Net Pay: {php(pay.net_pay)}</h3>
+ {pay.employee_acknowledgement==='disputed' && (
+ <div style={{ margin:'8px 0' }}>
+ <button style={{...btnGray, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'13px', opacity:0.75, cursor:'not-allowed' }} disabled>SUBMITTED</button>
+ <p style={{ fontSize:'11px', color:'#ca1b1b', margin:'5px 0 0', fontWeight:'bold' }}>Dispute already submitted. Waiting for admin review.</p>
+ </div>
+ )}
+ <EmployeePortalPayslipBreakdown pay={pay} />
  {(pay.employee_acknowledgement==='pending'||!pay.employee_acknowledgement)&&(
  <div style={{ marginTop:'10px' }}>
  <p style={{ color:'#888', fontSize:'13px', margin:'0 0 8px' }}>Please review and acknowledge this payslip.</p>
@@ -26331,7 +27695,11 @@ onClick={async ()=>{
  style={{...inputStyle, minHeight:'70px', resize:'none' }}
  />
  )}
- <button style={btnRed} onClick={()=>submitPayslipDispute(pay)}>SUBMIT DISPUTE</button>
+ <button
+ style={{...btnRed, opacity:submittingPayslipDisputes[pay.id]?0.65:1, cursor:submittingPayslipDisputes[pay.id]?'not-allowed':'pointer' }}
+ disabled={!!submittingPayslipDisputes[pay.id]}
+ onClick={()=>submitPayslipDispute(pay)}
+ >{submittingPayslipDisputes[pay.id]?'SUBMITTED':'SUBMIT DISPUTE'}</button>
  </div>
  )}
  </div>
