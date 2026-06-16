@@ -1,4 +1,4 @@
-import { Component, useEffect, useRef, useState } from 'react'
+﻿import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { createClient } from '@supabase/supabase-js'
 
@@ -7523,7 +7523,7 @@ function buildDeliveryInvoicePrintCSS() {
 
    const productTemplate = [
      { label:'Choco Balls', aliases:['Choco Balls'] },
-     { label:'', aliases:[] },
+      { label:'Matcha Pops', aliases:['Matcha Pops'] },
      { label:'Almond Glitz', aliases:['Almond Glitz'] },
      { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
      { label:'Oreo Dream', aliases:['Oreo Dream'] },
