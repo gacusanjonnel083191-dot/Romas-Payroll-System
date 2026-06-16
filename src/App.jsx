@@ -24179,7 +24179,53 @@ function PosMonitorPanel() {
  forecastMap[key].total += Number(item.quantity||0)
  })
  })
- const forecastRows = Object.values(forecastMap).sort((a,b)=>a.variant_name.localeCompare(b.variant_name))
+ let forecastRows = Object.values(forecastMap).sort((a,b)=>a.variant_name.localeCompare(b.variant_name))
+
+ // FORECAST ZERO-QTY ACTIVE VARIANTS PATCH
+ // Include active variants that have no invoice quantity yet, without changing totals.
+ {
+   const forecastVariantKey = (value) => {
+     try {
+       return normalizeProductCostKey(value);
+     } catch (_) {
+       return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim();
+     }
+   };
+   const existingForecastKeys = new Set((forecastRows || []).map((row) =>
+     forecastVariantKey(row.variant_name || row.variant || row.product_name || row.name || row.product || '')
+   ));
+   (donutVariants || []).forEach((variant) => {
+     const variantName = variant?.name || variant?.variant_name || variant?.product_name || '';
+     const variantKey = forecastVariantKey(variantName);
+     if (!variantName || existingForecastKeys.has(variantKey)) return;
+     forecastRows.push({
+       id: variant?.id || variant?.variant_id || `zero-${variantKey}`,
+       variant_id: variant?.id || variant?.variant_id || `zero-${variantKey}`,
+       variant_name: variantName,
+       variant: variantName,
+       product_name: variantName,
+       name: variantName,
+       product: variantName,
+       totalPieces: 0,
+       total_pieces: 0,
+       pieces: 0,
+       quantity: 0,
+       qty: 0,
+       forecast_qty: 0,
+       dryPremix: 0,
+       dry_premix: 0,
+       dryPremixKg: 0,
+       dryPremixGrams: 0
+     });
+     existingForecastKeys.add(variantKey);
+   });
+   forecastRows = (forecastRows || []).sort((a, b) =>
+     String(a.variant_name || a.variant || a.product_name || a.name || '').localeCompare(
+       String(b.variant_name || b.variant || b.product_name || b.name || '')
+     )
+   );
+ }
+
  const totalPieces = forecastRows.reduce((s,r)=>s+r.total,0)
  const totalDryPremixG = forecastRows.reduce((s,r)=>s+(DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total, 0)
  const totalDryPremixKg = (totalDryPremixG/1000).toFixed(2)
