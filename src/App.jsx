@@ -462,7 +462,7 @@ function positiveNum(value, fallback = 1) {
  const n = safeNum(value, fallback)
  return n > 0? n: fallback
 }
-function php(a) { return `PHP ${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })}` }
+function php(a) { return `\u20B1${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
 function moneyRound(value) { return Math.round((safeNum(value, 0) + Number.EPSILON) * 100) / 100 }
 function isMoneySettled(balance) { return moneyRound(balance) <= 0.01 }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
@@ -17432,7 +17432,785 @@ async function computePayroll() {
  }
 
 
- // Camera Screen 
+ 
+function PosMonitorPanel() {
+ const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
+ const readSagsDraft = (key, fallback = '') => {
+  try {
+   const saved = JSON.parse(localStorage.getItem(SAGS_POS_DRAFT_KEY) || '{}')
+   return saved[key] ?? fallback
+  } catch {
+   return fallback
+  }
+ }
+ const [posDate, setPosDate] = useState(getTodayDate())
+ const [posLoading, setPosLoading] = useState(false)
+ const [posSales, setPosSales] = useState([])
+ const [posItems, setPosItems] = useState([])
+ const [posMovements, setPosMovements] = useState([])
+ const [posProducts, setPosProducts] = useState([])
+ const [posRefreshing, setPosRefreshing] = useState(false)
+ const [stockInProductId, setStockInProductId] = useState(() => readSagsDraft('stockInProductId', ''))
+ const [stockInSearch, setStockInSearch] = useState(() => readSagsDraft('stockInSearch', ''))
+ const [stockInQty, setStockInQty] = useState(() => readSagsDraft('stockInQty', ''))
+ const [stockInNote, setStockInNote] = useState(() => readSagsDraft('stockInNote', ''))
+ const [stockInTransferNo, setStockInTransferNo] = useState(() => readSagsDraft('stockInTransferNo', ''))
+ const [stockInTransferredBy, setStockInTransferredBy] = useState(() => readSagsDraft('stockInTransferredBy', ''))
+ const [stockInReceivedBy, setStockInReceivedBy] = useState(() => readSagsDraft('stockInReceivedBy', ''))
+ const [transactionSearch, setTransactionSearch] = useState(() => readSagsDraft('transactionSearch', ''))
+ const [voidReceiptNo, setVoidReceiptNo] = useState(() => readSagsDraft('voidReceiptNo', ''))
+ const [voidReason, setVoidReason] = useState(() => readSagsDraft('voidReason', ''))
+ const [voidedBy, setVoidedBy] = useState(() => readSagsDraft('voidedBy', ''))
+ const [voidAdminPin, setVoidAdminPin] = useState(() => readSagsDraft('voidAdminPin', ''))
+ const [closingOpeningCash, setClosingOpeningCash] = useState(() => readSagsDraft('closingOpeningCash', ''))
+ const [closingActualCash, setClosingActualCash] = useState(() => readSagsDraft('closingActualCash', ''))
+ const [closingClosedBy, setClosingClosedBy] = useState(() => readSagsDraft('closingClosedBy', ''))
+ const [closingRemarks, setClosingRemarks] = useState(() => readSagsDraft('closingRemarks', ''))
+ const [posError, setPosError] = useState('')
+
+ async function loadPosMonitor(options = {}) {
+  const silent = options && options.silent
+  silent ? setPosRefreshing(true) : setPosLoading(true)
+  setPosError('')
+  try {
+   const start = posDate + 'T00:00:00'
+   const end = posDate + 'T23:59:59'
+
+   const [salesRes, itemsRes, movementsRes, productsRes] = await Promise.all([
+    supabase.from('pos_sales').select('*').order('created_at', { ascending:false }).limit(300),
+    supabase.from('pos_sale_items').select('*').order('created_at', { ascending:false }).limit(500),
+    supabase.from('pos_inventory_movements').select('*').order('created_at', { ascending:false }).limit(1000),
+    supabase.from('pos_products').select('*').order('product_name', { ascending:true })
+   ])
+
+   if (salesRes.error) throw salesRes.error
+   if (itemsRes.error) throw itemsRes.error
+   if (movementsRes.error) throw movementsRes.error
+   if (productsRes.error) throw productsRes.error
+
+   const salesData = salesRes.data || []
+   const filteredSales = salesData.filter(row => String(row.business_date || '').slice(0,10) === posDate)
+   const receiptSet = new Set(filteredSales.map(row => row.receipt_no))
+
+   const filteredItems = (itemsRes.data || []).filter(row =>
+    receiptSet.has(row.receipt_no) || String(row.created_at || '').slice(0,10) === posDate
+   )
+
+   const filteredMovements = (movementsRes.data || []).filter(row =>
+    receiptSet.has(row.reference_no) || String(row.created_at || '').slice(0,10) === posDate
+   )
+
+   console.log('POS Monitor debug:', {
+    posDate,
+    totalSalesRows: salesData.length,
+    filteredSales: filteredSales.length,
+    filteredItems: filteredItems.length,
+    filteredMovements: filteredMovements.length
+   })
+
+   setPosSales(filteredSales)
+   setPosItems(filteredItems)
+   setPosMovements(filteredMovements)
+   setPosProducts(productsRes.data || [])
+  } catch (err) {
+   console.error('POS monitor error:', err)
+   setPosError(err?.message || String(err))
+  } finally {
+   silent ? setPosRefreshing(false) : setPosLoading(false)
+  }
+ }
+
+ async function saveOutletStockIn() {
+  if (!stockInProductId) {
+   alert('Please select a product.')
+   return
+  }
+
+  const qty = safeNum(stockInQty, 0)
+  if (qty <= 0) {
+   alert('Please enter a valid stock-in quantity.')
+   return
+  }
+
+  const product = posProducts.find(p => String(p.id) === String(stockInProductId))
+  if (!product) {
+   alert('Selected product not found.')
+   return
+  }
+
+  const referenceNo = stockInTransferNo.trim() || ('STOCKIN-' + Date.now())
+
+  try {
+   const { error } = await supabase.from('pos_inventory_movements').insert([{
+    outlet_id: 'OUTLET-MALUED',
+    product_id: product.id,
+    sku: product.sku || '',
+    barcode: product.barcode || '',
+    product_name: product.product_name || product.name || '',
+    movement_type: 'stock_in',
+    qty: qty,
+    reference_no: referenceNo,
+    remarks: [stockInNote || 'Stock in to outlet', stockInTransferredBy ? 'Transferred by: ' + stockInTransferredBy : '', stockInReceivedBy ? 'Received by: ' + stockInReceivedBy : ''].filter(Boolean).join(' | ')
+   }])
+
+   if (error) throw error
+
+   alert('Stock in saved successfully.')
+   setStockInProductId('')
+   setStockInSearch('')
+   setStockInQty('')
+   setStockInNote('')
+   setStockInTransferNo('')
+   setStockInTransferredBy('')
+   setStockInReceivedBy('')
+   await loadPosMonitor()
+  } catch (err) {
+   console.error('Stock in failed:', err)
+   alert('Stock in failed: ' + (err?.message || String(err)))
+  }
+ }
+
+ async function cleanVoidSaleWithAdminPin() {
+  const receiptNo = String(voidReceiptNo || '').trim()
+  const reason = String(voidReason || '').trim()
+  const userName = String(voidedBy || '').trim()
+  const adminPin = String(voidAdminPin || '').trim()
+
+  if (!receiptNo) {
+   alert('Please enter the receipt number.')
+   return
+  }
+
+  if (!reason) {
+   alert('Please enter the reason for voiding.')
+   return
+  }
+
+  if (!userName) {
+   alert('Please enter who voided this receipt.')
+   return
+  }
+
+  if (adminPin !== 'SAGS') {
+   alert('Invalid admin PIN.')
+   return
+  }
+
+  const sale = posSales.find(s => String(s.receipt_no || '').trim() === receiptNo)
+  if (!sale) {
+   alert('Receipt not found for the selected date. Check the date or receipt number.')
+   return
+  }
+
+  if (String(sale.status || 'completed').toLowerCase() === 'void') {
+   alert('This receipt is already voided.')
+   return
+  }
+
+  const proceed = confirm('Void receipt ' + receiptNo + '? This will return inventory movements.')
+  if (!proceed) return
+
+  try {
+   const saleId = sale.id || sale.sale_id || receiptNo
+   const originalTotal = safeNum(sale.net_total || sale.total || sale.total_amount, 0)
+
+   const relatedItems = posItems.filter(item =>
+    String(item.receipt_no || '') === receiptNo ||
+    String(item.sale_id || '') === String(saleId)
+   )
+
+   const { error: updateError } = await supabase
+    .from('pos_sales')
+    .update({
+     status: 'void',
+     voided_at: new Date().toISOString(),
+     voided_by: userName,
+     void_reason: reason
+    })
+    .eq('receipt_no', receiptNo)
+
+   if (updateError) throw updateError
+
+   const { error: logError } = await supabase.from('pos_void_logs').insert([{
+    outlet_id: 'OUTLET-MALUED',
+    receipt_no: receiptNo,
+    sale_id: String(saleId),
+    business_date: posDate,
+    voided_by: userName,
+    void_reason: reason,
+    original_total: originalTotal
+   }])
+
+   if (logError) throw logError
+
+   const returnMovements = relatedItems.map(item => ({
+    outlet_id: 'OUTLET-MALUED',
+    product_id: item.product_id || '',
+    sku: item.sku || '',
+    barcode: item.barcode || '',
+    product_name: item.product_name || item.name || '',
+    movement_type: 'void_return',
+    qty: safeNum(item.qty, 0),
+    reference_no: 'VOID-' + receiptNo,
+    remarks: 'Void return for receipt ' + receiptNo + ' | Reason: ' + reason
+   })).filter(move => move.qty > 0)
+
+   if (returnMovements.length > 0) {
+    const { error: movementError } = await supabase
+     .from('pos_inventory_movements')
+     .insert(returnMovements)
+
+    if (movementError) throw movementError
+   }
+
+   alert('Receipt voided successfully.')
+   setVoidReceiptNo('')
+   setVoidReason('')
+   setVoidedBy('')
+   setVoidAdminPin('')
+   await loadPosMonitor()
+  } catch (err) {
+   console.error('Void sale failed:', err)
+   alert('Void sale failed: ' + (err?.message || String(err)))
+  }
+ }
+
+ async function saveShiftClosing() {
+  const openingCash = safeNum(closingOpeningCash, 0)
+  const actualCash = safeNum(closingActualCash, 0)
+  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+  const gcashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'gcash').reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+  const onlineSales = posSales.filter(s => String(s.payment_method || '').toLowerCase().includes('online')).reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+  const expectedCash = openingCash + cashSales
+  const variance = actualCash - expectedCash
+
+  if (!closingClosedBy.trim()) {
+   alert('Please enter who closed the shift.')
+   return
+  }
+
+  try {
+   const { error } = await supabase.from('pos_shift_closings').insert([{
+    outlet_id: 'OUTLET-MALUED',
+    business_date: posDate,
+    opening_cash: openingCash,
+    cash_sales: cashSales,
+    gcash_sales: gcashSales,
+    online_sales: onlineSales,
+    total_sales: totalSales,
+    expected_cash: expectedCash,
+    actual_cash: actualCash,
+    cash_variance: variance,
+    transaction_count: posSales.length,
+    closed_by: closingClosedBy,
+    remarks: closingRemarks
+   }])
+
+   if (error) throw error
+
+   alert('Shift closing saved successfully.')
+   setClosingOpeningCash('')
+   setClosingActualCash('')
+   setClosingClosedBy('')
+   setClosingRemarks('')
+  } catch (err) {
+   console.error('Shift closing failed:', err)
+   alert('Shift closing failed: ' + (err?.message || String(err)))
+  }
+ }
+
+ useEffect(() => {
+  try {
+   localStorage.setItem(SAGS_POS_DRAFT_KEY, JSON.stringify({
+    stockInProductId,
+    stockInSearch,
+    stockInQty,
+    stockInNote,
+    stockInTransferNo,
+    stockInTransferredBy,
+    stockInReceivedBy,
+    transactionSearch,
+    closingOpeningCash,
+    closingActualCash,
+    closingClosedBy,
+    closingRemarks,
+    voidReceiptNo,
+    voidReason,
+    voidedBy,
+    voidAdminPin
+   }))
+  } catch {}
+ }, [
+  stockInProductId,
+  stockInSearch,
+  stockInQty,
+  stockInNote,
+  stockInTransferNo,
+  stockInTransferredBy,
+  stockInReceivedBy,
+  transactionSearch,
+  closingOpeningCash,
+  closingActualCash,
+  closingClosedBy,
+  closingRemarks,
+  voidReceiptNo,
+  voidReason,
+  voidedBy,
+  voidAdminPin
+ ])
+
+ useEffect(() => { loadPosMonitor({ silent:true }) }, [posDate])
+
+ const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
+ const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
+ const gcashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase().includes('gcash')).reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
+ const onlineSales = posSales.filter(s => String(s.payment_method || '').toLowerCase().includes('online')).reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
+ const avgSale = posSales.length ? totalSales / posSales.length : 0
+
+ const productMap = {}
+ posItems.forEach(item => {
+  const key = item.product_id || item.product_name
+  if (!productMap[key]) productMap[key] = { product_name:item.product_name || 'Unnamed', category:item.category || '', qty:0, total:0 }
+  productMap[key].qty += safeNum(item.qty, 0)
+  productMap[key].total += safeNum(item.line_total, 0)
+ })
+ const topProducts = Object.values(productMap).sort((a,b) => b.qty - a.qty).slice(0, 20)
+
+ const soldMap = {}
+ posItems.forEach(item => {
+  const key = item.product_id || item.product_name
+  soldMap[key] = (soldMap[key] || 0) + safeNum(item.qty, 0)
+ })
+
+ const movementMap = {}
+ posMovements.forEach(move => {
+  const key = move.product_id || move.product_name
+  movementMap[key] = (movementMap[key] || 0) + safeNum(move.qty, 0)
+ })
+
+ const filteredStockInProducts = posProducts.filter(p => {
+  const text = [
+   p.product_name,
+   p.name,
+   p.sku,
+   p.barcode,
+   p.category
+  ].join(' ').toLowerCase()
+  return stockInSearch.trim() && text.includes(stockInSearch.toLowerCase())
+ }).slice(0, 12)
+
+ const selectedStockInProduct = posProducts.find(p => String(p.id) === String(stockInProductId))
+
+ const lowStockProducts = posProducts.map(product => {
+  const key = product.id || product.product_name
+  const movementQty = safeNum(movementMap[key], 0)
+  const remainingStock = safeNum(product.stock, 0) + movementQty
+  const minStock = safeNum(product.min_stock, 10)
+  return {
+   id: product.id,
+   product_name: product.product_name || product.name || 'Unnamed Product',
+   category: product.category || '',
+   remainingStock,
+   minStock,
+   status: remainingStock <= 0 ? 'Out of Stock' : remainingStock <= minStock ? 'Low Stock' : 'OK'
+  }
+ }).filter(p => p.status !== 'OK').sort((a,b) => a.remainingStock - b.remainingStock)
+
+ const movementSummaryMap = {}
+ posMovements.forEach(move => {
+  const type = move.movement_type || 'movement'
+  if (!movementSummaryMap[type]) movementSummaryMap[type] = { type, qty: 0, count: 0 }
+  movementSummaryMap[type].qty += safeNum(move.qty, 0)
+  movementSummaryMap[type].count += 1
+ })
+ const movementSummary = Object.values(movementSummaryMap).sort((a,b) => String(a.type).localeCompare(String(b.type)))
+
+ const searchedReceipts = posSales.filter(s => {
+  const text = [
+   s.receipt_no,
+   s.cashier_name,
+   s.payment_method,
+   s.customer_name,
+   s.net_total,
+   s.total,
+   s.total_amount
+  ].join(' ').toLowerCase()
+  return !transactionSearch.trim() || text.includes(transactionSearch.toLowerCase())
+ })
+
+ const closingCashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+ const closingGcashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'gcash').reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+ const closingOnlineSales = posSales.filter(s => String(s.payment_method || '').toLowerCase().includes('online')).reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+ const closingTotalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+ const closingExpectedCash = safeNum(closingOpeningCash, 0) + closingCashSales
+ const closingVariance = safeNum(closingActualCash, 0) - closingExpectedCash
+
+ const outletBalances = posProducts.map(product => {
+  const key = product.id || product.product_name
+  const startingStock = safeNum(product.stock, 0)
+  const soldQty = safeNum(soldMap[key], 0)
+  const movementQty = safeNum(movementMap[key], 0)
+  const remainingStock = startingStock + movementQty
+  const minStock = safeNum(product.min_stock, 10)
+  const status = remainingStock <= 0 ? 'Out of Stock' : remainingStock <= minStock ? 'Low Stock' : 'OK'
+  return {
+   id: product.id,
+   product_name: product.product_name || product.name || 'Unnamed Product',
+   category: product.category || '',
+   startingStock,
+   soldQty,
+   movementQty,
+   remainingStock,
+   minStock,
+   status
+  }
+ }).sort((a,b) => a.remainingStock - b.remainingStock)
+
+ const card = (label, value, note, color) => (
+  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)' }}>
+   <p style={{ margin:'0 0 6px', color:'#777', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px', fontWeight:'bold' }}>{label}</p>
+   <h3 style={{ margin:'0 0 4px', color:color || '#ca1b1b', fontSize:'22px' }}>{value}</h3>
+   <p style={{ margin:0, color:'#999', fontSize:'11px' }}>{note}</p>
+  </div>
+ )
+
+ return (
+  <div>
+   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'16px' }}>
+    <div>
+     <h2 style={h2s}>SAGS POS</h2>
+     <p style={{ margin:0, color:'#777', fontSize:'13px' }}>Outlet POS sales, payment breakdown, product movement, and inventory deductions.</p>
+    </div>
+    <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+     <input type="date" value={posDate} onChange={e=>setPosDate(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0}} />
+     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
+    </div>
+   </div>
+
+   {posError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'12px', padding:'12px', marginBottom:'14px', fontSize:'12px' }}>POS Monitor error: {posError}</div>}
+
+   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'12px', marginBottom:'16px' }}>
+    {card('Total POS Sales', php(totalSales), posDate, '#ca1b1b')}
+    {card('Cash Sales', php(cashSales), 'Cash collected', '#2d8a4e')}
+    {card('GCash Sales', php(gcashSales), 'Digital payment', '#4a90d9')}
+    {card('Online Sales', php(onlineSales), 'Other online payments', '#1a1a2e')}
+    {card('Transactions', posSales.length, 'Avg: ' + php(avgSale), '#ca1b1b')}
+   </div>
+
+   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'14px', marginBottom:'14px' }}>
+    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Top Selling Products</h3>
+     {topProducts.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS items found for this date.</p> : (
+      <div style={{ overflowX:'auto' }}>
+       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+        <thead><tr style={{ background:'#f8f8f8' }}><th style={{ textAlign:'left', padding:'8px' }}>Product</th><th style={{ textAlign:'right', padding:'8px' }}>Qty</th><th style={{ textAlign:'right', padding:'8px' }}>Sales</th></tr></thead>
+        <tbody>{topProducts.map((p,i)=>(
+         <tr key={p.product_name + i}>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}><strong>{p.product_name}</strong><br/><span style={{ color:'#999', fontSize:'10px' }}>{p.category}</span></td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{p.qty}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b' }}>{php(p.total)}</td>
+         </tr>
+        ))}</tbody>
+       </table>
+      </div>
+     )}
+    </div>
+
+    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Recent Receipts</h3>
+    <input value={transactionSearch} onChange={e=>setTransactionSearch(e.target.value)} placeholder="Search receipt, cashier, payment method..." style={{...inputStyle, marginBottom:'10px'}} />
+     {posSales.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS receipts found for this date.</p> : (
+      <div style={{ display:'grid', gap:'8px' }}>
+       {posSales.slice(0,12).map(s=>(
+        <div key={s.id} style={{ border:'1px solid #f0f0f0', borderRadius:'10px', padding:'10px', background:'#fafafa' }}>
+         <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><strong style={{ fontSize:'12px' }}>{s.receipt_no}</strong><strong style={{ color:'#ca1b1b', fontSize:'12px' }}>{php(s.net_total)}</strong></div>
+         <p style={{ margin:'4px 0 0', color:'#777', fontSize:'11px' }}>{s.outlet_name || 'Outlet'} | {s.cashier_name || 'Cashier'} | {s.payment_method || '-'}</p>
+        </div>
+       ))}
+      </div>
+     )}
+    </div>
+   </div>
+
+   
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Void / Cancel Sale</h3>
+    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>
+     Void a receipt using admin PIN. The sale will be marked as void and inventory will be returned.
+    </p>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 2fr 1fr 1fr auto', gap:'10px', alignItems:'end' }}>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Receipt No.</label>
+      <input value={voidReceiptNo} onChange={e=>setVoidReceiptNo(e.target.value)} placeholder="ROMA-..." style={{...inputStyle, marginBottom:0}} />
+     </div>
+
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Reason</label>
+      <input value={voidReason} onChange={e=>setVoidReason(e.target.value)} placeholder="Wrong item / cancelled / test void" style={{...inputStyle, marginBottom:0}} />
+     </div>
+
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Voided By</label>
+      <input value={voidedBy} onChange={e=>setVoidedBy(e.target.value)} placeholder="Name" style={{...inputStyle, marginBottom:0}} />
+     </div>
+
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Admin PIN</label>
+      <input type="password" value={voidAdminPin} onChange={e=>setVoidAdminPin(e.target.value)} placeholder="PIN" style={{...inputStyle, marginBottom:0}} />
+     </div>
+
+     <button
+      onClick={cleanVoidSaleWithAdminPin}
+      style={{
+       background:'#ca1b1b',
+       color:'white',
+       border:'none',
+       borderRadius:'10px',
+       padding:'12px 16px',
+       fontWeight:'bold',
+       cursor:'pointer',
+       whiteSpace:'nowrap'
+      }}
+     >
+      Void Sale
+     </button>
+    </div>
+   </div>
+
+
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Low Stock Alert Dashboard</h3>
+    {lowStockProducts.length === 0 ? (
+     <p style={{ color:'#2d8a4e', fontSize:'13px', margin:0 }}>No low stock alerts for this outlet.</p>
+    ) : (
+     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(3, 1fr)', gap:'10px' }}>
+      {lowStockProducts.slice(0, 12).map(p => (
+       <div key={p.id || p.product_name} style={{ border:'1px solid #ffd4d4', background:'#fff7f7', borderRadius:'12px', padding:'10px' }}>
+        <strong style={{ color:'#ca1b1b', display:'block' }}>{p.product_name}</strong>
+        <span style={{ fontSize:'12px', color:'#777' }}>{p.category}</span><br/>
+        <span style={{ fontSize:'12px' }}>Remaining: <strong>{p.remainingStock}</strong> / Min: {p.minStock}</span><br/>
+        <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>{p.status}</span>
+       </div>
+      ))}
+     </div>
+    )}
+   </div>
+
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Shift Closing Report</h3>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'10px', marginBottom:'12px' }}>
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+      <small>Cash Sales</small><br/><strong>?{closingCashSales.toLocaleString()}</strong>
+     </div>
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+      <small>GCash Sales</small><br/><strong>?{closingGcashSales.toLocaleString()}</strong>
+     </div>
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+      <small>Total POS Sales</small><br/><strong>?{closingTotalSales.toLocaleString()}</strong>
+     </div>
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+      <small>Transactions</small><br/><strong>{posSales.length}</strong>
+     </div>
+    </div>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'10px', alignItems:'end' }}>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Opening Cash</label>
+      <input type="number" value={closingOpeningCash} onChange={e=>setClosingOpeningCash(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
+     </div>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Actual Cash Counted</label>
+      <input type="number" value={closingActualCash} onChange={e=>setClosingActualCash(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
+     </div>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Closed By</label>
+      <input value={closingClosedBy} onChange={e=>setClosingClosedBy(e.target.value)} placeholder="Cashier / manager" style={{...inputStyle, marginBottom:0}} />
+     </div>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Remarks</label>
+      <input value={closingRemarks} onChange={e=>setClosingRemarks(e.target.value)} placeholder="Optional" style={{...inputStyle, marginBottom:0}} />
+     </div>
+    </div>
+
+    <div style={{ marginTop:'12px', padding:'10px', borderRadius:'12px', background:'#f8f8f8', fontSize:'13px' }}>
+     Expected Cash: <strong>?{closingExpectedCash.toLocaleString()}</strong> | 
+     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>?{closingVariance.toLocaleString()}</strong>
+    </div>
+
+    <button onClick={saveShiftClosing} style={{...btnGreen, marginTop:'12px'}}>Save Shift Closing</button>
+   </div>
+
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Stock In to Outlet</h3>
+    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>Record products delivered or transferred to Roma�s Donuts - Malued.</p>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transfer No.</label>
+      <input value={stockInTransferNo} onChange={e=>setStockInTransferNo(e.target.value)} placeholder="Example: TR-MALUED-001" style={{...inputStyle, marginBottom:0}} />
+     </div>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transferred By</label>
+      <input value={stockInTransferredBy} onChange={e=>setStockInTransferredBy(e.target.value)} placeholder="Sender name" style={{...inputStyle, marginBottom:0}} />
+     </div>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Received By</label>
+      <input value={stockInReceivedBy} onChange={e=>setStockInReceivedBy(e.target.value)} placeholder="Receiver name" style={{...inputStyle, marginBottom:0}} />
+     </div>
+    </div>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '2fr 1fr 2fr auto', gap:'10px', alignItems:'end' }}>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Search Product</label>
+      <input
+       value={stockInSearch}
+       onChange={e=>{
+        setStockInSearch(e.target.value)
+        setStockInProductId('')
+       }}
+       placeholder="Search product, SKU, barcode..."
+       style={{...inputStyle, marginBottom:'6px'}}
+      />
+
+      {selectedStockInProduct && (
+       <div style={{ border:'1px solid #d9f2e3', background:'#f0fff6', borderRadius:'10px', padding:'8px 10px', marginBottom:'6px', fontSize:'12px' }}>
+        <strong style={{ color:'#2d8a4e' }}>Selected:</strong> {selectedStockInProduct.product_name || selectedStockInProduct.name}
+       </div>
+      )}
+
+      {stockInSearch.trim() && !stockInProductId && (
+       <div style={{ border:'1px solid #eee', borderRadius:'12px', background:'white', maxHeight:'220px', overflowY:'auto', boxShadow:'0 6px 18px rgba(0,0,0,0.08)' }}>
+        {filteredStockInProducts.length === 0 ? (
+         <div style={{ padding:'10px', color:'#999', fontSize:'12px' }}>No product found.</div>
+        ) : (
+         filteredStockInProducts.map(p => (
+          <button
+           key={p.id}
+           type="button"
+           onClick={()=>{
+            setStockInProductId(p.id)
+            setStockInSearch(p.product_name || p.name || '')
+           }}
+           style={{
+            width:'100%',
+            textAlign:'left',
+            border:'none',
+            borderBottom:'1px solid #f2f2f2',
+            background:'white',
+            padding:'10px',
+            cursor:'pointer',
+            fontFamily:'inherit'
+           }}
+          >
+           <strong style={{ display:'block', color:'#222', fontSize:'13px' }}>{p.product_name || p.name}</strong>
+           <span style={{ color:'#888', fontSize:'11px' }}>{p.category || ''} {p.sku ? '� ' + p.sku : ''} {p.barcode ? '� ' + p.barcode : ''}</span>
+          </button>
+         ))
+        )}
+       </div>
+      )}
+     </div>
+
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Qty</label>
+      <input type="number" min="1" value={stockInQty} onChange={e=>setStockInQty(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
+     </div>
+
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Remarks</label>
+      <input value={stockInNote} onChange={e=>setStockInNote(e.target.value)} placeholder="Delivery / transfer note" style={{...inputStyle, marginBottom:0}} />
+     </div>
+
+     <button onClick={saveOutletStockIn} style={{...btnGreen, width:'auto', marginTop:0}}>Save Stock In</button>
+    </div>
+   </div>
+
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Outlet Inventory Balance</h3>
+    {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
+     <div style={{ overflowX:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'760px' }}>
+       <thead>
+        <tr style={{ background:'#f8f8f8' }}>
+         <th style={{ textAlign:'left', padding:'8px' }}>Product</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Starting</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Sold</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Movement</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Remaining</th>
+         <th style={{ textAlign:'center', padding:'8px', width:'90px' }}>Status</th>
+        </tr>
+       </thead>
+       <tbody>
+        {outletBalances.map(row => (
+         <tr key={row.id || row.product_name}>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
+           <strong>{row.product_name}</strong><br/>
+           <span style={{ color:'#999', fontSize:'10px' }}>{row.category}</span>
+          </td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.startingStock}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{row.soldQty}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.movementQty}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{row.remainingStock}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center', width:'90px', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>{row.status}</td>
+         </tr>
+        ))}
+       </tbody>
+      </table>
+     </div>
+    )}
+   </div>
+
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Product Movement Summary</h3>
+    {movementSummary.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No movement summary found.</p> : (
+     <div style={{ overflowX:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'500px' }}>
+       <thead>
+        <tr style={{ background:'#f8f8f8' }}>
+         <th style={{ textAlign:'left', padding:'8px' }}>Movement Type</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Total Qty</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Records</th>
+        </tr>
+       </thead>
+       <tbody>
+        {movementSummary.map(row => (
+         <tr key={row.type}>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', fontWeight:'bold' }}>{row.type}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.qty}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.count}</td>
+         </tr>
+        ))}
+       </tbody>
+      </table>
+     </div>
+    )}
+   </div>
+
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Inventory Movements</h3>
+    {posMovements.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS inventory movement found for this date.</p> : (
+     <div style={{ overflowX:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'680px' }}>
+       <thead><tr style={{ background:'#f8f8f8' }}><th style={{ textAlign:'left', padding:'8px' }}>Product</th><th style={{ textAlign:'left', padding:'8px' }}>Movement</th><th style={{ textAlign:'right', padding:'8px' }}>Qty</th><th style={{ textAlign:'left', padding:'8px' }}>Reference</th></tr></thead>
+       <tbody>{posMovements.slice(0,100).map(m=>(
+        <tr key={m.id}>
+         <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}><strong>{m.product_name}</strong><br/><span style={{ color:'#999', fontSize:'10px' }}>{m.sku || ''}</span></td>
+         <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>{m.movement_type}</td>
+         <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:safeNum(m.qty,0) < 0 ? '#ca1b1b' : '#2d8a4e' }}>{m.qty}</td>
+         <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', color:'#777' }}>{m.reference_no || '-'}</td>
+        </tr>
+       ))}</tbody>
+      </table>
+     </div>
+    )}
+   </div>
+  </div>
+ )
+}
+
+// Camera Screen 
  if (cameraMode) {
  return (
  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#000', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'20px', zIndex:9999 }}>
@@ -17461,6 +18239,7 @@ async function computePayroll() {
  // Admin Render 
  if (adminMode) {
  const SECTIONS = [
+ { key:'posMonitor', icon:<img src="/icons/pos-machine.svg" alt="" style={{width:18,height:18,objectFit:'contain'}} />, label:'SAGS POS', tabs:[{key:'posMonitor',label:'Outlet POS Monitor'}], roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
  { key:'dashboard', icon:'\uD83C\uDFE0', label:'Dashboard',
  tabs:[{key:'dashboard',label:'Overview'}],
  roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
@@ -17842,6 +18621,9 @@ async function computePayroll() {
  {/* Content Area */}
  <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'24px', background:'#f8f7f5' }}>
  <SectionErrorBoundary resetKey={activeTab}>
+
+ {/* POS MONITOR */}
+ {activeTab==='posMonitor' && <PosMonitorPanel />}
 
  {/* DASHBOARD */}
  {activeTab==='dashboard' && (
