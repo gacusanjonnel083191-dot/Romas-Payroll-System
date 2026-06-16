@@ -5075,7 +5075,7 @@ Cancel = create batch record only for existing stock.`)
  try {
  const { data, error } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
  if (error) throw error
- setDonutVariants(data || [])
+ setDonutVariants(sortDonutVariantsByGuide(data || []))
  setCostingLoadErrors(p => p.filter(x=>!x.includes('donut_variants')))
  } catch (err) {
  console.warn('Donut variants could not be loaded:', err)
@@ -5570,7 +5570,7 @@ Cancel = create batch record only for existing stock.`)
  console.warn('Unable to load donut variants for default order editor:', error)
  }
  variants = data || []
- if (variants.length > 0) setDonutVariants(variants)
+ if (variants.length > 0) setDonutVariants(sortDonutVariantsByGuide(variants))
  }
 
  const existing = resellerDefaultOrders[resellerId] || []
@@ -5646,7 +5646,7 @@ Cancel = create batch record only for existing stock.`)
  return
  }
  variants = data || []
- setDonutVariants(variants)
+ setDonutVariants(sortDonutVariantsByGuide(variants))
  }
  if (!variants || variants.length === 0) {
  showToast('No donut varieties found. Go to Costing / Recipes and load variants first.', 'red')
@@ -7475,6 +7475,76 @@ function buildDeliveryInvoicePrintCSS() {
    return clean.slice(0, 120) || 'roma-delivery-invoice'
  }
 
+
+  // MASTER DONUT VARIETY ORDER - use this everywhere for uniform display.
+  const DONUT_VARIANT_DISPLAY_ORDER = [
+    { label:'Choco Balls', aliases:['Choco Balls'] },
+    { label:'Matcha Pops', aliases:['Matcha Pops'] },
+    { label:'Taro Pops', aliases:['Taro Pops'] },
+    { label:'Strawberry Pops', aliases:['Strawberry Pops'] },
+    { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
+    { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
+    { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] },
+    { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
+    { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
+    { label:'Rings', aliases:['Rings'] },
+    { label:'Shells', aliases:['Shells'] },
+    { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
+    { label:'Biscoreo', aliases:['Biscoreo'] },
+    { label:'Oreo Dream', aliases:['Oreo Dream'] },
+    { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
+    { label:'Almond Glitz', aliases:['Almond Glitz'] },
+    { label:'Lotus Cloud', aliases:['Lotus Cloud'] }
+  ];
+
+  function normalizeDonutVariantName(value) {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  const DONUT_VARIANT_ORDER_INDEX = DONUT_VARIANT_DISPLAY_ORDER.reduce((map, row, index) => {
+    [row.label, ...(row.aliases || [])].forEach(name => {
+      const key = normalizeDonutVariantName(name);
+      if (key) map[key] = index;
+    });
+    return map;
+  }, {});
+
+  function getDonutVariantOrderIndex(value) {
+    const key = normalizeDonutVariantName(value);
+    return Object.prototype.hasOwnProperty.call(DONUT_VARIANT_ORDER_INDEX, key)
+      ? DONUT_VARIANT_ORDER_INDEX[key]
+      : 9999;
+  }
+
+  function compareDonutVariantNamesByGuide(a, b) {
+    const ai = getDonutVariantOrderIndex(a);
+    const bi = getDonutVariantOrderIndex(b);
+    if (ai !== bi) return ai - bi;
+    return String(a || '').localeCompare(String(b || ''));
+  }
+
+  function compareDonutVariantRowsByGuide(a, b) {
+    const an = a?.variant_name || a?.variant || a?.product_name || a?.name || a?.product || '';
+    const bn = b?.variant_name || b?.variant || b?.product_name || b?.name || b?.product || '';
+    return compareDonutVariantNamesByGuide(an, bn);
+  }
+
+  function sortDonutVariantsByGuide(list) {
+    return [...(Array.isArray(list) ? list : [])].sort((a, b) =>
+      compareDonutVariantNamesByGuide(
+        a?.name || a?.variant_name || a?.product_name || '',
+        b?.name || b?.variant_name || b?.product_name || ''
+      )
+    );
+  }
+
+  function buildInvoiceProductTemplateFromGuide() {
+    return DONUT_VARIANT_DISPLAY_ORDER.map(row => ({
+      label: row.label,
+      aliases: row.aliases || [row.label]
+    }));
+  }
+
  function getDeliveryInvoicePrintData(invoice) {
    const items = Array.isArray(invoice?.delivery_invoice_items) ? invoice.delivery_invoice_items : []
    const reseller = resellers.find(r => String(r.id) === String(invoice?.reseller_id))
@@ -7521,25 +7591,7 @@ function buildDeliveryInvoicePrintCSS() {
        reseller?.area
      ].map(cleanText).find(Boolean) || ''
 
-   const productTemplate = [
-     { label:'Choco Balls', aliases:['Choco Balls'] },
-      { label:'Matcha Pops', aliases:['Matcha Pops'] },
-     { label:'Almond Glitz', aliases:['Almond Glitz'] },
-     { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
-     { label:'Oreo Dream', aliases:['Oreo Dream'] },
-     { label:'Lotus Cloud', aliases:['Lotus Cloud'] },
-     { label:'Rings', aliases:['Rings'] },
-     { label:'Shells', aliases:['Shells'] },
-     { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
-     { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
-     { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
-     { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
-     { label:'Strawberry Pops', aliases:['Strawberry Pops'] },
-     { label:'Taro Pops', aliases:['Taro Pops'] },
-     { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
-     { label:'Biscoreo', aliases:['Biscoreo'] },
-     { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] }
-   ]
+    const productTemplate = buildInvoiceProductTemplateFromGuide()
 
    const getQty = item => safeNum(item?.delivered_quantity ?? item?.actual_quantity ?? item?.quantity, 0)
    const getPrice = item => safeNum(item?.reseller_price ?? item?.unit_price ?? item?.price ?? item?.selling_price, 0)
@@ -7927,7 +7979,7 @@ function buildDeliveryInvoicePrintCSS() {
  }
  })
 
- return Object.values(rowsByKey).sort((a,b)=>String(a.variant_name).localeCompare(String(b.variant_name)))
+ return Object.values(rowsByKey).sort(compareDonutVariantRowsByGuide)
  }
 
  function startInvoiceAdjustment(invoice) {
@@ -8169,7 +8221,7 @@ function buildDeliveryInvoicePrintCSS() {
   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
  ])
  if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
- const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
+ const variantItems = sortDonutVariantsByGuide(variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
  setProductionReportItems(variantItems)
  setProductionReportDeliveryDate(deliveryDate)
  setShowProductionReport(true)
@@ -9313,7 +9365,7 @@ function buildDeliveryInvoicePrintCSS() {
 
  if (!error && data && data.length > 0) {
  variants = data
- setDonutVariants(data)
+ setDonutVariants(sortDonutVariantsByGuide(data))
  }
  }
 
@@ -24179,7 +24231,7 @@ function PosMonitorPanel() {
  forecastMap[key].total += Number(item.quantity||0)
  })
  })
- let forecastRows = Object.values(forecastMap).sort((a,b)=>a.variant_name.localeCompare(b.variant_name))
+ let forecastRows = Object.values(forecastMap).sort(compareDonutVariantRowsByGuide)
 
  // FORECAST ZERO-QTY ACTIVE VARIANTS PATCH
  // Include active variants that have no invoice quantity yet, without changing totals.
@@ -24219,11 +24271,7 @@ function PosMonitorPanel() {
      });
      existingForecastKeys.add(variantKey);
    });
-   forecastRows = (forecastRows || []).sort((a, b) =>
-     String(a.variant_name || a.variant || a.product_name || a.name || '').localeCompare(
-       String(b.variant_name || b.variant || b.product_name || b.name || '')
-     )
-   );
+   forecastRows = (forecastRows || []).sort(compareDonutVariantRowsByGuide);
  }
 
  const totalPieces = forecastRows.reduce((s,r)=>s+r.total,0)
@@ -26003,9 +26051,9 @@ onClick={async ()=>{
  const { data, error } = await supabase.from('donut_variants').select('*').order('category').order('name')
  if (error) console.warn('Unable to load donut variants:', error)
  variants = data || []
- if (variants.length > 0) setDonutVariants(variants)
+ if (variants.length > 0) setDonutVariants(sortDonutVariantsByGuide(variants))
  }
- const all = variants.map(v => { const existing = defaultOrderItems.find(i=>i.variant_id===v.id); return { variant_id:v.id, variant_name:v.name, default_quantity: existing?.default_quantity||'' } })
+ const all = sortDonutVariantsByGuide(variants).map(v => { const existing = defaultOrderItems.find(i=>i.variant_id===v.id); return { variant_id:v.id, variant_name:v.name, default_quantity: existing?.default_quantity||'' } })
  setDefaultOrderItems(all)
  if (all.length === 0) showToast(' No donut variants found to load.', 'red')
  }}> LOAD ALL VARIANTS</button>
