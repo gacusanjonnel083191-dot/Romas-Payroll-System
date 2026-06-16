@@ -1867,6 +1867,7 @@ export default function App() {
  { name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Strawberry Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Taro Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+  { name:'Matcha Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Choco Lollisticks', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Glazed Circlets', category:'Glaze Circlet', selling_price:13, pieces_per_batch:20 },
  { name:'Cinnamon Rolls', category:'Premium', selling_price:18, pieces_per_batch:8 },
