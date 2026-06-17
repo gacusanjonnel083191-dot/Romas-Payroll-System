@@ -831,6 +831,7 @@ const PAYROLL_COST_TYPES = [
 
 
 const DOCUMENT_BATCH1A_FORMS = [
+  { key:'INV-WITHDRAWAL', title:'Company Inventory Withdrawal Slip', refPrefix:'INV-WD' },
  { key:'DISC-NTE', title:'Notice to Explain', category:'NTE / Disciplinary', refPrefix:'RD-NTE', purpose:'Formal notice requiring an employee to explain an alleged violation or incident.' },
  { key:'DISC-IR', title:'Incident Report Form', category:'NTE / Disciplinary', refPrefix:'RD-IR', purpose:'Record incident facts, people involved, date, location, and initial findings.' },
  { key:'DISC-EXPLAIN', title:'Employee Explanation Form', category:'NTE / Disciplinary', refPrefix:'RD-EXPLAIN', purpose:'Employee written explanation connected to an incident, NTE, shortage, or violation.' },
@@ -855,6 +856,7 @@ const DOCUMENT_CENTER_CATEGORIES = [
 ]
 
 const DOCUMENT_CENTER_CATALOG = [
+  { code:'INV-WD', name:'Company Inventory Withdrawal Slip', category:'Inventory', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Records withdrawal of raw materials, packaging, supplies, finished goods like donuts, tools, equipment, crates, crate covers, and other company property.' },
  { code:'HR-EMP-CONTRACT', name:'Employment Contract', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Generate, print, upload, and track employee contracts and regularization records.' },
  { code:'HR-JOB-OFFER', name:'Job Offer / Hiring Approval Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Approve hiring details before adding a new employee to payroll.' },
  { code:'HR-INFO-SHEET', name:'Employee Information Sheet', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Collect employee profile, emergency contact, government IDs, and payroll details.' },
@@ -18770,6 +18772,17 @@ function PosMonitorPanel() {
   if (form.key === 'HR-PPE-ISSUE') {
    rows.push(['Items Issued', documentFormDraft.items || '____________________________'])
    rows.push(['Accountability Terms', documentFormDraft.details || 'Employee acknowledges receipt and agrees to return company property or accept approved accountability deduction for lost/damaged items.'])
+  }
+
+
+  if (form.key === 'INV-WITHDRAWAL') {
+   rows.push(['Withdrawal Purpose', documentFormDraft.subject || 'Production Use / Outlet Transfer / Staff Meal / Sample / Damage Replacement / Marketing / Promo / Company Use / Finished Goods Release / Other'])
+   rows.push(['Department / Area', emp?.department || 'Production / Inventory / Outlet / Company Use'])
+   rows.push(['Items Withdrawn', documentFormDraft.items || 'Item name, category, quantity, and unit'])
+   rows.push(['Quantity / Unit', documentFormDraft.amount || '________________'])
+   rows.push(['Released By', documentFormDraft.preparedBy || currentAdminLabel || '____________________________'])
+   rows.push(['Approved By', documentFormDraft.approvedBy || '____________________________'])
+   rows.push(['Remarks / Reason', documentFormDraft.details || documentFormDraft.remarks || 'This slip records company inventory, finished goods, supplies, tools, equipment, crates, crate covers, or other company property withdrawn from company custody.'])
   }
 
   if (form.key === 'PAY-RELEASE') {
