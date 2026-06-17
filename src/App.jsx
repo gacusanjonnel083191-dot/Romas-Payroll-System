@@ -828,6 +828,135 @@ const PAYROLL_COST_TYPES = [
  { value:'operating_expense', label:'Other Operating Payroll Expense', shortLabel:'Operating Expense', bucket:'expense' }
 ]
 
+
+const DOCUMENT_CENTER_CATEGORIES = [
+ 'HR & Employee',
+ 'Payroll & Salary',
+ 'NTE / Disciplinary',
+ 'Production & Food Safety',
+ 'Inventory & Purchasing',
+ 'Delivery / Reseller / Outlet',
+ 'Finance & Cash Control',
+ 'Compliance / Permits',
+ 'SOPs & Training',
+ 'Management Reports'
+]
+
+const DOCUMENT_CENTER_CATALOG = [
+ { code:'HR-EMP-CONTRACT', name:'Employment Contract', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Generate, print, upload, and track employee contracts and regularization records.' },
+ { code:'HR-JOB-OFFER', name:'Job Offer / Hiring Approval Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Approve hiring details before adding a new employee to payroll.' },
+ { code:'HR-INFO-SHEET', name:'Employee Information Sheet', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Collect employee profile, emergency contact, government IDs, and payroll details.' },
+ { code:'HR-DATA-PRIVACY', name:'Data Privacy Consent Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Document employee consent for storing and processing records inside the system.' },
+ { code:'HR-HANDBOOK-ACK', name:'Employee Handbook Acknowledgment', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm employee received and accepted company rules and policies.' },
+ { code:'HR-NDA', name:'NDA / Confidentiality Agreement', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Protect recipes, suppliers, costing, reseller terms, and internal systems.' },
+ { code:'HR-PPE-ISSUE', name:'Uniform / PPE Issuance Slip', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Track issued shirts, aprons, caps, shoes, hairnets, and other PPE.' },
+ { code:'HR-PROPERTY-ISSUE', name:'Company Property Issuance Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Record keys, tools, devices, vehicle items, and company assets issued to employees.' },
+ { code:'HR-TRAINING-COMPLETE', name:'Training Completion Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document completed training for sanitation, production, delivery, cashier, and system rules.' },
+ { code:'HR-EVAL-PROBATION', name:'Probationary Evaluation Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Evaluate employee performance before regularization decision.' },
+ { code:'HR-REGULARIZATION', name:'Regularization Recommendation Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Prepare approval or non-regularization recommendation before the review date.' },
+ { code:'HR-REGULAR-CONFIRM', name:'Regular Employment Confirmation Letter', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm regular employment status and effective date.' },
+ { code:'HR-RESIGN-ACCEPT', name:'Resignation Acceptance Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Acknowledge resignation, last day, turnover, and clearance requirements.' },
+ { code:'HR-CLEARANCE', name:'Employee Clearance Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Track clearance before final pay release.' },
+ { code:'HR-COE', name:'Certificate of Employment Request / Release Log', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Track employee COE requests, release dates, and receiving acknowledgment.' },
+ { code:'PAY-PAYSLIP', name:'Payslip Archive', category:'Payroll & Salary', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Centralize generated payslips and payroll release records.' },
+ { code:'PAY-APPROVAL', name:'Payroll Summary Approval Sheet', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Approve payroll before release and prevent unauthorized changes.' },
+ { code:'PAY-RELEASE', name:'Payroll Release Acknowledgment Slip', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm employee received salary or payroll release.' },
+ { code:'PAY-CA-AGREEMENT', name:'Cash Advance Agreement', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Set repayment terms, deduction schedule, and employee acknowledgment.' },
+ { code:'PAY-CA-REQUEST', name:'Cash Advance Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Employee request and admin approval for cash advance.' },
+ { code:'PAY-DEDUCTION-AUTH', name:'Salary Deduction Authorization Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Authorize deductions for CA, shortages, damages, lost items, or other approved charges.' },
+ { code:'PAY-ADJUSTMENT', name:'Payroll Adjustment Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Record payroll additions, deductions, corrections, and reasons.' },
+ { code:'PAY-OT', name:'OT Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document overtime request and approval.' },
+ { code:'PAY-UT', name:'UT / Undertime Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document undertime request, approval, and payroll impact.' },
+ { code:'PAY-LEAVE', name:'Leave Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Track filed leaves and approval status.' },
+ { code:'PAY-DTR-DISPUTE', name:'DTR Correction / Dispute Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Correct or dispute attendance records before payroll release.' },
+ { code:'PAY-SIL', name:'SIL Conversion / Unused Leave Claim Form', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document unused service incentive leave conversion or claim.' },
+ { code:'PAY-13TH', name:'13th Month Pay Computation Sheet', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Existing Module', purpose:'Prepare and archive 13th month computation records.' },
+ { code:'PAY-HOLIDAY', name:'Holiday Pay Computation Record', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document special and regular holiday pay basis.' },
+ { code:'PAY-NSD', name:'Night Shift Differential Record', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document night shift minutes and NSD computation.' },
+ { code:'DISC-IR', name:'Incident Report Form', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Supervisor or staff incident report with facts, date, people involved, and evidence.' },
+ { code:'DISC-EXPLAIN', name:'Employee Explanation Form', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Employee written explanation connected to an incident or NTE.' },
+ { code:'DISC-NTE', name:'Notice to Explain', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Formal written notice asking employee to explain a violation or incident.' },
+ { code:'DISC-HEARING', name:'Administrative Hearing / Conference Record', category:'NTE / Disciplinary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Record meeting details, attendees, explanation, and evidence reviewed.' },
+ { code:'DISC-WARNING', name:'Warning Letter', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Document first warning, repeated violation, or corrective expectation.' },
+ { code:'DISC-FINAL-WARNING', name:'Final Warning Letter', category:'NTE / Disciplinary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document final warning before stronger action.' },
+ { code:'DISC-DECISION', name:'Notice of Decision', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Document final management decision after review of explanation and evidence.' },
+ { code:'DISC-SUSPENSION', name:'Suspension Notice', category:'NTE / Disciplinary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document suspension details, period, reason, and approval.' },
+ { code:'DISC-TERMINATION', name:'Termination Notice', category:'NTE / Disciplinary', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Formal termination document requiring careful owner review before use.' },
+ { code:'DISC-DAMAGE', name:'Damage / Loss Accountability Form', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Record broken equipment, lost crates, spoiled items, or property damage.' },
+ { code:'DISC-CASH-SHORT', name:'Cash Shortage Explanation Form', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Cashier or employee explanation for shortage or variance.' },
+ { code:'PROD-PLAN', name:'Daily Production Plan', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Plan daily production volume by product and outlet demand.' },
+ { code:'PROD-BATCH', name:'Batch Production Record', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track batch number, recipe version, maker, time, ingredients, yield, and rejects.' },
+ { code:'PROD-MIXING', name:'Dough Mixing Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track mixing time, batch size, operator, and dough observations.' },
+ { code:'PROD-PROOFING', name:'Proofing Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track proofing time, temperature observation, and product condition.' },
+ { code:'PROD-FRYING', name:'Frying Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track fryer temperature, time, oil condition, and operator.' },
+ { code:'PROD-FILLING', name:'Filling / Topping Log', category:'Production & Food Safety', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Track filled and topped products, filling batch, and finishing quality.' },
+ { code:'PROD-YIELD', name:'Product Yield Report', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Compare expected pieces vs actual pieces produced.' },
+ { code:'PROD-VARIANCE', name:'Production Variance Report', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Explain shortage, rejects, overproofing, underweight pieces, or production errors.' },
+ { code:'PROD-RELEASE', name:'Product Release Form', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Approve finished products before dispatch.' },
+ { code:'PROD-HOLD', name:'Product Hold Form', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Hold questionable product from sale or delivery until reviewed.' },
+ { code:'PROD-DISPOSAL', name:'Product Disposal / Wastage Form', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Document waste, reason, quantity, and approving person.' },
+ { code:'QA-CLEANING', name:'Daily Cleaning Checklist', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Document cleaning before, during, and after production.' },
+ { code:'QA-PREOP', name:'Pre-Operation Sanitation Checklist', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Verify production area and equipment readiness before work starts.' },
+ { code:'QA-POSTOP', name:'Post-Operation Cleaning Checklist', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Confirm end-of-shift cleaning and sanitation.' },
+ { code:'QA-CHILLER', name:'Chiller / Filling Temperature Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track temperature-sensitive fillings and storage control.' },
+ { code:'QA-OIL', name:'Oil Quality Monitoring Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track oil condition, change schedule, and quality issues.' },
+ { code:'QA-PEST', name:'Pest Control Log', category:'Production & Food Safety', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Record pest control inspection, findings, and corrective action.' },
+ { code:'QA-CALIBRATION', name:'Equipment Calibration Log', category:'Production & Food Safety', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Track scales, thermometers, and weighing equipment calibration.' },
+ { code:'QA-CAPA', name:'Corrective Action Report', category:'Production & Food Safety', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Document root cause, corrective action, and verification.' },
+ { code:'QA-COMPLAINT', name:'Customer Complaint Investigation Form', category:'Production & Food Safety', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Investigate complaints involving quality, delivery, safety, or service.' },
+ { code:'QA-RECALL', name:'Product Recall / Mock Recall Form', category:'Production & Food Safety', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Prepare traceability and recall readiness for scaling.' },
+ { code:'INV-PR', name:'Purchase Request Form', category:'Inventory & Purchasing', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Request ingredients, packaging, supplies, or equipment before buying.' },
+ { code:'INV-PO', name:'Purchase Order', category:'Inventory & Purchasing', batch:'Batch 3', priority:'Medium', status:'Existing Module', purpose:'Issue approved purchase order to supplier.' },
+ { code:'INV-RECEIVING', name:'Receiving Report', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record received items, quantity, condition, supplier, and discrepancy.' },
+ { code:'INV-RAW-INSPECT', name:'Raw Material Inspection Form', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Inspect flour, oil, fillings, packaging, and other incoming supplies.' },
+ { code:'INV-STOCK-IN', name:'Stock-In Slip', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record inventory additions.' },
+ { code:'INV-STOCK-OUT', name:'Stock-Out / Issuance Slip', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record inventory issued to production, outlets, or departments.' },
+ { code:'INV-ADJUST', name:'Inventory Adjustment Form', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Document stock corrections and reasons.' },
+ { code:'INV-EXPIRED', name:'Expired Item Report', category:'Inventory & Purchasing', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Document expired raw materials, packaging, or selling items.' },
+ { code:'INV-FEFO', name:'FEFO Monitoring Sheet', category:'Inventory & Purchasing', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Control First Expiry First Out usage.' },
+ { code:'DEL-INVOICE', name:'Delivery Invoice', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record products delivered to reseller or outlet.' },
+ { code:'DEL-RECEIPT', name:'Delivery Receipt', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Confirm product handover and receiving acknowledgment.' },
+ { code:'DEL-DISPATCH', name:'Dispatch Checklist', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Confirm products, crates, route, driver, and documents before leaving.' },
+ { code:'DEL-ROUTE', name:'Route Sheet / Driver Trip Sheet', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Track route, stops, driver, vehicle, time, and remarks.' },
+ { code:'DEL-ADJUST', name:'Actual Delivery Adjustment Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record increase, reduction, shortage, wrong count, or replacement.' },
+ { code:'DEL-RETURN', name:'Returns / Pullout Slip', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record unsold donut returns, pullouts, and reason.' },
+ { code:'DEL-CRATES-ISSUE', name:'Crates Issuance Slip', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record crates and covers issued to outlet, driver, or reseller.' },
+ { code:'DEL-CRATES-RETURN', name:'Crates Return Slip', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record returned crates, covers, and remaining balances.' },
+ { code:'DEL-CRATES-DAMAGE', name:'Lost / Damaged Crates Charge Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document damaged or missing crates and charge approval.' },
+ { code:'RES-AGREEMENT', name:'Reseller Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document reseller terms, area, pricing, delivery, returns, and payment rules.' },
+ { code:'RES-CART', name:'Rolling Cart Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document rolling cart deposit, ownership, renewal, and operating rules.' },
+ { code:'OUT-COUNT', name:'Outlet Inventory Count Sheet', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record beginning, delivered, wastage, ending, and estimated sold items.' },
+ { code:'OUT-REMIT', name:'Outlet Weekly Remittance Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Compute outlet sales, remittance, shortage, and posting status.' },
+ { code:'FIN-CASH-COUNT', name:'Daily Cash Count Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Count cash on hand and compare against expected cash.' },
+ { code:'FIN-CASHIER-TURNOVER', name:'Cashier Turnover Slip', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Document cashier handover of cash, sales, and variances.' },
+ { code:'FIN-GCASH-RECON', name:'GCash Reconciliation Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Match GCash/online payments to sales records.' },
+ { code:'FIN-BANK-DEPOSIT', name:'Bank Deposit Record', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Record money deposited to bank and supporting details.' },
+ { code:'FIN-PETTY-CASH', name:'Petty Cash Voucher', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Document petty cash disbursement and approval.' },
+ { code:'FIN-LIQUIDATION', name:'Petty Cash Liquidation Form', category:'Finance & Cash Control', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Liquidate petty cash with receipts and remaining cash.' },
+ { code:'FIN-EXPENSE', name:'Expense Voucher', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Record business expenses and supporting details.' },
+ { code:'FIN-SUPPLIER-PAY', name:'Supplier Payment Voucher', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Approve and record payments to suppliers.' },
+ { code:'FIN-AP-APPROVAL', name:'Accounts Payable Approval Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Approve payable obligations and due dates.' },
+ { code:'FIN-AR-COLLECTION', name:'Accounts Receivable Collection Form', category:'Finance & Cash Control', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Record collections from resellers or customers.' },
+ { code:'FIN-CASH-SHORT', name:'Cash Shortage / Over Report', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Document cash variance and explanation.' },
+ { code:'COMP-PERMIT', name:'Business Permit Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Track permit number, expiry, renewal date, and file location.' },
+ { code:'COMP-BIR', name:'BIR Registration / COR Record', category:'Compliance / Permits', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Store BIR registration details and document location.' },
+ { code:'COMP-FDA-LTO', name:'FDA LTO Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Track FDA license status, expiry, and renewal tasks.' },
+ { code:'COMP-SANITARY', name:'Sanitary Permit / Health Certificate Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Track sanitary permits and staff health certificates.' },
+ { code:'COMP-FIRE', name:'Fire Safety Certificate Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Track fire safety certificate status and renewal.' },
+ { code:'COMP-PEST-CERT', name:'Pest Control Certificate Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Store pest control certificates and expiry dates.' },
+ { code:'COMP-WATER', name:'Water Potability Test Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Track water testing records and renewal.' },
+ { code:'SOP-PRODUCTION', name:'Production SOP', category:'SOPs & Training', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Standardize production steps and responsibilities.' },
+ { code:'SOP-CLEANING', name:'Cleaning SOP', category:'SOPs & Training', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Standardize sanitation procedures and required records.' },
+ { code:'SOP-DELIVERY', name:'Delivery SOP', category:'SOPs & Training', batch:'Batch 3', priority:'Medium', status:'Existing Module', purpose:'Standardize delivery, returns, and customer handover procedures.' },
+ { code:'SOP-CASHIER', name:'Cashier / POS SOP', category:'SOPs & Training', batch:'Batch 4', priority:'Medium', status:'Existing Module', purpose:'Standardize POS sales, remittance, and variance handling.' },
+ { code:'SOP-ATTENDANCE', name:'Attendance Policy', category:'SOPs & Training', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Define timekeeping, late, undertime, absence, and DTR rules.' },
+ { code:'SOP-CASH-ADVANCE', name:'Cash Advance Policy', category:'SOPs & Training', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Set rules for cash advance approval, deduction, and limits.' },
+ { code:'SOP-HYGIENE', name:'Uniform & Hygiene Policy', category:'SOPs & Training', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Define grooming, uniforms, jewelry, hairnet, handwashing, and cellphone restrictions.' },
+ { code:'SOP-ACK', name:'SOP Acknowledgment Form', category:'SOPs & Training', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Track employee acknowledgment of SOP version.' },
+ { code:'MGMT-MONTH-END', name:'Month-End Closing Checklist', category:'Management Reports', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Ensure sales, expenses, payroll, inventory, deposits, and payables are reviewed monthly.' },
+ { code:'MGMT-DOC-AUDIT', name:'Document Control Audit Checklist', category:'Management Reports', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Review missing, unsigned, expired, or outdated documents.' }
+]
+
 function normalizePayrollCostType(value) {
  const raw = String(value || '').trim().toLowerCase()
  const found = PAYROLL_COST_TYPES.find(t => t.value === raw)
@@ -1676,6 +1805,9 @@ export default function App() {
  const [contractFile, setContractFile] = useState(null)
  const [contractUploading, setContractUploading] = useState(false)
  const [contractSearch, setContractSearch] = useState('')
+ const [documentCenterSearch, setDocumentCenterSearch] = useState('')
+ const [documentCenterCategory, setDocumentCenterCategory] = useState('all')
+ const [documentCenterBatch, setDocumentCenterBatch] = useState('all')
  const [viewingContract, setViewingContract] = useState(null)
  const [contractStorageType, setContractStorageType] = useState('digital')
  const [contractPhysicalLocation, setContractPhysicalLocation] = useState('')
@@ -18308,6 +18440,9 @@ function PosMonitorPanel() {
  { key:'sops', icon:'\uD83D\uDCD8', label:'SOP Library',
  tabs:[{key:'sops',label:'SOP Control Center'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
+ { key:'documents', icon:String.fromCodePoint(0x1F5C2), label:'Documents Center',
+ tabs:[{key:'documents',label:'Company Forms & Documents'}],
+ roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
  { key:'recipes', icon:'\uD83D\uDD10', label:'Recipe Vault',
  tabs:[{key:'recipes',label:'Recipe Vault'}],
  roles:['owner','manager'] },
@@ -18333,7 +18468,7 @@ function PosMonitorPanel() {
  ]
  const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
- const visibleSubTabs = currentSection.tabs.filter(t => canAccess(t.key))
+ const visibleSubTabs = currentSection.tabs.filter(t => t.key === 'documents' || canAccess(t.key))
  const canManageSopLibrary = ['owner','manager'].includes(normalizeAdminRole(adminRole))
  const filteredSops = (sops || []).filter(sop => {
  if (!canViewSop(sop)) return false
@@ -21389,6 +21524,132 @@ function PosMonitorPanel() {
  )
  })
  }
+ </div>
+ )}
+
+
+ {/* COMPANY DOCUMENTS & FORMS CENTER */}
+ {activeTab==='documents' && (
+ <div>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'14px' }}>
+ <div>
+ <h2 style={h2s}> Company Documents & Forms Center</h2>
+ <p style={{ color:'#888', fontSize:'13px', margin:'0 0 6px' }}>Central catalog for agreements, slips, NTE, contracts, production forms, food safety records, delivery documents, finance slips, compliance trackers, SOPs, and management checklists.</p>
+ <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Batch 0 is the library foundation. Forms marked Existing Module already have partial or full app support. Forms marked Template Listed are ready to build in the next batches.</p>
+ </div>
+ <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Documents Center Batch 0 is active. Choose the next batch to build real forms.')}>BATCH 0 ACTIVE</button>
+ </div>
+
+ {(()=>{
+ const q = documentCenterSearch.trim().toLowerCase()
+ const filteredDocs = DOCUMENT_CENTER_CATALOG.filter(doc => {
+  const matchesSearch = !q || [doc.code, doc.name, doc.category, doc.batch, doc.priority, doc.status, doc.purpose].some(v => String(v || '').toLowerCase().includes(q))
+  const matchesCategory = documentCenterCategory === 'all' || doc.category === documentCenterCategory
+  const matchesBatch = documentCenterBatch === 'all' || doc.batch === documentCenterBatch
+  return matchesSearch && matchesCategory && matchesBatch
+ })
+ const existingCount = DOCUMENT_CENTER_CATALOG.filter(d => d.status === 'Existing Module').length
+ const highPriorityCount = DOCUMENT_CENTER_CATALOG.filter(d => d.priority === 'High').length
+ const batch1Count = DOCUMENT_CENTER_CATALOG.filter(d => d.batch === 'Batch 1').length
+ const categoriesWithCount = DOCUMENT_CENTER_CATEGORIES.map(cat => ({ category:cat, count:DOCUMENT_CENTER_CATALOG.filter(d => d.category === cat).length }))
+ return (
+ <>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Total Document Types</p><p style={{ margin:0, color:'#ca1b1b', fontSize:'24px', fontWeight:'900' }}>{DOCUMENT_CENTER_CATALOG.length}</p></div>
+ <div style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Existing Modules</p><p style={{ margin:0, color:'#2d8a4e', fontSize:'24px', fontWeight:'900' }}>{existingCount}</p></div>
+ <div style={{ background:'#fff5f5', border:'1px solid #ffcdd2', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>High Priority</p><p style={{ margin:0, color:'#ca1b1b', fontSize:'24px', fontWeight:'900' }}>{highPriorityCount}</p></div>
+ <div style={{ background:'#f7f9fc', border:'1px solid #d9e2ec', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Batch 1 Forms</p><p style={{ margin:0, color:'#1a1a2e', fontSize:'24px', fontWeight:'900' }}>{batch1Count}</p></div>
+ </div>
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr', gap:'10px' }}>
+ <div>
+ <label style={lblS}>Search document</label>
+ <input value={documentCenterSearch} onChange={e=>setDocumentCenterSearch(e.target.value)} placeholder="Search contract, NTE, cash advance, batch production, crates, permit..." style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Category</label>
+ <select value={documentCenterCategory} onChange={e=>setDocumentCenterCategory(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+ <option value="all">All categories</option>
+ {DOCUMENT_CENTER_CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>Build batch</label>
+ <select value={documentCenterBatch} onChange={e=>setDocumentCenterBatch(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+ {['all','Batch 1','Batch 2','Batch 3','Batch 4'].map(b => <option key={b} value={b}>{b === 'all'? 'All batches': b}</option>)}
+ </select>
+ </div>
+ </div>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'8px', marginBottom:'14px' }}>
+ {categoriesWithCount.map(row => (
+ <button key={row.category} onClick={()=>setDocumentCenterCategory(row.category)} style={{ background:documentCenterCategory===row.category?'#ca1b1b':'white', color:documentCenterCategory===row.category?'white':'#333', border:'1px solid #eee', borderRadius:'12px', padding:'9px 10px', textAlign:'left', cursor:'pointer', fontWeight:'800', fontSize:'11px' }}>
+ <span>{row.category}</span><br/><span style={{ opacity:0.75, fontWeight:'700' }}>{row.count} document type(s)</span>
+ </button>
+ ))}
+ </div>
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 8px', fontSize:'14px' }}>Recommended Build Order</h3>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px' }}>
+ {[
+  ['Batch 1','HR, Payroll, NTE essentials','Contracts, CA, deductions, NTE, incident, clearance, final pay'],
+  ['Batch 2','Production and food safety','Batch records, hold/release, cleaning, temperature, oil, wastage'],
+  ['Batch 3','Inventory, delivery, reseller','Receiving, issuance, crates, reseller agreement, returns, outlet slips'],
+  ['Batch 4','Finance and compliance','Petty cash, vouchers, permit trackers, closing checklist']
+ ].map(([batch,title,desc]) => (
+ <div key={batch} style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:documentCenterBatch===batch?'#fff8dc':'#fafafa' }}>
+ <p style={{ margin:'0 0 4px', color:'#ca1b1b', fontWeight:'900', fontSize:'12px' }}>{batch}</p>
+ <p style={{ margin:'0 0 5px', color:'#333', fontWeight:'900', fontSize:'12px' }}>{title}</p>
+ <p style={{ margin:0, color:'#777', fontSize:'11px', lineHeight:1.4 }}>{desc}</p>
+ </div>
+ ))}
+ </div>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'10px' }}>
+ {filteredDocs.map(doc => {
+ const statusColor = doc.status === 'Existing Module' ? 'green' : doc.priority === 'High' ? 'red' : 'gray'
+ const canOpenContracts = doc.code === 'HR-EMP-CONTRACT'
+ return (
+ <div key={doc.code} style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.04)' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px', flexWrap:'wrap', marginBottom:'8px' }}>
+ <div>
+ <p style={{ color:'#999', fontSize:'10px', margin:'0 0 3px', fontWeight:'900', letterSpacing:'0.5px' }}>{doc.code}</p>
+ <h3 style={{ color:'#333', fontSize:'14px', margin:'0 0 4px' }}>{doc.name}</h3>
+ <p style={{ color:'#777', fontSize:'11px', margin:0 }}>{doc.category}</p>
+ </div>
+ <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:'flex-end' }}>
+ <Badge label={doc.batch} color="blue" />
+ <Badge label={doc.priority} color={doc.priority === 'High'?'red':'gray'} />
+ <Badge label={doc.status} color={statusColor} />
+ </div>
+ </div>
+ <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px' }}>{doc.purpose}</p>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ {canOpenContracts ? (
+ <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>handleTabClick('contracts')}>OPEN CONTRACTS</button>
+ ) : (
+ <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px', opacity:0.8 }} onClick={()=>showToast(doc.name + ' is listed. We will activate this form in ' + doc.batch + '.')}>BUILD NEXT</button>
+ )}
+ <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>showToast('Purpose: ' + doc.purpose)}>VIEW PURPOSE</button>
+ </div>
+ </div>
+ )
+ })}
+ </div>
+
+ {filteredDocs.length === 0 && (
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'28px', textAlign:'center', color:'#888' }}>
+ <p style={{ fontWeight:'900', color:'#333', margin:'0 0 6px' }}>No documents found.</p>
+ <p style={{ margin:0, fontSize:'12px' }}>Try a different search, category, or batch filter.</p>
+ </div>
+ )}
+ </>
+ )
+ })()}
  </div>
  )}
 
