@@ -3142,77 +3142,133 @@ export default function App() {
  if (error) { showToast('Failed: ' + error.message, 'red'); return }
  showToast(` Contract marked as ${status}`); loadContracts()
  }
- function printContractSummary(c) {
- const pw = window.open('', '_blank', 'width=800,height=600')
- const statusLabel = c.status === 'active'? 'ACTIVE': c.status === 'expired'? 'EXPIRED': 'TERMINATED'
- const statusColor = c.status === 'active'? '#2d8a4e': '#ca1b1b'
- const storageLabel = c.storage_type === 'physical'
-? `Physical Copy on File ${c.physical_location || 'Location not specified'}`
-: 'Digital PDF (uploaded to system)'
- pw.document.write(`<!DOCTYPE html><html><head><title>Contract Summary</title>
- <style>
- *{margin:0;padding:0;box-sizing:border-box;}
- body{font-family:Arial,sans-serif;padding:20mm;font-size:12px;color:#000;}
- @media print{@page{size:A4;margin:20mm;}.no-print{display:none;}}
- h1{font-size:22px;color:#ca1b1b;margin-bottom:4px;}
-.subtitle{color:#888;font-size:11px;margin-bottom:20px;}
-.header{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:14px;margin-bottom:20px;}
-.badge{display:inline-block;padding:4px 14px;border-radius:20px;font-weight:bold;font-size:12px;color:white;background:${statusColor};}
- table{width:100%;border-collapse:collapse;margin-top:16px;}
- td{padding:10px 12px;border-bottom:1px solid #eee;vertical-align:top;}
- td:first-child{width:40%;font-weight:bold;color:#555;background:#f9f9f9;}
-.section-title{background:#ca1b1b;color:white;padding:8px 12px;font-weight:bold;font-size:12px;margin-top:20px;}
-.footer{margin-top:50px;display:flex;justify-content:space-between;}
-.sig{text-align:center;}
-.sig-line{border-top:1px solid #000;width:180px;padding-top:6px;font-size:10px;color:#555;margin:0 auto;}
-.watermark{color:#888;font-size:11px;text-align:center;margin-top:30px;}
-.storage-box{background:${c.storage_type==='physical'?'#fff8dc':'#e8f5e9'};border:2px solid ${c.storage_type==='physical'?'#f5a623':'#2d8a4e'};border-radius:8px;padding:12px;margin-top:16px;}
- </style>
- </head><body>
- <div class="header">
- <h1>Roma's Donuts</h1>
- <div class="subtitle">Payroll &amp; Attendance System Employee Contract Record</div>
- </div>
+  function printContractSummary(c) {
+    const cleanText = value => String(value ?? '').trim();
 
- <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
- <div>
- <div style="font-size:20px;font-weight:bold;color:#333;">${c.employee_name}</div>
- <div style="color:#888;font-size:12px;">${c.employee_code}</div>
- </div>
- <div class="badge">${statusLabel}</div>
- </div>
+    const escapeHtml = value => cleanText(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\"/g, '&quot;')
+      .replace(/'/g, '&#039;');
 
- <div class="section-title">CONTRACT DETAILS</div>
- <table>
- <tr><td>Contract Type</td><td style="text-transform:capitalize;font-weight:bold;">${(c.contract_type||'').replace(/-/g,' ')}</td></tr>
- <tr><td>Start Date</td><td>${c.start_date || ' '}</td></tr>
- <tr><td>End Date</td><td>${c.end_date || 'Open-ended / No fixed end date'}</td></tr>
- <tr><td>Status</td><td style="color:${statusColor};font-weight:bold;">${statusLabel}</td></tr>
- <tr><td>Date Logged</td><td>${c.created_at? new Date(c.created_at).toLocaleDateString('en-PH', {year:'numeric',month:'long',day:'numeric'}): ' '}</td></tr>
- </table>
+    const titleCase = value => cleanText(value)
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .toLowerCase()
+      .replace(/\b\w/g, ch => ch.toUpperCase());
 
- <div class="section-title">DOCUMENT STORAGE</div>
- <div class="storage-box">
- <strong>${c.storage_type === 'physical'? ' Physical Copy on File': ' Digital Copy in System'}</strong><br/>
- <span style="color:#555;font-size:12px;margin-top:4px;display:block;">${storageLabel}</span>
- ${c.storage_type === 'digital' && c.file_url? `<span style="color:#888;font-size:11px;">File available in the system. Print a copy from the payroll portal.</span>`: ''}
- </div>
+    const safeFilePart = value => cleanText(value)
+      .replace(/[^a-z0-9]+/gi, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60);
 
- <div class="footer">
- <div class="sig"><div class="sig-line">Employee Signature over Printed Name</div></div>
- <div class="sig"><div class="sig-line">HR / Authorized Signatory</div></div>
- <div class="sig"><div class="sig-line">Date</div></div>
- </div>
+    const employeeName = cleanText(c?.employee_name || 'Employee');
+    const employeeCode = cleanText(c?.employee_code || '');
+    const contractType = titleCase(c?.contract_type || 'contract');
+    const statusLabel = titleCase(c?.status || 'active');
+    const startDate = cleanText(c?.start_date || '');
+    const endDate = cleanText(c?.end_date || 'Open-ended / No fixed end date');
+    const loggedDate = c?.created_at
+      ? new Date(c.created_at).toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric' })
+      : '';
+    const generatedDate = new Date().toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric' });
+    const storageType = cleanText(c?.storage_type || 'digital').toLowerCase();
+    const storageTitle = storageType === 'physical' ? 'Physical Copy on File' : 'Digital Copy in System';
+    const storageDetails = storageType === 'physical'
+      ? cleanText(c?.physical_location || 'Physical contract location not specified.')
+      : cleanText(c?.file_name || c?.file_url || 'Digital contract file is recorded in the system.');
+    const preparedBy = cleanText(typeof currentAdminLabel !== 'undefined' ? currentAdminLabel : 'Admin');
 
- <div class="watermark">This is an official contract record of Roma's Donuts. Generated on ${new Date().toLocaleDateString('en-PH', {year:'numeric',month:'long',day:'numeric'})}.</div>
+    const fileName = [
+      'Roma-Contract',
+      safeFilePart(employeeName),
+      safeFilePart(contractType),
+      safeFilePart(startDate || generatedDate)
+    ].filter(Boolean).join('_') + '.doc';
 
- <div class="no-print" style="text-align:center;margin-top:20px;">
- <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;"> PRINT</button>
- </div>
- </body></html>`)
- pw.document.close()
- setTimeout(() => { pw.focus(); pw.print() }, 600)
- }
+    const html = [
+      '<!DOCTYPE html>',
+      '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">',
+      '<head>',
+      '<meta charset="utf-8">',
+      '<title>Roma\'s Donuts Contract Summary</title>',
+      '<style>',
+      '@page WordSection1{size:8.5in 11in;margin:0.65in 0.65in 0.65in 0.65in;}',
+      'div.WordSection1{page:WordSection1;}',
+      'body{font-family:Arial,sans-serif;color:#111;font-size:11pt;line-height:1.35;}',
+      '.header{border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:16px;}',
+      'h1{font-size:18pt;color:#ca1b1b;margin:0;}',
+      '.subtitle{font-size:10pt;color:#555;margin-top:3px;}',
+      '.badge{display:inline-block;border:1px solid #ca1b1b;color:#ca1b1b;padding:4px 10px;font-weight:bold;font-size:9pt;text-transform:uppercase;margin-top:8px;}',
+      '.section-title{background:#fdd412;color:#111;font-weight:bold;padding:6px 8px;margin:16px 0 0;border:1px solid #111;}',
+      'table{width:100%;border-collapse:collapse;}',
+      'td{border:1px solid #111;padding:7px 8px;vertical-align:top;}',
+      'td:first-child{width:32%;font-weight:bold;background:#f7f7f7;}',
+      '.storage-box{border:1px solid #111;padding:10px;margin-top:0;}',
+      '.note{font-size:9pt;color:#555;margin-top:8px;}',
+      '.signature-table{margin-top:42px;}',
+      '.signature-table td{border:none;text-align:center;padding-top:34px;font-size:9pt;}',
+      '.sig-line{border-top:1px solid #111;padding-top:5px;}',
+      '.watermark{font-size:8pt;color:#777;margin-top:22px;text-align:center;}',
+      '</style>',
+      '</head>',
+      '<body>',
+      '<div class="WordSection1">',
+      '<div class="header">',
+      '<h1>Roma\'s Donuts - Employee Contract Record</h1>',
+      '<div class="subtitle">Payroll &amp; Attendance System Employee Contract Summary</div>',
+      '<div class="badge">' + escapeHtml(statusLabel) + '</div>',
+      '</div>',
+      '<div class="section-title">EMPLOYEE DETAILS</div>',
+      '<table>',
+      '<tr><td>Employee Name</td><td>' + escapeHtml(employeeName) + '</td></tr>',
+      '<tr><td>Employee Code</td><td>' + escapeHtml(employeeCode) + '</td></tr>',
+      '</table>',
+      '<div class="section-title">CONTRACT DETAILS</div>',
+      '<table>',
+      '<tr><td>Contract Type</td><td><strong>' + escapeHtml(contractType) + '</strong></td></tr>',
+      '<tr><td>Start Date</td><td>' + escapeHtml(startDate) + '</td></tr>',
+      '<tr><td>End Date</td><td>' + escapeHtml(endDate) + '</td></tr>',
+      '<tr><td>Status</td><td><strong>' + escapeHtml(statusLabel) + '</strong></td></tr>',
+      '<tr><td>Date Logged</td><td>' + escapeHtml(loggedDate) + '</td></tr>',
+      '<tr><td>Prepared By</td><td>' + escapeHtml(preparedBy) + '</td></tr>',
+      '</table>',
+      '<div class="section-title">DOCUMENT STORAGE</div>',
+      '<div class="storage-box">',
+      '<strong>' + escapeHtml(storageTitle) + '</strong><br>',
+      escapeHtml(storageDetails),
+      '</div>',
+      '<p class="note">This Word file is generated from the official contract record stored in the Roma\'s Donuts Payroll &amp; Attendance System.</p>',
+      '<table class="signature-table">',
+      '<tr>',
+      '<td><div class="sig-line">Employee Signature over Printed Name</div></td>',
+      '<td><div class="sig-line">HR / Authorized Signatory</div></td>',
+      '<td><div class="sig-line">Date</div></td>',
+      '</tr>',
+      '</table>',
+      '<div class="watermark">Generated on ' + escapeHtml(generatedDate) + '.</div>',
+      '</div>',
+      '</body>',
+      '</html>'
+    ].join('');
+
+    try {
+      const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast('Contract Word file downloaded.');
+    } catch (err) {
+      console.warn('printContractSummary Word download failed:', err);
+      showToast('Failed to download contract Word file: ' + (err?.message || err), 'red');
+    }
+  }
 
  function getRegularizationDueDate(emp) {
  if (!emp?.hire_date) return ''
