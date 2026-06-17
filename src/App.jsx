@@ -829,6 +829,18 @@ const PAYROLL_COST_TYPES = [
 ]
 
 
+
+const DOCUMENT_BATCH1A_FORMS = [
+ { key:'DISC-NTE', title:'Notice to Explain', category:'NTE / Disciplinary', refPrefix:'RD-NTE', purpose:'Formal notice requiring an employee to explain an alleged violation or incident.' },
+ { key:'DISC-IR', title:'Incident Report Form', category:'NTE / Disciplinary', refPrefix:'RD-IR', purpose:'Record incident facts, people involved, date, location, and initial findings.' },
+ { key:'DISC-EXPLAIN', title:'Employee Explanation Form', category:'NTE / Disciplinary', refPrefix:'RD-EXPLAIN', purpose:'Employee written explanation connected to an incident, NTE, shortage, or violation.' },
+ { key:'PAY-CA-AGREEMENT', title:'Cash Advance Agreement', category:'Payroll & Salary', refPrefix:'RD-CA', purpose:'Document cash advance amount, repayment terms, deductions, and acknowledgment.' },
+ { key:'PAY-DEDUCTION-AUTH', title:'Salary Deduction Authorization Form', category:'Payroll & Salary', refPrefix:'RD-DED', purpose:'Authorize payroll deductions for cash advance, damage, shortage, lost item, or other approved charge.' },
+ { key:'HR-CLEARANCE', title:'Employee Clearance Form', category:'HR & Employee', refPrefix:'RD-CLEAR', purpose:'Clear accountabilities before final pay or separation release.' },
+ { key:'HR-PPE-ISSUE', title:'Uniform / PPE Issuance Slip', category:'HR & Employee', refPrefix:'RD-PPE', purpose:'Track issued uniforms, PPE, tools, and employee accountability.' },
+ { key:'PAY-RELEASE', title:'Payroll Release Acknowledgment Slip', category:'Payroll & Salary', refPrefix:'RD-PAYREL', purpose:'Employee acknowledgment of salary, payroll release, or final pay received.' }
+]
+
 const DOCUMENT_CENTER_CATEGORIES = [
  'HR & Employee',
  'Payroll & Salary',
@@ -1808,6 +1820,21 @@ export default function App() {
  const [documentCenterSearch, setDocumentCenterSearch] = useState('')
  const [documentCenterCategory, setDocumentCenterCategory] = useState('all')
  const [documentCenterBatch, setDocumentCenterBatch] = useState('all')
+ const [documentFormDraft, setDocumentFormDraft] = useState({
+  formKey:'DISC-NTE',
+  employeeId:'',
+  documentDate:today,
+  incidentDate:today,
+  effectiveDate:today,
+  amount:'',
+  deductionPerCutoff:'',
+  subject:'',
+  details:'',
+  items:'',
+  remarks:'',
+  preparedBy:'',
+  approvedBy:''
+ })
  const [viewingContract, setViewingContract] = useState(null)
  const [contractStorageType, setContractStorageType] = useState('digital')
  const [contractPhysicalLocation, setContractPhysicalLocation] = useState('')
@@ -18588,6 +18615,129 @@ function PosMonitorPanel() {
  return Object.values(map)
  })()
 
+
+ const updateDocumentFormDraft = (field, value) => {
+  setDocumentFormDraft(prev => ({ ...prev, [field]:value }))
+ }
+
+ const getSelectedDocumentBatch1AForm = () => {
+  return DOCUMENT_BATCH1A_FORMS.find(f => f.key === documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS[0]
+ }
+
+ const getDocumentFormEmployee = () => {
+  return (employees || []).find(e => String(e.id) === String(documentFormDraft.employeeId)) || null
+ }
+
+ const getDocumentReferenceNumber = (form = getSelectedDocumentBatch1AForm()) => {
+  const cleanDate = String(documentFormDraft.documentDate || today).replace(/-/g, '')
+  return form.refPrefix + '-' + cleanDate + '-' + String(Date.now()).slice(-5)
+ }
+
+ const buildPrintableDocumentRows = (form, emp) => {
+  const rows = [
+   ['Document No.', getDocumentReferenceNumber(form)],
+   ['Document Type', form.title],
+   ['Date Prepared', formatDateForDisplay(documentFormDraft.documentDate || today)],
+   ['Employee Name', emp?.full_name || '____________________________'],
+   ['Employee Code', emp?.employee_code || '________________'],
+   ['Position / Department', (emp?.position || '________________') + ' / ' + (emp?.department || '________________')]
+  ]
+
+  if (['DISC-NTE','DISC-IR','DISC-EXPLAIN'].includes(form.key)) {
+   rows.push(['Incident Date', formatDateForDisplay(documentFormDraft.incidentDate || documentFormDraft.documentDate || today)])
+   rows.push(['Subject / Violation', documentFormDraft.subject || '____________________________'])
+   rows.push(['Details / Explanation', documentFormDraft.details || ''])
+  }
+
+  if (form.key === 'PAY-CA-AGREEMENT') {
+   rows.push(['Cash Advance Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
+   rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
+   rows.push(['Repayment Terms', documentFormDraft.details || 'Deduction shall be made every payroll cut-off until fully paid, unless modified by written approval.'])
+  }
+
+  if (form.key === 'PAY-DEDUCTION-AUTH') {
+   rows.push(['Deduction Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
+   rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
+   rows.push(['Reason for Deduction', documentFormDraft.subject || '____________________________'])
+   rows.push(['Details', documentFormDraft.details || ''])
+  }
+
+  if (form.key === 'HR-CLEARANCE') {
+   rows.push(['Effective / Last Working Date', formatDateForDisplay(documentFormDraft.effectiveDate || documentFormDraft.documentDate || today)])
+   rows.push(['Accountabilities to Clear', documentFormDraft.items || 'Uniform/PPE, cash advance, tools, documents, inventory, crates, keys, and other company property.'])
+   rows.push(['Remarks', documentFormDraft.remarks || ''])
+  }
+
+  if (form.key === 'HR-PPE-ISSUE') {
+   rows.push(['Items Issued', documentFormDraft.items || '____________________________'])
+   rows.push(['Accountability Terms', documentFormDraft.details || 'Employee acknowledges receipt and agrees to return company property or accept approved accountability deduction for lost/damaged items.'])
+  }
+
+  if (form.key === 'PAY-RELEASE') {
+   rows.push(['Payroll / Release Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
+   rows.push(['Payroll Period / Reason', documentFormDraft.subject || '____________________________'])
+   rows.push(['Remarks', documentFormDraft.remarks || 'Employee acknowledges receipt of the stated amount.'])
+  }
+
+  rows.push(['Prepared By', documentFormDraft.preparedBy || currentAdminLabel || 'Admin'])
+  rows.push(['Approved By', documentFormDraft.approvedBy || '____________________________'])
+  return rows
+ }
+
+ const printBatch1ADocumentForm = () => {
+  const form = getSelectedDocumentBatch1AForm()
+  const emp = getDocumentFormEmployee()
+  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Print blank form?')) return
+
+  const escDoc = value => {
+   const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }
+   return String(value ?? '').replace(/[&<>"']/g, ch => map[ch] || ch)
+  }
+
+  const rows = buildPrintableDocumentRows(form, emp)
+  const rowHtml = rows.map(row => {
+   const label = row[0]
+   const value = row[1]
+   return '<tr><td class="label">' + escDoc(label) + '</td><td>' + escDoc(value).replace(/\n/g, '<br/>') + '</td></tr>'
+  }).join('')
+
+  let reminder = 'This form documents the details stated above for company records and proper review.'
+  if (form.key === 'DISC-NTE') reminder = 'Employee is given the opportunity to submit a written explanation. Management shall review the explanation and available evidence before making a decision.'
+  if (form.key === 'PAY-CA-AGREEMENT') reminder = "Employee authorizes Roma's Donuts to deduct the agreed repayment amount from payroll until the cash advance is fully paid."
+  if (form.key === 'PAY-DEDUCTION-AUTH') reminder = 'Employee confirms that the deduction details were explained and authorizes payroll deduction according to the approved terms.'
+  if (form.key === 'HR-CLEARANCE') reminder = 'Final pay or release may be processed only after all required clearances and accountabilities are reviewed.'
+  if (form.key === 'HR-PPE-ISSUE') reminder = 'Employee acknowledges receipt of the listed items and responsibility for proper use, care, and return when required.'
+  if (form.key === 'PAY-RELEASE') reminder = 'Employee acknowledges receipt of the stated payroll or release amount.'
+
+  const html =
+   '<!DOCTYPE html><html><head><title>' + escDoc(form.title) + '</title>' +
+   '<style>' +
+   '*{box-sizing:border-box}body{font-family:Arial,sans-serif;background:#e5e5e5;margin:0;padding:18px;color:#111;font-size:12px}' +
+   '.page{width:210mm;min-height:297mm;background:white;margin:0 auto;padding:18mm;box-shadow:0 2px 10px rgba(0,0,0,.18)}' +
+   '.brand{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px}.brand h1{margin:0;color:#ca1b1b;font-size:24px;letter-spacing:.5px}.brand p{margin:3px 0;color:#555;font-size:11px}' +
+   'h2{text-align:center;margin:14px 0 8px;font-size:16px;text-decoration:underline;letter-spacing:.5px}.purpose{text-align:center;color:#555;font-size:11px;margin:0 0 14px;line-height:1.45}' +
+   'table{width:100%;border-collapse:collapse;margin:10px 0 14px}td{border:1px solid #ddd;padding:7px 8px;vertical-align:top;line-height:1.4}td.label{width:31%;background:#fff8dc;font-weight:bold;color:#333}' +
+   '.notice{border:1px solid #f5c518;background:#fff8dc;border-radius:8px;padding:10px;margin:14px 0;font-size:11px;line-height:1.5;color:#444;text-align:justify}' +
+   '.sig-wrap{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:35px}.sig{border-top:1px solid #000;text-align:center;padding-top:6px;font-size:10px;min-height:30px}' +
+   '.footer{text-align:center;color:#888;font-size:9px;margin-top:18px;border-top:1px solid #eee;padding-top:8px}.no-print{text-align:center;margin:0 0 18px}button{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 22px;font-weight:bold;cursor:pointer}' +
+   '@media print{@page{size:A4;margin:0}body{background:white;padding:0}.page{box-shadow:none;margin:0}.no-print{display:none}}' +
+   '</style></head><body>' +
+   '<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>' +
+   '<div class="page"><div class="brand"><h1>Roma\'s Donuts</h1><p>Payroll, HR, Production &amp; Business Documents System</p><p>Every bite is a little piece of heaven.</p></div>' +
+   '<h2>' + escDoc(form.title).toUpperCase() + '</h2><p class="purpose">' + escDoc(form.purpose) + '</p><table>' + rowHtml + '</table>' +
+   '<div class="notice">' + escDoc(reminder) + '</div>' +
+   '<div class="sig-wrap"><div class="sig">Employee Signature / Date</div><div class="sig">Authorized Representative / Date</div></div>' +
+   '<div class="sig-wrap" style="margin-top:28px"><div class="sig">Prepared By</div><div class="sig">Approved By</div></div>' +
+   '<div class="footer">Generated from Roma\'s Donuts Company Documents &amp; Forms Center</div></div></body></html>'
+
+  const pw = window.open('', '_blank', 'width=900,height=700')
+  if (!pw) { showToast('Popup blocked. Please allow popups to print documents.', 'red'); return }
+  pw.document.write(html)
+  pw.document.close()
+  pw.focus()
+ }
+
+
  const handleTabClick = (key) => {
       if(key==='payablesMain') {
         setActiveTab('payablesMain')
@@ -21538,6 +21688,83 @@ function PosMonitorPanel() {
  <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Batch 0 is the library foundation. Forms marked Existing Module already have partial or full app support. Forms marked Template Listed are ready to build in the next batches.</p>
  </div>
  <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Documents Center Batch 0 is active. Choose the next batch to build real forms.')}>BATCH 0 ACTIVE</button>
+ </div>
+
+ <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Batch 1A Printable Forms Builder</h3>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Create professional printable HR, payroll, NTE, clearance, PPE, and acknowledgment forms. Database saving will be added in the next batch.</p>
+ </div>
+ <Badge label="Printable Only" color="yellow" />
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+ <div>
+ <label style={lblS}>Form Type</label>
+ <select value={documentFormDraft.formKey} onChange={e=>updateDocumentFormDraft('formKey', e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+ {DOCUMENT_BATCH1A_FORMS.map(form => <option key={form.key} value={form.key}>{form.title}</option>)}
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>Employee</label>
+ <EmployeeSelect value={documentFormDraft.employeeId} onChange={value=>updateDocumentFormDraft('employeeId', value)} employees={employees} />
+ </div>
+ <div>
+ <label style={lblS}>Document Date</label>
+ <input type="date" value={documentFormDraft.documentDate} onChange={e=>updateDocumentFormDraft('documentDate', e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+ <div>
+ <label style={lblS}>Incident / Effective Date</label>
+ <input type="date" value={documentFormDraft.incidentDate} onChange={e=>{ updateDocumentFormDraft('incidentDate', e.target.value); updateDocumentFormDraft('effectiveDate', e.target.value) }} style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Amount</label>
+ <input value={documentFormDraft.amount} onChange={e=>updateDocumentFormDraft('amount', e.target.value)} placeholder="Example: 2000" style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Deduction Per Cutoff</label>
+ <input value={documentFormDraft.deductionPerCutoff} onChange={e=>updateDocumentFormDraft('deductionPerCutoff', e.target.value)} placeholder="Example: 500" style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+ <div>
+ <label style={lblS}>Subject / Reason / Payroll Period</label>
+ <input value={documentFormDraft.subject} onChange={e=>updateDocumentFormDraft('subject', e.target.value)} placeholder="Example: Cash advance repayment / Late attendance / Payroll period" style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Items / Accountabilities</label>
+ <input value={documentFormDraft.items} onChange={e=>updateDocumentFormDraft('items', e.target.value)} placeholder="Example: 2 uniforms, apron, cap, ID, cash advance balance" style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ </div>
+
+ <label style={lblS}>Details / Explanation / Terms</label>
+ <textarea value={documentFormDraft.details} onChange={e=>updateDocumentFormDraft('details', e.target.value)} placeholder="Write the important details here. This will appear in the printed form." style={{...inputStyle, minHeight:'90px', resize:'vertical' }} />
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+ <div>
+ <label style={lblS}>Remarks</label>
+ <input value={documentFormDraft.remarks} onChange={e=>updateDocumentFormDraft('remarks', e.target.value)} placeholder="Optional remarks" style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Prepared By</label>
+ <input value={documentFormDraft.preparedBy} onChange={e=>updateDocumentFormDraft('preparedBy', e.target.value)} placeholder={currentAdminLabel || 'Admin'} style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ <div>
+ <label style={lblS}>Approved By</label>
+ <input value={documentFormDraft.approvedBy} onChange={e=>updateDocumentFormDraft('approvedBy', e.target.value)} placeholder="Owner / Manager / HR / Payroll" style={{...inputStyle, marginBottom:0 }} />
+ </div>
+ </div>
+
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+ <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={printBatch1ADocumentForm}>PRINT / SAVE AS PDF</button>
+ <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>setDocumentFormDraft(prev=>({ ...prev, subject:'', details:'', amount:'', deductionPerCutoff:'', items:'', remarks:'' }))}>CLEAR FIELDS</button>
+ <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Selected: <strong>{getSelectedDocumentBatch1AForm().title}</strong></p>
+ </div>
  </div>
 
  {(()=>{
