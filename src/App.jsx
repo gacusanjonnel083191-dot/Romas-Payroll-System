@@ -3470,12 +3470,35 @@ export default function App() {
  <div class="sig-wrap"><div><div class="sig">Employee Signature over Printed Name / Date</div></div><div><div class="sig">Authorized Company Representative / Date</div></div></div>
  <div class="sig-wrap"><div><div class="sig">Witness / HR Representative / Date</div></div><div><div class="sig">Government ID Presented / ID Number</div></div></div>
  <div class="footer">Roma's Donuts | ${esc(title)} | Generated ${new Date().toLocaleDateString('en-PH', {year:'numeric', month:'long', day:'numeric'})}</div>
- </div><div class="no-print"><button onclick="window.print()">PRINT CONTRACT</button></div></body></html>`
- const pw = window.open('', '_blank', 'width=900,height=700')
- if (!pw) { showToast('Popup blocked. Please allow popups to print the contract.', 'red'); return }
- pw.document.write(html)
- pw.document.close()
- setTimeout(() => { pw.focus(); pw.print() }, 700)
+ </div></body></html>`
+ const cleanFileName = value => String(value || '')
+  .trim()
+  .replace(/[^a-z0-9]+/gi, '-')
+  .replace(/^-+|-+$/g, '')
+  .slice(0, 70)
+
+ const fileName = [
+  'Roma-Employment-Contract',
+  cleanFileName(emp.full_name || 'Employee'),
+  cleanFileName(type || 'contract'),
+  cleanFileName(startDate || today)
+ ].filter(Boolean).join('_') + '.doc'
+
+ try {
+  const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  showToast('Employment contract Word file downloaded.')
+ } catch (err) {
+  console.warn('printEmploymentContract Word download failed:', err)
+  showToast('Failed to download employment contract Word file: ' + (err?.message || err), 'red')
+ }
  }
 
 
