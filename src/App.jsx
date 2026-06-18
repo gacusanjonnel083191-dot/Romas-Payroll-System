@@ -16052,6 +16052,108 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (employee?.id) loadMyCashAdvances(employee)
  }
 
+async function editCashAdvanceDeductionPlan(ca, req = null) {
+  if (!ca?.id) {
+   showToast('Cash advance ledger not found. Refresh cash advance requests first.', 'red')
+   return
+  }
+
+  if (adminRole !== 'owner') {
+   showToast('Owner access is required to edit an approved cash advance deduction plan.', 'red')
+   return
+  }
+
+  const amount = Math.max(0, safeNum(ca.amount, 0))
+  const amountPaid = Math.max(0, safeNum(ca.amount_paid, 0))
+  const currentTotal = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || req?.request_installments_total || 1))
+  const currentRemaining = Math.max(0, safeNum(ca.installments_remaining, currentTotal))
+  const completed = Math.max(0, currentTotal - currentRemaining)
+
+  if (!amount) {
+   showToast('Invalid cash advance amount.', 'red')
+   return
+  }
+
+  if (amountPaid > 0 || completed > 0) {
+   showToast('This cash advance already has deduction history. Use correction/reversal instead of editing the plan directly.', 'red')
+   return
+  }
+
+  const answer = window.prompt(
+   'Enter new number of payroll deductions/installments:\n\n' +
+   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
+   'CA Amount: ' + php(amount) + '\n' +
+   'Current Plan: ' + currentTotal + ' payroll(s) at ' + php(ca.per_payroll_deduction || 0) + ' per payroll',
+   String(currentTotal)
+  )
+
+  if (answer === null) return
+
+  const newInstallments = Math.max(1, Math.round(safeNum(answer, 0)))
+
+  if (!Number.isFinite(newInstallments) || newInstallments < 1) {
+   showToast('Invalid number of payroll deductions.', 'red')
+   return
+  }
+
+  const newPerPayroll = moneyRound(amount / newInstallments)
+
+  if (!window.confirm(
+   'Update deduction plan?\n\n' +
+   'Amount: ' + php(amount) + '\n' +
+   'New payroll count: ' + newInstallments + '\n' +
+   'New deduction per payroll: ' + php(newPerPayroll) + '\n\n' +
+   'This is allowed because no payroll deduction has been applied yet.'
+  )) return
+
+  const existingNotes = String(ca.notes || '').trim()
+  const newNotes = existingNotes +
+   (existingNotes ? ' | ' : '') +
+   'DEDUCTION PLAN EDITED BY OWNER ' + new Date().toISOString().slice(0,10) +
+   ': ' + currentTotal + ' payroll(s) to ' + newInstallments + ' payroll(s)'
+
+  try {
+   const { error } = await supabase.from('cash_advances').update({
+    amount_paid:0,
+    balance:amount,
+    per_payroll_deduction:newPerPayroll,
+    installments_total:newInstallments,
+    installments_remaining:newInstallments,
+    status:'Unpaid',
+    notes:newNotes
+   }).eq('id', ca.id)
+
+   if (error) throw error
+
+   if (req?.id) {
+    const { error:reqError } = await supabase.from('cash_advance_requests').update({
+     request_installments_total:newInstallments,
+     request_per_payroll_deduction:newPerPayroll
+    }).eq('id', req.id)
+
+    if (reqError && !isMissingCashAdvanceDetailColumnError(reqError)) {
+     console.warn('Cash advance request plan sync skipped:', reqError)
+    }
+   }
+
+   await logAudit(
+    'CA DEDUCTION PLAN EDITED',
+    currentAdminLabel || adminRole,
+    ca.employee_name || req?.employee_name || 'Employee',
+    php(amount) + ' changed from ' + currentTotal + ' payroll(s) to ' + newInstallments + ' payroll(s). New deduction: ' + php(newPerPayroll) + '. CA ID: ' + ca.id
+   )
+
+   await loadCashAdvanceRequests()
+   await loadResolvedCARequests()
+
+   showToast('Cash advance deduction plan updated: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).', 'green')
+  } catch (err) {
+   console.warn('editCashAdvanceDeductionPlan:', err)
+   showToast('Failed to update deduction plan: ' + (err?.message || err), 'red')
+  }
+ }
+
+
  async function loadPayslipDisputes() {
  const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'pending').order('created_at', { ascending:false })
  setPayslipDisputes(dedupePayslipDisputes(data || []))
@@ -21529,6 +21631,11 @@ function PosMonitorPanel() {
  {approved && (
  <div style={{ marginTop:'10px', background:'white', border:'1px solid #d9f2df', borderRadius:'10px', padding:'10px' }}>
  <p style={{ margin:'0 0 8px', color:'#2d8a4e', fontWeight:'bold', fontSize:'13px' }}>Cash Advance Ledger / Payroll Deduction Plan</p>
+ {ledger && safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
+  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', margin:'0 0 10px' }}>
+   <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
+  </div>
+ )}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px' }}>
  {[
   ['CA Ledger ID', ledger?.id ? String(ledger.id).slice(0,8) : (req.ca_ledger_id ? String(req.ca_ledger_id).slice(0,8) : 'Not linked')],
