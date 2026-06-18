@@ -25063,10 +25063,39 @@ function PosMonitorPanel() {
   return parseForecastNumber(row.total ?? row.totalPieces ?? row.total_pieces ?? row.forecast_qty ?? row.quantity ?? row.qty ?? row.pieces ?? 0)
  }
 
- const getDryPremixGramsPerPiece = (variantName) => {
-  const normalizedName = typeof normalizeDonutVariantName === 'function' ? normalizeDonutVariantName(variantName) : variantName
-  return parseForecastNumber(DRY_PREMIX_GRAMS[variantName] ?? DRY_PREMIX_GRAMS[normalizedName] ?? 0)
+ 
+const getDryPremixGramsPerPiece = (variantName) => {
+ const dryPremixByKey = Object.entries(DRY_PREMIX_GRAMS || {}).reduce((map, [key, value]) => {
+  map[getDryPremixLookupKey(key)] = safeNum(value, 0)
+  return map
+ }, {})
+
+ const name = String(variantName || '').trim()
+ const normalizedName = typeof normalizeDonutVariantName === 'function'
+  ? normalizeDonutVariantName(name)
+  : name
+
+ const possibleKeys = [
+  name,
+  normalizedName,
+  name.replace(/pops$/i, ' Pops'),
+  name.replace(/balls$/i, ' Balls'),
+  name.replace(/bites$/i, ' Bites'),
+  name.replace(/circlets$/i, ' Circlets'),
+  name.replace(/rolls$/i, ' Rolls'),
+  name.replace(/midnight$/i, ' Midnight'),
+  name.replace(/dream$/i, ' Dream'),
+  name.replace(/glitz$/i, ' Glitz'),
+  name.replace(/cloud$/i, ' Cloud')
+ ].map(getDryPremixLookupKey)
+
+ for (const key of possibleKeys) {
+  const value = dryPremixByKey[key]
+  if (Number.isFinite(value)) return value
  }
+
+ return 0
+}
 
  const forecastInvoices = deliveryInvoices.filter(i => String(i.delivery_date || '').slice(0, 10) === forecastDate)
  const forecastMap = {}
@@ -25182,7 +25211,7 @@ function PosMonitorPanel() {
  <tr><th>Variant</th><th style="text-align:right;">Pieces</th><th style="text-align:right;">Dry Premix</th><th style="text-align:center;">Actual</th></tr>
  ${forecastRows.map(r => {
  const pieces = getForecastRowTotal(r)
-const grams = safeNum(getDryPremixGramsPerPiece(r.variant_name),0)*safeNum(r.total,0)
+const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  const kgDisplay = grams>=1000? (grams/1000).toFixed(2)+' kg': grams.toFixed(0)+' g'
  return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+safeNum(r.total,0).toLocaleString('en-PH')+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
  }).join('')}
@@ -25243,7 +25272,7 @@ const grams = safeNum(getDryPremixGramsPerPiece(r.variant_name),0)*safeNum(r.tot
  </div>
  {forecastRows.map((r,i)=>{
  const pieces = getForecastRowTotal(r)
-const grams = safeNum(getDryPremixGramsPerPiece(r.variant_name),0)*safeNum(r.total,0)
+const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  const kg = (grams/1000).toFixed(2)
  return (
  <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
