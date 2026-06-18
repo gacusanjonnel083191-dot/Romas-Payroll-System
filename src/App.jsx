@@ -831,7 +831,6 @@ const PAYROLL_COST_TYPES = [
 
 
 const DOCUMENT_BATCH1A_FORMS = [
- { key:'RES-ROLLING-CART-PAYMENT', title:'Rolling Cart Payment Agreement', category:'Reseller / Rolling Cart', refPrefix:'RD-CARTPAY', purpose:'Fixed standard agreement for reseller rolling cart price and payment terms.' },
   { key:'INV-WITHDRAWAL', title:'Company Inventory Withdrawal Slip', refPrefix:'INV-WD' },
  { key:'DISC-NTE', title:'Notice to Explain', category:'NTE / Disciplinary', refPrefix:'RD-NTE', purpose:'Formal notice requiring an employee to explain an alleged violation or incident.' },
  { key:'DISC-IR', title:'Incident Report Form', category:'NTE / Disciplinary', refPrefix:'RD-IR', purpose:'Record incident facts, people involved, date, location, and initial findings.' },
@@ -18919,20 +18918,7 @@ function PosMonitorPanel() {
 
 
  const updateDocumentFormDraft = (field, value) => {
-  setDocumentFormDraft(prev => {
-   const next = { ...prev, [field]:value }
-
-   if (field === 'formKey' && value === 'RES-ROLLING-CART-PAYMENT') {
-    next.employeeId = ''
-    next.subject = next.subject || ''
-    next.items = 'Rolling Cart'
-    next.details = next.details || 'One-time payment'
-    next.deductionPerCutoff = ''
-    next.remarks = next.remarks || 'Fixed standard rolling cart payment agreement.'
-   }
-
-   return next
-  })
+  setDocumentFormDraft(prev => ({ ...prev, [field]:value }))
  }
 
 
@@ -18981,11 +18967,7 @@ function PosMonitorPanel() {
   const emp = getDocumentFormEmployee()
   const docNo = getDocumentReferenceNumber(form)
 
-  if (form.key === 'RES-ROLLING-CART-PAYMENT') {
-   if (!String(documentFormDraft.subject || '').trim()) { showToast('Please enter reseller name.', 'red'); return null }
-   if (safeNum(documentFormDraft.amount, 0) <= 0) { showToast('Please enter rolling cart price.', 'red'); return null }
-   if (!String(documentFormDraft.details || '').trim()) { showToast('Please select payment terms.', 'red'); return null }
-  } else if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Save blank document record?')) return null
+  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Save blank document record?')) return null
 
   const payload = {
    document_no: docNo,
@@ -19073,25 +19055,6 @@ function PosMonitorPanel() {
    showToast('Failed to void document: ' + (err?.message || err), 'red')
   }
  }
-
-async function deleteCompanyDocumentRecord(record) {
-  if (!record?.id) return
-  if (!window.confirm('Delete this saved document record permanently? This cannot be undone.')) return
-
-  try {
-   const { error } = await supabase
-    .from('company_document_records')
-    .delete()
-    .eq('id', record.id)
-
-   if (error) throw error
-   showToast('Document record deleted.')
-   await loadCompanyDocumentRecords()
-  } catch (err) {
-   showToast('Failed to delete document: ' + (err?.message || err), 'red')
-  }
- }
-
 
 function printCompanyDocumentRecord(record) {
   if (!record) {
@@ -19204,31 +19167,6 @@ function printCompanyDocumentRecord(record) {
  }
 
  const buildPrintableDocumentRows = (form, emp) => {
-  if (form.key === 'RES-ROLLING-CART-PAYMENT') {
-   const resellerName = String(documentFormDraft.subject || '').trim() || '____________________________'
-   const cartPrice = safeNum(documentFormDraft.amount, 0)
-   const paymentTerms = documentFormDraft.details || 'One-time payment'
-
-   return [
-    ['Document No.', getDocumentReferenceNumber(form)],
-    ['Document Type', form.title],
-    ['Date Prepared', formatDateForDisplay(documentFormDraft.documentDate || today)],
-    ['Reseller Name', resellerName],
-    ['Rolling Cart Price', cartPrice > 0 ? php(cartPrice) : '________________'],
-    ['Payment Terms', paymentTerms],
-    ['Agreement Purpose', 'This document records the approved payment agreement for one Roma\'s Donuts rolling cart under the reseller / cart program.'],
-    ['Standard Terms', 'The Reseller agrees to acquire one Roma\'s Donuts rolling cart for authorized business use. The rolling cart price and payment terms stated in this document shall be followed until fully paid.'],
-    ['Fabrication / Release Terms', 'Cart fabrication, assignment, or release shall be subject to management approval and the agreed payment arrangement. Any unpaid balance remains payable by the Reseller until fully settled.'],
-    ['Use of Cart', 'The rolling cart shall be used only for authorized Roma\'s Donuts selling activities. The Reseller must maintain the cart properly, keep it clean, and follow company selling, hygiene, display, and product-handling standards.'],
-    ['Default or Non-Payment', 'If the Reseller fails to follow the agreed payment terms, Roma\'s Donuts may pause supply, hold further delivery, require payment settlement, or take other appropriate company action based on company policy and reseller agreement.'],
-    ['Acknowledgment', 'By signing this document, the Reseller confirms that the price, payment terms, and obligations have been clearly explained and accepted.'],
-    ['Remarks', documentFormDraft.remarks || 'Fixed standard rolling cart payment agreement.'],
-    ['Prepared By', documentFormDraft.preparedBy || currentAdminLabel || 'Admin'],
-    ['Approved By', documentFormDraft.approvedBy || '____________________________']
-   ]
-  }
-
-
   const rows = [
    ['Document No.', getDocumentReferenceNumber(form)],
    ['Document Type', form.title],
@@ -19293,11 +19231,7 @@ function printCompanyDocumentRecord(record) {
  const printBatch1ADocumentForm = () => {
   const form = getSelectedDocumentBatch1AForm()
   const emp = getDocumentFormEmployee()
-  if (form.key === 'RES-ROLLING-CART-PAYMENT') {
-   if (!String(documentFormDraft.subject || '').trim()) { showToast('Please enter reseller name.', 'red'); return }
-   if (safeNum(documentFormDraft.amount, 0) <= 0) { showToast('Please enter rolling cart price.', 'red'); return }
-   if (!String(documentFormDraft.details || '').trim()) { showToast('Please select payment terms.', 'red'); return }
-  } else if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Print blank form?')) return
+  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Print blank form?')) return
 
   const escDoc = value => {
    const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }
@@ -22440,7 +22374,6 @@ function printCompanyDocumentRecord(record) {
           {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
           {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
           {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
- <button style={{...btnRed, background:'#7f1d1d', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>deleteCompanyDocumentRecord(record)}>DELETE</button>
          </div>
         </td>
        </tr>
