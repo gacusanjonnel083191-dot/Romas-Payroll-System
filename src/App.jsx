@@ -4293,33 +4293,57 @@ Cancel = create batch record only for existing stock.`)
  showToast(` ${item.name} removed.`); loadInventoryItems()
  }
  async function saveInventoryItemEdit(item) {
- const f = editItemFields
- const updatedCategory = f.category ?? item.category
- const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
+  const f = editItemFields
+  const updatedCategory = f.category ?? item.category
+  const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
 
- // For Snacks/Drinks: keep old/existing price as SELLING PRICE.
- // Only when buying_price is entered do we recompute selling price.
- const previousSellingPrice = safeNum(item.selling_price || item.cost_per_unit || 0, 0)
- const updatedBuyingPrice = safeNum(f.buying_price ?? item.buying_price ?? 0, 0)
- const updatedCostPerUnit = isEditingSnackDrink
-  ? (updatedBuyingPrice > 0 ? updatedBuyingPrice : safeNum(item.cost_per_unit, 0))
-  : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
- const updatedSellingPrice = isEditingSnackDrink
-  ? (updatedBuyingPrice > 0 ? snackDrinkAutoSellingPrice(updatedBuyingPrice) : previousSellingPrice)
-  : safeNum(f.selling_price ?? item.selling_price ?? 0, 0)
- const { error } = await supabase.from('inventory_items').update({
- name: f.name||item.name,
- category: f.category||item.category,
- unit: f.unit||item.unit,
- current_stock: Number(f.current_stock??item.current_stock??0),
- min_stock: Number(f.min_stock??item.min_stock),
- cost_per_unit: Number(f.cost_per_unit??item.cost_per_unit),
- selling_price: Number(f.selling_price??item.selling_price??0),
- expiry_date: f.expiry_date!==undefined? (f.expiry_date||null): (item.expiry_date||null),
- supplier_id: f.supplier_id!==undefined? (f.supplier_id||null): (item.supplier_id||null)
- }).eq('id', item.id)
- if (error) { showToast(' Failed: '+error.message,'red'); return }
- showToast(' Item updated!'); setEditingItemId(null); setEditItemFields({}); loadInventoryItems()
+  const supplierPrice = isEditingSnackDrink
+   ? safeNum(f.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item), 0)
+   : safeNum(f.buying_price ?? item.buying_price ?? 0, 0)
+
+  if (isEditingSnackDrink && supplierPrice <= 0) {
+   showToast('Please enter supplier price / buying price for this snack or drink.', 'red')
+   return
+  }
+
+  const finalCostPerUnit = isEditingSnackDrink
+   ? supplierPrice
+   : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
+
+  const finalSellingPrice = isEditingSnackDrink
+   ? snackDrinkAutoSellingPrice(supplierPrice)
+   : safeNum(f.selling_price ?? item.selling_price ?? 0, 0)
+
+  const payload = {
+   name: f.name || item.name,
+   category: f.category || item.category,
+   unit: f.unit || item.unit,
+   current_stock: Number(f.current_stock ?? item.current_stock ?? 0),
+   min_stock: Number(f.min_stock ?? item.min_stock),
+   cost_per_unit: finalCostPerUnit,
+   selling_price: finalSellingPrice,
+   expiry_date: f.expiry_date !== undefined ? (f.expiry_date || null) : (item.expiry_date || null),
+   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null)
+  }
+
+  if (isEditingSnackDrink) {
+   payload.buying_price = supplierPrice
+   payload.markup_percent = 30
+  }
+
+  const { error } = await supabase.from('inventory_items').update(payload).eq('id', item.id)
+
+  if (error) { showToast(' Failed: ' + error.message, 'red'); return }
+
+  showToast(
+   isEditingSnackDrink
+    ? ' Item updated! Supplier price: ' + php(supplierPrice) + ' | Selling price: ' + php(finalSellingPrice)
+    : ' Item updated!'
+  )
+
+  setEditingItemId(null)
+  setEditItemFields({})
+  loadInventoryItems()
  }
  async function recordStockTransaction() {
  if (!stockTxItemId) { showToast(' Please select an item.','red'); return }
@@ -24138,39 +24162,46 @@ function PosMonitorPanel() {
  ): Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}
  </td>
 
+ 
  <td style={{ ...numStyle, color:'#666' }}>
  {isEditing? (
- <input type="number" value={isSnackDrinkCategoryName(editItemFields.category ?? item.category) ? (editItemFields.buying_price ?? item.buying_price ?? '') : (editItemFields.cost_per_unit??item.cost_per_unit)} onChange={e=>{
- const value = e.target.value
- setEditItemFields(p=>{
-  const category = p.category ?? item.category
-  if (isSnackDrinkCategoryName(category)) {
-   const buy = safeNum(value, 0)
-   return {
-    ...p,
-    buying_price:value,
-    cost_per_unit: buy > 0 ? buy : p.cost_per_unit,
-    selling_price: buy > 0 ? snackDrinkAutoSellingPrice(buy) : (p.selling_price ?? item.selling_price ?? item.cost_per_unit ?? 0)
-   }
-  }
-  return {...p,cost_per_unit:value}
- })
-}} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
- ): (
- isSnackDrinkInventoryItem(item) ? (
-  <>
-   <div style={{ color:'#2d8a4e', fontWeight:'900' }}>Sell: {php(getSnackDrinkDisplaySellingPrice(item))}</div>
-   <div style={{ fontSize:'10px', color:safeNum(item.buying_price,0)>0?'#555':'#ca1b1b', fontWeight:'700', marginTop:'2px' }}>
-    Buy: {php(getSnackDrinkDisplayBuyingPrice(item))}
+  isSnackDrinkCategoryName(editItemFields.category ?? item.category) ? (
+   <div>
+    <input
+     type="number"
+     value={editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)}
+     onChange={e=>{
+      const supplierPrice = e.target.value
+      setEditItemFields(p=>({
+       ...p,
+       buying_price:supplierPrice,
+       cost_per_unit:safeNum(supplierPrice, 0),
+       selling_price:snackDrinkAutoSellingPrice(supplierPrice)
+      }))
+     }}
+     style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px', border:'2px solid #2d8a4e' }}
+     min="0"
+     step="0.01"
+     title="Supplier Price / Buying Price"
+    />
+    <div style={{ fontSize:'9.5px', color:'#555', fontWeight:'800', marginTop:'3px' }}>Supplier Price</div>
+    <div style={{ fontSize:'9.5px', color:'#2d8a4e', fontWeight:'900', marginTop:'2px', whiteSpace:'nowrap' }}>
+     Auto Sell: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)))}
+    </div>
    </div>
-  </>
- ) : php(item.cost_per_unit || 0)
-)}
-{editingItemId===item.id && isSnackDrinkCategoryName(editItemFields.category ?? item.category) && (
- <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'900', marginTop:'4px', whiteSpace:'nowrap' }}>
-  Auto Selling Price from Buying Price: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)))}
- </div>
-)}
+  ) : (
+   <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
+  )
+ ) : (
+  isSnackDrinkInventoryItem(item) ? (
+   <>
+    <div style={{ color:'#2d8a4e', fontWeight:'900' }}>Sell: {php(getSnackDrinkDisplaySellingPrice(item))}</div>
+    <div style={{ fontSize:'10px', color:'#555', fontWeight:'700', marginTop:'2px' }}>
+     Supplier: {php(getSnackDrinkDisplayBuyingPrice(item))}
+    </div>
+   </>
+  ) : php(item.cost_per_unit || 0)
+ )}
  </td>
 
  <td style={{ ...rowBase, textAlign:'center' }}>
