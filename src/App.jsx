@@ -2369,6 +2369,13 @@ export default function App() {
  const [crateAdjustmentAssetType, setCrateAdjustmentAssetType] = useState('crate')
  const [editingItemId, setEditingItemId] = useState(null)
  const [editItemFields, setEditItemFields] = useState({})
+
+ const snackDrinkAutoSellingPrice = (cost) => moneyRound(safeNum(cost, 0) * 1.30)
+
+ const isSnackDrinkCategoryName = (category) => {
+  const label = getInventoryCategoryLabel({ category })
+  return label === 'Snacks, Drinks and Others'
+ }
  // Suppliers
  const [suppliers, setSuppliers] = useState([])
  const [suppliersLoading, setSuppliersLoading] = useState(false)
@@ -4202,8 +4209,8 @@ Cancel = create batch record only for existing stock.`)
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
 
  const itemCostPerUnit = safeNum(newItemCostPerUnit, 0)
- const itemSellingPrice = isSnacksDrinksInventoryCategory(newItemCategory)
-  ? computeSnackDrinkSellingPrice(itemCostPerUnit)
+ const itemSellingPrice = isSnackDrinkCategoryName(newItemCategory)
+  ? snackDrinkAutoSellingPrice(itemCostPerUnit)
   : safeNum(newItemSellingPrice, 0)
  setAddItemLoading(true)
  try {
@@ -4257,8 +4264,8 @@ Cancel = create batch record only for existing stock.`)
  const f = editItemFields
  const updatedCategory = f.category ?? item.category
  const updatedCostPerUnit = safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
- const updatedSellingPrice = isSnacksDrinksInventoryCategory(updatedCategory)
-  ? computeSnackDrinkSellingPrice(updatedCostPerUnit)
+ const updatedSellingPrice = isSnackDrinkCategoryName(updatedCategory)
+  ? snackDrinkAutoSellingPrice(updatedCostPerUnit)
   : safeNum(f.selling_price ?? item.selling_price ?? 0, 0)
  const { error } = await supabase.from('inventory_items').update({
  name: f.name||item.name,
@@ -23855,8 +23862,8 @@ function PosMonitorPanel() {
  <select value={newItemCategory} onChange={e=>{
  const category = e.target.value
  setNewItemCategory(category)
- if (isSnacksDrinksInventoryCategory(category)) {
-  setNewItemSellingPrice(computeSnackDrinkSellingPrice(newItemCostPerUnit))
+ if (isSnackDrinkCategoryName(category)) {
+  setNewItemSellingPrice(snackDrinkAutoSellingPrice(newItemCostPerUnit))
  }
 }} style={inputStyle}>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
@@ -23882,8 +23889,8 @@ function PosMonitorPanel() {
  <input type="number" placeholder="0.00" value={newItemCostPerUnit} onChange={e=>{
  const cost = e.target.value
  setNewItemCostPerUnit(cost)
- if (isSnacksDrinksInventoryCategory(newItemCategory)) {
-  setNewItemSellingPrice(computeSnackDrinkSellingPrice(cost))
+ if (isSnackDrinkCategoryName(newItemCategory)) {
+  setNewItemSellingPrice(snackDrinkAutoSellingPrice(cost))
  }
 }} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
  </div>
@@ -23897,10 +23904,10 @@ function PosMonitorPanel() {
  <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
  </div>
  )}
- {(newItemCategory==='Finished Products' || isSnacksDrinksInventoryCategory(newItemCategory)) && (
+ {(newItemCategory==='Finished Products' || isSnackDrinkCategoryName(newItemCategory)) && (
  <div>
  <label style={lblS}>Selling Price (PHP):</label>
- <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnacksDrinksInventoryCategory(newItemCategory)} title={isSnacksDrinksInventoryCategory(newItemCategory)?'Auto-computed: cost + 30% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnacksDrinksInventoryCategory(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
+ <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnackDrinkCategoryName(newItemCategory)} title={isSnackDrinkCategoryName(newItemCategory)?'Auto-computed: cost + 30% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnackDrinkCategoryName(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
  </div>
  )}
  </div>
@@ -24014,7 +24021,7 @@ function PosMonitorPanel() {
   return {
    ...p,
    category,
-   ...(isSnacksDrinksInventoryCategory(category) ? { selling_price: computeSnackDrinkSellingPrice(cost) } : {})
+   ...(isSnackDrinkCategoryName(category) ? { selling_price: snackDrinkAutoSellingPrice(cost) } : {})
   }
  })
 }} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
@@ -24085,7 +24092,7 @@ function PosMonitorPanel() {
   return {
    ...p,
    cost_per_unit:cost,
-   ...(isSnacksDrinksInventoryCategory(category) ? { selling_price: computeSnackDrinkSellingPrice(cost) } : {})
+   ...(isSnackDrinkCategoryName(category) ? { selling_price: snackDrinkAutoSellingPrice(cost) } : {})
   }
  })
 }} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
@@ -24093,13 +24100,13 @@ function PosMonitorPanel() {
  <>
   <div>{php(item.cost_per_unit || 0)}</div>
   {isSnackDrinkInventoryItem(item) && (
-   <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Sell: {php(item.selling_price || computeSnackDrinkSellingPrice(item.cost_per_unit))}</div>
+   <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Sell: {php(item.selling_price || snackDrinkAutoSellingPrice(item.cost_per_unit))}</div>
   )}
  </>
 )}
-{editingItemId===item.id && isSnacksDrinksInventoryCategory(editItemFields.category ?? item.category) && (
+{editingItemId===item.id && isSnackDrinkCategoryName(editItemFields.category ?? item.category) && (
  <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'900', marginTop:'4px', whiteSpace:'nowrap' }}>
-  Auto Sell: {php(computeSnackDrinkSellingPrice(editItemFields.cost_per_unit ?? item.cost_per_unit))}
+  Auto Sell: {php(snackDrinkAutoSellingPrice(editItemFields.cost_per_unit ?? item.cost_per_unit))}
  </div>
 )}
  </td>
