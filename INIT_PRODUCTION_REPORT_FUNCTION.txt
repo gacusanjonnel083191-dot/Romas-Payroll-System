@@ -1,0 +1,23 @@
+8154: async function initProductionReport(deliveryDate) {
+8155:  // Load forecast from invoices for delivery date
+8156:  const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157:  const forecastMap = {}
+8158:  forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160:  if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:'' }
+8161:  forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162:  })
+8163:  })
+8164:  const items = Object.values(forecastMap)
+8165:  if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166:  // Also load all variants for items not in forecast
+8167:  const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168:   supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169:   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170:  ])
+8171:  if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172:  const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
+8173:  setProductionReportItems(variantItems)
+8174:  setProductionReportDeliveryDate(deliveryDate)
+8175:  setShowProductionReport(true)
+8176:  }

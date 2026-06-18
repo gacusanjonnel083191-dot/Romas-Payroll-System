@@ -1,0 +1,991 @@
+PRODUCTION FORECAST AUDIT
+
+================ around line 1053 ================
+1041: return msg.includes('payroll_cost_type') || msg.includes('payroll_cost_label') || msg.includes('column') && msg.includes('cost')
+1042: }
+1043: 
+1044: 
+1045: function normalizeProductCostKey(value) {
+1046: return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim()
+1047: }
+1048: 
+1049: function getProductionReportActualQty(item = {}) {
+1050: return safeNum(item.actual_qty ?? item.actual_quantity ?? item.quantity ?? item.pieces ?? item.produced_qty ?? item.total_produced, 0)
+1051: }
+1052: 
+1053: function getProductionReportForecastQty(item = {}) {
+1054: return safeNum(item.forecast_qty ?? item.expected_quantity ?? item.default_quantity ?? item.standard_quantity ?? item.forecast_quantity, 0)
+1055: }
+1056: 
+1057: function getRecipeCostPerPiece(recipe = {}) {
+1058: const direct = safeNum(recipe.cost_per_piece ?? recipe.recipe_cost_per_piece ?? recipe.standard_cost_per_piece, 0)
+1059: if (direct > 0) return moneyRound(direct)
+1060: const batchCost = safeNum(recipe.batch_cost ?? recipe.total_cost ?? recipe.estimated_batch_cost, 0)
+1061: const yieldPieces = safeNum(recipe.batch_yield_pieces ?? recipe.yield_pieces ?? recipe.batch_yield, 0)
+1062: return batchCost > 0 && yieldPieces > 0 ? moneyRound(batchCost / yieldPieces) : 0
+1063: }
+1064: 
+1065: function buildRecipeCostLookup(recipeRows = []) {
+1066: const lookup = { byVariant:{}, byName:{}, rows:[] }
+1067: const statusRank = status => {
+1068: const s = String(status || '').toLowerCase()
+1069: if (s === 'active' || s === 'approved') return 0
+1070: if (s === 'test' || s === 'draft') return 1
+1071: return 2
+
+================ around line 1054 ================
+1042: }
+1043: 
+1044: 
+1045: function normalizeProductCostKey(value) {
+1046: return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim()
+1047: }
+1048: 
+1049: function getProductionReportActualQty(item = {}) {
+1050: return safeNum(item.actual_qty ?? item.actual_quantity ?? item.quantity ?? item.pieces ?? item.produced_qty ?? item.total_produced, 0)
+1051: }
+1052: 
+1053: function getProductionReportForecastQty(item = {}) {
+1054: return safeNum(item.forecast_qty ?? item.expected_quantity ?? item.default_quantity ?? item.standard_quantity ?? item.forecast_quantity, 0)
+1055: }
+1056: 
+1057: function getRecipeCostPerPiece(recipe = {}) {
+1058: const direct = safeNum(recipe.cost_per_piece ?? recipe.recipe_cost_per_piece ?? recipe.standard_cost_per_piece, 0)
+1059: if (direct > 0) return moneyRound(direct)
+1060: const batchCost = safeNum(recipe.batch_cost ?? recipe.total_cost ?? recipe.estimated_batch_cost, 0)
+1061: const yieldPieces = safeNum(recipe.batch_yield_pieces ?? recipe.yield_pieces ?? recipe.batch_yield, 0)
+1062: return batchCost > 0 && yieldPieces > 0 ? moneyRound(batchCost / yieldPieces) : 0
+1063: }
+1064: 
+1065: function buildRecipeCostLookup(recipeRows = []) {
+1066: const lookup = { byVariant:{}, byName:{}, rows:[] }
+1067: const statusRank = status => {
+1068: const s = String(status || '').toLowerCase()
+1069: if (s === 'active' || s === 'approved') return 0
+1070: if (s === 'test' || s === 'draft') return 1
+1071: return 2
+1072: }
+
+================ around line 1847 ================
+1835: // Phase 2: Costing System
+1836: const [costingView, setCostingView] = useState('dashboard')
+1837: const [costingLoadErrors, setCostingLoadErrors] = useState([])
+1838: const [costSettings, setCostSettings] = useState({
+1839: daily_labor_cost: 8000, waste_percentage: 10,
+1840: monthly_rent: 8000, monthly_electricity: 20000, monthly_other_fixed: 73000,
+1841: fryer_cost: 55000, fryer_lifespan_years: 6,
+1842: mixer_cost: 100000, mixer_lifespan_years: 6,
+1843: sheeter_cost: 200000, sheeter_lifespan_years: 5,
+1844: production_days_per_month: 26, target_margin_percentage: 30, total_daily_pieces: 4740,
+1845: })
+1846: const [savingCostSettings, setSavingCostSettings] = useState(false)
+1847: const [donutVariants, setDonutVariants] = useState([])
+1848: const [variantsLoading, setVariantsLoading] = useState(false)
+1849: const [baseDoughIngredients, setBaseDoughIngredients] = useState([])
+1850: const [variantRecipes, setVariantRecipes] = useState({})
+1851: const [selectedRecipeVariantId, setSelectedRecipeVariantId] = useState(null)
+1852: const [editingBaseDough, setEditingBaseDough] = useState([])
+1853: const [editingVariantRecipe, setEditingVariantRecipe] = useState([])
+1854: const [savingRecipe, setSavingRecipe] = useState(false)
+1855: const [productionLogs, setProductionLogs] = useState([])
+1856: const [productionLoading, setProductionLoading] = useState(false)
+1857: const [showProductionForm, setShowProductionForm] = useState(false)
+1858: const [prodDate, setProdDate] = useState(today)
+1859: const [prodEntries, setProdEntries] = useState([{ variant_id:'', pieces:'' }])
+1860: const [prodNotes, setProdNotes] = useState('')
+1861: const [savingProduction, setSavingProduction] = useState(false)
+1862: const [editingVariantId, setEditingVariantId] = useState(null)
+1863: const [editVariantFields, setEditVariantFields] = useState({})
+1864: const DONUT_VARIANTS_DEFAULT = [
+1865: { name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
+
+================ around line 1905 ================
+1893: const [resellerAccountsLoading, setResellerAccountsLoading] = useState(false)
+1894: const [showResellerAccountForm, setShowResellerAccountForm] = useState(false)
+1895: const [editingResellerAccountId, setEditingResellerAccountId] = useState(null)
+1896: const [resellerAccountForm, setResellerAccountForm] = useState({ account_name:'', owner_name:'', phone:'', access_code:'', access_pin:'', notes:'' })
+1897: const [resellerPortalAccount, setResellerPortalAccount] = useState(null)
+1898: const [resellerPortalBranches, setResellerPortalBranches] = useState([])
+1899: const [selectedResellerBranchId, setSelectedResellerBranchId] = useState('')
+1900: const [invoiceCopyFromResellerId, setInvoiceCopyFromResellerId] = useState('')
+1901: const [resellerOrderTemplateSourceId, setResellerOrderTemplateSourceId] = useState('')
+1902: const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
+1903: const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1)
+1904: const tomorrowStr = tomorrow.toISOString().slice(0,10)
+1905: const [forecastDate, setForecastDate] = useState(tomorrowStr)
+1906: const [showForecastVariants, setShowForecastVariants] = useState(true)
+1907: const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
+1908: const [defaultOrderItems, setDefaultOrderItems] = useState([])
+1909: const [deliveryInvoices, setDeliveryInvoices] = useState([])
+1910: const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('')
+1911: const [onlinePayments, setOnlinePayments] = useState([])
+1912: const [onlinePaymentsLoading, setOnlinePaymentsLoading] = useState(false)
+1913: const [onlinePaymentsMonth, setOnlinePaymentsMonth] = useState(today.slice(0,7))
+1914: const [onlinePaymentsSearch, setOnlinePaymentsSearch] = useState('')
+1915: const [dailySalesOnlinePayments, setDailySalesOnlinePayments] = useState([])
+1916: const [dailySalesOnlinePaymentsLoading, setDailySalesOnlinePaymentsLoading] = useState(false)
+1917: const [dailySalesOnlinePaymentsMonth, setDailySalesOnlinePaymentsMonth] = useState(today.slice(0,7))
+1918: const [dailySalesOnlinePaymentsSearch, setDailySalesOnlinePaymentsSearch] = useState('')
+1919: const [savingDailySalesOnlinePayment, setSavingDailySalesOnlinePayment] = useState(false)
+1920: const [dailySalesOnlinePaymentForm, setDailySalesOnlinePaymentForm] = useState({ payment_date:today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_num ...
+1921: const [invoicesLoading, setInvoicesLoading] = useState(false)
+1922: const [showCreateInvoice, setShowCreateInvoice] = useState(false)
+1923: const [invoiceResellerId, setInvoiceResellerId] = useState('')
+
+================ around line 1906 ================
+1894: const [showResellerAccountForm, setShowResellerAccountForm] = useState(false)
+1895: const [editingResellerAccountId, setEditingResellerAccountId] = useState(null)
+1896: const [resellerAccountForm, setResellerAccountForm] = useState({ account_name:'', owner_name:'', phone:'', access_code:'', access_pin:'', notes:'' })
+1897: const [resellerPortalAccount, setResellerPortalAccount] = useState(null)
+1898: const [resellerPortalBranches, setResellerPortalBranches] = useState([])
+1899: const [selectedResellerBranchId, setSelectedResellerBranchId] = useState('')
+1900: const [invoiceCopyFromResellerId, setInvoiceCopyFromResellerId] = useState('')
+1901: const [resellerOrderTemplateSourceId, setResellerOrderTemplateSourceId] = useState('')
+1902: const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
+1903: const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1)
+1904: const tomorrowStr = tomorrow.toISOString().slice(0,10)
+1905: const [forecastDate, setForecastDate] = useState(tomorrowStr)
+1906: const [showForecastVariants, setShowForecastVariants] = useState(true)
+1907: const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
+1908: const [defaultOrderItems, setDefaultOrderItems] = useState([])
+1909: const [deliveryInvoices, setDeliveryInvoices] = useState([])
+1910: const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('')
+1911: const [onlinePayments, setOnlinePayments] = useState([])
+1912: const [onlinePaymentsLoading, setOnlinePaymentsLoading] = useState(false)
+1913: const [onlinePaymentsMonth, setOnlinePaymentsMonth] = useState(today.slice(0,7))
+1914: const [onlinePaymentsSearch, setOnlinePaymentsSearch] = useState('')
+1915: const [dailySalesOnlinePayments, setDailySalesOnlinePayments] = useState([])
+1916: const [dailySalesOnlinePaymentsLoading, setDailySalesOnlinePaymentsLoading] = useState(false)
+1917: const [dailySalesOnlinePaymentsMonth, setDailySalesOnlinePaymentsMonth] = useState(today.slice(0,7))
+1918: const [dailySalesOnlinePaymentsSearch, setDailySalesOnlinePaymentsSearch] = useState('')
+1919: const [savingDailySalesOnlinePayment, setSavingDailySalesOnlinePayment] = useState(false)
+1920: const [dailySalesOnlinePaymentForm, setDailySalesOnlinePaymentForm] = useState({ payment_date:today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_num ...
+1921: const [invoicesLoading, setInvoicesLoading] = useState(false)
+1922: const [showCreateInvoice, setShowCreateInvoice] = useState(false)
+1923: const [invoiceResellerId, setInvoiceResellerId] = useState('')
+1924: const [invoiceCustomerType, setInvoiceCustomerType] = useState('reseller')
+
+================ around line 4619 ================
+4607: function classifyOutletInventoryProduct(item = {}) {
+4608: const text = `${item.category || ''} ${item.name || ''}`.toLowerCase()
+4609: if (text.includes('drink') || text.includes('beverage') || text.includes('water') || text.includes('juice') || text.includes('soda')) return 'Drinks'
+4610: if (text.includes('snack') || text.includes('chips') || text.includes('biscuit') || text.includes('grocery') || text.includes('groceries')) return 'Snacks'
+4611: return 'Other Items'
+4612: }
+4613: function getOutletProductKey(product = {}) {
+4614: const source = product.source || product.product_type || 'item'
+4615: const id = product.product_id || product.id || normalizeProductCostKey(product.product_name || product.name || '')
+4616: return `${source}:${id}`
+4617: }
+4618: function getOutletProductCatalog() {
+4619: const donutProducts = (donutVariants || []).map(v => ({ source:'donut_variant', product_id:String(v.id || v.name || ''), product_name:v.name || 'Donut Product', product_type:'Donut ...
+4620: const snackProducts = (inventoryItems || []).filter(item => isSnackDrinkInventoryItem(item)).map(item => ({ source:'inventory_item', product_id:String(item.id || ''), product_name: ...
+4621: const seen = new Set()
+4622: return [...donutProducts, ...snackProducts].filter(product => { const key = getOutletProductKey(product); if (!key || seen.has(key)) return false; seen.add(key); return true }).sor ...
+4623: }
+4624: function getOutletVisibleProducts() {
+4625: const term = String(outletRemitSearch || '').trim().toLowerCase()
+4626: return getOutletProductCatalog().filter(product => !term || [product.product_name, product.product_type, product.category, product.unit, product.default_price].filter(Boolean).join ...
+4627: }
+4628: function getOutletLatestEndingMap() {
+4629: const map = {}
+4630: ;(outletRemitReports || []).forEach(report => {
+4631: const rows = Array.isArray(report.outlet_weekly_remittance_items) ? report.outlet_weekly_remittance_items : []
+4632: rows.forEach(row => { const key = row.product_key || `${row.product_source || 'item'}:${row.product_id || normalizeProductCostKey(row.product_name || '')}`; if (!key || map[key] != ...
+4633: })
+4634: return map
+4635: }
+4636: function isOutletDateWithinRange(dateValue) {
+4637: const d = getSalesSummaryDateKey(dateValue)
+
+================ around line 5226 ================
+5214: const monthlyDepreciation =
+5215: (safeNum(costSettings.fryer_cost) / (positiveNum(costSettings.fryer_lifespan_years) * 12)) +
+5216: (safeNum(costSettings.mixer_cost) / (positiveNum(costSettings.mixer_lifespan_years) * 12)) +
+5217: (safeNum(costSettings.sheeter_cost) / (positiveNum(costSettings.sheeter_lifespan_years) * 12))
+5218: const monthlyFixed = safeNum(costSettings.monthly_rent) + safeNum(costSettings.monthly_electricity) +
+5219: safeNum(costSettings.monthly_other_fixed) + monthlyDepreciation
+5220: const dailyFixed = monthlyFixed / positiveNum(costSettings.production_days_per_month)
+5221: const dailyLabor = safeNum(costSettings.daily_labor_cost)
+5222: const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
+5223: const fixedPerPiece = dailyFixed / totalDailyPieces
+5224: const laborPerPiece = dailyLabor / totalDailyPieces
+5225: const wasteFactor = 1 + (safeNum(costSettings.waste_percentage) / 100)
+5226: const variantData = donutVariants.map(v => {
+5227: const sellPrice = safeNum(v.selling_price)
+5228: const cost = computeVariantCost(v.id, v.pieces_per_batch)
+5229: const totalCost = cost? cost.totalCost: laborPerPiece + fixedPerPiece
+5230: const grossMargin = sellPrice - totalCost
+5231: const grossMarginPct = sellPrice > 0? (grossMargin / sellPrice) * 100: 0
+5232: const belowTarget = grossMarginPct < safeNum(costSettings.target_margin_percentage)
+5233: return {...v,...(cost || {}), selling_price:sellPrice, totalCost, grossMargin, grossMarginPct, belowTarget, isEstimate:!cost || (cost.ingredientCost === 0) }
+5234: })
+5235: const avgGrossMargin = variantData.length > 0? variantData.reduce((s,v) => s + safeNum(v.grossMargin), 0) / variantData.length: fixedPerPiece
+5236: const dailyBEP = avgGrossMargin > 0? Math.ceil(dailyFixed / avgGrossMargin): 0
+5237: const monthlyBEP = dailyBEP * positiveNum(costSettings.production_days_per_month)
+5238: return { variantData, monthlyFixed, dailyFixed, dailyLabor, fixedPerPiece, laborPerPiece, wasteFactor, dailyBEP, monthlyBEP, monthlyDepreciation }
+5239: }
+5240: async function loadProductionLogs() {
+5241: setProductionLoading(true)
+5242: try {
+5243: let { data, error } = await supabase.from('production_logs').select('*, production_log_items(*)').order('production_date', { ascending:false }).limit(30)
+5244: if (error) {
+
+================ around line 5278 ================
+5266: const totalPieces = validEntries.reduce((s,e) => s + Number(e.pieces), 0)
+5267: const monthlyDepreciation =
+5268: (Number(costSettings.fryer_cost) / (Number(costSettings.fryer_lifespan_years) * 12)) +
+5269: (Number(costSettings.mixer_cost) / (Number(costSettings.mixer_lifespan_years) * 12)) +
+5270: (Number(costSettings.sheeter_cost) / (Number(costSettings.sheeter_lifespan_years) * 12))
+5271: const monthlyFixed = Number(costSettings.monthly_rent) + Number(costSettings.monthly_electricity) +
+5272: Number(costSettings.monthly_other_fixed) + monthlyDepreciation
+5273: const overheadCost = monthlyFixed / Math.max(1, Number(costSettings.production_days_per_month))
+5274: const laborCost = Number(costSettings.daily_labor_cost)
+5275: let totalIngredientCost = 0
+5276: // Compute ingredient costs per entry
+5277: const entryDetails = validEntries.map(e => {
+5278: const variant = donutVariants.find(v => v.id === e.variant_id)
+5279: const piecesPerBatch = Number(variant?.pieces_per_batch || 12)
+5280: const pieces = Number(e.pieces)
+5281: const cost = computeVariantCost(e.variant_id, piecesPerBatch)
+5282: const ingCost = cost? cost.ingredientCost * pieces: 0
+5283: totalIngredientCost += ingCost
+5284: return { variant, pieces, piecesPerBatch, ingCost }
+5285: })
+5286: const totalCost = totalIngredientCost + laborCost + overheadCost
+5287: // Insert log
+5288: const { data: logData, error: logErr } = await supabase.from('production_logs').insert({
+5289: production_date: prodDate, total_pieces: totalPieces,
+5290: ingredient_cost: totalIngredientCost, labor_cost: laborCost,
+5291: overhead_cost: overheadCost, total_cost: totalCost,
+5292: notes: prodNotes || null, logged_by: `${adminRole}`
+5293: }).select().single()
+5294: if (logErr) throw logErr
+5295: // Insert line items
+5296: for (let i = 0; i < validEntries.length; i++) {
+
+================ around line 5566 ================
+5554: const panel = document.getElementById('reseller-form-panel')
+5555: if (panel) panel.scrollIntoView({ behavior:'smooth', block:'start' })
+5556: }, 80)
+5557: }
+5558: 
+5559: async function startEditDefaultOrder(resellerId) {
+5560: if (!resellerId) return
+5561: try {
+5562: setShowResellerForm(false)
+5563: setEditingResellerId(null)
+5564: setEditingDefaultOrder(resellerId)
+5565: 
+5566: let variants = Array.isArray(donutVariants)? donutVariants: []
+5567: if (variants.length === 0) {
+5568: const { data, error } = await supabase.from('donut_variants').select('*').order('category').order('name')
+5569: if (error) {
+5570: console.warn('Unable to load donut variants for default order editor:', error)
+5571: }
+5572: variants = data || []
+5573: if (variants.length > 0) setDonutVariants(variants)
+5574: }
+5575: 
+5576: const existing = resellerDefaultOrders[resellerId] || []
+5577: let allItems = []
+5578: 
+5579: if (variants.length > 0) {
+5580: allItems = variants.map(v => {
+5581: const found = existing.find(e => e.variant_id === v.id)
+5582: return {
+5583: variant_id: v.id,
+5584: variant_name: v.name,
+
+================ around line 5615 ================
+5603: setDefaultOrderItems([])
+5604: showToast(' Could not open default order editor: ' + (err?.message || err), 'red')
+5605: }
+5606: }
+5607: async function saveDefaultOrder(resellerId) {
+5608: try {
+5609: await supabase.from('reseller_default_orders').delete().eq('reseller_id', resellerId)
+5610: const valid = defaultOrderItems.filter(i => i.variant_id && Number(i.default_quantity) > 0)
+5611: if (valid.length > 0) {
+5612: const rows = valid.map(i => ({
+5613: reseller_id: resellerId,
+5614: variant_id: i.variant_id,
+5615: variant_name: i.variant_name || donutVariants.find(v=>v.id===i.variant_id)?.name || '',
+5616: default_quantity: Number(i.default_quantity)
+5617: }))
+5618: const { error } = await supabase.from('reseller_default_orders').insert(rows)
+5619: if (error) { showToast(' Failed: '+error.message,'red'); return }
+5620: }
+5621: showToast(` Default order saved! (${valid.length} variant${valid.length!==1?'s':''})`)
+5622: setEditingDefaultOrder(null)
+5623: loadResellerDefaultOrders()
+5624: } catch(err) { showToast(' Error: '+err.message,'red') }
+5625: }
+5626: // Invoice Functions
+5627: async function buildInvoiceFromReseller(resellerId) {
+5628: if (!resellerId) {
+5629: setInvoiceItems([])
+5630: return
+5631: }
+5632: let defaults = resellerDefaultOrders[resellerId] || []
+5633: const { data, error } = await supabase.from('reseller_default_orders').select('*').eq('reseller_id', resellerId)
+
+================ around line 5641 ================
+5629: setInvoiceItems([])
+5630: return
+5631: }
+5632: let defaults = resellerDefaultOrders[resellerId] || []
+5633: const { data, error } = await supabase.from('reseller_default_orders').select('*').eq('reseller_id', resellerId)
+5634: if (!error) defaults = data || defaults
+5635: const rows = await getAllOrderVariantRows(defaults, invoiceDiscountPct)
+5636: setInvoiceItems(rows)
+5637: }
+5638: 
+5639: 
+5640: async function loadAllInvoiceVariants(defaultQuantity = '', discountPctOverride = null) {
+5641: let variants = donutVariants
+5642: if (!variants || variants.length === 0) {
+5643: const { data, error } = await supabase.from('donut_variants').select('*').order('name')
+5644: if (error) {
+5645: showToast('Failed to load donut varieties: ' + error.message, 'red')
+5646: return
+5647: }
+5648: variants = data || []
+5649: setDonutVariants(variants)
+5650: }
+5651: if (!variants || variants.length === 0) {
+5652: showToast('No donut varieties found. Go to Costing / Recipes and load variants first.', 'red')
+5653: return
+5654: }
+5655: const discountForRows = discountPctOverride !== null ? discountPctOverride : invoiceDiscountPct
+5656: setInvoiceItems(variants.map(v => ({
+5657: variant_id:v.id,
+5658: variant_name:v.name,
+5659: quantity:defaultQuantity,
+
+================ around line 6857 ================
+6845: if (freshCreditStatus.blocked) {
+6846: showToast(`Credit warning for ${reseller?.name || 'this reseller'}. Invoice will still be created, but admin should review before dispatch. ${freshCreditStatus.message}`, 'red')
+6847: await logAudit('INVOICE CREATED WITH CREDIT WARNING', adminRole, reseller?.name || '', freshCreditStatus.message)
+6848: }
+6849: }
+6850: 
+6851: const invoiceNum = `INV-${invoiceDate.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
+6852: const dueDate = new Date(invoiceDate)
+6853: dueDate.setDate(dueDate.getDate() + (customerType === 'reseller' ? RESELLER_CREDIT_GRACE_DAYS : 0))
+6854: const dueDateStr = dueDate.toISOString().slice(0,10)
+6855: 
+6856: const lineItems = validItems.map(i => {
+6857: const variant = donutVariants.find(v => v.id === i.variant_id)
+6858: const retailPrice = safeNum(variant?.selling_price ?? i.retail_price, 0)
+6859: const invoicePrice = moneyRound(retailPrice * (1 - discountPercent / 100))
+6860: return {
+6861: ...i,
+6862: retail_price:retailPrice,
+6863: reseller_price:invoicePrice,
+6864: total_price:moneyRound(invoicePrice * Number(i.quantity || 0))
+6865: }
+6866: })
+6867: 
+6868: const subtotal = moneyRound(lineItems.reduce((s,i) => s + safeNum(i.total_price, 0), 0))
+6869: const customerName = customerType === 'reseller' ? (reseller?.name || '') : String(invoiceCustomerName || '').trim()
+6870: const customerAddress = customerType === 'reseller' ? (reseller?.address || reseller?.area || '') : String(invoiceCustomerAddress || '').trim()
+6871: const customerContact = customerType === 'reseller' ? (reseller?.phone || '') : String(invoiceCustomerContact || '').trim()
+6872: const baseNotes = invoiceNotes || ''
+6873: const nonResellerNote = customerType === 'non_reseller'
+6874: ? `Non-reseller invoice | Customer: ${customerName}${customerContact ? ' | Contact: ' + customerContact : ''}${customerAddress ? ' | Address: ' + customerAddress : ''}`
+6875: : ''
+
+================ around line 6959 ================
+6947: const cutoffStatus = getOrderCutoffStatus(editingInvoice.delivery_date)
+6948: if (cutoffStatus.locked) {
+6949: showToast(` Invoice editing is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time.`, 'red')
+6950: await logAudit('INVOICE EDIT BLOCKED - ORDER CUT-OFF', adminRole, editingInvoice.reseller_name || '', `${editingInvoice.invoice_number || ''} ${cutoffStatus.message}`)
+6951: return
+6952: }
+6953: const validItems = editInvoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
+6954: if (validItems.length === 0) { showToast(' Please add at least one item.','red'); return }
+6955: setSavingEditInvoice(true)
+6956: try {
+6957: // Recalculate totals
+6958: const lineItems = validItems.map(i => {
+6959: const variant = donutVariants.find(v => v.id === i.variant_id)
+6960: const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
+6961: const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
+6962: return {...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
+6963: })
+6964: const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
+6965: // Update invoice header
+6966: await supabase.from('delivery_invoices').update({
+6967: subtotal, total_amount:subtotal,
+6968: notes:editingInvoice.notes||null,
+6969: prepared_by:editingInvoice.prepared_by||null,
+6970: dispatched_by:editingInvoice.dispatched_by||null,
+6971: crates_used:Number(editingInvoice.crates_used||0)
+6972: }).eq('id', editingInvoice.id)
+6973: // Replace line items
+6974: await supabase.from('delivery_invoice_items').delete().eq('invoice_id', editingInvoice.id)
+6975: await supabase.from('delivery_invoice_items').insert(lineItems.map(i => ({
+6976: invoice_id:editingInvoice.id, variant_id:i.variant_id, variant_name:i.variant_name,
+6977: retail_price:i.retail_price, reseller_price:i.reseller_price,
+
+================ around line 7912 ================
+7900: item_id: item.id || null,
+7901: variant_id: item.variant_id || '',
+7902: variant_name: item.variant_name || 'Unknown Variant',
+7903: retail_price: safeNum(item.retail_price, 0),
+7904: reseller_price: safeNum(item.reseller_price, 0),
+7905: original_quantity: originalQty,
+7906: actual_quantity: originalQty,
+7907: adjustment_type: 'Actual Delivered',
+7908: adjustment_note: ''
+7909: }
+7910: })
+7911: 
+7912: ;(donutVariants || []).forEach(v => {
+7913: const key = String(v.id || v.name)
+7914: if (!rowsByKey[key]) {
+7915: const retailPrice = safeNum(v.selling_price, 0)
+7916: rowsByKey[key] = {
+7917: item_id: null,
+7918: variant_id: v.id || '',
+7919: variant_name: v.name || 'Variant',
+7920: retail_price: retailPrice,
+7921: reseller_price: Math.round(retailPrice * 0.80 * 100) / 100,
+7922: original_quantity: 0,
+7923: actual_quantity: 0,
+7924: adjustment_type: 'Additional / Overproduced',
+7925: adjustment_note: ''
+7926: }
+7927: }
+7928: })
+7929: 
+7930: return Object.values(rowsByKey).sort((a,b)=>String(a.variant_name).localeCompare(String(b.variant_name)))
+
+================ around line 8078 ================
+8066: const totalRevenue = walkinTotal + messengerTotal + resellerInvoicesDay
+8067: const otherSalesNote = validOtherSales.length
+8068: ? `Other Sales: ${validOtherSales.map(e=>`${getOtherSalesCategory(e.category).label} ${php(e.amount)}${e.description? ` (${e.description})`: ''}`).join('; ')} | Other Sales Total:  ...
+8069: : ''
+8070: const combinedNotes = [String(salesNotes || '').trim(), otherSalesNote].filter(Boolean).join(' | ')
+8071: const { data:saleData, error:sErr } = await supabase.from('daily_sales').insert({
+8072: sale_date:salesDate, total_walkin:walkinTotal, total_messenger:messengerTotal,
+8073: total_reseller:resellerInvoicesDay, total_revenue:totalRevenue,
+8074: notes:combinedNotes||null, encoded_by:currentAdminLabel
+8075: }).select().single()
+8076: if (sErr) throw sErr
+8077: const itemRows = valid.map(e => {
+8078: const variant = donutVariants.find(v=>v.id===e.variant_id)
+8079: const unitPrice = variant?.selling_price || Number(e.unit_price||0)
+8080: return { sale_id:saleData.id, variant_id:e.variant_id, variant_name:e.variant_name||variant?.name||'', channel:e.channel, quantity:Number(e.quantity), unit_price:unitPrice, total_p ...
+8081: })
+8082: if (itemRows.length > 0) {
+8083: const { error:itemErr } = await supabase.from('daily_sales_items').insert(itemRows)
+8084: if (itemErr) throw itemErr
+8085: }
+8086: await logAudit('DAILY SALES ENCODED', adminRole, 'Sales', `${salesDate} ${php(totalRevenue)}${otherSalesTotal>0? ` | Other Sales: ${php(otherSalesTotal)}`: ''}`)
+8087: showToast(` Sales for ${salesDate} saved! Total: ${php(totalRevenue)}`)
+8088: setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setOtherSalesEntries([]); setSalesNotes('')
+8089: loadDailySales()
+8090: refreshFoundationAfterDataChange('daily-sales-saved')
+8091: } catch(err) { showToast(' Failed: '+err.message,'red') }
+8092: setSavingSales(false)
+8093: }
+8094: // Expenses Functions
+8095: // FEATURE 1: Cash Reconciliation
+8096: // Bank Deposit System
+
+================ around line 8155 ================
+8143: }
+8144: }
+8145: 
+8146: // Production Report System
+8147: async function loadProductionReports() {
+8148: try {
+8149: const { data, error } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
+8150: if (error) { console.warn('loadProductionReports:', error); setProductionReports([]); return }
+8151: setProductionReports(data||[])
+8152: } catch(e) { console.warn('loadProductionReports:', e); setProductionReports([]) }
+8153: }
+8154: async function initProductionReport(deliveryDate) {
+8155: // Load forecast from invoices for delivery date
+8156: const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157: const forecastMap = {}
+8158: forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+
+================ around line 8156 ================
+8144: }
+8145: 
+8146: // Production Report System
+8147: async function loadProductionReports() {
+8148: try {
+8149: const { data, error } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
+8150: if (error) { console.warn('loadProductionReports:', error); setProductionReports([]); return }
+8151: setProductionReports(data||[])
+8152: } catch(e) { console.warn('loadProductionReports:', e); setProductionReports([]) }
+8153: }
+8154: async function initProductionReport(deliveryDate) {
+8155: // Load forecast from invoices for delivery date
+8156: const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157: const forecastMap = {}
+8158: forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+
+================ around line 8157 ================
+8145: 
+8146: // Production Report System
+8147: async function loadProductionReports() {
+8148: try {
+8149: const { data, error } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
+8150: if (error) { console.warn('loadProductionReports:', error); setProductionReports([]); return }
+8151: setProductionReports(data||[])
+8152: } catch(e) { console.warn('loadProductionReports:', e); setProductionReports([]) }
+8153: }
+8154: async function initProductionReport(deliveryDate) {
+8155: // Load forecast from invoices for delivery date
+8156: const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157: const forecastMap = {}
+8158: forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+
+================ around line 8158 ================
+8146: // Production Report System
+8147: async function loadProductionReports() {
+8148: try {
+8149: const { data, error } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
+8150: if (error) { console.warn('loadProductionReports:', error); setProductionReports([]); return }
+8151: setProductionReports(data||[])
+8152: } catch(e) { console.warn('loadProductionReports:', e); setProductionReports([]) }
+8153: }
+8154: async function initProductionReport(deliveryDate) {
+8155: // Load forecast from invoices for delivery date
+8156: const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157: const forecastMap = {}
+8158: forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+
+================ around line 8160 ================
+8148: try {
+8149: const { data, error } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
+8150: if (error) { console.warn('loadProductionReports:', error); setProductionReports([]); return }
+8151: setProductionReports(data||[])
+8152: } catch(e) { console.warn('loadProductionReports:', e); setProductionReports([]) }
+8153: }
+8154: async function initProductionReport(deliveryDate) {
+8155: // Load forecast from invoices for delivery date
+8156: const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157: const forecastMap = {}
+8158: forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+8177: async function saveProductionReport() {
+8178: const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+
+================ around line 8161 ================
+8149: const { data, error } = await supabase.from('production_reports').select('*, production_report_items(*)').order('report_date', { ascending:false }).limit(10)
+8150: if (error) { console.warn('loadProductionReports:', error); setProductionReports([]); return }
+8151: setProductionReports(data||[])
+8152: } catch(e) { console.warn('loadProductionReports:', e); setProductionReports([]) }
+8153: }
+8154: async function initProductionReport(deliveryDate) {
+8155: // Load forecast from invoices for delivery date
+8156: const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157: const forecastMap = {}
+8158: forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+8177: async function saveProductionReport() {
+8178: const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+8179: if (validItems.length===0) { showToast(' No items to report.','red'); return }
+
+================ around line 8164 ================
+8152: } catch(e) { console.warn('loadProductionReports:', e); setProductionReports([]) }
+8153: }
+8154: async function initProductionReport(deliveryDate) {
+8155: // Load forecast from invoices for delivery date
+8156: const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157: const forecastMap = {}
+8158: forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+8177: async function saveProductionReport() {
+8178: const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+8179: if (validItems.length===0) { showToast(' No items to report.','red'); return }
+8180: const totalForecast = validItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
+8181: const totalProduced = validItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+8182: const variance = totalProduced - totalForecast
+
+================ around line 8166 ================
+8154: async function initProductionReport(deliveryDate) {
+8155: // Load forecast from invoices for delivery date
+8156: const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+8157: const forecastMap = {}
+8158: forecastInvoices.forEach(inv=>{
+8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+8177: async function saveProductionReport() {
+8178: const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+8179: if (validItems.length===0) { showToast(' No items to report.','red'); return }
+8180: const totalForecast = validItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
+8181: const totalProduced = validItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+8182: const variance = totalProduced - totalForecast
+8183: const hasVariance = Math.abs(variance) > 0
+8184: if (hasVariance &&!productionVarianceReason.trim()) { showToast(' Variance detected please enter reason.','red'); return }
+
+================ around line 8172 ================
+8160: if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:' ...
+8161: forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+8162: })
+8163: })
+8164: const items = Object.values(forecastMap)
+8165: if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+8177: async function saveProductionReport() {
+8178: const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+8179: if (validItems.length===0) { showToast(' No items to report.','red'); return }
+8180: const totalForecast = validItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
+8181: const totalProduced = validItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+8182: const variance = totalProduced - totalForecast
+8183: const hasVariance = Math.abs(variance) > 0
+8184: if (hasVariance &&!productionVarianceReason.trim()) { showToast(' Variance detected please enter reason.','red'); return }
+8185: setSavingProductionReport(true)
+8186: try {
+8187: const { data:report, error } = await supabase.from('production_reports').insert({
+8188: report_date: productionReportDate,
+8189: delivery_date: productionReportDeliveryDate,
+8190: submitted_by: adminEmployee?.full_name||adminRole,
+
+================ around line 8178 ================
+8166: // Also load all variants for items not in forecast
+8167: const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+8177: async function saveProductionReport() {
+8178: const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+8179: if (validItems.length===0) { showToast(' No items to report.','red'); return }
+8180: const totalForecast = validItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
+8181: const totalProduced = validItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+8182: const variance = totalProduced - totalForecast
+8183: const hasVariance = Math.abs(variance) > 0
+8184: if (hasVariance &&!productionVarianceReason.trim()) { showToast(' Variance detected please enter reason.','red'); return }
+8185: setSavingProductionReport(true)
+8186: try {
+8187: const { data:report, error } = await supabase.from('production_reports').insert({
+8188: report_date: productionReportDate,
+8189: delivery_date: productionReportDeliveryDate,
+8190: submitted_by: adminEmployee?.full_name||adminRole,
+8191: submitted_by_role: adminRole,
+8192: status: 'submitted',
+8193: total_forecast: totalForecast,
+8194: total_produced: totalProduced,
+8195: variance,
+8196: variance_reason: hasVariance?productionVarianceReason:null,
+
+================ around line 8180 ================
+8168: supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+8169: supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+8177: async function saveProductionReport() {
+8178: const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+8179: if (validItems.length===0) { showToast(' No items to report.','red'); return }
+8180: const totalForecast = validItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
+8181: const totalProduced = validItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+8182: const variance = totalProduced - totalForecast
+8183: const hasVariance = Math.abs(variance) > 0
+8184: if (hasVariance &&!productionVarianceReason.trim()) { showToast(' Variance detected please enter reason.','red'); return }
+8185: setSavingProductionReport(true)
+8186: try {
+8187: const { data:report, error } = await supabase.from('production_reports').insert({
+8188: report_date: productionReportDate,
+8189: delivery_date: productionReportDeliveryDate,
+8190: submitted_by: adminEmployee?.full_name||adminRole,
+8191: submitted_by_role: adminRole,
+8192: status: 'submitted',
+8193: total_forecast: totalForecast,
+8194: total_produced: totalProduced,
+8195: variance,
+8196: variance_reason: hasVariance?productionVarianceReason:null,
+8197: notes: productionReportNotes||null
+8198: }).select().single()
+
+================ around line 8182 ================
+8170: ])
+8171: if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+8172: const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_ ...
+8173: setProductionReportItems(variantItems)
+8174: setProductionReportDeliveryDate(deliveryDate)
+8175: setShowProductionReport(true)
+8176: }
+8177: async function saveProductionReport() {
+8178: const validItems = productionReportItems.filter(i=>i.forecast_qty>0||Number(i.actual_qty)>0)
+8179: if (validItems.length===0) { showToast(' No items to report.','red'); return }
+8180: const totalForecast = validItems.reduce((s,i)=>s+Number(i.forecast_qty||0),0)
+8181: const totalProduced = validItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+8182: const variance = totalProduced - totalForecast
+8183: const hasVariance = Math.abs(variance) > 0
+8184: if (hasVariance &&!productionVarianceReason.trim()) { showToast(' Variance detected please enter reason.','red'); return }
+8185: setSavingProductionReport(true)
+8186: try {
+8187: const { data:report, error } = await supabase.from('production_reports').insert({
+8188: report_date: productionReportDate,
+8189: delivery_date: productionReportDeliveryDate,
+8190: submitted_by: adminEmployee?.full_name||adminRole,
+8191: submitted_by_role: adminRole,
+8192: status: 'submitted',
+8193: total_forecast: totalForecast,
+8194: total_produced: totalProduced,
+8195: variance,
+8196: variance_reason: hasVariance?productionVarianceReason:null,
+8197: notes: productionReportNotes||null
+8198: }).select().single()
+8199: if (error) throw error
+8200: const { data:recipeCostRowsForReport } = await supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_piec ...
+
+================ around line 8193 ================
+8181: const totalProduced = validItems.reduce((s,i)=>s+Number(i.actual_qty||0),0)
+8182: const variance = totalProduced - totalForecast
+8183: const hasVariance = Math.abs(variance) > 0
+8184: if (hasVariance &&!productionVarianceReason.trim()) { showToast(' Variance detected please enter reason.','red'); return }
+8185: setSavingProductionReport(true)
+8186: try {
+8187: const { data:report, error } = await supabase.from('production_reports').insert({
+8188: report_date: productionReportDate,
+8189: delivery_date: productionReportDeliveryDate,
+8190: submitted_by: adminEmployee?.full_name||adminRole,
+8191: submitted_by_role: adminRole,
+8192: status: 'submitted',
+8193: total_forecast: totalForecast,
+8194: total_produced: totalProduced,
+8195: variance,
+8196: variance_reason: hasVariance?productionVarianceReason:null,
+8197: notes: productionReportNotes||null
+8198: }).select().single()
+8199: if (error) throw error
+8200: const { data:recipeCostRowsForReport } = await supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_piec ...
+8201: const recipeLookupForReport = buildRecipeCostLookup(recipeCostRowsForReport || recipeVault || [])
+8202: const reportItemRowsWithCost = validItems.map(i => {
+8203: const actualQty = Number(i.actual_qty || 0)
+8204: const forecastQty = Number(i.forecast_qty || 0)
+8205: const costInfo = getProductCostInfo(i, recipeLookupForReport)
+8206: const costPerPiece = safeNum(costInfo?.costPerPiece, 0)
+8207: return {
+8208: report_id:report.id,
+8209: variant_id:i.variant_id,
+8210: variant_name:i.variant_name,
+8211: forecast_qty:forecastQty,
+
+================ around line 8204 ================
+8192: status: 'submitted',
+8193: total_forecast: totalForecast,
+8194: total_produced: totalProduced,
+8195: variance,
+8196: variance_reason: hasVariance?productionVarianceReason:null,
+8197: notes: productionReportNotes||null
+8198: }).select().single()
+8199: if (error) throw error
+8200: const { data:recipeCostRowsForReport } = await supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_piec ...
+8201: const recipeLookupForReport = buildRecipeCostLookup(recipeCostRowsForReport || recipeVault || [])
+8202: const reportItemRowsWithCost = validItems.map(i => {
+8203: const actualQty = Number(i.actual_qty || 0)
+8204: const forecastQty = Number(i.forecast_qty || 0)
+8205: const costInfo = getProductCostInfo(i, recipeLookupForReport)
+8206: const costPerPiece = safeNum(costInfo?.costPerPiece, 0)
+8207: return {
+8208: report_id:report.id,
+8209: variant_id:i.variant_id,
+8210: variant_name:i.variant_name,
+8211: forecast_qty:forecastQty,
+8212: actual_qty:actualQty,
+8213: variance:actualQty - forecastQty,
+8214: variance_reason:i.variance_reason || null,
+8215: cost_per_piece:costPerPiece,
+8216: estimated_cogs:moneyRound(actualQty * costPerPiece),
+8217: cogs_source:costInfo?.source || ''
+8218: }
+8219: })
+8220: let { error:reportItemErr } = await supabase.from('production_report_items').insert(reportItemRowsWithCost)
+8221: if (reportItemErr && String(reportItemErr.message || '').toLowerCase().includes('column')) {
+8222: const fallbackRows = reportItemRowsWithCost.map(row => {
+
+================ around line 8211 ================
+8199: if (error) throw error
+8200: const { data:recipeCostRowsForReport } = await supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_piec ...
+8201: const recipeLookupForReport = buildRecipeCostLookup(recipeCostRowsForReport || recipeVault || [])
+8202: const reportItemRowsWithCost = validItems.map(i => {
+8203: const actualQty = Number(i.actual_qty || 0)
+8204: const forecastQty = Number(i.forecast_qty || 0)
+8205: const costInfo = getProductCostInfo(i, recipeLookupForReport)
+8206: const costPerPiece = safeNum(costInfo?.costPerPiece, 0)
+8207: return {
+8208: report_id:report.id,
+8209: variant_id:i.variant_id,
+8210: variant_name:i.variant_name,
+8211: forecast_qty:forecastQty,
+8212: actual_qty:actualQty,
+8213: variance:actualQty - forecastQty,
+8214: variance_reason:i.variance_reason || null,
+8215: cost_per_piece:costPerPiece,
+8216: estimated_cogs:moneyRound(actualQty * costPerPiece),
+8217: cogs_source:costInfo?.source || ''
+8218: }
+8219: })
+8220: let { error:reportItemErr } = await supabase.from('production_report_items').insert(reportItemRowsWithCost)
+8221: if (reportItemErr && String(reportItemErr.message || '').toLowerCase().includes('column')) {
+8222: const fallbackRows = reportItemRowsWithCost.map(row => {
+8223: const clean = {...row}
+8224: delete clean.cost_per_piece
+8225: delete clean.estimated_cogs
+8226: delete clean.cogs_source
+8227: return clean
+8228: })
+8229: ;({ error:reportItemErr } = await supabase.from('production_report_items').insert(fallbackRows))

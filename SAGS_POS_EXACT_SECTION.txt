@@ -1,0 +1,471 @@
+17864:    remainingStock,
+17865:    minStock,
+17866:    status
+17867:   }
+17868:  }).sort((a,b) => a.remainingStock - b.remainingStock)
+17869: 
+17870:  const card = (label, value, note, color) => (
+17871:   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)' }}>
+17872:    <p style={{ margin:'0 0 6px', color:'#777', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px', fontWeight:'bold' }}>{label}</p>
+17873:    <h3 style={{ margin:'0 0 4px', color:color || '#ca1b1b', fontSize:'22px' }}>{value}</h3>
+17874:    <p style={{ margin:0, color:'#999', fontSize:'11px' }}>{note}</p>
+17875:   </div>
+17876:  )
+17877: 
+17878:  return (
+17879:   <div>
+17880:    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'16px' }}>
+17881:     <div>
+17882:      <h2 style={h2s}>SAGS POS</h2>
+17883:      <p style={{ margin:0, color:'#777', fontSize:'13px' }}>Outlet POS sales, payment breakdown, product movement, and inventory deductions.</p>
+17884:     </div>
+17885:     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+17886:      <input type="date" value={posDate} onChange={e=>setPosDate(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0}} />
+17887:      <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
+17888:     </div>
+17889:    </div>
+17890: 
+17891:    {posError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'12px', padding:'12px', marginBottom:'14px', fontSize:'12px' }}>POS Monitor error: {posError}</div>}
+17892: 
+17893:    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'12px', marginBottom:'16px' }}>
+17894:     {card('Total POS Sales', php(totalSales), posDate, '#ca1b1b')}
+17895:     {card('Cash Sales', php(cashSales), 'Cash collected', '#2d8a4e')}
+17896:     {card('GCash Sales', php(gcashSales), 'Digital payment', '#4a90d9')}
+17897:     {card('Online Sales', php(onlineSales), 'Other online payments', '#1a1a2e')}
+17898:     {card('Transactions', posSales.length, 'Avg: ' + php(avgSale), '#ca1b1b')}
+17899:    </div>
+17900: 
+17901:    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'14px', marginBottom:'14px' }}>
+17902:     <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+17903:      <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Top Selling Products</h3>
+17904:      {topProducts.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS items found for this date.</p> : (
+17905:       <div style={{ overflowX:'auto' }}>
+17906:        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
+17907:         <thead><tr style={{ background:'#f8f8f8' }}><th style={{ textAlign:'left', padding:'8px' }}>Product</th><th style={{ textAlign:'right', padding:'8px' }}>Qty</th><th style={{ textAlign:'right', padding:'8px' }}>Sales</th></tr></thead>
+17908:         <tbody>{topProducts.map((p,i)=>(
+17909:          <tr key={p.product_name + i}>
+17910:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}><strong>{p.product_name}</strong><br/><span style={{ color:'#999', fontSize:'10px' }}>{p.category}</span></td>
+17911:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{p.qty}</td>
+17912:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b' }}>{php(p.total)}</td>
+17913:          </tr>
+17914:         ))}</tbody>
+17915:        </table>
+17916:       </div>
+17917:      )}
+17918:     </div>
+17919: 
+17920:     <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+17921:      <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Recent Receipts</h3>
+17922:     <input value={transactionSearch} onChange={e=>setTransactionSearch(e.target.value)} placeholder="Search receipt, cashier, payment method..." style={{...inputStyle, marginBottom:'10px'}} />
+17923:      {posSales.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS receipts found for this date.</p> : (
+17924:       <div style={{ display:'grid', gap:'8px' }}>
+17925:        {posSales.slice(0,12).map(s=>(
+17926:         <div key={s.id} style={{ border:'1px solid #f0f0f0', borderRadius:'10px', padding:'10px', background:'#fafafa' }}>
+17927:          <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><strong style={{ fontSize:'12px' }}>{s.receipt_no}</strong><strong style={{ color:'#ca1b1b', fontSize:'12px' }}>{php(s.net_total)}</strong></div>
+17928:          <p style={{ margin:'4px 0 0', color:'#777', fontSize:'11px' }}>{s.outlet_name || 'Outlet'} | {s.cashier_name || 'Cashier'} | {s.payment_method || '-'}</p>
+17929:         </div>
+17930:        ))}
+17931:       </div>
+17932:      )}
+17933:     </div>
+17934:    </div>
+17935: 
+17936:    
+17937:    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+17938:     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Void / Cancel Sale</h3>
+17939:     <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>
+17940:      Void a receipt using admin PIN. The sale will be marked as void and inventory will be returned.
+17941:     </p>
+17942: 
+17943:     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 2fr 1fr 1fr auto', gap:'10px', alignItems:'end' }}>
+17944:      <div>
+17945:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Receipt No.</label>
+17946:       <input value={voidReceiptNo} onChange={e=>setVoidReceiptNo(e.target.value)} placeholder="ROMA-..." style={{...inputStyle, marginBottom:0}} />
+17947:      </div>
+17948: 
+17949:      <div>
+17950:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Reason</label>
+17951:       <input value={voidReason} onChange={e=>setVoidReason(e.target.value)} placeholder="Wrong item / cancelled / test void" style={{...inputStyle, marginBottom:0}} />
+17952:      </div>
+17953: 
+17954:      <div>
+17955:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Voided By</label>
+17956:       <input value={voidedBy} onChange={e=>setVoidedBy(e.target.value)} placeholder="Name" style={{...inputStyle, marginBottom:0}} />
+17957:      </div>
+17958: 
+17959:      <div>
+17960:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Admin PIN</label>
+17961:       <input type="password" value={voidAdminPin} onChange={e=>setVoidAdminPin(e.target.value)} placeholder="PIN" style={{...inputStyle, marginBottom:0}} />
+17962:      </div>
+17963: 
+17964:      <button
+17965:       onClick={cleanVoidSaleWithAdminPin}
+17966:       style={{
+17967:        background:'#ca1b1b',
+17968:        color:'white',
+17969:        border:'none',
+17970:        borderRadius:'10px',
+17971:        padding:'12px 16px',
+17972:        fontWeight:'bold',
+17973:        cursor:'pointer',
+17974:        whiteSpace:'nowrap'
+17975:       }}
+17976:      >
+17977:       Void Sale
+17978:      </button>
+17979:     </div>
+17980:    </div>
+17981: 
+17982: 
+17983:    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+17984:     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Low Stock Alert Dashboard</h3>
+17985:     {lowStockProducts.length === 0 ? (
+17986:      <p style={{ color:'#2d8a4e', fontSize:'13px', margin:0 }}>No low stock alerts for this outlet.</p>
+17987:     ) : (
+17988:      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(3, 1fr)', gap:'10px' }}>
+17989:       {lowStockProducts.slice(0, 12).map(p => (
+17990:        <div key={p.id || p.product_name} style={{ border:'1px solid #ffd4d4', background:'#fff7f7', borderRadius:'12px', padding:'10px' }}>
+17991:         <strong style={{ color:'#ca1b1b', display:'block' }}>{p.product_name}</strong>
+17992:         <span style={{ fontSize:'12px', color:'#777' }}>{p.category}</span><br/>
+17993:         <span style={{ fontSize:'12px' }}>Remaining: <strong>{p.remainingStock}</strong> / Min: {p.minStock}</span><br/>
+17994:         <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>{p.status}</span>
+17995:        </div>
+17996:       ))}
+17997:      </div>
+17998:     )}
+17999:    </div>
+18000: 
+18001:    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+18002:     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Shift Closing Report</h3>
+18003:     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'10px', marginBottom:'12px' }}>
+18004:      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+18005:       <small>Cash Sales</small><br/><strong>?{closingCashSales.toLocaleString()}</strong>
+18006:      </div>
+18007:      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+18008:       <small>GCash Sales</small><br/><strong>?{closingGcashSales.toLocaleString()}</strong>
+18009:      </div>
+18010:      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+18011:       <small>Total POS Sales</small><br/><strong>?{closingTotalSales.toLocaleString()}</strong>
+18012:      </div>
+18013:      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+18014:       <small>Transactions</small><br/><strong>{posSales.length}</strong>
+18015:      </div>
+18016:     </div>
+18017: 
+18018:     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'10px', alignItems:'end' }}>
+18019:      <div>
+18020:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Opening Cash</label>
+18021:       <input type="number" value={closingOpeningCash} onChange={e=>setClosingOpeningCash(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
+18022:      </div>
+18023:      <div>
+18024:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Actual Cash Counted</label>
+18025:       <input type="number" value={closingActualCash} onChange={e=>setClosingActualCash(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
+18026:      </div>
+18027:      <div>
+18028:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Closed By</label>
+18029:       <input value={closingClosedBy} onChange={e=>setClosingClosedBy(e.target.value)} placeholder="Cashier / manager" style={{...inputStyle, marginBottom:0}} />
+18030:      </div>
+18031:      <div>
+18032:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Remarks</label>
+18033:       <input value={closingRemarks} onChange={e=>setClosingRemarks(e.target.value)} placeholder="Optional" style={{...inputStyle, marginBottom:0}} />
+18034:      </div>
+18035:     </div>
+18036: 
+18037:     <div style={{ marginTop:'12px', padding:'10px', borderRadius:'12px', background:'#f8f8f8', fontSize:'13px' }}>
+18038:      Expected Cash: <strong>?{closingExpectedCash.toLocaleString()}</strong> | 
+18039:      Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>?{closingVariance.toLocaleString()}</strong>
+18040:     </div>
+18041: 
+18042:     <button onClick={saveShiftClosing} style={{...btnGreen, marginTop:'12px'}}>Save Shift Closing</button>
+18043:    </div>
+18044: 
+18045:    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+18046:     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Stock In to Outlet</h3>
+18047:     <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>Record products delivered or transferred to Roma�s Donuts - Malued.</p>
+18048: 
+18049:     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+18050:      <div>
+18051:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transfer No.</label>
+18052:       <input value={stockInTransferNo} onChange={e=>setStockInTransferNo(e.target.value)} placeholder="Example: TR-MALUED-001" style={{...inputStyle, marginBottom:0}} />
+18053:      </div>
+18054:      <div>
+18055:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transferred By</label>
+18056:       <input value={stockInTransferredBy} onChange={e=>setStockInTransferredBy(e.target.value)} placeholder="Sender name" style={{...inputStyle, marginBottom:0}} />
+18057:      </div>
+18058:      <div>
+18059:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Received By</label>
+18060:       <input value={stockInReceivedBy} onChange={e=>setStockInReceivedBy(e.target.value)} placeholder="Receiver name" style={{...inputStyle, marginBottom:0}} />
+18061:      </div>
+18062:     </div>
+18063: 
+18064:     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '2fr 1fr 2fr auto', gap:'10px', alignItems:'end' }}>
+18065:      <div>
+18066:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Search Product</label>
+18067:       <input
+18068:        value={stockInSearch}
+18069:        onChange={e=>{
+18070:         setStockInSearch(e.target.value)
+18071:         setStockInProductId('')
+18072:        }}
+18073:        placeholder="Search product, SKU, barcode..."
+18074:        style={{...inputStyle, marginBottom:'6px'}}
+18075:       />
+18076: 
+18077:       {selectedStockInProduct && (
+18078:        <div style={{ border:'1px solid #d9f2e3', background:'#f0fff6', borderRadius:'10px', padding:'8px 10px', marginBottom:'6px', fontSize:'12px' }}>
+18079:         <strong style={{ color:'#2d8a4e' }}>Selected:</strong> {selectedStockInProduct.product_name || selectedStockInProduct.name}
+18080:        </div>
+18081:       )}
+18082: 
+18083:       {stockInSearch.trim() && !stockInProductId && (
+18084:        <div style={{ border:'1px solid #eee', borderRadius:'12px', background:'white', maxHeight:'220px', overflowY:'auto', boxShadow:'0 6px 18px rgba(0,0,0,0.08)' }}>
+18085:         {filteredStockInProducts.length === 0 ? (
+18086:          <div style={{ padding:'10px', color:'#999', fontSize:'12px' }}>No product found.</div>
+18087:         ) : (
+18088:          filteredStockInProducts.map(p => (
+18089:           <button
+18090:            key={p.id}
+18091:            type="button"
+18092:            onClick={()=>{
+18093:             setStockInProductId(p.id)
+18094:             setStockInSearch(p.product_name || p.name || '')
+18095:            }}
+18096:            style={{
+18097:             width:'100%',
+18098:             textAlign:'left',
+18099:             border:'none',
+18100:             borderBottom:'1px solid #f2f2f2',
+18101:             background:'white',
+18102:             padding:'10px',
+18103:             cursor:'pointer',
+18104:             fontFamily:'inherit'
+18105:            }}
+18106:           >
+18107:            <strong style={{ display:'block', color:'#222', fontSize:'13px' }}>{p.product_name || p.name}</strong>
+18108:            <span style={{ color:'#888', fontSize:'11px' }}>{p.category || ''} {p.sku ? '� ' + p.sku : ''} {p.barcode ? '� ' + p.barcode : ''}</span>
+18109:           </button>
+18110:          ))
+18111:         )}
+18112:        </div>
+18113:       )}
+18114:      </div>
+18115: 
+18116:      <div>
+18117:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Qty</label>
+18118:       <input type="number" min="1" value={stockInQty} onChange={e=>setStockInQty(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
+18119:      </div>
+18120: 
+18121:      <div>
+18122:       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Remarks</label>
+18123:       <input value={stockInNote} onChange={e=>setStockInNote(e.target.value)} placeholder="Delivery / transfer note" style={{...inputStyle, marginBottom:0}} />
+18124:      </div>
+18125: 
+18126:      <button onClick={saveOutletStockIn} style={{...btnGreen, width:'auto', marginTop:0}}>Save Stock In</button>
+18127:     </div>
+18128:    </div>
+18129: 
+18130:    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+18131:     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Outlet Inventory Balance</h3>
+18132:     {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
+18133:      <div style={{ overflowX:'auto' }}>
+18134:       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'760px' }}>
+18135:        <thead>
+18136:         <tr style={{ background:'#f8f8f8' }}>
+18137:          <th style={{ textAlign:'left', padding:'8px' }}>Product</th>
+18138:          <th style={{ textAlign:'right', padding:'8px' }}>Starting</th>
+18139:          <th style={{ textAlign:'right', padding:'8px' }}>Sold</th>
+18140:          <th style={{ textAlign:'right', padding:'8px' }}>Movement</th>
+18141:          <th style={{ textAlign:'right', padding:'8px' }}>Remaining</th>
+18142:          <th style={{ textAlign:'left', padding:'8px' }}>Status</th>
+18143:         </tr>
+18144:        </thead>
+18145:        <tbody>
+18146:         {outletBalances.map(row => (
+18147:          <tr key={row.id || row.product_name}>
+18148:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
+18149:            <strong>{row.product_name}</strong><br/>
+18150:            <span style={{ color:'#999', fontSize:'10px' }}>{row.category}</span>
+18151:           </td>
+18152:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.startingStock}</td>
+18153:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{row.soldQty}</td>
+18154:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.movementQty}</td>
+18155:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{row.remainingStock}</td>
+18156:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>{row.status}</td>
+18157:          </tr>
+18158:         ))}
+18159:        </tbody>
+18160:       </table>
+18161:      </div>
+18162:     )}
+18163:    </div>
+18164: 
+18165:    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+18166:     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Product Movement Summary</h3>
+18167:     {movementSummary.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No movement summary found.</p> : (
+18168:      <div style={{ overflowX:'auto' }}>
+18169:       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'500px' }}>
+18170:        <thead>
+18171:         <tr style={{ background:'#f8f8f8' }}>
+18172:          <th style={{ textAlign:'left', padding:'8px' }}>Movement Type</th>
+18173:          <th style={{ textAlign:'right', padding:'8px' }}>Total Qty</th>
+18174:          <th style={{ textAlign:'right', padding:'8px' }}>Records</th>
+18175:         </tr>
+18176:        </thead>
+18177:        <tbody>
+18178:         {movementSummary.map(row => (
+18179:          <tr key={row.type}>
+18180:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', fontWeight:'bold' }}>{row.type}</td>
+18181:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.qty}</td>
+18182:           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.count}</td>
+18183:          </tr>
+18184:         ))}
+18185:        </tbody>
+18186:       </table>
+18187:      </div>
+18188:     )}
+18189:    </div>
+18190: 
+18191:    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+18192:     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Inventory Movements</h3>
+18193:     {posMovements.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS inventory movement found for this date.</p> : (
+18194:      <div style={{ overflowX:'auto' }}>
+18195:       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'680px' }}>
+18196:        <thead><tr style={{ background:'#f8f8f8' }}><th style={{ textAlign:'left', padding:'8px' }}>Product</th><th style={{ textAlign:'left', padding:'8px' }}>Movement</th><th style={{ textAlign:'right', padding:'8px' }}>Qty</th><th style={{ textAlign:'left', padding:'8px' }}>Reference</th></tr></thead>
+18197:        <tbody>{posMovements.slice(0,100).map(m=>(
+18198:         <tr key={m.id}>
+18199:          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}><strong>{m.product_name}</strong><br/><span style={{ color:'#999', fontSize:'10px' }}>{m.sku || ''}</span></td>
+18200:          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>{m.movement_type}</td>
+18201:          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:safeNum(m.qty,0) < 0 ? '#ca1b1b' : '#2d8a4e' }}>{m.qty}</td>
+18202:          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', color:'#777' }}>{m.reference_no || '-'}</td>
+18203:         </tr>
+18204:        ))}</tbody>
+18205:       </table>
+18206:      </div>
+18207:     )}
+18208:    </div>
+18209:   </div>
+18210:  )
+18211: }
+18212: 
+18213: // Camera Screen 
+18214:  if (cameraMode) {
+18215:  return (
+18216:  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#000', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'20px', zIndex:9999 }}>
+18217:  <h2 style={{ color:'white', marginBottom:'8px', fontSize:'18px' }}>{cameraMode==='timein'?' Selfie for Time In':' Selfie for Time Out'}</h2>
+18218:  <p style={{ color:'#aaa', marginBottom:'16px', fontSize:'13px' }}>Take a clear selfie to confirm your attendance</p>
+18219:  {!capturedPhoto? (
+18220:  <>
+18221:  <video ref={videoRef} autoPlay playsInline style={{ width:'100%', maxWidth:'360px', borderRadius:'14px', border:'3px solid #ca1b1b' }} />
+18222:  <canvas ref={canvasRef} style={{ display:'none' }} />
+18223:  <button style={{...btnRed, maxWidth:'360px', marginTop:'16px' }} onClick={capturePhoto}> TAKE SELFIE</button>
+18224:  </>
+18225:  ): (
+18226:  <>
+18227:  <img src={capturedPhoto} alt="Selfie" style={{ width:'100%', maxWidth:'360px', borderRadius:'14px', border:'3px solid #2d8a4e' }} />
+18228:  <div style={{ display:'flex', gap:'10px', marginTop:'16px', width:'100%', maxWidth:'360px' }}>
+18229:  <button style={{...btnGray, flex:1, marginTop:0 }} onClick={retakePhoto}> RETAKE</button>
+18230:  <button style={{...btnGreen, flex:1, marginTop:0 }} onClick={cameraMode==='timein'?confirmTimeIn:confirmTimeOut} disabled={loading}>{loading?' SAVING...':' CONFIRM'}</button>
+18231:  </div>
+18232:  </>
+18233:  )}
+18234:  <button style={{...btnGray, maxWidth:'360px', marginTop:'12px' }} onClick={()=>{ setCameraMode(null); setCapturedPhoto(null); stopCamera() }}>CANCEL</button>
+18235:  </div>
+18236:  )
+18237:  }
+18238: 
+18239:  // Admin Render 
+18240:  if (adminMode) {
+18241:  const SECTIONS = [
+18242:  { key:'posMonitor', icon:<img src="/icons/pos-machine.svg" alt="" style={{width:18,height:18,objectFit:'contain'}} />, label:'SAGS POS', tabs:[{key:'posMonitor',label:'Outlet POS Monitor'}], roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
+18243:  { key:'dashboard', icon:'\uD83C\uDFE0', label:'Dashboard',
+18244:  tabs:[{key:'dashboard',label:'Overview'}],
+18245:  roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
+18246:  { key:'hr', icon:'\uD83D\uDC65', label:'HR & Attendance',
+18247:  tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'leaveRequests',label:'Leave \uD83D\uDD14'},{key:'announcements',label:'Announcements'},{key:'contracts',label:'Contracts'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
+18248:  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
+18249:  { key:'payroll', icon:'\uD83D\uDCB0', label:'Payroll',
+18250:  tabs:[{key:'payroll',label:'Payroll'},{key:'cashAdvanceCoverage',label:'CA Coverage'},{key:'overtime',label:'OT / UT'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'cashRequests',label:'Cash Adv \uD83D\uDD14'},{key:'disputes',label:'Disputes \uD83D\uDD14'}],
+18251:  roles:['owner','manager','hr','payroll'] },
+18252:  { key:'inventory', icon:'\uD83D\uDCE6', label:'Inventory',
+18253:  tabs:[{key:'inventory',label:'Inventory'}],
+18254:  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
+18255:  { key:'sops', icon:'\uD83D\uDCD8', label:'SOP Library',
+18256:  tabs:[{key:'sops',label:'SOP Control Center'}],
+18257:  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
+18258:  { key:'recipes', icon:'\uD83D\uDD10', label:'Recipe Vault',
+18259:  tabs:[{key:'recipes',label:'Recipe Vault'}],
+18260:  roles:['owner','manager'] },
+18261:  { key:'costing', icon:'\uD83C\uDF69', label:'Costing',
+18262:  tabs:[{key:'costing',label:'Costing'}],
+18263:  roles:['owner','manager'] },
+18264:  { key:'sales', icon:'\uD83D\uDCC8', label:'Sales & Expenses',
+18265:  tabs:[{key:'sales',label:'Sales & Expenses'}],
+18266:  roles:['owner','manager','hr'] },
+18267:  { key:'analytics', icon:'\uD83D\uDCCA', label:'Analytics',
+18268:  tabs:[{key:'analytics',label:'Analytics'}],
+18269:  roles:['owner'] },
+18270:  { key:'foundation', icon:'\uD83E\uDDF1', label:'Foundation',
+18271:  tabs:[{key:'foundation',label:'Foundation'}],
+18272:  roles:['owner','manager'] },
+18273:  { key:'payablesMain', icon:String.fromCodePoint(0x1F4C5), label:'Payables / PDC',
+18274:         tabs:[{key:'payablesMain',label:'Payables / PDC'}],
+18275:         roles:['owner'] },
+18276: 
+18277:  { key:'franchise', icon:'\uD83C\uDFEA', label:'Franchise',
+18278:  tabs:[{key:'franchise',label:'Franchise'}],
+18279:  roles:['owner'] },
+18280:  ]
+18281:  const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
+18282:  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
+18283:  const visibleSubTabs = currentSection.tabs.filter(t => canAccess(t.key))
+18284:  const canManageSopLibrary = ['owner','manager'].includes(normalizeAdminRole(adminRole))
+18285:  const filteredSops = (sops || []).filter(sop => {
+18286:  if (!canViewSop(sop)) return false
+18287:  const q = sopSearch.trim().toLowerCase()
+18288:  const matchesSearch = !q || [sop.sop_code, sop.title, sop.department, sop.category, sop.purpose, sop.procedure, sop.required_records].some(v => String(v || '').toLowerCase().includes(q))
+18289:  const matchesDepartment = sopDepartmentFilter === 'all' || sop.department === sopDepartmentFilter
+18290:  const matchesStatus = sopStatusFilter === 'all' || String(sop.status || '').toLowerCase() === sopStatusFilter
+18291:  const matchesAckRequired = !sopAckRequiredOnly || sop.acknowledgement_required !== false
+18292:  return matchesSearch && matchesDepartment && matchesStatus && matchesAckRequired
+18293:  })
+18294:  const sopStats = {
+18295:  total:(sops || []).length,
+18296:  active:(sops || []).filter(s => s.status === 'active').length,
+18297:  draft:(sops || []).filter(s => s.status === 'draft').length,
+18298:  archived:(sops || []).filter(s => s.status === 'archived').length,
+18299:  ackRequired:(sops || []).filter(s => s.acknowledgement_required !== false).length
+18300:  }
+18301:  const activeAckSops = (sops || []).filter(s => String(s.status || '').toLowerCase() === 'active' && s.acknowledgement_required !== false)
+18302:  const activeSopEmployees = (employees || []).filter(e => e?.is_active !== false)
+18303:  const sopAckMatrixRows = activeSopEmployees.flatMap(emp => activeAckSops.map(sop => {
+18304:  const ack = (sopAcknowledgements || []).find(row =>
+18305:  String(row.sop_id || '') === String(sop.id) &&
+18306:  String(row.employee_id || '') === String(emp.id) &&
+18307:  String(row.version || '') === String(sop.version || '') &&
+18308:  String(row.status || 'acknowledged').toLowerCase() === 'acknowledged'
+18309:  )
+18310:  return {
+18311:  key:`${emp.id}-${sop.id}-${sop.version || '1.0'}`,
+18312:  employee:emp,
+18313:  sop,
+18314:  ack,
+18315:  status:ack? 'acknowledged':'missing'
+18316:  }
+18317:  }))
+18318:  const sopAckCompletedCount = sopAckMatrixRows.filter(r => r.status === 'acknowledged').length
+18319:  const sopAckMissingCount = sopAckMatrixRows.filter(r => r.status === 'missing').length
+18320:  const sopAckTotalRequired = sopAckMatrixRows.length
+18321:  const sopAckCoveragePct = sopAckTotalRequired? Math.round((sopAckCompletedCount / sopAckTotalRequired) * 100):0
+18322:  const filteredSopAckMatrixRows = sopAckMatrixRows.filter(row => {
+18323:  const q = sopAckSearch.trim().toLowerCase()
+18324:  const matchesStatus = sopAckStatusFilter === 'all' || row.status === sopAckStatusFilter
+18325:  const matchesSearch = !q || [row.employee.full_name, row.employee.employee_code, row.employee.position, row.employee.department, row.sop.sop_code, row.sop.title, row.sop.department].some(v => String(v || '').toLowerCase().includes(q))
+18326:  return matchesStatus && matchesSearch
+18327:  })
+18328:  const openSopLibraryFilter = (status = 'all', ackOnly = false) => {
+18329:  setSopSearch('')
+18330:  setSopDepartmentFilter('all')
+18331:  setSopStatusFilter(status)
+18332:  setSopAckRequiredOnly(!!ackOnly)
+18333:  setShowSopForm(false)
+18334:  setViewingSop(null)

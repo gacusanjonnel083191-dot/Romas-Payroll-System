@@ -2269,7 +2269,6 @@ export default function App() {
  const [newItemUnit, setNewItemUnit] = useState('kg')
  const [newItemMinStock, setNewItemMinStock] = useState('')
  const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
- const [newItemBuyingPrice, setNewItemBuyingPrice] = useState('')
  const [newItemCurrentStock, setNewItemCurrentStock] = useState('')
  const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
  const [newItemExpiryDate, setNewItemExpiryDate] = useState('')
@@ -2370,35 +2369,6 @@ export default function App() {
  const [crateAdjustmentAssetType, setCrateAdjustmentAssetType] = useState('crate')
  const [editingItemId, setEditingItemId] = useState(null)
  const [editItemFields, setEditItemFields] = useState({})
-
- const snackDrinkAutoSellingPrice = (cost) => moneyRound(safeNum(cost, 0) * 1.30)
- const snackDrinkAutoBuyingPrice = (sellingPrice) => moneyRound(safeNum(sellingPrice, 0) / 1.30)
-
- const getSnackDrinkDisplaySellingPrice = (item = {}) => {
-  const sell = safeNum(item.selling_price, 0)
-  const oldPrice = safeNum(item.cost_per_unit, 0)
-  const buy = safeNum(item.buying_price, 0)
-
-  // Safety for rows affected by the wrong previous markup display/save:
-  // if selling_price equals oldPrice × 1.30 and buying price is empty,
-  // treat oldPrice as the original selling price.
-  if (buy <= 0 && oldPrice > 0 && sell > 0 && Math.abs(sell - snackDrinkAutoSellingPrice(oldPrice)) <= 0.05) {
-   return oldPrice
-  }
-
-  return sell || oldPrice
- }
-
- const getSnackDrinkDisplayBuyingPrice = (item = {}) => {
-  const buy = safeNum(item.buying_price, 0)
-  if (buy > 0) return buy
-  return snackDrinkAutoBuyingPrice(getSnackDrinkDisplaySellingPrice(item))
- }
-
- const isSnackDrinkCategoryName = (category) => {
-  const label = getInventoryCategoryLabel({ category })
-  return label === 'Snacks, Drinks and Others'
- }
  // Suppliers
  const [suppliers, setSuppliers] = useState([])
  const [suppliersLoading, setSuppliersLoading] = useState(false)
@@ -4230,19 +4200,6 @@ Cancel = create batch record only for existing stock.`)
  async function addInventoryItem() {
  if (!newItemName.trim()) { showToast(' Please enter item name.','red'); return }
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
-
- const isNewSnackDrink = isSnackDrinkCategoryName(newItemCategory)
- const enteredBuyingPrice = safeNum(newItemBuyingPrice, 0)
-
- // For Snacks/Drinks: existing/old price is SELLING PRICE.
- // Buying price is a separate field. Only compute selling price when buying price is entered.
- const itemBuyingPrice = isNewSnackDrink ? enteredBuyingPrice : 0
- const itemCostPerUnit = isNewSnackDrink
-  ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
-  : safeNum(newItemCostPerUnit, 0)
- const itemSellingPrice = isNewSnackDrink
-  ? (enteredBuyingPrice > 0 ? snackDrinkAutoSellingPrice(enteredBuyingPrice) : safeNum(newItemSellingPrice, 0))
-  : safeNum(newItemSellingPrice, 0)
  setAddItemLoading(true)
  try {
  const { error } = await supabase.from('inventory_items').insert({
@@ -4267,7 +4224,6 @@ Cancel = create batch record only for existing stock.`)
  setNewItemName('')
  setNewItemMinStock('')
  setNewItemCostPerUnit('')
- setNewItemBuyingPrice('')
  setNewItemCurrentStock('')
  setNewItemSellingPrice('')
  setNewItemExpiryDate('')
@@ -4293,71 +4249,20 @@ Cancel = create batch record only for existing stock.`)
  showToast(` ${item.name} removed.`); loadInventoryItems()
  }
  async function saveInventoryItemEdit(item) {
-  const inventoryScrollY = typeof window !== 'undefined' ? window.scrollY : 0
-  const f = editItemFields
-  const updatedCategory = f.category ?? item.category
-  const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
-
-  const supplierPrice = isEditingSnackDrink
-   ? safeNum(f.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item), 0)
-   : safeNum(f.buying_price ?? item.buying_price ?? 0, 0)
-
-  if (isEditingSnackDrink && supplierPrice <= 0) {
-   showToast('Please enter supplier price / buying price for this snack or drink.', 'red')
-   return
-  }
-
-  const finalCostPerUnit = isEditingSnackDrink
-   ? supplierPrice
-   : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
-
-  const finalSellingPrice = isEditingSnackDrink
-   ? snackDrinkAutoSellingPrice(supplierPrice)
-   : safeNum(f.selling_price ?? item.selling_price ?? 0, 0)
-
-  const payload = {
-   name: f.name || item.name,
-   category: f.category || item.category,
-   unit: f.unit || item.unit,
-   current_stock: Number(f.current_stock ?? item.current_stock ?? 0),
-   min_stock: Number(f.min_stock ?? item.min_stock),
-   cost_per_unit: finalCostPerUnit,
-   selling_price: finalSellingPrice,
-   expiry_date: f.expiry_date !== undefined ? (f.expiry_date || null) : (item.expiry_date || null),
-   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null)
-  }
-
-  if (isEditingSnackDrink) {
-   payload.buying_price = supplierPrice
-   payload.markup_percent = 30
-  }
-
-  const { error } = await supabase.from('inventory_items').update(payload).eq('id', item.id)
-
-  if (error) { showToast(' Failed: ' + error.message, 'red'); return }
-
-  showToast(
-   isEditingSnackDrink
-    ? ' Item updated! Supplier price: ' + php(supplierPrice) + ' | Selling price: ' + php(finalSellingPrice)
-    : ' Item updated!'
-  )
-
-  const updatedItem = { ...item, ...payload, id:item.id }
-
-  setInventoryItems(prev => (prev || []).map(row =>
-   String(row.id) === String(item.id)
-    ? { ...row, ...updatedItem }
-    : row
-  ))
-
-  setEditingItemId(null)
-  setEditItemFields({})
-
-  if (typeof window !== 'undefined') {
-   requestAnimationFrame(() => {
-    window.scrollTo({ top: inventoryScrollY, left:0, behavior:'auto' })
-   })
-  }
+ const f = editItemFields
+ const { error } = await supabase.from('inventory_items').update({
+ name: f.name||item.name,
+ category: f.category||item.category,
+ unit: f.unit||item.unit,
+ current_stock: Number(f.current_stock??item.current_stock??0),
+ min_stock: Number(f.min_stock??item.min_stock),
+ cost_per_unit: Number(f.cost_per_unit??item.cost_per_unit),
+ selling_price: Number(f.selling_price??item.selling_price??0),
+ expiry_date: f.expiry_date!==undefined? (f.expiry_date||null): (item.expiry_date||null),
+ supplier_id: f.supplier_id!==undefined? (f.supplier_id||null): (item.supplier_id||null)
+ }).eq('id', item.id)
+ if (error) { showToast(' Failed: '+error.message,'red'); return }
+ showToast(' Item updated!'); setEditingItemId(null); setEditItemFields({}); loadInventoryItems()
  }
  async function recordStockTransaction() {
  if (!stockTxItemId) { showToast(' Please select an item.','red'); return }
@@ -10777,7 +10682,6 @@ function buildDeliveryInvoicePrintCSS() {
  setTodaySchedule(data)
  }
  async function loadTodayBreaks(logId) {
- if (!logId) { setTodayBreaks([]); return }
  const { data } = await supabase.from('break_logs').select('*').eq('attendance_log_id', logId).order('created_at')
  setTodayBreaks(data || [])
  }
@@ -16148,108 +16052,6 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (employee?.id) loadMyCashAdvances(employee)
  }
 
-async function editCashAdvanceDeductionPlan(ca, req = null) {
-  if (!ca?.id) {
-   showToast('Cash advance ledger not found. Refresh cash advance requests first.', 'red')
-   return
-  }
-
-  if (adminRole !== 'owner') {
-   showToast('Owner access is required to edit an approved cash advance deduction plan.', 'red')
-   return
-  }
-
-  const amount = Math.max(0, safeNum(ca.amount, 0))
-  const amountPaid = Math.max(0, safeNum(ca.amount_paid, 0))
-  const currentTotal = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || req?.request_installments_total || 1))
-  const currentRemaining = Math.max(0, safeNum(ca.installments_remaining, currentTotal))
-  const completed = Math.max(0, currentTotal - currentRemaining)
-
-  if (!amount) {
-   showToast('Invalid cash advance amount.', 'red')
-   return
-  }
-
-  if (amountPaid > 0 || completed > 0) {
-   showToast('This cash advance already has deduction history. Use correction/reversal instead of editing the plan directly.', 'red')
-   return
-  }
-
-  const answer = window.prompt(
-   'Enter new number of payroll deductions/installments:\n\n' +
-   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
-   'CA Amount: ' + php(amount) + '\n' +
-   'Current Plan: ' + currentTotal + ' payroll(s) at ' + php(ca.per_payroll_deduction || 0) + ' per payroll',
-   String(currentTotal)
-  )
-
-  if (answer === null) return
-
-  const newInstallments = Math.max(1, Math.round(safeNum(answer, 0)))
-
-  if (!Number.isFinite(newInstallments) || newInstallments < 1) {
-   showToast('Invalid number of payroll deductions.', 'red')
-   return
-  }
-
-  const newPerPayroll = moneyRound(amount / newInstallments)
-
-  if (!window.confirm(
-   'Update deduction plan?\n\n' +
-   'Amount: ' + php(amount) + '\n' +
-   'New payroll count: ' + newInstallments + '\n' +
-   'New deduction per payroll: ' + php(newPerPayroll) + '\n\n' +
-   'This is allowed because no payroll deduction has been applied yet.'
-  )) return
-
-  const existingNotes = String(ca.notes || '').trim()
-  const newNotes = existingNotes +
-   (existingNotes ? ' | ' : '') +
-   'DEDUCTION PLAN EDITED BY OWNER ' + new Date().toISOString().slice(0,10) +
-   ': ' + currentTotal + ' payroll(s) to ' + newInstallments + ' payroll(s)'
-
-  try {
-   const { error } = await supabase.from('cash_advances').update({
-    amount_paid:0,
-    balance:amount,
-    per_payroll_deduction:newPerPayroll,
-    installments_total:newInstallments,
-    installments_remaining:newInstallments,
-    status:'Unpaid',
-    notes:newNotes
-   }).eq('id', ca.id)
-
-   if (error) throw error
-
-   if (req?.id) {
-    const { error:reqError } = await supabase.from('cash_advance_requests').update({
-     request_installments_total:newInstallments,
-     request_per_payroll_deduction:newPerPayroll
-    }).eq('id', req.id)
-
-    if (reqError && !isMissingCashAdvanceDetailColumnError(reqError)) {
-     console.warn('Cash advance request plan sync skipped:', reqError)
-    }
-   }
-
-   await logAudit(
-    'CA DEDUCTION PLAN EDITED',
-    currentAdminLabel || adminRole,
-    ca.employee_name || req?.employee_name || 'Employee',
-    php(amount) + ' changed from ' + currentTotal + ' payroll(s) to ' + newInstallments + ' payroll(s). New deduction: ' + php(newPerPayroll) + '. CA ID: ' + ca.id
-   )
-
-   await loadCashAdvanceRequests()
-   await loadResolvedCARequests()
-
-   showToast('Cash advance deduction plan updated: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).', 'green')
-  } catch (err) {
-   console.warn('editCashAdvanceDeductionPlan:', err)
-   showToast('Failed to update deduction plan: ' + (err?.message || err), 'red')
-  }
- }
-
-
  async function loadPayslipDisputes() {
  const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'pending').order('created_at', { ascending:false })
  setPayslipDisputes(dedupePayslipDisputes(data || []))
@@ -19057,103 +18859,6 @@ function PosMonitorPanel() {
   }
  }
 
-function printCompanyDocumentRecord(record) {
-  if (!record) {
-   showToast('No document record selected.', 'red')
-   return
-  }
-
-  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({
-   '&':'&amp;',
-   '<':'&lt;',
-   '>':'&gt;',
-   '"':'&quot;',
-   "'":'&#39;'
-  }[ch]))
-
-  const docNo = record.document_no || record.document_number || 'RD-DOCUMENT'
-  const title = record.document_type || record.form_title || record.form_key || 'Company Document'
-  const status = getCompanyDocumentRecordStatusLabel(record.status)
-  const employee = record.employee_name || '____________________________'
-  const employeeCode = record.employee_code || ''
-  const documentDate = record.document_date || record.created_at || today
-
-  const rows = [
-   ['Document No.', docNo],
-   ['Document Type', title],
-   ['Status', status],
-   ['Employee', employee],
-   ['Employee Code', employeeCode],
-   ['Document Date', formatDateForDisplay(documentDate)],
-   ['Incident Date', record.incident_date ? formatDateForDisplay(record.incident_date) : ''],
-   ['Effective Date', record.effective_date ? formatDateForDisplay(record.effective_date) : ''],
-   ['Subject', record.subject || ''],
-   ['Details', record.details || ''],
-   ['Items / Accountabilities', record.items || ''],
-   ['Amount', safeNum(record.amount, 0) > 0 ? php(record.amount) : ''],
-   ['Deduction Per Cutoff', safeNum(record.deduction_per_cutoff, 0) > 0 ? php(record.deduction_per_cutoff) : ''],
-   ['Remarks', record.remarks || ''],
-   ['Prepared By', record.prepared_by || currentAdminLabel || 'Admin'],
-   ['Approved By', record.approved_by || '']
-  ].filter(([label, value]) => String(value || '').trim() !== '')
-
-  const rowHtml = rows.map(([label, value]) =>
-   '<tr><td>' + esc(label) + '</td><td>' + esc(value).replace(/\\n/g, '<br/>') + '</td></tr>'
-  ).join('')
-
-  const pw = window.open('', '_blank')
-  if (!pw) {
-   showToast('Popup blocked. Please allow popups to print document.', 'red')
-   return
-  }
-
-  const html = [
-   '<!DOCTYPE html><html><head><title>' + esc(docNo) + '</title>',
-   '<style>',
-   '@page { size:A4; margin:16mm; }',
-   'body { font-family:Arial, sans-serif; color:#1a1a2e; margin:0; }',
-   '.header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #ca1b1b; padding-bottom:10px; margin-bottom:18px; }',
-   'h1 { margin:0; color:#ca1b1b; font-size:20px; }',
-   'h2 { margin:0; color:#1a1a2e; font-size:17px; text-transform:uppercase; text-align:right; }',
-   '.sub { margin:3px 0 0; color:#666; font-size:11px; }',
-   '.badge { display:inline-block; padding:4px 9px; border-radius:999px; background:#f7f9fc; border:1px solid #ddd; font-size:10px; font-weight:bold; margin-top:6px; }',
-   'table { width:100%; border-collapse:collapse; margin-top:10px; }',
-   'td { border:1px solid #ddd; padding:8px 10px; font-size:12px; vertical-align:top; line-height:1.45; }',
-   'td:first-child { width:28%; background:#f8f7f5; font-weight:bold; color:#333; }',
-   '.signatures { display:grid; grid-template-columns:1fr 1fr; gap:40px; margin-top:55px; }',
-   '.sig { text-align:center; font-size:11px; color:#333; }',
-   '.line { border-top:1px solid #333; padding-top:6px; font-weight:bold; }',
-   '.footer { margin-top:30px; padding-top:10px; border-top:1px solid #eee; font-size:10px; color:#777; text-align:center; }',
-   '.no-print { margin-top:18px; text-align:center; }',
-   'button { background:#ca1b1b; color:white; border:none; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; }',
-   '@media print { .no-print { display:none; } }',
-   '</style></head><body>',
-   '<div class="header"><div>',
-   '<h1>Roma\'s Donuts</h1>',
-   '<p class="sub">Management System</p>',
-   '<p class="sub">Company Documents & Forms Center</p>',
-   '</div><div>',
-   '<h2>' + esc(title) + '</h2>',
-   '<p class="sub" style="text-align:right;">' + esc(docNo) + '</p>',
-   '<p style="text-align:right;"><span class="badge">' + esc(status) + '</span></p>',
-   '</div></div>',
-   '<table>' + rowHtml + '</table>',
-   '<div class="signatures">',
-   '<div class="sig"><div class="line">' + esc(record.prepared_by || currentAdminLabel || 'Prepared By') + '</div><div>Prepared By</div></div>',
-   '<div class="sig"><div class="line">' + esc(record.approved_by || 'Approved By') + '</div><div>Approved By</div></div>',
-   '</div>',
-   '<div class="footer">Printed from Roma\'s Donuts Management System • ' + new Date().toLocaleString() + '</div>',
-   '<div class="no-print"><button onclick="window.print()">PRINT DOCUMENT</button></div>',
-   '</body></html>'
-  ].join('')
-
-  pw.document.write(html)
-  pw.document.close()
-  pw.focus()
-  setTimeout(() => pw.print(), 300)
- }
-
-
  const getSelectedDocumentBatch1AForm = () => {
   return DOCUMENT_BATCH1A_FORMS.find(f => f.key === documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS[0]
  }
@@ -21824,11 +21529,6 @@ function printCompanyDocumentRecord(record) {
  {approved && (
  <div style={{ marginTop:'10px', background:'white', border:'1px solid #d9f2df', borderRadius:'10px', padding:'10px' }}>
  <p style={{ margin:'0 0 8px', color:'#2d8a4e', fontWeight:'bold', fontSize:'13px' }}>Cash Advance Ledger / Payroll Deduction Plan</p>
- {ledger && safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
-  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', margin:'0 0 10px' }}>
-   <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
-  </div>
- )}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px' }}>
  {[
   ['CA Ledger ID', ledger?.id ? String(ledger.id).slice(0,8) : (req.ca_ledger_id ? String(req.ca_ledger_id).slice(0,8) : 'Not linked')],
@@ -22371,7 +22071,6 @@ function printCompanyDocumentRecord(record) {
            '\nDetails: ' + (record.details || '') +
            '\nRemarks: ' + (record.remarks || '')
           )}>VIEW</button>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
           {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
           {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
           {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
@@ -24036,13 +23735,7 @@ function printCompanyDocumentRecord(record) {
  <label style={lblS}>Item Name:</label>
  <input type="text" placeholder="e.g. All-purpose flour" value={newItemName} onChange={e=>setNewItemName(e.target.value)} style={inputStyle} />
  <label style={lblS}>Category:</label>
- <select value={newItemCategory} onChange={e=>{
- const category = e.target.value
- setNewItemCategory(category)
- if (isSnackDrinkCategoryName(category) && safeNum(newItemBuyingPrice, 0) > 0) {
-  setNewItemSellingPrice(snackDrinkAutoSellingPrice(newItemBuyingPrice))
- }
-}} style={inputStyle}>
+ <select value={newItemCategory} onChange={e=>setNewItemCategory(e.target.value)} style={inputStyle}>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
  </select>
  <label style={lblS}>Supplier:</label>
@@ -24075,31 +23768,10 @@ function printCompanyDocumentRecord(record) {
  <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
  </div>
  )}
- {isSnackDrinkCategoryName(newItemCategory) && (
- <div>
-  <label style={lblS}>Buying Price / Purchase Price</label>
-  <input
-   type="number"
-   placeholder="0.00"
-   value={newItemBuyingPrice}
-   onChange={e=>{
-    const buy = e.target.value
-    setNewItemBuyingPrice(buy)
-    setNewItemSellingPrice(safeNum(buy, 0) > 0 ? snackDrinkAutoSellingPrice(buy) : '')
-   }}
-   style={{...inputStyle, marginBottom:0 }}
-   min="0"
-   step="0.01"
-  />
-  <p style={{ margin:'4px 0 0', color:'#2d8a4e', fontSize:'10px', fontWeight:'800' }}>
-   Auto selling price: {safeNum(newItemBuyingPrice,0)>0 ? php(snackDrinkAutoSellingPrice(newItemBuyingPrice)) : 'Enter buying price'}
-  </p>
- </div>
-)}
-{(newItemCategory==='Finished Products' || isSnackDrinkCategoryName(newItemCategory)) && (
+ {newItemCategory==='Finished Products' && (
  <div>
  <label style={lblS}>Selling Price (PHP):</label>
- <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnackDrinkCategoryName(newItemCategory)} title={isSnackDrinkCategoryName(newItemCategory)?'Auto-computed from Buying Price + 30% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnackDrinkCategoryName(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
+ <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
  </div>
  )}
  </div>
@@ -24206,17 +23878,7 @@ function printCompanyDocumentRecord(record) {
  {isEditing? (
  <div style={{ display:'grid', gap:'5px' }}>
  <input value={editItemFields.name??item.name} onChange={e=>setEditItemFields(p=>({...p,name:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }} />
- <select value={editItemFields.category??displayCategoryName(item.category)} onChange={e=>{
- const category = e.target.value
- setEditItemFields(p=>{
-  const buy = safeNum(p.buying_price ?? item.buying_price, 0)
-  return {
-   ...p,
-   category,
-   ...(isSnackDrinkCategoryName(category) && buy > 0 ? { selling_price: snackDrinkAutoSellingPrice(buy), cost_per_unit:buy } : {})
-  }
- })
-}} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
+ <select value={editItemFields.category??displayCategoryName(item.category)} onChange={e=>setEditItemFields(p=>({...p,category:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
  </select>
  <select value={editItemFields.supplier_id??item.supplier_id??''} onChange={e=>setEditItemFields(p=>({...p,supplier_id:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
@@ -24275,46 +23937,10 @@ function printCompanyDocumentRecord(record) {
  ): Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}
  </td>
 
- 
  <td style={{ ...numStyle, color:'#666' }}>
  {isEditing? (
-  isSnackDrinkCategoryName(editItemFields.category ?? item.category) ? (
-   <div>
-    <input
-     type="number"
-     value={editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)}
-     onChange={e=>{
-      const supplierPrice = e.target.value
-      setEditItemFields(p=>({
-       ...p,
-       buying_price:supplierPrice,
-       cost_per_unit:safeNum(supplierPrice, 0),
-       selling_price:snackDrinkAutoSellingPrice(supplierPrice)
-      }))
-     }}
-     style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px', border:'2px solid #2d8a4e' }}
-     min="0"
-     step="0.01"
-     title="Supplier Price / Buying Price"
-    />
-    <div style={{ fontSize:'9.5px', color:'#555', fontWeight:'800', marginTop:'3px' }}>Supplier Price</div>
-    <div style={{ fontSize:'9.5px', color:'#2d8a4e', fontWeight:'900', marginTop:'2px', whiteSpace:'nowrap' }}>
-     Auto Sell: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)))}
-    </div>
-   </div>
-  ) : (
-   <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
-  )
- ) : (
-  isSnackDrinkInventoryItem(item) ? (
-   <>
-    <div style={{ color:'#2d8a4e', fontWeight:'900' }}>Sell: {php(getSnackDrinkDisplaySellingPrice(item))}</div>
-    <div style={{ fontSize:'10px', color:'#555', fontWeight:'700', marginTop:'2px' }}>
-     Supplier: {php(getSnackDrinkDisplayBuyingPrice(item))}
-    </div>
-   </>
-  ) : php(item.cost_per_unit || 0)
- )}
+ <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
+ ): php(item.cost_per_unit || 0)}
  </td>
 
  <td style={{ ...rowBase, textAlign:'center' }}>
@@ -25393,104 +25019,119 @@ function printCompanyDocumentRecord(record) {
  {(()=>{
  // Dry premix weight per piece (grams) after 10% reduction
  const DRY_PREMIX_GRAMS = {
-  'Choco Balls': 9.45,
-  'Matcha Pops': 0,
-  'Taro Pops': 9.45,
-  'Strawberry Pops': 9.45,
-  'Bavarian Pops': 9.45,
-  'Bavarian Bites': 9.45,
-  'Choco Lollisticks': 0,
-  'Glazed Circlets': 11.7,
-  'Cinnamon Rolls': 27,
-  'Rings': 27,
-  'Shells': 27,
-  'Bavarian Midnight': 27,
-  'Biscoreo': 27,
-  'Fanfans': 31.5,
-  'Oreo Dream': 31.5,
-  'Almond Glitz': 31.5,
-  'Lotus Cloud': 31.5
+ 'Choco Balls': 9.45,
+ 'Matcha Pops': 9.45,
+ 'Taro Pops': 9.45,
+ 'Strawberry Pops': 9.45,
+ 'Bavarian Pops': 9.45,
+ 'Bavarian Bites': 9.45,
+ 'Choco Lollisticks': 0,
+ 'Glazed Circlets': 11.7,
+ 'Cinnamon Rolls': 27,
+ 'Rings': 27,
+ 'Shells': 27,
+ 'Bavarian Midnight': 27,
+ 'Biscoreo': 27,
+ 'Fanfans': 31.5,
+ 'Oreo Dream': 31.5,
+ 'Almond Glitz': 31.5,
+ 'Lotus Cloud': 31.5
  }
 
- const forecastNameKey = (value) => {
-  return String(value || '')
-   .trim()
-   .toLowerCase()
-   .replace(/[^a-z0-9]/g, '')
- }
-
- const getForecastRowTotal = (row) => {
-  const raw = row?.total ?? row?.totalPieces ?? row?.total_pieces ?? row?.pieces ?? row?.forecast_qty ?? row?.quantity ?? row?.qty ?? 0
-  const n = safeNum(raw, 0)
+ const parseForecastNumber = (value) => {
+  if (value === null || value === undefined || value === '') return 0
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
+  const cleaned = String(value).replace(/,/g, '').replace(/[^0-9.-]/g, '').trim()
+  if (!cleaned || cleaned === '-' || cleaned === '.' || cleaned === '-.') return 0
+  const n = Number(cleaned)
   return Number.isFinite(n) ? n : 0
  }
 
- const getDryPremixGramsPerPiece = (variantName) => {
-  const name = String(variantName || '').trim()
-  const normalizedName = typeof normalizeDonutVariantName === 'function'
-   ? normalizeDonutVariantName(name)
-   : name
-
-  const premixByKey = Object.entries(DRY_PREMIX_GRAMS || {}).reduce((map, [key, value]) => {
-   map[forecastNameKey(key)] = safeNum(value, 0)
-   return map
-  }, {})
-
-  const possibleKeys = [
-   name,
-   normalizedName,
-   name.replace(/pops$/i, ' Pops'),
-   name.replace(/balls$/i, ' Balls'),
-   name.replace(/bites$/i, ' Bites'),
-   name.replace(/circlets$/i, ' Circlets'),
-   name.replace(/rolls$/i, ' Rolls'),
-   name.replace(/midnight$/i, ' Midnight'),
-   name.replace(/dream$/i, ' Dream'),
-   name.replace(/glitz$/i, ' Glitz'),
-   name.replace(/cloud$/i, ' Cloud')
-  ].map(forecastNameKey)
-
-  for (const key of possibleKeys) {
-   if (Object.prototype.hasOwnProperty.call(premixByKey, key)) {
-    return safeNum(premixByKey[key], 0)
-   }
-  }
-
-  return 0
+ const getForecastVariantKey = (value) => {
+  if (typeof normalizeProductCostKey === 'function') return normalizeProductCostKey(value)
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim()
  }
 
- const forecastInvoices = deliveryInvoices.filter(i => i.delivery_date === forecastDate)
+ const getForecastVariantName = (item = {}) => {
+  const linkedVariant = (donutVariants || []).find(v => String(v.id || v.variant_id || '') === String(item.variant_id || ''))
+  const rawName = item.variant_name || item.variant || item.product_name || item.name || item.product || linkedVariant?.name || 'Unassigned Variant'
+  const normalizedName = typeof normalizeDonutVariantName === 'function' ? normalizeDonutVariantName(rawName) : rawName
+  return normalizedName || rawName || 'Unassigned Variant'
+ }
+
+ const getForecastRowTotal = (row = {}) => {
+  return parseForecastNumber(row.total ?? row.totalPieces ?? row.total_pieces ?? row.forecast_qty ?? row.quantity ?? row.qty ?? row.pieces ?? 0)
+ }
+
+ 
+const getDryPremixGramsPerPiece = (variantName) => {
+ const dryPremixByKey = Object.entries(DRY_PREMIX_GRAMS || {}).reduce((map, [key, value]) => {
+  map[getDryPremixLookupKey(key)] = safeNum(value, 0)
+  return map
+ }, {})
+
+ const name = String(variantName || '').trim()
+ const normalizedName = typeof normalizeDonutVariantName === 'function'
+  ? normalizeDonutVariantName(name)
+  : name
+
+ const possibleKeys = [
+  name,
+  normalizedName,
+  name.replace(/pops$/i, ' Pops'),
+  name.replace(/balls$/i, ' Balls'),
+  name.replace(/bites$/i, ' Bites'),
+  name.replace(/circlets$/i, ' Circlets'),
+  name.replace(/rolls$/i, ' Rolls'),
+  name.replace(/midnight$/i, ' Midnight'),
+  name.replace(/dream$/i, ' Dream'),
+  name.replace(/glitz$/i, ' Glitz'),
+  name.replace(/cloud$/i, ' Cloud')
+ ].map(getDryPremixLookupKey)
+
+ for (const key of possibleKeys) {
+  const value = dryPremixByKey[key]
+  if (Number.isFinite(value)) return value
+ }
+
+ return 0
+}
+
+ const forecastInvoices = deliveryInvoices.filter(i => String(i.delivery_date || '').slice(0, 10) === forecastDate)
  const forecastMap = {}
 
  forecastInvoices.forEach(inv => {
   ;(inv.delivery_invoice_items || []).forEach(item => {
-   const variantName = item.variant_name || item.product_name || item.name || ''
-   const key = forecastNameKey(variantName)
-   if (!key) return
+   const variantName = getForecastVariantName(item)
+   const variantKey = getForecastVariantKey(variantName)
+   const qty = parseForecastNumber(item.quantity ?? item.qty ?? item.total ?? item.totalPieces ?? item.total_pieces ?? item.pieces ?? item.forecast_qty ?? 0)
 
-   if (!forecastMap[key]) {
-    forecastMap[key] = {
+   if (!variantKey) return
+   if (!forecastMap[variantKey]) {
+    forecastMap[variantKey] = {
      variant_name: variantName,
-     variant_id: item.variant_id,
-     total: 0
+     variant_id: item.variant_id || null,
+     total: 0,
+     totalPieces: 0,
+     forecast_qty: 0
     }
    }
 
-   forecastMap[key].total = safeNum(forecastMap[key].total, 0) + safeNum(item.quantity, 0)
+   forecastMap[variantKey].total += qty
+   forecastMap[variantKey].totalPieces = forecastMap[variantKey].total
+   forecastMap[variantKey].forecast_qty = forecastMap[variantKey].total
   })
  })
 
  let forecastRows = Object.values(forecastMap)
-
- const existingForecastKeys = new Set((forecastRows || []).map(row =>
-  forecastNameKey(row.variant_name || row.variant || row.product_name || row.name || row.product || '')
- ))
+ const existingForecastKeys = new Set(forecastRows.map(row => getForecastVariantKey(row.variant_name)))
 
  ;(donutVariants || []).forEach(variant => {
-  const variantName = variant?.name || variant?.variant_name || variant?.product_name || ''
-  const variantKey = forecastNameKey(variantName)
-
-  if (!variantName || existingForecastKeys.has(variantKey)) return
+  if (variant?.is_active === false) return
+  const variantNameRaw = variant?.name || variant?.variant_name || variant?.product_name || ''
+  const variantName = typeof normalizeDonutVariantName === 'function' ? normalizeDonutVariantName(variantNameRaw) : variantNameRaw
+  const variantKey = getForecastVariantKey(variantName)
+  if (!variantName || !variantKey || existingForecastKeys.has(variantKey)) return
 
   forecastRows.push({
    id: variant?.id || variant?.variant_id || `zero-${variantKey}`,
@@ -25506,17 +25147,22 @@ function printCompanyDocumentRecord(record) {
    pieces: 0,
    quantity: 0,
    qty: 0,
-   forecast_qty: 0
+   forecast_qty: 0,
+   dryPremix: 0,
+   dry_premix: 0,
+   dryPremixKg: 0,
+   dryPremixGrams: 0
   })
-
   existingForecastKeys.add(variantKey)
  })
 
- forecastRows = (forecastRows || [])
+ forecastRows = forecastRows
   .map(row => {
    const cleanTotal = getForecastRowTotal(row)
+   const cleanName = typeof normalizeDonutVariantName === 'function' ? normalizeDonutVariantName(row.variant_name || row.variant || row.product_name || row.name || row.product || '') : (row.variant_name || row.variant || row.product_name || row.name || row.product || '')
    return {
     ...row,
+    variant_name: cleanName || row.variant_name || 'Unassigned Variant',
     total: cleanTotal,
     totalPieces: cleanTotal,
     total_pieces: cleanTotal,
@@ -25528,9 +25174,9 @@ function printCompanyDocumentRecord(record) {
   })
   .sort(compareDonutVariantRowsByGuide)
 
- const totalPieces = safeNum((forecastRows || []).reduce((s,r)=>s+getForecastRowTotal(r),0),0)
- const totalDryPremixG = safeNum((forecastRows || []).reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0),0)
- const totalDryPremixKg = (safeNum(totalDryPremixG,0)/1000).toFixed(2)
+ const totalPieces = forecastRows.reduce((s,r)=>s+getForecastRowTotal(r),0)
+ const totalDryPremixG = forecastRows.reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0)
+ const totalDryPremixKg = (totalDryPremixG/1000).toFixed(2)
 
  const printForecast = () => {
  const pw = window.open('','_blank','width=700,height=900')
@@ -25567,7 +25213,7 @@ function printCompanyDocumentRecord(record) {
  const pieces = getForecastRowTotal(r)
 const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  const kgDisplay = grams>=1000? (grams/1000).toFixed(2)+' kg': grams.toFixed(0)+' g'
- return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+getForecastRowTotal(r).toLocaleString('en-PH')+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
+ return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+safeNum(r.total,0).toLocaleString('en-PH')+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
  }).join('')}
  <tr class="total-row"><td>TOTAL</td><td style="text-align:right;color:#ca1b1b;">${totalPieces.toLocaleString()}</td><td style="text-align:right;color:#2d8a4e;">${totalDryPremixKg} kg</td><td></td></tr>
  </table>
@@ -25631,7 +25277,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  return (
  <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
  <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}</span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</span>
+ <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{safeNum(r.total,0).toLocaleString('en-PH')}</span>
  <span style={{ textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</span>
  </div>
  )
@@ -30669,6 +30315,7 @@ onClick={async ()=>{
  </>
  )}
  </div>
+
  <div style={{...portalCard, marginTop:'14px' }}>
  <h3 style={{ color:'#333', margin:'0 0 10px', fontSize:'14px' }}>Submitted Reports</h3>
  {resellerReturns.length===0? <p style={{ color:'#aaa', margin:0, fontSize:'12px' }}>No return reports submitted yet.</p>: resellerReturns.map(r=>(

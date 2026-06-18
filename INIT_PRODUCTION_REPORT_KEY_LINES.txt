@@ -1,0 +1,23 @@
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:1:8154: async function initProductionReport(deliveryDate) {
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:2:8155:  // Load forecast from invoices for delivery date
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:3:8156:  const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:4:8157:  const forecastMap = {}
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:5:8158:  forecastInvoices.forEach(inv=>{
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:6:8159: ;(inv.delivery_invoice_items||[]).forEach(item=>{
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:7:8160:  if (!forecastMap[item.variant_name]) forecastMap[item.variant_name] = { variant_id:item.variant_id, variant_name:item.variant_name, forecast_qty:0, actual_qty:'', variance_reason:'' }
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:8:8161:  forecastMap[item.variant_name].forecast_qty += Number(item.quantity||0)
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:9:8162:  })
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:10:8163:  })
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:11:8164:  const items = Object.values(forecastMap)
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:12:8165:  if (items.length===0) { showToast(' No invoices found for '+deliveryDate+'. Load all variants manually.','red') }
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:13:8166:  // Also load all variants for items not in forecast
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:14:8167:  const [{ data:variants }, { data:recipesForCost }] = await Promise.all([
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:15:8168:   supabase.from('donut_variants').select('*').eq('is_active',true).order('name'),
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:16:8169:   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:17:8170:  ])
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:18:8171:  if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:19:8172:  const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
+> C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:20:8173:  setProductionReportItems(variantItems)
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:21:8174:  setProductionReportDeliveryDate(deliveryDate)
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:22:8175:  setShowProductionReport(true)
+  C:\Users\Jonnel Gacusan\Desktop\Romas-Payroll-System-main\INIT_PRODUCTION_REPORT_FUNCTION.txt:23:8176:  }

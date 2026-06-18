@@ -1,4 +1,4 @@
-﻿import { Component, useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { createClient } from '@supabase/supabase-js'
 
@@ -462,7 +462,7 @@ function positiveNum(value, fallback = 1) {
  const n = safeNum(value, fallback)
  return n > 0? n: fallback
 }
-function php(a) { return `\u20B1${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
+function php(a) { return `PHP ${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })}` }
 function moneyRound(value) { return Math.round((safeNum(value, 0) + Number.EPSILON) * 100) / 100 }
 function isMoneySettled(balance) { return moneyRound(balance) <= 0.01 }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
@@ -826,149 +826,6 @@ const PAYROLL_COST_TYPES = [
  { value:'delivery_expense', label:'Delivery / Dispatch Payroll Expense', shortLabel:'Delivery Expense', bucket:'expense' },
  { value:'management_expense', label:'Management Payroll Expense', shortLabel:'Management Expense', bucket:'expense' },
  { value:'operating_expense', label:'Other Operating Payroll Expense', shortLabel:'Operating Expense', bucket:'expense' }
-]
-
-
-
-const DOCUMENT_BATCH1A_FORMS = [
-  { key:'INV-WITHDRAWAL', title:'Company Inventory Withdrawal Slip', refPrefix:'INV-WD' },
- { key:'DISC-NTE', title:'Notice to Explain', category:'NTE / Disciplinary', refPrefix:'RD-NTE', purpose:'Formal notice requiring an employee to explain an alleged violation or incident.' },
- { key:'DISC-IR', title:'Incident Report Form', category:'NTE / Disciplinary', refPrefix:'RD-IR', purpose:'Record incident facts, people involved, date, location, and initial findings.' },
- { key:'DISC-EXPLAIN', title:'Employee Explanation Form', category:'NTE / Disciplinary', refPrefix:'RD-EXPLAIN', purpose:'Employee written explanation connected to an incident, NTE, shortage, or violation.' },
- { key:'PAY-CA-AGREEMENT', title:'Cash Advance Agreement', category:'Payroll & Salary', refPrefix:'RD-CA', purpose:'Document cash advance amount, repayment terms, deductions, and acknowledgment.' },
- { key:'PAY-DEDUCTION-AUTH', title:'Salary Deduction Authorization Form', category:'Payroll & Salary', refPrefix:'RD-DED', purpose:'Authorize payroll deductions for cash advance, damage, shortage, lost item, or other approved charge.' },
- { key:'HR-CLEARANCE', title:'Employee Clearance Form', category:'HR & Employee', refPrefix:'RD-CLEAR', purpose:'Clear accountabilities before final pay or separation release.' },
- { key:'HR-PPE-ISSUE', title:'Uniform / PPE Issuance Slip', category:'HR & Employee', refPrefix:'RD-PPE', purpose:'Track issued uniforms, PPE, tools, and employee accountability.' },
- { key:'PAY-RELEASE', title:'Payroll Release Acknowledgment Slip', category:'Payroll & Salary', refPrefix:'RD-PAYREL', purpose:'Employee acknowledgment of salary, payroll release, or final pay received.' }
-]
-
-const DOCUMENT_CENTER_CATEGORIES = [
- 'HR & Employee',
- 'Payroll & Salary',
- 'NTE / Disciplinary',
- 'Production & Food Safety',
- 'Inventory & Purchasing',
- 'Delivery / Reseller / Outlet',
- 'Finance & Cash Control',
- 'Compliance / Permits',
- 'SOPs & Training',
- 'Management Reports'
-]
-
-const DOCUMENT_CENTER_CATALOG = [
-  { code:'INV-WD', name:'Company Inventory Withdrawal Slip', category:'Inventory', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Records withdrawal of raw materials, packaging, supplies, finished goods like donuts, tools, equipment, crates, crate covers, and other company property.' },
- { code:'HR-EMP-CONTRACT', name:'Employment Contract', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Generate, print, upload, and track employee contracts and regularization records.' },
- { code:'HR-JOB-OFFER', name:'Job Offer / Hiring Approval Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Approve hiring details before adding a new employee to payroll.' },
- { code:'HR-INFO-SHEET', name:'Employee Information Sheet', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Collect employee profile, emergency contact, government IDs, and payroll details.' },
- { code:'HR-DATA-PRIVACY', name:'Data Privacy Consent Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Document employee consent for storing and processing records inside the system.' },
- { code:'HR-HANDBOOK-ACK', name:'Employee Handbook Acknowledgment', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm employee received and accepted company rules and policies.' },
- { code:'HR-NDA', name:'NDA / Confidentiality Agreement', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Protect recipes, suppliers, costing, reseller terms, and internal systems.' },
- { code:'HR-PPE-ISSUE', name:'Uniform / PPE Issuance Slip', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Track issued shirts, aprons, caps, shoes, hairnets, and other PPE.' },
- { code:'HR-PROPERTY-ISSUE', name:'Company Property Issuance Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Record keys, tools, devices, vehicle items, and company assets issued to employees.' },
- { code:'HR-TRAINING-COMPLETE', name:'Training Completion Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document completed training for sanitation, production, delivery, cashier, and system rules.' },
- { code:'HR-EVAL-PROBATION', name:'Probationary Evaluation Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Evaluate employee performance before regularization decision.' },
- { code:'HR-REGULARIZATION', name:'Regularization Recommendation Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Prepare approval or non-regularization recommendation before the review date.' },
- { code:'HR-REGULAR-CONFIRM', name:'Regular Employment Confirmation Letter', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm regular employment status and effective date.' },
- { code:'HR-RESIGN-ACCEPT', name:'Resignation Acceptance Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Acknowledge resignation, last day, turnover, and clearance requirements.' },
- { code:'HR-CLEARANCE', name:'Employee Clearance Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Track clearance before final pay release.' },
- { code:'HR-COE', name:'Certificate of Employment Request / Release Log', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Track employee COE requests, release dates, and receiving acknowledgment.' },
- { code:'PAY-PAYSLIP', name:'Payslip Archive', category:'Payroll & Salary', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Centralize generated payslips and payroll release records.' },
- { code:'PAY-APPROVAL', name:'Payroll Summary Approval Sheet', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Approve payroll before release and prevent unauthorized changes.' },
- { code:'PAY-RELEASE', name:'Payroll Release Acknowledgment Slip', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm employee received salary or payroll release.' },
- { code:'PAY-CA-AGREEMENT', name:'Cash Advance Agreement', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Set repayment terms, deduction schedule, and employee acknowledgment.' },
- { code:'PAY-CA-REQUEST', name:'Cash Advance Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Employee request and admin approval for cash advance.' },
- { code:'PAY-DEDUCTION-AUTH', name:'Salary Deduction Authorization Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Authorize deductions for CA, shortages, damages, lost items, or other approved charges.' },
- { code:'PAY-ADJUSTMENT', name:'Payroll Adjustment Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Record payroll additions, deductions, corrections, and reasons.' },
- { code:'PAY-OT', name:'OT Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document overtime request and approval.' },
- { code:'PAY-UT', name:'UT / Undertime Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document undertime request, approval, and payroll impact.' },
- { code:'PAY-LEAVE', name:'Leave Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Track filed leaves and approval status.' },
- { code:'PAY-DTR-DISPUTE', name:'DTR Correction / Dispute Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Correct or dispute attendance records before payroll release.' },
- { code:'PAY-SIL', name:'SIL Conversion / Unused Leave Claim Form', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document unused service incentive leave conversion or claim.' },
- { code:'PAY-13TH', name:'13th Month Pay Computation Sheet', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Existing Module', purpose:'Prepare and archive 13th month computation records.' },
- { code:'PAY-HOLIDAY', name:'Holiday Pay Computation Record', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document special and regular holiday pay basis.' },
- { code:'PAY-NSD', name:'Night Shift Differential Record', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document night shift minutes and NSD computation.' },
- { code:'DISC-IR', name:'Incident Report Form', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Supervisor or staff incident report with facts, date, people involved, and evidence.' },
- { code:'DISC-EXPLAIN', name:'Employee Explanation Form', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Employee written explanation connected to an incident or NTE.' },
- { code:'DISC-NTE', name:'Notice to Explain', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Formal written notice asking employee to explain a violation or incident.' },
- { code:'DISC-HEARING', name:'Administrative Hearing / Conference Record', category:'NTE / Disciplinary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Record meeting details, attendees, explanation, and evidence reviewed.' },
- { code:'DISC-WARNING', name:'Warning Letter', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Document first warning, repeated violation, or corrective expectation.' },
- { code:'DISC-FINAL-WARNING', name:'Final Warning Letter', category:'NTE / Disciplinary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document final warning before stronger action.' },
- { code:'DISC-DECISION', name:'Notice of Decision', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Document final management decision after review of explanation and evidence.' },
- { code:'DISC-SUSPENSION', name:'Suspension Notice', category:'NTE / Disciplinary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document suspension details, period, reason, and approval.' },
- { code:'DISC-TERMINATION', name:'Termination Notice', category:'NTE / Disciplinary', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Formal termination document requiring careful owner review before use.' },
- { code:'DISC-DAMAGE', name:'Damage / Loss Accountability Form', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Record broken equipment, lost crates, spoiled items, or property damage.' },
- { code:'DISC-CASH-SHORT', name:'Cash Shortage Explanation Form', category:'NTE / Disciplinary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Cashier or employee explanation for shortage or variance.' },
- { code:'PROD-PLAN', name:'Daily Production Plan', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Plan daily production volume by product and outlet demand.' },
- { code:'PROD-BATCH', name:'Batch Production Record', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track batch number, recipe version, maker, time, ingredients, yield, and rejects.' },
- { code:'PROD-MIXING', name:'Dough Mixing Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track mixing time, batch size, operator, and dough observations.' },
- { code:'PROD-PROOFING', name:'Proofing Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track proofing time, temperature observation, and product condition.' },
- { code:'PROD-FRYING', name:'Frying Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track fryer temperature, time, oil condition, and operator.' },
- { code:'PROD-FILLING', name:'Filling / Topping Log', category:'Production & Food Safety', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Track filled and topped products, filling batch, and finishing quality.' },
- { code:'PROD-YIELD', name:'Product Yield Report', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Compare expected pieces vs actual pieces produced.' },
- { code:'PROD-VARIANCE', name:'Production Variance Report', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Explain shortage, rejects, overproofing, underweight pieces, or production errors.' },
- { code:'PROD-RELEASE', name:'Product Release Form', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Approve finished products before dispatch.' },
- { code:'PROD-HOLD', name:'Product Hold Form', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Hold questionable product from sale or delivery until reviewed.' },
- { code:'PROD-DISPOSAL', name:'Product Disposal / Wastage Form', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Document waste, reason, quantity, and approving person.' },
- { code:'QA-CLEANING', name:'Daily Cleaning Checklist', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Document cleaning before, during, and after production.' },
- { code:'QA-PREOP', name:'Pre-Operation Sanitation Checklist', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Verify production area and equipment readiness before work starts.' },
- { code:'QA-POSTOP', name:'Post-Operation Cleaning Checklist', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Confirm end-of-shift cleaning and sanitation.' },
- { code:'QA-CHILLER', name:'Chiller / Filling Temperature Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track temperature-sensitive fillings and storage control.' },
- { code:'QA-OIL', name:'Oil Quality Monitoring Log', category:'Production & Food Safety', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Track oil condition, change schedule, and quality issues.' },
- { code:'QA-PEST', name:'Pest Control Log', category:'Production & Food Safety', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Record pest control inspection, findings, and corrective action.' },
- { code:'QA-CALIBRATION', name:'Equipment Calibration Log', category:'Production & Food Safety', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Track scales, thermometers, and weighing equipment calibration.' },
- { code:'QA-CAPA', name:'Corrective Action Report', category:'Production & Food Safety', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Document root cause, corrective action, and verification.' },
- { code:'QA-COMPLAINT', name:'Customer Complaint Investigation Form', category:'Production & Food Safety', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Investigate complaints involving quality, delivery, safety, or service.' },
- { code:'QA-RECALL', name:'Product Recall / Mock Recall Form', category:'Production & Food Safety', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Prepare traceability and recall readiness for scaling.' },
- { code:'INV-PR', name:'Purchase Request Form', category:'Inventory & Purchasing', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Request ingredients, packaging, supplies, or equipment before buying.' },
- { code:'INV-PO', name:'Purchase Order', category:'Inventory & Purchasing', batch:'Batch 3', priority:'Medium', status:'Existing Module', purpose:'Issue approved purchase order to supplier.' },
- { code:'INV-RECEIVING', name:'Receiving Report', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record received items, quantity, condition, supplier, and discrepancy.' },
- { code:'INV-RAW-INSPECT', name:'Raw Material Inspection Form', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Inspect flour, oil, fillings, packaging, and other incoming supplies.' },
- { code:'INV-STOCK-IN', name:'Stock-In Slip', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record inventory additions.' },
- { code:'INV-STOCK-OUT', name:'Stock-Out / Issuance Slip', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record inventory issued to production, outlets, or departments.' },
- { code:'INV-ADJUST', name:'Inventory Adjustment Form', category:'Inventory & Purchasing', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Document stock corrections and reasons.' },
- { code:'INV-EXPIRED', name:'Expired Item Report', category:'Inventory & Purchasing', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Document expired raw materials, packaging, or selling items.' },
- { code:'INV-FEFO', name:'FEFO Monitoring Sheet', category:'Inventory & Purchasing', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Control First Expiry First Out usage.' },
- { code:'DEL-INVOICE', name:'Delivery Invoice', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record products delivered to reseller or outlet.' },
- { code:'DEL-RECEIPT', name:'Delivery Receipt', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Confirm product handover and receiving acknowledgment.' },
- { code:'DEL-DISPATCH', name:'Dispatch Checklist', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Confirm products, crates, route, driver, and documents before leaving.' },
- { code:'DEL-ROUTE', name:'Route Sheet / Driver Trip Sheet', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'Medium', status:'Template Listed', purpose:'Track route, stops, driver, vehicle, time, and remarks.' },
- { code:'DEL-ADJUST', name:'Actual Delivery Adjustment Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record increase, reduction, shortage, wrong count, or replacement.' },
- { code:'DEL-RETURN', name:'Returns / Pullout Slip', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record unsold donut returns, pullouts, and reason.' },
- { code:'DEL-CRATES-ISSUE', name:'Crates Issuance Slip', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record crates and covers issued to outlet, driver, or reseller.' },
- { code:'DEL-CRATES-RETURN', name:'Crates Return Slip', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record returned crates, covers, and remaining balances.' },
- { code:'DEL-CRATES-DAMAGE', name:'Lost / Damaged Crates Charge Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document damaged or missing crates and charge approval.' },
- { code:'RES-AGREEMENT', name:'Reseller Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document reseller terms, area, pricing, delivery, returns, and payment rules.' },
- { code:'RES-CART', name:'Rolling Cart Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document rolling cart deposit, ownership, renewal, and operating rules.' },
- { code:'OUT-COUNT', name:'Outlet Inventory Count Sheet', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record beginning, delivered, wastage, ending, and estimated sold items.' },
- { code:'OUT-REMIT', name:'Outlet Weekly Remittance Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Compute outlet sales, remittance, shortage, and posting status.' },
- { code:'FIN-CASH-COUNT', name:'Daily Cash Count Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Count cash on hand and compare against expected cash.' },
- { code:'FIN-CASHIER-TURNOVER', name:'Cashier Turnover Slip', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Document cashier handover of cash, sales, and variances.' },
- { code:'FIN-GCASH-RECON', name:'GCash Reconciliation Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Match GCash/online payments to sales records.' },
- { code:'FIN-BANK-DEPOSIT', name:'Bank Deposit Record', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Record money deposited to bank and supporting details.' },
- { code:'FIN-PETTY-CASH', name:'Petty Cash Voucher', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Document petty cash disbursement and approval.' },
- { code:'FIN-LIQUIDATION', name:'Petty Cash Liquidation Form', category:'Finance & Cash Control', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Liquidate petty cash with receipts and remaining cash.' },
- { code:'FIN-EXPENSE', name:'Expense Voucher', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Record business expenses and supporting details.' },
- { code:'FIN-SUPPLIER-PAY', name:'Supplier Payment Voucher', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Approve and record payments to suppliers.' },
- { code:'FIN-AP-APPROVAL', name:'Accounts Payable Approval Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Approve payable obligations and due dates.' },
- { code:'FIN-AR-COLLECTION', name:'Accounts Receivable Collection Form', category:'Finance & Cash Control', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Record collections from resellers or customers.' },
- { code:'FIN-CASH-SHORT', name:'Cash Shortage / Over Report', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Document cash variance and explanation.' },
- { code:'COMP-PERMIT', name:'Business Permit Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Track permit number, expiry, renewal date, and file location.' },
- { code:'COMP-BIR', name:'BIR Registration / COR Record', category:'Compliance / Permits', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Store BIR registration details and document location.' },
- { code:'COMP-FDA-LTO', name:'FDA LTO Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Track FDA license status, expiry, and renewal tasks.' },
- { code:'COMP-SANITARY', name:'Sanitary Permit / Health Certificate Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Track sanitary permits and staff health certificates.' },
- { code:'COMP-FIRE', name:'Fire Safety Certificate Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Track fire safety certificate status and renewal.' },
- { code:'COMP-PEST-CERT', name:'Pest Control Certificate Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Store pest control certificates and expiry dates.' },
- { code:'COMP-WATER', name:'Water Potability Test Tracker', category:'Compliance / Permits', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Track water testing records and renewal.' },
- { code:'SOP-PRODUCTION', name:'Production SOP', category:'SOPs & Training', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Standardize production steps and responsibilities.' },
- { code:'SOP-CLEANING', name:'Cleaning SOP', category:'SOPs & Training', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Standardize sanitation procedures and required records.' },
- { code:'SOP-DELIVERY', name:'Delivery SOP', category:'SOPs & Training', batch:'Batch 3', priority:'Medium', status:'Existing Module', purpose:'Standardize delivery, returns, and customer handover procedures.' },
- { code:'SOP-CASHIER', name:'Cashier / POS SOP', category:'SOPs & Training', batch:'Batch 4', priority:'Medium', status:'Existing Module', purpose:'Standardize POS sales, remittance, and variance handling.' },
- { code:'SOP-ATTENDANCE', name:'Attendance Policy', category:'SOPs & Training', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Define timekeeping, late, undertime, absence, and DTR rules.' },
- { code:'SOP-CASH-ADVANCE', name:'Cash Advance Policy', category:'SOPs & Training', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Set rules for cash advance approval, deduction, and limits.' },
- { code:'SOP-HYGIENE', name:'Uniform & Hygiene Policy', category:'SOPs & Training', batch:'Batch 2', priority:'High', status:'Template Listed', purpose:'Define grooming, uniforms, jewelry, hairnet, handwashing, and cellphone restrictions.' },
- { code:'SOP-ACK', name:'SOP Acknowledgment Form', category:'SOPs & Training', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Track employee acknowledgment of SOP version.' },
- { code:'MGMT-MONTH-END', name:'Month-End Closing Checklist', category:'Management Reports', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Ensure sales, expenses, payroll, inventory, deposits, and payables are reviewed monthly.' },
- { code:'MGMT-DOC-AUDIT', name:'Document Control Audit Checklist', category:'Management Reports', batch:'Batch 4', priority:'Medium', status:'Template Listed', purpose:'Review missing, unsigned, expired, or outdated documents.' }
 ]
 
 function normalizePayrollCostType(value) {
@@ -1819,27 +1676,6 @@ export default function App() {
  const [contractFile, setContractFile] = useState(null)
  const [contractUploading, setContractUploading] = useState(false)
  const [contractSearch, setContractSearch] = useState('')
- const [documentCenterSearch, setDocumentCenterSearch] = useState('')
- const [documentCenterCategory, setDocumentCenterCategory] = useState('all')
- const [documentCenterBatch, setDocumentCenterBatch] = useState('all')
- const [documentFormDraft, setDocumentFormDraft] = useState({
-  formKey:'DISC-NTE',
-  employeeId:'',
-  documentDate:today,
-  incidentDate:today,
-  effectiveDate:today,
-  amount:'',
-  deductionPerCutoff:'',
-  subject:'',
-  details:'',
-  items:'',
-  remarks:'',
-  preparedBy:'',
-  approvedBy:''
- })
- const [companyDocumentRecords, setCompanyDocumentRecords] = useState([])
- const [companyDocumentRecordsLoading, setCompanyDocumentRecordsLoading] = useState(false)
-
  const [viewingContract, setViewingContract] = useState(null)
  const [contractStorageType, setContractStorageType] = useState('digital')
  const [contractPhysicalLocation, setContractPhysicalLocation] = useState('')
@@ -2031,7 +1867,6 @@ export default function App() {
  { name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Strawberry Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Taro Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
-  { name:'Matcha Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Choco Lollisticks', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Glazed Circlets', category:'Glaze Circlet', selling_price:13, pieces_per_batch:20 },
  { name:'Cinnamon Rolls', category:'Premium', selling_price:18, pieces_per_batch:8 },
@@ -2269,7 +2104,6 @@ export default function App() {
  const [newItemUnit, setNewItemUnit] = useState('kg')
  const [newItemMinStock, setNewItemMinStock] = useState('')
  const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
- const [newItemBuyingPrice, setNewItemBuyingPrice] = useState('')
  const [newItemCurrentStock, setNewItemCurrentStock] = useState('')
  const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
  const [newItemExpiryDate, setNewItemExpiryDate] = useState('')
@@ -2370,35 +2204,6 @@ export default function App() {
  const [crateAdjustmentAssetType, setCrateAdjustmentAssetType] = useState('crate')
  const [editingItemId, setEditingItemId] = useState(null)
  const [editItemFields, setEditItemFields] = useState({})
-
- const snackDrinkAutoSellingPrice = (cost) => moneyRound(safeNum(cost, 0) * 1.30)
- const snackDrinkAutoBuyingPrice = (sellingPrice) => moneyRound(safeNum(sellingPrice, 0) / 1.30)
-
- const getSnackDrinkDisplaySellingPrice = (item = {}) => {
-  const sell = safeNum(item.selling_price, 0)
-  const oldPrice = safeNum(item.cost_per_unit, 0)
-  const buy = safeNum(item.buying_price, 0)
-
-  // Safety for rows affected by the wrong previous markup display/save:
-  // if selling_price equals oldPrice × 1.30 and buying price is empty,
-  // treat oldPrice as the original selling price.
-  if (buy <= 0 && oldPrice > 0 && sell > 0 && Math.abs(sell - snackDrinkAutoSellingPrice(oldPrice)) <= 0.05) {
-   return oldPrice
-  }
-
-  return sell || oldPrice
- }
-
- const getSnackDrinkDisplayBuyingPrice = (item = {}) => {
-  const buy = safeNum(item.buying_price, 0)
-  if (buy > 0) return buy
-  return snackDrinkAutoBuyingPrice(getSnackDrinkDisplaySellingPrice(item))
- }
-
- const isSnackDrinkCategoryName = (category) => {
-  const label = getInventoryCategoryLabel({ category })
-  return label === 'Snacks, Drinks and Others'
- }
  // Suppliers
  const [suppliers, setSuppliers] = useState([])
  const [suppliersLoading, setSuppliersLoading] = useState(false)
@@ -3177,133 +2982,77 @@ export default function App() {
  if (error) { showToast('Failed: ' + error.message, 'red'); return }
  showToast(` Contract marked as ${status}`); loadContracts()
  }
-  function printContractSummary(c) {
-    const cleanText = value => String(value ?? '').trim();
+ function printContractSummary(c) {
+ const pw = window.open('', '_blank', 'width=800,height=600')
+ const statusLabel = c.status === 'active'? 'ACTIVE': c.status === 'expired'? 'EXPIRED': 'TERMINATED'
+ const statusColor = c.status === 'active'? '#2d8a4e': '#ca1b1b'
+ const storageLabel = c.storage_type === 'physical'
+? `Physical Copy on File ${c.physical_location || 'Location not specified'}`
+: 'Digital PDF (uploaded to system)'
+ pw.document.write(`<!DOCTYPE html><html><head><title>Contract Summary</title>
+ <style>
+ *{margin:0;padding:0;box-sizing:border-box;}
+ body{font-family:Arial,sans-serif;padding:20mm;font-size:12px;color:#000;}
+ @media print{@page{size:A4;margin:20mm;}.no-print{display:none;}}
+ h1{font-size:22px;color:#ca1b1b;margin-bottom:4px;}
+.subtitle{color:#888;font-size:11px;margin-bottom:20px;}
+.header{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:14px;margin-bottom:20px;}
+.badge{display:inline-block;padding:4px 14px;border-radius:20px;font-weight:bold;font-size:12px;color:white;background:${statusColor};}
+ table{width:100%;border-collapse:collapse;margin-top:16px;}
+ td{padding:10px 12px;border-bottom:1px solid #eee;vertical-align:top;}
+ td:first-child{width:40%;font-weight:bold;color:#555;background:#f9f9f9;}
+.section-title{background:#ca1b1b;color:white;padding:8px 12px;font-weight:bold;font-size:12px;margin-top:20px;}
+.footer{margin-top:50px;display:flex;justify-content:space-between;}
+.sig{text-align:center;}
+.sig-line{border-top:1px solid #000;width:180px;padding-top:6px;font-size:10px;color:#555;margin:0 auto;}
+.watermark{color:#888;font-size:11px;text-align:center;margin-top:30px;}
+.storage-box{background:${c.storage_type==='physical'?'#fff8dc':'#e8f5e9'};border:2px solid ${c.storage_type==='physical'?'#f5a623':'#2d8a4e'};border-radius:8px;padding:12px;margin-top:16px;}
+ </style>
+ </head><body>
+ <div class="header">
+ <h1>Roma's Donuts</h1>
+ <div class="subtitle">Payroll &amp; Attendance System Employee Contract Record</div>
+ </div>
 
-    const escapeHtml = value => cleanText(value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/\"/g, '&quot;')
-      .replace(/'/g, '&#039;');
+ <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+ <div>
+ <div style="font-size:20px;font-weight:bold;color:#333;">${c.employee_name}</div>
+ <div style="color:#888;font-size:12px;">${c.employee_code}</div>
+ </div>
+ <div class="badge">${statusLabel}</div>
+ </div>
 
-    const titleCase = value => cleanText(value)
-      .replace(/[-_]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .toLowerCase()
-      .replace(/\b\w/g, ch => ch.toUpperCase());
+ <div class="section-title">CONTRACT DETAILS</div>
+ <table>
+ <tr><td>Contract Type</td><td style="text-transform:capitalize;font-weight:bold;">${(c.contract_type||'').replace(/-/g,' ')}</td></tr>
+ <tr><td>Start Date</td><td>${c.start_date || ' '}</td></tr>
+ <tr><td>End Date</td><td>${c.end_date || 'Open-ended / No fixed end date'}</td></tr>
+ <tr><td>Status</td><td style="color:${statusColor};font-weight:bold;">${statusLabel}</td></tr>
+ <tr><td>Date Logged</td><td>${c.created_at? new Date(c.created_at).toLocaleDateString('en-PH', {year:'numeric',month:'long',day:'numeric'}): ' '}</td></tr>
+ </table>
 
-    const safeFilePart = value => cleanText(value)
-      .replace(/[^a-z0-9]+/gi, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 60);
+ <div class="section-title">DOCUMENT STORAGE</div>
+ <div class="storage-box">
+ <strong>${c.storage_type === 'physical'? ' Physical Copy on File': ' Digital Copy in System'}</strong><br/>
+ <span style="color:#555;font-size:12px;margin-top:4px;display:block;">${storageLabel}</span>
+ ${c.storage_type === 'digital' && c.file_url? `<span style="color:#888;font-size:11px;">File available in the system. Print a copy from the payroll portal.</span>`: ''}
+ </div>
 
-    const employeeName = cleanText(c?.employee_name || 'Employee');
-    const employeeCode = cleanText(c?.employee_code || '');
-    const contractType = titleCase(c?.contract_type || 'contract');
-    const statusLabel = titleCase(c?.status || 'active');
-    const startDate = cleanText(c?.start_date || '');
-    const endDate = cleanText(c?.end_date || 'Open-ended / No fixed end date');
-    const loggedDate = c?.created_at
-      ? new Date(c.created_at).toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric' })
-      : '';
-    const generatedDate = new Date().toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric' });
-    const storageType = cleanText(c?.storage_type || 'digital').toLowerCase();
-    const storageTitle = storageType === 'physical' ? 'Physical Copy on File' : 'Digital Copy in System';
-    const storageDetails = storageType === 'physical'
-      ? cleanText(c?.physical_location || 'Physical contract location not specified.')
-      : cleanText(c?.file_name || c?.file_url || 'Digital contract file is recorded in the system.');
-    const preparedBy = cleanText(typeof currentAdminLabel !== 'undefined' ? currentAdminLabel : 'Admin');
+ <div class="footer">
+ <div class="sig"><div class="sig-line">Employee Signature over Printed Name</div></div>
+ <div class="sig"><div class="sig-line">HR / Authorized Signatory</div></div>
+ <div class="sig"><div class="sig-line">Date</div></div>
+ </div>
 
-    const fileName = [
-      'Roma-Contract',
-      safeFilePart(employeeName),
-      safeFilePart(contractType),
-      safeFilePart(startDate || generatedDate)
-    ].filter(Boolean).join('_') + '.doc';
+ <div class="watermark">This is an official contract record of Roma's Donuts. Generated on ${new Date().toLocaleDateString('en-PH', {year:'numeric',month:'long',day:'numeric'})}.</div>
 
-    const html = [
-      '<!DOCTYPE html>',
-      '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">',
-      '<head>',
-      '<meta charset="utf-8">',
-      '<title>Roma\'s Donuts Contract Summary</title>',
-      '<style>',
-      '@page WordSection1{size:8.5in 11in;margin:0.65in 0.65in 0.65in 0.65in;}',
-      'div.WordSection1{page:WordSection1;}',
-      'body{font-family:Arial,sans-serif;color:#111;font-size:11pt;line-height:1.35;}',
-      '.header{border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:16px;}',
-      'h1{font-size:18pt;color:#ca1b1b;margin:0;}',
-      '.subtitle{font-size:10pt;color:#555;margin-top:3px;}',
-      '.badge{display:inline-block;border:1px solid #ca1b1b;color:#ca1b1b;padding:4px 10px;font-weight:bold;font-size:9pt;text-transform:uppercase;margin-top:8px;}',
-      '.section-title{background:#fdd412;color:#111;font-weight:bold;padding:6px 8px;margin:16px 0 0;border:1px solid #111;}',
-      'table{width:100%;border-collapse:collapse;}',
-      'td{border:1px solid #111;padding:7px 8px;vertical-align:top;}',
-      'td:first-child{width:32%;font-weight:bold;background:#f7f7f7;}',
-      '.storage-box{border:1px solid #111;padding:10px;margin-top:0;}',
-      '.note{font-size:9pt;color:#555;margin-top:8px;}',
-      '.signature-table{margin-top:42px;}',
-      '.signature-table td{border:none;text-align:center;padding-top:34px;font-size:9pt;}',
-      '.sig-line{border-top:1px solid #111;padding-top:5px;}',
-      '.watermark{font-size:8pt;color:#777;margin-top:22px;text-align:center;}',
-      '</style>',
-      '</head>',
-      '<body>',
-      '<div class="WordSection1">',
-      '<div class="header">',
-      '<h1>Roma\'s Donuts - Employee Contract Record</h1>',
-      '<div class="subtitle">Payroll &amp; Attendance System Employee Contract Summary</div>',
-      '<div class="badge">' + escapeHtml(statusLabel) + '</div>',
-      '</div>',
-      '<div class="section-title">EMPLOYEE DETAILS</div>',
-      '<table>',
-      '<tr><td>Employee Name</td><td>' + escapeHtml(employeeName) + '</td></tr>',
-      '<tr><td>Employee Code</td><td>' + escapeHtml(employeeCode) + '</td></tr>',
-      '</table>',
-      '<div class="section-title">CONTRACT DETAILS</div>',
-      '<table>',
-      '<tr><td>Contract Type</td><td><strong>' + escapeHtml(contractType) + '</strong></td></tr>',
-      '<tr><td>Start Date</td><td>' + escapeHtml(startDate) + '</td></tr>',
-      '<tr><td>End Date</td><td>' + escapeHtml(endDate) + '</td></tr>',
-      '<tr><td>Status</td><td><strong>' + escapeHtml(statusLabel) + '</strong></td></tr>',
-      '<tr><td>Date Logged</td><td>' + escapeHtml(loggedDate) + '</td></tr>',
-      '<tr><td>Prepared By</td><td>' + escapeHtml(preparedBy) + '</td></tr>',
-      '</table>',
-      '<div class="section-title">DOCUMENT STORAGE</div>',
-      '<div class="storage-box">',
-      '<strong>' + escapeHtml(storageTitle) + '</strong><br>',
-      escapeHtml(storageDetails),
-      '</div>',
-      '<p class="note">This Word file is generated from the official contract record stored in the Roma\'s Donuts Payroll &amp; Attendance System.</p>',
-      '<table class="signature-table">',
-      '<tr>',
-      '<td><div class="sig-line">Employee Signature over Printed Name</div></td>',
-      '<td><div class="sig-line">HR / Authorized Signatory</div></td>',
-      '<td><div class="sig-line">Date</div></td>',
-      '</tr>',
-      '</table>',
-      '<div class="watermark">Generated on ' + escapeHtml(generatedDate) + '.</div>',
-      '</div>',
-      '</body>',
-      '</html>'
-    ].join('');
-
-    try {
-      const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      showToast('Contract Word file downloaded.');
-    } catch (err) {
-      console.warn('printContractSummary Word download failed:', err);
-      showToast('Failed to download contract Word file: ' + (err?.message || err), 'red');
-    }
-  }
+ <div class="no-print" style="text-align:center;margin-top:20px;">
+ <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;"> PRINT</button>
+ </div>
+ </body></html>`)
+ pw.document.close()
+ setTimeout(() => { pw.focus(); pw.print() }, 600)
+ }
 
  function getRegularizationDueDate(emp) {
  if (!emp?.hire_date) return ''
@@ -3451,111 +3200,68 @@ export default function App() {
  function printEmploymentContract(emp, contractKind = null) {
  if (!emp) { showToast('Employee not found.', 'red'); return }
  const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]))
- const cleanFileName = value => String(value || '').trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 70)
  const type = contractKind || getRecommendedContractTypeForEmployee(emp)
  const dueDate = getRegularizationDueDate(emp)
  const isRegular = type === 'regular'
- const title = isRegular ? 'REGULAR EMPLOYMENT CONTRACT' : 'PROBATIONARY EMPLOYMENT CONTRACT'
- const startDate = isRegular ? (String(emp.employment_type || '').toLowerCase() === 'regular' ? (emp.hire_date || today) : (dueDate || today)) : (emp.hire_date || today)
- const endDate = isRegular ? 'Open-ended, subject to company policies and applicable labor laws' : (dueDate || 'Six months from hire date')
- const rateText = emp.daily_rate ? php(emp.daily_rate) + ' per day' : 'As stated in the employee compensation record'
+ const title = isRegular? 'REGULAR EMPLOYMENT CONTRACT': 'PROBATIONARY EMPLOYMENT CONTRACT'
+ const startDate = isRegular? (String(emp.employment_type || '').toLowerCase() === 'regular'? (emp.hire_date || today): (dueDate || today)): (emp.hire_date || today)
+ const endDate = isRegular? 'Open-ended, subject to company policies and applicable labor laws': (dueDate || 'Six months from hire date')
+ const rateText = emp.daily_rate? php(emp.daily_rate) + ' per day': 'As stated in the employee compensation record'
  const position = emp.position || 'Crew / Staff'
  const department = emp.department || 'Operations'
  const workLocation = emp.work_location || 'Roma\'s Donuts assigned work location / branch / production area'
- const generatedDate = new Date().toLocaleDateString('en-PH', {year:'numeric', month:'long', day:'numeric'})
- const fileName = ['Roma-Employment-Contract', cleanFileName(emp.full_name || 'Employee'), cleanFileName(type || 'contract'), cleanFileName(startDate || today)].filter(Boolean).join('_') + '.doc'
-
- const probationaryClauses = isRegular ? '' : [
-  '<h3>3. PROBATIONARY PERIOD AND REGULARIZATION STANDARDS</h3>',
-  '<p>The Employee is engaged on a probationary basis starting from the commencement date stated above. The Employee shall be evaluated based on attendance, punctuality, work quality, productivity, teamwork, honesty, discipline, food safety compliance, customer service, obedience to lawful company instructions, care of company property, and compliance with Roma\'s Donuts SOPs and handbook.</p>',
-  '<p>The probationary review date is <strong>' + esc(dueDate || 'to be computed from hire date') + '</strong>. Regularization is subject to management review and written approval. If the Employee continues working after the probationary period without lawful termination or extension allowed by law, the Employee may be treated according to applicable labor standards.</p>'
- ].join('')
-
- const regularClauses = isRegular ? [
-  '<h3>3. REGULAR EMPLOYMENT STATUS</h3>',
-  '<p>The Employee is engaged as a regular employee effective on the start date stated above, subject to continued compliance with company standards, attendance rules, payroll policies, food safety requirements, lawful instructions, and the Roma\'s Donuts employee handbook and SOPs.</p>'
- ].join('') : ''
-
- const html = [
- '<!DOCTYPE html>',
- '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">',
- '<head>',
- '<meta charset="utf-8">',
- '<title>' + esc(title) + ' - ' + esc(emp.full_name || '') + '</title>',
- '<style>',
- '@page WordSection1{size:8.5in 11in;margin:0.75in 0.85in 0.75in 0.85in;}',
- 'div.WordSection1{page:WordSection1;}',
- 'body{font-family:Arial,sans-serif;color:#111;font-size:11pt;line-height:1.45;margin:0;background:white;}',
- '.brand{text-align:center;border-bottom:2px solid #ca1b1b;padding-bottom:10px;margin-bottom:20px;}',
- '.brand h1{margin:0;color:#ca1b1b;font-size:18pt;}',
- '.brand p{margin:2px 0;color:#555;font-size:9pt;}',
- 'h2{text-align:center;margin:10px 0 18px;font-size:14pt;text-decoration:underline;letter-spacing:.4px;}',
- 'h3{font-size:11pt;color:#ca1b1b;margin:18px 0 6px;text-transform:uppercase;border-bottom:1px solid #ca1b1b;padding-bottom:3px;}',
- 'p{margin:7px 0;text-align:justify;}',
- '.info{margin:10px 0 16px;padding:10px 12px;border-left:4px solid #ca1b1b;background:#fff8dc;}',
- '.info p{margin:4px 0;text-align:left;}',
- '.note{border:1px solid #f5c518;background:#fff8dc;padding:9px 11px;margin:14px 0;font-size:10pt;}',
- '.signature-area{margin-top:42px;}',
- '.sig-row{display:block;margin-top:28px;}',
- '.sig-line{border-top:1px solid #111;width:44%;display:inline-block;text-align:center;padding-top:5px;font-size:9pt;margin-right:8%;vertical-align:top;}',
- '.sig-line:nth-child(2){margin-right:0;}',
- '.footer{text-align:center;color:#777;font-size:8pt;margin-top:24px;border-top:1px solid #ddd;padding-top:8px;}',
- '</style>',
- '</head>',
- '<body><div class="WordSection1">',
- '<div class="brand"><h1>Roma\'s Donuts</h1><p>Employment Contract Record</p><p>Generated by Roma\'s Donuts Business System</p></div>',
- '<h2>' + esc(title) + '</h2>',
- '<p>This Employment Contract is entered into by and between <strong>Roma\'s Donuts</strong> (the <strong>Company</strong>) and <strong>' + esc(emp.full_name || '') + '</strong> (the <strong>Employee</strong>).</p>',
- '<div class="info">',
- '<p><strong>Employee Name:</strong> ' + esc(emp.full_name || '') + '</p>',
- '<p><strong>Employee Code:</strong> ' + esc(emp.employee_code || '') + '</p>',
- '<p><strong>Position:</strong> ' + esc(position) + '</p>',
- '<p><strong>Department:</strong> ' + esc(department) + '</p>',
- '<p><strong>Work Location:</strong> ' + esc(workLocation) + '</p>',
- '<p><strong>Hire Date:</strong> ' + esc(emp.hire_date || '') + '</p>',
- '<p><strong>Contract Start Date:</strong> ' + esc(startDate) + '</p>',
- '<p><strong>Contract End / Review Date:</strong> ' + esc(endDate) + '</p>',
- '<p><strong>Compensation:</strong> ' + esc(rateText) + '</p>',
- '</div>',
- '<h3>1. Duties and Responsibilities</h3>',
- '<p>The Employee shall perform all duties related to the position and any reasonable work assignment given by the Company, including tasks connected to production, packing, dispatch, delivery, selling, customer service, cleaning, inventory, food safety, documentation, and other operational needs depending on the assigned role.</p>',
- '<h3>2. Work Schedule, Attendance, and Payroll</h3>',
- '<p>The Employee shall follow the work schedule, attendance rules, time-in/time-out procedures, overtime approval process, leave procedures, and payroll policies implemented by the Company. Overtime, undertime, absences, tardiness, holiday pay, cash advances, deductions, and adjustments shall be processed based on company records and applicable labor rules.</p>',
- probationaryClauses,
- regularClauses,
- '<h3>4. Company Rules, Food Safety, and Confidentiality</h3>',
- '<p>The Employee agrees to follow all company SOPs, food safety rules, hygiene standards, cash handling procedures, production standards, inventory controls, delivery policies, reseller policies, and lawful instructions from authorized managers or supervisors.</p>',
- '<p>The Employee shall keep confidential all company recipes, formulas, costing, supplier information, customer/reseller records, employee records, prices, business systems, reports, and other internal information. Unauthorized disclosure or misuse may lead to disciplinary action and other lawful remedies.</p>',
- '<h3>5. Company Property and Accountability</h3>',
- '<p>The Employee shall properly use and safeguard all company property, including equipment, tools, uniforms, delivery items, crates, crate covers, documents, cash, ingredients, finished goods, vehicles, devices, and system access credentials. Loss, damage, negligence, or unauthorized use shall be handled according to company policy, investigation, and applicable law.</p>',
- '<h3>6. Discipline, Separation, and Acknowledgment</h3>',
- '<p>Violation of company policy, misconduct, negligence, dishonesty, abandonment, repeated attendance issues, unsafe practices, insubordination, theft, fraud, or failure to meet reasonable work standards may result in disciplinary action, up to termination, subject to due process and applicable labor laws.</p>',
- '<div class="note"><strong>Legal/HR Review Note:</strong> This is a system-generated company template. For official signing and enforcement, management should ensure the contract matches current Philippine labor requirements and company policy.</div>',
- '<p>By signing below, the Employee confirms that the terms have been explained, read, understood, and accepted.</p>',
- '<div class="signature-area">',
- '<div class="sig-row"><div class="sig-line">Employee Signature over Printed Name / Date</div><div class="sig-line">Authorized Company Representative / Date</div></div>',
- '<div class="sig-row"><div class="sig-line">Witness / HR Representative / Date</div><div class="sig-line">Government ID Presented / ID Number</div></div>',
- '</div>',
- '<div class="footer">Roma\'s Donuts | ' + esc(title) + ' | Generated ' + esc(generatedDate) + '</div>',
- '</div></body></html>'
- ].join('')
-
- try {
-  const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = fileName
-  document.body.appendChild(link)
-  link.click()
-  link.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-  showToast('Employment contract Word file downloaded.')
- } catch (err) {
-  console.warn('printEmploymentContract Word download failed:', err)
-  showToast('Failed to download employment contract Word file: ' + (err?.message || err), 'red')
+ const probationaryClauses = isRegular? '' : `
+ <h3>PROBATIONARY PERIOD AND REGULARIZATION STANDARDS</h3>
+ <p>The Employee is engaged on a probationary basis starting from the commencement date stated above. The Employee shall be evaluated based on attendance, punctuality, work quality, productivity, teamwork, honesty, discipline, food safety compliance, customer service, obedience to lawful company instructions, care of company property, and compliance with Roma's Donuts SOPs and handbook.</p>
+ <p>The probationary review date is <strong>${esc(dueDate || 'to be computed from hire date')}</strong>. Regularization is subject to management review and written approval. If the Employee continues working after the probationary period without lawful termination or extension allowed by law, the Employee may be treated according to applicable labor standards.</p>`
+ const regularClauses = isRegular? `
+ <h3>REGULAR EMPLOYMENT STATUS</h3>
+ <p>The Employee is engaged as a regular employee effective on the start date stated above, subject to continued compliance with company standards, attendance rules, payroll policies, food safety requirements, lawful instructions, and the Roma's Donuts employee handbook and SOPs.</p>` : ''
+ const html = `<!DOCTYPE html><html><head><title>${esc(title)} - ${esc(emp.full_name)}</title>
+ <style>
+ *{box-sizing:border-box;} body{font-family:Arial,sans-serif;color:#111;margin:0;background:#e5e5e5;font-size:11px;line-height:1.38;} .page{width:210mm;min-height:297mm;margin:0 auto;background:white;padding:17mm 18mm;} .brand{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px;} .brand h1{margin:0;color:#ca1b1b;font-size:24px;letter-spacing:.5px;} .brand p{margin:3px 0;color:#555;font-size:11px;} h2{text-align:center;margin:10px 0 14px;font-size:16px;letter-spacing:.6px;text-decoration:underline;} h3{background:#ca1b1b;color:white;padding:5px 8px;font-size:11px;margin:12px 0 7px;letter-spacing:.3px;} p{margin:5px 0;text-align:justify;} table{width:100%;border-collapse:collapse;margin:8px 0 12px;} td{border:1px solid #ddd;padding:6px 8px;vertical-align:top;} td:first-child{width:31%;background:#fff8dc;font-weight:bold;color:#333;} .note{border:1px solid #f5c518;background:#fff8dc;padding:8px;margin:10px 0;font-size:10px;color:#555;} .sig-wrap{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:26px;} .sig{border-top:1px solid #000;text-align:center;padding-top:5px;font-size:10px;} .footer{text-align:center;color:#777;font-size:9px;margin-top:14px;} .no-print{text-align:center;margin:18px;} button{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 22px;font-weight:bold;cursor:pointer;} @media print{@page{size:A4;margin:0;} body{background:white;} .page{margin:0;box-shadow:none;} .no-print{display:none;}}
+ </style></head><body><div class="page">
+ <div class="brand"><h1>Roma's Donuts</h1><p>Employment Contract Record</p><p>Generated by Roma's Donuts Business System</p></div>
+ <h2>${esc(title)}</h2>
+ <p>This Employment Contract is entered into by and between <strong>Roma's Donuts</strong> (the "Company") and the employee named below (the "Employee").</p>
+ <h3>EMPLOYEE INFORMATION</h3>
+ <table>
+ <tr><td>Employee Name</td><td>${esc(emp.full_name || '')}</td></tr>
+ <tr><td>Employee Code</td><td>${esc(emp.employee_code || '')}</td></tr>
+ <tr><td>Position</td><td>${esc(position)}</td></tr>
+ <tr><td>Department</td><td>${esc(department)}</td></tr>
+ <tr><td>Work Location</td><td>${esc(workLocation)}</td></tr>
+ <tr><td>Hire Date</td><td>${esc(emp.hire_date || '')}</td></tr>
+ <tr><td>Contract Start Date</td><td>${esc(startDate)}</td></tr>
+ <tr><td>Contract End / Review Date</td><td>${esc(endDate)}</td></tr>
+ <tr><td>Compensation</td><td>${esc(rateText)}</td></tr>
+ </table>
+ <h3>DUTIES AND RESPONSIBILITIES</h3>
+ <p>The Employee shall perform all duties related to the position and any reasonable work assignment given by the Company, including tasks connected to production, packing, dispatch, delivery, selling, customer service, cleaning, inventory, food safety, documentation, and other operational needs depending on the assigned role.</p>
+ <h3>WORK SCHEDULE, ATTENDANCE, AND PAYROLL</h3>
+ <p>The Employee shall follow the work schedule, attendance rules, time-in/time-out procedures, overtime approval process, leave procedures, and payroll policies implemented by the Company. Overtime, undertime, absences, tardiness, holiday pay, cash advances, deductions, and adjustments shall be processed based on company records and applicable labor rules.</p>
+ ${probationaryClauses}
+ ${regularClauses}
+ <h3>COMPANY RULES, FOOD SAFETY, AND CONFIDENTIALITY</h3>
+ <p>The Employee agrees to follow all company SOPs, food safety rules, hygiene standards, cash handling procedures, production standards, inventory controls, delivery policies, reseller policies, and lawful instructions from authorized managers or supervisors.</p>
+ <p>The Employee shall keep confidential all company recipes, formulas, costing, supplier information, customer/reseller records, employee records, prices, business systems, reports, and other internal information. Unauthorized disclosure or misuse may lead to disciplinary action and other lawful remedies.</p>
+ <h3>COMPANY PROPERTY AND ACCOUNTABILITY</h3>
+ <p>The Employee shall properly use and safeguard all company property, including equipment, tools, uniforms, delivery items, crates, crate covers, documents, cash, ingredients, finished goods, vehicles, devices, and system access credentials. Loss, damage, negligence, or unauthorized use shall be handled according to company policy, investigation, and applicable law.</p>
+ <h3>DISCIPLINE, SEPARATION, AND ACKNOWLEDGMENT</h3>
+ <p>Violation of company policy, misconduct, negligence, dishonesty, abandonment, repeated attendance issues, unsafe practices, insubordination, theft, fraud, or failure to meet reasonable work standards may result in disciplinary action, up to termination, subject to due process and applicable labor laws.</p>
+ <div class="note"><strong>Legal/HR Review Note:</strong> This is a system-generated company template. For official signing and enforcement, management should ensure the contract matches current Philippine labor requirements and company policy.</div>
+ <p>By signing below, the Employee confirms that the terms have been explained, read, understood, and accepted.</p>
+ <div class="sig-wrap"><div><div class="sig">Employee Signature over Printed Name / Date</div></div><div><div class="sig">Authorized Company Representative / Date</div></div></div>
+ <div class="sig-wrap"><div><div class="sig">Witness / HR Representative / Date</div></div><div><div class="sig">Government ID Presented / ID Number</div></div></div>
+ <div class="footer">Roma's Donuts | ${esc(title)} | Generated ${new Date().toLocaleDateString('en-PH', {year:'numeric', month:'long', day:'numeric'})}</div>
+ </div><div class="no-print"><button onclick="window.print()">PRINT CONTRACT</button></div></body></html>`
+ const pw = window.open('', '_blank', 'width=900,height=700')
+ if (!pw) { showToast('Popup blocked. Please allow popups to print the contract.', 'red'); return }
+ pw.document.write(html)
+ pw.document.close()
+ setTimeout(() => { pw.focus(); pw.print() }, 700)
  }
- }
+
 
  // Inventory Functions 
  // Feature 3: Item Transaction History 
@@ -4230,19 +3936,6 @@ Cancel = create batch record only for existing stock.`)
  async function addInventoryItem() {
  if (!newItemName.trim()) { showToast(' Please enter item name.','red'); return }
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
-
- const isNewSnackDrink = isSnackDrinkCategoryName(newItemCategory)
- const enteredBuyingPrice = safeNum(newItemBuyingPrice, 0)
-
- // For Snacks/Drinks: existing/old price is SELLING PRICE.
- // Buying price is a separate field. Only compute selling price when buying price is entered.
- const itemBuyingPrice = isNewSnackDrink ? enteredBuyingPrice : 0
- const itemCostPerUnit = isNewSnackDrink
-  ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
-  : safeNum(newItemCostPerUnit, 0)
- const itemSellingPrice = isNewSnackDrink
-  ? (enteredBuyingPrice > 0 ? snackDrinkAutoSellingPrice(enteredBuyingPrice) : safeNum(newItemSellingPrice, 0))
-  : safeNum(newItemSellingPrice, 0)
  setAddItemLoading(true)
  try {
  const { error } = await supabase.from('inventory_items').insert({
@@ -4267,7 +3960,6 @@ Cancel = create batch record only for existing stock.`)
  setNewItemName('')
  setNewItemMinStock('')
  setNewItemCostPerUnit('')
- setNewItemBuyingPrice('')
  setNewItemCurrentStock('')
  setNewItemSellingPrice('')
  setNewItemExpiryDate('')
@@ -4293,71 +3985,20 @@ Cancel = create batch record only for existing stock.`)
  showToast(` ${item.name} removed.`); loadInventoryItems()
  }
  async function saveInventoryItemEdit(item) {
-  const inventoryScrollY = typeof window !== 'undefined' ? window.scrollY : 0
-  const f = editItemFields
-  const updatedCategory = f.category ?? item.category
-  const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
-
-  const supplierPrice = isEditingSnackDrink
-   ? safeNum(f.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item), 0)
-   : safeNum(f.buying_price ?? item.buying_price ?? 0, 0)
-
-  if (isEditingSnackDrink && supplierPrice <= 0) {
-   showToast('Please enter supplier price / buying price for this snack or drink.', 'red')
-   return
-  }
-
-  const finalCostPerUnit = isEditingSnackDrink
-   ? supplierPrice
-   : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
-
-  const finalSellingPrice = isEditingSnackDrink
-   ? snackDrinkAutoSellingPrice(supplierPrice)
-   : safeNum(f.selling_price ?? item.selling_price ?? 0, 0)
-
-  const payload = {
-   name: f.name || item.name,
-   category: f.category || item.category,
-   unit: f.unit || item.unit,
-   current_stock: Number(f.current_stock ?? item.current_stock ?? 0),
-   min_stock: Number(f.min_stock ?? item.min_stock),
-   cost_per_unit: finalCostPerUnit,
-   selling_price: finalSellingPrice,
-   expiry_date: f.expiry_date !== undefined ? (f.expiry_date || null) : (item.expiry_date || null),
-   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null)
-  }
-
-  if (isEditingSnackDrink) {
-   payload.buying_price = supplierPrice
-   payload.markup_percent = 30
-  }
-
-  const { error } = await supabase.from('inventory_items').update(payload).eq('id', item.id)
-
-  if (error) { showToast(' Failed: ' + error.message, 'red'); return }
-
-  showToast(
-   isEditingSnackDrink
-    ? ' Item updated! Supplier price: ' + php(supplierPrice) + ' | Selling price: ' + php(finalSellingPrice)
-    : ' Item updated!'
-  )
-
-  const updatedItem = { ...item, ...payload, id:item.id }
-
-  setInventoryItems(prev => (prev || []).map(row =>
-   String(row.id) === String(item.id)
-    ? { ...row, ...updatedItem }
-    : row
-  ))
-
-  setEditingItemId(null)
-  setEditItemFields({})
-
-  if (typeof window !== 'undefined') {
-   requestAnimationFrame(() => {
-    window.scrollTo({ top: inventoryScrollY, left:0, behavior:'auto' })
-   })
-  }
+ const f = editItemFields
+ const { error } = await supabase.from('inventory_items').update({
+ name: f.name||item.name,
+ category: f.category||item.category,
+ unit: f.unit||item.unit,
+ current_stock: Number(f.current_stock??item.current_stock??0),
+ min_stock: Number(f.min_stock??item.min_stock),
+ cost_per_unit: Number(f.cost_per_unit??item.cost_per_unit),
+ selling_price: Number(f.selling_price??item.selling_price??0),
+ expiry_date: f.expiry_date!==undefined? (f.expiry_date||null): (item.expiry_date||null),
+ supplier_id: f.supplier_id!==undefined? (f.supplier_id||null): (item.supplier_id||null)
+ }).eq('id', item.id)
+ if (error) { showToast(' Failed: '+error.message,'red'); return }
+ showToast(' Item updated!'); setEditingItemId(null); setEditItemFields({}); loadInventoryItems()
  }
  async function recordStockTransaction() {
  if (!stockTxItemId) { showToast(' Please select an item.','red'); return }
@@ -5433,7 +5074,7 @@ Cancel = create batch record only for existing stock.`)
  try {
  const { data, error } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
  if (error) throw error
- setDonutVariants(sortDonutVariantsByGuide(data || []))
+ setDonutVariants(data || [])
  setCostingLoadErrors(p => p.filter(x=>!x.includes('donut_variants')))
  } catch (err) {
  console.warn('Donut variants could not be loaded:', err)
@@ -5928,7 +5569,7 @@ Cancel = create batch record only for existing stock.`)
  console.warn('Unable to load donut variants for default order editor:', error)
  }
  variants = data || []
- if (variants.length > 0) setDonutVariants(sortDonutVariantsByGuide(variants))
+ if (variants.length > 0) setDonutVariants(variants)
  }
 
  const existing = resellerDefaultOrders[resellerId] || []
@@ -6004,7 +5645,7 @@ Cancel = create batch record only for existing stock.`)
  return
  }
  variants = data || []
- setDonutVariants(sortDonutVariantsByGuide(variants))
+ setDonutVariants(variants)
  }
  if (!variants || variants.length === 0) {
  showToast('No donut varieties found. Go to Costing / Recipes and load variants first.', 'red')
@@ -7833,76 +7474,6 @@ function buildDeliveryInvoicePrintCSS() {
    return clean.slice(0, 120) || 'roma-delivery-invoice'
  }
 
-
-  // MASTER DONUT VARIETY ORDER - use this everywhere for uniform display.
-  const DONUT_VARIANT_DISPLAY_ORDER = [
-    { label:'Choco Balls', aliases:['Choco Balls'] },
-    { label:'Matcha Pops', aliases:['Matcha Pops'] },
-    { label:'Taro Pops', aliases:['Taro Pops'] },
-    { label:'Strawberry Pops', aliases:['Strawberry Pops'] },
-    { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
-    { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
-    { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] },
-    { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
-    { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
-    { label:'Rings', aliases:['Rings'] },
-    { label:'Shells', aliases:['Shells'] },
-    { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
-    { label:'Biscoreo', aliases:['Biscoreo'] },
-    { label:'Oreo Dream', aliases:['Oreo Dream'] },
-    { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
-    { label:'Almond Glitz', aliases:['Almond Glitz'] },
-    { label:'Lotus Cloud', aliases:['Lotus Cloud'] }
-  ];
-
-  function normalizeDonutVariantName(value) {
-    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-  }
-
-  const DONUT_VARIANT_ORDER_INDEX = DONUT_VARIANT_DISPLAY_ORDER.reduce((map, row, index) => {
-    [row.label, ...(row.aliases || [])].forEach(name => {
-      const key = normalizeDonutVariantName(name);
-      if (key) map[key] = index;
-    });
-    return map;
-  }, {});
-
-  function getDonutVariantOrderIndex(value) {
-    const key = normalizeDonutVariantName(value);
-    return Object.prototype.hasOwnProperty.call(DONUT_VARIANT_ORDER_INDEX, key)
-      ? DONUT_VARIANT_ORDER_INDEX[key]
-      : 9999;
-  }
-
-  function compareDonutVariantNamesByGuide(a, b) {
-    const ai = getDonutVariantOrderIndex(a);
-    const bi = getDonutVariantOrderIndex(b);
-    if (ai !== bi) return ai - bi;
-    return String(a || '').localeCompare(String(b || ''));
-  }
-
-  function compareDonutVariantRowsByGuide(a, b) {
-    const an = a?.variant_name || a?.variant || a?.product_name || a?.name || a?.product || '';
-    const bn = b?.variant_name || b?.variant || b?.product_name || b?.name || b?.product || '';
-    return compareDonutVariantNamesByGuide(an, bn);
-  }
-
-  function sortDonutVariantsByGuide(list) {
-    return [...(Array.isArray(list) ? list : [])].sort((a, b) =>
-      compareDonutVariantNamesByGuide(
-        a?.name || a?.variant_name || a?.product_name || '',
-        b?.name || b?.variant_name || b?.product_name || ''
-      )
-    );
-  }
-
-  function buildInvoiceProductTemplateFromGuide() {
-    return DONUT_VARIANT_DISPLAY_ORDER.map(row => ({
-      label: row.label,
-      aliases: row.aliases || [row.label]
-    }));
-  }
-
  function getDeliveryInvoicePrintData(invoice) {
    const items = Array.isArray(invoice?.delivery_invoice_items) ? invoice.delivery_invoice_items : []
    const reseller = resellers.find(r => String(r.id) === String(invoice?.reseller_id))
@@ -7949,7 +7520,25 @@ function buildDeliveryInvoicePrintCSS() {
        reseller?.area
      ].map(cleanText).find(Boolean) || ''
 
-    const productTemplate = buildInvoiceProductTemplateFromGuide()
+   const productTemplate = [
+     { label:'Choco Balls', aliases:['Choco Balls'] },
+     { label:'', aliases:[] },
+     { label:'Almond Glitz', aliases:['Almond Glitz'] },
+     { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
+     { label:'Oreo Dream', aliases:['Oreo Dream'] },
+     { label:'Lotus Cloud', aliases:['Lotus Cloud'] },
+     { label:'Rings', aliases:['Rings'] },
+     { label:'Shells', aliases:['Shells'] },
+     { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
+     { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
+     { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
+     { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
+     { label:'Strawberry Pops', aliases:['Strawberry Pops'] },
+     { label:'Taro Pops', aliases:['Taro Pops'] },
+     { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
+     { label:'Biscoreo', aliases:['Biscoreo'] },
+     { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] }
+   ]
 
    const getQty = item => safeNum(item?.delivered_quantity ?? item?.actual_quantity ?? item?.quantity, 0)
    const getPrice = item => safeNum(item?.reseller_price ?? item?.unit_price ?? item?.price ?? item?.selling_price, 0)
@@ -8337,7 +7926,7 @@ function buildDeliveryInvoicePrintCSS() {
  }
  })
 
- return Object.values(rowsByKey).sort(compareDonutVariantRowsByGuide)
+ return Object.values(rowsByKey).sort((a,b)=>String(a.variant_name).localeCompare(String(b.variant_name)))
  }
 
  function startInvoiceAdjustment(invoice) {
@@ -8579,7 +8168,7 @@ function buildDeliveryInvoicePrintCSS() {
   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
  ])
  if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
- const variantItems = sortDonutVariantsByGuide(variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
+ const variantItems = (variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
  setProductionReportItems(variantItems)
  setProductionReportDeliveryDate(deliveryDate)
  setShowProductionReport(true)
@@ -9723,7 +9312,7 @@ function buildDeliveryInvoicePrintCSS() {
 
  if (!error && data && data.length > 0) {
  variants = data
- setDonutVariants(sortDonutVariantsByGuide(data))
+ setDonutVariants(data)
  }
  }
 
@@ -10777,7 +10366,6 @@ function buildDeliveryInvoicePrintCSS() {
  setTodaySchedule(data)
  }
  async function loadTodayBreaks(logId) {
- if (!logId) { setTodayBreaks([]); return }
  const { data } = await supabase.from('break_logs').select('*').eq('attendance_log_id', logId).order('created_at')
  setTodayBreaks(data || [])
  }
@@ -16148,108 +15736,6 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (employee?.id) loadMyCashAdvances(employee)
  }
 
-async function editCashAdvanceDeductionPlan(ca, req = null) {
-  if (!ca?.id) {
-   showToast('Cash advance ledger not found. Refresh cash advance requests first.', 'red')
-   return
-  }
-
-  if (adminRole !== 'owner') {
-   showToast('Owner access is required to edit an approved cash advance deduction plan.', 'red')
-   return
-  }
-
-  const amount = Math.max(0, safeNum(ca.amount, 0))
-  const amountPaid = Math.max(0, safeNum(ca.amount_paid, 0))
-  const currentTotal = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || req?.request_installments_total || 1))
-  const currentRemaining = Math.max(0, safeNum(ca.installments_remaining, currentTotal))
-  const completed = Math.max(0, currentTotal - currentRemaining)
-
-  if (!amount) {
-   showToast('Invalid cash advance amount.', 'red')
-   return
-  }
-
-  if (amountPaid > 0 || completed > 0) {
-   showToast('This cash advance already has deduction history. Use correction/reversal instead of editing the plan directly.', 'red')
-   return
-  }
-
-  const answer = window.prompt(
-   'Enter new number of payroll deductions/installments:\n\n' +
-   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
-   'CA Amount: ' + php(amount) + '\n' +
-   'Current Plan: ' + currentTotal + ' payroll(s) at ' + php(ca.per_payroll_deduction || 0) + ' per payroll',
-   String(currentTotal)
-  )
-
-  if (answer === null) return
-
-  const newInstallments = Math.max(1, Math.round(safeNum(answer, 0)))
-
-  if (!Number.isFinite(newInstallments) || newInstallments < 1) {
-   showToast('Invalid number of payroll deductions.', 'red')
-   return
-  }
-
-  const newPerPayroll = moneyRound(amount / newInstallments)
-
-  if (!window.confirm(
-   'Update deduction plan?\n\n' +
-   'Amount: ' + php(amount) + '\n' +
-   'New payroll count: ' + newInstallments + '\n' +
-   'New deduction per payroll: ' + php(newPerPayroll) + '\n\n' +
-   'This is allowed because no payroll deduction has been applied yet.'
-  )) return
-
-  const existingNotes = String(ca.notes || '').trim()
-  const newNotes = existingNotes +
-   (existingNotes ? ' | ' : '') +
-   'DEDUCTION PLAN EDITED BY OWNER ' + new Date().toISOString().slice(0,10) +
-   ': ' + currentTotal + ' payroll(s) to ' + newInstallments + ' payroll(s)'
-
-  try {
-   const { error } = await supabase.from('cash_advances').update({
-    amount_paid:0,
-    balance:amount,
-    per_payroll_deduction:newPerPayroll,
-    installments_total:newInstallments,
-    installments_remaining:newInstallments,
-    status:'Unpaid',
-    notes:newNotes
-   }).eq('id', ca.id)
-
-   if (error) throw error
-
-   if (req?.id) {
-    const { error:reqError } = await supabase.from('cash_advance_requests').update({
-     request_installments_total:newInstallments,
-     request_per_payroll_deduction:newPerPayroll
-    }).eq('id', req.id)
-
-    if (reqError && !isMissingCashAdvanceDetailColumnError(reqError)) {
-     console.warn('Cash advance request plan sync skipped:', reqError)
-    }
-   }
-
-   await logAudit(
-    'CA DEDUCTION PLAN EDITED',
-    currentAdminLabel || adminRole,
-    ca.employee_name || req?.employee_name || 'Employee',
-    php(amount) + ' changed from ' + currentTotal + ' payroll(s) to ' + newInstallments + ' payroll(s). New deduction: ' + php(newPerPayroll) + '. CA ID: ' + ca.id
-   )
-
-   await loadCashAdvanceRequests()
-   await loadResolvedCARequests()
-
-   showToast('Cash advance deduction plan updated: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).', 'green')
-  } catch (err) {
-   console.warn('editCashAdvanceDeductionPlan:', err)
-   showToast('Failed to update deduction plan: ' + (err?.message || err), 'red')
-  }
- }
-
-
  async function loadPayslipDisputes() {
  const { data } = await supabase.from('payslip_disputes').select('*').eq('status', 'pending').order('created_at', { ascending:false })
  setPayslipDisputes(dedupePayslipDisputes(data || []))
@@ -17948,43 +17434,32 @@ async function computePayroll() {
 
  
 function PosMonitorPanel() {
- const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
- const readSagsDraft = (key, fallback = '') => {
-  try {
-   const saved = JSON.parse(localStorage.getItem(SAGS_POS_DRAFT_KEY) || '{}')
-   return saved[key] ?? fallback
-  } catch {
-   return fallback
-  }
- }
  const [posDate, setPosDate] = useState(getTodayDate())
  const [posLoading, setPosLoading] = useState(false)
  const [posSales, setPosSales] = useState([])
  const [posItems, setPosItems] = useState([])
  const [posMovements, setPosMovements] = useState([])
  const [posProducts, setPosProducts] = useState([])
- const [posRefreshing, setPosRefreshing] = useState(false)
- const [stockInProductId, setStockInProductId] = useState(() => readSagsDraft('stockInProductId', ''))
- const [stockInSearch, setStockInSearch] = useState(() => readSagsDraft('stockInSearch', ''))
- const [stockInQty, setStockInQty] = useState(() => readSagsDraft('stockInQty', ''))
- const [stockInNote, setStockInNote] = useState(() => readSagsDraft('stockInNote', ''))
- const [stockInTransferNo, setStockInTransferNo] = useState(() => readSagsDraft('stockInTransferNo', ''))
- const [stockInTransferredBy, setStockInTransferredBy] = useState(() => readSagsDraft('stockInTransferredBy', ''))
- const [stockInReceivedBy, setStockInReceivedBy] = useState(() => readSagsDraft('stockInReceivedBy', ''))
- const [transactionSearch, setTransactionSearch] = useState(() => readSagsDraft('transactionSearch', ''))
- const [voidReceiptNo, setVoidReceiptNo] = useState(() => readSagsDraft('voidReceiptNo', ''))
- const [voidReason, setVoidReason] = useState(() => readSagsDraft('voidReason', ''))
- const [voidedBy, setVoidedBy] = useState(() => readSagsDraft('voidedBy', ''))
- const [voidAdminPin, setVoidAdminPin] = useState(() => readSagsDraft('voidAdminPin', ''))
- const [closingOpeningCash, setClosingOpeningCash] = useState(() => readSagsDraft('closingOpeningCash', ''))
- const [closingActualCash, setClosingActualCash] = useState(() => readSagsDraft('closingActualCash', ''))
- const [closingClosedBy, setClosingClosedBy] = useState(() => readSagsDraft('closingClosedBy', ''))
- const [closingRemarks, setClosingRemarks] = useState(() => readSagsDraft('closingRemarks', ''))
+ const [stockInProductId, setStockInProductId] = useState('')
+ const [stockInSearch, setStockInSearch] = useState('')
+ const [stockInQty, setStockInQty] = useState('')
+ const [stockInNote, setStockInNote] = useState('')
+ const [stockInTransferNo, setStockInTransferNo] = useState('')
+ const [stockInTransferredBy, setStockInTransferredBy] = useState('')
+ const [stockInReceivedBy, setStockInReceivedBy] = useState('')
+ const [transactionSearch, setTransactionSearch] = useState('')
+ const [voidReceiptNo, setVoidReceiptNo] = useState('')
+ const [voidReason, setVoidReason] = useState('')
+ const [voidedBy, setVoidedBy] = useState('')
+ const [voidAdminPin, setVoidAdminPin] = useState('')
+ const [closingOpeningCash, setClosingOpeningCash] = useState('')
+ const [closingActualCash, setClosingActualCash] = useState('')
+ const [closingClosedBy, setClosingClosedBy] = useState('')
+ const [closingRemarks, setClosingRemarks] = useState('')
  const [posError, setPosError] = useState('')
 
- async function loadPosMonitor(options = {}) {
-  const silent = options && options.silent
-  silent ? setPosRefreshing(true) : setPosLoading(true)
+ async function loadPosMonitor() {
+  setPosLoading(true)
   setPosError('')
   try {
    const start = posDate + 'T00:00:00'
@@ -18030,7 +17505,7 @@ function PosMonitorPanel() {
    console.error('POS monitor error:', err)
    setPosError(err?.message || String(err))
   } finally {
-   silent ? setPosRefreshing(false) : setPosLoading(false)
+   setPosLoading(false)
   }
  }
 
@@ -18234,47 +17709,7 @@ function PosMonitorPanel() {
   }
  }
 
- useEffect(() => {
-  try {
-   localStorage.setItem(SAGS_POS_DRAFT_KEY, JSON.stringify({
-    stockInProductId,
-    stockInSearch,
-    stockInQty,
-    stockInNote,
-    stockInTransferNo,
-    stockInTransferredBy,
-    stockInReceivedBy,
-    transactionSearch,
-    closingOpeningCash,
-    closingActualCash,
-    closingClosedBy,
-    closingRemarks,
-    voidReceiptNo,
-    voidReason,
-    voidedBy,
-    voidAdminPin
-   }))
-  } catch {}
- }, [
-  stockInProductId,
-  stockInSearch,
-  stockInQty,
-  stockInNote,
-  stockInTransferNo,
-  stockInTransferredBy,
-  stockInReceivedBy,
-  transactionSearch,
-  closingOpeningCash,
-  closingActualCash,
-  closingClosedBy,
-  closingRemarks,
-  voidReceiptNo,
-  voidReason,
-  voidedBy,
-  voidAdminPin
- ])
-
- useEffect(() => { loadPosMonitor({ silent:true }) }, [posDate])
+ useEffect(() => { loadPosMonitor() }, [posDate])
 
  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
@@ -18398,7 +17833,7 @@ function PosMonitorPanel() {
     </div>
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
      <input type="date" value={posDate} onChange={e=>setPosDate(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0}} />
-     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
+     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={loadPosMonitor} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
     </div>
    </div>
 
@@ -18446,53 +17881,6 @@ function PosMonitorPanel() {
      )}
     </div>
    </div>
-
-   
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Void / Cancel Sale</h3>
-    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>
-     Void a receipt using admin PIN. The sale will be marked as void and inventory will be returned.
-    </p>
-
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 2fr 1fr 1fr auto', gap:'10px', alignItems:'end' }}>
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Receipt No.</label>
-      <input value={voidReceiptNo} onChange={e=>setVoidReceiptNo(e.target.value)} placeholder="ROMA-..." style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Reason</label>
-      <input value={voidReason} onChange={e=>setVoidReason(e.target.value)} placeholder="Wrong item / cancelled / test void" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Voided By</label>
-      <input value={voidedBy} onChange={e=>setVoidedBy(e.target.value)} placeholder="Name" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Admin PIN</label>
-      <input type="password" value={voidAdminPin} onChange={e=>setVoidAdminPin(e.target.value)} placeholder="PIN" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <button
-      onClick={cleanVoidSaleWithAdminPin}
-      style={{
-       background:'#ca1b1b',
-       color:'white',
-       border:'none',
-       borderRadius:'10px',
-       padding:'12px 16px',
-       fontWeight:'bold',
-       cursor:'pointer',
-       whiteSpace:'nowrap'
-      }}
-     >
-      Void Sale
-     </button>
-    </div>
-   </div>
-
 
    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Low Stock Alert Dashboard</h3>
@@ -18653,7 +18041,7 @@ function PosMonitorPanel() {
          <th style={{ textAlign:'right', padding:'8px' }}>Sold</th>
          <th style={{ textAlign:'right', padding:'8px' }}>Movement</th>
          <th style={{ textAlign:'right', padding:'8px' }}>Remaining</th>
-         <th style={{ textAlign:'center', padding:'8px', width:'90px' }}>Status</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>Status</th>
         </tr>
        </thead>
        <tbody>
@@ -18667,7 +18055,7 @@ function PosMonitorPanel() {
           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{row.soldQty}</td>
           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.movementQty}</td>
           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{row.remainingStock}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center', width:'90px', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>{row.status}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>{row.status}</td>
          </tr>
         ))}
        </tbody>
@@ -18769,9 +18157,6 @@ function PosMonitorPanel() {
  { key:'sops', icon:'\uD83D\uDCD8', label:'SOP Library',
  tabs:[{key:'sops',label:'SOP Control Center'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
- { key:'documents', icon:String.fromCodePoint(0x1F5C2), label:'Documents Center',
- tabs:[{key:'documents',label:'Company Forms & Documents'}],
- roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
  { key:'recipes', icon:'\uD83D\uDD10', label:'Recipe Vault',
  tabs:[{key:'recipes',label:'Recipe Vault'}],
  roles:['owner','manager'] },
@@ -18797,7 +18182,7 @@ function PosMonitorPanel() {
  ]
  const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
- const visibleSubTabs = currentSection.tabs.filter(t => t.key === 'documents' || canAccess(t.key))
+ const visibleSubTabs = currentSection.tabs.filter(t => canAccess(t.key))
  const canManageSopLibrary = ['owner','manager'].includes(normalizeAdminRole(adminRole))
  const filteredSops = (sops || []).filter(sop => {
  if (!canViewSop(sop)) return false
@@ -18916,372 +18301,6 @@ function PosMonitorPanel() {
  })
  return Object.values(map)
  })()
-
-
- const updateDocumentFormDraft = (field, value) => {
-  setDocumentFormDraft(prev => ({ ...prev, [field]:value }))
- }
-
-
- async function loadCompanyDocumentRecords() {
-  setCompanyDocumentRecordsLoading(true)
-  try {
-   const { data, error } = await supabase
-    .from('company_document_records')
-    .select('*')
-    .order('created_at', { ascending:false })
-    .limit(200)
-
-   if (error) throw error
-   setCompanyDocumentRecords(data || [])
-  } catch (err) {
-   console.warn('loadCompanyDocumentRecords:', err)
-   showToast('Failed to load document records: ' + (err?.message || err), 'red')
-   setCompanyDocumentRecords([])
-  } finally {
-   setCompanyDocumentRecordsLoading(false)
-  }
- }
-
- function getCompanyDocumentRecordStatusColor(status) {
-  const s = String(status || '').toLowerCase()
-  if (s === 'draft') return 'yellow'
-  if (s === 'served' || s === 'issued') return 'blue'
-  if (s === 'closed' || s === 'completed') return 'green'
-  if (s === 'voided') return 'red'
-  return 'gray'
- }
-
- function getCompanyDocumentRecordStatusLabel(status) {
-  const s = String(status || 'draft').toLowerCase()
-  if (s === 'draft') return 'Draft'
-  if (s === 'served') return 'Served'
-  if (s === 'issued') return 'Issued'
-  if (s === 'closed') return 'Closed'
-  if (s === 'completed') return 'Completed'
-  if (s === 'voided') return 'Voided'
-  return s.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
- }
-
- async function saveCurrentDocumentRecord(status = 'draft', options = {}) {
-  const form = getSelectedDocumentBatch1AForm()
-  const emp = getDocumentFormEmployee()
-  const docNo = getDocumentReferenceNumber(form)
-
-  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Save blank document record?')) return null
-
-  const payload = {
-   document_no: docNo,
-   form_key: form.key,
-   document_type: form.title,
-   employee_id: emp?.id || documentFormDraft.employeeId || null,
-   employee_name: emp?.full_name || null,
-   employee_code: emp?.employee_code || null,
-   position: emp?.position || null,
-   department: emp?.department || null,
-   document_date: documentFormDraft.documentDate || today,
-   incident_date: documentFormDraft.incidentDate || null,
-   effective_date: documentFormDraft.effectiveDate || null,
-   subject: documentFormDraft.subject || null,
-   details: documentFormDraft.details || null,
-   amount: documentFormDraft.amount ? safeNum(documentFormDraft.amount, 0) : null,
-   deduction_per_cutoff: documentFormDraft.deductionPerCutoff ? safeNum(documentFormDraft.deductionPerCutoff, 0) : null,
-   items: documentFormDraft.items || null,
-   remarks: documentFormDraft.remarks || null,
-   prepared_by: documentFormDraft.preparedBy || currentAdminLabel || 'Admin',
-   approved_by: documentFormDraft.approvedBy || null,
-   status,
-   created_by: currentAdminLabel || adminRole || 'Admin'
-  }
-
-  try {
-   const { data, error } = await supabase
-    .from('company_document_records')
-    .insert(payload)
-    .select()
-    .single()
-
-   if (error) throw error
-
-   showToast((options.printAfter ? 'Document saved. Preparing print...' : 'Document saved to Document Records.'))
-   await loadCompanyDocumentRecords()
-
-   if (options.printAfter) {
-    setTimeout(() => printBatch1ADocumentForm(), 150)
-   }
-
-   return data
-  } catch (err) {
-   console.warn('saveCurrentDocumentRecord:', err)
-   showToast('Failed to save document: ' + (err?.message || err), 'red')
-   return null
-  }
- }
-
- async function updateCompanyDocumentRecordStatus(record, status) {
-  if (!record?.id) return
-  const extra = {}
-  if (status === 'served') extra.served_date = today
-  if (status === 'closed') extra.closed_date = today
-
-  try {
-   const { error } = await supabase
-    .from('company_document_records')
-    .update({ status, ...extra })
-    .eq('id', record.id)
-
-   if (error) throw error
-   showToast('Document marked as ' + getCompanyDocumentRecordStatusLabel(status) + '.')
-   await loadCompanyDocumentRecords()
-  } catch (err) {
-   showToast('Failed to update document status: ' + (err?.message || err), 'red')
-  }
- }
-
- async function voidCompanyDocumentRecord(record) {
-  if (!record?.id) return
-  const reason = window.prompt('Reason for voiding this document?')
-  if (reason === null) return
-
-  try {
-   const { error } = await supabase
-    .from('company_document_records')
-    .update({ status:'voided', void_reason:reason || 'Voided by admin' })
-    .eq('id', record.id)
-
-   if (error) throw error
-   showToast('Document voided.')
-   await loadCompanyDocumentRecords()
-  } catch (err) {
-   showToast('Failed to void document: ' + (err?.message || err), 'red')
-  }
- }
-
-function printCompanyDocumentRecord(record) {
-  if (!record) {
-   showToast('No document record selected.', 'red')
-   return
-  }
-
-  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({
-   '&':'&amp;',
-   '<':'&lt;',
-   '>':'&gt;',
-   '"':'&quot;',
-   "'":'&#39;'
-  }[ch]))
-
-  const docNo = record.document_no || record.document_number || 'RD-DOCUMENT'
-  const title = record.document_type || record.form_title || record.form_key || 'Company Document'
-  const status = getCompanyDocumentRecordStatusLabel(record.status)
-  const employee = record.employee_name || '____________________________'
-  const employeeCode = record.employee_code || ''
-  const documentDate = record.document_date || record.created_at || today
-
-  const rows = [
-   ['Document No.', docNo],
-   ['Document Type', title],
-   ['Status', status],
-   ['Employee', employee],
-   ['Employee Code', employeeCode],
-   ['Document Date', formatDateForDisplay(documentDate)],
-   ['Incident Date', record.incident_date ? formatDateForDisplay(record.incident_date) : ''],
-   ['Effective Date', record.effective_date ? formatDateForDisplay(record.effective_date) : ''],
-   ['Subject', record.subject || ''],
-   ['Details', record.details || ''],
-   ['Items / Accountabilities', record.items || ''],
-   ['Amount', safeNum(record.amount, 0) > 0 ? php(record.amount) : ''],
-   ['Deduction Per Cutoff', safeNum(record.deduction_per_cutoff, 0) > 0 ? php(record.deduction_per_cutoff) : ''],
-   ['Remarks', record.remarks || ''],
-   ['Prepared By', record.prepared_by || currentAdminLabel || 'Admin'],
-   ['Approved By', record.approved_by || '']
-  ].filter(([label, value]) => String(value || '').trim() !== '')
-
-  const rowHtml = rows.map(([label, value]) =>
-   '<tr><td>' + esc(label) + '</td><td>' + esc(value).replace(/\\n/g, '<br/>') + '</td></tr>'
-  ).join('')
-
-  const pw = window.open('', '_blank')
-  if (!pw) {
-   showToast('Popup blocked. Please allow popups to print document.', 'red')
-   return
-  }
-
-  const html = [
-   '<!DOCTYPE html><html><head><title>' + esc(docNo) + '</title>',
-   '<style>',
-   '@page { size:A4; margin:16mm; }',
-   'body { font-family:Arial, sans-serif; color:#1a1a2e; margin:0; }',
-   '.header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #ca1b1b; padding-bottom:10px; margin-bottom:18px; }',
-   'h1 { margin:0; color:#ca1b1b; font-size:20px; }',
-   'h2 { margin:0; color:#1a1a2e; font-size:17px; text-transform:uppercase; text-align:right; }',
-   '.sub { margin:3px 0 0; color:#666; font-size:11px; }',
-   '.badge { display:inline-block; padding:4px 9px; border-radius:999px; background:#f7f9fc; border:1px solid #ddd; font-size:10px; font-weight:bold; margin-top:6px; }',
-   'table { width:100%; border-collapse:collapse; margin-top:10px; }',
-   'td { border:1px solid #ddd; padding:8px 10px; font-size:12px; vertical-align:top; line-height:1.45; }',
-   'td:first-child { width:28%; background:#f8f7f5; font-weight:bold; color:#333; }',
-   '.signatures { display:grid; grid-template-columns:1fr 1fr; gap:40px; margin-top:55px; }',
-   '.sig { text-align:center; font-size:11px; color:#333; }',
-   '.line { border-top:1px solid #333; padding-top:6px; font-weight:bold; }',
-   '.footer { margin-top:30px; padding-top:10px; border-top:1px solid #eee; font-size:10px; color:#777; text-align:center; }',
-   '.no-print { margin-top:18px; text-align:center; }',
-   'button { background:#ca1b1b; color:white; border:none; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; }',
-   '@media print { .no-print { display:none; } }',
-   '</style></head><body>',
-   '<div class="header"><div>',
-   '<h1>Roma\'s Donuts</h1>',
-   '<p class="sub">Management System</p>',
-   '<p class="sub">Company Documents & Forms Center</p>',
-   '</div><div>',
-   '<h2>' + esc(title) + '</h2>',
-   '<p class="sub" style="text-align:right;">' + esc(docNo) + '</p>',
-   '<p style="text-align:right;"><span class="badge">' + esc(status) + '</span></p>',
-   '</div></div>',
-   '<table>' + rowHtml + '</table>',
-   '<div class="signatures">',
-   '<div class="sig"><div class="line">' + esc(record.prepared_by || currentAdminLabel || 'Prepared By') + '</div><div>Prepared By</div></div>',
-   '<div class="sig"><div class="line">' + esc(record.approved_by || 'Approved By') + '</div><div>Approved By</div></div>',
-   '</div>',
-   '<div class="footer">Printed from Roma\'s Donuts Management System • ' + new Date().toLocaleString() + '</div>',
-   '<div class="no-print"><button onclick="window.print()">PRINT DOCUMENT</button></div>',
-   '</body></html>'
-  ].join('')
-
-  pw.document.write(html)
-  pw.document.close()
-  pw.focus()
-  setTimeout(() => pw.print(), 300)
- }
-
-
- const getSelectedDocumentBatch1AForm = () => {
-  return DOCUMENT_BATCH1A_FORMS.find(f => f.key === documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS[0]
- }
-
- const getDocumentFormEmployee = () => {
-  return (employees || []).find(e => String(e.id) === String(documentFormDraft.employeeId)) || null
- }
-
- const getDocumentReferenceNumber = (form = getSelectedDocumentBatch1AForm()) => {
-  const cleanDate = String(documentFormDraft.documentDate || today).replace(/-/g, '')
-  return form.refPrefix + '-' + cleanDate + '-' + String(Date.now()).slice(-5)
- }
-
- const buildPrintableDocumentRows = (form, emp) => {
-  const rows = [
-   ['Document No.', getDocumentReferenceNumber(form)],
-   ['Document Type', form.title],
-   ['Date Prepared', formatDateForDisplay(documentFormDraft.documentDate || today)],
-   ['Employee Name', emp?.full_name || '____________________________'],
-   ['Employee Code', emp?.employee_code || '________________'],
-   ['Position / Department', (emp?.position || '________________') + ' / ' + (emp?.department || '________________')]
-  ]
-
-  if (['DISC-NTE','DISC-IR','DISC-EXPLAIN'].includes(form.key)) {
-   rows.push(['Incident Date', formatDateForDisplay(documentFormDraft.incidentDate || documentFormDraft.documentDate || today)])
-   rows.push(['Subject / Violation', documentFormDraft.subject || '____________________________'])
-   rows.push(['Details / Explanation', documentFormDraft.details || ''])
-  }
-
-  if (form.key === 'PAY-CA-AGREEMENT') {
-   rows.push(['Cash Advance Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
-   rows.push(['Repayment Terms', documentFormDraft.details || 'Deduction shall be made every payroll cut-off until fully paid, unless modified by written approval.'])
-  }
-
-  if (form.key === 'PAY-DEDUCTION-AUTH') {
-   rows.push(['Deduction Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
-   rows.push(['Reason for Deduction', documentFormDraft.subject || '____________________________'])
-   rows.push(['Details', documentFormDraft.details || ''])
-  }
-
-  if (form.key === 'HR-CLEARANCE') {
-   rows.push(['Effective / Last Working Date', formatDateForDisplay(documentFormDraft.effectiveDate || documentFormDraft.documentDate || today)])
-   rows.push(['Accountabilities to Clear', documentFormDraft.items || 'Uniform/PPE, cash advance, tools, documents, inventory, crates, keys, and other company property.'])
-   rows.push(['Remarks', documentFormDraft.remarks || ''])
-  }
-
-  if (form.key === 'HR-PPE-ISSUE') {
-   rows.push(['Items Issued', documentFormDraft.items || '____________________________'])
-   rows.push(['Accountability Terms', documentFormDraft.details || 'Employee acknowledges receipt and agrees to return company property or accept approved accountability deduction for lost/damaged items.'])
-  }
-
-
-  if (form.key === 'INV-WITHDRAWAL') {
-   rows.push(['Withdrawal Purpose', documentFormDraft.subject || 'Production Use / Outlet Transfer / Staff Meal / Sample / Damage Replacement / Marketing / Promo / Company Use / Finished Goods Release / Other'])
-   rows.push(['Department / Area', emp?.department || 'Production / Inventory / Outlet / Company Use'])
-   rows.push(['Items Withdrawn', documentFormDraft.items || 'Item name, category, quantity, and unit'])
-   rows.push(['Quantity / Unit', documentFormDraft.amount || '________________'])
-   rows.push(['Released By', documentFormDraft.preparedBy || currentAdminLabel || '____________________________'])
-   rows.push(['Approved By', documentFormDraft.approvedBy || '____________________________'])
-   rows.push(['Remarks / Reason', documentFormDraft.details || documentFormDraft.remarks || 'This slip records company inventory, finished goods, supplies, tools, equipment, crates, crate covers, or other company property withdrawn from company custody.'])
-  }
-
-  if (form.key === 'PAY-RELEASE') {
-   rows.push(['Payroll / Release Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Payroll Period / Reason', documentFormDraft.subject || '____________________________'])
-   rows.push(['Remarks', documentFormDraft.remarks || 'Employee acknowledges receipt of the stated amount.'])
-  }
-
-  rows.push(['Prepared By', documentFormDraft.preparedBy || currentAdminLabel || 'Admin'])
-  rows.push(['Approved By', documentFormDraft.approvedBy || '____________________________'])
-  return rows
- }
-
- const printBatch1ADocumentForm = () => {
-  const form = getSelectedDocumentBatch1AForm()
-  const emp = getDocumentFormEmployee()
-  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Print blank form?')) return
-
-  const escDoc = value => {
-   const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }
-   return String(value ?? '').replace(/[&<>"']/g, ch => map[ch] || ch)
-  }
-
-  const rows = buildPrintableDocumentRows(form, emp)
-  const rowHtml = rows.map(row => {
-   const label = row[0]
-   const value = row[1]
-   return '<tr><td class="label">' + escDoc(label) + '</td><td>' + escDoc(value).replace(/\n/g, '<br/>') + '</td></tr>'
-  }).join('')
-
-  let reminder = 'This form documents the details stated above for company records and proper review.'
-  if (form.key === 'DISC-NTE') reminder = 'Employee is given the opportunity to submit a written explanation. Management shall review the explanation and available evidence before making a decision.'
-  if (form.key === 'PAY-CA-AGREEMENT') reminder = "Employee authorizes Roma's Donuts to deduct the agreed repayment amount from payroll until the cash advance is fully paid."
-  if (form.key === 'PAY-DEDUCTION-AUTH') reminder = 'Employee confirms that the deduction details were explained and authorizes payroll deduction according to the approved terms.'
-  if (form.key === 'HR-CLEARANCE') reminder = 'Final pay or release may be processed only after all required clearances and accountabilities are reviewed.'
-  if (form.key === 'HR-PPE-ISSUE') reminder = 'Employee acknowledges receipt of the listed items and responsibility for proper use, care, and return when required.'
-  if (form.key === 'PAY-RELEASE') reminder = 'Employee acknowledges receipt of the stated payroll or release amount.'
-
-  const html =
-   '<!DOCTYPE html><html><head><title>' + escDoc(form.title) + '</title>' +
-   '<style>' +
-   '*{box-sizing:border-box}body{font-family:Arial,sans-serif;background:#e5e5e5;margin:0;padding:18px;color:#111;font-size:12px}' +
-   '.page{width:210mm;min-height:297mm;background:white;margin:0 auto;padding:18mm;box-shadow:0 2px 10px rgba(0,0,0,.18)}' +
-   '.brand{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px}.brand h1{margin:0;color:#ca1b1b;font-size:24px;letter-spacing:.5px}.brand p{margin:3px 0;color:#555;font-size:11px}' +
-   'h2{text-align:center;margin:14px 0 8px;font-size:16px;text-decoration:underline;letter-spacing:.5px}.purpose{text-align:center;color:#555;font-size:11px;margin:0 0 14px;line-height:1.45}' +
-   'table{width:100%;border-collapse:collapse;margin:10px 0 14px}td{border:1px solid #ddd;padding:7px 8px;vertical-align:top;line-height:1.4}td.label{width:31%;background:#fff8dc;font-weight:bold;color:#333}' +
-   '.notice{border:1px solid #f5c518;background:#fff8dc;border-radius:8px;padding:10px;margin:14px 0;font-size:11px;line-height:1.5;color:#444;text-align:justify}' +
-   '.sig-wrap{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:35px}.sig{border-top:1px solid #000;text-align:center;padding-top:6px;font-size:10px;min-height:30px}' +
-   '.footer{text-align:center;color:#888;font-size:9px;margin-top:18px;border-top:1px solid #eee;padding-top:8px}.no-print{text-align:center;margin:0 0 18px}button{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 22px;font-weight:bold;cursor:pointer}' +
-   '@media print{@page{size:A4;margin:0}body{background:white;padding:0}.page{box-shadow:none;margin:0}.no-print{display:none}}' +
-   '</style></head><body>' +
-   '<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>' +
-   '<div class="page"><div class="brand"><h1>Roma\'s Donuts</h1><p>Payroll, HR, Production &amp; Business Documents System</p><p>Every bite is a little piece of heaven.</p></div>' +
-   '<h2>' + escDoc(form.title).toUpperCase() + '</h2><p class="purpose">' + escDoc(form.purpose) + '</p><table>' + rowHtml + '</table>' +
-   '<div class="notice">' + escDoc(reminder) + '</div>' +
-   '<div class="sig-wrap"><div class="sig">Employee Signature / Date</div><div class="sig">Authorized Representative / Date</div></div>' +
-   '<div class="sig-wrap" style="margin-top:28px"><div class="sig">Prepared By</div><div class="sig">Approved By</div></div>' +
-   '<div class="footer">Generated from Roma\'s Donuts Company Documents &amp; Forms Center</div></div></body></html>'
-
-  const pw = window.open('', '_blank', 'width=900,height=700')
-  if (!pw) { showToast('Popup blocked. Please allow popups to print documents.', 'red'); return }
-  pw.document.write(html)
-  pw.document.close()
-  pw.focus()
- }
-
 
  const handleTabClick = (key) => {
       if(key==='payablesMain') {
@@ -21824,11 +20843,6 @@ function printCompanyDocumentRecord(record) {
  {approved && (
  <div style={{ marginTop:'10px', background:'white', border:'1px solid #d9f2df', borderRadius:'10px', padding:'10px' }}>
  <p style={{ margin:'0 0 8px', color:'#2d8a4e', fontWeight:'bold', fontSize:'13px' }}>Cash Advance Ledger / Payroll Deduction Plan</p>
- {ledger && safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
-  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', margin:'0 0 10px' }}>
-   <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
-  </div>
- )}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px' }}>
  {[
   ['CA Ledger ID', ledger?.id ? String(ledger.id).slice(0,8) : (req.ca_ledger_id ? String(req.ca_ledger_id).slice(0,8) : 'Not linked')],
@@ -22224,277 +21238,6 @@ function printCompanyDocumentRecord(record) {
  )
  })
  }
- </div>
- )}
-
-
- {/* COMPANY DOCUMENTS & FORMS CENTER */}
- {activeTab==='documents' && (
- <div>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'14px' }}>
- <div>
- <h2 style={h2s}> Company Documents & Forms Center</h2>
- <p style={{ color:'#888', fontSize:'13px', margin:'0 0 6px' }}>Central catalog for agreements, slips, NTE, contracts, production forms, food safety records, delivery documents, finance slips, compliance trackers, SOPs, and management checklists.</p>
- <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Batch 0 is the library foundation. Forms marked Existing Module already have partial or full app support. Forms marked Template Listed are ready to build in the next batches.</p>
- </div>
- <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Documents Center Batch 0 is active. Choose the next batch to build real forms.')}>BATCH 0 ACTIVE</button>
- </div>
-
- <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
- <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Batch 1A Printable Forms Builder</h3>
- <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Create professional printable HR, payroll, NTE, clearance, PPE, and acknowledgment forms. Database saving will be added in the next batch.</p>
- </div>
- <Badge label="Printable Only" color="yellow" />
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Form Type</label>
- <select value={documentFormDraft.formKey} onChange={e=>updateDocumentFormDraft('formKey', e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- {DOCUMENT_BATCH1A_FORMS.map(form => <option key={form.key} value={form.key}>{form.title}</option>)}
- </select>
- </div>
- <div>
- <label style={lblS}>Employee</label>
- <EmployeeSelect value={documentFormDraft.employeeId} onChange={value=>updateDocumentFormDraft('employeeId', value)} employees={employees} />
- </div>
- <div>
- <label style={lblS}>Document Date</label>
- <input type="date" value={documentFormDraft.documentDate} onChange={e=>updateDocumentFormDraft('documentDate', e.target.value)} style={{...inputStyle, marginBottom:0 }} />
- </div>
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Incident / Effective Date</label>
- <input type="date" value={documentFormDraft.incidentDate} onChange={e=>{ updateDocumentFormDraft('incidentDate', e.target.value); updateDocumentFormDraft('effectiveDate', e.target.value) }} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Amount</label>
- <input value={documentFormDraft.amount} onChange={e=>updateDocumentFormDraft('amount', e.target.value)} placeholder="Example: 2000" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Deduction Per Cutoff</label>
- <input value={documentFormDraft.deductionPerCutoff} onChange={e=>updateDocumentFormDraft('deductionPerCutoff', e.target.value)} placeholder="Example: 500" style={{...inputStyle, marginBottom:0 }} />
- </div>
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Subject / Reason / Payroll Period</label>
- <input value={documentFormDraft.subject} onChange={e=>updateDocumentFormDraft('subject', e.target.value)} placeholder="Example: Cash advance repayment / Late attendance / Payroll period" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Items / Accountabilities</label>
- <input value={documentFormDraft.items} onChange={e=>updateDocumentFormDraft('items', e.target.value)} placeholder="Example: 2 uniforms, apron, cap, ID, cash advance balance" style={{...inputStyle, marginBottom:0 }} />
- </div>
- </div>
-
- <label style={lblS}>Details / Explanation / Terms</label>
- <textarea value={documentFormDraft.details} onChange={e=>updateDocumentFormDraft('details', e.target.value)} placeholder="Write the important details here. This will appear in the printed form." style={{...inputStyle, minHeight:'90px', resize:'vertical' }} />
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Remarks</label>
- <input value={documentFormDraft.remarks} onChange={e=>updateDocumentFormDraft('remarks', e.target.value)} placeholder="Optional remarks" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Prepared By</label>
- <input value={documentFormDraft.preparedBy} onChange={e=>updateDocumentFormDraft('preparedBy', e.target.value)} placeholder={currentAdminLabel || 'Admin'} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Approved By</label>
- <input value={documentFormDraft.approvedBy} onChange={e=>updateDocumentFormDraft('approvedBy', e.target.value)} placeholder="Owner / Manager / HR / Payroll" style={{...inputStyle, marginBottom:0 }} />
- </div>
- </div>
-
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>SAVE AS DRAFT</button>
-  <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
-  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={printBatch1ADocumentForm}>PRINT ONLY</button>
- <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>setDocumentFormDraft(prev=>({ ...prev, subject:'', details:'', amount:'', deductionPerCutoff:'', items:'', remarks:'' }))}>CLEAR FIELDS</button>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Selected: <strong>{getSelectedDocumentBatch1AForm().title}</strong></p>
- </div>
- </div>
-
-
- <div style={{ background:'white', border:'1px solid #e5e5e5', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
-  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
-   <div>
-    <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'15px' }}>Document Records</h3>
-    <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Saved NTE, incident reports, inventory withdrawal slips, agreements, clearance forms, and other company documents.</p>
-   </div>
-   <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={loadCompanyDocumentRecords}>REFRESH RECORDS</button>
-  </div>
-
-  {companyDocumentRecordsLoading && <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Loading document records...</p>}
-
-  {!companyDocumentRecordsLoading && companyDocumentRecords.length === 0 && (
-   <div style={{ background:'#fafafa', border:'1px dashed #ccc', borderRadius:'12px', padding:'14px', color:'#888', fontSize:'12px' }}>
-    No saved document records yet. Create a form above, then click SAVE AS DRAFT or SAVE & PRINT.
-   </div>
-  )}
-
-  {!companyDocumentRecordsLoading && companyDocumentRecords.length > 0 && (
-   <div style={{ overflowX:'auto', border:'1px solid #eee', borderRadius:'12px' }}>
-    <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'980px', fontSize:'12px' }}>
-     <thead>
-      <tr style={{ background:'#f7f9fc', color:'#555' }}>
-       <th style={{ padding:'9px', textAlign:'left' }}>Document No.</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Type</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Employee</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Date</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Subject / Items</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Status</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Actions</th>
-      </tr>
-     </thead>
-     <tbody>
-      {companyDocumentRecords.map(record => (
-       <tr key={record.id} style={{ borderTop:'1px solid #eee' }}>
-        <td style={{ padding:'9px', fontWeight:'bold', color:'#333' }}>{record.document_no}</td>
-        <td style={{ padding:'9px' }}>{record.document_type}</td>
-        <td style={{ padding:'9px' }}>{record.employee_name || '—'}<br/><span style={{ color:'#888', fontSize:'10px' }}>{record.employee_code || ''}</span></td>
-        <td style={{ padding:'9px' }}>{formatDateForDisplay(record.document_date)}</td>
-        <td style={{ padding:'9px' }}>{record.subject || record.items || '—'}</td>
-        <td style={{ padding:'9px' }}><Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} /></td>
-        <td style={{ padding:'9px' }}>
-         <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-          <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>alert(
-           'Document No.: ' + (record.document_no || '') +
-           '\nType: ' + (record.document_type || '') +
-           '\nEmployee: ' + (record.employee_name || '') +
-           '\nSubject: ' + (record.subject || '') +
-           '\nItems: ' + (record.items || '') +
-           '\nDetails: ' + (record.details || '') +
-           '\nRemarks: ' + (record.remarks || '')
-          )}>VIEW</button>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
-          {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
-          {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
-          {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
-         </div>
-        </td>
-       </tr>
-      ))}
-     </tbody>
-    </table>
-   </div>
-  )}
- </div>
-
- {(()=>{
- const q = documentCenterSearch.trim().toLowerCase()
- const filteredDocs = DOCUMENT_CENTER_CATALOG.filter(doc => {
-  const matchesSearch = !q || [doc.code, doc.name, doc.category, doc.batch, doc.priority, doc.status, doc.purpose].some(v => String(v || '').toLowerCase().includes(q))
-  const matchesCategory = documentCenterCategory === 'all' || doc.category === documentCenterCategory
-  const matchesBatch = documentCenterBatch === 'all' || doc.batch === documentCenterBatch
-  return matchesSearch && matchesCategory && matchesBatch
- })
- const existingCount = DOCUMENT_CENTER_CATALOG.filter(d => d.status === 'Existing Module').length
- const highPriorityCount = DOCUMENT_CENTER_CATALOG.filter(d => d.priority === 'High').length
- const batch1Count = DOCUMENT_CENTER_CATALOG.filter(d => d.batch === 'Batch 1').length
- const categoriesWithCount = DOCUMENT_CENTER_CATEGORIES.map(cat => ({ category:cat, count:DOCUMENT_CENTER_CATALOG.filter(d => d.category === cat).length }))
- return (
- <>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
- <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Total Document Types</p><p style={{ margin:0, color:'#ca1b1b', fontSize:'24px', fontWeight:'900' }}>{DOCUMENT_CENTER_CATALOG.length}</p></div>
- <div style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Existing Modules</p><p style={{ margin:0, color:'#2d8a4e', fontSize:'24px', fontWeight:'900' }}>{existingCount}</p></div>
- <div style={{ background:'#fff5f5', border:'1px solid #ffcdd2', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>High Priority</p><p style={{ margin:0, color:'#ca1b1b', fontSize:'24px', fontWeight:'900' }}>{highPriorityCount}</p></div>
- <div style={{ background:'#f7f9fc', border:'1px solid #d9e2ec', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Batch 1 Forms</p><p style={{ margin:0, color:'#1a1a2e', fontSize:'24px', fontWeight:'900' }}>{batch1Count}</p></div>
- </div>
-
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr', gap:'10px' }}>
- <div>
- <label style={lblS}>Search document</label>
- <input value={documentCenterSearch} onChange={e=>setDocumentCenterSearch(e.target.value)} placeholder="Search contract, NTE, cash advance, batch production, crates, permit..." style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Category</label>
- <select value={documentCenterCategory} onChange={e=>setDocumentCenterCategory(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- <option value="all">All categories</option>
- {DOCUMENT_CENTER_CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
- </select>
- </div>
- <div>
- <label style={lblS}>Build batch</label>
- <select value={documentCenterBatch} onChange={e=>setDocumentCenterBatch(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- {['all','Batch 1','Batch 2','Batch 3','Batch 4'].map(b => <option key={b} value={b}>{b === 'all'? 'All batches': b}</option>)}
- </select>
- </div>
- </div>
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'8px', marginBottom:'14px' }}>
- {categoriesWithCount.map(row => (
- <button key={row.category} onClick={()=>setDocumentCenterCategory(row.category)} style={{ background:documentCenterCategory===row.category?'#ca1b1b':'white', color:documentCenterCategory===row.category?'white':'#333', border:'1px solid #eee', borderRadius:'12px', padding:'9px 10px', textAlign:'left', cursor:'pointer', fontWeight:'800', fontSize:'11px' }}>
- <span>{row.category}</span><br/><span style={{ opacity:0.75, fontWeight:'700' }}>{row.count} document type(s)</span>
- </button>
- ))}
- </div>
-
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 8px', fontSize:'14px' }}>Recommended Build Order</h3>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px' }}>
- {[
-  ['Batch 1','HR, Payroll, NTE essentials','Contracts, CA, deductions, NTE, incident, clearance, final pay'],
-  ['Batch 2','Production and food safety','Batch records, hold/release, cleaning, temperature, oil, wastage'],
-  ['Batch 3','Inventory, delivery, reseller','Receiving, issuance, crates, reseller agreement, returns, outlet slips'],
-  ['Batch 4','Finance and compliance','Petty cash, vouchers, permit trackers, closing checklist']
- ].map(([batch,title,desc]) => (
- <div key={batch} style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:documentCenterBatch===batch?'#fff8dc':'#fafafa' }}>
- <p style={{ margin:'0 0 4px', color:'#ca1b1b', fontWeight:'900', fontSize:'12px' }}>{batch}</p>
- <p style={{ margin:'0 0 5px', color:'#333', fontWeight:'900', fontSize:'12px' }}>{title}</p>
- <p style={{ margin:0, color:'#777', fontSize:'11px', lineHeight:1.4 }}>{desc}</p>
- </div>
- ))}
- </div>
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'10px' }}>
- {filteredDocs.map(doc => {
- const statusColor = doc.status === 'Existing Module' ? 'green' : doc.priority === 'High' ? 'red' : 'gray'
- const canOpenContracts = doc.code === 'HR-EMP-CONTRACT'
- return (
- <div key={doc.code} style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.04)' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px', flexWrap:'wrap', marginBottom:'8px' }}>
- <div>
- <p style={{ color:'#999', fontSize:'10px', margin:'0 0 3px', fontWeight:'900', letterSpacing:'0.5px' }}>{doc.code}</p>
- <h3 style={{ color:'#333', fontSize:'14px', margin:'0 0 4px' }}>{doc.name}</h3>
- <p style={{ color:'#777', fontSize:'11px', margin:0 }}>{doc.category}</p>
- </div>
- <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:'flex-end' }}>
- <Badge label={doc.batch} color="blue" />
- <Badge label={doc.priority} color={doc.priority === 'High'?'red':'gray'} />
- <Badge label={doc.status} color={statusColor} />
- </div>
- </div>
- <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px' }}>{doc.purpose}</p>
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- {canOpenContracts ? (
- <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>handleTabClick('contracts')}>OPEN CONTRACTS</button>
- ) : (
- <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px', opacity:0.8 }} onClick={()=>showToast(doc.name + ' is listed. We will activate this form in ' + doc.batch + '.')}>BUILD NEXT</button>
- )}
- <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>showToast('Purpose: ' + doc.purpose)}>VIEW PURPOSE</button>
- </div>
- </div>
- )
- })}
- </div>
-
- {filteredDocs.length === 0 && (
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'28px', textAlign:'center', color:'#888' }}>
- <p style={{ fontWeight:'900', color:'#333', margin:'0 0 6px' }}>No documents found.</p>
- <p style={{ margin:0, fontSize:'12px' }}>Try a different search, category, or batch filter.</p>
- </div>
- )}
- </>
- )
- })()}
  </div>
  )}
 
@@ -24036,13 +22779,7 @@ function printCompanyDocumentRecord(record) {
  <label style={lblS}>Item Name:</label>
  <input type="text" placeholder="e.g. All-purpose flour" value={newItemName} onChange={e=>setNewItemName(e.target.value)} style={inputStyle} />
  <label style={lblS}>Category:</label>
- <select value={newItemCategory} onChange={e=>{
- const category = e.target.value
- setNewItemCategory(category)
- if (isSnackDrinkCategoryName(category) && safeNum(newItemBuyingPrice, 0) > 0) {
-  setNewItemSellingPrice(snackDrinkAutoSellingPrice(newItemBuyingPrice))
- }
-}} style={inputStyle}>
+ <select value={newItemCategory} onChange={e=>setNewItemCategory(e.target.value)} style={inputStyle}>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
  </select>
  <label style={lblS}>Supplier:</label>
@@ -24075,31 +22812,10 @@ function printCompanyDocumentRecord(record) {
  <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
  </div>
  )}
- {isSnackDrinkCategoryName(newItemCategory) && (
- <div>
-  <label style={lblS}>Buying Price / Purchase Price</label>
-  <input
-   type="number"
-   placeholder="0.00"
-   value={newItemBuyingPrice}
-   onChange={e=>{
-    const buy = e.target.value
-    setNewItemBuyingPrice(buy)
-    setNewItemSellingPrice(safeNum(buy, 0) > 0 ? snackDrinkAutoSellingPrice(buy) : '')
-   }}
-   style={{...inputStyle, marginBottom:0 }}
-   min="0"
-   step="0.01"
-  />
-  <p style={{ margin:'4px 0 0', color:'#2d8a4e', fontSize:'10px', fontWeight:'800' }}>
-   Auto selling price: {safeNum(newItemBuyingPrice,0)>0 ? php(snackDrinkAutoSellingPrice(newItemBuyingPrice)) : 'Enter buying price'}
-  </p>
- </div>
-)}
-{(newItemCategory==='Finished Products' || isSnackDrinkCategoryName(newItemCategory)) && (
+ {newItemCategory==='Finished Products' && (
  <div>
  <label style={lblS}>Selling Price (PHP):</label>
- <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnackDrinkCategoryName(newItemCategory)} title={isSnackDrinkCategoryName(newItemCategory)?'Auto-computed from Buying Price + 30% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnackDrinkCategoryName(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
+ <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
  </div>
  )}
  </div>
@@ -24206,17 +22922,7 @@ function printCompanyDocumentRecord(record) {
  {isEditing? (
  <div style={{ display:'grid', gap:'5px' }}>
  <input value={editItemFields.name??item.name} onChange={e=>setEditItemFields(p=>({...p,name:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }} />
- <select value={editItemFields.category??displayCategoryName(item.category)} onChange={e=>{
- const category = e.target.value
- setEditItemFields(p=>{
-  const buy = safeNum(p.buying_price ?? item.buying_price, 0)
-  return {
-   ...p,
-   category,
-   ...(isSnackDrinkCategoryName(category) && buy > 0 ? { selling_price: snackDrinkAutoSellingPrice(buy), cost_per_unit:buy } : {})
-  }
- })
-}} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
+ <select value={editItemFields.category??displayCategoryName(item.category)} onChange={e=>setEditItemFields(p=>({...p,category:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
  </select>
  <select value={editItemFields.supplier_id??item.supplier_id??''} onChange={e=>setEditItemFields(p=>({...p,supplier_id:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
@@ -24275,46 +22981,10 @@ function printCompanyDocumentRecord(record) {
  ): Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}
  </td>
 
- 
  <td style={{ ...numStyle, color:'#666' }}>
  {isEditing? (
-  isSnackDrinkCategoryName(editItemFields.category ?? item.category) ? (
-   <div>
-    <input
-     type="number"
-     value={editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)}
-     onChange={e=>{
-      const supplierPrice = e.target.value
-      setEditItemFields(p=>({
-       ...p,
-       buying_price:supplierPrice,
-       cost_per_unit:safeNum(supplierPrice, 0),
-       selling_price:snackDrinkAutoSellingPrice(supplierPrice)
-      }))
-     }}
-     style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px', border:'2px solid #2d8a4e' }}
-     min="0"
-     step="0.01"
-     title="Supplier Price / Buying Price"
-    />
-    <div style={{ fontSize:'9.5px', color:'#555', fontWeight:'800', marginTop:'3px' }}>Supplier Price</div>
-    <div style={{ fontSize:'9.5px', color:'#2d8a4e', fontWeight:'900', marginTop:'2px', whiteSpace:'nowrap' }}>
-     Auto Sell: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)))}
-    </div>
-   </div>
-  ) : (
-   <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
-  )
- ) : (
-  isSnackDrinkInventoryItem(item) ? (
-   <>
-    <div style={{ color:'#2d8a4e', fontWeight:'900' }}>Sell: {php(getSnackDrinkDisplaySellingPrice(item))}</div>
-    <div style={{ fontSize:'10px', color:'#555', fontWeight:'700', marginTop:'2px' }}>
-     Supplier: {php(getSnackDrinkDisplayBuyingPrice(item))}
-    </div>
-   </>
-  ) : php(item.cost_per_unit || 0)
- )}
+ <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
+ ): php(item.cost_per_unit || 0)}
  </td>
 
  <td style={{ ...rowBase, textAlign:'center' }}>
@@ -25393,145 +24063,27 @@ function printCompanyDocumentRecord(record) {
  {(()=>{
  // Dry premix weight per piece (grams) after 10% reduction
  const DRY_PREMIX_GRAMS = {
-  'Choco Balls': 9.45,
-  'Matcha Pops': 0,
-  'Taro Pops': 9.45,
-  'Strawberry Pops': 9.45,
-  'Bavarian Pops': 9.45,
-  'Bavarian Bites': 9.45,
-  'Choco Lollisticks': 0,
-  'Glazed Circlets': 11.7,
-  'Cinnamon Rolls': 27,
-  'Rings': 27,
-  'Shells': 27,
-  'Bavarian Midnight': 27,
-  'Biscoreo': 27,
-  'Fanfans': 31.5,
-  'Oreo Dream': 31.5,
-  'Almond Glitz': 31.5,
-  'Lotus Cloud': 31.5
+ 'Choco Balls': 9.45, 'Bavarian Bites': 9.45, 'Bavarian Pops': 9.45,
+ 'Strawberry Pops': 9.45, 'Taro Pops': 9.45,
+ 'Choco Lollisticks': 0,
+ 'Glazed Circlets': 11.7,
+ 'Cinnamon Rolls': 27, 'Rings': 27, 'Shells': 27,
+ 'Bavarian Midnight': 27, 'Biscoreo': 27,
+ 'Fanfans': 31.5, 'Oreo Dream': 31.5, 'Almond Glitz': 31.5, 'Lotus Cloud': 31.5
  }
-
- const forecastNameKey = (value) => {
-  return String(value || '')
-   .trim()
-   .toLowerCase()
-   .replace(/[^a-z0-9]/g, '')
- }
-
- const getForecastRowTotal = (row) => {
-  const raw = row?.total ?? row?.totalPieces ?? row?.total_pieces ?? row?.pieces ?? row?.forecast_qty ?? row?.quantity ?? row?.qty ?? 0
-  const n = safeNum(raw, 0)
-  return Number.isFinite(n) ? n : 0
- }
-
- const getDryPremixGramsPerPiece = (variantName) => {
-  const name = String(variantName || '').trim()
-  const normalizedName = typeof normalizeDonutVariantName === 'function'
-   ? normalizeDonutVariantName(name)
-   : name
-
-  const premixByKey = Object.entries(DRY_PREMIX_GRAMS || {}).reduce((map, [key, value]) => {
-   map[forecastNameKey(key)] = safeNum(value, 0)
-   return map
-  }, {})
-
-  const possibleKeys = [
-   name,
-   normalizedName,
-   name.replace(/pops$/i, ' Pops'),
-   name.replace(/balls$/i, ' Balls'),
-   name.replace(/bites$/i, ' Bites'),
-   name.replace(/circlets$/i, ' Circlets'),
-   name.replace(/rolls$/i, ' Rolls'),
-   name.replace(/midnight$/i, ' Midnight'),
-   name.replace(/dream$/i, ' Dream'),
-   name.replace(/glitz$/i, ' Glitz'),
-   name.replace(/cloud$/i, ' Cloud')
-  ].map(forecastNameKey)
-
-  for (const key of possibleKeys) {
-   if (Object.prototype.hasOwnProperty.call(premixByKey, key)) {
-    return safeNum(premixByKey[key], 0)
-   }
-  }
-
-  return 0
- }
-
  const forecastInvoices = deliveryInvoices.filter(i => i.delivery_date === forecastDate)
  const forecastMap = {}
-
  forecastInvoices.forEach(inv => {
-  ;(inv.delivery_invoice_items || []).forEach(item => {
-   const variantName = item.variant_name || item.product_name || item.name || ''
-   const key = forecastNameKey(variantName)
-   if (!key) return
-
-   if (!forecastMap[key]) {
-    forecastMap[key] = {
-     variant_name: variantName,
-     variant_id: item.variant_id,
-     total: 0
-    }
-   }
-
-   forecastMap[key].total = safeNum(forecastMap[key].total, 0) + safeNum(item.quantity, 0)
-  })
+;(inv.delivery_invoice_items || []).forEach(item => {
+ const key = item.variant_name
+ if (!forecastMap[key]) forecastMap[key] = { variant_name:item.variant_name, variant_id:item.variant_id, total:0 }
+ forecastMap[key].total += Number(item.quantity||0)
  })
-
- let forecastRows = Object.values(forecastMap)
-
- const existingForecastKeys = new Set((forecastRows || []).map(row =>
-  forecastNameKey(row.variant_name || row.variant || row.product_name || row.name || row.product || '')
- ))
-
- ;(donutVariants || []).forEach(variant => {
-  const variantName = variant?.name || variant?.variant_name || variant?.product_name || ''
-  const variantKey = forecastNameKey(variantName)
-
-  if (!variantName || existingForecastKeys.has(variantKey)) return
-
-  forecastRows.push({
-   id: variant?.id || variant?.variant_id || `zero-${variantKey}`,
-   variant_id: variant?.id || variant?.variant_id || `zero-${variantKey}`,
-   variant_name: variantName,
-   variant: variantName,
-   product_name: variantName,
-   name: variantName,
-   product: variantName,
-   total: 0,
-   totalPieces: 0,
-   total_pieces: 0,
-   pieces: 0,
-   quantity: 0,
-   qty: 0,
-   forecast_qty: 0
-  })
-
-  existingForecastKeys.add(variantKey)
  })
-
- forecastRows = (forecastRows || [])
-  .map(row => {
-   const cleanTotal = getForecastRowTotal(row)
-   return {
-    ...row,
-    total: cleanTotal,
-    totalPieces: cleanTotal,
-    total_pieces: cleanTotal,
-    pieces: cleanTotal,
-    quantity: cleanTotal,
-    qty: cleanTotal,
-    forecast_qty: cleanTotal
-   }
-  })
-  .sort(compareDonutVariantRowsByGuide)
-
- const totalPieces = safeNum((forecastRows || []).reduce((s,r)=>s+getForecastRowTotal(r),0),0)
- const totalDryPremixG = safeNum((forecastRows || []).reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0),0)
- const totalDryPremixKg = (safeNum(totalDryPremixG,0)/1000).toFixed(2)
-
+ const forecastRows = Object.values(forecastMap).sort((a,b)=>a.variant_name.localeCompare(b.variant_name))
+ const totalPieces = forecastRows.reduce((s,r)=>s+r.total,0)
+ const totalDryPremixG = forecastRows.reduce((s,r)=>s+(DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total, 0)
+ const totalDryPremixKg = (totalDryPremixG/1000).toFixed(2)
  const printForecast = () => {
  const pw = window.open('','_blank','width=700,height=900')
  pw.document.write(`<!DOCTYPE html><html><head><title>Production Forecast</title>
@@ -25564,10 +24116,9 @@ function printCompanyDocumentRecord(record) {
  <table>
  <tr><th>Variant</th><th style="text-align:right;">Pieces</th><th style="text-align:right;">Dry Premix</th><th style="text-align:center;">Actual</th></tr>
  ${forecastRows.map(r => {
- const pieces = getForecastRowTotal(r)
-const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
+ const grams = (DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total
  const kgDisplay = grams>=1000? (grams/1000).toFixed(2)+' kg': grams.toFixed(0)+' g'
- return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+getForecastRowTotal(r).toLocaleString('en-PH')+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
+ return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+r.total.toLocaleString()+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
  }).join('')}
  <tr class="total-row"><td>TOTAL</td><td style="text-align:right;color:#ca1b1b;">${totalPieces.toLocaleString()}</td><td style="text-align:right;color:#2d8a4e;">${totalDryPremixKg} kg</td><td></td></tr>
  </table>
@@ -25625,13 +24176,12 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  {['Variant','Total Pieces','Dry Premix'].map(h=><span key={h} style={{ color:'white', fontSize:'11px', fontWeight:'bold', textAlign:h==='Variant'?'left':'right' }}>{h}</span>)}
  </div>
  {forecastRows.map((r,i)=>{
- const pieces = getForecastRowTotal(r)
-const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
+ const grams = (DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total
  const kg = (grams/1000).toFixed(2)
  return (
  <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
  <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}</span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</span>
+ <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{r.total.toLocaleString()}</span>
  <span style={{ textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</span>
  </div>
  )
@@ -27308,9 +25858,9 @@ onClick={async ()=>{
  const { data, error } = await supabase.from('donut_variants').select('*').order('category').order('name')
  if (error) console.warn('Unable to load donut variants:', error)
  variants = data || []
- if (variants.length > 0) setDonutVariants(sortDonutVariantsByGuide(variants))
+ if (variants.length > 0) setDonutVariants(variants)
  }
- const all = sortDonutVariantsByGuide(variants).map(v => { const existing = defaultOrderItems.find(i=>i.variant_id===v.id); return { variant_id:v.id, variant_name:v.name, default_quantity: existing?.default_quantity||'' } })
+ const all = variants.map(v => { const existing = defaultOrderItems.find(i=>i.variant_id===v.id); return { variant_id:v.id, variant_name:v.name, default_quantity: existing?.default_quantity||'' } })
  setDefaultOrderItems(all)
  if (all.length === 0) showToast(' No donut variants found to load.', 'red')
  }}> LOAD ALL VARIANTS</button>
@@ -30669,6 +29219,7 @@ onClick={async ()=>{
  </>
  )}
  </div>
+
  <div style={{...portalCard, marginTop:'14px' }}>
  <h3 style={{ color:'#333', margin:'0 0 10px', fontSize:'14px' }}>Submitted Reports</h3>
  {resellerReturns.length===0? <p style={{ color:'#aaa', margin:0, fontSize:'12px' }}>No return reports submitted yet.</p>: resellerReturns.map(r=>(

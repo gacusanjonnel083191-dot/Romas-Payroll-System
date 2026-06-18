@@ -1,0 +1,69 @@
+
+================ ABG ================
+NOT FOUND
+
+================ Almond Glitz around line 1879 ================
+1867: { name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1868: { name:'Strawberry Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1869: { name:'Taro Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1870: { name:'Choco Lollisticks', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1871: { name:'Glazed Circlets', category:'Glaze Circlet', selling_price:13, pieces_per_batch:20 },
+1872: { name:'Cinnamon Rolls', category:'Premium', selling_price:18, pieces_per_batch:8 },
+1873: { name:'Rings', category:'Regular', selling_price:25, pieces_per_batch:12 },
+1874: { name:'Shells', category:'Filled', selling_price:26, pieces_per_batch:12 },
+1875: { name:'Bavarian Midnight', category:'Premium', selling_price:28, pieces_per_batch:10 },
+1876: { name:'Biscoreo', category:'Premium', selling_price:28, pieces_per_batch:10 },
+1877: { name:'Fanfans', category:'Premium', selling_price:33, pieces_per_batch:10 },
+1878: { name:'Oreo Dream', category:'Premium', selling_price:33, pieces_per_batch:10 },
+1879: { name:'Almond Glitz', category:'Premium', selling_price:35, pieces_per_batch:10 },
+1880: { name:'Lotus Cloud', category:'Premium', selling_price:35, pieces_per_batch:10 },
+1881: ]
+1882: const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium'])
+1883: // Phase 3: Sales & Resellers
+1884: const [salesView, setSalesView] = useState('dashboard')
+1885: const [resellers, setResellers] = useState([])
+1886: const [resellersLoading, setResellersLoading] = useState(false)
+1887: const [showResellerForm, setShowResellerForm] = useState(false)
+1888: const [editingResellerId, setEditingResellerId] = useState(null)
+1889: const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account ...
+1890: // Multi-branch reseller accounts: one owner login can manage multiple branch/outlet records.
+1891: const [resellerAccounts, setResellerAccounts] = useState([])
+1892: const [resellerAccountsLoading, setResellerAccountsLoading] = useState(false)
+1893: const [showResellerAccountForm, setShowResellerAccountForm] = useState(false)
+1894: const [editingResellerAccountId, setEditingResellerAccountId] = useState(null)
+1895: const [resellerAccountForm, setResellerAccountForm] = useState({ account_name:'', owner_name:'', phone:'', access_code:'', access_pin:'', notes:'' })
+1896: const [resellerPortalAccount, setResellerPortalAccount] = useState(null)
+1897: const [resellerPortalBranches, setResellerPortalBranches] = useState([])
+
+================ Bavarian Bites around line 1866 ================
+1854: const [savingRecipe, setSavingRecipe] = useState(false)
+1855: const [productionLogs, setProductionLogs] = useState([])
+1856: const [productionLoading, setProductionLoading] = useState(false)
+1857: const [showProductionForm, setShowProductionForm] = useState(false)
+1858: const [prodDate, setProdDate] = useState(today)
+1859: const [prodEntries, setProdEntries] = useState([{ variant_id:'', pieces:'' }])
+1860: const [prodNotes, setProdNotes] = useState('')
+1861: const [savingProduction, setSavingProduction] = useState(false)
+1862: const [editingVariantId, setEditingVariantId] = useState(null)
+1863: const [editVariantFields, setEditVariantFields] = useState({})
+1864: const DONUT_VARIANTS_DEFAULT = [
+1865: { name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1866: { name:'Bavarian Bites', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1867: { name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1868: { name:'Strawberry Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1869: { name:'Taro Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1870: { name:'Choco Lollisticks', category:'Bites', selling_price:7, pieces_per_batch:30 },
+1871: { name:'Glazed Circlets', category:'Glaze Circlet', selling_price:13, pieces_per_batch:20 },
+1872: { name:'Cinnamon Rolls', category:'Premium', selling_price:18, pieces_per_batch:8 },
+1873: { name:'Rings', category:'Regular', selling_price:25, pieces_per_batch:12 },
+1874: { name:'Shells', category:'Filled', selling_price:26, pieces_per_batch:12 },
+1875: { name:'Bavarian Midnight', category:'Premium', selling_price:28, pieces_per_batch:10 },
+1876: { name:'Biscoreo', category:'Premium', selling_price:28, pieces_per_batch:10 },
+1877: { name:'Fanfans', category:'Premium', selling_price:33, pieces_per_batch:10 },
+1878: { name:'Oreo Dream', category:'Premium', selling_price:33, pieces_per_batch:10 },
+1879: { name:'Almond Glitz', category:'Premium', selling_price:35, pieces_per_batch:10 },
+1880: { name:'Lotus Cloud', category:'Premium', selling_price:35, pieces_per_batch:10 },
+1881: ]
+1882: const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium'])
+1883: // Phase 3: Sales & Resellers
+1884: const [salesView, setSalesView] = useState('dashboard')

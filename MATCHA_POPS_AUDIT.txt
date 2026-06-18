@@ -1,0 +1,667 @@
+MATCHA POPS PRODUCT INSERT AUDIT
+New variety target:
+- Name: Matcha Pops
+- Price: 7
+- Suggested SKU: MATCHA-POPS
+- Scope: POS, invoices, forecast, reseller portal, stock/inventory areas
+
+IMPORTANT MATCHES:
+Line 14 [reseller]
+const RESELLER_CREDIT_GRACE_DAYS = 7
+
+Line 21 [POS]
+const pageStyle = { position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(150deg,#1a1a2e 0%,#2d1515 50%,#ca1b1b 100%)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'a ...
+
+Line 112 [invoice, reseller]
+// Resellers and admins can create, edit, and approve orders/invoices anytime.
+
+Line 126 [invoice]
+message:'Order cut-off removed. Orders, invoices, quantity edits, and order approvals are allowed anytime.'
+
+Line 131 [reseller]
+function getDefaultResellerOrderDeliveryDate(asOf = new Date()) {
+
+Line 253 [POS]
+position:pay.position || '',
+
+Line 379 [POS]
+addText(`Code: ${printablePay.employeeCode || '-'} Position: ${printablePay.position || '-'}`, marginX, y)
+
+Line 461 [POS]
+function positiveNum(value, fallback = 1) {
+
+Line 822 [POS]
+{ value:'auto', label:'Auto classify from department / position', shortLabel:'Auto', bucket:'auto' },
+
+Line 843 [POS]
+const text = `${emp.department || ''} ${emp.position || ''} ${emp.full_name || ''}`.toLowerCase()
+
+Line 1053 [forecast]
+function getProductionReportForecastQty(item = {}) {
+
+Line 1054 [forecast]
+return safeNum(item.forecast_qty ?? item.expected_quantity ?? item.default_quantity ?? item.standard_quantity ?? item.forecast_quantity, 0)
+
+Line 1080 [product_name]
+product_name:recipe.product_name || recipe.name || '',
+
+Line 1084 [product_name]
+source:`Recipe Vault${recipe.product_name? ` - ${recipe.product_name}`:''}`
+
+Line 1088 [product_name]
+;[recipe.product_name, recipe.name, recipe.variant_name, recipe.recipe_code].forEach(name => {
+
+Line 1100 [product_name]
+const names = [item.variant_name, item.product_name, item.item_name, item.name, item.recipe_code]
+
+Line 1109 [product_name]
+const name = item.variant_name || item.product_name || item.item_name || item.name || 'Unassigned Product'
+
+Line 1129 [invoice]
+function calculateSoldProductCOGS({ dailySalesRows = [], invoices = [], returnItemMap = {}, recipeRows = [] } = {}) {
+
+Line 1137 [unit_price, selling_price, price]
+const revenue = safeNum(item.total_price ?? item.total_amount ?? item.total_revenue, qty * safeNum(item.unit_price ?? item.selling_price, 0))
+
+Line 1142 [product_name]
+const name = sale.variant_name || sale.product_name || sale.item_name || sale.product || ''
+
+Line 1144 [unit_price, selling_price, price]
+const revenue = safeNum(sale.total_price ?? sale.total_amount ?? sale.total_revenue ?? sale.amount, qty * safeNum(sale.unit_price ?? sale.selling_price, 0))
+
+Line 1149 [invoice]
+;(invoices || []).forEach(inv => {
+
+Line 1150 [invoice]
+;(inv.delivery_invoice_items || []).forEach(item => {
+
+Line 1152 [unit_price, price, reseller]
+const revenue = safeNum(item.total_price ?? item.total_amount ?? item.subtotal, qty * safeNum(item.reseller_price ?? item.unit_price ?? item.price, 0))
+
+Line 1153 [invoice, reseller]
+addCOGSProductRow(productMap, item, qty, revenue, lookup, 'Reseller Invoice')
+
+Line 1192 [product_name]
+const name = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+
+Line 1415 [POS]
+<div style="font-size:12px;font-weight:bold;color:#555;">${pay.position||''}</div>
+
+Line 1500 [reseller]
+const resellerOrderSubmitLockRef = useRef(false)
+
+Line 1606 [POS]
+const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, regularHolidayEligible:true, specialHolidayEligible:true, payTyp ...
+
+Line 1716 [POS]
+purpose:'',
+
+Line 1737 [product_name]
+product_name:'',
+
+Line 1743 [selling_price, price]
+selling_price:'',
+
+Line 1744 [price, reseller]
+reseller_price:'',
+
+Line 1799 [reseller]
+// Reseller Portal
+
+Line 1800 [reseller]
+const [resellerMode, setResellerMode] = useState(false)
+
+Line 1801 [reseller]
+const [currentReseller, setCurrentReseller] = useState(null)
+
+Line 1802 [reseller]
+const [resellerLoginCode, setResellerLoginCode] = useState('')
+
+Line 1803 [reseller]
+const [resellerLoginPin, setResellerLoginPin] = useState('')
+
+Line 1804 [reseller]
+const [resellerPortalView, setResellerPortalView] = useState('dashboard')
+
+Line 1805 [invoice, reseller]
+const [resellerInvoices, setResellerInvoices] = useState([])
+
+Line 1806 [reseller]
+const [resellerPaymentHistory, setResellerPaymentHistory] = useState([])
+
+Line 1807 [reseller]
+const [resellerOrderItems, setResellerOrderItems] = useState([])
+
+Line 1808 [reseller]
+const [resellerOrderDeliveryDate, setResellerOrderDeliveryDate] = useState('')
+
+Line 1809 [reseller]
+const [resellerOrderNotes, setResellerOrderNotes] = useState('')
+
+Line 1811 [reseller]
+const [editingResellerOrderId, setEditingResellerOrderId] = useState(null)
+
+Line 1812 [reseller]
+const [updatingResellerOrder, setUpdatingResellerOrder] = useState(false)
+
+Line 1813 [reseller]
+const [resellerOrders, setResellerOrders] = useState([])
+
+Line 1814 [reseller]
+const [resellerReturns, setResellerReturns] = useState([])
+
+Line 1815 [invoice, reseller]
+const [resellerReturnInvoiceId, setResellerReturnInvoiceId] = useState('')
+
+Line 1816 [reseller]
+const [resellerReturnItems, setResellerReturnItems] = useState([])
+
+Line 1817 [reseller]
+const [resellerReturnNotes, setResellerReturnNotes] = useState('')
+
+Line 1818 [reseller]
+const [submittingResellerReturn, setSubmittingResellerReturn] = useState(false)
+
+Line 1819 [reseller]
+const [resellerNotices, setResellerNotices] = useState([])
+
+Line 1820 [reseller]
+const [resellerPortalLoading, setResellerPortalLoading] = useState(false)
+
+Line 1822 [reseller]
+const [pendingResellerOrders, setPendingResellerOrders] = useState([])
+
+Line 1865 [selling_price, price]
+{ name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
+
+Line 1866 [Bavarian Bites, selling_price, price]
+{ name:'Bavarian Bites', category:'Bites', selling_price:7, pieces_per_batch:30 },
+
+Line 1867 [selling_price, price]
+{ name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+
+Line 1868 [selling_price, price]
+{ name:'Strawberry Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+
+Line 1869 [selling_price, price]
+{ name:'Taro Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
+
+Line 1870 [selling_price, price]
+{ name:'Choco Lollisticks', category:'Bites', selling_price:7, pieces_per_batch:30 },
+
+Line 1871 [selling_price, price]
+{ name:'Glazed Circlets', category:'Glaze Circlet', selling_price:13, pieces_per_batch:20 },
+
+Line 1872 [selling_price, price]
+{ name:'Cinnamon Rolls', category:'Premium', selling_price:18, pieces_per_batch:8 },
+
+Line 1873 [selling_price, price]
+{ name:'Rings', category:'Regular', selling_price:25, pieces_per_batch:12 },
+
+Line 1874 [selling_price, price]
+{ name:'Shells', category:'Filled', selling_price:26, pieces_per_batch:12 },
+
+Line 1875 [selling_price, price]
+{ name:'Bavarian Midnight', category:'Premium', selling_price:28, pieces_per_batch:10 },
+
+Line 1876 [selling_price, price]
+{ name:'Biscoreo', category:'Premium', selling_price:28, pieces_per_batch:10 },
+
+Line 1877 [selling_price, price]
+{ name:'Fanfans', category:'Premium', selling_price:33, pieces_per_batch:10 },
+
+Line 1878 [selling_price, price]
+{ name:'Oreo Dream', category:'Premium', selling_price:33, pieces_per_batch:10 },
+
+Line 1879 [Almond Glitz, selling_price, price]
+{ name:'Almond Glitz', category:'Premium', selling_price:35, pieces_per_batch:10 },
+
+Line 1880 [selling_price, price]
+{ name:'Lotus Cloud', category:'Premium', selling_price:35, pieces_per_batch:10 },
+
+Line 1883 [reseller]
+// Phase 3: Sales & Resellers
+
+Line 1885 [reseller]
+const [resellers, setResellers] = useState([])
+
+Line 1886 [reseller]
+const [resellersLoading, setResellersLoading] = useState(false)
+
+Line 1887 [reseller]
+const [showResellerForm, setShowResellerForm] = useState(false)
+
+Line 1888 [reseller]
+const [editingResellerId, setEditingResellerId] = useState(null)
+
+Line 1889 [reseller]
+const [resellerForm, setResellerForm] = useState({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' })
+
+Line 1890 [reseller]
+// Multi-branch reseller accounts: one owner login can manage multiple branch/outlet records.
+
+Line 1891 [reseller]
+const [resellerAccounts, setResellerAccounts] = useState([])
+
+Line 1892 [reseller]
+const [resellerAccountsLoading, setResellerAccountsLoading] = useState(false)
+
+Line 1893 [reseller]
+const [showResellerAccountForm, setShowResellerAccountForm] = useState(false)
+
+Line 1894 [reseller]
+const [editingResellerAccountId, setEditingResellerAccountId] = useState(null)
+
+Line 1895 [reseller]
+const [resellerAccountForm, setResellerAccountForm] = useState({ account_name:'', owner_name:'', phone:'', access_code:'', access_pin:'', notes:'' })
+
+Line 1896 [reseller]
+const [resellerPortalAccount, setResellerPortalAccount] = useState(null)
+
+Line 1897 [reseller]
+const [resellerPortalBranches, setResellerPortalBranches] = useState([])
+
+Line 1898 [reseller]
+const [selectedResellerBranchId, setSelectedResellerBranchId] = useState('')
+
+Line 1899 [invoice, reseller]
+const [invoiceCopyFromResellerId, setInvoiceCopyFromResellerId] = useState('')
+
+Line 1900 [reseller]
+const [resellerOrderTemplateSourceId, setResellerOrderTemplateSourceId] = useState('')
+
+Line 1901 [reseller]
+const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
+
+Line 1904 [forecast]
+const [forecastDate, setForecastDate] = useState(tomorrowStr)
+
+Line 1905 [forecast]
+const [showForecastVariants, setShowForecastVariants] = useState(true)
+
+Line 1908 [invoice]
+const [deliveryInvoices, setDeliveryInvoices] = useState([])
+
+Line 1909 [invoice]
+const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('')
+
+Line 1920 [invoice]
+const [invoicesLoading, setInvoicesLoading] = useState(false)
+
+Line 1921 [invoice]
+const [showCreateInvoice, setShowCreateInvoice] = useState(false)
+
+Line 1922 [invoice, reseller]
+const [invoiceResellerId, setInvoiceResellerId] = useState('')
+
+Line 1923 [invoice, reseller]
+const [invoiceCustomerType, setInvoiceCustomerType] = useState('reseller')
+
+Line 1924 [invoice]
+const [invoiceDiscountPct, setInvoiceDiscountPct] = useState('20')
+
+Line 1925 [invoice]
+const [invoiceCustomerName, setInvoiceCustomerName] = useState('')
+
+Line 1926 [invoice]
+const [invoiceCustomerAddress, setInvoiceCustomerAddress] = useState('')
+
+Line 1927 [invoice]
+const [invoiceCustomerContact, setInvoiceCustomerContact] = useState('')
+
+Line 1928 [invoice]
+const [invoiceContainerType, setInvoiceContainerType] = useState('Crates')
+
+Line 1929 [invoice]
+const [invoiceDate, setInvoiceDate] = useState(today)
+
+Line 1930 [invoice]
+const [invoiceItems, setInvoiceItems] = useState([])
+
+Line 1931 [invoice]
+const [invoiceNotes, setInvoiceNotes] = useState('')
+
+Line 1932 [invoice]
+const [invoicePreparedBy, setInvoicePreparedBy] = useState('')
+
+Line 1933 [invoice]
+const [invoiceDispatchedBy, setInvoiceDispatchedBy] = useState('')
+
+Line 1934 [invoice]
+const [invoiceCrates, setInvoiceCrates] = useState('')
+
+Line 1935 [invoice]
+const [savingInvoice, setSavingInvoice] = useState(false)
+
+Line 1941 [invoice]
+const [viewingInvoice, setViewingInvoice] = useState(null)
+
+Line 1942 [invoice]
+const [editingInvoice, setEditingInvoice] = useState(null)
+
+Line 1943 [invoice]
+const [editInvoiceItems, setEditInvoiceItems] = useState([])
+
+Line 1944 [invoice]
+const [savingEditInvoice, setSavingEditInvoice] = useState(false)
+
+Line 1945 [invoice]
+// Invoice / delivery quantity adjustments
+
+Line 1946 [invoice]
+const [adjustmentInvoiceId, setAdjustmentInvoiceId] = useState('')
+
+Line 1951 [POS]
+const ONLINE_PAYMENT_METHODS = ['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Check','Other Online Payment']
+
+Line 1952 [POS]
+const DAILY_SALES_ONLINE_PAYMENT_METHODS = ['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Debit/Credit Card','QR PH','Other Online Payment']
+
+Line 1981 [unit_price, price]
+const [salesEntries, setSalesEntries] = useState([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])
+
+Line 2018 [invoice]
+const [invoiceFilter, setInvoiceFilter] = useState('active')
+
+Line 2019 [invoice]
+const [invoiceDayFilter, setInvoiceDayFilter] = useState(today)
+
+Line 2036 [POS]
+const [bankDeposits, setBankDeposits] = useState([])
+
+Line 2037 [POS]
+const [showDepositForm, setShowDepositForm] = useState(false)
+
+Line 2038 [POS]
+const [depositForm, setDepositForm] = useState({ deposit_date:today, deposit_slip_number:'', bank_name:'BDO', amount:'', notes:'' })
+
+Line 2039 [POS]
+const [savingDeposit, setSavingDeposit] = useState(false)
+
+Line 2054 [reseller]
+// Reseller Disputes
+
+Line 2060 [reseller]
+const [resellerDisputes, setResellerDisputes] = useState([])
+
+Line 2091 [reseller]
+const SOP_DEPARTMENTS = ['Production','Quality Control','Food Safety','Inventory','Packing / Dispatch','Delivery','Reseller Management','Finance','HR / Discipline','System','Safety','Management']
+
+Line 2092 [reseller]
+const SOP_CATEGORIES = ['Operations','Quality Control','Food Safety','Inventory Control','Dispatch','Delivery','Sales / Reseller','Finance','HR Policy','System Control','Safety','Management Control']
+
+Line 2094 [reseller]
+const SOP_ACCESS_ROLE_OPTIONS = ['owner','manager','hr','payroll','supervisor','asst_supervisor','employee','reseller']
+
+Line 2108 [price]
+const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
+
+Line 2159 [POS]
+const [weeklySnackPostToSales, setWeeklySnackPostToSales] = useState(true)
+
+Line 2162 [reseller]
+const [outletRemitResellerId, setOutletRemitResellerId] = useState('')
+
+Line 2170 [POS]
+const [outletRemitPostToSales, setOutletRemitPostToSales] = useState(true)
+
+Line 2174 [reseller]
+// Crates Inventory / Reseller Variance Tracking
+
+Line 2180 [reseller]
+const [crateDispatchResellerId, setCrateDispatchResellerId] = useState('')
+
+Line 2181 [invoice]
+const [crateDispatchInvoiceId, setCrateDispatchInvoiceId] = useState('')
+
+Line 2187 [reseller]
+const [crateCollectionResellerId, setCrateCollectionResellerId] = useState('')
+
+Line 2192 [reseller]
+const [crateAdjustmentResellerId, setCrateAdjustmentResellerId] = useState('')
+
+Line 2216 [POS]
+const [showPOSection, setShowPOSection] = useState(false)
+
+Line 2218 [POS]
+const [poSupplierId, setPOSupplierId] = useState('')
+
+Line 2383 [invoice]
+if (isOwnerSide) loadDeliveryInvoices()
+
+Line 2573 [POS]
+navigator.geolocation.getCurrentPosition(
+
+Line 2574 [POS]
+(pos) => {
+
+Line 2575 [POS]
+const dist = getDistanceMeters(pos.coords.latitude, pos.coords.longitude, useLat, useLng)
+
+Line 2900 [POS]
+showToast(' Announcement posted!')
+
+Line 3210 [POS]
+const position = emp.position || 'Crew / Staff'
+
+Line 3231 [POS]
+<tr><td>Position</td><td>${esc(position)}</td></tr>
+
+Line 3240 [POS]
+<p>The Employee shall perform all duties related to the position and any reasonable work assignment given by the Company, including tasks connected to production, packing, dispatch, delivery, selling, customer service, cleaning, inventory, food safety, documen ...
+
+Line 3246 [reseller]
+<p>The Employee agrees to follow all company SOPs, food safety rules, hygiene standards, cash handling procedures, production standards, inventory controls, delivery policies, reseller policies, and lawful instructions from authorized managers or supervisors.< ...
+
+Line 3247 [price, reseller]
+<p>The Employee shall keep confidential all company recipes, formulas, costing, supplier information, customer/reseller records, employee records, prices, business systems, reports, and other internal information. Unauthorized disclosure or misuse may lead to  ...
+
+Line 3278 [Stock In]
+...(txs.data||[]).map(t=>({...t, movementType: t.transaction_type==='in'?'Stock In':'Stock Out', color: t.transaction_type==='in'?'#2d8a4e':'#ca1b1b', icon:' ' })),
+
+Line 3561 [reseller, POS]
+// Positive means crates are with the reseller. Negative means crates returned/reduced.
+
+Line 3570 [reseller]
+function getResellerRecordById(resellerId) {
+
+Line 3571 [reseller]
+return (resellers || []).find(r => String(r.id) === String(resellerId)) || null
+
+Line 3574 [invoice]
+function getInvoiceRecordById(invoiceId) {
+
+Line 3575 [invoice]
+return (deliveryInvoices || []).find(inv => String(inv.id) === String(invoiceId)) || null
+
+Line 3592 [reseller]
+const resellerName = String(movement?.reseller_name || '').trim().toLowerCase()
+
+Line 3593 [reseller]
+return type.startsWith('company_') || resellerName === 'company inventory'
+
+Line 3602 [POS]
+// Positive means crates owned by the company increased. Negative means damaged/lost/deducted.
+
+Line 3612 [reseller]
+;(resellers || []).forEach(r => {
+
+Line 3614 [reseller]
+reseller_id:String(r.id),
+
+Line 3615 [reseller]
+reseller_name:r.name || 'Unnamed Reseller',
+
+Line 3631 [reseller]
+const key = String(m.reseller_id || m.reseller_name || 'unknown')
+
+Line 3634 [reseller]
+reseller_id:m.reseller_id || key,
+
+Line 3635 [reseller]
+reseller_name:m.reseller_name || 'Unknown Reseller',
+
+Line 3682 [reseller]
+return String(row.reseller_name || '').toLowerCase().includes(q) || String(row.area || '').toLowerCase().includes(q)
+
+Line 3684 [reseller]
+.sort((a,b) => (safeNum(b.crateBalance, 0) + safeNum(b.coverBalance, 0)) - (safeNum(a.crateBalance, 0) + safeNum(a.coverBalance, 0)) || String(a.reseller_name).localeCompare(String(b.reseller_name)))
+
+Line 3700 [reseller]
+const totalWithResellers = allRows.reduce((s,r)=>s+Math.max(0, safeNum(r.crateBalance,0)),0)
+
+Line 3701 [reseller]
+const totalCoversWithResellers = allRows.reduce((s,r)=>s+Math.max(0, safeNum(r.coverBalance,0)),0)
+
+Line 3702 [reseller]
+const resellersWithBalance = allRows.filter(r => safeNum(r.crateBalance,0) > 0 || safeNum(r.coverBalance,0) > 0).length
+
+Line 3707 [reseller]
+const availableCrates = totalCompanyCrates - totalWithResellers
+
+Line 3708 [reseller]
+const availableCovers = totalCompanyCovers - totalCoversWithResellers
+
+Line 3709 [reseller]
+return { rows, allRows, totalReleased, totalCollected, totalCoversReleased, totalCoversCollected, totalWithResellers, totalCoversWithResellers, resellersWithBalance, totalCompanyCrates, totalCompanyCovers, totalCompanyAdded, totalCompanyDeducted, availableCrat ...
+
+Line 3775 [reseller]
+reseller_id:null,
+
+Line 3776 [reseller]
+reseller_name:'Company Inventory',
+
+Line 3777 [invoice]
+invoice_id:null,
+
+Line 3778 [invoice]
+invoice_number:'',
+
+Line 3802 [reseller]
+const reseller = getResellerRecordById(crateDispatchResellerId)
+
+Line 3806 [reseller]
+if (!reseller) { showToast('Please select reseller.','red'); return }
+
+Line 3808 [invoice]
+const invoice = getInvoiceRecordById(crateDispatchInvoiceId)
+
+Line 3813 [reseller]
+reseller_id:reseller.id,
+
+Line 3814 [reseller]
+reseller_name:reseller.name || '',
+
+Line 3815 [invoice]
+invoice_id:invoice?.id || null,
+
+Line 3816 [invoice]
+invoice_number:invoice?.invoice_number || '',
+
+Line 3831 [invoice, reseller]
+await logAudit('CRATES / COVERS DISPATCHED', adminRole || 'Admin', reseller.name, `${crateQty} crate(s), ${coverQty} cover(s) released${invoice?.invoice_number ? ' for '+invoice.invoice_number : ''}`)
+
+Line 3833 [invoice]
+setCrateReleasedQty(''); setCrateCoverReleasedQty(''); setCrateDispatchInvoiceId(''); setCrateDispatchNotes('')
+
+Line 3842 [reseller]
+const reseller = getResellerRecordById(crateCollectionResellerId)
+
+Line 3846 [reseller]
+if (!reseller) { showToast('Please select reseller.','red'); return }
+
+Line 3852 [reseller]
+reseller_id:reseller.id,
+
+Line 3853 [reseller]
+reseller_name:reseller.name || '',
+
+Line 3854 [invoice]
+invoice_id:null,
+
+Line 3855 [invoice]
+invoice_number:'',
+
+Line 3870 [reseller]
+await logAudit('CRATES / COVERS COLLECTED', adminRole || 'Admin', reseller.name, `${crateQty} crate(s), ${coverQty} cover(s) collected`)
+
+Line 3881 [reseller]
+const reseller = getResellerRecordById(crateAdjustmentResellerId)
+
+Line 3886 [reseller]
+if (!reseller) { showToast('Please select reseller.','red'); return }
+
+Line 3893 [reseller]
+reseller_id:reseller.id,
+
+Line 3894 [reseller]
+reseller_name:reseller.name || '',
+
+Line 3895 [invoice]
+invoice_id:null,
+
+Line 3896 [invoice]
+invoice_number:'',
+
+Line 3909 [reseller]
+await logAudit('CRATES / COVERS ADJUSTED', adminRole || 'Admin', reseller.name, `${reducing ? 'Reduced' : 'Added'} ${qty} ${assetLabel}: ${crateAdjustmentReason || 'Correction'}`)
+
+Line 3921 [reseller]
+const headers = ['Reseller','Area','Crates Released','Crates Collected','Crate Adjustments','Crates Unreturned','Covers Released','Covers Collected','Cover Adjustments','Covers Unreturned','Last Movement']
+
+Line 3925 [reseller]
+lines.push([r.reseller_name, r.area, r.cratesReleased, r.cratesCollected, r.crateAdjustments, r.crateBalance, r.coversReleased, r.coversCollected, r.coverAdjustments, r.coverBalance, last].map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(','))
+
+Line 3948 [selling_price, price]
+selling_price: Number(newItemSellingPrice||0),
+
+Line 3964 [price]
+setNewItemSellingPrice('')
+
+Line 3996 [selling_price, price]
+selling_price: Number(f.selling_price??item.selling_price??0),
+
+Line 4189 [POS]
+async function createPOsForLowStockSuppliers() {
+
+Line 4222 [unit_price, price]
+unit_price: Number(i.cost_per_unit||0)
+
+Line 4224 [unit_price, price]
+const total = poItemsForSupplier.reduce((sum,i)=>sum + Number(i.order_qty||0) * Number(i.unit_price||0), 0)
+
+Line 4242 [unit_price, price]
+unit_price: Number(i.unit_price || 0),
+
+Line 4243 [unit_price, price]
+total_price: Number(i.order_qty || 0) * Number(i.unit_price || 0)
+
+Line 4254 [POS]
+setShowPOSection(true)
+
+Line 4256 [POS]
+setPOSupplierId('')
+
+Line 4460 [price]
+function getSnackDrinkSellingPrice(item = {}) {
+
+Line 4461 [unit_price, selling_price, price]
+return safeNum(item.selling_price ?? item.sale_price ?? item.unit_price ?? item.price ?? item.retail_price, 0)
+
+Line 4467 [selling_price, price]
+.filter(item => !term || [item.name, item.category, getInventoryCategoryLabel(item), item.unit, item.selling_price, item.current_stock].filter(Boolean).join(' ').toLowerCase().includes(term))
+
+Line 4498 [selling_price, price]
+const sellingPrice = input.selling_price !== undefined && input.selling_price !== '' ? safeNum(input.selling_price, 0) : getSnackDrinkSellingPrice(item)
+
+Line 4499 [price]
+const salesAmount = moneyRound(estimatedSold * sellingPrice)
+
+Line 4500 [selling_price, price]
+return { item, item_id:item.id, item_name:item.name, category:getInventoryCategoryLabel(item), unit:item.unit || 'pcs', beginning_count:beginning, stock_in_qty:moneyRound(stockIn), wastage_qty:moneyRound(wastage), ending_count:ending, estimated_sold_qty:estima ...
+
+Line 4513 [selling_price, price]
+if (safeNum(row.selling_price, 0) <= 0 && safeNum(row.estimated_sold_qty, 0) > 0) acc.missingPriceCount += 1
+
+Line 4515 [price]
+}, { itemCount:0, totalBeginning:0, totalStockIn:0, totalWastage:0, totalEnding:0, totalSold:0, totalSales:0, negativeVariance:0, missingPriceCount:0 })
