@@ -24099,14 +24099,14 @@ function PosMonitorPanel() {
  ): (
  <>
   <div>{php(item.cost_per_unit || 0)}</div>
-  {isSnackDrinkInventoryItem(item) && (
-   <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Sell: {php(item.selling_price || snackDrinkAutoSellingPrice(item.cost_per_unit))}</div>
+  {isSnackDrinkInventoryItem(item) && safeNum(item.selling_price, 0) > 0 && (
+   <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Sell: {php(item.selling_price)}</div>
   )}
  </>
 )}
 {editingItemId===item.id && isSnackDrinkCategoryName(editItemFields.category ?? item.category) && (
  <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'900', marginTop:'4px', whiteSpace:'nowrap' }}>
-  Auto Sell: {php(snackDrinkAutoSellingPrice(editItemFields.cost_per_unit ?? item.cost_per_unit))}
+  Auto Selling Price from Buying Price: {php(snackDrinkAutoSellingPrice(editItemFields.cost_per_unit ?? item.cost_per_unit))}
  </div>
 )}
  </td>
