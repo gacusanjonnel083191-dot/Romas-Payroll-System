@@ -4200,6 +4200,11 @@ Cancel = create batch record only for existing stock.`)
  async function addInventoryItem() {
  if (!newItemName.trim()) { showToast(' Please enter item name.','red'); return }
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
+
+ const itemCostPerUnit = safeNum(newItemCostPerUnit, 0)
+ const itemSellingPrice = isSnacksDrinksInventoryCategory(newItemCategory)
+  ? computeSnackDrinkSellingPrice(itemCostPerUnit)
+  : safeNum(newItemSellingPrice, 0)
  setAddItemLoading(true)
  try {
  const { error } = await supabase.from('inventory_items').insert({
@@ -4250,6 +4255,11 @@ Cancel = create batch record only for existing stock.`)
  }
  async function saveInventoryItemEdit(item) {
  const f = editItemFields
+ const updatedCategory = f.category ?? item.category
+ const updatedCostPerUnit = safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
+ const updatedSellingPrice = isSnacksDrinksInventoryCategory(updatedCategory)
+  ? computeSnackDrinkSellingPrice(updatedCostPerUnit)
+  : safeNum(f.selling_price ?? item.selling_price ?? 0, 0)
  const { error } = await supabase.from('inventory_items').update({
  name: f.name||item.name,
  category: f.category||item.category,
@@ -23842,7 +23852,13 @@ function PosMonitorPanel() {
  <label style={lblS}>Item Name:</label>
  <input type="text" placeholder="e.g. All-purpose flour" value={newItemName} onChange={e=>setNewItemName(e.target.value)} style={inputStyle} />
  <label style={lblS}>Category:</label>
- <select value={newItemCategory} onChange={e=>setNewItemCategory(e.target.value)} style={inputStyle}>
+ <select value={newItemCategory} onChange={e=>{
+ const category = e.target.value
+ setNewItemCategory(category)
+ if (isSnacksDrinksInventoryCategory(category)) {
+  setNewItemSellingPrice(computeSnackDrinkSellingPrice(newItemCostPerUnit))
+ }
+}} style={inputStyle}>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
  </select>
  <label style={lblS}>Supplier:</label>
@@ -23863,7 +23879,13 @@ function PosMonitorPanel() {
  </div>
  <div>
  <label style={lblS}>Cost per Unit (PHP):</label>
- <input type="number" placeholder="0.00" value={newItemCostPerUnit} onChange={e=>setNewItemCostPerUnit(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+ <input type="number" placeholder="0.00" value={newItemCostPerUnit} onChange={e=>{
+ const cost = e.target.value
+ setNewItemCostPerUnit(cost)
+ if (isSnacksDrinksInventoryCategory(newItemCategory)) {
+  setNewItemSellingPrice(computeSnackDrinkSellingPrice(cost))
+ }
+}} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
  </div>
  <div>
  <label style={lblS}>Min Stock Level:</label>
@@ -23875,10 +23897,10 @@ function PosMonitorPanel() {
  <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
  </div>
  )}
- {newItemCategory==='Finished Products' && (
+ {(newItemCategory==='Finished Products' || isSnacksDrinksInventoryCategory(newItemCategory)) && (
  <div>
  <label style={lblS}>Selling Price (PHP):</label>
- <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+ <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnacksDrinksInventoryCategory(newItemCategory)} title={isSnacksDrinksInventoryCategory(newItemCategory)?'Auto-computed: cost + 30% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnacksDrinksInventoryCategory(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
  </div>
  )}
  </div>
@@ -23985,7 +24007,17 @@ function PosMonitorPanel() {
  {isEditing? (
  <div style={{ display:'grid', gap:'5px' }}>
  <input value={editItemFields.name??item.name} onChange={e=>setEditItemFields(p=>({...p,name:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }} />
- <select value={editItemFields.category??displayCategoryName(item.category)} onChange={e=>setEditItemFields(p=>({...p,category:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
+ <select value={editItemFields.category??displayCategoryName(item.category)} onChange={e=>{
+ const category = e.target.value
+ setEditItemFields(p=>{
+  const cost = safeNum(p.cost_per_unit ?? item.cost_per_unit, 0)
+  return {
+   ...p,
+   category,
+   ...(isSnacksDrinksInventoryCategory(category) ? { selling_price: computeSnackDrinkSellingPrice(cost) } : {})
+  }
+ })
+}} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
  </select>
  <select value={editItemFields.supplier_id??item.supplier_id??''} onChange={e=>setEditItemFields(p=>({...p,supplier_id:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
@@ -24046,7 +24078,17 @@ function PosMonitorPanel() {
 
  <td style={{ ...numStyle, color:'#666' }}>
  {isEditing? (
- <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
+ <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>{
+ const cost = e.target.value
+ setEditItemFields(p=>{
+  const category = p.category ?? item.category
+  return {
+   ...p,
+   cost_per_unit:cost,
+   ...(isSnacksDrinksInventoryCategory(category) ? { selling_price: computeSnackDrinkSellingPrice(cost) } : {})
+  }
+ })
+}} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
  ): php(item.cost_per_unit || 0)}
  </td>
 
