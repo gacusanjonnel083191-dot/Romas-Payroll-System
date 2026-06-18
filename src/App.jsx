@@ -24089,7 +24089,19 @@ function PosMonitorPanel() {
   }
  })
 }} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
- ): php(item.cost_per_unit || 0)}
+ ): (
+ <>
+  <div>{php(item.cost_per_unit || 0)}</div>
+  {isSnackDrinkInventoryItem(item) && (
+   <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Sell: {php(item.selling_price || computeSnackDrinkSellingPrice(item.cost_per_unit))}</div>
+  )}
+ </>
+)}
+{editingItemId===item.id && isSnacksDrinksInventoryCategory(editItemFields.category ?? item.category) && (
+ <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'900', marginTop:'4px', whiteSpace:'nowrap' }}>
+  Auto Sell: {php(computeSnackDrinkSellingPrice(editItemFields.cost_per_unit ?? item.cost_per_unit))}
+ </div>
+)}
  </td>
 
  <td style={{ ...rowBase, textAlign:'center' }}>
