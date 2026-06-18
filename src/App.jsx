@@ -4471,6 +4471,130 @@ Cancel = create batch record only for existing stock.`)
  pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
  }
 
+ function printInventoryCategoryReport(categoryFilter = 'all') {
+ const filtered = categoryFilter === 'all'
+ ? inventoryItems
+ : inventoryItems.filter(i => getInventoryCategoryLabel(i) === categoryFilter)
+ if (filtered.length === 0) { showToast(' No items to print for this category.', 'red'); return }
+ const lowStock = filtered.filter(i => Number(i.current_stock||0) <= Number(i.min_stock||0) && Number(i.min_stock||0) > 0)
+ const totalValue = filtered.reduce((s,i) => s + Number(i.current_stock||0) * Number(i.cost_per_unit||0), 0)
+ const byCategory = categoryFilter === 'all'
+ ? getInventoryCategoryGroups(filtered)
+ : [{ cat: categoryFilter, items: filtered }]
+ const reportTitle = categoryFilter === 'all' ? 'FULL INVENTORY REPORT' : `INVENTORY REPORT — ${categoryFilter.toUpperCase()}`
+ const reportDate = new Date().toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit' })
+ const pw = window.open('','_blank','width=900,height=700')
+ pw.document.write(`<!DOCTYPE html><html><head><title>${reportTitle}</title>
+ <style>
+ *{margin:0;padding:0;box-sizing:border-box;}
+ body{font-family:Arial,sans-serif;padding:14mm;font-size:11px;color:#000;background:white;}
+ @media print{@page{size:A4;margin:12mm;}.no-print{display:none!important;}body{padding:0;}}
+ h1{font-size:20px;color:#ca1b1b;margin-bottom:2px;}
+ .sub{font-size:11px;color:#666;}
+ .summary{display:flex;gap:12px;margin:14px 0 18px;flex-wrap:wrap;}
+ .card{border:1px solid #ddd;border-radius:8px;padding:10px 14px;background:#fafafa;min-width:130px;}
+ .card-label{font-size:9px;text-transform:uppercase;color:#777;font-weight:bold;letter-spacing:0.5px;}
+ .card-value{font-size:18px;font-weight:bold;color:#ca1b1b;margin-top:3px;}
+ .card-sub{font-size:9px;color:#aaa;margin-top:1px;}
+ .cat-title{background:#ca1b1b;color:white;padding:7px 10px;font-size:11px;font-weight:bold;margin-top:14px;border-radius:6px 6px 0 0;letter-spacing:0.5px;}
+ table{width:100%;border-collapse:collapse;margin-bottom:16px;}
+ th{background:#fff8dc;color:#333;border:1px solid #ccc;padding:6px 8px;text-align:left;font-size:9px;text-transform:uppercase;letter-spacing:0.5px;}
+ td{border:1px solid #e0e0e0;padding:5px 8px;font-size:10px;vertical-align:middle;}
+ tr:nth-child(even) td{background:#fafafa;}
+ .low{color:#ca1b1b;font-weight:bold;}
+ .ok{color:#2d8a4e;font-weight:bold;}
+ .right{text-align:right;}
+ .center{text-align:center;}
+ .footer{margin-top:18px;border-top:1px solid #eee;padding-top:10px;font-size:9px;color:#aaa;display:flex;justify-content:space-between;}
+ .no-print{text-align:center;margin-top:18px;}
+ .print-btn{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:bold;cursor:pointer;margin-right:8px;}
+ .close-btn{background:#eee;color:#333;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:bold;cursor:pointer;}
+ </style></head><body>
+ <div style="border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+ <div>
+ <h1>Roma's Donuts</h1>
+ <div style="font-size:13px;font-weight:bold;margin-top:2px;">${reportTitle}</div>
+ <div class="sub">Generated: ${reportDate}</div>
+ ${categoryFilter !== 'all' ? `<div style="margin-top:4px;display:inline-block;background:#fff8dc;border:1px solid #FDD412;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:bold;color:#7a5c00;">Category: ${categoryFilter}</div>` : ''}
+ </div>
+ <div style="text-align:right;font-size:10px;color:#666;">Inventory Control<br/>Roma's Donuts</div>
+ </div>
+ <div class="summary">
+ <div class="card">
+ <div class="card-label">Total Items</div>
+ <div class="card-value">${filtered.length}</div>
+ <div class="card-sub">${categoryFilter === 'all' ? `${INVENTORY_CATEGORIES.filter(c=>filtered.some(i=>getInventoryCategoryLabel(i)===c)).length} categories` : categoryFilter}</div>
+ </div>
+ <div class="card" style="border-color:${lowStock.length > 0 ? '#ffcdd2' : '#c8e6c9'};">
+ <div class="card-label">Low Stock</div>
+ <div class="card-value" style="color:${lowStock.length > 0 ? '#ca1b1b' : '#2d8a4e'};">${lowStock.length}</div>
+ <div class="card-sub">${lowStock.length > 0 ? 'Need reorder' : 'All levels OK'}</div>
+ </div>
+ <div class="card" style="border-color:#c5cae9;">
+ <div class="card-label">Total Stock Value</div>
+ <div class="card-value" style="color:#4a90d9;">${php(totalValue)}</div>
+ <div class="card-sub">At cost per unit</div>
+ </div>
+ </div>
+ ${byCategory.map(g => `
+ <div class="cat-title"> ${g.cat}</div>
+ <table>
+ <tr>
+ <th>#</th>
+ <th>Item Name</th>
+ <th>Unit</th>
+ <th class="right">Current Stock</th>
+ <th class="right">Min Stock</th>
+ <th class="right">Cost / Unit</th>
+ <th class="right">Total Value</th>
+ <th class="center">Status</th>
+ </tr>
+ ${g.items.map((i, idx) => {
+ const isLow = Number(i.current_stock||0) <= Number(i.min_stock||0) && Number(i.min_stock||0) > 0
+ const val = Number(i.current_stock||0) * Number(i.cost_per_unit||0)
+ return `<tr>
+ <td class="center" style="color:#aaa;">${idx+1}</td>
+ <td style="font-weight:bold;">${i.name || ''}</td>
+ <td class="center">${i.unit || ''}</td>
+ <td class="right ${isLow ? 'low' : ''}">${Number(i.current_stock||0).toFixed(2)}</td>
+ <td class="right">${Number(i.min_stock||0).toFixed(2)}</td>
+ <td class="right">${php(i.cost_per_unit||0)}</td>
+ <td class="right">${php(val)}</td>
+ <td class="center ${isLow ? 'low' : 'ok'}">${isLow ? '⚠ LOW' : '✓ OK'}</td>
+ </tr>`
+ }).join('')}
+ <tr style="background:#f9f9f9;font-weight:bold;">
+ <td colspan="6" class="right" style="font-size:10px;color:#555;">Category Total:</td>
+ <td class="right" style="color:#4a90d9;">${php(g.items.reduce((s,i)=>s+Number(i.current_stock||0)*Number(i.cost_per_unit||0),0))}</td>
+ <td></td>
+ </tr>
+ </table>`).join('')}
+ ${lowStock.length > 0 ? `
+ <div class="cat-title" style="background:#8b0000;"> LOW STOCK ALERT — ${lowStock.length} item(s) need reorder</div>
+ <table>
+ <tr><th>#</th><th>Item Name</th><th>Category</th><th class="right">Current</th><th class="right">Minimum</th><th>Unit</th></tr>
+ ${lowStock.map((i,idx)=>`<tr>
+ <td class="center" style="color:#aaa;">${idx+1}</td>
+ <td class="low">${i.name}</td>
+ <td>${getInventoryCategoryLabel(i)}</td>
+ <td class="right low">${Number(i.current_stock||0).toFixed(2)}</td>
+ <td class="right">${Number(i.min_stock||0).toFixed(2)}</td>
+ <td>${i.unit}</td>
+ </tr>`).join('')}
+ </table>` : ''}
+ <div class="footer">
+ <span>Roma's Donuts — Inventory Report</span>
+ <span>Total Items: ${filtered.length} | Total Value: ${php(totalValue)} | Low Stock: ${lowStock.length}</span>
+ </div>
+ <div class="no-print">
+ <button class="print-btn" onclick="window.print()"> PRINT / SAVE AS PDF</button>
+ <button class="close-btn" onclick="window.close()"> CLOSE</button>
+ </div>
+ </body></html>`)
+ pw.document.close()
+ setTimeout(() => { pw.focus(); pw.print() }, 600)
+ }
+
  function getLowStockItems() {
  const lowItems = inventoryItems.filter(i=>Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0)
  return lowItems.sort((a,b)=>String(a.category||'').localeCompare(String(b.category||'')) || String(a.name||'').localeCompare(String(b.name||'')))
@@ -23966,12 +24090,19 @@ function printCompanyDocumentRecord(record) {
  )}
 
  {/* Search & Filter */}
- <div style={{ display:'flex', gap:'10px', marginBottom:'14px', flexWrap:'wrap' }}>
+ <div style={{ display:'flex', gap:'10px', marginBottom:'14px', flexWrap:'wrap', alignItems:'center' }}>
  <input placeholder="Search items..." value={inventorySearch} onChange={e=>setInventorySearch(e.target.value)} style={{...inputStyle, marginBottom:0, flex:1, minWidth:'150px' }} />
  <select value={inventoryCategoryFilter} onChange={e=>setInventoryCategoryFilter(e.target.value)} style={{...inputStyle, marginBottom:0, width:'auto' }}>
  <option value="all">All Categories</option>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
  </select>
+ <button
+ style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'10px', padding:'10px 16px', cursor:'pointer', fontWeight:'700', fontSize:'12px', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:'6px', boxShadow:'0 2px 8px rgba(0,0,0,0.18)' }}
+ onClick={() => printInventoryCategoryReport(inventoryCategoryFilter)}
+ title={inventoryCategoryFilter === 'all' ? 'Print full inventory report' : `Print only: ${inventoryCategoryFilter}`}
+ >
+  PRINT {inventoryCategoryFilter === 'all' ? 'ALL' : inventoryCategoryFilter.split(' ')[0].toUpperCase()}
+ </button>
  </div>
 
  {/* Add Item Button + CSV/XLSX Upload */}
@@ -30669,6 +30800,17 @@ onClick={async ()=>{
  </>
  )}
  </div>
+
+
+  "${i}: $($lines[$i-1])"
+}
+
+  "${i}: $($lines[$i-1])"
+}
+
+  "${i}: $($lines[$i-1])"
+}
+
  <div style={{...portalCard, marginTop:'14px' }}>
  <h3 style={{ color:'#333', margin:'0 0 10px', fontSize:'14px' }}>Submitted Reports</h3>
  {resellerReturns.length===0? <p style={{ color:'#aaa', margin:0, fontSize:'12px' }}>No return reports submitted yet.</p>: resellerReturns.map(r=>(
