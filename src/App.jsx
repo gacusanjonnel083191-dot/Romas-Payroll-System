@@ -25077,10 +25077,25 @@ function PosMonitorPanel() {
      existingForecastKeys.add(variantKey);
    });
    forecastRows = (forecastRows || []).sort(compareDonutVariantRowsByGuide);
+
+const getForecastRowTotal = (row) => {
+ const raw = row?.total ?? row?.totalPieces ?? row?.forecast_qty ?? row?.quantity ?? row?.qty ?? 0
+ const n = safeNum(raw, 0)
+ return Number.isFinite(n) ? n : 0
+}
+
+const getDryPremixGramsPerPiece = (variantName) => {
+ const direct = DRY_PREMIX_GRAMS[variantName]
+ const normalized = typeof normalizeDonutVariantName === 'function'
+  ? DRY_PREMIX_GRAMS[normalizeDonutVariantName(variantName)]
+  : undefined
+ const n = safeNum(direct ?? normalized ?? 0, 0)
+ return Number.isFinite(n) ? n : 0
+}
  }
 
- const totalPieces = forecastRows.reduce((s,r)=>s+r.total,0)
- const totalDryPremixG = forecastRows.reduce((s,r)=>s+(DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total, 0)
+ const totalPieces = forecastRows.reduce((s,r)=>s+getForecastRowTotal(r),0)
+ const totalDryPremixG = forecastRows.reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)), 0)
  const totalDryPremixKg = (totalDryPremixG/1000).toFixed(2)
  const printForecast = () => {
  const pw = window.open('','_blank','width=700,height=900')
@@ -25114,7 +25129,8 @@ function PosMonitorPanel() {
  <table>
  <tr><th>Variant</th><th style="text-align:right;">Pieces</th><th style="text-align:right;">Dry Premix</th><th style="text-align:center;">Actual</th></tr>
  ${forecastRows.map(r => {
- const grams = (DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total
+ const pieces = getForecastRowTotal(r)
+const grams = getDryPremixGramsPerPiece(r.variant_name)*pieces
  const kgDisplay = grams>=1000? (grams/1000).toFixed(2)+' kg': grams.toFixed(0)+' g'
  return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+safeNum(r.total,0).toLocaleString('en-PH')+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
  }).join('')}
@@ -25174,7 +25190,8 @@ function PosMonitorPanel() {
  {['Variant','Total Pieces','Dry Premix'].map(h=><span key={h} style={{ color:'white', fontSize:'11px', fontWeight:'bold', textAlign:h==='Variant'?'left':'right' }}>{h}</span>)}
  </div>
  {forecastRows.map((r,i)=>{
- const grams = (DRY_PREMIX_GRAMS[r.variant_name]||0)*r.total
+ const pieces = getForecastRowTotal(r)
+const grams = getDryPremixGramsPerPiece(r.variant_name)*pieces
  const kg = (grams/1000).toFixed(2)
  return (
  <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
