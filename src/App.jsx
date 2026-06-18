@@ -25064,9 +25064,15 @@ function PosMonitorPanel() {
  }
 
  
+
 const getDryPremixGramsPerPiece = (variantName) => {
+ const lookupKey = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]/g, '')
+
  const dryPremixByKey = Object.entries(DRY_PREMIX_GRAMS || {}).reduce((map, [key, value]) => {
-  map[getDryPremixLookupKey(key)] = safeNum(value, 0)
+  map[lookupKey(key)] = safeNum(value, 0)
   return map
  }, {})
 
@@ -25087,7 +25093,7 @@ const getDryPremixGramsPerPiece = (variantName) => {
   name.replace(/dream$/i, ' Dream'),
   name.replace(/glitz$/i, ' Glitz'),
   name.replace(/cloud$/i, ' Cloud')
- ].map(getDryPremixLookupKey)
+ ].map(lookupKey)
 
  for (const key of possibleKeys) {
   const value = dryPremixByKey[key]
