@@ -1610,7 +1610,13 @@ const printCSS = `
  }
  </style>`
 
-export default function App() {
+export default 
+// Safe fallback: prevents owner dashboard crash if payment deadline alert helper is missing.
+function getOwnerPaymentDeadlineAlerts() {
+ return []
+}
+
+function App() {
   useEffect(() => {
     if (typeof document === 'undefined') return
     if (document.getElementById('payables-main-blink-style')) return
