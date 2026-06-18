@@ -2269,6 +2269,7 @@ export default function App() {
  const [newItemUnit, setNewItemUnit] = useState('kg')
  const [newItemMinStock, setNewItemMinStock] = useState('')
  const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
+ const [newItemBuyingPrice, setNewItemBuyingPrice] = useState('')
  const [newItemCurrentStock, setNewItemCurrentStock] = useState('')
  const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
  const [newItemExpiryDate, setNewItemExpiryDate] = useState('')
@@ -4208,9 +4209,17 @@ Cancel = create batch record only for existing stock.`)
  if (!newItemName.trim()) { showToast(' Please enter item name.','red'); return }
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
 
- const itemCostPerUnit = safeNum(newItemCostPerUnit, 0)
- const itemSellingPrice = isSnackDrinkCategoryName(newItemCategory)
-  ? snackDrinkAutoSellingPrice(itemCostPerUnit)
+ const isNewSnackDrink = isSnackDrinkCategoryName(newItemCategory)
+ const enteredBuyingPrice = safeNum(newItemBuyingPrice, 0)
+
+ // For Snacks/Drinks: existing/old price is SELLING PRICE.
+ // Buying price is a separate field. Only compute selling price when buying price is entered.
+ const itemBuyingPrice = isNewSnackDrink ? enteredBuyingPrice : 0
+ const itemCostPerUnit = isNewSnackDrink
+  ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
+  : safeNum(newItemCostPerUnit, 0)
+ const itemSellingPrice = isNewSnackDrink
+  ? (enteredBuyingPrice > 0 ? snackDrinkAutoSellingPrice(enteredBuyingPrice) : safeNum(newItemSellingPrice, 0))
   : safeNum(newItemSellingPrice, 0)
  setAddItemLoading(true)
  try {
@@ -4236,6 +4245,7 @@ Cancel = create batch record only for existing stock.`)
  setNewItemName('')
  setNewItemMinStock('')
  setNewItemCostPerUnit('')
+ setNewItemBuyingPrice('')
  setNewItemCurrentStock('')
  setNewItemSellingPrice('')
  setNewItemExpiryDate('')
@@ -4263,9 +4273,17 @@ Cancel = create batch record only for existing stock.`)
  async function saveInventoryItemEdit(item) {
  const f = editItemFields
  const updatedCategory = f.category ?? item.category
- const updatedCostPerUnit = safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
- const updatedSellingPrice = isSnackDrinkCategoryName(updatedCategory)
-  ? snackDrinkAutoSellingPrice(updatedCostPerUnit)
+ const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
+
+ // For Snacks/Drinks: keep old/existing price as SELLING PRICE.
+ // Only when buying_price is entered do we recompute selling price.
+ const previousSellingPrice = safeNum(item.selling_price || item.cost_per_unit || 0, 0)
+ const updatedBuyingPrice = safeNum(f.buying_price ?? item.buying_price ?? 0, 0)
+ const updatedCostPerUnit = isEditingSnackDrink
+  ? (updatedBuyingPrice > 0 ? updatedBuyingPrice : safeNum(item.cost_per_unit, 0))
+  : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
+ const updatedSellingPrice = isEditingSnackDrink
+  ? (updatedBuyingPrice > 0 ? snackDrinkAutoSellingPrice(updatedBuyingPrice) : previousSellingPrice)
   : safeNum(f.selling_price ?? item.selling_price ?? 0, 0)
  const { error } = await supabase.from('inventory_items').update({
  name: f.name||item.name,
@@ -23862,8 +23880,8 @@ function PosMonitorPanel() {
  <select value={newItemCategory} onChange={e=>{
  const category = e.target.value
  setNewItemCategory(category)
- if (isSnackDrinkCategoryName(category)) {
-  setNewItemSellingPrice(snackDrinkAutoSellingPrice(newItemCostPerUnit))
+ if (isSnackDrinkCategoryName(category) && safeNum(newItemBuyingPrice, 0) > 0) {
+  setNewItemSellingPrice(snackDrinkAutoSellingPrice(newItemBuyingPrice))
  }
 }} style={inputStyle}>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
@@ -23886,13 +23904,7 @@ function PosMonitorPanel() {
  </div>
  <div>
  <label style={lblS}>Cost per Unit (PHP):</label>
- <input type="number" placeholder="0.00" value={newItemCostPerUnit} onChange={e=>{
- const cost = e.target.value
- setNewItemCostPerUnit(cost)
- if (isSnackDrinkCategoryName(newItemCategory)) {
-  setNewItemSellingPrice(snackDrinkAutoSellingPrice(cost))
- }
-}} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+ <input type="number" placeholder="0.00" value={newItemCostPerUnit} onChange={e=>setNewItemCostPerUnit(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
  </div>
  <div>
  <label style={lblS}>Min Stock Level:</label>
@@ -23904,10 +23916,31 @@ function PosMonitorPanel() {
  <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
  </div>
  )}
- {(newItemCategory==='Finished Products' || isSnackDrinkCategoryName(newItemCategory)) && (
+ {isSnackDrinkCategoryName(newItemCategory) && (
+ <div>
+  <label style={lblS}>Buying Price / Purchase Price</label>
+  <input
+   type="number"
+   placeholder="0.00"
+   value={newItemBuyingPrice}
+   onChange={e=>{
+    const buy = e.target.value
+    setNewItemBuyingPrice(buy)
+    setNewItemSellingPrice(safeNum(buy, 0) > 0 ? snackDrinkAutoSellingPrice(buy) : '')
+   }}
+   style={{...inputStyle, marginBottom:0 }}
+   min="0"
+   step="0.01"
+  />
+  <p style={{ margin:'4px 0 0', color:'#2d8a4e', fontSize:'10px', fontWeight:'800' }}>
+   Auto selling price: {safeNum(newItemBuyingPrice,0)>0 ? php(snackDrinkAutoSellingPrice(newItemBuyingPrice)) : 'Enter buying price'}
+  </p>
+ </div>
+)}
+{(newItemCategory==='Finished Products' || isSnackDrinkCategoryName(newItemCategory)) && (
  <div>
  <label style={lblS}>Selling Price (PHP):</label>
- <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnackDrinkCategoryName(newItemCategory)} title={isSnackDrinkCategoryName(newItemCategory)?'Auto-computed: cost + 30% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnackDrinkCategoryName(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
+ <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnackDrinkCategoryName(newItemCategory)} title={isSnackDrinkCategoryName(newItemCategory)?'Auto-computed from Buying Price + 30% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnackDrinkCategoryName(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
  </div>
  )}
  </div>
@@ -24017,11 +24050,11 @@ function PosMonitorPanel() {
  <select value={editItemFields.category??displayCategoryName(item.category)} onChange={e=>{
  const category = e.target.value
  setEditItemFields(p=>{
-  const cost = safeNum(p.cost_per_unit ?? item.cost_per_unit, 0)
+  const buy = safeNum(p.buying_price ?? item.buying_price, 0)
   return {
    ...p,
    category,
-   ...(isSnackDrinkCategoryName(category) ? { selling_price: snackDrinkAutoSellingPrice(cost) } : {})
+   ...(isSnackDrinkCategoryName(category) && buy > 0 ? { selling_price: snackDrinkAutoSellingPrice(buy), cost_per_unit:buy } : {})
   }
  })
 }} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }}>
@@ -24085,28 +24118,35 @@ function PosMonitorPanel() {
 
  <td style={{ ...numStyle, color:'#666' }}>
  {isEditing? (
- <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>{
- const cost = e.target.value
+ <input type="number" value={isSnackDrinkCategoryName(editItemFields.category ?? item.category) ? (editItemFields.buying_price ?? item.buying_price ?? '') : (editItemFields.cost_per_unit??item.cost_per_unit)} onChange={e=>{
+ const value = e.target.value
  setEditItemFields(p=>{
   const category = p.category ?? item.category
-  return {
-   ...p,
-   cost_per_unit:cost,
-   ...(isSnackDrinkCategoryName(category) ? { selling_price: snackDrinkAutoSellingPrice(cost) } : {})
+  if (isSnackDrinkCategoryName(category)) {
+   const buy = safeNum(value, 0)
+   return {
+    ...p,
+    buying_price:value,
+    cost_per_unit: buy > 0 ? buy : p.cost_per_unit,
+    selling_price: buy > 0 ? snackDrinkAutoSellingPrice(buy) : (p.selling_price ?? item.selling_price ?? item.cost_per_unit ?? 0)
+   }
   }
+  return {...p,cost_per_unit:value}
  })
 }} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
  ): (
- <>
-  <div>{php(item.cost_per_unit || 0)}</div>
-  {isSnackDrinkInventoryItem(item) && safeNum(item.selling_price, 0) > 0 && (
-   <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Sell: {php(item.selling_price)}</div>
-  )}
- </>
+ isSnackDrinkInventoryItem(item) ? (
+  <>
+   <div style={{ color:'#2d8a4e', fontWeight:'900' }}>Sell: {php(item.selling_price || item.cost_per_unit || 0)}</div>
+   <div style={{ fontSize:'10px', color:safeNum(item.buying_price,0)>0?'#555':'#ca1b1b', fontWeight:'700', marginTop:'2px' }}>
+    Buy: {safeNum(item.buying_price,0)>0 ? php(item.buying_price) : 'Not set'}
+   </div>
+  </>
+ ) : php(item.cost_per_unit || 0)
 )}
 {editingItemId===item.id && isSnackDrinkCategoryName(editItemFields.category ?? item.category) && (
  <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'900', marginTop:'4px', whiteSpace:'nowrap' }}>
-  Auto Selling Price from Buying Price: {php(snackDrinkAutoSellingPrice(editItemFields.cost_per_unit ?? item.cost_per_unit))}
+  Auto Selling Price from Buying Price: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? 0))}
  </div>
 )}
  </td>
