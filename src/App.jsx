@@ -4359,6 +4359,86 @@ Cancel = create batch record only for existing stock.`)
    })
   }
  }
+
+function printInventoryCategoryPriceList() {
+  const selectedCategory = inventoryCategoryFilter || 'all'
+
+  if (selectedCategory === 'all') {
+   showToast('Please select one category before printing.', 'red')
+   return
+  }
+
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({
+   '&':'&amp;',
+   '<':'&lt;',
+   '>':'&gt;',
+   '"':'&quot;',
+   "'":'&#39;'
+  }[ch]))
+
+  const rows = (inventoryItems || [])
+   .filter(item => String(item.is_active ?? true).toLowerCase() !== 'false')
+   .filter(item => {
+    const displayCat = normalizeInventoryCategory(item.category)
+    return displayCat === selectedCategory || String(item.category || '') === selectedCategory
+   })
+   .sort((a,b) => String(a.name || '').localeCompare(String(b.name || '')))
+   .map(item => {
+    const sellingPrice = isSnackDrinkInventoryItem(item)
+     ? getSnackDrinkDisplaySellingPrice(item)
+     : safeNum(item.selling_price ?? item.price ?? 0, 0)
+
+    return {
+     name: item.name || '',
+     sellingPrice
+    }
+   })
+
+  if (rows.length === 0) {
+   showToast('No items found for this category.', 'red')
+   return
+  }
+
+  const rowHtml = rows.map(row =>
+   '<tr>' +
+    '<td>' + esc(row.name) + '</td>' +
+    '<td style="text-align:right;">' + esc(php(row.sellingPrice)) + '</td>' +
+   '</tr>'
+  ).join('')
+
+  const pw = window.open('', '_blank')
+  if (!pw) {
+   showToast('Popup blocked. Please allow popups to print.', 'red')
+   return
+  }
+
+  const html = [
+   '<!DOCTYPE html><html><head><title>Inventory Price List</title>',
+   '<style>',
+   '@page { size:A4; margin:14mm; }',
+   'body { font-family:Arial, sans-serif; color:#111; margin:0; }',
+   'table { width:100%; border-collapse:collapse; }',
+   'th, td { border:1px solid #222; padding:8px 10px; font-size:13px; }',
+   'th { background:#f2f2f2; text-align:left; font-weight:bold; }',
+   'th:last-child { text-align:right; }',
+   '.no-print { text-align:center; margin-top:14px; }',
+   'button { background:#ca1b1b; color:white; border:none; border-radius:8px; padding:10px 18px; font-weight:bold; cursor:pointer; }',
+   '@media print { .no-print { display:none; } }',
+   '</style></head><body>',
+   '<table>',
+   '<thead><tr><th>Product Name</th><th>Selling Price</th></tr></thead>',
+   '<tbody>' + rowHtml + '</tbody>',
+   '</table>',
+   '<div class="no-print"><button onclick="window.print()">PRINT</button></div>',
+   '</body></html>'
+  ].join('')
+
+  pw.document.write(html)
+  pw.document.close()
+  pw.focus()
+  setTimeout(() => pw.print(), 300)
+ }
+
  async function recordStockTransaction() {
  if (!stockTxItemId) { showToast(' Please select an item.','red'); return }
  if (!stockTxQty || Number(stockTxQty) <= 0) { showToast(' Please enter a valid quantity.','red'); return }
@@ -23971,6 +24051,13 @@ function printCompanyDocumentRecord(record) {
  <option value="all">All Categories</option>
  {INVENTORY_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
  </select>
+ <button
+  style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'10px 14px', marginTop:0, fontSize:'12px', opacity:inventoryCategoryFilter==='all'?0.55:1 }}
+  onClick={printInventoryCategoryPriceList}
+  title={inventoryCategoryFilter==='all'?'Select one category first':'Print product name and selling price only'}
+ >
+  PRINT CATEGORY PRICE LIST
+ </button>
  </div>
 
  {/* Add Item Button + CSV/XLSX Upload */}
