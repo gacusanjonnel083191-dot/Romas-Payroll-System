@@ -4342,13 +4342,21 @@ Cancel = create batch record only for existing stock.`)
     : ' Item updated!'
   )
 
+  const updatedItem = { ...item, ...payload, id:item.id }
+
+  setInventoryItems(prev => (prev || []).map(row =>
+   String(row.id) === String(item.id)
+    ? { ...row, ...updatedItem }
+    : row
+  ))
+
   setEditingItemId(null)
   setEditItemFields({})
-  await loadInventoryItems()
 
   if (typeof window !== 'undefined') {
-   setTimeout(() => window.scrollTo({ top: inventoryScrollY, left:0, behavior:'auto' }), 0)
-   setTimeout(() => window.scrollTo({ top: inventoryScrollY, left:0, behavior:'auto' }), 120)
+   requestAnimationFrame(() => {
+    window.scrollTo({ top: inventoryScrollY, left:0, behavior:'auto' })
+   })
   }
  }
  async function recordStockTransaction() {
