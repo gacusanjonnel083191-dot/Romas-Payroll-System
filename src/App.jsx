@@ -25019,125 +25019,104 @@ function PosMonitorPanel() {
  {(()=>{
  // Dry premix weight per piece (grams) after 10% reduction
  const DRY_PREMIX_GRAMS = {
- 'Choco Balls': 9.45,
- 'Matcha Pops': 9.45,
- 'Taro Pops': 9.45,
- 'Strawberry Pops': 9.45,
- 'Bavarian Pops': 9.45,
- 'Bavarian Bites': 9.45,
- 'Choco Lollisticks': 0,
- 'Glazed Circlets': 11.7,
- 'Cinnamon Rolls': 27,
- 'Rings': 27,
- 'Shells': 27,
- 'Bavarian Midnight': 27,
- 'Biscoreo': 27,
- 'Fanfans': 31.5,
- 'Oreo Dream': 31.5,
- 'Almond Glitz': 31.5,
- 'Lotus Cloud': 31.5
+  'Choco Balls': 9.45,
+  'Matcha Pops': 0,
+  'Taro Pops': 9.45,
+  'Strawberry Pops': 9.45,
+  'Bavarian Pops': 9.45,
+  'Bavarian Bites': 9.45,
+  'Choco Lollisticks': 0,
+  'Glazed Circlets': 11.7,
+  'Cinnamon Rolls': 27,
+  'Rings': 27,
+  'Shells': 27,
+  'Bavarian Midnight': 27,
+  'Biscoreo': 27,
+  'Fanfans': 31.5,
+  'Oreo Dream': 31.5,
+  'Almond Glitz': 31.5,
+  'Lotus Cloud': 31.5
  }
 
- const parseForecastNumber = (value) => {
-  if (value === null || value === undefined || value === '') return 0
-  if (typeof value === 'number') return Number.isFinite(value) ? value : 0
-  const cleaned = String(value).replace(/,/g, '').replace(/[^0-9.-]/g, '').trim()
-  if (!cleaned || cleaned === '-' || cleaned === '.' || cleaned === '-.') return 0
-  const n = Number(cleaned)
+ const forecastNameKey = (value) => {
+  return String(value || '')
+   .trim()
+   .toLowerCase()
+   .replace(/[^a-z0-9]/g, '')
+ }
+
+ const getForecastRowTotal = (row) => {
+  const raw = row?.total ?? row?.totalPieces ?? row?.total_pieces ?? row?.pieces ?? row?.forecast_qty ?? row?.quantity ?? row?.qty ?? 0
+  const n = safeNum(raw, 0)
   return Number.isFinite(n) ? n : 0
  }
 
- const getForecastVariantKey = (value) => {
-  if (typeof normalizeProductCostKey === 'function') return normalizeProductCostKey(value)
-  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim()
+ const getDryPremixGramsPerPiece = (variantName) => {
+  const name = String(variantName || '').trim()
+  const normalizedName = typeof normalizeDonutVariantName === 'function'
+   ? normalizeDonutVariantName(name)
+   : name
+
+  const premixByKey = Object.entries(DRY_PREMIX_GRAMS || {}).reduce((map, [key, value]) => {
+   map[forecastNameKey(key)] = safeNum(value, 0)
+   return map
+  }, {})
+
+  const possibleKeys = [
+   name,
+   normalizedName,
+   name.replace(/pops$/i, ' Pops'),
+   name.replace(/balls$/i, ' Balls'),
+   name.replace(/bites$/i, ' Bites'),
+   name.replace(/circlets$/i, ' Circlets'),
+   name.replace(/rolls$/i, ' Rolls'),
+   name.replace(/midnight$/i, ' Midnight'),
+   name.replace(/dream$/i, ' Dream'),
+   name.replace(/glitz$/i, ' Glitz'),
+   name.replace(/cloud$/i, ' Cloud')
+  ].map(forecastNameKey)
+
+  for (const key of possibleKeys) {
+   if (Object.prototype.hasOwnProperty.call(premixByKey, key)) {
+    return safeNum(premixByKey[key], 0)
+   }
+  }
+
+  return 0
  }
 
- const getForecastVariantName = (item = {}) => {
-  const linkedVariant = (donutVariants || []).find(v => String(v.id || v.variant_id || '') === String(item.variant_id || ''))
-  const rawName = item.variant_name || item.variant || item.product_name || item.name || item.product || linkedVariant?.name || 'Unassigned Variant'
-  const normalizedName = typeof normalizeDonutVariantName === 'function' ? normalizeDonutVariantName(rawName) : rawName
-  return normalizedName || rawName || 'Unassigned Variant'
- }
-
- const getForecastRowTotal = (row = {}) => {
-  return parseForecastNumber(row.total ?? row.totalPieces ?? row.total_pieces ?? row.forecast_qty ?? row.quantity ?? row.qty ?? row.pieces ?? 0)
- }
-
- 
-
-const getDryPremixGramsPerPiece = (variantName) => {
- const lookupKey = (value) => String(value || '')
-  .trim()
-  .toLowerCase()
-  .replace(/[^a-z0-9]/g, '')
-
- const dryPremixByKey = Object.entries(DRY_PREMIX_GRAMS || {}).reduce((map, [key, value]) => {
-  map[lookupKey(key)] = safeNum(value, 0)
-  return map
- }, {})
-
- const name = String(variantName || '').trim()
- const normalizedName = typeof normalizeDonutVariantName === 'function'
-  ? normalizeDonutVariantName(name)
-  : name
-
- const possibleKeys = [
-  name,
-  normalizedName,
-  name.replace(/pops$/i, ' Pops'),
-  name.replace(/balls$/i, ' Balls'),
-  name.replace(/bites$/i, ' Bites'),
-  name.replace(/circlets$/i, ' Circlets'),
-  name.replace(/rolls$/i, ' Rolls'),
-  name.replace(/midnight$/i, ' Midnight'),
-  name.replace(/dream$/i, ' Dream'),
-  name.replace(/glitz$/i, ' Glitz'),
-  name.replace(/cloud$/i, ' Cloud')
- ].map(lookupKey)
-
- for (const key of possibleKeys) {
-  const value = dryPremixByKey[key]
-  if (Number.isFinite(value)) return value
- }
-
- return 0
-}
-
- const forecastInvoices = deliveryInvoices.filter(i => String(i.delivery_date || '').slice(0, 10) === forecastDate)
+ const forecastInvoices = deliveryInvoices.filter(i => i.delivery_date === forecastDate)
  const forecastMap = {}
 
  forecastInvoices.forEach(inv => {
   ;(inv.delivery_invoice_items || []).forEach(item => {
-   const variantName = getForecastVariantName(item)
-   const variantKey = getForecastVariantKey(variantName)
-   const qty = parseForecastNumber(item.quantity ?? item.qty ?? item.total ?? item.totalPieces ?? item.total_pieces ?? item.pieces ?? item.forecast_qty ?? 0)
+   const variantName = item.variant_name || item.product_name || item.name || ''
+   const key = forecastNameKey(variantName)
+   if (!key) return
 
-   if (!variantKey) return
-   if (!forecastMap[variantKey]) {
-    forecastMap[variantKey] = {
+   if (!forecastMap[key]) {
+    forecastMap[key] = {
      variant_name: variantName,
-     variant_id: item.variant_id || null,
-     total: 0,
-     totalPieces: 0,
-     forecast_qty: 0
+     variant_id: item.variant_id,
+     total: 0
     }
    }
 
-   forecastMap[variantKey].total += qty
-   forecastMap[variantKey].totalPieces = forecastMap[variantKey].total
-   forecastMap[variantKey].forecast_qty = forecastMap[variantKey].total
+   forecastMap[key].total = safeNum(forecastMap[key].total, 0) + safeNum(item.quantity, 0)
   })
  })
 
  let forecastRows = Object.values(forecastMap)
- const existingForecastKeys = new Set(forecastRows.map(row => getForecastVariantKey(row.variant_name)))
+
+ const existingForecastKeys = new Set((forecastRows || []).map(row =>
+  forecastNameKey(row.variant_name || row.variant || row.product_name || row.name || row.product || '')
+ ))
 
  ;(donutVariants || []).forEach(variant => {
-  if (variant?.is_active === false) return
-  const variantNameRaw = variant?.name || variant?.variant_name || variant?.product_name || ''
-  const variantName = typeof normalizeDonutVariantName === 'function' ? normalizeDonutVariantName(variantNameRaw) : variantNameRaw
-  const variantKey = getForecastVariantKey(variantName)
-  if (!variantName || !variantKey || existingForecastKeys.has(variantKey)) return
+  const variantName = variant?.name || variant?.variant_name || variant?.product_name || ''
+  const variantKey = forecastNameKey(variantName)
+
+  if (!variantName || existingForecastKeys.has(variantKey)) return
 
   forecastRows.push({
    id: variant?.id || variant?.variant_id || `zero-${variantKey}`,
@@ -25153,22 +25132,17 @@ const getDryPremixGramsPerPiece = (variantName) => {
    pieces: 0,
    quantity: 0,
    qty: 0,
-   forecast_qty: 0,
-   dryPremix: 0,
-   dry_premix: 0,
-   dryPremixKg: 0,
-   dryPremixGrams: 0
+   forecast_qty: 0
   })
+
   existingForecastKeys.add(variantKey)
  })
 
- forecastRows = forecastRows
+ forecastRows = (forecastRows || [])
   .map(row => {
    const cleanTotal = getForecastRowTotal(row)
-   const cleanName = typeof normalizeDonutVariantName === 'function' ? normalizeDonutVariantName(row.variant_name || row.variant || row.product_name || row.name || row.product || '') : (row.variant_name || row.variant || row.product_name || row.name || row.product || '')
    return {
     ...row,
-    variant_name: cleanName || row.variant_name || 'Unassigned Variant',
     total: cleanTotal,
     totalPieces: cleanTotal,
     total_pieces: cleanTotal,
@@ -25180,9 +25154,9 @@ const getDryPremixGramsPerPiece = (variantName) => {
   })
   .sort(compareDonutVariantRowsByGuide)
 
- const totalPieces = forecastRows.reduce((s,r)=>s+getForecastRowTotal(r),0)
- const totalDryPremixG = forecastRows.reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0)
- const totalDryPremixKg = (totalDryPremixG/1000).toFixed(2)
+ const totalPieces = safeNum((forecastRows || []).reduce((s,r)=>s+getForecastRowTotal(r),0),0)
+ const totalDryPremixG = safeNum((forecastRows || []).reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0),0)
+ const totalDryPremixKg = (safeNum(totalDryPremixG,0)/1000).toFixed(2)
 
  const printForecast = () => {
  const pw = window.open('','_blank','width=700,height=900')
@@ -25219,7 +25193,7 @@ const getDryPremixGramsPerPiece = (variantName) => {
  const pieces = getForecastRowTotal(r)
 const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  const kgDisplay = grams>=1000? (grams/1000).toFixed(2)+' kg': grams.toFixed(0)+' g'
- return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+safeNum(r.total,0).toLocaleString('en-PH')+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
+ return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+getForecastRowTotal(r).toLocaleString('en-PH')+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
  }).join('')}
  <tr class="total-row"><td>TOTAL</td><td style="text-align:right;color:#ca1b1b;">${totalPieces.toLocaleString()}</td><td style="text-align:right;color:#2d8a4e;">${totalDryPremixKg} kg</td><td></td></tr>
  </table>
@@ -25283,7 +25257,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  return (
  <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
  <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}</span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{safeNum(r.total,0).toLocaleString('en-PH')}</span>
+ <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</span>
  <span style={{ textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</span>
  </div>
  )
