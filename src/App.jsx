@@ -2372,6 +2372,28 @@ export default function App() {
  const [editItemFields, setEditItemFields] = useState({})
 
  const snackDrinkAutoSellingPrice = (cost) => moneyRound(safeNum(cost, 0) * 1.30)
+ const snackDrinkAutoBuyingPrice = (sellingPrice) => moneyRound(safeNum(sellingPrice, 0) / 1.30)
+
+ const getSnackDrinkDisplaySellingPrice = (item = {}) => {
+  const sell = safeNum(item.selling_price, 0)
+  const oldPrice = safeNum(item.cost_per_unit, 0)
+  const buy = safeNum(item.buying_price, 0)
+
+  // Safety for rows affected by the wrong previous markup display/save:
+  // if selling_price equals oldPrice × 1.30 and buying price is empty,
+  // treat oldPrice as the original selling price.
+  if (buy <= 0 && oldPrice > 0 && sell > 0 && Math.abs(sell - snackDrinkAutoSellingPrice(oldPrice)) <= 0.05) {
+   return oldPrice
+  }
+
+  return sell || oldPrice
+ }
+
+ const getSnackDrinkDisplayBuyingPrice = (item = {}) => {
+  const buy = safeNum(item.buying_price, 0)
+  if (buy > 0) return buy
+  return snackDrinkAutoBuyingPrice(getSnackDrinkDisplaySellingPrice(item))
+ }
 
  const isSnackDrinkCategoryName = (category) => {
   const label = getInventoryCategoryLabel({ category })
@@ -24137,16 +24159,16 @@ function PosMonitorPanel() {
  ): (
  isSnackDrinkInventoryItem(item) ? (
   <>
-   <div style={{ color:'#2d8a4e', fontWeight:'900' }}>Sell: {php(item.selling_price || item.cost_per_unit || 0)}</div>
+   <div style={{ color:'#2d8a4e', fontWeight:'900' }}>Sell: {php(getSnackDrinkDisplaySellingPrice(item))}</div>
    <div style={{ fontSize:'10px', color:safeNum(item.buying_price,0)>0?'#555':'#ca1b1b', fontWeight:'700', marginTop:'2px' }}>
-    Buy: {safeNum(item.buying_price,0)>0 ? php(item.buying_price) : 'Not set'}
+    Buy: {php(getSnackDrinkDisplayBuyingPrice(item))}
    </div>
   </>
  ) : php(item.cost_per_unit || 0)
 )}
 {editingItemId===item.id && isSnackDrinkCategoryName(editItemFields.category ?? item.category) && (
  <div style={{ fontSize:'10px', color:'#2d8a4e', fontWeight:'900', marginTop:'4px', whiteSpace:'nowrap' }}>
-  Auto Selling Price from Buying Price: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? 0))}
+  Auto Selling Price from Buying Price: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)))}
  </div>
 )}
  </td>
