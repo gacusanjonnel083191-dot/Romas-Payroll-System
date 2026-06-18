@@ -1610,7 +1610,12 @@ const printCSS = `
  }
  </style>`
 
-export default function App() {
+export default 
+function getOwnerPaymentDeadlineAlerts() {
+ return []
+}
+
+function App() {
   useEffect(() => {
     if (typeof document === 'undefined') return
     if (document.getElementById('payables-main-blink-style')) return
