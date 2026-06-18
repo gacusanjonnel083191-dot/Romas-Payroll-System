@@ -4293,6 +4293,7 @@ Cancel = create batch record only for existing stock.`)
  showToast(` ${item.name} removed.`); loadInventoryItems()
  }
  async function saveInventoryItemEdit(item) {
+  const inventoryScrollY = typeof window !== 'undefined' ? window.scrollY : 0
   const f = editItemFields
   const updatedCategory = f.category ?? item.category
   const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
@@ -4343,7 +4344,12 @@ Cancel = create batch record only for existing stock.`)
 
   setEditingItemId(null)
   setEditItemFields({})
-  loadInventoryItems()
+  await loadInventoryItems()
+
+  if (typeof window !== 'undefined') {
+   setTimeout(() => window.scrollTo({ top: inventoryScrollY, left:0, behavior:'auto' }), 0)
+   setTimeout(() => window.scrollTo({ top: inventoryScrollY, left:0, behavior:'auto' }), 120)
+  }
  }
  async function recordStockTransaction() {
  if (!stockTxItemId) { showToast(' Please select an item.','red'); return }
