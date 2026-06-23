@@ -1,4 +1,4 @@
-import { Component, useEffect, useRef, useState } from 'react'
+﻿import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { createClient } from '@supabase/supabase-js'
 
@@ -18640,13 +18640,13 @@ function PosMonitorPanel() {
     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Shift Closing Report</h3>
     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'10px', marginBottom:'12px' }}>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>Cash Sales</small><br/><strong>?{closingCashSales.toLocaleString()}</strong>
+      <small>Cash Sales</small><br/><strong>{php(closingCashSales)}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>GCash Sales</small><br/><strong>?{closingGcashSales.toLocaleString()}</strong>
+      <small>GCash Sales</small><br/><strong>{php(closingGcashSales)}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>Total POS Sales</small><br/><strong>?{closingTotalSales.toLocaleString()}</strong>
+      <small>Total POS Sales</small><br/><strong>{php(closingTotalSales)}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
       <small>Transactions</small><br/><strong>{posSales.length}</strong>
@@ -18673,8 +18673,8 @@ function PosMonitorPanel() {
     </div>
 
     <div style={{ marginTop:'12px', padding:'10px', borderRadius:'12px', background:'#f8f8f8', fontSize:'13px' }}>
-     Expected Cash: <strong>?{closingExpectedCash.toLocaleString()}</strong> | 
-     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>?{closingVariance.toLocaleString()}</strong>
+     Expected Cash: <strong>{php(closingExpectedCash)}</strong> | 
+     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>{php(closingVariance)}</strong>
     </div>
 
     <button onClick={saveShiftClosing} style={{...btnGreen, marginTop:'12px'}}>Save Shift Closing</button>
@@ -30800,16 +30800,6 @@ onClick={async ()=>{
  </>
  )}
  </div>
-
-
-  "${i}: $($lines[$i-1])"
-}
-
-  "${i}: $($lines[$i-1])"
-}
-
-  "${i}: $($lines[$i-1])"
-}
 
  <div style={{...portalCard, marginTop:'14px' }}>
  <h3 style={{ color:'#333', margin:'0 0 10px', fontSize:'14px' }}>Submitted Reports</h3>
