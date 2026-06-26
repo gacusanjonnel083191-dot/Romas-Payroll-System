@@ -6454,6 +6454,138 @@ Cancel = create batch record only for existing stock.`)
  return buildResellerCreditStatus(resellerId, data || [], today)
  }
 
+ function isOptionalSupabaseObjectMissing(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('does not exist') || msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')
+ }
+
+ function isResellerPortalReturnRecord(row) {
+ return String(row?.recorded_by || '').toLowerCase().includes('reseller portal')
+ }
+
+ function getInvoiceReturnRecordsForPrint(invoice) {
+ const allReturns = Array.isArray(invoice?.reseller_returns) ? invoice.reseller_returns : []
+ if (!allReturns.length) return []
+ const adminEncoded = allReturns.filter(row => !isResellerPortalReturnRecord(row))
+ // Admin/owner/driver/settlement entry is treated as final. Reseller portal entry is used only when no admin return exists yet.
+ return adminEncoded.length ? adminEncoded : allReturns
+ }
+
+ function getInvoiceReturnLookups(invoice) {
+ const byVariantId = {}
+ const byName = {}
+ getInvoiceReturnRecordsForPrint(invoice).forEach(ret => {
+ ;(ret.reseller_return_items || []).forEach(item => {
+ const qty = safeNum(item.returned_quantity ?? item.returned_qty ?? item.quantity ?? item.qty, 0)
+ if (!qty) return
+ const variantId = String(item.variant_id || '').trim()
+ const nameKey = normalizeDonutVariantName(item.variant_name || item.product_name || item.item_name || item.name || '')
+ if (variantId) byVariantId[variantId] = safeNum(byVariantId[variantId], 0) + qty
+ if (nameKey) byName[nameKey] = safeNum(byName[nameKey], 0) + qty
+ })
+ })
+ return { byVariantId, byName }
+ }
+
+ function getInvoiceItemDeliveredQty(item = {}) {
+ return Math.max(0, safeNum(item.delivered_quantity ?? item.actual_quantity ?? item.quantity, 0))
+ }
+
+ function getInvoiceItemPrice(item = {}) {
+ return moneyRound(item.reseller_price ?? item.unit_price ?? item.price ?? item.selling_price ?? 0)
+ }
+
+ function getInvoiceItemGrossAmount(item = {}) {
+ const stored = safeNum(item.total_price ?? item.amount ?? item.line_total, NaN)
+ if (Number.isFinite(stored)) return moneyRound(stored)
+ return moneyRound(getInvoiceItemDeliveredQty(item) * getInvoiceItemPrice(item))
+ }
+
+ function getInvoiceItemUnsoldQuantity(invoice, item = {}) {
+ const direct = safeNum(item.unsold_quantity ?? item.returned_quantity ?? item.returns_qty ?? item.returned_qty, NaN)
+ if (Number.isFinite(direct) && direct > 0) return Math.min(getInvoiceItemDeliveredQty(item), direct)
+ const lookups = getInvoiceReturnLookups(invoice)
+ const variantId = String(item.variant_id || '').trim()
+ if (variantId && Object.prototype.hasOwnProperty.call(lookups.byVariantId, variantId)) {
+ return Math.min(getInvoiceItemDeliveredQty(item), safeNum(lookups.byVariantId[variantId], 0))
+ }
+ const nameKey = normalizeDonutVariantName(item.variant_name || item.product_name || item.name || '')
+ if (nameKey && Object.prototype.hasOwnProperty.call(lookups.byName, nameKey)) {
+ return Math.min(getInvoiceItemDeliveredQty(item), safeNum(lookups.byName[nameKey], 0))
+ }
+ return 0
+ }
+
+ function attachUnsoldQuantitiesToInvoice(invoice) {
+ const inv = invoice || {}
+ const items = Array.isArray(inv.delivery_invoice_items) ? inv.delivery_invoice_items : []
+ return {
+ ...inv,
+ delivery_invoice_items:items.map(item => ({
+ ...item,
+ unsold_quantity:getInvoiceItemUnsoldQuantity(inv, item)
+ }))
+ }
+ }
+
+ function mergeDeliveryInvoicesWithReturns(invoiceRows = [], returnRows = []) {
+ const returnsByInvoiceId = {}
+ ;(returnRows || []).forEach(row => {
+ const key = String(row.invoice_id || '')
+ if (!key) return
+ if (!returnsByInvoiceId[key]) returnsByInvoiceId[key] = []
+ returnsByInvoiceId[key].push(row)
+ })
+ return (invoiceRows || []).map(inv => attachUnsoldQuantitiesToInvoice({
+ ...inv,
+ reseller_returns:returnsByInvoiceId[String(inv.id || '')] || inv.reseller_returns || []
+ }))
+ }
+
+ async function attachReturnsToDeliveryInvoices(invoiceRows = []) {
+ const rows = Array.isArray(invoiceRows) ? invoiceRows : []
+ const ids = rows.map(inv => inv?.id).filter(Boolean)
+ if (!ids.length) return rows.map(attachUnsoldQuantitiesToInvoice)
+ try {
+ const { data, error } = await supabase
+ .from('reseller_returns')
+ .select('*, reseller_return_items(*)')
+ .in('invoice_id', ids)
+ if (error) {
+ if (!isOptionalSupabaseObjectMissing(error)) console.warn('attachReturnsToDeliveryInvoices:', error)
+ return rows.map(attachUnsoldQuantitiesToInvoice)
+ }
+ return mergeDeliveryInvoicesWithReturns(rows, data || [])
+ } catch(e) {
+ console.warn('attachReturnsToDeliveryInvoices:', e)
+ return rows.map(attachUnsoldQuantitiesToInvoice)
+ }
+ }
+
+ function getInvoiceViewItemRows(invoice) {
+ const items = Array.isArray(invoice?.delivery_invoice_items) ? invoice.delivery_invoice_items : []
+ return items.map(item => {
+ const deliveredQty = getInvoiceItemDeliveredQty(item)
+ const unsoldQty = Math.min(deliveredQty, getInvoiceItemUnsoldQuantity(invoice, item))
+ const soldQty = Math.max(0, deliveredQty - unsoldQty)
+ const price = getInvoiceItemPrice(item)
+ const grossAmount = moneyRound(deliveredQty * price)
+ const returnsCredit = moneyRound(unsoldQty * price)
+ const netAmount = moneyRound(soldQty * price)
+ return {
+ ...item,
+ deliveredQty,
+ unsoldQty,
+ soldQty,
+ price,
+ grossAmount,
+ returnsCredit,
+ netAmount
+ }
+ })
+ }
+
+
  function getDaysUntilLocal(targetDate, asOfDate = today) {
  const target = parseLocalDate(targetDate)
  const asOf = parseLocalDate(asOfDate)
@@ -6581,7 +6713,9 @@ Cancel = create batch record only for existing stock.`)
  await autoMarkTodayDelivered()
  const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(500)
  if (!withItems.error) {
- setDeliveryInvoices((await normalizePaidInvoiceRows(withItems.data || [])).sort(sortDeliveryInvoicesNewestFirst))
+ const normalized = await normalizePaidInvoiceRows(withItems.data || [])
+ const withReturns = await attachReturnsToDeliveryInvoices(normalized)
+ setDeliveryInvoices(withReturns.sort(sortDeliveryInvoicesNewestFirst))
  return
  }
  console.warn('delivery_invoices with items failed, trying basic invoice list:', withItems.error)
@@ -6591,7 +6725,9 @@ Cancel = create batch record only for existing stock.`)
  setDeliveryInvoices([])
  return
  }
- setDeliveryInvoices((await normalizePaidInvoiceRows(basic.data || [])).sort(sortDeliveryInvoicesNewestFirst))
+ const normalizedBasic = await normalizePaidInvoiceRows(basic.data || [])
+ const basicWithReturns = await attachReturnsToDeliveryInvoices(normalizedBasic)
+ setDeliveryInvoices(basicWithReturns.sort(sortDeliveryInvoicesNewestFirst))
  } catch(e) {
  console.warn('loadDeliveryInvoices:', e)
  setDeliveryInvoices([])
@@ -7846,13 +7982,14 @@ function buildDeliveryInvoicePrintCSS() {
       const first = matched[0] || null;
       const price = first ? getPrice(first) : 0;
       const amount = matched.reduce((sum, item) => sum + getAmount(item), 0);
+      const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0);
 
       return `<tr class="product-row">
         <td class="product-name">${escapeHtml(row.label)}</td>
         <td class="number-cell">${qty ? qty.toLocaleString('en-PH') : ''}</td>
         <td class="money-cell">${price ? peso(price) : ''}</td>
         <td class="money-cell">${amount ? peso(amount) : ''}</td>
-        <td></td>
+        <td class="number-cell">${unsoldQty ? unsoldQty.toLocaleString('en-PH') : ''}</td>
       </tr>`;
     }).join('');
 
@@ -8099,12 +8236,13 @@ function buildDeliveryInvoicePrintCSS() {
      const first = matched[0] || null
      const price = first ? getPrice(first) : 0
      const amount = matched.reduce((sum, item) => sum + getAmount(item), 0)
+     const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0)
      return {
        product: row.label,
        delivered: qty ? qty.toLocaleString('en-PH') : '',
        price: price ? peso(price) : '',
        amount: amount ? peso(amount) : '',
-       unsold: ''
+       unsold: unsoldQty ? unsoldQty.toLocaleString('en-PH') : ''
      }
    })
 
@@ -8416,10 +8554,38 @@ function buildDeliveryInvoicePrintCSS() {
  loadDailySalesOnlinePayments()
  refreshFoundationAfterDataChange('reseller-payment-recorded')
  }
- function printDeliveryInvoice(invoice) {
+ async function getFreshDeliveryInvoiceForAction(invoice) {
+ if (!invoice?.id) return attachUnsoldQuantitiesToInvoice(invoice)
+ try {
+ const { data, error } = await supabase
+ .from('delivery_invoices')
+ .select('*, delivery_invoice_items(*)')
+ .eq('id', invoice.id)
+ .single()
+ if (error) {
+ console.warn('getFreshDeliveryInvoiceForAction:', error)
+ return attachUnsoldQuantitiesToInvoice(invoice)
+ }
+ const [normalized] = await normalizePaidInvoiceRows([data || invoice])
+ const [withReturns] = await attachReturnsToDeliveryInvoices([normalized || invoice])
+ return withReturns || attachUnsoldQuantitiesToInvoice(invoice)
+ } catch(e) {
+ console.warn('getFreshDeliveryInvoiceForAction:', e)
+ return attachUnsoldQuantitiesToInvoice(invoice)
+ }
+ }
+
+ async function viewDeliveryInvoice(invoice) {
  if (!invoice) { showToast(' No invoice selected.','red'); return }
- const invoiceNumber = invoice.invoice_number || invoice.id || 'invoice'
- downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [invoice])
+ const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice)
+ setViewingInvoice(freshInvoice)
+ }
+
+ async function printDeliveryInvoice(invoice) {
+ if (!invoice) { showToast(' No invoice selected.','red'); return }
+ const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice)
+ const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
+ downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
  showToast(' Downloaded 100x140mm centered 4x6 invoice Word file.')
  }
  function buildInvoiceAdjustmentRows(invoice) {
@@ -26175,7 +26341,7 @@ onClick={async ()=>{
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
  <button style={{...btnYellow, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>startInvoiceAdjustment(inv)}> ADJUST</button>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setViewingInvoice(inv)}> VIEW</button>
+ <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {inv.status==='unpaid' && (
  <button style={{...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#4a90d9' }} onClick={()=>markAsDelivered(inv)} disabled={markingDelivered[inv.id]}> {markingDelivered[inv.id]?'Saving...':'MARK DELIVERED'}</button>
  )}
@@ -26477,7 +26643,7 @@ onClick={async ()=>{
  {/* VIEW INVOICE MODAL */}
  {viewingInvoice && (
  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setViewingInvoice(null)}>
- <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'580px', width:'100%', maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
+ <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'820px', width:'100%', maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'14px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:'0 0 2px' }}>{viewingInvoice.invoice_number}</p>
@@ -26505,32 +26671,55 @@ onClick={async ()=>{
  ))}
  </div>
  {/* Items */}
- <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', marginBottom:'12px' }}>
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#ca1b1b', padding:'6px 10px' }}>
- {['Variant','Qty','Reseller Price','Amount'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', textAlign:'right' }}>{h==='Variant'?h:h}</span>)}
- </div>
- {(viewingInvoice.delivery_invoice_items||[]).map((item,i)=>(
- <div key={item.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{Number(item.quantity).toLocaleString()}</span>
- <span style={{ textAlign:'right', fontSize:'12px', color:'#2d8a4e' }}>{php(item.reseller_price)}</span>
- <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(item.total_price)}</span>
- </div>
+ {(()=>{
+ const viewRows = getInvoiceViewItemRows(viewingInvoice)
+ const totalDelivered = viewRows.reduce((s,i)=>s+i.deliveredQty,0)
+ const totalUnsold = viewRows.reduce((s,i)=>s+i.unsoldQty,0)
+ const totalSold = viewRows.reduce((s,i)=>s+i.soldQty,0)
+ const totalGross = viewRows.reduce((s,i)=>moneyRound(s+i.grossAmount),0)
+ const totalNet = viewRows.reduce((s,i)=>moneyRound(s+i.netAmount),0)
+ return (
+ <div style={{ border:'1px solid #eee', borderRadius:'8px', overflowX:'auto', marginBottom:'12px' }}>
+ <table style={{ width:'100%', minWidth:'760px', borderCollapse:'collapse', fontSize:'11px' }}>
+ <thead>
+ <tr style={{ background:'#ca1b1b', color:'white' }}>
+ {['Variant','Delivered','Unsold','Sold','Price','Gross','Net Amount'].map(h=>(
+ <th key={h} style={{ padding:'7px 8px', textAlign:h==='Variant'?'left':'right', fontSize:'10px' }}>{h}</th>
  ))}
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'10px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</span>
- <span style={{ textAlign:'right', fontWeight:'bold', fontSize:'12px' }}>{(viewingInvoice.delivery_invoice_items||[]).reduce((s,i)=>s+Number(i.quantity||0),0).toLocaleString()} pcs</span>
- <span></span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>{php(viewingInvoice.total_amount)}</span>
+ </tr>
+ </thead>
+ <tbody>
+ {viewRows.map((item,i)=>(
+ <tr key={item.id || `${item.variant_name}-${i}`} style={{ background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <td style={{ padding:'7px 8px', fontWeight:'bold', color:'#333' }}>{item.variant_name}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right' }}>{item.deliveredQty.toLocaleString('en-PH')}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', color:item.unsoldQty>0?'#ca1b1b':'#777', fontWeight:item.unsoldQty>0?'bold':'normal' }}>{item.unsoldQty ? item.unsoldQty.toLocaleString('en-PH') : '-'}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', fontWeight:'bold', color:'#2d8a4e' }}>{item.soldQty.toLocaleString('en-PH')}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', color:'#2d8a4e' }}>{php(item.price)}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right' }}>{php(item.grossAmount)}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', fontWeight:'bold', color:'#ca1b1b' }}>{php(item.netAmount)}</td>
+ </tr>
+ ))}
+ <tr style={{ background:'#fff9e6', borderTop:'2px solid #ca1b1b', fontWeight:'bold' }}>
+ <td style={{ padding:'9px 8px', color:'#ca1b1b' }}>TOTAL</td>
+ <td style={{ padding:'9px 8px', textAlign:'right' }}>{totalDelivered.toLocaleString('en-PH')}</td>
+ <td style={{ padding:'9px 8px', textAlign:'right', color:'#ca1b1b' }}>{totalUnsold.toLocaleString('en-PH')}</td>
+ <td style={{ padding:'9px 8px', textAlign:'right', color:'#2d8a4e' }}>{totalSold.toLocaleString('en-PH')}</td>
+ <td></td>
+ <td style={{ padding:'9px 8px', textAlign:'right' }}>{php(totalGross)}</td>
+ <td style={{ padding:'9px 8px', textAlign:'right', color:'#ca1b1b', fontSize:'14px' }}>{php(totalNet)}</td>
+ </tr>
+ </tbody>
+ </table>
  </div>
- </div>
+ )
+ })()}
  {/* Payment status */}
- {viewingInvoice.paid_amount > 0 && (
- <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', marginBottom:'12px', display:'flex', justifyContent:'space-between' }}>
- <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>Paid: {php(viewingInvoice.paid_amount)}</span>
- <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>Balance: {php(Number(viewingInvoice.total_amount)-Number(viewingInvoice.paid_amount))}</span>
+ <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', marginBottom:'12px', display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
+ <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>Paid: {php(viewingInvoice.paid_amount||0)}</span>
+ <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>Balance: {php(Math.max(0, safeNum(viewingInvoice.total_amount,0)-safeNum(viewingInvoice.paid_amount,0)))}</span>
+ <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Reported Unsold: {getInvoiceViewItemRows(viewingInvoice).reduce((s,i)=>s+i.unsoldQty,0).toLocaleString('en-PH')} pcs</span>
  </div>
- )}
  {viewingInvoice.notes && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}> {viewingInvoice.notes}</p>}
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}> PRINT INVOICE</button>
@@ -26629,6 +26818,7 @@ onClick={async ()=>{
  {/* Action Buttons */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
+ <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {displayStatus!=='paid' && (
  <button style={{...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>openInvoiceSettlement(inv)}>
  {showPaymentFormMap[inv.id]?' CANCEL SETTLEMENT':' RECORD PAYMENT'}
