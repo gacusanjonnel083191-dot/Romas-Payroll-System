@@ -16,6 +16,17 @@ const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
 
+// Payroll policy: Roma's Donuts gives holiday pay eligibility to every active employee.
+// Regular holiday rule: every active employee in the cutoff receives one daily-rate holiday pay.
+// If the employee also worked that regular holiday, basic pay already includes that day,
+// so the added one daily rate produces 200% total pay for the holiday.
+// Special holiday rule: no work, no premium; worked special holiday receives the 30% premium.
+const HOLIDAY_PAY_ALL_EMPLOYEES_ELIGIBLE = true
+const REGULAR_HOLIDAY_PAY_ALL_ACTIVE_EMPLOYEES = true
+const REGULAR_HOLIDAY_WORKED_PREMIUM_RATE = 1
+const REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE = 1
+const SPECIAL_HOLIDAY_WORKED_PREMIUM_RATE = 0.30
+
 // Design System 
 // Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
 const pageStyle = { position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(150deg,#1a1a2e 0%,#2d1515 50%,#ca1b1b 100%)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'auto' }
@@ -223,6 +234,10 @@ function formatDutyHours(minutes = 0) {
 }
 
 function isHolidayPayEligible(emp = {}, holidayType = '') {
+ // Company payroll rule: no employee-level holiday exemption.
+ // Older employee records may still contain false regular/special eligibility values,
+ // but payroll must ignore those old flags so every active employee is covered.
+ if (HOLIDAY_PAY_ALL_EMPLOYEES_ELIGIBLE) return true
  const type = String(holidayType || '').trim().toLowerCase()
  if (type === 'regular') return emp?.regular_holiday_pay_eligible !== false
  if (type === 'special') return emp?.special_holiday_pay_eligible !== false
@@ -16127,8 +16142,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  has_sss:editFields.hasSss,
  has_pagibig:editFields.hasPagibig,
  has_philhealth:editFields.hasPhilhealth,
- regular_holiday_pay_eligible:editFields.regularHolidayEligible !== false,
- special_holiday_pay_eligible:editFields.specialHolidayEligible !== false,
+ regular_holiday_pay_eligible:true,
+ special_holiday_pay_eligible:true,
  hire_date:editFields.hireDate,
  sick_leave_balance:0,
  vacation_leave_balance:0,
@@ -16185,8 +16200,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  has_sss:f.hasSss,
  has_pagibig:f.hasPagibig,
  has_philhealth:f.hasPhilhealth,
- regular_holiday_pay_eligible:f.regularHolidayEligible !== false,
- special_holiday_pay_eligible:f.specialHolidayEligible !== false,
+ regular_holiday_pay_eligible:true,
+ special_holiday_pay_eligible:true,
  hire_date:f.hire_date,
  sick_leave_balance:0,
  vacation_leave_balance:0,
@@ -17716,6 +17731,7 @@ async function computePayroll() {
   if (timeAdjError) throw timeAdjError
 
   const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
+  const workedDateKeys=[...new Set((workedLogs||[]).map(l=>String(l.attendance_date||'').slice(0,10)).filter(Boolean))]
   let breakRowsByLogId={}
   if (workedLogs.length>0) {
    const logIds = workedLogs.map(l=>l.id).filter(Boolean)
@@ -17733,7 +17749,7 @@ async function computePayroll() {
    }
   }
 
-  const workedDays=workedLogs.length||0
+  const workedDays=workedDateKeys.length||0
   const absentDays=logs?.filter(l=>l.status==='Absent').length||0
   const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
   const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
@@ -17760,7 +17776,18 @@ async function computePayroll() {
    const computedNightDiffMinutes=calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows)
    nightDiffMinutes+=computedNightDiffMinutes
    totalWorkedMinutes+=actualMins
-   workDetailByDate[String(log.attendance_date||'').slice(0,10)]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes }
+   const logDateKey=String(log.attendance_date||'').slice(0,10)
+   if (logDateKey) {
+    workDetailByDate[logDateKey]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes }
+    // Overnight shift support: if a shift starts before midnight and ends on the next day,
+    // mark the next calendar date as worked too so holiday premium is not missed.
+    if (minutesFromTime(log.time_out) < minutesFromTime(log.time_in)) {
+     const nextDateKey=addDaysToDateString(logDateKey, 1)
+     if (nextDateKey && nextDateKey >= payrollStart && nextDateKey <= payrollEnd && !workDetailByDate[nextDateKey]) {
+      workDetailByDate[nextDateKey]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes, overnightCarryover:true }
+     }
+    }
+   }
   }
 
   const workedBasicPay=workedDays*dailyRate
@@ -17790,14 +17817,23 @@ async function computePayroll() {
   // Night differential premium: break time inside 10PM-6AM is excluded.
   const nightDiffPay=nightDiffMinutes*minuteRate*0.10
 
-  // Holiday premium based on worked holiday attendance date.
+  // Holiday pay policy.
+  // Regular holiday: all active employees receive one daily-rate holiday pay.
+  // If they worked that holiday, the normal basic pay already covers the worked day,
+  // so this added daily rate makes the holiday total equal to double pay.
+  // Special holiday: premium is added only when the employee worked the special holiday.
   let holidayPay=0
   for (const h of holidayList||[]) {
-   const workedInfo=workDetailByDate[String(h.holiday_date||'').slice(0,10)]
-   const holidayBasePay=workedInfo?dailyRate:0
+   const holidayDate=String(h.holiday_date||'').slice(0,10)
+   const workedInfo=workDetailByDate[holidayDate]
    const holidayType = String(h.holiday_type || '').toLowerCase()
-   if (holidayType === 'regular' && isHolidayPayEligible(emp, 'regular')) holidayPay+=holidayBasePay
-   else if (holidayType === 'special' && isHolidayPayEligible(emp, 'special')) holidayPay+=holidayBasePay*0.3
+   const activeOnHoliday = !emp.hire_date || String(emp.hire_date).slice(0,10) <= holidayDate
+   if (holidayType === 'regular' && activeOnHoliday && isHolidayPayEligible(emp, 'regular')) {
+    const rate = workedInfo ? REGULAR_HOLIDAY_WORKED_PREMIUM_RATE : REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE
+    holidayPay += dailyRate * rate
+   } else if (holidayType === 'special' && workedInfo && isHolidayPayEligible(emp, 'special')) {
+    holidayPay += dailyRate * SPECIAL_HOLIDAY_WORKED_PREMIUM_RATE
+   }
   }
 
   let adjEarnings=0,adjDeductions=0
@@ -20205,10 +20241,10 @@ function printCompanyDocumentRecord(record) {
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Production Labor / COGS will be included in COGS after payroll is released. Other classifications remain operating payroll expense.</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
- <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
- <label style={lblS}><input type="checkbox" checked={newEmpFields.regularHolidayEligible !== false} onChange={e=>setNewEmpFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
- <label style={lblS}><input type="checkbox" checked={newEmpFields.specialHolidayEligible !== false} onChange={e=>setNewEmpFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
- <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Uncheck for supervisors or employees you want exempted from holiday premium computation.</p>
+ <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Policy</p>
+ <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Regular Holiday premium</label>
+ <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Special Holiday premium</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Company rule: no staff or supervisor is exempted from worked-holiday premium computation.</p>
  </div>
  {adminRole==='owner' && (<>
  <label style={lblS}> Admin Role (Owner only grants system access):</label>
@@ -20291,13 +20327,13 @@ function printCompanyDocumentRecord(record) {
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
  {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
- <p style={cps}>Holiday Pay: <Badge label={emp.regular_holiday_pay_eligible === false?'Regular Exempt':'Regular Eligible'} color={emp.regular_holiday_pay_eligible === false?'red':'green'} /> <Badge label={emp.special_holiday_pay_eligible === false?'Special Exempt':'Special Eligible'} color={emp.special_holiday_pay_eligible === false?'red':'green'} /></p>
+ <p style={cps}>Holiday Pay: <Badge label="All Employees Eligible" color="green" /> <Badge label="No Exemptions" color="blue" /></p>
  </div>
  </div>
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:true, specialHolidayEligible:true, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -20329,10 +20365,10 @@ function printCompanyDocumentRecord(record) {
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Use Production Labor / COGS for mixers, frymen, bakers, finishers, and packers directly making products.</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
- <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
- <label style={lblS}><input type="checkbox" checked={editFields.regularHolidayEligible !== false} onChange={e=>setEditFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
- <label style={lblS}><input type="checkbox" checked={editFields.specialHolidayEligible !== false} onChange={e=>setEditFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
- <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Uncheck Regular and/or Special if this employee should not receive that holiday premium.</p>
+ <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Policy</p>
+ <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Regular Holiday premium</label>
+ <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Special Holiday premium</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Company rule: no staff or supervisor is exempted from worked-holiday premium computation.</p>
  </div>
  {adminRole==='owner'||adminRole==='manager'? (<>
  <label style={lblS}> Primary Role (grants system access):</label>
