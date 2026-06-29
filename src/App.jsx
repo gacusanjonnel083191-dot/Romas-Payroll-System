@@ -16453,6 +16453,163 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (employee?.id) loadMyCashAdvances(employee)
  }
 
+
+async function correctCashAdvanceAmount(ca, req = null) {
+  if (!ca?.id) {
+   showToast('Cash advance ledger not found. Refresh cash advance requests first.', 'red')
+   return
+  }
+
+  if (adminRole !== 'owner') {
+   showToast('Owner access is required to correct an approved cash advance amount.', 'red')
+   return
+  }
+
+  const oldAmount = Math.max(0, safeNum(ca.amount, 0))
+  const amountPaid = Math.max(0, safeNum(ca.amount_paid, 0))
+  const currentTotal = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || req?.request_installments_total || 1))
+  const currentRemaining = Math.max(0, safeNum(ca.installments_remaining, currentTotal))
+  const completed = Math.max(0, currentTotal - currentRemaining)
+
+  if (!oldAmount) {
+   showToast('Invalid cash advance amount.', 'red')
+   return
+  }
+
+  if (amountPaid > 0 || completed > 0) {
+   showToast('This cash advance already has payroll deduction history. Do not rewrite the approved amount. Use a CA correction/reversal entry instead so payroll history stays clean.', 'red')
+   return
+  }
+
+  const amountAnswer = window.prompt(
+   'Enter corrected approved cash advance amount:\n\n' +
+   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
+   'Current Approved Amount: ' + php(oldAmount) + '\n\n' +
+   'This is allowed only because no payroll deduction has been applied yet.',
+   String(oldAmount)
+  )
+
+  if (amountAnswer === null) return
+
+  const cleanedAmount = String(amountAnswer).replace(/[₱,\s]/g, '')
+  const newAmount = moneyRound(safeNum(cleanedAmount, 0))
+
+  if (!Number.isFinite(newAmount) || newAmount <= 0) {
+   showToast('Invalid corrected cash advance amount.', 'red')
+   return
+  }
+
+  if (Math.abs(newAmount - oldAmount) < 0.01) {
+   showToast('No amount change detected.', 'red')
+   return
+  }
+
+  const installmentsAnswer = window.prompt(
+   'Enter number of payroll deductions/installments for the corrected amount:\n\n' +
+   'Corrected Amount: ' + php(newAmount) + '\n' +
+   'Current Plan: ' + currentTotal + ' payroll(s)',
+   String(currentTotal)
+  )
+
+  if (installmentsAnswer === null) return
+
+  const newInstallments = Math.max(1, Math.round(safeNum(installmentsAnswer, 0)))
+
+  if (!Number.isFinite(newInstallments) || newInstallments < 1) {
+   showToast('Invalid number of payroll deductions.', 'red')
+   return
+  }
+
+  const correctionReason = window.prompt(
+   'Enter reason for correcting this approved cash advance amount.\n\nThis reason will be saved in notes and audit log.',
+   'Amount encoding correction before first payroll deduction'
+  )
+
+  if (correctionReason === null) return
+  if (!String(correctionReason).trim()) {
+   showToast('Correction reason is required.', 'red')
+   return
+  }
+
+  const newPerPayroll = moneyRound(newAmount / newInstallments)
+
+  if (!window.confirm(
+   'Correct approved cash advance amount?\n\n' +
+   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
+   'Old Amount: ' + php(oldAmount) + '\n' +
+   'New Amount: ' + php(newAmount) + '\n' +
+   'New Payroll Count: ' + newInstallments + '\n' +
+   'New Deduction / Payroll: ' + php(newPerPayroll) + '\n\n' +
+   'This will update the CA ledger amount, balance, installment plan, and linked CA request. Continue?'
+  )) return
+
+  const existingNotes = String(ca.notes || '').trim()
+  const newNotes = existingNotes +
+   (existingNotes ? ' | ' : '') +
+   'CA AMOUNT CORRECTED BY OWNER ' + new Date().toISOString().slice(0,10) +
+   ': ' + php(oldAmount) + ' to ' + php(newAmount) +
+   '; plan ' + currentTotal + ' to ' + newInstallments + ' payroll(s)' +
+   '; reason: ' + String(correctionReason).trim()
+
+  try {
+   const { error } = await supabase.from('cash_advances').update({
+    amount:newAmount,
+    amount_paid:0,
+    balance:newAmount,
+    per_payroll_deduction:newPerPayroll,
+    installments_total:newInstallments,
+    installments_remaining:newInstallments,
+    status:'Unpaid',
+    notes:newNotes
+   }).eq('id', ca.id)
+
+   if (error) throw error
+
+   if (req?.id) {
+    let { error:reqError } = await supabase.from('cash_advance_requests').update({
+     amount:newAmount,
+     request_installments_total:newInstallments,
+     request_per_payroll_deduction:newPerPayroll
+    }).eq('id', req.id)
+
+    if (reqError && isMissingCashAdvanceDetailColumnError(reqError)) {
+     ;({ error:reqError } = await supabase.from('cash_advance_requests').update({ amount:newAmount }).eq('id', req.id))
+    }
+
+    if (reqError) {
+     console.warn('Cash advance request amount sync skipped:', reqError)
+    }
+   }
+
+   await logAudit(
+    'CA AMOUNT CORRECTED',
+    currentAdminLabel || adminRole,
+    ca.employee_name || req?.employee_name || 'Employee',
+    'CA ID: ' + ca.id + ' | ' + php(oldAmount) + ' corrected to ' + php(newAmount) + ' | ' + newInstallments + ' payroll(s) at ' + php(newPerPayroll) + ' | Reason: ' + String(correctionReason).trim()
+   )
+
+   if (ca.employee_id || req?.employee_id) {
+    await createNotification(
+     ca.employee_id || req?.employee_id,
+     ca.employee_name || req?.employee_name || 'Employee',
+     'cash_advance',
+     ' Cash Advance Amount Corrected',
+     'Your approved cash advance amount was corrected from ' + php(oldAmount) + ' to ' + php(newAmount) + '. New deduction plan: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).'
+    )
+   }
+
+   await loadCashAdvanceRequests()
+   await loadResolvedCARequests()
+   await loadCashAdvanceCoverage(payrollStart, payrollEnd)
+   if (employee?.id) loadMyCashAdvances(employee)
+
+   showToast('Cash advance amount corrected to ' + php(newAmount) + '. New deduction: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).', 'green')
+  } catch (err) {
+   console.warn('correctCashAdvanceAmount:', err)
+   showToast('Failed to correct cash advance amount: ' + (err?.message || err), 'red')
+  }
+ }
+
 async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (!ca?.id) {
    showToast('Cash advance ledger not found. Refresh cash advance requests first.', 'red')
@@ -22150,9 +22307,12 @@ function printCompanyDocumentRecord(record) {
  {approved && (
  <div style={{ marginTop:'10px', background:'white', border:'1px solid #d9f2df', borderRadius:'10px', padding:'10px' }}>
  <p style={{ margin:'0 0 8px', color:'#2d8a4e', fontWeight:'bold', fontSize:'13px' }}>Cash Advance Ledger / Payroll Deduction Plan</p>
- {ledger && safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
+ {ledger && adminRole === 'owner' && (
   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', margin:'0 0 10px' }}>
-   <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
+   {safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
+    <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
+   )}
+   <button style={{...btnYellow, background:'#FDD412', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>correctCashAdvanceAmount(ledger, req)}>CORRECT CA AMOUNT</button>
   </div>
  )}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px' }}>
