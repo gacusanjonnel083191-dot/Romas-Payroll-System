@@ -7500,7 +7500,7 @@ Cancel = create batch record only for existing stock.`)
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
 
  if (customerType === 'reseller') {
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(invoiceResellerId, invoiceDate)
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(invoiceResellerId, invoiceDate, { resellerName:reseller?.name || '' })
  if (duplicateCheck.blocked) {
  showToast(duplicateCheck.message, 'red')
  await logAudit('INVOICE CREATE BLOCKED - DUPLICATE SAME DAY', adminRole, reseller?.name || '', duplicateCheck.message)
@@ -10367,6 +10367,42 @@ function buildDeliveryInvoicePrintCSS() {
  return !['cancelled','canceled','void','deleted'].includes(s)
  }
 
+ function normalizeOutletDuplicateKey(value) {
+ return String(value || '')
+ .trim()
+ .toLowerCase()
+ .replace(/[^a-z0-9]+/g, ' ')
+ .replace(/\s+/g, ' ')
+ .trim()
+ }
+
+ function getOutletDuplicateProfile(resellerId, fallbackName = '') {
+ const id = String(resellerId || '')
+ const knownRows = [
+ ...(Array.isArray(resellers)? resellers: []),
+ ...(Array.isArray(resellerPortalBranches)? resellerPortalBranches: [])
+ ]
+ const branch = knownRows.find(r => String(r?.id || '') === id)
+ const name = branch?.name || branch?.reseller_name || fallbackName || ''
+ const accountId = branch?.reseller_account_id || resellerPortalAccount?.id || ''
+ return {
+ id,
+ name,
+ normalizedName:normalizeOutletDuplicateKey(name),
+ accountId:String(accountId || '')
+ }
+ }
+
+ function isSameDuplicateOutletRecord(row, targetProfile, relatedIds = []) {
+ if (!row || !targetProfile) return false
+ const rowResellerId = String(row.reseller_id || '')
+ const sameId = targetProfile.id && rowResellerId === targetProfile.id
+ const sameRelatedBranch = relatedIds.length > 0 && relatedIds.includes(rowResellerId)
+ const rowNameKey = normalizeOutletDuplicateKey(row.reseller_name || row.name || '')
+ const sameName = targetProfile.normalizedName && rowNameKey && rowNameKey === targetProfile.normalizedName
+ return Boolean(sameId || sameRelatedBranch || sameName)
+ }
+
  async function checkSameDayOutletOrderOrInvoice(resellerId, deliveryDate, options = {}) {
  const targetResellerId = String(resellerId || '')
  const targetDate = String(deliveryDate || '').slice(0, 10)
@@ -10375,43 +10411,51 @@ function buildDeliveryInvoicePrintCSS() {
 
  if (!targetResellerId || !targetDate) return { blocked:false, message:'' }
 
+ const targetProfile = getOutletDuplicateProfile(targetResellerId, options.resellerName || options.outletName || '')
+ const relatedIds = getResellerBranchIds(targetResellerId).map(id => String(id)).filter(Boolean)
+
+ // Important: query the whole delivery date, not only the exact reseller_id.
+ // Some duplicate reseller records can share the same outlet name but have different IDs.
+ // Without the name/date check, the app can create two invoices for the same reseller and same date.
  const { data:existingOrders, error:orderErr } = await supabase
  .from('reseller_orders')
- .select('id,status,delivery_date,reseller_name,invoice_id')
- .eq('reseller_id', targetResellerId)
+ .select('id,status,delivery_date,reseller_id,reseller_name,invoice_id')
  .eq('delivery_date', targetDate)
- .limit(20)
+ .limit(300)
  if (orderErr) throw orderErr
 
  const duplicateOrder = (existingOrders || []).find(o =>
- String(o.id) !== excludeOrderId && isActiveDuplicateOrderStatus(o.status)
+ String(o.id) !== excludeOrderId &&
+ isActiveDuplicateOrderStatus(o.status) &&
+ isSameDuplicateOutletRecord(o, targetProfile, relatedIds)
  )
  if (duplicateOrder) {
  return {
  blocked:true,
  type:'order',
  record:duplicateOrder,
- message:`Duplicate blocked: ${duplicateOrder.reseller_name || 'this outlet'} already has an active order for ${targetDate}. Only one order/invoice per outlet per delivery date is allowed.`
+ message:`Duplicate blocked: ${duplicateOrder.reseller_name || targetProfile.name || 'this outlet'} already has an active order for ${targetDate}. Same reseller/outlet name + same delivery date is not allowed.`
  }
  }
 
  const { data:existingInvoices, error:invoiceErr } = await supabase
  .from('delivery_invoices')
- .select('id,invoice_number,status,delivery_date,reseller_name')
- .eq('reseller_id', targetResellerId)
+ .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
  .eq('delivery_date', targetDate)
- .limit(20)
+ .limit(300)
  if (invoiceErr) throw invoiceErr
 
  const duplicateInvoice = (existingInvoices || []).find(inv =>
- String(inv.id) !== excludeInvoiceId && isActiveDuplicateInvoiceStatus(inv.status)
+ String(inv.id) !== excludeInvoiceId &&
+ isActiveDuplicateInvoiceStatus(inv.status) &&
+ isSameDuplicateOutletRecord(inv, targetProfile, relatedIds)
  )
  if (duplicateInvoice) {
  return {
  blocked:true,
  type:'invoice',
  record:duplicateInvoice,
- message:`Duplicate blocked: ${duplicateInvoice.reseller_name || 'this outlet'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Only one order/invoice per outlet per delivery date is allowed.`
+ message:`Duplicate blocked: ${duplicateInvoice.reseller_name || targetProfile.name || 'this outlet'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Same reseller/outlet name + same delivery date is not allowed.`
  }
  }
 
@@ -10586,7 +10630,7 @@ function buildDeliveryInvoicePrintCSS() {
  resellerOrderSubmitLockRef.current = true
  setSubmittingOrder(true)
  try {
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, resellerOrderDeliveryDate)
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, resellerOrderDeliveryDate, { resellerName:orderBranch.name || '' })
  if (duplicateCheck.blocked) {
  showToast(duplicateCheck.message, 'red')
  await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
@@ -10644,7 +10688,7 @@ function buildDeliveryInvoicePrintCSS() {
  const items = customItems || order.reseller_order_items || []
  const validItems = items.filter(i=>Number(i.quantity)>0)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(order.reseller_id, order.delivery_date, { excludeOrderId:order.id })
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(order.reseller_id, order.delivery_date, { excludeOrderId:order.id, resellerName:order.reseller_name || '' })
  if (duplicateCheck.blocked) {
  showToast(duplicateCheck.message, 'red')
  await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY', adminRole, order?.reseller_name || '', duplicateCheck.message)
