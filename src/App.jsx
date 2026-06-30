@@ -16,16 +16,18 @@ const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
 
-// Payroll policy: Roma's Donuts gives holiday pay eligibility to every active employee.
-// Regular holiday rule: every active employee in the cutoff receives one daily-rate holiday pay.
-// If the employee also worked that regular holiday, basic pay already includes that day,
-// so the added one daily rate produces 200% total pay for the holiday.
-// Special holiday rule: no work, no premium; worked special holiday receives the 30% premium.
+// Payroll policy: all active employees are holiday-pay candidates, but attendance rules still apply.
+// Regular holiday rule: employee receives holiday pay only when NOT marked absent
+// on the day before the holiday, on the holiday, or on the day after the holiday.
+// If the employee worked the regular holiday, basic pay already covers the worked day,
+// so the added daily-rate holiday pay produces 200% total pay for that holiday.
+// Special holiday rule: no work, no premium; worked special holiday receives the 30% premium,
+// also subject to the same absence guard.
 const HOLIDAY_PAY_ALL_EMPLOYEES_ELIGIBLE = true
-const REGULAR_HOLIDAY_PAY_ALL_ACTIVE_EMPLOYEES = true
 const REGULAR_HOLIDAY_WORKED_PREMIUM_RATE = 1
 const REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE = 1
 const SPECIAL_HOLIDAY_WORKED_PREMIUM_RATE = 0.30
+const HOLIDAY_ABSENCE_GUARD_DAY_OFFSETS = [-1, 0, 1]
 
 // Design System 
 // Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
@@ -565,6 +567,41 @@ function addDaysToDateString(dateStr, days = 0) {
  if (!date) return ''
  date.setDate(date.getDate() + safeNum(days, 0))
  return formatDateLocal(date)
+}
+
+function isAbsentAttendanceLog(log = {}) {
+ return String(log?.status || '').trim().toLowerCase() === 'absent'
+}
+
+function isPaidLeaveCoveringDate(leaves = [], dateStr = '') {
+ if (!dateStr) return false
+ return (leaves || []).some(leave => {
+  if (!isPaidLeaveRecord(leave)) return false
+  const start = String(leave?.leave_start || '').slice(0, 10)
+  const end = String(leave?.leave_end || '').slice(0, 10)
+  return start && end && start <= dateStr && end >= dateStr
+ })
+}
+
+function getHolidayAbsenceGuardDates(holidayDate = '') {
+ const dateStr = String(holidayDate || '').slice(0, 10)
+ if (!dateStr) return []
+ return HOLIDAY_ABSENCE_GUARD_DAY_OFFSETS
+  .map(offset => addDaysToDateString(dateStr, offset))
+  .filter(Boolean)
+}
+
+function getHolidayAbsenceGuardFailure(holidayDate = '', attendanceByDate = {}, paidLeaves = []) {
+ const guardDates = getHolidayAbsenceGuardDates(holidayDate)
+ const absentDates = guardDates.filter(dateStr => {
+  const log = attendanceByDate?.[dateStr]
+  return isAbsentAttendanceLog(log) && !isPaidLeaveCoveringDate(paidLeaves, dateStr)
+ })
+ return {
+  eligible: absentDates.length === 0,
+  absentDates,
+  guardDates
+ }
 }
 
 function buildDateRangeRows(startDate, endDate, mapper = null) {
@@ -17870,10 +17907,24 @@ async function computePayroll() {
  const startDay = Number(payrollStart.split('-')[2])
  const isFirstCutoff = startDay>=11&&startDay<=25
  for (const emp of empList||[]) {
-  const { data:logs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', payrollStart).lte('attendance_date', payrollEnd)
+  const holidayGuardStart = addDaysToDateString(payrollStart, -1) || payrollStart
+  const holidayGuardEnd = addDaysToDateString(payrollEnd, 1) || payrollEnd
+  const { data:allLogs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', holidayGuardStart).lte('attendance_date', holidayGuardEnd)
   if (logsError) throw logsError
-  const { data:leaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', payrollEnd).gte('leave_end', payrollStart)
+  const logs = (allLogs || []).filter(log => {
+   const dateKey = String(log.attendance_date || '').slice(0, 10)
+   return dateKey >= payrollStart && dateKey <= payrollEnd
+  })
+  const guardLogsByDate = groupDTRLogsByDate(allLogs || [])
+  const guardAttendanceByDate = {}
+  Object.entries(guardLogsByDate).forEach(([dateKey, dayLogs]) => {
+   guardAttendanceByDate[dateKey] = mergeDTRDayLogs(dayLogs)
+  })
+
+  const { data:allLeaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', holidayGuardEnd).gte('leave_end', holidayGuardStart)
   if (leavesError) throw leavesError
+  const leaves = (allLeaves || []).filter(leave => getLeaveOverlapDays(leave, payrollStart, payrollEnd) > 0)
+  const holidayGuardPaidLeaves = (allLeaves || []).filter(isPaidLeaveRecord)
   const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id)
   if (caError) throw caError
   const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
@@ -17975,16 +18026,24 @@ async function computePayroll() {
   const nightDiffPay=nightDiffMinutes*minuteRate*0.10
 
   // Holiday pay policy.
-  // Regular holiday: all active employees receive one daily-rate holiday pay.
-  // If they worked that holiday, the normal basic pay already covers the worked day,
-  // so this added daily rate makes the holiday total equal to double pay.
+  // Absence guard: no holiday pay/premium when employee is marked ABSENT
+  // on the day before the holiday, on the holiday, or on the day after the holiday.
+  // Paid leave on any guard date is treated as not absent.
+  // Regular holiday: eligible employee receives one daily-rate holiday pay;
+  // if they worked, basic pay already covers the worked day, so total becomes 200%.
   // Special holiday: premium is added only when the employee worked the special holiday.
   let holidayPay=0
+  const holidayEligibilityNotes=[]
   for (const h of holidayList||[]) {
    const holidayDate=String(h.holiday_date||'').slice(0,10)
    const workedInfo=workDetailByDate[holidayDate]
    const holidayType = String(h.holiday_type || '').toLowerCase()
    const activeOnHoliday = !emp.hire_date || String(emp.hire_date).slice(0,10) <= holidayDate
+   const absenceGuard = getHolidayAbsenceGuardFailure(holidayDate, guardAttendanceByDate, holidayGuardPaidLeaves)
+   if (!absenceGuard.eligible) {
+    holidayEligibilityNotes.push(`${h.holiday_name || holidayDate}: no holiday pay due to ABS on ${absenceGuard.absentDates.join(', ')}`)
+    continue
+   }
    if (holidayType === 'regular' && activeOnHoliday && isHolidayPayEligible(emp, 'regular')) {
     const rate = workedInfo ? REGULAR_HOLIDAY_WORKED_PREMIUM_RATE : REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE
     holidayPay += dailyRate * rate
@@ -18020,7 +18079,7 @@ async function computePayroll() {
   const undertimeMinutesInfo=undertimeMinutesApproved
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -20954,7 +21013,7 @@ function printCompanyDocumentRecord(record) {
  <h2 style={h2s}>Holiday Calendar</h2>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'13px', color:'#555' }}>
  <strong style={{ color:'#ca1b1b' }}>Holiday Pay Rules (DOLE):</strong><br/>
- Regular Holiday Worked: <strong>200%</strong> | Not Worked: <strong>100%</strong> (paid even if absent)<br/>
+ Regular Holiday Worked: <strong>200%</strong> | Not Worked: <strong>100%</strong> only if not ABS before/on/after holiday<br/>
  Special Non-Working Worked: <strong>130%</strong> | Not Worked: <strong>No Pay (NWNP)</strong>
  </div>
 
