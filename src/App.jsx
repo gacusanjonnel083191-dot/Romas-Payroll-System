@@ -7500,7 +7500,7 @@ Cancel = create batch record only for existing stock.`)
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
 
  if (customerType === 'reseller') {
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(invoiceResellerId, invoiceDate, { resellerName:reseller?.name || '' })
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(invoiceResellerId, invoiceDate, { resellerName:reseller?.name || '', ignoreOrders:true })
  if (duplicateCheck.blocked) {
  showToast(duplicateCheck.message, 'red')
  await logAudit('INVOICE CREATE BLOCKED - DUPLICATE SAME DAY', adminRole, reseller?.name || '', duplicateCheck.message)
