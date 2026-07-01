@@ -1,4 +1,4 @@
-﻿import { Component, useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { createClient } from '@supabase/supabase-js'
 
@@ -10693,11 +10693,28 @@ function buildDeliveryInvoicePrintCSS() {
  const items = customItems || order.reseller_order_items || []
  const validItems = items.filter(i=>Number(i.quantity)>0)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(order.reseller_id, order.delivery_date, { excludeOrderId:order.id, resellerName:order.reseller_name || '', ignoreOrders:true })
- if (duplicateCheck.blocked) {
- showToast(duplicateCheck.message, 'red')
- await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY', adminRole, order?.reseller_name || '', duplicateCheck.message)
- return
+ // Approval safety: pending order approval must NOT be blocked by the same pending order itself.
+ // At this stage, only an already-existing active invoice for the same outlet/date should block approval.
+ const approvalTargetDate = String(order?.delivery_date || '').slice(0, 10)
+ const approvalTargetNameKey = normalizeOutletDuplicateKey(order?.reseller_name || '')
+ const approvalTargetResellerId = String(order?.reseller_id || '')
+ const { data:approvalExistingInvoices, error:approvalInvoiceErr } = await supabase
+ .from('delivery_invoices')
+ .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
+ .eq('delivery_date', approvalTargetDate)
+ .limit(500)
+ if (approvalInvoiceErr) throw approvalInvoiceErr
+ const duplicateApprovalInvoice = (approvalExistingInvoices || []).find(inv => {
+  if (!isActiveDuplicateInvoiceStatus(inv.status)) return false
+  const sameId = approvalTargetResellerId && String(inv.reseller_id || '') === approvalTargetResellerId
+  const sameName = approvalTargetNameKey && normalizeOutletDuplicateKey(inv.reseller_name || '') === approvalTargetNameKey
+  return sameId || sameName
+ })
+ if (duplicateApprovalInvoice) {
+  const duplicateMessage = `Duplicate blocked: ${duplicateApprovalInvoice.reseller_name || order?.reseller_name || 'this outlet'} already has invoice ${duplicateApprovalInvoice.invoice_number || ''} for ${approvalTargetDate}. Same reseller/outlet name + same delivery date is not allowed.`
+  showToast(duplicateMessage, 'red')
+  await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY INVOICE', adminRole, order?.reseller_name || '', duplicateMessage)
+  return
  }
  const creditStatus = await checkResellerCreditBlockFresh(order.reseller_id)
  const hasCreditWarning = creditStatus.blocked
