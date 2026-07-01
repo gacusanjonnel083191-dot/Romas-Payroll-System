@@ -10413,10 +10413,14 @@ function buildDeliveryInvoicePrintCSS() {
 
  const targetProfile = getOutletDuplicateProfile(targetResellerId, options.resellerName || options.outletName || '')
  const relatedIds = getResellerBranchIds(targetResellerId).map(id => String(id)).filter(Boolean)
+ const ignoreOrders = options.ignoreOrders === true
 
  // Important: query the whole delivery date, not only the exact reseller_id.
  // Some duplicate reseller records can share the same outlet name but have different IDs.
  // Without the name/date check, the app can create two invoices for the same reseller and same date.
+ // When approving a pending order, do not block the approval just because the same pending
+ // order is active. Approval only needs to check for an existing active invoice.
+ if (!ignoreOrders) {
  const { data:existingOrders, error:orderErr } = await supabase
  .from('reseller_orders')
  .select('id,status,delivery_date,reseller_id,reseller_name,invoice_id')
@@ -10435,6 +10439,7 @@ function buildDeliveryInvoicePrintCSS() {
  type:'order',
  record:duplicateOrder,
  message:`Duplicate blocked: ${duplicateOrder.reseller_name || targetProfile.name || 'this outlet'} already has an active order for ${targetDate}. Same reseller/outlet name + same delivery date is not allowed.`
+ }
  }
  }
 
@@ -10688,7 +10693,7 @@ function buildDeliveryInvoicePrintCSS() {
  const items = customItems || order.reseller_order_items || []
  const validItems = items.filter(i=>Number(i.quantity)>0)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(order.reseller_id, order.delivery_date, { excludeOrderId:order.id, resellerName:order.reseller_name || '' })
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(order.reseller_id, order.delivery_date, { excludeOrderId:order.id, resellerName:order.reseller_name || '', ignoreOrders:true })
  if (duplicateCheck.blocked) {
  showToast(duplicateCheck.message, 'red')
  await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY', adminRole, order?.reseller_name || '', duplicateCheck.message)
