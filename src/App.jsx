@@ -10397,10 +10397,12 @@ function buildDeliveryInvoicePrintCSS() {
  if (!row || !targetProfile) return false
  const rowResellerId = String(row.reseller_id || '')
  const sameId = targetProfile.id && rowResellerId === targetProfile.id
- const sameRelatedBranch = relatedIds.length > 0 && relatedIds.includes(rowResellerId)
  const rowNameKey = normalizeOutletDuplicateKey(row.reseller_name || row.name || '')
  const sameName = targetProfile.normalizedName && rowNameKey && rowNameKey === targetProfile.normalizedName
- return Boolean(sameId || sameRelatedBranch || sameName)
+ // IMPORTANT: Do not treat sibling branches under the same reseller account as duplicates.
+ // Example: JV1-MANGALDAN and JV2-MAPANDAN can share one owner/account,
+ // but they are different outlets and must be allowed to receive separate invoices on the same date.
+ return Boolean(sameId || sameName)
  }
 
  async function checkSameDayOutletOrderOrInvoice(resellerId, deliveryDate, options = {}) {
