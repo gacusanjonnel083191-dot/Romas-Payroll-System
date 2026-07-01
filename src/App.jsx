@@ -7500,10 +7500,12 @@ Cancel = create batch record only for existing stock.`)
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
 
  if (customerType === 'reseller') {
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(invoiceResellerId, invoiceDate, { resellerName:reseller?.name || '', ignoreOrders:true })
+ // Manual invoice creation must be checked against the actual selected reseller/branch only.
+ // Do not use the copy-template branch, parent account, or sibling branches for duplicate blocking.
+ const duplicateCheck = await checkSameDayInvoiceForExactBranch(invoiceResellerId, invoiceDate, { resellerName:reseller?.name || '' })
  if (duplicateCheck.blocked) {
  showToast(duplicateCheck.message, 'red')
- await logAudit('INVOICE CREATE BLOCKED - DUPLICATE SAME DAY', adminRole, reseller?.name || '', duplicateCheck.message)
+ await logAudit('INVOICE CREATE BLOCKED - EXACT BRANCH DUPLICATE', adminRole, reseller?.name || '', duplicateCheck.message)
  setSavingInvoice(false)
  return
  }
@@ -10365,6 +10367,42 @@ function buildDeliveryInvoicePrintCSS() {
  function isActiveDuplicateInvoiceStatus(status) {
  const s = String(status || '').trim().toLowerCase()
  return !['cancelled','canceled','void','deleted'].includes(s)
+ }
+
+ async function checkSameDayInvoiceForExactBranch(resellerId, deliveryDate, options = {}) {
+ const targetResellerId = String(resellerId || '').trim()
+ const targetDate = String(deliveryDate || '').slice(0, 10)
+ const excludeInvoiceId = options.excludeInvoiceId ? String(options.excludeInvoiceId) : ''
+ const resellerName = options.resellerName || 'this branch'
+
+ if (!targetResellerId || !targetDate) return { blocked:false, message:'' }
+
+ // Critical rule: a manual invoice duplicate check is branch-exact only.
+ // JV1-MANGALDAN and JV2-MAPANDAN may share an owner/account or copy each other's quantity template,
+ // but they are different reseller branches and must not block each other.
+ const { data:existingInvoices, error } = await supabase
+ .from('delivery_invoices')
+ .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
+ .eq('delivery_date', targetDate)
+ .eq('reseller_id', targetResellerId)
+ .limit(50)
+ if (error) throw error
+
+ const duplicateInvoice = (existingInvoices || []).find(inv =>
+  String(inv.id) !== excludeInvoiceId &&
+  isActiveDuplicateInvoiceStatus(inv.status)
+ )
+
+ if (duplicateInvoice) {
+  return {
+   blocked:true,
+   type:'invoice',
+   record:duplicateInvoice,
+   message:`Duplicate blocked: ${resellerName || duplicateInvoice.reseller_name || 'this branch'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Same exact branch + same delivery date is not allowed.`
+  }
+ }
+
+ return { blocked:false, message:'' }
  }
 
  function normalizeOutletDuplicateKey(value) {
@@ -26471,6 +26509,16 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked? ' CREDIT WARNING': ''}</option>
 })}
 </select>
+{invoiceResellerId && (()=>{
+ const target = resellers.find(r=>String(r.id)===String(invoiceResellerId))
+ const source = invoiceCopyFromResellerId ? resellers.find(r=>String(r.id)===String(invoiceCopyFromResellerId)) : null
+ return (
+  <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'9px 10px', marginTop:'6px' }}>
+   <p style={{ margin:'0 0 3px', color:'#1b5e20', fontSize:'12px', fontWeight:'900' }}>THIS INVOICE WILL BE CREATED FOR: {target?.name || 'Selected branch'} {target?.area?`(${target.area})`:''}</p>
+   <p style={{ margin:0, color:'#555', fontSize:'11px', lineHeight:1.4 }}>Copy Template is quantities only. It does not change the invoice branch. {source && String(source.id)!==String(target?.id || '') ? `Currently copying quantities from: ${source.name}${source.area?` (${source.area})`:''}.` : 'Template source is the same as the selected branch.'}</p>
+  </div>
+ )
+})()}
 </div>
 ) : (
 <>
@@ -26527,7 +26575,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 </div>
 {invoiceCustomerType === 'reseller' && (
 <div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
-<label style={lblS}>Copy order quantities from another branch/template:</label>
+<label style={lblS}>Copy quantities only from another branch/template:</label>
 <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
 <select value={invoiceCopyFromResellerId} onChange={e=>setInvoiceCopyFromResellerId(e.target.value)} style={{...inputStyle, marginBottom:0, flex:'1 1 240px' }}>
 <option value="">Select branch template to copy</option>
@@ -26535,7 +26583,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 </select>
 <button style={{...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(invoiceCopyFromResellerId || invoiceResellerId, 'invoice')}>COPY TEMPLATE</button>
 </div>
-<p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>Use this when one branch will receive the same quantities/variants as another branch. You can still edit quantities before saving.</p>
+<p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>This copies quantities only. It does not change the invoice recipient/reseller selected above. You can still edit quantities before saving.</p>
 </div>
 )}
 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
