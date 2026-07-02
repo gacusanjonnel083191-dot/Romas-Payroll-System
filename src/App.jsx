@@ -8392,13 +8392,14 @@ function buildDeliveryInvoicePrintCSS() {
 
  function buildDeliveryInvoiceDocxTable(invoice) {
    const data = getDeliveryInvoicePrintData(invoice)
-   // Exact requested size: 105mm x 160mm was the starting point, but the
-   // real fix is that page height now tracks actual content height per
-   // invoice (see heightTwips below) — "paper size matches invoice size"
-   // by construction, not by guessing a fixed height that's sometimes too
-   // tall and leaves a dead gap. Width stays fixed at 105mm; that one
-   // isn't content-dependent.
-   const widths = [1750, 1210, 903, 903, 903]
+   // Fixed physical paper size: 105mm x 165mm, confirmed — this matches
+   // real paper stock, not a computed value. Table width is sized to fit
+   // within the page margins (147 twips ≈ 2.6mm each side), leaving a
+   // little clearance on all 4 sides as requested. Checked against the
+   // maximum possible invoice (all 17 donut variants at once) — even that
+   // fits comfortably within 165mm with room to spare, so this size is
+   // safe for every invoice this system can produce, not just typical ones.
+   const widths = [1746, 1207, 900, 900, 900]
    const full = widths.reduce((sum, w) => sum + w, 0)
    const valueSpan3 = widths[1] + widths[2] + widths[3]
 
@@ -8409,97 +8410,85 @@ function buildDeliveryInvoicePrintCSS() {
    const PALE_RED = 'FBDCDC'
 
    const rows = []
-   let heightTwips = 0
-   const addRow = (cells, height) => {
-     rows.push(wordRow(cells, height))
-     heightTwips += height
-   }
-
-   addRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:19, line:235, shade:BRAND_RED, color:'FFFFFF' })], 420)
-   addRow([
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:19, line:235, shade:BRAND_RED, color:'FFFFFF' })], 420))
+   rows.push(wordRow([
      wordCell('Date:', { width:widths[0], align:'center', bold:true, size:16 }),
      wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:16, shade:PALE_GOLD }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350)
-   addRow([
+   ], 350))
+   rows.push(wordRow([
      wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:16 }),
      wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:16, shade:PALE_GOLD }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350)
-   addRow([
+   ], 350))
+   rows.push(wordRow([
      wordCell('Address:', { width:widths[0], align:'center', bold:true, size:16 }),
      wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:15, shade:PALE_RED }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350)
-   addRow([
+   ], 350))
+   rows.push(wordRow([
      wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:14, line:175, shade:PALE_GOLD })
-   ], 360)
-   addRow([
+   ], 360))
+   rows.push(wordRow([
      wordCell('Product', { width:widths[0], align:'center', bold:true, size:16 }),
      wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:16 }),
      wordCell('Price', { width:widths[2], align:'center', bold:true, size:16 }),
      wordCell('Amount', { width:widths[3], align:'center', bold:true, size:16 }),
      wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:16 })
-   ], 350)
+   ], 350))
 
    data.productRows.forEach(row => {
-     addRow([
+     rows.push(wordRow([
        wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:14 }),
        wordCell(row.delivered, { width:widths[1], align:'center', size:15 }),
        wordCell(row.price, { width:widths[2], align:'right', size:14 }),
        wordCell(row.amount, { width:widths[3], align:'right', size:14 }),
        wordCell(row.unsold, { width:widths[4], align:'center', size:15 })
-     ], 267)
+     ], 267))
    })
 
-   addRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80)
-   addRow([
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
+   rows.push(wordRow([
      wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
      wordCell(data.cratesUsed, { width:widths[1], align:'center', size:15 }),
      wordCell('', { width:widths[2], align:'center', size:15 }),
      wordCell('', { width:widths[3], align:'center', size:15 }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350)
-   addRow([
+   ], 350))
+   rows.push(wordRow([
      wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
      wordCell('', { width:widths[1], align:'center', size:15 }),
      wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:17, shade:BRAND_GOLD }),
      wordCell(data.total, { width:widths[3], align:'right', bold:true, size:17, shade:BRAND_GOLD }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 390)
-   addRow([
+   ], 390))
+   rows.push(wordRow([
      wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:14, shade:PALE_GOLD }),
      wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:14, shade:PALE_GOLD }),
      wordCell('', { width:widths[3], align:'center', size:15 }),
      wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 400)
+   ], 400))
 
-   const xml = `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
-   return { xml, heightTwips }
+   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
  function buildDeliveryInvoicesDocxDocument(invoices) {
    const invoiceList = Array.isArray(invoices) ? invoices : []
    const bodyParts = []
-   let maxHeightTwips = 0
    invoiceList.forEach((invoice, idx) => {
      bodyParts.push(buildInvoiceDocxTopSpacer(idx > 0))
-     const { xml, heightTwips } = buildDeliveryInvoiceDocxTable(invoice)
-     bodyParts.push(xml)
-     if (heightTwips > maxHeightTwips) maxHeightTwips = heightTwips
+     bodyParts.push(buildDeliveryInvoiceDocxTable(invoice))
    })
 
-   // Page height tracks actual content instead of a fixed guess. Two things
-   // go into the budget: the spacer paragraph that runs before every table
-   // (351 twips — this was the actual bug last time, it was never counted,
-   // leaving almost no real margin and pushing the last row onto page 2),
-   // plus a genuine safety cushion for normal font-rendering variance
-   // between what I calculate and what Word actually draws.
-   const SPACER_HEIGHT = 351
-   const SAFETY_BUFFER = 550
-   const pageHeightTwips = maxHeightTwips + SPACER_HEIGHT + SAFETY_BUFFER
+   // Fixed physical paper size: 105mm x 165mm (5953 x 9354 twips) — real
+   // paper stock, confirmed exact. Margins of 147 twips (~2.6mm) on all 4
+   // sides, per request. Verified safe for every invoice this system can
+   // produce: even the maximum possible order (all 17 donut variants at
+   // once) needs roughly 146mm, comfortably inside 165mm with margin to
+   // spare — so this size never needs to change per invoice.
+   const MARGIN = 147
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5953" w:h="${pageHeightTwips}"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5953" w:h="9354"/><w:pgMar w:top="${MARGIN}" w:right="${MARGIN}" w:bottom="${MARGIN}" w:left="${MARGIN}" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
  }
 
  function createCrc32Table() {
