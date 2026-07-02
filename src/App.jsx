@@ -8391,13 +8391,11 @@ function buildDeliveryInvoicePrintCSS() {
 
  function buildDeliveryInvoiceDocxTable(invoice) {
    const data = getDeliveryInvoicePrintData(invoice)
-   // Page is genuine standard A4 portrait (210mm x 297mm) — no custom size
-   // at all, which is the actual fix: non-standard page sizes can get
-   // silently overridden by Word depending on the default printer driver,
-   // standard sizes never do. The table is narrowed to ~100mm and
-   // left-aligned (not centered) so it sits entirely within the left half
-   // of the page — cut straight down the middle and the invoice is intact
-   // on one side, the other side is intentionally blank margin.
+   // Exact requested size: 105mm x 160mm portrait, deliberately custom —
+   // doesn't match any Word-recognized standard name (A4, A5, Letter...),
+   // which is what makes it render reliably rather than risk Word trying
+   // to "helpfully" reconcile it against a built-in size and a specific
+   // printer's supported paper list. Table stays centered within it.
    const widths = [1750, 1210, 903, 903, 903]
    const full = widths.reduce((sum, w) => sum + w, 0)
    const valueSpan3 = widths[1] + widths[2] + widths[3]
@@ -8462,7 +8460,7 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell('', { width:widths[4], align:'center', size:15 })
    ], 400))
 
-   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="left"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
+   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
  function buildDeliveryInvoicesDocxDocument(invoices) {
@@ -8475,7 +8473,7 @@ function buildDeliveryInvoicePrintCSS() {
 
    // A5 portrait = half of A4 (148mm x 210mm), standard OOXML twip values.
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5953" w:h="9071"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
  }
 
  function createCrc32Table() {
