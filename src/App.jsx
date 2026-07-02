@@ -18089,6 +18089,7 @@ async function computePayroll() {
   const absenceDeductionApplicable = employeeRuleEnabled(emp.absence_deduction_applicable, payrollBasis !== 'daily')
   const overtimePayEligible = employeeRuleEnabled(emp.overtime_pay_eligible, true)
   const undertimeDeductionApplicable = employeeRuleEnabled(emp.undertime_deduction_applicable, true)
+  const nightDifferentialPayEligible = employeeRuleEnabled(emp.night_differential_pay_eligible, true)
 
   const rawDailyRate=safeNum(emp.daily_rate, 0)
   const savedHourlyRate=safeNum(emp.hourly_rate, 0)
@@ -18124,7 +18125,7 @@ async function computePayroll() {
    const recordedBreak=safeNum(log.total_break_minutes, 0)
    const effectiveBreak=recordedBreak>0?recordedBreak:(rawMins>=9*60?ALLOWED_BREAK_MINUTES:0)
    const actualMins=Math.max(0,rawMins-effectiveBreak)
-   const computedNightDiffMinutes=calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows)
+   const computedNightDiffMinutes=nightDifferentialPayEligible ? calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows) : 0
    nightDiffMinutes+=computedNightDiffMinutes
    totalWorkedMinutes+=actualMins
    const logDateKey=String(log.attendance_date||'').slice(0,10)
@@ -18177,7 +18178,9 @@ async function computePayroll() {
   const undertimeDeduction=undertimeDeductionApplicable ? undertimeMinutesApproved*minuteRate : 0
 
   // Night differential premium: break time inside 10PM-6AM is excluded.
-  const nightDiffPay=nightDiffMinutes*minuteRate*0.10
+  // Employees marked night_differential_pay_eligible = false still keep worked hours,
+  // but receive ₱0 night differential premium.
+  const nightDiffPay=nightDifferentialPayEligible ? nightDiffMinutes*minuteRate*0.10 : 0
 
   // Holiday pay policy.
   // Absence guard: no holiday pay/premium when employee is marked ABSENT
