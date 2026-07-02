@@ -236,14 +236,28 @@ function formatDutyHours(minutes = 0) {
 }
 
 function isHolidayPayEligible(emp = {}, holidayType = '') {
- // Company payroll rule: no employee-level holiday exemption.
- // Older employee records may still contain false regular/special eligibility values,
- // but payroll must ignore those old flags so every active employee is covered.
- if (HOLIDAY_PAY_ALL_EMPLOYEES_ELIGIBLE) return true
+ // Default company rule: active employees are holiday-pay candidates.
+ // Explicit employee-level false values are still respected for owner/manager
+ // exceptions such as staff with no holiday-pay arrangement.
  const type = String(holidayType || '').trim().toLowerCase()
  if (type === 'regular') return emp?.regular_holiday_pay_eligible !== false
  if (type === 'special') return emp?.special_holiday_pay_eligible !== false
  return true
+}
+
+function normalizePayrollBasis(value) {
+ const raw = String(value || 'daily').trim().toLowerCase().replace(/[\s-]+/g, '_')
+ if (raw === 'monthly' || raw === 'fixed_monthly') return 'monthly'
+ if (raw === 'semi_monthly' || raw === 'semimonthly' || raw === 'fixed_semi_monthly') return 'semi_monthly'
+ return 'daily'
+}
+
+function employeeRuleEnabled(value, fallback = true) {
+ if (value === false) return false
+ if (value === true) return true
+ if (String(value).toLowerCase() === 'false') return false
+ if (String(value).toLowerCase() === 'true') return true
+ return fallback
 }
 
 function isMissingEmployeeHolidayEligibilityColumnError(error) {
@@ -18067,15 +18081,38 @@ async function computePayroll() {
   const absentDays=logs?.filter(l=>l.status==='Absent').length||0
   const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
   const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
+  const payrollBasis = normalizePayrollBasis(emp.payroll_basis)
+  const monthlySalary = safeNum(emp.monthly_salary, 0)
+  const semiMonthlySalary = safeNum(emp.semi_monthly_salary, 0)
+  const annualWorkingDays = positiveNum(emp.annual_working_days, 313)
+  const attendanceRequiredForPay = employeeRuleEnabled(emp.attendance_required_for_pay, payrollBasis === 'daily')
+  const absenceDeductionApplicable = employeeRuleEnabled(emp.absence_deduction_applicable, payrollBasis !== 'daily')
+  const overtimePayEligible = employeeRuleEnabled(emp.overtime_pay_eligible, true)
+  const undertimeDeductionApplicable = employeeRuleEnabled(emp.undertime_deduction_applicable, true)
+
   const rawDailyRate=safeNum(emp.daily_rate, 0)
   const savedHourlyRate=safeNum(emp.hourly_rate, 0)
-  const dailyRate=rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0)
+  const fixedMonthlyEquivalent = payrollBasis === 'monthly'
+   ? monthlySalary
+   : payrollBasis === 'semi_monthly'
+    ? (semiMonthlySalary > 0 ? semiMonthlySalary * 2 : monthlySalary)
+    : 0
+  const derivedFixedDailyRate = fixedMonthlyEquivalent > 0 ? fixedMonthlyEquivalent * 12 / annualWorkingDays : 0
+  const dailyRate = payrollBasis === 'daily'
+   ? (rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0))
+   : (derivedFixedDailyRate>0?derivedFixedDailyRate:(rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0)))
   const hourlyRate=dailyRate>0?dailyRate/8:savedHourlyRate
   const minuteRate=hourlyRate/60
+  const fixedCutoffBasePay = payrollBasis === 'monthly'
+   ? monthlySalary / 2
+   : payrollBasis === 'semi_monthly'
+    ? (semiMonthlySalary > 0 ? semiMonthlySalary : monthlySalary / 2)
+    : 0
 
-  // Daily-rate rule: one completed attendance day earns one full daily rate.
-  // Time-in/time-out minutes do not reduce basic pay automatically.
-  // Minutes are used only for approved OT, approved UT, and night differential premium.
+  // Payroll basis rule:
+  // Daily-paid: attendance earns salary. No attendance = no pay.
+  // Monthly/semi-monthly fixed: salary is paid per cutoff first, then attendance
+  // creates allowed deductions/premiums depending on employee rule switches.
   let totalWorkedMinutes=0
   let nightDiffMinutes=0
   const workDetailByDate={}
@@ -18104,9 +18141,18 @@ async function computePayroll() {
    }
   }
 
-  const workedBasicPay=workedDays*dailyRate
-  const paidLeavePay=paidLeaveDays*dailyRate
-  const basicPay=workedBasicPay+paidLeavePay
+  let workedBasicPay = 0
+  let paidLeavePay = 0
+  let absenceDeduction = 0
+  if (payrollBasis === 'daily') {
+   workedBasicPay = attendanceRequiredForPay ? workedDays * dailyRate : dailyRate
+   paidLeavePay = paidLeaveDays * dailyRate
+  } else {
+   workedBasicPay = fixedCutoffBasePay
+   paidLeavePay = 0
+   absenceDeduction = absenceDeductionApplicable ? (absentDays + unpaidLeaveDays) * dailyRate : 0
+  }
+  const basicPay = moneyRound(workedBasicPay + paidLeavePay)
   const regularPaidMinutes=(workedDays+paidLeaveDays)*8*60
 
   // Birthday Pay: no work, no pay. If employee worked on birthday, add extra 100%.
@@ -18123,10 +18169,12 @@ async function computePayroll() {
    }
   }
 
-  const overtimeMinutes=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='overtime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
-  const overtimePay=overtimeMinutes*minuteRate*1.25
-  const undertimeMinutesApproved=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='undertime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
-  const undertimeDeduction=undertimeMinutesApproved*minuteRate
+  const overtimeMinutesRaw=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='overtime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
+  const overtimeMinutes=overtimePayEligible ? overtimeMinutesRaw : 0
+  const overtimePay=overtimePayEligible ? overtimeMinutes*minuteRate*1.25 : 0
+  const undertimeMinutesRaw=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='undertime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
+  const undertimeMinutesApproved=undertimeDeductionApplicable ? undertimeMinutesRaw : 0
+  const undertimeDeduction=undertimeDeductionApplicable ? undertimeMinutesApproved*minuteRate : 0
 
   // Night differential premium: break time inside 10PM-6AM is excluded.
   const nightDiffPay=nightDiffMinutes*minuteRate*0.10
@@ -18160,15 +18208,17 @@ async function computePayroll() {
 
   let adjEarnings=0,adjDeductions=0
   for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
-  const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
-  const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
-  const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
+  const hasPayForCutoff = moneyRound(basicPay + paidLeavePay + overtimePay + nightDiffPay + holidayPay + adjEarnings) > 0
+  const sssDeduction=hasPayForCutoff&&emp.has_sss&&isFirstCutoff?375:0
+  const pagibigDeduction=hasPayForCutoff&&emp.has_pagibig&&!isFirstCutoff?200:0
+  const philhealthDeduction=hasPayForCutoff&&emp.has_philhealth&&!isFirstCutoff?250:0
   const totalEarnings=moneyRound(basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings)
   const undertimeDeductionRounded=moneyRound(undertimeDeduction)
+  const absenceDeductionRounded=moneyRound(absenceDeduction)
   const sssDeductionRounded=moneyRound(sssDeduction)
   const pagibigDeductionRounded=moneyRound(pagibigDeduction)
   const philhealthDeductionRounded=moneyRound(philhealthDeduction)
-  const adjDeductionsRounded=moneyRound(adjDeductions)
+  const adjDeductionsRounded=moneyRound(adjDeductions+absenceDeductionRounded)
   const nonCADeductions=moneyRound(undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
 
   // Payroll safety rule: deductions must never create negative net pay.
@@ -18185,7 +18235,7 @@ async function computePayroll() {
   const undertimeMinutesInfo=undertimeMinutesApproved
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
