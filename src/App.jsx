@@ -18648,7 +18648,8 @@ async function computePayroll() {
 
 
  
-function PosMonitorPanel() {
+function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }) {
+ const canEditOutletInventory = isOwnerRole || String(adminRole || '').trim().toLowerCase() === 'manager'
  const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
  const readSagsDraft = (key, fallback = '') => {
   try {
@@ -18672,6 +18673,9 @@ function PosMonitorPanel() {
  const [stockInTransferNo, setStockInTransferNo] = useState(() => readSagsDraft('stockInTransferNo', ''))
  const [stockInTransferredBy, setStockInTransferredBy] = useState(() => readSagsDraft('stockInTransferredBy', ''))
  const [stockInReceivedBy, setStockInReceivedBy] = useState(() => readSagsDraft('stockInReceivedBy', ''))
+ const [priceEditProductId, setPriceEditProductId] = useState('')
+ const [priceEditSearch, setPriceEditSearch] = useState('')
+ const [priceEditValue, setPriceEditValue] = useState('')
  const [transactionSearch, setTransactionSearch] = useState(() => readSagsDraft('transactionSearch', ''))
  const [voidReceiptNo, setVoidReceiptNo] = useState(() => readSagsDraft('voidReceiptNo', ''))
  const [voidReason, setVoidReason] = useState(() => readSagsDraft('voidReason', ''))
@@ -18736,6 +18740,11 @@ function PosMonitorPanel() {
  }
 
  async function saveOutletStockIn() {
+  if (!canEditOutletInventory) {
+   alert('Only Owner or Manager can log stock in for the outlet.')
+   return
+  }
+
   if (!stockInProductId) {
    alert('Please select a product.')
    return
@@ -18770,6 +18779,25 @@ function PosMonitorPanel() {
 
    if (error) throw error
 
+   // Logging the movement alone doesn't restock anything the POS can
+   // actually sell — this is what makes the delivery real.
+   const newStock = safeNum(product.stock, 0) + qty
+   const { error: stockError } = await supabase
+    .from('pos_products')
+    .update({ stock: newStock })
+    .eq('id', product.id)
+
+   if (stockError) throw stockError
+
+   if (logAudit) {
+    await logAudit(
+     'OUTLET STOCK IN',
+     currentAdminLabel || 'Admin',
+     product.product_name || product.name || product.id,
+     `+${qty} (${safeNum(product.stock,0)} → ${newStock}) | Ref: ${referenceNo}${stockInNote ? ' | ' + stockInNote : ''}`
+    )
+   }
+
    alert('Stock in saved successfully.')
    setStockInProductId('')
    setStockInSearch('')
@@ -18782,6 +18810,59 @@ function PosMonitorPanel() {
   } catch (err) {
    console.error('Stock in failed:', err)
    alert('Stock in failed: ' + (err?.message || String(err)))
+  }
+ }
+
+ async function saveProductPrice() {
+  if (!canEditOutletInventory) {
+   alert('Only Owner or Manager can change outlet prices.')
+   return
+  }
+
+  if (!priceEditProductId) {
+   alert('Please select a product.')
+   return
+  }
+
+  const newPrice = safeNum(priceEditValue, -1)
+  if (newPrice < 0) {
+   alert('Please enter a valid price.')
+   return
+  }
+
+  const product = posProducts.find(p => String(p.id) === String(priceEditProductId))
+  if (!product) {
+   alert('Selected product not found.')
+   return
+  }
+
+  const oldPrice = safeNum(product.selling_price, 0)
+
+  try {
+   const { error } = await supabase
+    .from('pos_products')
+    .update({ selling_price: newPrice })
+    .eq('id', product.id)
+
+   if (error) throw error
+
+   if (logAudit) {
+    await logAudit(
+     'OUTLET PRICE CHANGE',
+     currentAdminLabel || 'Admin',
+     product.product_name || product.name || product.id,
+     `₱${oldPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`
+    )
+   }
+
+   alert('Price updated successfully.')
+   setPriceEditProductId('')
+   setPriceEditSearch('')
+   setPriceEditValue('')
+   await loadPosMonitor()
+  } catch (err) {
+   console.error('Price update failed:', err)
+   alert('Price update failed: ' + (err?.message || String(err)))
   }
  }
 
@@ -18817,7 +18898,7 @@ function PosMonitorPanel() {
    return
   }
 
-  if (String(sale.status || 'completed').toLowerCase() === 'void') {
+  if (String(sale.status || 'completed').toLowerCase() === 'voided') {
    alert('This receipt is already voided.')
    return
   }
@@ -18837,7 +18918,7 @@ function PosMonitorPanel() {
    const { error: updateError } = await supabase
     .from('pos_sales')
     .update({
-     status: 'void',
+     status: 'voided',
      voided_at: new Date().toISOString(),
      voided_by: userName,
      void_reason: reason
@@ -18876,6 +18957,29 @@ function PosMonitorPanel() {
      .insert(returnMovements)
 
     if (movementError) throw movementError
+
+    // Actually give the stock back — logging the movement alone never
+    // changed what the POS shows as available, which meant a voided sale's
+    // items silently stayed "sold" forever from the register's point of view.
+    for (const move of returnMovements) {
+     if (!move.product_id) continue
+     const product = posProducts.find(p => String(p.id) === String(move.product_id))
+     if (!product) continue
+     const { error: stockError } = await supabase
+      .from('pos_products')
+      .update({ stock: safeNum(product.stock, 0) + move.qty })
+      .eq('id', move.product_id)
+     if (stockError) console.error('Stock restore failed for', move.product_id, stockError)
+    }
+   }
+
+   if (logAudit) {
+    await logAudit(
+     'POS SALE VOIDED',
+     currentAdminLabel || userName || 'Admin',
+     receiptNo,
+     `Voided receipt ${receiptNo} (₱${originalTotal.toFixed(2)}) | Reason: ${reason} | Stock restored for ${returnMovements.length} item(s)`
+    )
    }
 
    alert('Receipt voided successfully.')
@@ -19016,6 +19120,19 @@ function PosMonitorPanel() {
  }).slice(0, 12)
 
  const selectedStockInProduct = posProducts.find(p => String(p.id) === String(stockInProductId))
+
+ const filteredPriceEditProducts = posProducts.filter(p => {
+  const text = [
+   p.product_name,
+   p.name,
+   p.sku,
+   p.barcode,
+   p.category
+  ].join(' ').toLowerCase()
+  return priceEditSearch.trim() && text.includes(priceEditSearch.toLowerCase())
+ }).slice(0, 12)
+
+ const selectedPriceEditProduct = posProducts.find(p => String(p.id) === String(priceEditProductId))
 
  const lowStockProducts = posProducts.map(product => {
   const key = product.id || product.product_name
@@ -19259,6 +19376,12 @@ function PosMonitorPanel() {
 
    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Stock In to Outlet</h3>
+    {!canEditOutletInventory ? (
+     <p style={{ margin:0, color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
+      Viewing only — Owner or Manager access is needed to log stock in for the outlet.
+     </p>
+    ) : (
+    <>
     <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>Record products delivered or transferred to Roma�s Donuts - Malued.</p>
 
     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
@@ -19340,6 +19463,83 @@ function PosMonitorPanel() {
 
      <button onClick={saveOutletStockIn} style={{...btnGreen, width:'auto', marginTop:0}}>Save Stock In</button>
     </div>
+    </>
+    )}
+   </div>
+
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Edit Outlet Price</h3>
+    {!canEditOutletInventory ? (
+     <p style={{ margin:0, color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
+      Viewing only — Owner or Manager access is needed to change outlet prices.
+     </p>
+    ) : (
+    <>
+    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>Changes take effect the next time the outlet POS loads its product list.</p>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '2fr 1fr auto', gap:'10px', alignItems:'end' }}>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Search Product</label>
+      <input
+       value={priceEditSearch}
+       onChange={e=>{
+        setPriceEditSearch(e.target.value)
+        setPriceEditProductId('')
+        setPriceEditValue('')
+       }}
+       placeholder="Search product, SKU, barcode..."
+       style={{...inputStyle, marginBottom:'6px'}}
+      />
+
+      {selectedPriceEditProduct && (
+       <div style={{ border:'1px solid #d9f2e3', background:'#f0fff6', borderRadius:'10px', padding:'8px 10px', marginBottom:'6px', fontSize:'12px' }}>
+        <strong style={{ color:'#2d8a4e' }}>Selected:</strong> {selectedPriceEditProduct.product_name || selectedPriceEditProduct.name} — current price ₱{safeNum(selectedPriceEditProduct.selling_price,0).toFixed(2)}
+       </div>
+      )}
+
+      {priceEditSearch.trim() && !priceEditProductId && (
+       <div style={{ border:'1px solid #eee', borderRadius:'12px', background:'white', maxHeight:'220px', overflowY:'auto', boxShadow:'0 6px 18px rgba(0,0,0,0.08)' }}>
+        {filteredPriceEditProducts.length === 0 ? (
+         <div style={{ padding:'10px', color:'#999', fontSize:'12px' }}>No product found.</div>
+        ) : (
+         filteredPriceEditProducts.map(p => (
+          <button
+           key={p.id}
+           type="button"
+           onClick={()=>{
+            setPriceEditProductId(p.id)
+            setPriceEditSearch(p.product_name || p.name || '')
+            setPriceEditValue(String(safeNum(p.selling_price, 0)))
+           }}
+           style={{
+            width:'100%',
+            textAlign:'left',
+            border:'none',
+            borderBottom:'1px solid #f2f2f2',
+            background:'white',
+            padding:'10px',
+            cursor:'pointer',
+            fontFamily:'inherit'
+           }}
+          >
+           <strong style={{ display:'block', color:'#222', fontSize:'13px' }}>{p.product_name || p.name}</strong>
+           <span style={{ color:'#888', fontSize:'11px' }}>₱{safeNum(p.selling_price,0).toFixed(2)} � {p.category || ''} {p.sku ? '� ' + p.sku : ''}</span>
+          </button>
+         ))
+        )}
+       </div>
+      )}
+     </div>
+
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>New Price (₱)</label>
+      <input type="number" min="0" step="0.01" value={priceEditValue} onChange={e=>setPriceEditValue(e.target.value)} placeholder="0.00" style={{...inputStyle, marginBottom:0}} />
+     </div>
+
+     <button onClick={saveProductPrice} style={{...btnGreen, width:'auto', marginTop:0}}>Save Price</button>
+    </div>
+    </>
+    )}
    </div>
 
    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
@@ -20207,7 +20407,7 @@ function printCompanyDocumentRecord(record) {
  <SectionErrorBoundary resetKey={activeTab}>
 
  {/* POS MONITOR */}
- {activeTab==='posMonitor' && <PosMonitorPanel />}
+ {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
 
  {/* DASHBOARD */}
  {activeTab==='dashboard' && (
