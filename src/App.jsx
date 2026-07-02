@@ -7827,7 +7827,7 @@ function getInvoiceProductionDispatchNote(invoice) {
 function buildDeliveryInvoicePrintCSS() {
   return [
     '<style>',
-    '@page { size: 4in 6in; margin: 0; }',
+    '@page { size: 10.5cm 16.5cm; margin: 0; }',
 
     '* {',
     '  box-sizing: border-box !important;',
@@ -7836,8 +7836,8 @@ function buildDeliveryInvoicePrintCSS() {
     '}',
 
     'html, body {',
-    '  width: 4in !important;',
-    '  height: 6in !important;',
+    '  width: 10.5cm !important;',
+    '  height: 16.5cm !important;',
     '  margin: 0 !important;',
     '  padding: 0 !important;',
     '  background: white !important;',
@@ -7848,10 +7848,10 @@ function buildDeliveryInvoicePrintCSS() {
     '.no-print { display: none !important; }',
 
     '.invoice-page {',
-    '  width: 4in !important;',
-    '  height: 6in !important;',
+    '  width: 10.5cm !important;',
+    '  height: 16.5cm !important;',
     '  margin: 0 auto !important;',
-    '  padding: 0.04in !important;',
+    '  padding: 0.12cm !important;',
     '  background: white !important;',
     '  overflow: hidden !important;',
     '}',
@@ -7932,8 +7932,8 @@ function buildDeliveryInvoicePrintCSS() {
     '}',
 
     '@media print {',
-    '  html, body { width: 4in !important; height: 6in !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }',
-    '  .invoice-page { width: 4in !important; height: 6in !important; margin: 0 !important; padding: 0.04in !important; box-shadow: none !important; page-break-after: always !important; }',
+    '  html, body { width: 10.5cm !important; height: 16.5cm !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }',
+    '  .invoice-page { width: 10.5cm !important; height: 16.5cm !important; margin: 0 !important; padding: 0.12cm !important; box-shadow: none !important; page-break-after: always !important; }',
     '  .invoice-page:last-of-type { page-break-after: auto !important; }',
     '}',
     '</style>'
@@ -8297,29 +8297,23 @@ function buildDeliveryInvoicePrintCSS() {
      })
    }
 
-   const productRows = productTemplate
-     .map(row => {
-       if (!row.label) return { product:'', delivered:'', price:'', amount:'', unsold:'', _spacer:true }
-       const matched = findMatchingItems(row)
-       const qty = matched.reduce((sum, item) => sum + getQty(item), 0)
-       const first = matched[0] || null
-       const price = first ? getPrice(first) : 0
-       const amount = matched.reduce((sum, item) => sum + getAmount(item), 0)
-       const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0)
-       return {
-         product: row.label,
-         delivered: qty ? qty.toLocaleString('en-PH') : '',
-         price: price ? peso(price) : '',
-         amount: amount ? peso(amount) : '',
-         unsold: unsoldQty ? unsoldQty.toLocaleString('en-PH') : '',
-         _ordered: qty > 0
-       }
-     })
-     // Print should only show what this customer actually ordered — a
-     // template row that matched nothing stays out of the printed invoice.
-     // Structural spacer rows (blank dividers already built into the
-     // template's layout) are kept since they're not about a product at all.
-     .filter(row => row._spacer || row._ordered)
+   const productRows = productTemplate.map(row => {
+     if (!row.label) return { product:'', delivered:'', price:'', amount:'', unsold:'', _spacer:true }
+     const matched = findMatchingItems(row)
+     const qty = matched.reduce((sum, item) => sum + getQty(item), 0)
+     const first = matched[0] || null
+     const price = first ? getPrice(first) : 0
+     const amount = matched.reduce((sum, item) => sum + getAmount(item), 0)
+     const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0)
+     return {
+       product: row.label,
+       delivered: qty ? qty.toLocaleString('en-PH') : '',
+       price: price ? peso(price) : '',
+       amount: amount ? peso(amount) : '',
+       unsold: unsoldQty ? unsoldQty.toLocaleString('en-PH') : '',
+       _ordered: qty > 0
+     }
+   })
 
    const computedTotal = productTemplate.reduce((sum, row) => {
      return sum + findMatchingItems(row).reduce((itemSum, item) => itemSum + getAmount(item), 0)
@@ -8387,13 +8381,13 @@ function buildDeliveryInvoicePrintCSS() {
    // after each invoice. A trailing page-break paragraph can be forced onto its own sheet,
    // which creates the blank pages seen between invoices in Word print preview.
    const pageBreak = startNewPage ? '<w:pageBreakBefore/>' : ''
-   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="351" w:lineRule="exact"/></w:pPr></w:p>`
+   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="340" w:lineRule="exact"/></w:pPr></w:p>`
  }
 
  function buildDeliveryInvoiceDocxTable(invoice) {
    const data = getDeliveryInvoicePrintData(invoice)
-   // Fixed physical paper size: 105mm x 165mm, confirmed — this matches
-   // real paper stock, not a computed value. Table width is sized to fit
+   // Fixed physical paper size: 105mm x 165mm, confirmed from the Word custom
+   // paper setup screenshot — this matches real paper stock, not a computed value. Table width is sized to fit
    // within the page margins (147 twips ≈ 2.6mm each side), leaving a
    // little clearance on all 4 sides as requested. Checked against the
    // maximum possible invoice (all 17 donut variants at once) — even that
@@ -8444,7 +8438,7 @@ function buildDeliveryInvoicePrintCSS() {
        wordCell(row.price, { width:widths[2], align:'right', size:14 }),
        wordCell(row.amount, { width:widths[3], align:'right', size:14 }),
        wordCell(row.unsold, { width:widths[4], align:'center', size:15 })
-     ], 267))
+     ], 310))
    })
 
    rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
@@ -8481,7 +8475,7 @@ function buildDeliveryInvoicePrintCSS() {
    })
 
    // Fixed physical paper size: 105mm x 165mm (5953 x 9354 twips) — real
-   // paper stock, confirmed exact. Margins of 147 twips (~2.6mm) on all 4
+   // paper stock, confirmed exact from the Word custom paper setup screenshot. Margins of 147 twips (~2.6mm) on all 4
    // sides, per request. Verified safe for every invoice this system can
    // produce: even the maximum possible order (all 17 donut variants at
    // once) needs roughly 146mm, comfortably inside 165mm with margin to
