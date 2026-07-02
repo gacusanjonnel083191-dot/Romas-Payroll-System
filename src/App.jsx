@@ -8435,11 +8435,11 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:14, line:175, shade:PALE_GOLD })
    ], 360)
    addRow([
-     wordCell('Product', { width:widths[0], align:'center', bold:true, size:16, shade:BRAND_RED, color:'FFFFFF' }),
-     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:16, shade:BRAND_RED, color:'FFFFFF' }),
-     wordCell('Price', { width:widths[2], align:'center', bold:true, size:16, shade:BRAND_RED, color:'FFFFFF' }),
-     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:16, shade:BRAND_RED, color:'FFFFFF' }),
-     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:16, shade:BRAND_RED, color:'FFFFFF' })
+     wordCell('Product', { width:widths[0], align:'center', bold:true, size:16 }),
+     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:16 }),
+     wordCell('Price', { width:widths[2], align:'center', bold:true, size:16 }),
+     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:16 }),
+     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:16 })
    ], 350)
 
    data.productRows.forEach(row => {
@@ -8489,12 +8489,15 @@ function buildDeliveryInvoicePrintCSS() {
      if (heightTwips > maxHeightTwips) maxHeightTwips = heightTwips
    })
 
-   // Page height now tracks actual content instead of a fixed guess — this
-   // is the real fix for "paper size should match invoice size". A small
-   // top/bottom buffer (200 twips ≈ 3.5mm each side) keeps the border from
-   // looking pinched against the paper edge. Width stays fixed at 105mm,
-   // since that's a column-width decision, not something content-driven.
-   const pageHeightTwips = maxHeightTwips + 400
+   // Page height tracks actual content instead of a fixed guess. Two things
+   // go into the budget: the spacer paragraph that runs before every table
+   // (351 twips — this was the actual bug last time, it was never counted,
+   // leaving almost no real margin and pushing the last row onto page 2),
+   // plus a genuine safety cushion for normal font-rendering variance
+   // between what I calculate and what Word actually draws.
+   const SPACER_HEIGHT = 351
+   const SAFETY_BUFFER = 550
+   const pageHeightTwips = maxHeightTwips + SPACER_HEIGHT + SAFETY_BUFFER
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5953" w:h="${pageHeightTwips}"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
  }
