@@ -8373,6 +8373,38 @@ function buildDeliveryInvoicePrintCSS() {
    return `<w:tr><w:trPr><w:trHeight w:val="${height}" w:hRule="exact"/><w:cantSplit/></w:trPr>${cells.join('')}</w:tr>`
  }
 
+ // Logo embedding — a PNG is fetched once at print time, stored as a real
+ // media part inside the docx zip, and referenced here via relationship ID.
+ // This run injects raw drawing XML directly (unlike wordRun, which escapes
+ // its input as visible text — that's the wrong tool for an image).
+ function buildLogoDrawingRun(relId, sizeTwips) {
+   const emu = Math.round(sizeTwips * 635)
+   return `<w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${emu}" cy="${emu}"/><wp:docPr id="1" name="Logo"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="1" name="Logo"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${emu}" cy="${emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`
+ }
+
+ function wordImageCell(relId, sizeTwips, opts = {}) {
+   const width = safeNum(opts.width, 1000)
+   const span = opts.span ? `<w:gridSpan w:val="${opts.span}"/>` : ''
+   const vAlign = '<w:vAlign w:val="center"/>'
+   const cellMargins = '<w:tcMar><w:top w:w="60" w:type="dxa"/><w:left w:w="24" w:type="dxa"/><w:bottom w:w="60" w:type="dxa"/><w:right w:w="24" w:type="dxa"/></w:tcMar>'
+   const paragraph = `<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="0"/></w:pPr>${buildLogoDrawingRun(relId, sizeTwips)}</w:p>`
+   return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${span}${vAlign}${cellMargins}</w:tcPr>${paragraph}</w:tc>`
+ }
+
+ async function fetchLogoImageBytes() {
+   // Graceful by design — if this fails for any reason, invoices should
+   // still print normally, just without the logo, not break entirely.
+   try {
+     const res = await fetch('/logo.png')
+     if (!res.ok) return null
+     const buf = await res.arrayBuffer()
+     return new Uint8Array(buf)
+   } catch (e) {
+     console.warn('Logo fetch failed — invoice will print without it:', e)
+     return null
+   }
+ }
+
  function buildInvoiceDocxTopSpacer(startNewPage = false) {
    // Keeps the invoice title away from Word/printer top clipping while page margin stays 0.
    // For Print All, use pageBreakBefore on this spacer instead of placing a page-break paragraph
@@ -8382,15 +8414,19 @@ function buildDeliveryInvoicePrintCSS() {
    return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="351" w:lineRule="exact"/></w:pPr></w:p>`
  }
 
- function buildDeliveryInvoiceDocxTable(invoice) {
+ function buildDeliveryInvoiceDocxTable(invoice, hasLogo) {
    const data = getDeliveryInvoicePrintData(invoice)
-   // Keep the invoice body at exactly 100mm x 140mm and center it
-   // inside the 4x6 inch Word page. 100mm = 5669 twips, 140mm = about 7937 twips.
-   const widths = [1750, 1210, 903, 903, 903]
+   // Sized for A5 (148mm x 210mm = half an A4 sheet). Table is kept
+   // narrower than the page and centered, same approach as the original
+   // 4x6 design, just scaled up — roughly a 0.4in margin on each side.
+   const widths = [2223, 1537, 1147, 1147, 1147]
    const full = widths.reduce((sum, w) => sum + w, 0)
    const valueSpan3 = widths[1] + widths[2] + widths[3]
 
    const rows = []
+   if (hasLogo) {
+     rows.push(wordRow([wordImageCell('rIdLogo', 620, { width:full, span:5 })], 700))
+   }
    rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:19, line:235 })], 420))
    rows.push(wordRow([
      wordCell('Date:', { width:widths[0], align:'center', bold:true, size:16 }),
@@ -8453,16 +8489,17 @@ function buildDeliveryInvoicePrintCSS() {
    return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
- function buildDeliveryInvoicesDocxDocument(invoices) {
+ function buildDeliveryInvoicesDocxDocument(invoices, hasLogo) {
    const invoiceList = Array.isArray(invoices) ? invoices : []
    const bodyParts = []
    invoiceList.forEach((invoice, idx) => {
      bodyParts.push(buildInvoiceDocxTopSpacer(idx > 0))
-     bodyParts.push(buildDeliveryInvoiceDocxTable(invoice))
+     bodyParts.push(buildDeliveryInvoiceDocxTable(invoice, hasLogo))
    })
 
+   // A5 portrait = half of A4 (148mm x 210mm), standard OOXML twip values.
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5760" w:h="8640"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="8391" w:h="11906"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
  }
 
  function createCrc32Table() {
@@ -8565,26 +8602,30 @@ function buildDeliveryInvoicePrintCSS() {
    return new Blob([zipData], { type:mimeType })
  }
 
- function buildDeliveryInvoicesDocxBlob(invoices) {
-   const documentXml = buildDeliveryInvoicesDocxDocument(invoices)
-   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
+ function buildDeliveryInvoicesDocxBlob(invoices, logoBytes) {
+   const hasLogo = logoBytes instanceof Uint8Array && logoBytes.length > 0
+   const documentXml = buildDeliveryInvoicesDocxDocument(invoices, hasLogo)
+   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${hasLogo ? '<Default Extension="png" ContentType="image/png"/>' : ''}<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
-   const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`
+   const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>${hasLogo ? '<Relationship Id="rIdLogo" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/logo.png"/>' : ''}</Relationships>`
    const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
    const settings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`
 
-   return createStoredZipBlob([
+   const files = [
      { name:'[Content_Types].xml', data:contentTypes },
      { name:'_rels/.rels', data:rootRels },
      { name:'word/document.xml', data:documentXml },
      { name:'word/_rels/document.xml.rels', data:docRels },
      { name:'word/styles.xml', data:styles },
      { name:'word/settings.xml', data:settings }
-   ], 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+   ]
+   if (hasLogo) files.push({ name:'word/media/logo.png', data:logoBytes })
+
+   return createStoredZipBlob(files, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
  }
 
- function downloadDeliveryInvoiceDocxFile(filename, invoices) {
-   const blob = buildDeliveryInvoicesDocxBlob(invoices)
+ function downloadDeliveryInvoiceDocxFile(filename, invoices, logoBytes) {
+   const blob = buildDeliveryInvoicesDocxBlob(invoices, logoBytes)
    const url = URL.createObjectURL(blob)
    const link = document.createElement('a')
    link.href = url
@@ -8595,11 +8636,12 @@ function buildDeliveryInvoicePrintCSS() {
    setTimeout(() => URL.revokeObjectURL(url), 1500)
  }
 
- function printAllDailyInvoices(date) {
+ async function printAllDailyInvoices(date) {
    const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
    if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
-   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
-   showToast(` Downloaded ${dayInvoices.length} invoice(s) as 100x140mm centered 4x6 Word file.`)
+   const logoBytes = await fetchLogoImageBytes()
+   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices, logoBytes)
+   showToast(` Downloaded ${dayInvoices.length} invoice(s) as A5 (half-A4) Word file.`)
  }
  async function recordPayment(invoice) {
  const amt = Number(paymentAmount[invoice.id] || 0)
@@ -8653,8 +8695,9 @@ function buildDeliveryInvoicePrintCSS() {
  if (!invoice) { showToast(' No invoice selected.','red'); return }
  const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice)
  const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
- downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
- showToast(' Downloaded 100x140mm centered 4x6 invoice Word file.')
+ const logoBytes = await fetchLogoImageBytes()
+ downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice], logoBytes)
+ showToast(' Downloaded A5 (half-A4) invoice Word file.')
  }
  function buildInvoiceAdjustmentRows(invoice) {
  if (!invoice) return []
