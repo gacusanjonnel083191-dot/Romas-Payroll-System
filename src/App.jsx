@@ -18759,6 +18759,209 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   })
  }
 
+
+ function cleanOutletBarcodeCode(value) {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9 ./$+%-]+/g, '-')
+ }
+
+ function makeOutletSkuFromName(value) {
+  return String(value || 'ITEM')
+   .normalize('NFKD')
+   .replace(/[̀-ͯ]/g, '')
+   .replace(/&/g, 'AND')
+   .replace(/[^a-z0-9]+/gi, '-')
+   .replace(/^-+|-+$/g, '')
+   .replace(/-{2,}/g, '-')
+   .toUpperCase() || 'ITEM'
+ }
+
+ function getOutletCategoryPluStart(category) {
+  const map = {
+   Donuts:1000,
+   Biscuits:2000,
+   Coffee:3000,
+   Drinks:4000,
+   Noodles:5000,
+   'Refreshing Drinks':6000,
+   Snacks:7000,
+   Others:8000
+  }
+  return map[category] || 8000
+ }
+
+ function getNextAvailableOutletBarcode(category, products = []) {
+  const usedCodes = new Set((products || []).map(p => cleanOutletBarcodeCode(p.barcode)).filter(Boolean))
+  let next = getOutletCategoryPluStart(category) + 1
+  let code = String(next).padStart(4, '0')
+  while (usedCodes.has(code) && next < 9999) {
+   next += 1
+   code = String(next).padStart(4, '0')
+  }
+  return code
+ }
+
+ function buildCode39BarcodeSvg(codeValue, productName) {
+  const patterns = {
+   '0':'nnnwwnwnn','1':'wnnwnnnnw','2':'nnwwnnnnw','3':'wnwwnnnnn','4':'nnnwwnnnw',
+   '5':'wnnwwnnnn','6':'nnwwwnnnn','7':'nnnwnnwnw','8':'wnnwnnwnn','9':'nnwwnnwnn',
+   'A':'wnnnnwnnw','B':'nnwnnwnnw','C':'wnwnnwnnn','D':'nnnnwwnnw','E':'wnnnwwnnn',
+   'F':'nnwnwwnnn','G':'nnnnnwwnw','H':'wnnnnwwnn','I':'nnwnnwwnn','J':'nnnnwwwnn',
+   'K':'wnnnnnnww','L':'nnwnnnnww','M':'wnwnnnnwn','N':'nnnnwnnww','O':'wnnnwnnwn',
+   'P':'nnwnwnnwn','Q':'nnnnnnwww','R':'wnnnnnwwn','S':'nnwnnnwwn','T':'nnnnwnwwn',
+   'U':'wwnnnnnnw','V':'nwwnnnnnw','W':'wwwnnnnnn','X':'nwnnwnnnw','Y':'wwnnwnnnn',
+   'Z':'nwwnwnnnn','-':'nwnnnnwnw','.':'wwnnnnwnn',' ':'nwwnnnwnn','$':'nwnwnwnnn',
+   '/':'nwnwnnnwn','+':'nwnnnwnwn','%':'nnnwnwnwn','*':'nwnnwnwnn'
+  }
+  const escapeSvg = value => String(value || '')
+   .replace(/&/g, '&amp;')
+   .replace(/</g, '&lt;')
+   .replace(/>/g, '&gt;')
+   .replace(/"/g, '&quot;')
+   .replace(/'/g, '&apos;')
+  const cleanCode = cleanOutletBarcodeCode(codeValue).replace(/[^0-9A-Z ./$+%-]/g, '-')
+  const encoded = ('*' + cleanCode + '*').split('')
+  const narrow = 2
+  const wide = 5
+  const quiet = 18
+  const barY = 38
+  const barHeight = 72
+  let x = quiet
+  const rects = []
+  encoded.forEach(char => {
+   const pattern = patterns[char] || patterns['-']
+   for (let i = 0; i < pattern.length; i += 1) {
+    const width = pattern[i] === 'w' ? wide : narrow
+    if (i % 2 === 0) rects.push(`<rect x="${x}" y="${barY}" width="${width}" height="${barHeight}" fill="#111827"/>`)
+    x += width
+   }
+   x += narrow
+  })
+  const labelWidth = Math.max(330, x + quiet)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${labelWidth}" height="178" viewBox="0 0 ${labelWidth} 178">
+   <rect width="100%" height="100%" fill="#ffffff"/>
+   <rect x="8" y="8" width="${labelWidth - 16}" height="162" rx="12" fill="#fffdf7" stroke="#f4d35e" stroke-width="2"/>
+   <text x="${labelWidth / 2}" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ca1b1b">Roma's Donuts POS Label</text>
+   ${rects.join('')}
+   <text x="${labelWidth / 2}" y="128" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="900" fill="#111827">${escapeSvg(cleanCode)}</text>
+   <text x="${labelWidth / 2}" y="152" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" font-weight="800" fill="#1a1a2e">${escapeSvg(productName)}</text>
+  </svg>`
+ }
+
+ function downloadTextAsFile(content, filename, type = 'image/svg+xml;charset=utf-8') {
+  const blob = new Blob([content], { type })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+ }
+
+ function downloadBarcodeLabel(product) {
+  const code = cleanOutletBarcodeCode(product?.barcode || product?.sku || product?.id)
+  if (!code) {
+   alert('This product has no barcode or SKU to print. Generate a barcode first.')
+   return
+  }
+  const productName = product?.product_name || product?.name || 'POS Item'
+  const svg = buildCode39BarcodeSvg(code, productName)
+  const safeName = makeOutletSkuFromName(productName).slice(0, 60) || 'POS-LABEL'
+  downloadTextAsFile(svg, `${safeName}-${code}-barcode.svg`)
+ }
+
+ function printBarcodeLabelSheet(productsToPrint = []) {
+  const labelRows = (productsToPrint || []).filter(row => cleanOutletBarcodeCode(row.barcode || row.sku || row.id))
+  if (!labelRows.length) {
+   alert('No barcode labels available to print. Generate barcodes first.')
+   return
+  }
+  const labels = labelRows.map(row => {
+   const code = cleanOutletBarcodeCode(row.barcode || row.sku || row.id)
+   return `<div class="label">${buildCode39BarcodeSvg(code, row.product_name || row.name || 'POS Item')}</div>`
+  }).join('')
+  const html = `<!doctype html><html><head><title>Roma's Donuts POS Barcode Labels</title><style>
+   @page{size:A4;margin:10mm} body{font-family:Arial,sans-serif;margin:0;background:#fff;color:#111827} .sheet{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:8px} .label{break-inside:avoid;border:1px dashed #ddd;padding:5px;border-radius:10px;display:flex;justify-content:center} svg{max-width:100%;height:auto} @media print{.no-print{display:none}.sheet{gap:6px;padding:0}.label{border:0}}
+  </style></head><body><div class="no-print" style="padding:10px;text-align:center"><button onclick="window.print()" style="padding:10px 18px;border:0;border-radius:10px;background:#ca1b1b;color:white;font-weight:800;cursor:pointer">Print Labels</button></div><div class="sheet">${labels}</div></body></html>`
+  const printWindow = window.open('', '_blank')
+  if (!printWindow) {
+   downloadTextAsFile(html, 'romas-pos-barcode-label-sheet.html', 'text/html;charset=utf-8')
+   return
+  }
+  printWindow.document.write(html)
+  printWindow.document.close()
+  printWindow.focus()
+ }
+
+ async function generateBarcodeForProduct(product, options = {}) {
+  if (!canEditOutletInventory) {
+   alert('Only Owner or Manager can generate POS barcodes.')
+   return null
+  }
+  if (!product?.id) {
+   alert('Product record is missing an ID. Please refresh and try again.')
+   return null
+  }
+  const existingBarcode = cleanOutletBarcodeCode(product.barcode)
+  if (existingBarcode && !options.force) return existingBarcode
+  const barcode = options.barcode || getNextAvailableOutletBarcode(product.category || 'Others', posProducts)
+  const { error } = await supabase
+   .from('pos_products')
+   .update({ barcode })
+   .eq('id', product.id)
+  if (error) throw error
+  if (logAudit) {
+   await logAudit(
+    'POS BARCODE GENERATED',
+    currentAdminLabel || 'Admin',
+    product.product_name || product.name || product.id,
+    `Barcode: ${barcode}`
+   )
+  }
+  await loadPosMonitor({ silent:true, forceProducts:true })
+  return barcode
+ }
+
+ async function generateMissingBarcodes() {
+  if (!canEditOutletInventory) {
+   alert('Only Owner or Manager can generate POS barcodes.')
+   return
+  }
+  const missingRows = outletBalances.filter(row => !cleanOutletBarcodeCode(row.barcode))
+  if (!missingRows.length) {
+   alert('All visible POS products already have barcodes.')
+   return
+  }
+  const proceed = confirm(`Generate barcodes for ${missingRows.length} product(s) without barcode?`)
+  if (!proceed) return
+  const usedCodes = new Set((posProducts || []).map(p => cleanOutletBarcodeCode(p.barcode)).filter(Boolean))
+  const updates = []
+  for (const row of missingRows) {
+   let code = getNextAvailableOutletBarcode(row.category || 'Others', [...posProducts, ...updates.map(u => ({ barcode:u.barcode }))])
+   while (usedCodes.has(code)) {
+    const numeric = safeNum(code, 8000) + 1
+    code = String(numeric).padStart(4, '0')
+   }
+   usedCodes.add(code)
+   updates.push({ id:row.id, barcode:code, product_name:row.product_name })
+  }
+  try {
+   for (const update of updates) {
+    const { error } = await supabase.from('pos_products').update({ barcode:update.barcode }).eq('id', update.id)
+    if (error) throw error
+   }
+   if (logAudit) {
+    await logAudit('POS BARCODES GENERATED', currentAdminLabel || 'Admin', 'SAGS POS', `${updates.length} barcode(s) generated`)
+   }
+   alert(`Generated ${updates.length} barcode(s). You can now download or print labels.`)
+   await loadPosMonitor({ silent:true, forceProducts:true })
+  } catch (err) {
+   console.error('Barcode generation failed:', err)
+   alert('Barcode generation failed: ' + (err?.message || String(err)))
+  }
+ }
+
  async function loadPosMonitor(options = {}) {
   const silent = options && options.silent
   silent ? setPosRefreshing(true) : setPosLoading(true)
@@ -19829,6 +20032,19 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      </p>
     )}
 
+    <div style={{ background:'#fff8dc', border:'1.5px solid #f4d35e', borderRadius:'14px', padding:'12px', marginBottom:'14px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+     <div>
+      <h4 style={{ margin:'0 0 4px', color:'#ca1b1b', fontSize:'15px', fontWeight:'900' }}>Barcode & Label Generator</h4>
+      <p style={{ margin:0, color:'#4b5563', fontSize:'12.5px', fontWeight:'700' }}>Generate missing 4-digit POS scan codes, then download individual barcode labels or print a label sheet.</p>
+     </div>
+     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+      {canEditOutletInventory && (
+       <button onClick={generateMissingBarcodes} style={{...btnYellow, width:'auto', marginTop:0, padding:'9px 13px', fontSize:'12px', fontWeight:'900'}}>Generate Missing Barcodes</button>
+      )}
+      <button onClick={()=>printBarcodeLabelSheet(filteredOutletInventoryRows)} style={{...btnGreen, width:'auto', marginTop:0, padding:'9px 13px', fontSize:'12px', fontWeight:'900'}}>Print / Download Labels</button>
+     </div>
+    </div>
+
     {showAddOutletItem && canEditOutletInventory && (
      <div style={{ background:'#fff8d9', border:'1.5px solid #f4d35e', borderRadius:'14px', padding:'12px', marginBottom:'14px' }}>
       <h4 style={{ margin:'0 0 10px', color:'#1a1a2e', fontSize:'16px', fontWeight:'900' }}>Add New POS Item</h4>
@@ -19871,7 +20087,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
     {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
      <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:'13px', minWidth:'1240px', color:'#1f2937', background:'white', border:'1px solid #f1d35a', borderRadius:'12px', overflow:'hidden' }}>
+      <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:'13px', minWidth:'1320px', color:'#1f2937', background:'white', border:'1px solid #f1d35a', borderRadius:'12px', overflow:'hidden' }}>
        <thead>
         <tr style={{ background:'linear-gradient(90deg,#ca1b1b 0%,#e64b3c 100%)', color:'white' }}>
          <th style={{ textAlign:'left', padding:'11px 10px', fontSize:'12px', fontWeight:'900', color:'white' }}>Product</th>
@@ -19902,6 +20118,20 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
            <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', color:'#374151', fontWeight:'700' }}>
             <strong style={{ fontSize:'12px', color:'#1f2937', fontWeight:'900' }}>{row.sku || '-'}</strong><br/>
             <span style={{ fontSize:'11px', color:'#6b7280', fontWeight:'700' }}>{row.barcode || '-'}</span>
+            <div style={{ display:'flex', gap:'6px', marginTop:'7px', flexWrap:'wrap' }}>
+             {!row.barcode && canEditOutletInventory && (
+              <button
+               onClick={()=>generateBarcodeForProduct(row).catch(err=>alert('Barcode generation failed: ' + (err?.message || String(err))))}
+               style={{ background:'#FDD412', color:'#1a1a2e', border:'none', borderRadius:'8px', padding:'5px 8px', fontSize:'10.5px', fontWeight:'900', cursor:'pointer' }}
+              >Generate</button>
+             )}
+             {(row.barcode || row.sku || row.id) && (
+              <button
+               onClick={()=>downloadBarcodeLabel(row)}
+               style={{ background:'#fff7ed', color:'#ca1b1b', border:'1px solid #f4d35e', borderRadius:'8px', padding:'5px 8px', fontSize:'10.5px', fontWeight:'900', cursor:'pointer' }}
+              >Download Label</button>
+             )}
+            </div>
            </td>
            <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
             <input
