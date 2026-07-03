@@ -19115,21 +19115,85 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   if (duplicate && !confirm('A similar product already exists. Continue adding this item?')) return
 
   try {
-   const { data, error } = await supabase
-    .from('pos_products')
-    .insert([{
-     product_name: productName,
-     category,
-     sku,
-     barcode,
-     selling_price: sellingPrice,
-     stock: startingStock,
-     min_stock: minStock
-    }])
-    .select()
-    .single()
+   const makeCleanProductId = (suffix = '') => {
+    const rawBase = sku || barcode || productName || ('POS-' + Date.now())
+    const cleanBase = String(rawBase)
+     .trim()
+     .toUpperCase()
+     .replace(/[^A-Z0-9]+/g, '-')
+     .replace(/^-+|-+$/g, '')
+     .slice(0, 42) || 'POS-ITEM'
+    return suffix ? `${cleanBase}-${suffix}` : cleanBase
+   }
 
-   if (error) throw error
+   const uniqueSuffix = Date.now().toString().slice(-8)
+   const idCandidates = [
+    makeCleanProductId(),
+    makeCleanProductId(uniqueSuffix),
+    Number(Date.now()),
+    (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `POS-${Date.now()}-${Math.round(Math.random() * 9999)}`)
+   ]
+
+   const buildFullPayload = id => ({
+    id,
+    product_name: productName,
+    name: productName,
+    category,
+    sku,
+    barcode,
+    selling_price: sellingPrice,
+    price: sellingPrice,
+    stock: startingStock,
+    min_stock: minStock,
+    is_active:true
+   })
+
+   const buildCorePayload = id => ({
+    id,
+    product_name: productName,
+    category,
+    sku,
+    barcode,
+    selling_price: sellingPrice,
+    stock: startingStock,
+    min_stock: minStock
+   })
+
+   let data = null
+   let insertError = null
+
+   for (const idCandidate of idCandidates) {
+    const payloadAttempts = [buildFullPayload(idCandidate), buildCorePayload(idCandidate)]
+
+    for (const payload of payloadAttempts) {
+     const result = await supabase
+      .from('pos_products')
+      .insert([payload])
+      .select()
+      .single()
+
+     if (!result.error) {
+      data = result.data
+      insertError = null
+      break
+     }
+
+     insertError = result.error
+     const msg = String(result.error?.message || '').toLowerCase()
+
+     // Retry with the core payload if this database does not have optional compatibility columns.
+     if (payload.name !== undefined && (msg.includes('name') || msg.includes('price') || msg.includes('is_active') || msg.includes('schema cache') || msg.includes('could not find'))) {
+      continue
+     }
+
+     // Wrong ID type or duplicate ID: try the next generated ID candidate.
+     break
+    }
+
+    if (data) break
+   }
+
+   if (insertError) throw insertError
 
    if (startingStock > 0 && data?.id) {
     const { error: movementError } = await supabase.from('pos_inventory_movements').insert([{
