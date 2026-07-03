@@ -19646,18 +19646,18 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <button onClick={saveShiftClosing} style={{...btnGreen, marginTop:'12px'}}>Save Shift Closing</button>
    </div>
 
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'12px' }}>
+   <div style={{ background:'#fffdf7', border:'1.5px solid #f4d35e', borderRadius:'16px', padding:'16px', marginBottom:'14px', boxShadow:'0 3px 14px rgba(202,27,27,0.07)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'14px', background:'linear-gradient(90deg,#fff4b8 0%,#fffdf7 100%)', border:'1px solid #f6d85c', borderRadius:'14px', padding:'12px' }}>
      <div>
-      <h3 style={{ margin:'0 0 6px', color:'#ca1b1b' }}>Outlet Inventory Manager</h3>
-      <p style={{ margin:0, color:'#777', fontSize:'13px' }}>Manage POS items, stock in, stock out, outlet price, barcode, and current balance in one place.</p>
+      <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'20px', fontWeight:'900', letterSpacing:'-0.2px' }}>Outlet Inventory Manager</h3>
+      <p style={{ margin:0, color:'#4b5563', fontSize:'13px', fontWeight:'600' }}>Manage POS items, stock in, stock out, outlet price, barcode, and current balance in one place.</p>
      </div>
      <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
       <input
        value={inventorySearch}
        onChange={e=>setInventorySearch(e.target.value)}
        placeholder="Search product, SKU, barcode, category..."
-       style={{...inputStyle, width:isMobile ? '100%' : '320px', marginBottom:0}}
+       style={{...inputStyle, width:isMobile ? '100%' : '320px', marginBottom:0, border:'1.5px solid #e0b900', color:'#1a1a2e', fontWeight:'700', background:'#ffffff'}}
       />
       {canEditOutletInventory && (
        <button
@@ -19677,8 +19677,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     )}
 
     {showAddOutletItem && canEditOutletInventory && (
-     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'14px', padding:'12px', marginBottom:'14px' }}>
-      <h4 style={{ margin:'0 0 10px', color:'#1a1a2e' }}>Add New POS Item</h4>
+     <div style={{ background:'#fff8d9', border:'1.5px solid #f4d35e', borderRadius:'14px', padding:'12px', marginBottom:'14px' }}>
+      <h4 style={{ margin:'0 0 10px', color:'#1a1a2e', fontSize:'16px', fontWeight:'900' }}>Add New POS Item</h4>
       <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.5fr 1fr 1fr 1fr 0.8fr 0.8fr 0.8fr', gap:'8px', alignItems:'end' }}>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Product Name</label>
@@ -19718,20 +19718,20 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
     {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
      <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'1240px' }}>
+      <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:'13px', minWidth:'1240px', color:'#1f2937', background:'white', border:'1px solid #f1d35a', borderRadius:'12px', overflow:'hidden' }}>
        <thead>
-        <tr style={{ background:'#f8f8f8' }}>
-         <th style={{ textAlign:'left', padding:'8px' }}>Product</th>
-         <th style={{ textAlign:'left', padding:'8px' }}>SKU / Barcode</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Price</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Current Stock</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Sold Today</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Movement Today</th>
-         <th style={{ textAlign:'right', padding:'8px', width:'90px' }}>Stock In</th>
-         <th style={{ textAlign:'right', padding:'8px', width:'90px' }}>Stock Out</th>
-         <th style={{ textAlign:'left', padding:'8px', width:'180px' }}>Remarks</th>
-         <th style={{ textAlign:'center', padding:'8px', width:'90px' }}>Status</th>
-         <th style={{ textAlign:'center', padding:'8px', width:'90px' }}>Action</th>
+        <tr style={{ background:'linear-gradient(90deg,#ca1b1b 0%,#e64b3c 100%)', color:'white' }}>
+         <th style={{ textAlign:'left', padding:'11px 10px', fontSize:'12px', fontWeight:'900', color:'white' }}>Product</th>
+         <th style={{ textAlign:'left', padding:'11px 10px', fontSize:'12px', fontWeight:'900', color:'white' }}>SKU / Barcode</th>
+         <th style={{ textAlign:'right', padding:'11px 10px', fontSize:'12px', fontWeight:'900', color:'white' }}>Price</th>
+         <th style={{ textAlign:'right', padding:'11px 10px', fontSize:'12px', fontWeight:'900', color:'white' }}>Current Stock</th>
+         <th style={{ textAlign:'right', padding:'11px 10px', fontSize:'12px', fontWeight:'900', color:'white' }}>Sold Today</th>
+         <th style={{ textAlign:'right', padding:'11px 10px', fontSize:'12px', fontWeight:'900', color:'white' }}>Movement Today</th>
+         <th style={{ textAlign:'right', padding:'11px 10px', width:'90px', fontSize:'12px', fontWeight:'900', color:'white' }}>Stock In</th>
+         <th style={{ textAlign:'right', padding:'11px 10px', width:'90px', fontSize:'12px', fontWeight:'900', color:'white' }}>Stock Out</th>
+         <th style={{ textAlign:'left', padding:'11px 10px', width:'180px', fontSize:'12px', fontWeight:'900', color:'white' }}>Remarks</th>
+         <th style={{ textAlign:'center', padding:'11px 10px', width:'90px', fontSize:'12px', fontWeight:'900', color:'white' }}>Status</th>
+         <th style={{ textAlign:'center', padding:'11px 10px', width:'90px', fontSize:'12px', fontWeight:'900', color:'white' }}>Action</th>
         </tr>
        </thead>
        <tbody>
@@ -19741,16 +19741,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          const projectedStock = safeNum(row.remainingStock, 0) + safeNum(draft.stockIn, 0) - safeNum(draft.stockOut, 0)
          const saving = inventorySavingId === draftKey
          return (
-          <tr key={row.id || row.product_name} style={{ background:projectedStock < 0 ? '#fff5f5' : 'white' }}>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
-            <strong>{row.product_name}</strong><br/>
-            <span style={{ color:'#999', fontSize:'10px' }}>{row.category || '-'}</span>
+          <tr key={row.id || row.product_name} style={{ background:projectedStock < 0 ? '#fff1f1' : (filteredOutletInventoryRows.indexOf(row) % 2 === 0 ? '#ffffff' : '#fffdf2') }}>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', color:'#1a1a2e', fontWeight:'800' }}>
+            <strong style={{ color:'#1a1a2e', fontSize:'13.5px', fontWeight:'900' }}>{row.product_name}</strong><br/>
+            <span style={{ color:'#6b7280', fontSize:'11px', fontWeight:'700' }}>{row.category || '-'}</span>
            </td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', color:'#777' }}>
-            <strong style={{ fontSize:'11px' }}>{row.sku || '-'}</strong><br/>
-            <span style={{ fontSize:'10px' }}>{row.barcode || '-'}</span>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', color:'#374151', fontWeight:'700' }}>
+            <strong style={{ fontSize:'12px', color:'#1f2937', fontWeight:'900' }}>{row.sku || '-'}</strong><br/>
+            <span style={{ fontSize:'11px', color:'#6b7280', fontWeight:'700' }}>{row.barcode || '-'}</span>
            </td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
             <input
              type="number"
              min="0"
@@ -19758,29 +19758,29 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
              disabled={!canEditOutletInventory}
              value={draft.price ?? row.sellingPrice}
              onChange={e=>setInventoryDraftValue(row, 'price', e.target.value)}
-             style={{...inputStyle, width:'92px', marginBottom:0, textAlign:'right', padding:'8px'}}
+             style={{...inputStyle, width:'92px', marginBottom:0, textAlign:'right', padding:'9px', color:'#1a1a2e', fontWeight:'900', fontSize:'13px', border:'1.5px solid #d7bf42', background:'#fffdf2'}}
             />
            </td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{row.remainingStock}</td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{row.soldQty}</td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:row.movementQty < 0 ? '#ca1b1b' : '#2d8a4e', fontWeight:'bold' }}>{row.movementQty}</td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>
-            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockIn || ''} onChange={e=>setInventoryDraftValue(row, 'stockIn', e.target.value)} placeholder="0" style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'8px'}} />
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'right', fontWeight:'900', color:'#1a1a2e', fontSize:'14px' }}>{row.remainingStock}</td>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:'#ca1b1b', fontWeight:'900', fontSize:'14px' }}>{row.soldQty}</td>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:row.movementQty < 0 ? '#ca1b1b' : '#087a37', fontWeight:'900', fontSize:'14px' }}>{row.movementQty}</td>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
+            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockIn || ''} onChange={e=>setInventoryDraftValue(row, 'stockIn', e.target.value)} placeholder="0" style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'9px', color:'#1a1a2e', fontWeight:'900', fontSize:'13px', border:'1.5px solid #d7bf42', background:'#fffdf2'}} />
            </td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>
-            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockOut || ''} onChange={e=>setInventoryDraftValue(row, 'stockOut', e.target.value)} placeholder="0" style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'8px'}} />
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
+            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockOut || ''} onChange={e=>setInventoryDraftValue(row, 'stockOut', e.target.value)} placeholder="0" style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'9px', color:'#1a1a2e', fontWeight:'900', fontSize:'13px', border:'1.5px solid #d7bf42', background:'#fffdf2'}} />
            </td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
-            <input disabled={!canEditOutletInventory} value={draft.remarks || ''} onChange={e=>setInventoryDraftValue(row, 'remarks', e.target.value)} placeholder="Reason / note" style={{...inputStyle, marginBottom:0, padding:'8px'}} />
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', color:'#1a1a2e', fontWeight:'800' }}>
+            <input disabled={!canEditOutletInventory} value={draft.remarks || ''} onChange={e=>setInventoryDraftValue(row, 'remarks', e.target.value)} placeholder="Reason / note" style={{...inputStyle, marginBottom:0, padding:'9px', color:'#1a1a2e', fontWeight:'700', fontSize:'13px', border:'1.5px solid #e2d078', background:'#ffffff'}} />
            </td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'center', color:row.status === 'OK' ? '#087a37' : '#ca1b1b', fontWeight:'900', fontSize:'13px' }}>
             {projectedStock < 0 ? 'Invalid' : row.status}
            </td>
-           <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center' }}>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'center' }}>
             <button
              disabled={!canEditOutletInventory || saving}
              onClick={()=>saveOutletInventoryRow(row)}
-             style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 12px', opacity:(!canEditOutletInventory || saving) ? 0.65 : 1}}
+             style={{...btnGreen, width:'auto', marginTop:0, padding:'9px 14px', opacity:(!canEditOutletInventory || saving) ? 0.65 : 1, fontSize:'13px', fontWeight:'900', boxShadow:'0 2px 7px rgba(45,138,78,0.25)'}}
             >
              {saving ? 'Saving...' : 'Save'}
             </button>
