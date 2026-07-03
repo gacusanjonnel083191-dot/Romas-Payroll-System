@@ -18705,7 +18705,46 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [closingActualCash, setClosingActualCash] = useState(() => readSagsDraft('closingActualCash', ''))
  const [closingClosedBy, setClosingClosedBy] = useState(() => readSagsDraft('closingClosedBy', ''))
  const [closingRemarks, setClosingRemarks] = useState(() => readSagsDraft('closingRemarks', ''))
+ const [inventorySearch, setInventorySearch] = useState('')
+ const [inventoryDrafts, setInventoryDrafts] = useState({})
+ const [inventorySavingId, setInventorySavingId] = useState('')
+ const [showAddOutletItem, setShowAddOutletItem] = useState(false)
+ const [newOutletItem, setNewOutletItem] = useState({
+  product_name:'',
+  category:'Donuts',
+  sku:'',
+  barcode:'',
+  selling_price:'',
+  stock:'',
+  min_stock:'10'
+ })
  const [posError, setPosError] = useState('')
+
+ function getInventoryDraftKey(product = {}) {
+  return String(product.id || product.product_name || product.name || '')
+ }
+
+ function setInventoryDraftValue(product, field, value) {
+  const key = getInventoryDraftKey(product)
+  if (!key) return
+  setInventoryDrafts(prev => ({
+   ...prev,
+   [key]: {
+    ...(prev[key] || {}),
+    [field]: value
+   }
+  }))
+ }
+
+ function clearInventoryDraft(product) {
+  const key = getInventoryDraftKey(product)
+  if (!key) return
+  setInventoryDrafts(prev => {
+   const next = { ...prev }
+   delete next[key]
+   return next
+  })
+ }
 
  async function loadPosMonitor(options = {}) {
   const silent = options && options.silent
@@ -18883,6 +18922,211 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   } catch (err) {
    console.error('Price update failed:', err)
    alert('Price update failed: ' + (err?.message || String(err)))
+  }
+ }
+
+
+ async function saveOutletInventoryRow(product) {
+  if (!canEditOutletInventory) {
+   alert('Only Owner or Manager can update outlet inventory.')
+   return
+  }
+
+  if (!product?.id) {
+   alert('Product record is missing an ID. Please refresh and try again.')
+   return
+  }
+
+  const key = getInventoryDraftKey(product)
+  const draft = inventoryDrafts[key] || {}
+  const stockInQty = Math.round(safeNum(draft.stockIn, 0))
+  const stockOutQty = Math.round(safeNum(draft.stockOut, 0))
+  const currentStock = safeNum(product.remainingStock ?? product.stock, 0)
+  const currentPrice = safeNum(product.sellingPrice ?? product.selling_price, 0)
+  const newPrice = draft.price !== undefined && String(draft.price).trim() !== '' ? safeNum(draft.price, -1) : currentPrice
+  const remarks = String(draft.remarks || '').trim()
+
+  if (stockInQty < 0 || stockOutQty < 0) {
+   alert('Stock In and Stock Out cannot be negative.')
+   return
+  }
+
+  if (newPrice < 0) {
+   alert('Please enter a valid selling price.')
+   return
+  }
+
+  const newStock = currentStock + stockInQty - stockOutQty
+  if (newStock < 0) {
+   alert('Stock Out is greater than current stock. Current stock cannot go below zero.')
+   return
+  }
+
+  const priceChanged = Math.abs(newPrice - currentPrice) > 0.009
+  const stockChanged = stockInQty > 0 || stockOutQty > 0
+
+  if (!priceChanged && !stockChanged) {
+   alert('No changes to save for this product.')
+   return
+  }
+
+  const referenceBase = 'INV-' + Date.now()
+  setInventorySavingId(key)
+
+  try {
+   const updatePayload = {}
+   if (stockChanged) updatePayload.stock = newStock
+   if (priceChanged) updatePayload.selling_price = newPrice
+
+   const { error: updateError } = await supabase
+    .from('pos_products')
+    .update(updatePayload)
+    .eq('id', product.id)
+
+   if (updateError) throw updateError
+
+   const movementRows = []
+   if (stockInQty > 0) {
+    movementRows.push({
+     outlet_id: 'OUTLET-MALUED',
+     product_id: product.id,
+     sku: product.sku || '',
+     barcode: product.barcode || '',
+     product_name: product.product_name || product.name || 'Unnamed Product',
+     movement_type: 'stock_in',
+     qty: stockInQty,
+     reference_no: referenceBase + '-IN',
+     remarks: remarks || 'Stock in from unified POS inventory manager'
+    })
+   }
+
+   if (stockOutQty > 0) {
+    movementRows.push({
+     outlet_id: 'OUTLET-MALUED',
+     product_id: product.id,
+     sku: product.sku || '',
+     barcode: product.barcode || '',
+     product_name: product.product_name || product.name || 'Unnamed Product',
+     movement_type: 'stock_out',
+     qty: -stockOutQty,
+     reference_no: referenceBase + '-OUT',
+     remarks: remarks || 'Stock out from unified POS inventory manager'
+    })
+   }
+
+   if (movementRows.length > 0) {
+    const { error: movementError } = await supabase
+     .from('pos_inventory_movements')
+     .insert(movementRows)
+    if (movementError) throw movementError
+   }
+
+   if (logAudit) {
+    const changes = []
+    if (stockChanged) changes.push(`Stock ${currentStock} → ${newStock} (${stockInQty ? '+' + stockInQty : ''}${stockInQty && stockOutQty ? ', ' : ''}${stockOutQty ? '-' + stockOutQty : ''})`)
+    if (priceChanged) changes.push(`Price ₱${currentPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`)
+    await logAudit(
+     'OUTLET INVENTORY UPDATED',
+     currentAdminLabel || 'Admin',
+     product.product_name || product.name || product.id,
+     changes.join(' | ') + (remarks ? ' | ' + remarks : '')
+    )
+   }
+
+   clearInventoryDraft(product)
+   await loadPosMonitor({ silent:true })
+  } catch (err) {
+   console.error('Inventory update failed:', err)
+   alert('Inventory update failed: ' + (err?.message || String(err)))
+  } finally {
+   setInventorySavingId('')
+  }
+ }
+
+ async function saveNewOutletItem() {
+  if (!canEditOutletInventory) {
+   alert('Only Owner or Manager can add new POS items.')
+   return
+  }
+
+  const productName = String(newOutletItem.product_name || '').trim()
+  const category = String(newOutletItem.category || '').trim() || 'Donuts'
+  const sku = String(newOutletItem.sku || '').trim()
+  const barcode = String(newOutletItem.barcode || '').trim()
+  const startingStock = Math.round(safeNum(newOutletItem.stock, 0))
+  const sellingPrice = safeNum(newOutletItem.selling_price, -1)
+  const minStock = Math.round(safeNum(newOutletItem.min_stock, 10))
+
+  if (!productName) {
+   alert('Please enter a product name.')
+   return
+  }
+
+  if (sellingPrice < 0) {
+   alert('Please enter a valid selling price.')
+   return
+  }
+
+  if (startingStock < 0 || minStock < 0) {
+   alert('Starting stock and minimum stock cannot be negative.')
+   return
+  }
+
+  const duplicate = posProducts.find(p =>
+   String(p.product_name || p.name || '').trim().toLowerCase() === productName.toLowerCase() ||
+   (sku && String(p.sku || '').trim().toLowerCase() === sku.toLowerCase()) ||
+   (barcode && String(p.barcode || '').trim() === barcode)
+  )
+
+  if (duplicate && !confirm('A similar product already exists. Continue adding this item?')) return
+
+  try {
+   const { data, error } = await supabase
+    .from('pos_products')
+    .insert([{
+     product_name: productName,
+     category,
+     sku,
+     barcode,
+     selling_price: sellingPrice,
+     stock: startingStock,
+     min_stock: minStock
+    }])
+    .select()
+    .single()
+
+   if (error) throw error
+
+   if (startingStock > 0 && data?.id) {
+    const { error: movementError } = await supabase.from('pos_inventory_movements').insert([{
+     outlet_id: 'OUTLET-MALUED',
+     product_id: data.id,
+     sku,
+     barcode,
+     product_name: productName,
+     movement_type: 'new_item_stock',
+     qty: startingStock,
+     reference_no: 'NEWITEM-' + Date.now(),
+     remarks: 'Initial stock for new POS item'
+    }])
+    if (movementError) console.error('Initial stock movement log failed:', movementError)
+   }
+
+   if (logAudit) {
+    await logAudit(
+     'OUTLET POS ITEM ADDED',
+     currentAdminLabel || 'Admin',
+     productName,
+     `Category: ${category} | Price: ₱${sellingPrice.toFixed(2)} | Starting stock: ${startingStock}`
+    )
+   }
+
+   setNewOutletItem({ product_name:'', category:'Donuts', sku:'', barcode:'', selling_price:'', stock:'', min_stock:'10' })
+   setShowAddOutletItem(false)
+   await loadPosMonitor({ silent:true })
+  } catch (err) {
+   console.error('Add POS item failed:', err)
+   alert('Add POS item failed: ' + (err?.message || String(err)))
   }
  }
 
@@ -19155,9 +19399,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const selectedPriceEditProduct = posProducts.find(p => String(p.id) === String(priceEditProductId))
 
  const lowStockProducts = posProducts.map(product => {
-  const key = product.id || product.product_name
-  const movementQty = safeNum(movementMap[key], 0)
-  const remainingStock = safeNum(product.stock, 0) + movementQty
+  const remainingStock = safeNum(product.stock, 0)
   const minStock = safeNum(product.min_stock, 10)
   return {
    id: product.id,
@@ -19200,24 +19442,34 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  const outletBalances = posProducts.map(product => {
   const key = product.id || product.product_name
-  const startingStock = safeNum(product.stock, 0)
+  const currentStock = safeNum(product.stock, 0)
   const soldQty = safeNum(soldMap[key], 0)
   const movementQty = safeNum(movementMap[key], 0)
-  const remainingStock = startingStock + movementQty
   const minStock = safeNum(product.min_stock, 10)
-  const status = remainingStock <= 0 ? 'Out of Stock' : remainingStock <= minStock ? 'Low Stock' : 'OK'
+  const status = currentStock <= 0 ? 'Out of Stock' : currentStock <= minStock ? 'Low Stock' : 'OK'
   return {
    id: product.id,
    product_name: product.product_name || product.name || 'Unnamed Product',
+   name: product.name || product.product_name || 'Unnamed Product',
    category: product.category || '',
-   startingStock,
+   sku: product.sku || '',
+   barcode: product.barcode || '',
+   sellingPrice: safeNum(product.selling_price, 0),
+   stock: currentStock,
+   startingStock: currentStock,
    soldQty,
    movementQty,
-   remainingStock,
+   remainingStock: currentStock,
    minStock,
    status
   }
- }).sort((a,b) => a.remainingStock - b.remainingStock)
+ }).sort((a,b) => String(a.product_name).localeCompare(String(b.product_name)))
+
+ const filteredOutletInventoryRows = outletBalances.filter(row => {
+  const search = inventorySearch.trim().toLowerCase()
+  if (!search) return true
+  return [row.product_name, row.category, row.sku, row.barcode, row.sellingPrice, row.remainingStock].join(' ').toLowerCase().includes(search)
+ })
 
  const card = (label, value, note, color) => (
   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)' }}>
@@ -19395,204 +19647,150 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    </div>
 
    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Stock In to Outlet</h3>
-    {!canEditOutletInventory ? (
-     <p style={{ margin:0, color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
-      Viewing only — Owner or Manager access is needed to log stock in for the outlet.
-     </p>
-    ) : (
-    <>
-    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>Record products delivered or transferred to Roma�s Donuts - Malued.</p>
-
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'12px' }}>
      <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transfer No.</label>
-      <input value={stockInTransferNo} onChange={e=>setStockInTransferNo(e.target.value)} placeholder="Example: TR-MALUED-001" style={{...inputStyle, marginBottom:0}} />
+      <h3 style={{ margin:'0 0 6px', color:'#ca1b1b' }}>Outlet Inventory Manager</h3>
+      <p style={{ margin:0, color:'#777', fontSize:'13px' }}>Manage POS items, stock in, stock out, outlet price, barcode, and current balance in one place.</p>
      </div>
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transferred By</label>
-      <input value={stockInTransferredBy} onChange={e=>setStockInTransferredBy(e.target.value)} placeholder="Sender name" style={{...inputStyle, marginBottom:0}} />
-     </div>
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Received By</label>
-      <input value={stockInReceivedBy} onChange={e=>setStockInReceivedBy(e.target.value)} placeholder="Receiver name" style={{...inputStyle, marginBottom:0}} />
-     </div>
-    </div>
-
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '2fr 1fr 2fr auto', gap:'10px', alignItems:'end' }}>
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Search Product</label>
+     <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
       <input
-       value={stockInSearch}
-       onChange={e=>{
-        setStockInSearch(e.target.value)
-        setStockInProductId('')
-       }}
-       placeholder="Search product, SKU, barcode..."
-       style={{...inputStyle, marginBottom:'6px'}}
+       value={inventorySearch}
+       onChange={e=>setInventorySearch(e.target.value)}
+       placeholder="Search product, SKU, barcode, category..."
+       style={{...inputStyle, width:isMobile ? '100%' : '320px', marginBottom:0}}
       />
-
-      {selectedStockInProduct && (
-       <div style={{ border:'1px solid #d9f2e3', background:'#f0fff6', borderRadius:'10px', padding:'8px 10px', marginBottom:'6px', fontSize:'12px' }}>
-        <strong style={{ color:'#2d8a4e' }}>Selected:</strong> {selectedStockInProduct.product_name || selectedStockInProduct.name}
-       </div>
-      )}
-
-      {stockInSearch.trim() && !stockInProductId && (
-       <div style={{ border:'1px solid #eee', borderRadius:'12px', background:'white', maxHeight:'220px', overflowY:'auto', boxShadow:'0 6px 18px rgba(0,0,0,0.08)' }}>
-        {filteredStockInProducts.length === 0 ? (
-         <div style={{ padding:'10px', color:'#999', fontSize:'12px' }}>No product found.</div>
-        ) : (
-         filteredStockInProducts.map(p => (
-          <button
-           key={p.id}
-           type="button"
-           onClick={()=>{
-            setStockInProductId(p.id)
-            setStockInSearch(p.product_name || p.name || '')
-           }}
-           style={{
-            width:'100%',
-            textAlign:'left',
-            border:'none',
-            borderBottom:'1px solid #f2f2f2',
-            background:'white',
-            padding:'10px',
-            cursor:'pointer',
-            fontFamily:'inherit'
-           }}
-          >
-           <strong style={{ display:'block', color:'#222', fontSize:'13px' }}>{p.product_name || p.name}</strong>
-           <span style={{ color:'#888', fontSize:'11px' }}>{p.category || ''} {p.sku ? '� ' + p.sku : ''} {p.barcode ? '� ' + p.barcode : ''}</span>
-          </button>
-         ))
-        )}
-       </div>
+      {canEditOutletInventory && (
+       <button
+        onClick={()=>setShowAddOutletItem(v=>!v)}
+        style={{...btnGreen, width:'auto', marginTop:0, whiteSpace:'nowrap'}}
+       >
+        {showAddOutletItem ? 'Close Add Item' : '+ Add New Item'}
+       </button>
       )}
      </div>
-
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Qty</label>
-      <input type="number" min="1" value={stockInQty} onChange={e=>setStockInQty(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Remarks</label>
-      <input value={stockInNote} onChange={e=>setStockInNote(e.target.value)} placeholder="Delivery / transfer note" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <button onClick={saveOutletStockIn} style={{...btnGreen, width:'auto', marginTop:0}}>Save Stock In</button>
     </div>
-    </>
-    )}
-   </div>
 
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Edit Outlet Price</h3>
-    {!canEditOutletInventory ? (
-     <p style={{ margin:0, color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
-      Viewing only — Owner or Manager access is needed to change outlet prices.
+    {!canEditOutletInventory && (
+     <p style={{ margin:'0 0 12px', color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
+      Viewing only — Owner or Manager access is needed to add items, edit prices, or change outlet stock.
      </p>
-    ) : (
-    <>
-    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>Changes take effect the next time the outlet POS loads its product list.</p>
-
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '2fr 1fr auto', gap:'10px', alignItems:'end' }}>
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Search Product</label>
-      <input
-       value={priceEditSearch}
-       onChange={e=>{
-        setPriceEditSearch(e.target.value)
-        setPriceEditProductId('')
-        setPriceEditValue('')
-       }}
-       placeholder="Search product, SKU, barcode..."
-       style={{...inputStyle, marginBottom:'6px'}}
-      />
-
-      {selectedPriceEditProduct && (
-       <div style={{ border:'1px solid #d9f2e3', background:'#f0fff6', borderRadius:'10px', padding:'8px 10px', marginBottom:'6px', fontSize:'12px' }}>
-        <strong style={{ color:'#2d8a4e' }}>Selected:</strong> {selectedPriceEditProduct.product_name || selectedPriceEditProduct.name} — current price ₱{safeNum(selectedPriceEditProduct.selling_price,0).toFixed(2)}
-       </div>
-      )}
-
-      {priceEditSearch.trim() && !priceEditProductId && (
-       <div style={{ border:'1px solid #eee', borderRadius:'12px', background:'white', maxHeight:'220px', overflowY:'auto', boxShadow:'0 6px 18px rgba(0,0,0,0.08)' }}>
-        {filteredPriceEditProducts.length === 0 ? (
-         <div style={{ padding:'10px', color:'#999', fontSize:'12px' }}>No product found.</div>
-        ) : (
-         filteredPriceEditProducts.map(p => (
-          <button
-           key={p.id}
-           type="button"
-           onClick={()=>{
-            setPriceEditProductId(p.id)
-            setPriceEditSearch(p.product_name || p.name || '')
-            setPriceEditValue(String(safeNum(p.selling_price, 0)))
-           }}
-           style={{
-            width:'100%',
-            textAlign:'left',
-            border:'none',
-            borderBottom:'1px solid #f2f2f2',
-            background:'white',
-            padding:'10px',
-            cursor:'pointer',
-            fontFamily:'inherit'
-           }}
-          >
-           <strong style={{ display:'block', color:'#222', fontSize:'13px' }}>{p.product_name || p.name}</strong>
-           <span style={{ color:'#888', fontSize:'11px' }}>₱{safeNum(p.selling_price,0).toFixed(2)} � {p.category || ''} {p.sku ? '� ' + p.sku : ''}</span>
-          </button>
-         ))
-        )}
-       </div>
-      )}
-     </div>
-
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>New Price (₱)</label>
-      <input type="number" min="0" step="0.01" value={priceEditValue} onChange={e=>setPriceEditValue(e.target.value)} placeholder="0.00" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <button onClick={saveProductPrice} style={{...btnGreen, width:'auto', marginTop:0}}>Save Price</button>
-    </div>
-    </>
     )}
-   </div>
 
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Outlet Inventory Balance</h3>
+    {showAddOutletItem && canEditOutletInventory && (
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'14px', padding:'12px', marginBottom:'14px' }}>
+      <h4 style={{ margin:'0 0 10px', color:'#1a1a2e' }}>Add New POS Item</h4>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.5fr 1fr 1fr 1fr 0.8fr 0.8fr 0.8fr', gap:'8px', alignItems:'end' }}>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Product Name</label>
+        <input value={newOutletItem.product_name} onChange={e=>setNewOutletItem(prev=>({...prev, product_name:e.target.value}))} placeholder="Example: Bavarian Pops" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Category</label>
+        <input value={newOutletItem.category} onChange={e=>setNewOutletItem(prev=>({...prev, category:e.target.value}))} placeholder="Donuts / Coffee" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>SKU</label>
+        <input value={newOutletItem.sku} onChange={e=>setNewOutletItem(prev=>({...prev, sku:e.target.value}))} placeholder="Optional" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Barcode</label>
+        <input value={newOutletItem.barcode} onChange={e=>setNewOutletItem(prev=>({...prev, barcode:e.target.value}))} placeholder="Scan/type" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Price</label>
+        <input type="number" min="0" step="0.01" value={newOutletItem.selling_price} onChange={e=>setNewOutletItem(prev=>({...prev, selling_price:e.target.value}))} placeholder="0.00" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Start Stock</label>
+        <input type="number" min="0" value={newOutletItem.stock} onChange={e=>setNewOutletItem(prev=>({...prev, stock:e.target.value}))} placeholder="0" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Min Stock</label>
+        <input type="number" min="0" value={newOutletItem.min_stock} onChange={e=>setNewOutletItem(prev=>({...prev, min_stock:e.target.value}))} placeholder="10" style={{...inputStyle, marginBottom:0}} />
+       </div>
+      </div>
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:'8px', marginTop:'10px', flexWrap:'wrap' }}>
+       <button onClick={()=>setNewOutletItem({ product_name:'', category:'Donuts', sku:'', barcode:'', selling_price:'', stock:'', min_stock:'10' })} style={{...btnGray, width:'auto', marginTop:0}}>Clear</button>
+       <button onClick={saveNewOutletItem} style={{...btnGreen, width:'auto', marginTop:0}}>Save New Item</button>
+      </div>
+     </div>
+    )}
+
     {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
      <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'760px' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'1240px' }}>
        <thead>
         <tr style={{ background:'#f8f8f8' }}>
          <th style={{ textAlign:'left', padding:'8px' }}>Product</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Starting</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Sold</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Movement</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Remaining</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>SKU / Barcode</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Price</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Current Stock</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Sold Today</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Movement Today</th>
+         <th style={{ textAlign:'right', padding:'8px', width:'90px' }}>Stock In</th>
+         <th style={{ textAlign:'right', padding:'8px', width:'90px' }}>Stock Out</th>
+         <th style={{ textAlign:'left', padding:'8px', width:'180px' }}>Remarks</th>
          <th style={{ textAlign:'center', padding:'8px', width:'90px' }}>Status</th>
+         <th style={{ textAlign:'center', padding:'8px', width:'90px' }}>Action</th>
         </tr>
        </thead>
        <tbody>
-        {outletBalances.map(row => (
-         <tr key={row.id || row.product_name}>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
-           <strong>{row.product_name}</strong><br/>
-           <span style={{ color:'#999', fontSize:'10px' }}>{row.category}</span>
-          </td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.startingStock}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{row.soldQty}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.movementQty}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{row.remainingStock}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center', width:'90px', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>{row.status}</td>
-         </tr>
-        ))}
+        {filteredOutletInventoryRows.map(row => {
+         const draftKey = getInventoryDraftKey(row)
+         const draft = inventoryDrafts[draftKey] || {}
+         const projectedStock = safeNum(row.remainingStock, 0) + safeNum(draft.stockIn, 0) - safeNum(draft.stockOut, 0)
+         const saving = inventorySavingId === draftKey
+         return (
+          <tr key={row.id || row.product_name} style={{ background:projectedStock < 0 ? '#fff5f5' : 'white' }}>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
+            <strong>{row.product_name}</strong><br/>
+            <span style={{ color:'#999', fontSize:'10px' }}>{row.category || '-'}</span>
+           </td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', color:'#777' }}>
+            <strong style={{ fontSize:'11px' }}>{row.sku || '-'}</strong><br/>
+            <span style={{ fontSize:'10px' }}>{row.barcode || '-'}</span>
+           </td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>
+            <input
+             type="number"
+             min="0"
+             step="0.01"
+             disabled={!canEditOutletInventory}
+             value={draft.price ?? row.sellingPrice}
+             onChange={e=>setInventoryDraftValue(row, 'price', e.target.value)}
+             style={{...inputStyle, width:'92px', marginBottom:0, textAlign:'right', padding:'8px'}}
+            />
+           </td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{row.remainingStock}</td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{row.soldQty}</td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:row.movementQty < 0 ? '#ca1b1b' : '#2d8a4e', fontWeight:'bold' }}>{row.movementQty}</td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>
+            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockIn || ''} onChange={e=>setInventoryDraftValue(row, 'stockIn', e.target.value)} placeholder="0" style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'8px'}} />
+           </td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>
+            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockOut || ''} onChange={e=>setInventoryDraftValue(row, 'stockOut', e.target.value)} placeholder="0" style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'8px'}} />
+           </td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
+            <input disabled={!canEditOutletInventory} value={draft.remarks || ''} onChange={e=>setInventoryDraftValue(row, 'remarks', e.target.value)} placeholder="Reason / note" style={{...inputStyle, marginBottom:0, padding:'8px'}} />
+           </td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>
+            {projectedStock < 0 ? 'Invalid' : row.status}
+           </td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center' }}>
+            <button
+             disabled={!canEditOutletInventory || saving}
+             onClick={()=>saveOutletInventoryRow(row)}
+             style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 12px', opacity:(!canEditOutletInventory || saving) ? 0.65 : 1}}
+            >
+             {saving ? 'Saving...' : 'Save'}
+            </button>
+           </td>
+          </tr>
+         )
+        })}
        </tbody>
       </table>
+      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>No product matched your search.</p>}
      </div>
     )}
    </div>
