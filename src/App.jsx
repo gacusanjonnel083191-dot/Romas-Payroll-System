@@ -18679,6 +18679,24 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    return fallback
   }
  }
+ const readSagsDraftObject = (key, fallback = {}) => {
+  try {
+   const saved = JSON.parse(localStorage.getItem(SAGS_POS_DRAFT_KEY) || '{}')
+   const value = saved[key]
+   return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback
+  } catch {
+   return fallback
+  }
+ }
+ const getDefaultNewOutletItem = () => ({
+  product_name:'',
+  category:'Donuts',
+  sku:'',
+  barcode:'',
+  selling_price:'',
+  stock:'',
+  min_stock:'10'
+ })
  const [posDate, setPosDate] = useState(getTodayDate())
  const [posLoading, setPosLoading] = useState(false)
  const [posSales, setPosSales] = useState([])
@@ -18705,19 +18723,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [closingActualCash, setClosingActualCash] = useState(() => readSagsDraft('closingActualCash', ''))
  const [closingClosedBy, setClosingClosedBy] = useState(() => readSagsDraft('closingClosedBy', ''))
  const [closingRemarks, setClosingRemarks] = useState(() => readSagsDraft('closingRemarks', ''))
- const [inventorySearch, setInventorySearch] = useState('')
- const [inventoryDrafts, setInventoryDrafts] = useState({})
+ const [inventorySearch, setInventorySearch] = useState(() => readSagsDraft('inventorySearch', ''))
+ const [inventoryDrafts, setInventoryDrafts] = useState(() => readSagsDraftObject('inventoryDrafts', {}))
  const [inventorySavingId, setInventorySavingId] = useState('')
- const [showAddOutletItem, setShowAddOutletItem] = useState(false)
- const [newOutletItem, setNewOutletItem] = useState({
-  product_name:'',
-  category:'Donuts',
-  sku:'',
-  barcode:'',
-  selling_price:'',
-  stock:'',
-  min_stock:'10'
- })
+ const [showAddOutletItem, setShowAddOutletItem] = useState(() => readSagsDraft('showAddOutletItem', false) === true)
+ const [newOutletItem, setNewOutletItem] = useState(() => ({
+  ...getDefaultNewOutletItem(),
+  ...readSagsDraftObject('newOutletItem', {})
+ }))
  const [posError, setPosError] = useState('')
 
  function getInventoryDraftKey(product = {}) {
@@ -18789,7 +18802,28 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    setPosSales(filteredSales)
    setPosItems(filteredItems)
    setPosMovements(filteredMovements)
-   setPosProducts(productsRes.data || [])
+   const nextProducts = productsRes.data || []
+   const hasUnsavedAddItem = showAddOutletItem && Object.values(newOutletItem || {}).some(value => String(value || '').trim() !== '')
+   const hasUnsavedRowEdits = Object.values(inventoryDrafts || {}).some(draft =>
+    draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
+   )
+   const preserveProductRows = silent && !options.forceProducts && (hasUnsavedAddItem || hasUnsavedRowEdits)
+   if (!preserveProductRows) {
+    setPosProducts(prevProducts => {
+     if (!Array.isArray(prevProducts) || prevProducts.length !== nextProducts.length) return nextProducts
+     const changed = nextProducts.some((item, index) => {
+      const prev = prevProducts[index] || {}
+      return String(prev.id || '') !== String(item.id || '') ||
+       String(prev.product_name || prev.name || '') !== String(item.product_name || item.name || '') ||
+       String(prev.sku || '') !== String(item.sku || '') ||
+       String(prev.barcode || '') !== String(item.barcode || '') ||
+       safeNum(prev.selling_price, 0) !== safeNum(item.selling_price, 0) ||
+       safeNum(prev.stock, 0) !== safeNum(item.stock, 0) ||
+       safeNum(prev.min_stock, 0) !== safeNum(item.min_stock, 0)
+     })
+     return changed ? nextProducts : prevProducts
+    })
+   }
   } catch (err) {
    console.error('POS monitor error:', err)
    setPosError(err?.message || String(err))
@@ -19034,7 +19068,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    }
 
    clearInventoryDraft(product)
-   await loadPosMonitor({ silent:true })
+   await loadPosMonitor({ silent:true, forceProducts:true })
   } catch (err) {
    console.error('Inventory update failed:', err)
    alert('Inventory update failed: ' + (err?.message || String(err)))
@@ -19121,9 +19155,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     )
    }
 
-   setNewOutletItem({ product_name:'', category:'Donuts', sku:'', barcode:'', selling_price:'', stock:'', min_stock:'10' })
+   setNewOutletItem(getDefaultNewOutletItem())
    setShowAddOutletItem(false)
-   await loadPosMonitor({ silent:true })
+   await loadPosMonitor({ silent:true, forceProducts:true })
   } catch (err) {
    console.error('Add POS item failed:', err)
    alert('Add POS item failed: ' + (err?.message || String(err)))
@@ -19321,7 +19355,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     voidReceiptNo,
     voidReason,
     voidedBy,
-    voidAdminPin
+    voidAdminPin,
+    inventorySearch,
+    inventoryDrafts,
+    showAddOutletItem,
+    newOutletItem
    }))
   } catch {}
  }, [
@@ -19340,7 +19378,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   voidReceiptNo,
   voidReason,
   voidedBy,
-  voidAdminPin
+  voidAdminPin,
+  inventorySearch,
+  inventoryDrafts,
+  showAddOutletItem,
+  newOutletItem
  ])
 
  useEffect(() => { loadPosMonitor({ silent:true }) }, [posDate])
@@ -19651,6 +19693,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      <div>
       <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'20px', fontWeight:'900', letterSpacing:'-0.2px' }}>Outlet Inventory Manager</h3>
       <p style={{ margin:0, color:'#4b5563', fontSize:'13px', fontWeight:'600' }}>Manage POS items, stock in, stock out, outlet price, barcode, and current balance in one place.</p>
+      <p style={{ margin:'5px 0 0', color:'#087a37', fontSize:'12px', fontWeight:'800' }}>Silent refresh is safe: unsaved Add Item details and row edits are preserved while you are typing.</p>
      </div>
      <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
       <input
@@ -19710,7 +19753,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        </div>
       </div>
       <div style={{ display:'flex', justifyContent:'flex-end', gap:'8px', marginTop:'10px', flexWrap:'wrap' }}>
-       <button onClick={()=>setNewOutletItem({ product_name:'', category:'Donuts', sku:'', barcode:'', selling_price:'', stock:'', min_stock:'10' })} style={{...btnGray, width:'auto', marginTop:0}}>Clear</button>
+       <button onClick={()=>setNewOutletItem(getDefaultNewOutletItem())} style={{...btnGray, width:'auto', marginTop:0}}>Clear</button>
        <button onClick={saveNewOutletItem} style={{...btnGreen, width:'auto', marginTop:0}}>Save New Item</button>
       </div>
      </div>
