@@ -1707,6 +1707,7 @@ export default function App() {
  const canvasRef = useRef(null)
  const profilePhotoInputRef = useRef(null)
  const resellerOrderSubmitLockRef = useRef(false)
+ const approvingResellerOrderIdsRef = useRef(new Set())
 
  const [employeeCode, setEmployeeCode] = useState('')
  const [pin, setPin] = useState('')
@@ -10616,8 +10617,9 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- const validItems = resellerOrderItems.filter(i => Number(i.quantity) > 0)
+ const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
  if (validItems.length === 0) { showToast(' Enter at least one quantity.', 'red'); return }
+ if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before saving. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.', 'red'); return }
  const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
  if (cutoffStatus.locked) {
@@ -10688,6 +10690,45 @@ function buildDeliveryInvoicePrintCSS() {
  setUpdatingResellerOrder(false)
  }
 
+
+ function collapseDuplicateOrderItemsByProduct(items = []) {
+ const map = new Map()
+ const duplicates = []
+ ;(items || []).forEach((item, idx) => {
+  const qty = safeNum(item?.quantity, 0)
+  if (qty <= 0) return
+  const nameKey = normalizeOutletDuplicateKey(item?.variant_name || item?.product_name || item?.name || '')
+  const idKey = String(item?.variant_id || item?.product_id || '').trim()
+  // Use product name first because old duplicate variant records can have different IDs but the same visible product.
+  const key = nameKey || idKey || `row-${idx}`
+  const clean = {
+   ...item,
+   quantity:qty,
+   variant_name:item?.variant_name || item?.product_name || item?.name || 'Product',
+   retail_price:safeNum(item?.retail_price, 0),
+   reseller_price:safeNum(item?.reseller_price, 0)
+  }
+  if (!map.has(key)) {
+   map.set(key, clean)
+   return
+  }
+  const existing = map.get(key)
+  duplicates.push({ name:clean.variant_name, keptQty:safeNum(existing.quantity, 0), duplicateQty:qty })
+  // Same product should only appear once per order. Keep the largest entered quantity instead of summing,
+  // because summing accidental duplicate rows is what doubles the invoice.
+  if (qty > safeNum(existing.quantity, 0)) {
+   map.set(key, {
+    ...existing,
+    ...clean,
+    quantity:qty,
+    retail_price:safeNum(clean.retail_price, existing.retail_price),
+    reseller_price:safeNum(clean.reseller_price, existing.reseller_price)
+   })
+  }
+ })
+ return { items:[...map.values()], duplicates }
+ }
+
  async function submitResellerOrder() {
  if (resellerOrderSubmitLockRef.current || submittingOrder) {
  showToast(' Order already submitted. Please wait while the system records it.', 'red')
@@ -10696,8 +10737,9 @@ function buildDeliveryInvoicePrintCSS() {
  const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
  if (!orderBranch?.id) { showToast(' Select the branch/outlet for this order.','red'); return }
 
- const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
+ const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
  if (validItems.length===0) { showToast(' Enter at least one quantity.','red'); return }
+ if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before submitting. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.','red'); return }
  const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
  if (cutoffStatus.locked) {
@@ -10758,20 +10800,50 @@ function buildDeliveryInvoicePrintCSS() {
  setPendingResellerOrders(data||[])
  }
  async function approveResellerOrder(order, customItems) {
+ const orderId = String(order?.id || '')
+ if (!orderId) { showToast(' Order ID missing. Please refresh pending orders.', 'red'); return }
+ if (approvingResellerOrderIdsRef.current.has(orderId)) {
+  showToast(' This order is already being approved. Please wait.', 'red')
+  return
+ }
+ approvingResellerOrderIdsRef.current.add(orderId)
+ try {
  const cutoffStatus = getOrderCutoffStatus(order?.delivery_date)
  if (cutoffStatus.locked) {
  showToast(` Approval into invoice is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance delivery dates are still allowed.`, 'red')
  await logAudit('ORDER APPROVAL BLOCKED - ORDER CUT-OFF', adminRole, order?.reseller_name || '', cutoffStatus.message)
  return
  }
- const items = customItems || order.reseller_order_items || []
- const validItems = items.filter(i=>Number(i.quantity)>0)
+
+ // Always re-read the order before approval. This prevents approving stale/duplicated UI data.
+ const { data:freshOrder, error:freshOrderErr } = await supabase
+ .from('reseller_orders')
+ .select('*, reseller_order_items(*)')
+ .eq('id', orderId)
+ .maybeSingle()
+ if (freshOrderErr) throw freshOrderErr
+ if (!freshOrder) { showToast(' Order was not found. Please refresh pending orders.', 'red'); return }
+ if (String(freshOrder.status || '').toLowerCase() !== 'pending' || freshOrder.invoice_id) {
+  showToast(' This order was already approved/rejected or already has an invoice. Please refresh.', 'red')
+  await loadPendingResellerOrders()
+  return
+ }
+
+ const approvalOrder = { ...order, ...freshOrder }
+ const rawItems = customItems || freshOrder.reseller_order_items || []
+ const { items:validItems, duplicates:duplicateOrderRows } = collapseDuplicateOrderItemsByProduct(rawItems)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
+ if (duplicateOrderRows.length > 0) {
+  const duplicateNames = [...new Set(duplicateOrderRows.map(row => row.name).filter(Boolean))].slice(0, 8).join(', ')
+  showToast(` Duplicate product rows were detected and merged before approval${duplicateNames ? ': ' + duplicateNames : ''}. Quantities were not summed, so the invoice will not double.`, 'red')
+  await logAudit('ORDER APPROVAL DUPLICATE ROWS MERGED', adminRole, approvalOrder.reseller_name || '', `${approvalOrder.delivery_date}: ${duplicateNames || duplicateOrderRows.length + ' duplicate row(s)'}`)
+ }
+
  // Approval safety: pending order approval must NOT be blocked by the same pending order itself.
  // At this stage, only an already-existing active invoice for the same outlet/date should block approval.
- const approvalTargetDate = String(order?.delivery_date || '').slice(0, 10)
- const approvalTargetNameKey = normalizeOutletDuplicateKey(order?.reseller_name || '')
- const approvalTargetResellerId = String(order?.reseller_id || '')
+ const approvalTargetDate = String(approvalOrder?.delivery_date || '').slice(0, 10)
+ const approvalTargetNameKey = normalizeOutletDuplicateKey(approvalOrder?.reseller_name || '')
+ const approvalTargetResellerId = String(approvalOrder?.reseller_id || '')
  const { data:approvalExistingInvoices, error:approvalInvoiceErr } = await supabase
  .from('delivery_invoices')
  .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
@@ -10785,39 +10857,56 @@ function buildDeliveryInvoicePrintCSS() {
   return sameId || sameName
  })
  if (duplicateApprovalInvoice) {
-  const duplicateMessage = `Duplicate blocked: ${duplicateApprovalInvoice.reseller_name || order?.reseller_name || 'this outlet'} already has invoice ${duplicateApprovalInvoice.invoice_number || ''} for ${approvalTargetDate}. Same reseller/outlet name + same delivery date is not allowed.`
+  const duplicateMessage = `Duplicate blocked: ${duplicateApprovalInvoice.reseller_name || approvalOrder?.reseller_name || 'this outlet'} already has invoice ${duplicateApprovalInvoice.invoice_number || ''} for ${approvalTargetDate}. Same reseller/outlet name + same delivery date is not allowed.`
   showToast(duplicateMessage, 'red')
-  await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY INVOICE', adminRole, order?.reseller_name || '', duplicateMessage)
+  await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY INVOICE', adminRole, approvalOrder?.reseller_name || '', duplicateMessage)
   return
  }
- const creditStatus = await checkResellerCreditBlockFresh(order.reseller_id)
+ const creditStatus = await checkResellerCreditBlockFresh(approvalOrder.reseller_id)
  const hasCreditWarning = creditStatus.blocked
  if (hasCreditWarning) {
- showToast(` Credit warning for ${order.reseller_name}. Approval is allowed, but review/collect before releasing delivery. ${creditStatus.message}`, 'red')
- await logAudit('ORDER APPROVAL CREDIT WARNING', adminRole, order.reseller_name, creditStatus.message)
+ showToast(` Credit warning for ${approvalOrder.reseller_name}. Approval is allowed, but review/collect before releasing delivery. ${creditStatus.message}`, 'red')
+ await logAudit('ORDER APPROVAL CREDIT WARNING', adminRole, approvalOrder.reseller_name, creditStatus.message)
  }
  // Create invoice automatically
- const reseller = resellers.find(r=>r.id===order.reseller_id)
- const invoiceNum = `INV-${order.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
- const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
- const lineItems = validItems.map(i=>{ const rp=Math.round((i.retail_price||0)*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
+ const invoiceNum = `INV-${approvalOrder.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
+ const dueDate = new Date(approvalOrder.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
+ const lineItems = validItems.map(i=>{ const rp=Math.round((safeNum(i.retail_price,0))*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*safeNum(i.quantity,0)} })
  const subtotal = lineItems.reduce((s,i)=>s+i.total_price,0)
- const resellerRequestNote = String(order?.notes || '').trim()
- const invoiceOrderNotes = [`From order ${order.id.slice(0,8)}`, resellerRequestNote ? `Reseller note: ${resellerRequestNote}` : ''].filter(Boolean).join(' | ')
+ const resellerRequestNote = String(approvalOrder?.notes || '').trim()
+ const invoiceOrderNotes = [`From order ${orderId.slice(0,8)}`, duplicateOrderRows.length > 0 ? 'System note: duplicate order rows were merged before approval to prevent doubled quantities.' : '', resellerRequestNote ? `Reseller note: ${resellerRequestNote}` : ''].filter(Boolean).join(' | ')
  const { data:inv, error } = await supabase.from('delivery_invoices').insert({
- invoice_number:invoiceNum, reseller_id:order.reseller_id, reseller_name:order.reseller_name,
- delivery_date:order.delivery_date, due_date:dueDate.toISOString().slice(0,10),
+ invoice_number:invoiceNum, reseller_id:approvalOrder.reseller_id, reseller_name:approvalOrder.reseller_name,
+ delivery_date:approvalOrder.delivery_date, due_date:dueDate.toISOString().slice(0,10),
  subtotal, discount_pct:20, total_amount:subtotal, status:'unpaid',
  prepared_by:'Ronald Reyes / Jomar Cerezo', dispatched_by:'Ronald Reyes / Jomar Cerezo',
  notes:invoiceOrderNotes, created_by:adminRole
  }).select().single()
  if (error) { showToast(' Failed: '+error.message,'red'); return }
- await supabase.from('delivery_invoice_items').insert(lineItems.map(i=>({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:i.retail_price||0, reseller_price:i.reseller_price, quantity:Number(i.quantity), total_price:i.total_price })))
- await supabase.from('reseller_orders').update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString(), invoice_id:inv.id }).eq('id',order.id)
- await createNotification(null,'System','order',` Order Approved: ${order.reseller_name}`,`Your order for ${order.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
- await logAudit('ORDER APPROVED', adminRole, order.reseller_name, `${invoiceNum} ${php(subtotal)}`)
- showToast(` Order approved! Invoice ${invoiceNum} created.`)
+ await supabase.from('delivery_invoice_items').insert(lineItems.map(i=>({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:safeNum(i.retail_price,0), reseller_price:i.reseller_price, quantity:safeNum(i.quantity,0), total_price:i.total_price })))
+ const { data:approvedOrder, error:approveErr } = await supabase
+ .from('reseller_orders')
+ .update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString(), invoice_id:inv.id })
+ .eq('id',orderId)
+ .eq('status','pending')
+ .is('invoice_id', null)
+ .select('id')
+ .maybeSingle()
+ if (approveErr) throw approveErr
+ if (!approvedOrder) {
+  showToast(' Invoice was created, but order status changed before approval finished. Please check for duplicate invoices immediately.', 'red')
+  await logAudit('ORDER APPROVAL WARNING - STATUS CHANGED AFTER INVOICE CREATE', adminRole, approvalOrder.reseller_name || '', invoiceNum)
+ } else {
+  await createNotification(null,'System','order',` Order Approved: ${approvalOrder.reseller_name}`,`Your order for ${approvalOrder.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
+  await logAudit('ORDER APPROVED', adminRole, approvalOrder.reseller_name, `${invoiceNum} ${php(subtotal)}`)
+  showToast(` Order approved! Invoice ${invoiceNum} created.`)
+ }
  loadPendingResellerOrders(); loadDeliveryInvoices()
+ } catch(err) {
+  showToast(' Approval failed: ' + (err?.message || err), 'red')
+ } finally {
+  approvingResellerOrderIdsRef.current.delete(orderId)
+ }
  }
  async function rejectResellerOrder(orderId, resellerName) {
  const reason = window.prompt('Reason for rejection:')
