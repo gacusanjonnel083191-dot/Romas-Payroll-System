@@ -8616,11 +8616,49 @@ function buildDeliveryInvoicePrintCSS() {
    setTimeout(() => URL.revokeObjectURL(url), 1500)
  }
 
- function printAllDailyInvoices(date) {
-   const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
-   if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
-   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
-   showToast(` Downloaded ${dayInvoices.length} invoice(s) as Word file.`)
+ async function getFreshDeliveryInvoicesForPrintByDate(date) {
+   const { data, error } = await supabase
+     .from('delivery_invoices')
+     .select('*, delivery_invoice_items(*)')
+     .eq('delivery_date', date)
+     .order('created_at', { ascending:false })
+
+   if (error) throw error
+   const normalized = await normalizePaidInvoiceRows(data || [])
+   const withReturns = await attachReturnsToDeliveryInvoices(normalized)
+   return withReturns.sort(sortDeliveryInvoicesNewestFirst)
+ }
+
+ function validateDeliveryInvoiceForPrint(invoice) {
+   if (!invoice?.id || !invoice?.invoice_number) {
+     return 'This invoice is not a saved database invoice yet. Refresh the invoice list and print only from the saved Delivery Invoices list.'
+   }
+
+   const rows = invoice.delivery_invoice_items || []
+   if (!rows.length) {
+     return 'This invoice has no saved line items. Refresh the invoice list before printing.'
+   }
+
+   const itemTotal = moneyRound(rows.reduce((sum, item) => sum + safeNum(item.total_price, safeNum(item.quantity,0) * safeNum(item.reseller_price,0)), 0))
+   const headerTotal = moneyRound(invoice.total_amount ?? invoice.subtotal ?? 0)
+   if (Math.abs(itemTotal - headerTotal) > 0.01) {
+     return `Invoice total mismatch. Saved header is ${php(headerTotal)} but saved item rows total ${php(itemTotal)}. Please edit/recalculate the invoice before printing.`
+   }
+
+   return ''
+ }
+
+ async function printAllDailyInvoices(date) {
+   try {
+     const dayInvoices = await getFreshDeliveryInvoicesForPrintByDate(date)
+     if (dayInvoices.length === 0) { showToast(' No saved invoices for this date.','red'); return }
+     const invalid = dayInvoices.map(inv => ({ inv, error: validateDeliveryInvoiceForPrint(inv) })).find(row => row.error)
+     if (invalid) { showToast(` Print blocked for ${invalid.inv?.invoice_number || 'invoice'}: ${invalid.error}`, 'red'); return }
+     downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
+     showToast(` Downloaded ${dayInvoices.length} fresh invoice(s) from database as Word file.`)
+   } catch (err) {
+     showToast(' Failed to fetch fresh invoices for printing: ' + (err?.message || err), 'red')
+   }
  }
  async function recordPayment(invoice) {
  const amt = Number(paymentAmount[invoice.id] || 0)
@@ -8643,8 +8681,11 @@ function buildDeliveryInvoicePrintCSS() {
  loadDailySalesOnlinePayments()
  refreshFoundationAfterDataChange('reseller-payment-recorded')
  }
- async function getFreshDeliveryInvoiceForAction(invoice) {
- if (!invoice?.id) return attachUnsoldQuantitiesToInvoice(invoice)
+ async function getFreshDeliveryInvoiceForAction(invoice, options = {}) {
+ if (!invoice?.id) {
+   if (options.requireSaved) throw new Error('This invoice is not saved in the database yet.')
+   return attachUnsoldQuantitiesToInvoice(invoice)
+ }
  try {
  const { data, error } = await supabase
  .from('delivery_invoices')
@@ -8653,6 +8694,7 @@ function buildDeliveryInvoicePrintCSS() {
  .single()
  if (error) {
  console.warn('getFreshDeliveryInvoiceForAction:', error)
+ if (options.requireSaved) throw error
  return attachUnsoldQuantitiesToInvoice(invoice)
  }
  const [normalized] = await normalizePaidInvoiceRows([data || invoice])
@@ -8660,6 +8702,7 @@ function buildDeliveryInvoicePrintCSS() {
  return withReturns || attachUnsoldQuantitiesToInvoice(invoice)
  } catch(e) {
  console.warn('getFreshDeliveryInvoiceForAction:', e)
+ if (options.requireSaved) throw e
  return attachUnsoldQuantitiesToInvoice(invoice)
  }
  }
@@ -8672,10 +8715,16 @@ function buildDeliveryInvoicePrintCSS() {
 
  async function printDeliveryInvoice(invoice) {
  if (!invoice) { showToast(' No invoice selected.','red'); return }
- const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice)
- const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
- downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
- showToast(' Downloaded invoice Word file.')
+ try {
+   const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice, { requireSaved:true })
+   const validationError = validateDeliveryInvoiceForPrint(freshInvoice)
+   if (validationError) { showToast(` Print blocked: ${validationError}`, 'red'); return }
+   const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
+   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
+   showToast(' Downloaded fresh invoice Word file from database.')
+ } catch (err) {
+   showToast(' Print blocked: invoice could not be verified from database. Refresh invoices and try again. ' + (err?.message || err), 'red')
+ }
  }
  function buildInvoiceAdjustmentRows(invoice) {
  if (!invoice) return []
