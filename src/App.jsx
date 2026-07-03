@@ -494,6 +494,151 @@ function positiveNum(value, fallback = 1) {
  return n > 0? n: fallback
 }
 function php(a) { return `\u20B1${safeNum(a).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` }
+
+
+const CODE128_PATTERNS = [
+ '212222','222122','222221','121223','121322','131222','122213','122312','132212','221213',
+ '221312','231212','112232','122132','122231','113222','123122','123221','223211','221132',
+ '221231','213212','223112','312131','311222','321122','321221','312212','322112','322211',
+ '212123','212321','232121','111323','131123','131321','112313','132113','132311','211313',
+ '231113','231311','112133','112331','132131','113123','113321','133121','313121','211331',
+ '231131','213113','213311','213131','311123','311321','331121','312113','312311','332111',
+ '314111','221411','431111','111224','111422','121124','121421','141122','141221','112214',
+ '112412','122114','122411','142112','142211','241211','221114','413111','241112','134111',
+ '111242','121142','121241','114212','124112','124211','411212','421112','421211','212141',
+ '214121','412121','111143','111341','131141','114113','114311','411113','411311','113141',
+ '114131','311141','411131','211412','211214','211232','2331112'
+]
+
+function cleanCode128Text(value = '') {
+ return String(value || '').replace(/[^\x20-\x7E]/g, '').trim().slice(0, 80)
+}
+
+function buildCode128BValues(value = '') {
+ const text = cleanCode128Text(value)
+ if (!text) return []
+ const values = [104]
+ for (let i = 0; i < text.length; i++) {
+  const code = text.charCodeAt(i) - 32
+  if (code < 0 || code > 95) continue
+  values.push(code)
+ }
+ if (values.length === 1) return []
+ let checksum = 104
+ for (let i = 1; i < values.length; i++) checksum += values[i] * i
+ values.push(checksum % 103)
+ values.push(106)
+ return values
+}
+
+function hashBarcodeSeed(value = '') {
+ const text = String(value || 'POS-ITEM')
+ let hash = 0
+ for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash) + text.charCodeAt(i)
+ return Math.abs(hash >>> 0)
+}
+
+function makeSafeFileNamePart(value = '', fallback = 'barcode') {
+ const clean = String(value || '').trim().replace(/[^a-z0-9\-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 60)
+ return clean || fallback
+}
+
+function makePosInternalBarcode(product = {}, existingProducts = []) {
+ const used = new Set((existingProducts || []).map(p => String(p?.barcode || '').trim().toUpperCase()).filter(Boolean))
+ const seed = String(product.id || product.sku || product.product_name || product.name || `POS-${Date.now()}-${Math.round(Math.random() * 999999)}`)
+ let attempt = 0
+ let code = ''
+ do {
+  const hash = String(hashBarcodeSeed(`${seed}-${attempt}`)).padStart(10, '0').slice(0, 10)
+  code = `SAGS-${hash}`
+  attempt += 1
+ } while (used.has(code.toUpperCase()) && attempt < 50)
+ return code
+}
+
+function drawWrappedCanvasText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 2) {
+ const words = String(text || '').split(/\s+/).filter(Boolean)
+ const lines = []
+ let line = ''
+ words.forEach(word => {
+  const testLine = line ? `${line} ${word}` : word
+  if (ctx.measureText(testLine).width > maxWidth && line) {
+   lines.push(line)
+   line = word
+  } else {
+   line = testLine
+  }
+ })
+ if (line) lines.push(line)
+ const visible = lines.slice(0, maxLines)
+ visible.forEach((row, idx) => {
+  const suffix = idx === maxLines - 1 && lines.length > maxLines ? '…' : ''
+  ctx.fillText(row + suffix, x, y + idx * lineHeight)
+ })
+ return visible.length * lineHeight
+}
+
+function createBarcodeLabelCanvas(product = {}) {
+ if (typeof document === 'undefined') throw new Error('Barcode label download is available only in the browser.')
+ const barcode = cleanCode128Text(product.barcode || product.code || '')
+ if (!barcode) throw new Error('This product has no barcode yet.')
+ const values = buildCode128BValues(barcode)
+ if (!values.length) throw new Error('This barcode has unsupported characters.')
+ const productName = String(product.product_name || product.name || 'POS Product').trim()
+ const moduleWidth = 2
+ const barHeight = 82
+ const marginX = 26
+ const topY = 22
+ const totalModules = values.reduce((sum, code) => {
+  const pattern = CODE128_PATTERNS[code] || ''
+  return sum + pattern.split('').reduce((inner, n) => inner + safeNum(n, 0), 0)
+ }, 0)
+ const canvas = document.createElement('canvas')
+ canvas.width = Math.max(520, marginX * 2 + totalModules * moduleWidth)
+ canvas.height = 205
+ const ctx = canvas.getContext('2d')
+ ctx.fillStyle = '#ffffff'
+ ctx.fillRect(0, 0, canvas.width, canvas.height)
+ ctx.fillStyle = '#000000'
+ let x = Math.round((canvas.width - totalModules * moduleWidth) / 2)
+ values.forEach(code => {
+  const pattern = CODE128_PATTERNS[code] || ''
+  for (let i = 0; i < pattern.length; i++) {
+   const width = safeNum(pattern[i], 0) * moduleWidth
+   if (i % 2 === 0 && width > 0) ctx.fillRect(x, topY, width, barHeight)
+   x += width
+  }
+ })
+ ctx.textAlign = 'center'
+ ctx.fillStyle = '#111111'
+ ctx.font = 'bold 17px Arial, sans-serif'
+ ctx.fillText(barcode, canvas.width / 2, topY + barHeight + 26)
+ ctx.font = 'bold 18px Arial, sans-serif'
+ drawWrappedCanvasText(ctx, productName, canvas.width / 2, topY + barHeight + 55, canvas.width - 60, 22, 2)
+ ctx.font = '11px Arial, sans-serif'
+ ctx.fillStyle = '#666666'
+ ctx.fillText("Roma's Donuts POS Label", canvas.width / 2, canvas.height - 13)
+ return canvas
+}
+
+function downloadPosBarcodeImage(product = {}) {
+ const barcode = String(product.barcode || '').trim()
+ if (!barcode) {
+  alert('This product has no barcode yet. Generate a barcode first.')
+  return
+ }
+ try {
+  const canvas = createBarcodeLabelCanvas(product)
+  const productName = makeSafeFileNamePart(product.product_name || product.name || 'product')
+  const barcodePart = makeSafeFileNamePart(barcode)
+  const link = document.createElement('a')
+  link.download = `${productName}-${barcodePart}-barcode.png`
+  link.href = canvas.toDataURL('image/png')
+  link.click()
+ } catch (err) {
+  alert('Barcode image download failed: ' + (err?.message || String(err)))
+ }
+}
 function moneyRound(value) { return Math.round((safeNum(value, 0) + Number.EPSILON) * 100) / 100 }
 function isMoneySettled(balance) { return moneyRound(balance) <= 0.01 }
 function genSerial(start, idx) { return `PS-${start.slice(0,7).replace('-','')}-${String(idx+1).padStart(3,'0')}` }
@@ -18726,6 +18871,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [inventorySearch, setInventorySearch] = useState(() => readSagsDraft('inventorySearch', ''))
  const [inventoryDrafts, setInventoryDrafts] = useState(() => readSagsDraftObject('inventoryDrafts', {}))
  const [inventorySavingId, setInventorySavingId] = useState('')
+ const [barcodeGeneratingId, setBarcodeGeneratingId] = useState('')
+ const [bulkBarcodeGenerating, setBulkBarcodeGenerating] = useState(false)
  const [showAddOutletItem, setShowAddOutletItem] = useState(() => readSagsDraft('showAddOutletItem', false) === true)
  const [newOutletItem, setNewOutletItem] = useState(() => ({
   ...getDefaultNewOutletItem(),
@@ -18960,6 +19107,117 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
 
+ function generateBarcodeForNewOutletItem() {
+  const productName = String(newOutletItem.product_name || '').trim()
+  const sku = String(newOutletItem.sku || '').trim()
+  if (!productName && !sku) {
+   alert('Enter the product name or SKU first, then generate the barcode.')
+   return
+  }
+  const barcode = makePosInternalBarcode({ product_name:productName, sku }, posProducts)
+  setNewOutletItem(prev => ({ ...prev, barcode }))
+ }
+
+ async function generateBarcodeForProduct(product = {}) {
+  if (!canEditOutletInventory) {
+   alert('Only Owner or Manager can generate POS barcodes.')
+   return
+  }
+  if (!product?.id) {
+   alert('Product record is missing an ID. Please refresh and try again.')
+   return
+  }
+  const existingBarcode = String(product.barcode || '').trim()
+  if (existingBarcode) {
+   downloadPosBarcodeImage(product)
+   return
+  }
+
+  const barcode = makePosInternalBarcode(product, posProducts)
+  const productKey = getInventoryDraftKey(product)
+  setBarcodeGeneratingId(productKey || String(product.id))
+  try {
+   const { error } = await supabase
+    .from('pos_products')
+    .update({ barcode })
+    .eq('id', product.id)
+
+   if (error) throw error
+
+   if (logAudit) {
+    await logAudit(
+     'POS BARCODE GENERATED',
+     currentAdminLabel || 'Admin',
+     product.product_name || product.name || product.id,
+     `Generated internal POS barcode: ${barcode}`
+    )
+   }
+
+   setPosProducts(prev => (prev || []).map(row => String(row.id) === String(product.id) ? { ...row, barcode } : row))
+   alert('Barcode generated successfully. You can now download the label image.')
+  } catch (err) {
+   console.error('Barcode generation failed:', err)
+   alert('Barcode generation failed: ' + (err?.message || String(err)))
+  } finally {
+   setBarcodeGeneratingId('')
+  }
+ }
+
+ async function generateMissingProductBarcodes() {
+  if (!canEditOutletInventory) {
+   alert('Only Owner or Manager can generate POS barcodes.')
+   return
+  }
+  const missingRows = (posProducts || []).filter(product => !String(product.barcode || '').trim())
+  if (!missingRows.length) {
+   alert('All POS products already have barcodes.')
+   return
+  }
+  const proceed = confirm(`Generate internal barcodes for ${missingRows.length} product(s) with no barcode? Existing supplier barcodes will not be changed.`)
+  if (!proceed) return
+
+  setBulkBarcodeGenerating(true)
+  try {
+   const workingProducts = [...(posProducts || [])]
+   const updates = []
+   for (const product of missingRows) {
+    if (!product?.id) continue
+    const barcode = makePosInternalBarcode(product, workingProducts)
+    workingProducts.push({ barcode })
+    const { error } = await supabase
+     .from('pos_products')
+     .update({ barcode })
+     .eq('id', product.id)
+    if (error) throw error
+    updates.push({ id:product.id, barcode, product_name:product.product_name || product.name || product.id })
+   }
+
+   if (updates.length) {
+    setPosProducts(prev => (prev || []).map(row => {
+     const update = updates.find(item => String(item.id) === String(row.id))
+     return update ? { ...row, barcode:update.barcode } : row
+    }))
+   }
+
+   if (logAudit) {
+    await logAudit(
+     'POS MISSING BARCODES GENERATED',
+     currentAdminLabel || 'Admin',
+     'SAGS POS',
+     `${updates.length} internal barcode(s) generated. Supplier/existing barcodes were not changed.`
+    )
+   }
+
+   alert(`${updates.length} missing barcode(s) generated. Use each product's Download Label button to save printable images.`)
+  } catch (err) {
+   console.error('Bulk barcode generation failed:', err)
+   alert('Bulk barcode generation failed: ' + (err?.message || String(err)))
+  } finally {
+   setBulkBarcodeGenerating(false)
+  }
+ }
+
+
  async function saveOutletInventoryRow(product) {
   if (!canEditOutletInventory) {
    alert('Only Owner or Manager can update outlet inventory.')
@@ -19087,10 +19345,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const category = String(newOutletItem.category || '').trim() || 'Donuts'
   const sku = String(newOutletItem.sku || '').trim()
   const barcode = String(newOutletItem.barcode || '').trim()
-  // Database unique constraints treat empty strings as real values.
-  // Keep SKU/barcode optional by saving blanks as NULL, not ''.
-  const skuForDb = sku || null
-  const barcodeForDb = barcode || null
   const startingStock = Math.round(safeNum(newOutletItem.stock, 0))
   const sellingPrice = safeNum(newOutletItem.selling_price, -1)
   const minStock = Math.round(safeNum(newOutletItem.min_stock, 10))
@@ -19110,27 +19364,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    return
   }
 
-  const duplicateName = posProducts.find(p =>
-   String(p.product_name || p.name || '').trim().toLowerCase() === productName.toLowerCase()
+  const duplicate = posProducts.find(p =>
+   String(p.product_name || p.name || '').trim().toLowerCase() === productName.toLowerCase() ||
+   (sku && String(p.sku || '').trim().toLowerCase() === sku.toLowerCase()) ||
+   (barcode && String(p.barcode || '').trim() === barcode)
   )
-  const duplicateSku = sku ? posProducts.find(p =>
-   String(p.sku || '').trim().toLowerCase() === sku.toLowerCase()
-  ) : null
-  const duplicateBarcode = barcode ? posProducts.find(p =>
-   String(p.barcode || '').trim() === barcode
-  ) : null
 
-  if (duplicateSku) {
-   alert(`SKU already exists for ${duplicateSku.product_name || duplicateSku.name || 'another POS item'}. Use a different SKU or leave SKU blank.`)
-   return
-  }
-
-  if (duplicateBarcode) {
-   alert(`Barcode already exists for ${duplicateBarcode.product_name || duplicateBarcode.name || 'another POS item'}. Use a different barcode or leave Barcode blank.`)
-   return
-  }
-
-  if (duplicateName && !confirm('A product with the same name already exists. Continue adding this item?')) return
+  if (duplicate && !confirm('A similar product already exists. Continue adding this item?')) return
 
   try {
    const makeCleanProductId = (suffix = '') => {
@@ -19157,8 +19397,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     product_name: productName,
     name: productName,
     category,
-    sku: skuForDb,
-    barcode: barcodeForDb,
+    sku,
+    barcode,
     selling_price: sellingPrice,
     price: sellingPrice,
     stock: startingStock,
@@ -19170,8 +19410,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     id,
     product_name: productName,
     category,
-    sku: skuForDb,
-    barcode: barcodeForDb,
+    sku,
+    barcode,
     selling_price: sellingPrice,
     stock: startingStock,
     min_stock: minStock
@@ -19217,8 +19457,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     const { error: movementError } = await supabase.from('pos_inventory_movements').insert([{
      outlet_id: 'OUTLET-MALUED',
      product_id: data.id,
-     sku: skuForDb,
-     barcode: barcodeForDb,
+     sku,
+     barcode,
      product_name: productName,
      movement_type: 'new_item_stock',
      qty: startingStock,
@@ -19785,12 +20025,21 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        style={{...inputStyle, width:isMobile ? '100%' : '320px', marginBottom:0, border:'1.5px solid #e0b900', color:'#1a1a2e', fontWeight:'700', background:'#ffffff'}}
       />
       {canEditOutletInventory && (
-       <button
-        onClick={()=>setShowAddOutletItem(v=>!v)}
-        style={{...btnGreen, width:'auto', marginTop:0, whiteSpace:'nowrap'}}
-       >
-        {showAddOutletItem ? 'Close Add Item' : '+ Add New Item'}
-       </button>
+       <>
+        <button
+         onClick={generateMissingProductBarcodes}
+         disabled={bulkBarcodeGenerating}
+         style={{...btnBlack, width:'auto', marginTop:0, whiteSpace:'nowrap', opacity:bulkBarcodeGenerating ? 0.65 : 1}}
+        >
+         {bulkBarcodeGenerating ? 'Generating...' : 'Generate Missing Barcodes'}
+        </button>
+        <button
+         onClick={()=>setShowAddOutletItem(v=>!v)}
+         style={{...btnGreen, width:'auto', marginTop:0, whiteSpace:'nowrap'}}
+        >
+         {showAddOutletItem ? 'Close Add Item' : '+ Add New Item'}
+        </button>
+       </>
       )}
      </div>
     </div>
@@ -19819,7 +20068,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Barcode</label>
-        <input value={newOutletItem.barcode} onChange={e=>setNewOutletItem(prev=>({...prev, barcode:e.target.value}))} placeholder="Scan/type" style={{...inputStyle, marginBottom:0}} />
+        <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+         <input value={newOutletItem.barcode} onChange={e=>setNewOutletItem(prev=>({...prev, barcode:e.target.value}))} placeholder="Scan/type or generate" style={{...inputStyle, marginBottom:0, flex:1, minWidth:0}} />
+         <button type="button" onClick={generateBarcodeForNewOutletItem} style={{...btnYellow, padding:'9px 10px', fontSize:'11px', whiteSpace:'nowrap'}}>Generate</button>
+        </div>
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Price</label>
@@ -19871,9 +20123,29 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
             <strong style={{ color:'#1a1a2e', fontSize:'13.5px', fontWeight:'900' }}>{row.product_name}</strong><br/>
             <span style={{ color:'#6b7280', fontSize:'11px', fontWeight:'700' }}>{row.category || '-'}</span>
            </td>
-           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', color:'#374151', fontWeight:'700' }}>
+           <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', color:'#374151', fontWeight:'700', minWidth:'170px' }}>
             <strong style={{ fontSize:'12px', color:'#1f2937', fontWeight:'900' }}>{row.sku || '-'}</strong><br/>
-            <span style={{ fontSize:'11px', color:'#6b7280', fontWeight:'700' }}>{row.barcode || '-'}</span>
+            <span style={{ fontSize:'11px', color:row.barcode ? '#6b7280' : '#ca1b1b', fontWeight:'800' }}>{row.barcode || 'No barcode yet'}</span>
+            <div style={{ display:'flex', gap:'6px', marginTop:'7px', flexWrap:'wrap' }}>
+             {row.barcode ? (
+              <button
+               type="button"
+               onClick={()=>downloadPosBarcodeImage(row)}
+               style={{...btnGray, width:'auto', marginTop:0, padding:'6px 9px', fontSize:'10.5px', fontWeight:'900', border:'1px solid #ddd'}}
+              >
+               Download Label
+              </button>
+             ) : canEditOutletInventory ? (
+              <button
+               type="button"
+               disabled={barcodeGeneratingId === draftKey || bulkBarcodeGenerating}
+               onClick={()=>generateBarcodeForProduct(row)}
+               style={{...btnYellow, width:'auto', marginTop:0, padding:'6px 9px', fontSize:'10.5px', fontWeight:'900', opacity:(barcodeGeneratingId === draftKey || bulkBarcodeGenerating) ? 0.65 : 1}}
+              >
+               {barcodeGeneratingId === draftKey ? 'Generating...' : 'Generate Barcode'}
+              </button>
+             ) : null}
+            </div>
            </td>
            <td style={{ padding:'10px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
             <input
