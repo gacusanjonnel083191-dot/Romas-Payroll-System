@@ -19087,6 +19087,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const category = String(newOutletItem.category || '').trim() || 'Donuts'
   const sku = String(newOutletItem.sku || '').trim()
   const barcode = String(newOutletItem.barcode || '').trim()
+  // Database unique constraints treat empty strings as real values.
+  // Keep SKU/barcode optional by saving blanks as NULL, not ''.
+  const skuForDb = sku || null
+  const barcodeForDb = barcode || null
   const startingStock = Math.round(safeNum(newOutletItem.stock, 0))
   const sellingPrice = safeNum(newOutletItem.selling_price, -1)
   const minStock = Math.round(safeNum(newOutletItem.min_stock, 10))
@@ -19106,13 +19110,27 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    return
   }
 
-  const duplicate = posProducts.find(p =>
-   String(p.product_name || p.name || '').trim().toLowerCase() === productName.toLowerCase() ||
-   (sku && String(p.sku || '').trim().toLowerCase() === sku.toLowerCase()) ||
-   (barcode && String(p.barcode || '').trim() === barcode)
+  const duplicateName = posProducts.find(p =>
+   String(p.product_name || p.name || '').trim().toLowerCase() === productName.toLowerCase()
   )
+  const duplicateSku = sku ? posProducts.find(p =>
+   String(p.sku || '').trim().toLowerCase() === sku.toLowerCase()
+  ) : null
+  const duplicateBarcode = barcode ? posProducts.find(p =>
+   String(p.barcode || '').trim() === barcode
+  ) : null
 
-  if (duplicate && !confirm('A similar product already exists. Continue adding this item?')) return
+  if (duplicateSku) {
+   alert(`SKU already exists for ${duplicateSku.product_name || duplicateSku.name || 'another POS item'}. Use a different SKU or leave SKU blank.`)
+   return
+  }
+
+  if (duplicateBarcode) {
+   alert(`Barcode already exists for ${duplicateBarcode.product_name || duplicateBarcode.name || 'another POS item'}. Use a different barcode or leave Barcode blank.`)
+   return
+  }
+
+  if (duplicateName && !confirm('A product with the same name already exists. Continue adding this item?')) return
 
   try {
    const makeCleanProductId = (suffix = '') => {
@@ -19139,8 +19157,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     product_name: productName,
     name: productName,
     category,
-    sku,
-    barcode,
+    sku: skuForDb,
+    barcode: barcodeForDb,
     selling_price: sellingPrice,
     price: sellingPrice,
     stock: startingStock,
@@ -19152,8 +19170,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     id,
     product_name: productName,
     category,
-    sku,
-    barcode,
+    sku: skuForDb,
+    barcode: barcodeForDb,
     selling_price: sellingPrice,
     stock: startingStock,
     min_stock: minStock
@@ -19199,8 +19217,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     const { error: movementError } = await supabase.from('pos_inventory_movements').insert([{
      outlet_id: 'OUTLET-MALUED',
      product_id: data.id,
-     sku,
-     barcode,
+     sku: skuForDb,
+     barcode: barcodeForDb,
      product_name: productName,
      movement_type: 'new_item_stock',
      qty: startingStock,
