@@ -19710,21 +19710,47 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    </div>
 
 
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Low Stock Alert Dashboard</h3>
-    {lowStockProducts.length === 0 ? (
-     <p style={{ color:'#2d8a4e', fontSize:'13px', margin:0 }}>No low stock alerts for this outlet.</p>
-    ) : (
-     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(3, 1fr)', gap:'10px' }}>
-      {lowStockProducts.slice(0, 12).map(p => (
-       <div key={p.id || p.product_name} style={{ border:'1px solid #ffd4d4', background:'#fff7f7', borderRadius:'12px', padding:'10px' }}>
-        <strong style={{ color:'#ca1b1b', display:'block' }}>{p.product_name}</strong>
-        <span style={{ fontSize:'12px', color:'#777' }}>{p.category}</span><br/>
-        <span style={{ fontSize:'12px' }}>Remaining: <strong>{p.remainingStock}</strong> / Min: {p.minStock}</span><br/>
-        <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>{p.status}</span>
-       </div>
-      ))}
+   <div style={{ background:'#fffdf7', border:'1px solid #f6d85c', borderRadius:'14px', padding:'10px 12px', marginBottom:'14px', boxShadow:'0 2px 10px rgba(202,27,27,0.04)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:lowStockProducts.length === 0 ? 0 : '8px' }}>
+     <div>
+      <h3 style={{ margin:0, color:'#ca1b1b', fontSize:'17px', fontWeight:'900', letterSpacing:'-0.2px' }}>Low Stock Alerts</h3>
+      <p style={{ margin:'2px 0 0', color:'#7c2d12', fontSize:'11px', fontWeight:'700' }}>Compact view for items that need refill or review.</p>
      </div>
+     <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', minHeight:'28px', padding:'0 10px', borderRadius:'999px', background:lowStockProducts.length > 0 ? '#fff1f2' : '#ecfdf5', border:`1px solid ${lowStockProducts.length > 0 ? '#fecdd3' : '#bbf7d0'}`, color:lowStockProducts.length > 0 ? '#b91c1c' : '#166534', fontSize:'12px', fontWeight:'900' }}>
+      {lowStockProducts.length} alert{lowStockProducts.length === 1 ? '' : 's'}
+     </span>
+    </div>
+    {lowStockProducts.length === 0 ? (
+     <p style={{ color:'#166534', fontSize:'12px', fontWeight:'800', margin:0 }}>All POS products are above minimum stock.</p>
+    ) : (
+     <>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(auto-fill, minmax(185px, 1fr))', gap:'7px', maxHeight:isMobile ? 'none' : '178px', overflowY:isMobile ? 'visible' : 'auto', paddingRight:isMobile ? 0 : '2px' }}>
+       {lowStockProducts.slice(0, 24).map(p => {
+        const outOfStock = safeNum(p.remainingStock, 0) <= 0
+        return (
+         <div key={p.id || p.product_name} style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:'6px', alignItems:'center', border:`1px solid ${outOfStock ? '#fecaca' : '#fde68a'}`, background:outOfStock ? '#fff7f7' : '#fffbeb', borderRadius:'10px', padding:'7px 9px', minHeight:'54px' }}>
+          <div style={{ minWidth:0 }}>
+           <strong style={{ color:'#1a1a2e', display:'block', fontSize:'12px', lineHeight:1.15, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{p.product_name}</strong>
+           <span style={{ display:'block', marginTop:'2px', fontSize:'10px', color:'#6b7280', fontWeight:'700', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{p.category || 'Uncategorized'}</span>
+          </div>
+          <div style={{ textAlign:'right', minWidth:'52px' }}>
+           <strong style={{ display:'block', color:outOfStock ? '#ca1b1b' : '#b45309', fontSize:'14px', lineHeight:1 }}>{p.remainingStock}</strong>
+           <span style={{ color:'#6b7280', fontSize:'10px', fontWeight:'800' }}>Min {p.minStock}</span>
+          </div>
+          <div style={{ gridColumn:'1 / -1', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'6px', marginTop:'1px' }}>
+           <span style={{ fontSize:'10px', color:outOfStock ? '#b91c1c' : '#92400e', fontWeight:'900' }}>{p.status}</span>
+           <span style={{ height:'5px', flex:1, borderRadius:'999px', background:'#f3f4f6', overflow:'hidden' }}>
+            <span style={{ display:'block', height:'100%', width:`${Math.max(0, Math.min(100, (safeNum(p.remainingStock,0) / Math.max(1, safeNum(p.minStock,1))) * 100))}%`, background:outOfStock ? '#ca1b1b' : '#f5a623' }} />
+           </span>
+          </div>
+         </div>
+        )
+       })}
+      </div>
+      {lowStockProducts.length > 24 && (
+       <p style={{ margin:'7px 0 0', color:'#7c2d12', fontSize:'11px', fontWeight:'800' }}>Showing first 24 of {lowStockProducts.length} alerts. Use the inventory search below to review more items.</p>
+      )}
+     </>
     )}
    </div>
 
