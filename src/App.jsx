@@ -18847,8 +18847,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   </svg>`
  }
 
- function downloadTextAsFile(content, filename, type = 'image/svg+xml;charset=utf-8') {
-  const blob = new Blob([content], { type })
+ function downloadBlobAsFile(blob, filename) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
@@ -18857,6 +18856,46 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   link.click()
   document.body.removeChild(link)
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+ }
+
+ function downloadTextAsFile(content, filename, type = 'image/svg+xml;charset=utf-8') {
+  downloadBlobAsFile(new Blob([content], { type }), filename)
+ }
+
+ function downloadSvgAsPng(svg, filename, scale = 3) {
+  if (typeof window === 'undefined') return
+  const svgBlob = new Blob([svg], { type:'image/svg+xml;charset=utf-8' })
+  const svgUrl = URL.createObjectURL(svgBlob)
+  const image = new Image()
+  image.onload = () => {
+   try {
+    const width = Math.max(1, image.naturalWidth || image.width || 360)
+    const height = Math.max(1, image.naturalHeight || image.height || 180)
+    const canvas = document.createElement('canvas')
+    canvas.width = width * scale
+    canvas.height = height * scale
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+    canvas.toBlob(blob => {
+     URL.revokeObjectURL(svgUrl)
+     if (blob) {
+      downloadBlobAsFile(blob, filename)
+     } else {
+      alert('PNG conversion failed. Please try again or use Print / Download Labels.')
+     }
+    }, 'image/png')
+   } catch (err) {
+    URL.revokeObjectURL(svgUrl)
+    alert('PNG conversion failed: ' + (err?.message || String(err)))
+   }
+  }
+  image.onerror = () => {
+   URL.revokeObjectURL(svgUrl)
+   alert('Barcode image could not be prepared. Please try again.')
+  }
+  image.src = svgUrl
  }
 
  function downloadBarcodeLabel(product) {
@@ -18868,7 +18907,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const productName = product?.product_name || product?.name || 'POS Item'
   const svg = buildCode39BarcodeSvg(code, productName)
   const safeName = makeOutletSkuFromName(productName).slice(0, 60) || 'POS-LABEL'
-  downloadTextAsFile(svg, `${safeName}-${code}-barcode.svg`)
+  downloadSvgAsPng(svg, `${safeName}-${code}-barcode.png`)
  }
 
  function printBarcodeLabelSheet(productsToPrint = []) {
@@ -20161,7 +20200,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
               <button
                onClick={()=>downloadBarcodeLabel(row)}
                style={{ background:'#ffffff', color:'#ca1b1b', border:'1px solid #f1d35a', borderRadius:'7px', padding:'3px 6px', fontSize:'9.5px', fontWeight:'900', cursor:'pointer' }}
-              >Label</button>
+              >PNG Label</button>
              )}
             </div>
            </td>
