@@ -18842,6 +18842,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [posMovements, setPosMovements] = useState([])
  const [posProducts, setPosProducts] = useState([])
  const [posRefreshing, setPosRefreshing] = useState(false)
+ const posSilentScrollSnapshotRef = useRef(null)
  const [stockInProductId, setStockInProductId] = useState(() => readSagsDraft('stockInProductId', ''))
  const [stockInSearch, setStockInSearch] = useState(() => readSagsDraft('stockInSearch', ''))
  const [stockInQty, setStockInQty] = useState(() => readSagsDraft('stockInQty', ''))
@@ -18895,6 +18896,43 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    delete next[key]
    return next
   })
+ }
+
+ function capturePosSilentScrollSnapshot() {
+  if (typeof window === 'undefined') return null
+  const active = document.activeElement
+  const activeSnapshot = active && active !== document.body ? {
+   element: active,
+   selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+   selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
+  } : null
+  return {
+   x: window.scrollX || 0,
+   y: window.scrollY || 0,
+   activeSnapshot
+  }
+ }
+
+ function restorePosSilentScrollSnapshot(snapshot) {
+  if (!snapshot || typeof window === 'undefined') return
+  const restore = () => {
+   try {
+    window.scrollTo({ left:snapshot.x || 0, top:snapshot.y || 0, behavior:'auto' })
+    const active = snapshot.activeSnapshot
+    if (active?.element && typeof active.element.focus === 'function' && document.contains(active.element)) {
+     active.element.focus({ preventScroll:true })
+     if (typeof active.element.setSelectionRange === 'function' && active.selectionStart !== null && active.selectionEnd !== null) {
+      active.element.setSelectionRange(active.selectionStart, active.selectionEnd)
+     }
+    }
+   } catch {}
+  }
+  restore()
+  window.requestAnimationFrame?.(() => {
+   restore()
+   window.requestAnimationFrame?.(restore)
+  })
+  window.setTimeout(restore, 80)
  }
 
 
@@ -19141,7 +19179,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  async function loadPosMonitor(options = {}) {
   const silent = options && options.silent
-  silent ? setPosRefreshing(true) : setPosLoading(true)
+  const scrollSnapshot = silent ? capturePosSilentScrollSnapshot() : null
+  posSilentScrollSnapshotRef.current = scrollSnapshot
+  // A true silent refresh must not toggle visible loading state, because that
+  // causes layout shifts and can push the admin back to the top while typing.
+  if (!silent) setPosLoading(true)
   setPosError('')
   try {
    const start = posDate + 'T00:00:00'
@@ -19208,7 +19250,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    console.error('POS monitor error:', err)
    setPosError(err?.message || String(err))
   } finally {
-   silent ? setPosRefreshing(false) : setPosLoading(false)
+   if (!silent) setPosLoading(false)
+   if (silent) restorePosSilentScrollSnapshot(posSilentScrollSnapshotRef.current || scrollSnapshot)
   }
  }
 
