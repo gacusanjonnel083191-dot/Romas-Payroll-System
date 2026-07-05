@@ -1707,6 +1707,7 @@ export default function App() {
  const canvasRef = useRef(null)
  const profilePhotoInputRef = useRef(null)
  const resellerOrderSubmitLockRef = useRef(false)
+ const resellerOrderRecentSubmitKeysRef = useRef(new Set())
  const approvingResellerOrderIdsRef = useRef(new Set())
 
  const [employeeCode, setEmployeeCode] = useState('')
@@ -1751,6 +1752,7 @@ export default function App() {
  const [submittingPayslipDisputes, setSubmittingPayslipDisputes] = useState({})
  // Reason dropdown presets
  const [requestCashReasonPreset, setRequestCashReasonPreset] = useState('')
+ const [otRequestReasonPreset, setOtRequestReasonPreset] = useState('')
  const [disputeReasonPresets, setDisputeReasonPresets] = useState({})
  const [profilePhotoUrl, setProfilePhotoUrl] = useState(null)
  const [uploadingPhoto, setUploadingPhoto] = useState(false)
@@ -2038,6 +2040,7 @@ export default function App() {
  const [resellerOrderDeliveryDate, setResellerOrderDeliveryDate] = useState('')
  const [resellerOrderNotes, setResellerOrderNotes] = useState('')
  const [submittingOrder, setSubmittingOrder] = useState(false)
+ const [lastSubmittedOrderNotice, setLastSubmittedOrderNotice] = useState('')
  const [editingResellerOrderId, setEditingResellerOrderId] = useState(null)
  const [updatingResellerOrder, setUpdatingResellerOrder] = useState(false)
  const [resellerOrders, setResellerOrders] = useState([])
@@ -8348,8 +8351,7 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  function wordRun(text, opts = {}) {
-   // Word DOCX uses half-points: 22 = Arial 11pt.
-   const size = opts.size || 22
+   const size = opts.size || 13
    // Use bold as the default for invoice readability on 4x6 thermal/photo paper.
    // Pass bold:false only for intentionally light text.
    const bold = opts.bold === false ? '' : '<w:b/><w:bCs/>'
@@ -8360,9 +8362,10 @@ function buildDeliveryInvoicePrintCSS() {
 
  function wordParagraph(text, opts = {}) {
    const align = opts.align || 'left'
-   // Arial 11 needs enough exact line height so Word does not display it as 5.5pt or clip bold text.
-   const size = opts.size || 22
-   const line = opts.line || Math.max(260, Math.ceil(size * 12))
+   // A line-height equal to the font size clips bold text in Word print preview.
+   // Give each line a small safety allowance while keeping the exact 4x6 table height.
+   const size = opts.size || 13
+   const line = opts.line || Math.max(150, Math.ceil(size * 12))
    return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:before="0" w:after="0" w:line="${line}" w:lineRule="exact"/></w:pPr>${wordRun(text, opts)}</w:p>`
  }
 
@@ -8408,63 +8411,63 @@ function buildDeliveryInvoicePrintCSS() {
    const PALE_RED = 'FBDCDC'
 
    const rows = []
-   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:22, line:260, shade:BRAND_RED, color:'FFFFFF' })], 360))
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:15, line:170, shade:BRAND_RED, color:'FFFFFF' })], 360))
    rows.push(wordRow([
-     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:22 }),
-     wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:22, shade:PALE_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:22 })
+     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:13 }),
+     wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:13, shade:PALE_GOLD }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
    ], 320))
    rows.push(wordRow([
-     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:22 }),
-     wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:22, shade:PALE_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:22 })
+     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:13 }),
+     wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:13, shade:PALE_GOLD }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
    ], 320))
    rows.push(wordRow([
-     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:22 }),
-     wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:22, shade:PALE_RED }),
-     wordCell('', { width:widths[4], align:'center', size:22 })
+     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:13 }),
+     wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:12, shade:PALE_RED }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
    ], 320))
    rows.push(wordRow([
-     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:22, line:260, shade:PALE_GOLD })
+     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:12, line:150, shade:PALE_GOLD })
    ], 290))
    rows.push(wordRow([
-     wordCell('Product', { width:widths[0], align:'center', bold:true, size:22 }),
-     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:22 }),
-     wordCell('Price', { width:widths[2], align:'center', bold:true, size:22 }),
-     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:22 }),
-     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:22 })
+     wordCell('Product', { width:widths[0], align:'center', bold:true, size:13 }),
+     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:13 }),
+     wordCell('Price', { width:widths[2], align:'center', bold:true, size:13 }),
+     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:13 }),
+     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:13 })
    ], 320))
 
    data.productRows.forEach(row => {
      rows.push(wordRow([
-       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:22 }),
-       wordCell(row.delivered, { width:widths[1], align:'center', size:22 }),
-       wordCell(row.price, { width:widths[2], align:'right', size:22 }),
-       wordCell(row.amount, { width:widths[3], align:'right', size:22 }),
-       wordCell(row.unsold, { width:widths[4], align:'center', size:22 })
+       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:11 }),
+       wordCell(row.delivered, { width:widths[1], align:'center', size:12 }),
+       wordCell(row.price, { width:widths[2], align:'right', size:11 }),
+       wordCell(row.amount, { width:widths[3], align:'right', size:11 }),
+       wordCell(row.unsold, { width:widths[4], align:'center', size:12 })
      ], 340))
    })
 
-   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:22 })), 40))
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:8 })), 40))
    rows.push(wordRow([
-     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:22 }),
-     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:22 }),
-     wordCell('', { width:widths[2], align:'center', size:22 }),
-     wordCell('', { width:widths[3], align:'center', size:22 }),
-     wordCell('', { width:widths[4], align:'center', size:22 })
+     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:11 }),
+     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:12 }),
+     wordCell('', { width:widths[2], align:'center', size:12 }),
+     wordCell('', { width:widths[3], align:'center', size:12 }),
+     wordCell('', { width:widths[4], align:'center', size:12 })
    ], 320))
    rows.push(wordRow([
-     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:22 }),
-     wordCell('', { width:widths[1], align:'center', size:22 }),
-     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:22, shade:BRAND_GOLD }),
-     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:22, shade:BRAND_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:22 })
+     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:11 }),
+     wordCell('', { width:widths[1], align:'center', size:12 }),
+     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:14, shade:BRAND_GOLD }),
+     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:14, shade:BRAND_GOLD }),
+     wordCell('', { width:widths[4], align:'center', size:12 })
    ], 340))
    rows.push(wordRow([
-     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:22, shade:PALE_GOLD }),
-     wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:22, shade:PALE_GOLD }),
-     wordCell('', { width:widths[3], align:'center', size:22 }),
-     wordCell('', { width:widths[4], align:'center', size:22 })
+     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:11, shade:PALE_GOLD }),
+     wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:11, shade:PALE_GOLD }),
+     wordCell('', { width:widths[3], align:'center', size:12 }),
+     wordCell('', { width:widths[4], align:'center', size:12 })
    ], 320))
 
    return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
@@ -8594,7 +8597,7 @@ function buildDeliveryInvoicePrintCSS() {
    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`
-   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
+   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
    const settings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`
 
    return createStoredZipBlob([
@@ -10354,6 +10357,7 @@ function buildDeliveryInvoicePrintCSS() {
  setResellerNotices([])
  setEditingResellerOrderId(null)
  setUpdatingResellerOrder(false)
+ setLastSubmittedOrderNotice('')
  setResellerOrderNotes('')
  setResellerOrderItems([])
  }
@@ -10783,7 +10787,7 @@ function buildDeliveryInvoicePrintCSS() {
 
  async function submitResellerOrder() {
  if (resellerOrderSubmitLockRef.current || submittingOrder) {
- showToast(' Order already submitted. Please wait while the system records it.', 'red')
+ showToast(' Order is already being submitted. Please wait until it appears in Order Requests.', 'red')
  return
  }
  const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
@@ -10793,6 +10797,16 @@ function buildDeliveryInvoicePrintCSS() {
  if (validItems.length===0) { showToast(' Enter at least one quantity.','red'); return }
  if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before submitting. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.','red'); return }
+ const deliveryDateKey = String(resellerOrderDeliveryDate || '').slice(0, 10)
+ const submitKey = `${String(orderBranch.id)}|${deliveryDateKey}`
+ if (resellerOrderRecentSubmitKeysRef.current.has(submitKey)) {
+  const notice = `Order already received for ${orderBranch.name} on ${deliveryDateKey}. Check Order Requests or edit the existing pending order instead of submitting again.`
+  setLastSubmittedOrderNotice(notice)
+  showToast(' Duplicate submit blocked. ' + notice, 'red')
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
+ }
  const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
  if (cutoffStatus.locked) {
  showToast(` Order cut-off reached for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Please choose a later delivery date.`, 'red')
@@ -10801,13 +10815,41 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  resellerOrderSubmitLockRef.current = true
+ resellerOrderRecentSubmitKeysRef.current.add(submitKey)
  setSubmittingOrder(true)
+ setLastSubmittedOrderNotice(`Submitting order for ${orderBranch.name} on ${deliveryDateKey}. Please wait — do not tap Submit again.`)
+ let confirmedOrderReceived = false
  try {
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, resellerOrderDeliveryDate, { resellerName:orderBranch.name || '' })
+ const { data:existingPendingOrder, error:existingPendingErr } = await supabase
+ .from('reseller_orders')
+ .select('id,status,delivery_date,reseller_id,reseller_name,created_at,invoice_id')
+ .eq('reseller_id', orderBranch.id)
+ .eq('delivery_date', deliveryDateKey)
+ .eq('status', 'pending')
+ .is('invoice_id', null)
+ .order('created_at', { ascending:false })
+ .limit(1)
+ .maybeSingle()
+ if (existingPendingErr) throw existingPendingErr
+ if (existingPendingOrder) {
+  confirmedOrderReceived = true
+  const notice = `${orderBranch.name} already has a pending order for ${deliveryDateKey}. It is now shown in Order Requests. Use EDIT PENDING ORDER if quantities need correction.`
+  setLastSubmittedOrderNotice(notice)
+  showToast(' Duplicate order blocked. ' + notice, 'red')
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
+ }
+
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, deliveryDateKey, { resellerName:orderBranch.name || '' })
  if (duplicateCheck.blocked) {
- showToast(duplicateCheck.message, 'red')
- await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
- return
+  confirmedOrderReceived = true
+  setLastSubmittedOrderNotice(duplicateCheck.message)
+  showToast(duplicateCheck.message, 'red')
+  await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
  }
 
  const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
@@ -10820,18 +10862,33 @@ function buildDeliveryInvoicePrintCSS() {
  const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
  const { data:order, error } = await supabase.from('reseller_orders').insert({
  reseller_id:orderBranch.id, reseller_name:orderBranch.name,
- order_date:today, delivery_date:resellerOrderDeliveryDate,
+ order_date:today, delivery_date:deliveryDateKey,
  total_qty:totalQty, estimated_amount:total,
  status:'pending', notes:resellerOrderNotes||null
  }).select().single()
- if (error) throw error
- await supabase.from('reseller_order_items').insert(validItems.map(i=>({
+ if (error) {
+  if (String(error?.code || '') === '23505') {
+   confirmedOrderReceived = true
+   const notice = `${orderBranch.name} already has an order for ${deliveryDateKey}. The duplicate submit was blocked by the database.`
+   setLastSubmittedOrderNotice(notice)
+   showToast(notice, 'red')
+   setResellerPortalView('orders')
+   await loadResellerPortalData(orderBranch.id)
+   return
+  }
+  throw error
+ }
+ const { error:itemInsertErr } = await supabase.from('reseller_order_items').insert(validItems.map(i=>({
  order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
  quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
  })))
+ if (itemInsertErr) throw itemInsertErr
+ confirmedOrderReceived = true
  const accountLabel = resellerPortalAccount?.account_name? `${resellerPortalAccount.account_name} / ${orderBranch.name}`: orderBranch.name
- await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
- await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
+ await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${deliveryDateKey}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
+ await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${deliveryDateKey} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
+ const notice = `Order received for ${orderBranch.name} on ${deliveryDateKey}. It is now waiting for admin approval. Do not submit this same order again; use Edit Pending Order if changes are needed.`
+ setLastSubmittedOrderNotice(notice)
  showToast(` Order submitted for ${orderBranch.name}! Waiting for admin approval${hasCreditWarning?' with credit warning.':'.'}`)
  setEditingResellerOrderId(null)
  setResellerOrderNotes('')
@@ -10841,11 +10898,11 @@ function buildDeliveryInvoicePrintCSS() {
  } catch(err) {
  showToast(' Failed: '+(err?.message || err),'red')
  } finally {
+ if (!confirmedOrderReceived) resellerOrderRecentSubmitKeysRef.current.delete(submitKey)
  resellerOrderSubmitLockRef.current = false
  setSubmittingOrder(false)
  }
  }
-
  // Feature: Admin Order Management 
  async function loadPendingResellerOrders() {
  const { data } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').eq('status','pending').order('created_at',{ascending:false})
@@ -11650,7 +11707,7 @@ function buildDeliveryInvoicePrintCSS() {
  const { error } = await supabase.from('time_adjustment_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:otRequestDate, request_type:otRequestType, minutes:Number(otRequestMinutes), employee_reason:otRequestReason, status:'pending' })
  if (error) { alert('Failed: '+error.message); return }
  alert(`${otRequestType==='overtime'?'Overtime':'Undertime'} request filed! Waiting for admin approval.`)
- setOtRequestReason(''); setOtRequestMinutes(''); setShowOTRequest(false)
+ setOtRequestReason(''); setOtRequestReasonPreset(''); setOtRequestMinutes(''); setShowOTRequest(false)
  }
  async function submitLeaveRequest() {
  if (!leaveStartDate ||!leaveEndDate ||!leaveReason) {
@@ -31639,14 +31696,44 @@ onClick={async ()=>{
  <label style={lblS}>Minutes:</label>
  <input type="number" placeholder="Number of minutes" value={otRequestMinutes} onChange={e=>setOtRequestMinutes(e.target.value)} style={inputStyle} />
  <label style={lblS}>Reason:</label>
+ <select
+ value={otRequestReasonPreset}
+ onChange={e => {
+ const val = e.target.value
+ setOtRequestReasonPreset(val)
+ if (val!== 'Others') setOtRequestReason(val)
+ else setOtRequestReason('')
+ }}
+ style={inputStyle}
+ >
+ <option value=""> Select a reason </option>
+ {otRequestType === 'overtime'? (
+ <>
+ <option value="Operational requirements / volume of work">Operational requirements / volume of work</option>
+ <option value="Rush order / client deadline">Rush order / client deadline</option>
+ <option value="Staff shortage / manpower gap">Staff shortage / manpower gap</option>
+ <option value="Management request">Management request</option>
+ <option value="Inventory or restocking task">Inventory or restocking task</option>
+ </>
+ ): (
+ <>
+ <option value="Medical / health appointment">Medical / health appointment</option>
+ <option value="Family emergency">Family emergency</option>
+ <option value="Personal matter (pre-approved)">Personal matter (pre-approved)</option>
+ <option value="Early release approved by supervisor">Early release approved by supervisor</option>
+ <option value="School / educational obligation">School / educational obligation</option>
+ </>
+ )}
+ <option value="Others">Others (please specify)</option>
+ </select>
+ {otRequestReasonPreset === 'Others' && (
  <textarea
- placeholder={otRequestType === 'overtime'
-  ? 'Type the exact overtime reason here. Example: Rush order, staff shortage, extra production, delivery preparation, etc.'
-  : 'Type the exact undertime reason here. Example: Medical appointment, family emergency, approved early release, personal matter, etc.'}
+ placeholder="Please describe your reason..."
  value={otRequestReason}
  onChange={e => setOtRequestReason(e.target.value)}
- style={{...inputStyle, minHeight:'90px', resize:'vertical', lineHeight:1.45 }}
+ style={{...inputStyle, minHeight:'70px', resize:'none' }}
  />
+ )}
  <button style={{ background:'#8b5cf6', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'14px' }} onClick={submitTimeAdjRequest}>SUBMIT REQUEST</button>
  </div>
  )}
@@ -32329,6 +32416,11 @@ onClick={async ()=>{
  {resellerPortalView==='orders' && (
  <div>
  <h2 style={h2s}> Order Requests</h2>
+ {lastSubmittedOrderNotice && (
+ <div style={{...portalCard, border:'2px solid #2d8a4e', background:'#f0fff4', color:'#155724', fontSize:'13px', fontWeight:'800', lineHeight:1.5 }}>
+  {lastSubmittedOrderNotice}
+ </div>
+ )}
  {resellerOrders.length===0? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No orders yet. Place your first order.</p>: resellerOrders.map(ord=>(
  <div key={ord.id} style={{...portalCard, marginBottom:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
@@ -32355,6 +32447,11 @@ onClick={async ()=>{
  {resellerPortalView==='place_order' && (
  <div>
  <h2 style={h2s}>{editingResellerOrderId?' Edit Pending Order':' Place Order'}</h2>
+ {lastSubmittedOrderNotice && (
+ <div style={{...portalCard, border:'2px solid #2d8a4e', background:'#f0fff4', color:'#155724', fontSize:'13px', fontWeight:'800', lineHeight:1.5 }}>
+  {lastSubmittedOrderNotice}
+ </div>
+ )}
  {(()=>{
  const selectedOrderCutoff = resellerOrderDeliveryDate? getOrderCutoffStatus(resellerOrderDeliveryDate): { locked:false, message:'' }
  return (
@@ -32429,7 +32526,7 @@ onClick={async ()=>{
  <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
  <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
  </div>
- <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' ORDER SUBMITTED - PROCESSING...':' SUBMIT ORDER REQUEST')}</button>
+ <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' SAVING ORDER - PLEASE WAIT...':' SUBMIT ORDER REQUEST')}</button>
  {editingResellerOrderId && <button style={{...btnGray, marginTop:'8px' }} disabled={updatingResellerOrder} onClick={cancelResellerOrderEdit}>CANCEL EDIT</button>}
  </div>
  </>
