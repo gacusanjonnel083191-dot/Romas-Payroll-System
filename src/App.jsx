@@ -1751,7 +1751,6 @@ export default function App() {
  const [submittingPayslipDisputes, setSubmittingPayslipDisputes] = useState({})
  // Reason dropdown presets
  const [requestCashReasonPreset, setRequestCashReasonPreset] = useState('')
- const [otRequestReasonPreset, setOtRequestReasonPreset] = useState('')
  const [disputeReasonPresets, setDisputeReasonPresets] = useState({})
  const [profilePhotoUrl, setProfilePhotoUrl] = useState(null)
  const [uploadingPhoto, setUploadingPhoto] = useState(false)
@@ -11651,7 +11650,7 @@ function buildDeliveryInvoicePrintCSS() {
  const { error } = await supabase.from('time_adjustment_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:otRequestDate, request_type:otRequestType, minutes:Number(otRequestMinutes), employee_reason:otRequestReason, status:'pending' })
  if (error) { alert('Failed: '+error.message); return }
  alert(`${otRequestType==='overtime'?'Overtime':'Undertime'} request filed! Waiting for admin approval.`)
- setOtRequestReason(''); setOtRequestReasonPreset(''); setOtRequestMinutes(''); setShowOTRequest(false)
+ setOtRequestReason(''); setOtRequestMinutes(''); setShowOTRequest(false)
  }
  async function submitLeaveRequest() {
  if (!leaveStartDate ||!leaveEndDate ||!leaveReason) {
@@ -31640,44 +31639,14 @@ onClick={async ()=>{
  <label style={lblS}>Minutes:</label>
  <input type="number" placeholder="Number of minutes" value={otRequestMinutes} onChange={e=>setOtRequestMinutes(e.target.value)} style={inputStyle} />
  <label style={lblS}>Reason:</label>
- <select
- value={otRequestReasonPreset}
- onChange={e => {
- const val = e.target.value
- setOtRequestReasonPreset(val)
- if (val!== 'Others') setOtRequestReason(val)
- else setOtRequestReason('')
- }}
- style={inputStyle}
- >
- <option value=""> Select a reason </option>
- {otRequestType === 'overtime'? (
- <>
- <option value="Operational requirements / volume of work">Operational requirements / volume of work</option>
- <option value="Rush order / client deadline">Rush order / client deadline</option>
- <option value="Staff shortage / manpower gap">Staff shortage / manpower gap</option>
- <option value="Management request">Management request</option>
- <option value="Inventory or restocking task">Inventory or restocking task</option>
- </>
- ): (
- <>
- <option value="Medical / health appointment">Medical / health appointment</option>
- <option value="Family emergency">Family emergency</option>
- <option value="Personal matter (pre-approved)">Personal matter (pre-approved)</option>
- <option value="Early release approved by supervisor">Early release approved by supervisor</option>
- <option value="School / educational obligation">School / educational obligation</option>
- </>
- )}
- <option value="Others">Others (please specify)</option>
- </select>
- {otRequestReasonPreset === 'Others' && (
  <textarea
- placeholder="Please describe your reason..."
+ placeholder={otRequestType === 'overtime'
+  ? 'Type the exact overtime reason here. Example: Rush order, staff shortage, extra production, delivery preparation, etc.'
+  : 'Type the exact undertime reason here. Example: Medical appointment, family emergency, approved early release, personal matter, etc.'}
  value={otRequestReason}
  onChange={e => setOtRequestReason(e.target.value)}
- style={{...inputStyle, minHeight:'70px', resize:'none' }}
+ style={{...inputStyle, minHeight:'90px', resize:'vertical', lineHeight:1.45 }}
  />
- )}
  <button style={{ background:'#8b5cf6', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'14px' }} onClick={submitTimeAdjRequest}>SUBMIT REQUEST</button>
  </div>
  )}
