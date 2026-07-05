@@ -1664,6 +1664,41 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  </div>`
 }
 
+
+
+// ------------------------------------------------------------
+// APP UPDATE CHECKER
+// Compares the currently loaded Vercel bundle with the latest index.html bundle.
+// If Vercel has deployed a newer build, users see a clear refresh banner instead
+// of unknowingly using an old cached reseller/PWA screen.
+// ------------------------------------------------------------
+const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 1000
+
+function getLoadedBundleSignature() {
+ if (typeof document === 'undefined') return ''
+ const assetPaths = Array.from(document.querySelectorAll('script[src], link[rel="modulepreload"][href], link[rel="stylesheet"][href]'))
+  .map(node => node.getAttribute('src') || node.getAttribute('href') || '')
+  .filter(src => /\/assets\//.test(src))
+  .map(src => {
+   try { return new URL(src, window.location.origin).pathname }
+   catch { return src }
+  })
+  .sort()
+ return assetPaths.join('|')
+}
+
+function getIndexBundleSignature(html = '') {
+ const matches = []
+ const re = /<(?:script|link)[^>]+(?:src|href)=["']([^"']*\/assets\/[^"']+)["'][^>]*>/gi
+ let match
+ while ((match = re.exec(String(html || '')))) {
+  const src = match[1]
+  try { matches.push(new URL(src, window.location.origin).pathname) }
+  catch { matches.push(src) }
+ }
+ return matches.sort().join('|')
+}
+
 const printCSS = `
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
@@ -1788,6 +1823,9 @@ export default function App() {
  const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
  const [saveSuccess, setSaveSuccess] = useState(null)
  const [toast, setToast] = useState(null)
+ const appUpdateCurrentSignatureRef = useRef('')
+ const [appUpdateInfo, setAppUpdateInfo] = useState({ available:false, latestSignature:'', currentSignature:'', checkedAt:null })
+ const [appUpdateChecking, setAppUpdateChecking] = useState(false)
  // Audit trail
  const [auditLogs, setAuditLogs] = useState([])
  const [auditSearch, setAuditSearch] = useState('')
@@ -2789,6 +2827,86 @@ export default function App() {
  setToast({ msg, color })
  setTimeout(() => setToast(null), 3000)
  }
+
+ async function checkForAppUpdate(manual = false) {
+  if (typeof window === 'undefined' || typeof fetch === 'undefined') return
+  if (manual) setAppUpdateChecking(true)
+  try {
+   const currentSignature = appUpdateCurrentSignatureRef.current || getLoadedBundleSignature()
+   if (!appUpdateCurrentSignatureRef.current) appUpdateCurrentSignatureRef.current = currentSignature
+   const url = `${window.location.origin}${window.location.pathname}?app_version_check=${Date.now()}`
+   const res = await fetch(url, { cache:'no-store', headers:{ 'Cache-Control':'no-cache' } })
+   if (!res.ok) throw new Error(`Version check failed: ${res.status}`)
+   const html = await res.text()
+   const latestSignature = getIndexBundleSignature(html)
+   if (latestSignature && currentSignature && latestSignature !== currentSignature) {
+    setAppUpdateInfo({ available:true, latestSignature, currentSignature, checkedAt:new Date().toISOString() })
+    return true
+   }
+   if (manual) showToast('App is already updated.', 'green')
+   return false
+  } catch (err) {
+   if (manual) showToast('Could not check app update. Please try again.', 'red')
+   console.warn('App update check failed:', err)
+   return false
+  } finally {
+   if (manual) setAppUpdateChecking(false)
+  }
+ }
+
+ async function reloadToLatestApp() {
+  try {
+   if ('serviceWorker' in navigator) {
+    const registrations = await navigator.serviceWorker.getRegistrations()
+    await Promise.all(registrations.map(reg => reg.update().catch(()=>null)))
+   }
+  } catch (err) {
+   console.warn('Service worker update request failed:', err)
+  }
+  try {
+   if ('caches' in window) {
+    const keys = await caches.keys()
+    await Promise.all(keys.filter(key => /roma|workbox|vite|precache|runtime/i.test(key)).map(key => caches.delete(key).catch(()=>false)))
+   }
+  } catch (err) {
+   console.warn('Cache cleanup failed:', err)
+  }
+  const url = new URL(window.location.href)
+  url.searchParams.set('app_updated', Date.now().toString())
+  window.location.replace(url.toString())
+ }
+
+ function renderAppUpdateBanner() {
+  if (!appUpdateInfo.available) return null
+  return (
+   <div style={{ position:'fixed', left:'50%', bottom:isMobile?'12px':'18px', transform:'translateX(-50%)', zIndex:99997, width:isMobile?'calc(100% - 24px)':'min(620px, calc(100% - 40px))', background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'16px', boxShadow:'0 12px 40px rgba(0,0,0,0.22)', padding:isMobile?'12px':'14px 16px', display:'flex', alignItems:isMobile?'stretch':'center', justifyContent:'space-between', gap:'12px', flexDirection:isMobile?'column':'row' }}>
+    <div style={{ minWidth:0 }}>
+     <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontWeight:'900', fontSize:'14px' }}>New update available</p>
+     <p style={{ margin:0, color:'#555', fontSize:'12px', lineHeight:1.45, fontWeight:'700' }}>Tap refresh to load the latest Roma’s Donuts system version before submitting orders or printing invoices.</p>
+    </div>
+    <div style={{ display:'flex', gap:'8px', flexShrink:0 }}>
+     <button style={{...btnGray, width:'auto', padding:'9px 12px', marginTop:0, fontSize:'12px' }} disabled={appUpdateChecking} onClick={()=>checkForAppUpdate(true)}>{appUpdateChecking?'Checking...':'Check'}</button>
+     <button style={{...btnRed, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={reloadToLatestApp}>Refresh Now</button>
+    </div>
+   </div>
+  )
+ }
+
+ useEffect(() => {
+  if (typeof window === 'undefined') return
+  appUpdateCurrentSignatureRef.current = getLoadedBundleSignature()
+  const timer = window.setTimeout(() => checkForAppUpdate(false), 8000)
+  const interval = window.setInterval(() => checkForAppUpdate(false), APP_UPDATE_CHECK_INTERVAL_MS)
+  const onVisible = () => { if (!document.hidden) checkForAppUpdate(false) }
+  window.addEventListener('focus', onVisible)
+  document.addEventListener('visibilitychange', onVisible)
+  return () => {
+   window.clearTimeout(timer)
+   window.clearInterval(interval)
+   window.removeEventListener('focus', onVisible)
+   document.removeEventListener('visibilitychange', onVisible)
+  }
+ }, [])
 
  // Camera 
  async function startCamera() {
@@ -21199,6 +21317,7 @@ function printCompanyDocumentRecord(record) {
  {toast.msg}
  </div>
  )}
+ {renderAppUpdateBanner()}
  {showAdminPasswordForm && (
  <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:99998, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
  <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'420px', width:'100%', boxShadow:'0 10px 40px rgba(0,0,0,0.35)' }}>
@@ -31471,6 +31590,7 @@ onClick={async ()=>{
  <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
  )}
 
+ {renderAppUpdateBanner()}
  {/* Scrollable Content Area */}
  <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'20px', display:'flex', justifyContent:'center', background:'#f8f7f5' }}>
  <div style={{ background:'white', borderRadius:'16px', padding:isMobile?'16px':'20px', width:'100%', maxWidth:'560px', boxShadow:'0 4px 20px rgba(0,0,0,0.08)', marginBottom:'16px', border:'1px solid #eee' }}>
@@ -32263,6 +32383,7 @@ onClick={async ()=>{
  return (
  <div style={{ minHeight:'100vh', background:'#f6f6f6', fontFamily:'Arial, sans-serif' }}>
  {toast && <div style={{ position:'fixed', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 24px', borderRadius:'12px', fontWeight:'bold', boxShadow:'0 6px 18px rgba(0,0,0,0.25)' }}>{toast.msg}</div>}
+ {renderAppUpdateBanner()}
 
  <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', color:'white', padding:isMobile?'18px 14px':'20px 28px', boxShadow:'0 4px 18px rgba(0,0,0,0.18)' }}>
  <div style={{ maxWidth:'1180px', margin:'0 auto', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
@@ -32626,6 +32747,7 @@ onClick={async ()=>{
  {toast && (
  <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
  )}
+ {renderAppUpdateBanner()}
  <div style={{ background:'white', borderRadius:'24px', boxShadow:'0 20px 60px rgba(0,0,0,0.25)', width:'100%', maxWidth:'440px', padding:'36px 32px', boxSizing:'border-box' }}>
  <div style={{ textAlign:'center', marginBottom:'24px' }}>
  <img src="/logo.png" alt="Logo" style={{ width:'90px', height:'90px', objectFit:'contain', display:'block', margin:'0 auto 10px' }} />
