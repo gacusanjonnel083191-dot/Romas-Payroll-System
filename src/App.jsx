@@ -2636,9 +2636,13 @@ export default function App() {
  }, [])
 
  useEffect(() => {
+ // Keep SAGS POS completely steady while the owner is working in it.
+ // The old 30-second global tick re-rendered the whole admin app and could
+ // feel like the POS was refreshing, causing the screen to jump while typing.
+ if (activeTab === 'posMonitor') return undefined
  const timer = window.setInterval(() => setOrderCutoffTick(Date.now()), 30 * 1000)
  return () => window.clearInterval(timer)
- }, [])
+ }, [activeTab])
 
  useEffect(() => {
  const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
@@ -18901,14 +18905,17 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  function capturePosSilentScrollSnapshot() {
   if (typeof window === 'undefined') return null
   const active = document.activeElement
+  const scrollingElement = document.scrollingElement || document.documentElement || document.body
   const activeSnapshot = active && active !== document.body ? {
    element: active,
    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
   } : null
   return {
-   x: window.scrollX || 0,
-   y: window.scrollY || 0,
+   x: window.scrollX || scrollingElement?.scrollLeft || 0,
+   y: window.scrollY || scrollingElement?.scrollTop || 0,
+   docTop: scrollingElement?.scrollTop || 0,
+   docLeft: scrollingElement?.scrollLeft || 0,
    activeSnapshot
   }
  }
@@ -18917,7 +18924,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   if (!snapshot || typeof window === 'undefined') return
   const restore = () => {
    try {
-    window.scrollTo({ left:snapshot.x || 0, top:snapshot.y || 0, behavior:'auto' })
+    const scrollingElement = document.scrollingElement || document.documentElement || document.body
+    if (scrollingElement) {
+     scrollingElement.scrollTop = snapshot.docTop ?? snapshot.y ?? 0
+     scrollingElement.scrollLeft = snapshot.docLeft ?? snapshot.x ?? 0
+    }
+    window.scrollTo({ left:snapshot.x || snapshot.docLeft || 0, top:snapshot.y || snapshot.docTop || 0, behavior:'auto' })
     const active = snapshot.activeSnapshot
     if (active?.element && typeof active.element.focus === 'function' && document.contains(active.element)) {
      active.element.focus({ preventScroll:true })
@@ -18933,8 +18945,25 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    window.requestAnimationFrame?.(restore)
   })
   window.setTimeout(restore, 80)
+  window.setTimeout(restore, 250)
  }
 
+
+ function isPosEditingNow() {
+  if (typeof document === 'undefined') return false
+  const active = document.activeElement
+  if (!active) return false
+  const tag = String(active.tagName || '').toLowerCase()
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || active.isContentEditable === true
+ }
+
+ function hasAnyUnsavedPosDrafts() {
+  const hasAddItemDraft = showAddOutletItem && Object.values(newOutletItem || {}).some(value => String(value || '').trim() !== '')
+  const hasRowDraft = Object.values(inventoryDrafts || {}).some(draft =>
+   draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
+  )
+  return hasAddItemDraft || hasRowDraft
+ }
 
  function cleanOutletBarcodeCode(value) {
   return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9 ./$+%-]+/g, '-')
@@ -19179,6 +19208,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  async function loadPosMonitor(options = {}) {
   const silent = options && options.silent
+  const isAutoRefresh = options && options.auto === true
+  // Auto refresh must never interrupt typing or stock/barcode editing.
+  // When the user is actively working, skip the background refresh entirely.
+  if (silent && isAutoRefresh && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
   const scrollSnapshot = silent ? capturePosSilentScrollSnapshot() : null
   posSilentScrollSnapshotRef.current = scrollSnapshot
   // A true silent refresh must not toggle visible loading state, because that
@@ -19892,7 +19925,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   newOutletItem
  ])
 
- useEffect(() => { loadPosMonitor({ silent:true }) }, [posDate])
+ useEffect(() => { loadPosMonitor({ silent:true, auto:true }) }, [posDate])
 
  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
@@ -20060,7 +20093,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
      <input type="date" value={posDate} onChange={e=>setPosDate(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0}} />
-     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
+     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true, manual:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
     </div>
    </div>
 
