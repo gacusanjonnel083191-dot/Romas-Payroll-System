@@ -11786,15 +11786,17 @@ function buildDeliveryInvoicePrintCSS() {
  const activeAttendanceDate = todayLog.attendance_date || today
  const shiftStartForCalc = todayLog.shift_start || todaySchedule?.shift_start || null
  const shiftEndForCalc = todayLog.shift_end || todaySchedule?.shift_end || null
+ const undertimeDeductionApplicable = employeeRuleEnabled(employee.undertime_deduction_applicable, true)
 
- let undertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
+ let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
  const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
  const excessBreakMins = Math.max(0, totalBreakMins-ALLOWED_BREAK_MINUTES)
 
  // Correctly compare time-out vs scheduled shift end even when the shift crosses midnight.
  if (shiftEndForCalc) {
  const diff = diffFromShiftEndMinutes(shiftStartForCalc, shiftEndForCalc, timeOut, timeIn)
- undertimeMinutes = diff < 0? Math.abs(diff): 0
+ rawUndertimeMinutes = diff < 0? Math.abs(diff): 0
+ undertimeMinutes = undertimeDeductionApplicable ? rawUndertimeMinutes : 0
  overtimeMinutes = diff > 0? diff: 0
  if (undertimeMinutes>0) status='Undertime - Pending Filing'
  if (overtimeMinutes>0) status='Overtime - Pending Filing'
@@ -11825,18 +11827,75 @@ function buildDeliveryInvoicePrintCSS() {
  }).eq('id', todayLog.id).select().single()
  setLoading(false)
  if (error) { alert('Time Out failed: '+error.message); return }
+
+ let autoUTRequestCreated = false
+ let autoUTRequestSkipped = false
+ let autoUTRequestError = ''
+ if (undertimeMinutes > 0) {
+  try {
+   const { data:existingUTRequests, error:existingUTError } = await supabase
+    .from('time_adjustment_requests')
+    .select('id,status')
+    .eq('employee_id', employee.id)
+    .eq('attendance_date', activeAttendanceDate)
+    .eq('request_type', 'undertime')
+    .in('status', ['pending', 'approved'])
+    .limit(1)
+
+   if (existingUTError) throw existingUTError
+   if (existingUTRequests?.length) {
+    autoUTRequestSkipped = true
+   } else {
+    const { error:autoUTError } = await supabase.from('time_adjustment_requests').insert({
+     employee_id:employee.id,
+     employee_code:employee.employee_code,
+     employee_name:employee.full_name,
+     attendance_date:activeAttendanceDate,
+     request_type:'undertime',
+     minutes:undertimeMinutes,
+     employee_reason:'System auto-filed: employee timed out before scheduled shift end. For admin review.',
+     status:'pending'
+    })
+    if (autoUTError) throw autoUTError
+    autoUTRequestCreated = true
+   }
+  } catch(autoUTErr) {
+   autoUTRequestError = autoUTErr?.message || String(autoUTErr)
+   console.error('Auto undertime request failed:', autoUTErr)
+  }
+ }
+
  setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
- await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}`)
+ await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}${autoUTRequestCreated?' | Auto UT request created':''}`)
  let msg = ' Time Out saved successfully!'
  if (activeAttendanceDate!== today) msg += `\n\n Night shift time-out saved under attendance date: ${activeAttendanceDate}.`
  if (nsdMinutes > 0) msg += `\n\n Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) will be computed in payroll at 10% premium.`
  if (overtimeMinutes>0) msg += `\n\n ${overtimeMinutes} min overtime please file an OT request.`
- if (undertimeMinutes>0) msg += `\n\n ${undertimeMinutes} min undertime please file a UT request.`
+ if (undertimeMinutes>0) {
+  if (autoUTRequestCreated) msg += `\n\n ${undertimeMinutes} min undertime was automatically filed for admin review.`
+  else if (autoUTRequestSkipped) msg += `\n\n ${undertimeMinutes} min undertime already has a pending or approved UT request.`
+  else msg += `\n\n ${undertimeMinutes} min undertime was detected, but auto-filing failed. Please file a UT request manually${autoUTRequestError?': '+autoUTRequestError:''}.`
+ }
+ if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No UT request or deduction was created.`
  if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break will be deducted.`
  alert(msg)
  }
  async function submitTimeAdjRequest() {
  if (!otRequestReason ||!otRequestMinutes ||!otRequestDate) { alert('Please enter date, minutes and reason.'); return }
+ if (otRequestType === 'undertime' && !employeeRuleEnabled(employee.undertime_deduction_applicable, true)) { alert('You are exempted from undertime filing. No undertime request is needed.'); return }
+ const { data:existingRequests, error:existingError } = await supabase
+ .from('time_adjustment_requests')
+ .select('id,status')
+ .eq('employee_id', employee.id)
+ .eq('attendance_date', otRequestDate)
+ .eq('request_type', otRequestType)
+ .in('status', ['pending', 'approved'])
+ .limit(1)
+ if (existingError) { alert('Failed checking existing request: '+existingError.message); return }
+ if (existingRequests?.length) {
+  alert(`You already have a ${otRequestType==='overtime'?'overtime':'undertime'} request for this date. Please wait for admin review instead of filing another one.`)
+  return
+ }
  const { error } = await supabase.from('time_adjustment_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:otRequestDate, request_type:otRequestType, minutes:Number(otRequestMinutes), employee_reason:otRequestReason, status:'pending' })
  if (error) { alert('Failed: '+error.message); return }
  alert(`${otRequestType==='overtime'?'Overtime':'Undertime'} request filed! Waiting for admin approval.`)
