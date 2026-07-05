@@ -265,61 +265,12 @@ function isMissingEmployeeHolidayEligibilityColumnError(error) {
  return msg.includes('regular_holiday_pay_eligible') || msg.includes('special_holiday_pay_eligible') || ((msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')) && msg.includes('holiday'))
 }
 
-function isMissingEmployeeBankColumnError(error) {
- const msg = String(error?.message || error || '').toLowerCase()
- return msg.includes('bank_account_name')
-  || msg.includes('bank_account_number')
-  || msg.includes('bank_name')
-  || ((msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')) && msg.includes('bank'))
-}
-
-function isMissingEmployeeGovernmentIdColumnError(error) {
- const msg = String(error?.message || error || '').toLowerCase()
- return msg.includes('sss_no')
-  || msg.includes('pagibig_no')
-  || msg.includes('philhealth_no')
-  || msg.includes('tin_no')
-}
-
-function isMissingEmployeeWorkLocationColumnError(error) {
- const msg = String(error?.message || error || '').toLowerCase()
- return msg.includes('work_location')
-  || msg.includes('location_lat')
-  || msg.includes('location_lng')
-  || msg.includes('location_radius')
-}
-
-function isUnsupportedEmployeeOptionalColumnError(error) {
- return isMissingPayrollCostColumnError(error)
-  || isMissingEmployeeHolidayEligibilityColumnError(error)
-  || isMissingEmployeeBankColumnError(error)
-  || isMissingEmployeeGovernmentIdColumnError(error)
-  || isMissingEmployeeWorkLocationColumnError(error)
-}
-
 function stripUnsupportedEmployeeOptionalColumns(payload = {}, error = null) {
  const clean = { ...payload }
  if (!error || isMissingPayrollCostColumnError(error)) delete clean.payroll_cost_type
  if (!error || isMissingEmployeeHolidayEligibilityColumnError(error)) {
   delete clean.regular_holiday_pay_eligible
   delete clean.special_holiday_pay_eligible
- }
- if (!error || isMissingEmployeeBankColumnError(error)) {
-  delete clean.bank_name
-  delete clean.bank_account_number
-  delete clean.bank_account_name
- }
- if (!error || isMissingEmployeeGovernmentIdColumnError(error)) {
-  delete clean.sss_no
-  delete clean.pagibig_no
-  delete clean.philhealth_no
-  delete clean.tin_no
- }
- if (!error || isMissingEmployeeWorkLocationColumnError(error)) {
-  delete clean.work_location
-  delete clean.location_lat
-  delete clean.location_lng
-  delete clean.location_radius
  }
  return clean
 }
@@ -930,6 +881,20 @@ function getEmployeeLeaveInfo(emp) {
 ? 'You are SIL-qualified, but you have no SIL balance left. This request will be unpaid.'
 : 'SIL becomes available after 1 year of service. This request will be unpaid.'
  }
+}
+
+const LEAVE_FILING_TYPE_OPTIONS = [
+ { value:'planned', label:'Planned Leave', note:'Must be filed at least 3 days before the leave date.' },
+ { value:'emergency_sick', label:'Emergency Sick Leave', note:'For sudden illness or medical emergency. 3-day advance filing is bypassed and subject to admin approval.' },
+ { value:'emergency_personal', label:'Emergency Personal Leave', note:'For urgent family or personal emergency. 3-day advance filing is bypassed and subject to admin approval.' }
+]
+
+function getLeaveFilingTypeInfo(value) {
+ return LEAVE_FILING_TYPE_OPTIONS.find(option => option.value === value) || LEAVE_FILING_TYPE_OPTIONS[0]
+}
+
+function isEmergencyLeaveFiling(value) {
+ return value === 'emergency_sick' || value === 'emergency_personal'
 }
 
 
@@ -1713,6 +1678,41 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  </div>`
 }
 
+
+
+// ------------------------------------------------------------
+// APP UPDATE CHECKER
+// Compares the currently loaded Vercel bundle with the latest index.html bundle.
+// If Vercel has deployed a newer build, users see a clear refresh banner instead
+// of unknowingly using an old cached reseller/PWA screen.
+// ------------------------------------------------------------
+const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 1000
+
+function getLoadedBundleSignature() {
+ if (typeof document === 'undefined') return ''
+ const assetPaths = Array.from(document.querySelectorAll('script[src], link[rel="modulepreload"][href], link[rel="stylesheet"][href]'))
+  .map(node => node.getAttribute('src') || node.getAttribute('href') || '')
+  .filter(src => /\/assets\//.test(src))
+  .map(src => {
+   try { return new URL(src, window.location.origin).pathname }
+   catch { return src }
+  })
+  .sort()
+ return assetPaths.join('|')
+}
+
+function getIndexBundleSignature(html = '') {
+ const matches = []
+ const re = /<(?:script|link)[^>]+(?:src|href)=["']([^"']*\/assets\/[^"']+)["'][^>]*>/gi
+ let match
+ while ((match = re.exec(String(html || '')))) {
+  const src = match[1]
+  try { matches.push(new URL(src, window.location.origin).pathname) }
+  catch { matches.push(src) }
+ }
+ return matches.sort().join('|')
+}
+
 const printCSS = `
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
@@ -1756,6 +1756,7 @@ export default function App() {
  const canvasRef = useRef(null)
  const profilePhotoInputRef = useRef(null)
  const resellerOrderSubmitLockRef = useRef(false)
+ const resellerOrderRecentSubmitKeysRef = useRef(new Set())
  const approvingResellerOrderIdsRef = useRef(new Set())
 
  const [employeeCode, setEmployeeCode] = useState('')
@@ -1794,6 +1795,7 @@ export default function App() {
  const [leaveStartDate, setLeaveStartDate] = useState('')
  const [leaveEndDate, setLeaveEndDate] = useState('')
  const [leaveType, setLeaveType] = useState('')
+ const [leaveFilingType, setLeaveFilingType] = useState('planned')
  const [leaveReason, setLeaveReason] = useState('')
  const [disputeReasons, setDisputeReasons] = useState({})
  const [showDisputeBox, setShowDisputeBox] = useState({})
@@ -1836,6 +1838,9 @@ export default function App() {
  const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
  const [saveSuccess, setSaveSuccess] = useState(null)
  const [toast, setToast] = useState(null)
+ const appUpdateCurrentSignatureRef = useRef('')
+ const [appUpdateInfo, setAppUpdateInfo] = useState({ available:false, latestSignature:'', currentSignature:'', checkedAt:null })
+ const [appUpdateChecking, setAppUpdateChecking] = useState(false)
  // Audit trail
  const [auditLogs, setAuditLogs] = useState([])
  const [auditSearch, setAuditSearch] = useState('')
@@ -2088,6 +2093,7 @@ export default function App() {
  const [resellerOrderDeliveryDate, setResellerOrderDeliveryDate] = useState('')
  const [resellerOrderNotes, setResellerOrderNotes] = useState('')
  const [submittingOrder, setSubmittingOrder] = useState(false)
+ const [lastSubmittedOrderNotice, setLastSubmittedOrderNotice] = useState('')
  const [editingResellerOrderId, setEditingResellerOrderId] = useState(null)
  const [updatingResellerOrder, setUpdatingResellerOrder] = useState(false)
  const [resellerOrders, setResellerOrders] = useState([])
@@ -2836,6 +2842,86 @@ export default function App() {
  setToast({ msg, color })
  setTimeout(() => setToast(null), 3000)
  }
+
+ async function checkForAppUpdate(manual = false) {
+  if (typeof window === 'undefined' || typeof fetch === 'undefined') return
+  if (manual) setAppUpdateChecking(true)
+  try {
+   const currentSignature = appUpdateCurrentSignatureRef.current || getLoadedBundleSignature()
+   if (!appUpdateCurrentSignatureRef.current) appUpdateCurrentSignatureRef.current = currentSignature
+   const url = `${window.location.origin}${window.location.pathname}?app_version_check=${Date.now()}`
+   const res = await fetch(url, { cache:'no-store', headers:{ 'Cache-Control':'no-cache' } })
+   if (!res.ok) throw new Error(`Version check failed: ${res.status}`)
+   const html = await res.text()
+   const latestSignature = getIndexBundleSignature(html)
+   if (latestSignature && currentSignature && latestSignature !== currentSignature) {
+    setAppUpdateInfo({ available:true, latestSignature, currentSignature, checkedAt:new Date().toISOString() })
+    return true
+   }
+   if (manual) showToast('App is already updated.', 'green')
+   return false
+  } catch (err) {
+   if (manual) showToast('Could not check app update. Please try again.', 'red')
+   console.warn('App update check failed:', err)
+   return false
+  } finally {
+   if (manual) setAppUpdateChecking(false)
+  }
+ }
+
+ async function reloadToLatestApp() {
+  try {
+   if ('serviceWorker' in navigator) {
+    const registrations = await navigator.serviceWorker.getRegistrations()
+    await Promise.all(registrations.map(reg => reg.update().catch(()=>null)))
+   }
+  } catch (err) {
+   console.warn('Service worker update request failed:', err)
+  }
+  try {
+   if ('caches' in window) {
+    const keys = await caches.keys()
+    await Promise.all(keys.filter(key => /roma|workbox|vite|precache|runtime/i.test(key)).map(key => caches.delete(key).catch(()=>false)))
+   }
+  } catch (err) {
+   console.warn('Cache cleanup failed:', err)
+  }
+  const url = new URL(window.location.href)
+  url.searchParams.set('app_updated', Date.now().toString())
+  window.location.replace(url.toString())
+ }
+
+ function renderAppUpdateBanner() {
+  if (!appUpdateInfo.available) return null
+  return (
+   <div style={{ position:'fixed', left:'50%', bottom:isMobile?'12px':'18px', transform:'translateX(-50%)', zIndex:99997, width:isMobile?'calc(100% - 24px)':'min(620px, calc(100% - 40px))', background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'16px', boxShadow:'0 12px 40px rgba(0,0,0,0.22)', padding:isMobile?'12px':'14px 16px', display:'flex', alignItems:isMobile?'stretch':'center', justifyContent:'space-between', gap:'12px', flexDirection:isMobile?'column':'row' }}>
+    <div style={{ minWidth:0 }}>
+     <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontWeight:'900', fontSize:'14px' }}>New update available</p>
+     <p style={{ margin:0, color:'#555', fontSize:'12px', lineHeight:1.45, fontWeight:'700' }}>Tap refresh to load the latest Roma’s Donuts system version before submitting orders or printing invoices.</p>
+    </div>
+    <div style={{ display:'flex', gap:'8px', flexShrink:0 }}>
+     <button style={{...btnGray, width:'auto', padding:'9px 12px', marginTop:0, fontSize:'12px' }} disabled={appUpdateChecking} onClick={()=>checkForAppUpdate(true)}>{appUpdateChecking?'Checking...':'Check'}</button>
+     <button style={{...btnRed, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={reloadToLatestApp}>Refresh Now</button>
+    </div>
+   </div>
+  )
+ }
+
+ useEffect(() => {
+  if (typeof window === 'undefined') return
+  appUpdateCurrentSignatureRef.current = getLoadedBundleSignature()
+  const timer = window.setTimeout(() => checkForAppUpdate(false), 8000)
+  const interval = window.setInterval(() => checkForAppUpdate(false), APP_UPDATE_CHECK_INTERVAL_MS)
+  const onVisible = () => { if (!document.hidden) checkForAppUpdate(false) }
+  window.addEventListener('focus', onVisible)
+  document.addEventListener('visibilitychange', onVisible)
+  return () => {
+   window.clearTimeout(timer)
+   window.clearInterval(interval)
+   window.removeEventListener('focus', onVisible)
+   document.removeEventListener('visibilitychange', onVisible)
+  }
+ }, [])
 
  // Camera 
  async function startCamera() {
@@ -3615,13 +3701,10 @@ export default function App() {
  '.info{margin:10px 0 16px;padding:10px 12px;border-left:4px solid #ca1b1b;background:#fff8dc;}',
  '.info p{margin:4px 0;text-align:left;}',
  '.note{border:1px solid #f5c518;background:#fff8dc;padding:9px 11px;margin:14px 0;font-size:10pt;}',
- '.signature-area{margin-top:38px;}',
- '.signature-table{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:18px;}',
- '.signature-table td{width:50%;padding:0 24px 22px;vertical-align:top;text-align:center;}',
- '.signature-space{height:44px;}',
- '.signature-line{border-top:1px solid #111;padding-top:6px;font-size:9pt;line-height:1.2;text-align:center;}',
- '.signature-left{padding-left:0;}',
- '.signature-right{padding-right:0;}',
+ '.signature-area{margin-top:42px;}',
+ '.sig-row{display:block;margin-top:28px;}',
+ '.sig-line{border-top:1px solid #111;width:44%;display:inline-block;text-align:center;padding-top:5px;font-size:9pt;margin-right:8%;vertical-align:top;}',
+ '.sig-line:nth-child(2){margin-right:0;}',
  '.footer{text-align:center;color:#777;font-size:8pt;margin-top:24px;border-top:1px solid #ddd;padding-top:8px;}',
  '</style>',
  '</head>',
@@ -3656,16 +3739,8 @@ export default function App() {
  '<div class="note"><strong>Legal/HR Review Note:</strong> This is a system-generated company template. For official signing and enforcement, management should ensure the contract matches current Philippine labor requirements and company policy.</div>',
  '<p>By signing below, the Employee confirms that the terms have been explained, read, understood, and accepted.</p>',
  '<div class="signature-area">',
- '<table class="signature-table">',
- '<tr>',
- '<td class="signature-left"><div class="signature-space"></div><div class="signature-line">Employee Signature over Printed Name / Date</div></td>',
- '<td class="signature-right"><div class="signature-space"></div><div class="signature-line">Authorized Company Representative / Date</div></td>',
- '</tr>',
- '<tr>',
- '<td class="signature-left"><div class="signature-space"></div><div class="signature-line">Witness / HR Representative / Date</div></td>',
- '<td class="signature-right"><div class="signature-space"></div><div class="signature-line">Government ID Presented / ID Number</div></td>',
- '</tr>',
- '</table>',
+ '<div class="sig-row"><div class="sig-line">Employee Signature over Printed Name / Date</div><div class="sig-line">Authorized Company Representative / Date</div></div>',
+ '<div class="sig-row"><div class="sig-line">Witness / HR Representative / Date</div><div class="sig-line">Government ID Presented / ID Number</div></div>',
  '</div>',
  '<div class="footer">Roma\'s Donuts | ' + esc(title) + ' | Generated ' + esc(generatedDate) + '</div>',
  '</div></body></html>'
@@ -10415,6 +10490,7 @@ function buildDeliveryInvoicePrintCSS() {
  setResellerNotices([])
  setEditingResellerOrderId(null)
  setUpdatingResellerOrder(false)
+ setLastSubmittedOrderNotice('')
  setResellerOrderNotes('')
  setResellerOrderItems([])
  }
@@ -10844,7 +10920,7 @@ function buildDeliveryInvoicePrintCSS() {
 
  async function submitResellerOrder() {
  if (resellerOrderSubmitLockRef.current || submittingOrder) {
- showToast(' Order already submitted. Please wait while the system records it.', 'red')
+ showToast(' Order is already being submitted. Please wait until it appears in Order Requests.', 'red')
  return
  }
  const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
@@ -10854,6 +10930,16 @@ function buildDeliveryInvoicePrintCSS() {
  if (validItems.length===0) { showToast(' Enter at least one quantity.','red'); return }
  if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before submitting. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.','red'); return }
+ const deliveryDateKey = String(resellerOrderDeliveryDate || '').slice(0, 10)
+ const submitKey = `${String(orderBranch.id)}|${deliveryDateKey}`
+ if (resellerOrderRecentSubmitKeysRef.current.has(submitKey)) {
+  const notice = `Order already received for ${orderBranch.name} on ${deliveryDateKey}. Check Order Requests or edit the existing pending order instead of submitting again.`
+  setLastSubmittedOrderNotice(notice)
+  showToast(' Duplicate submit blocked. ' + notice, 'red')
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
+ }
  const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
  if (cutoffStatus.locked) {
  showToast(` Order cut-off reached for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Please choose a later delivery date.`, 'red')
@@ -10862,13 +10948,41 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  resellerOrderSubmitLockRef.current = true
+ resellerOrderRecentSubmitKeysRef.current.add(submitKey)
  setSubmittingOrder(true)
+ setLastSubmittedOrderNotice(`Submitting order for ${orderBranch.name} on ${deliveryDateKey}. Please wait — do not tap Submit again.`)
+ let confirmedOrderReceived = false
  try {
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, resellerOrderDeliveryDate, { resellerName:orderBranch.name || '' })
+ const { data:existingPendingOrder, error:existingPendingErr } = await supabase
+ .from('reseller_orders')
+ .select('id,status,delivery_date,reseller_id,reseller_name,created_at,invoice_id')
+ .eq('reseller_id', orderBranch.id)
+ .eq('delivery_date', deliveryDateKey)
+ .eq('status', 'pending')
+ .is('invoice_id', null)
+ .order('created_at', { ascending:false })
+ .limit(1)
+ .maybeSingle()
+ if (existingPendingErr) throw existingPendingErr
+ if (existingPendingOrder) {
+  confirmedOrderReceived = true
+  const notice = `${orderBranch.name} already has a pending order for ${deliveryDateKey}. It is now shown in Order Requests. Use EDIT PENDING ORDER if quantities need correction.`
+  setLastSubmittedOrderNotice(notice)
+  showToast(' Duplicate order blocked. ' + notice, 'red')
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
+ }
+
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, deliveryDateKey, { resellerName:orderBranch.name || '' })
  if (duplicateCheck.blocked) {
- showToast(duplicateCheck.message, 'red')
- await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
- return
+  confirmedOrderReceived = true
+  setLastSubmittedOrderNotice(duplicateCheck.message)
+  showToast(duplicateCheck.message, 'red')
+  await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
  }
 
  const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
@@ -10881,18 +10995,33 @@ function buildDeliveryInvoicePrintCSS() {
  const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
  const { data:order, error } = await supabase.from('reseller_orders').insert({
  reseller_id:orderBranch.id, reseller_name:orderBranch.name,
- order_date:today, delivery_date:resellerOrderDeliveryDate,
+ order_date:today, delivery_date:deliveryDateKey,
  total_qty:totalQty, estimated_amount:total,
  status:'pending', notes:resellerOrderNotes||null
  }).select().single()
- if (error) throw error
- await supabase.from('reseller_order_items').insert(validItems.map(i=>({
+ if (error) {
+  if (String(error?.code || '') === '23505') {
+   confirmedOrderReceived = true
+   const notice = `${orderBranch.name} already has an order for ${deliveryDateKey}. The duplicate submit was blocked by the database.`
+   setLastSubmittedOrderNotice(notice)
+   showToast(notice, 'red')
+   setResellerPortalView('orders')
+   await loadResellerPortalData(orderBranch.id)
+   return
+  }
+  throw error
+ }
+ const { error:itemInsertErr } = await supabase.from('reseller_order_items').insert(validItems.map(i=>({
  order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
  quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
  })))
+ if (itemInsertErr) throw itemInsertErr
+ confirmedOrderReceived = true
  const accountLabel = resellerPortalAccount?.account_name? `${resellerPortalAccount.account_name} / ${orderBranch.name}`: orderBranch.name
- await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
- await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
+ await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${deliveryDateKey}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
+ await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${deliveryDateKey} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
+ const notice = `Order received for ${orderBranch.name} on ${deliveryDateKey}. It is now waiting for admin approval. Do not submit this same order again; use Edit Pending Order if changes are needed.`
+ setLastSubmittedOrderNotice(notice)
  showToast(` Order submitted for ${orderBranch.name}! Waiting for admin approval${hasCreditWarning?' with credit warning.':'.'}`)
  setEditingResellerOrderId(null)
  setResellerOrderNotes('')
@@ -10902,11 +11031,11 @@ function buildDeliveryInvoicePrintCSS() {
  } catch(err) {
  showToast(' Failed: '+(err?.message || err),'red')
  } finally {
+ if (!confirmedOrderReceived) resellerOrderRecentSubmitKeysRef.current.delete(submitKey)
  resellerOrderSubmitLockRef.current = false
  setSubmittingOrder(false)
  }
  }
-
  // Feature: Admin Order Management 
  async function loadPendingResellerOrders() {
  const { data } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').eq('status','pending').order('created_at',{ascending:false})
@@ -11719,6 +11848,8 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
+ const filingInfo = getLeaveFilingTypeInfo(leaveFilingType)
+ const emergencyFiling = isEmergencyLeaveFiling(leaveFilingType)
  const todayMid = parseLocalDate(today)
  const startD = parseLocalDate(leaveStartDate)
 
@@ -11727,8 +11858,8 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- if ((startD.getTime() - todayMid.getTime()) / (1000 * 60 * 60 * 24) < 2) {
- alert('Must be filed at least 3 days in advance.')
+ if (!emergencyFiling && (startD.getTime() - todayMid.getTime()) / (1000 * 60 * 60 * 24) < 2) {
+ alert('Planned leave must be filed at least 3 days in advance. For sudden illness or emergency, choose Emergency Sick Leave or Emergency Personal Leave.')
  return
  }
 
@@ -11747,6 +11878,9 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
+ const cleanReason = String(leaveReason || '').trim()
+ const reasonWithFilingType = `[${filingInfo.label}] ${cleanReason}`
+
  const { error } = await supabase.from('leave_requests').insert({
  employee_id: activeEmployee.id,
  employee_code: activeEmployee.employee_code,
@@ -11755,7 +11889,7 @@ function buildDeliveryInvoicePrintCSS() {
  leave_end: leaveEndDate,
  duration_days: dur,
  leave_type: leaveInfo.type,
- reason: leaveReason,
+ reason: reasonWithFilingType,
  status: 'pending',
  is_paid: leaveInfo.isPaid
  })
@@ -11765,12 +11899,13 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- alert(leaveInfo.isPaid? 'SIL request submitted! Waiting for admin approval.': 'Unpaid leave request submitted! Waiting for admin approval.')
+ alert(`${filingInfo.label} request submitted! ${leaveInfo.isPaid? 'If approved, it will be charged as paid SIL.': 'If approved, it will be treated as unpaid excused leave.'} Waiting for admin approval.`)
 
  setEmployee(activeEmployee)
  setLeaveStartDate('')
  setLeaveEndDate('')
  setLeaveType('')
+ setLeaveFilingType('planned')
  setLeaveReason('')
  setShowLeaveRequest(false)
  loadMyLeaveBalance(activeEmployee)
@@ -16544,7 +16679,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  extra_roles:editFields.extra_roles||null
  }
  let { error } = await supabase.from('employees').update(employeeUpdatePayload).eq('id', editingEmployeeId)
- if (error && isUnsupportedEmployeeOptionalColumnError(error)) {
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error))) {
  const fallbackEmployeeUpdatePayload = stripUnsupportedEmployeeOptionalColumns(employeeUpdatePayload, error)
  ;({ error } = await supabase.from('employees').update(fallbackEmployeeUpdatePayload).eq('id', editingEmployeeId))
  if (!error) console.warn('Employee saved with optional payroll/holiday columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
@@ -16611,7 +16746,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  bank_account_name:f.bank_account_name||''
  }
  let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select('*').single()
- if (error && isUnsupportedEmployeeOptionalColumnError(error)) {
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error))) {
  const fallbackEmployeeInsertPayload = stripUnsupportedEmployeeOptionalColumns(employeeInsertPayload, error)
  ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select('*').single())
  if (!error) console.warn('Employee added with optional payroll/holiday columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
@@ -21203,6 +21338,7 @@ function printCompanyDocumentRecord(record) {
  {toast.msg}
  </div>
  )}
+ {renderAppUpdateBanner()}
  {showAdminPasswordForm && (
  <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:99998, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
  <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'420px', width:'100%', boxShadow:'0 10px 40px rgba(0,0,0,0.35)' }}>
@@ -31475,6 +31611,7 @@ onClick={async ()=>{
  <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
  )}
 
+ {renderAppUpdateBanner()}
  {/* Scrollable Content Area */}
  <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'20px', display:'flex', justifyContent:'center', background:'#f8f7f5' }}>
  <div style={{ background:'white', borderRadius:'16px', padding:isMobile?'16px':'20px', width:'100%', maxWidth:'560px', boxShadow:'0 4px 20px rgba(0,0,0,0.08)', marginBottom:'16px', border:'1px solid #eee' }}>
@@ -31749,13 +31886,24 @@ onClick={async ()=>{
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'6px', padding:'5px 10px', cursor:'pointer', fontSize:'11px', color:'#555' }} onClick={()=>setShowLeaveRequest(false)}> Close</button>
  </div>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
- <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Leave Type: {getEmployeeLeaveInfo(employee).label}</p>
+ <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Leave Pay Type: {getEmployeeLeaveInfo(employee).label}</p>
  <p style={{ margin:0, color:'#666', fontSize:'12px' }}>{getEmployeeLeaveInfo(employee).note}</p>
  </div>
- <input type="date" value={leaveStartDate} min={new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
+ <label style={{...lblS, marginTop:'8px' }}>FILING TYPE</label>
+ <select
+ value={leaveFilingType}
+ onChange={e=>setLeaveFilingType(e.target.value)}
+ style={inputStyle}
+ >
+ {LEAVE_FILING_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+ </select>
+ <div style={{ background:isEmergencyLeaveFiling(leaveFilingType)?'#fff5f5':'#f8f9fa', border:`1px solid ${isEmergencyLeaveFiling(leaveFilingType)?'#ffd0d0':'#eee'}`, borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
+ <p style={{ margin:0, color:isEmergencyLeaveFiling(leaveFilingType)?'#ca1b1b':'#555', fontSize:'12px', fontWeight:'700' }}>{getLeaveFilingTypeInfo(leaveFilingType).note}</p>
+ </div>
+ <input type="date" value={leaveStartDate} min={isEmergencyLeaveFiling(leaveFilingType)?'':new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
  <input type="date" value={leaveEndDate} onChange={e=>setLeaveEndDate(e.target.value)} style={inputStyle} />
  {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {daysInclusive(leaveStartDate, leaveEndDate)} day(s)</p>}
- <textarea placeholder="Reason for leave..." value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'none' }} />
+ <textarea placeholder={isEmergencyLeaveFiling(leaveFilingType)?'Explain the emergency / illness clearly...':'Reason for planned leave...'} value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'none' }} />
  <button style={{...btnRed }} onClick={submitLeaveRequest}>{getEmployeeLeaveInfo(employee).type==='SIL'?'SUBMIT SIL REQUEST':'SUBMIT LEAVE REQUEST'}</button>
  </div>
  )}
@@ -32267,6 +32415,7 @@ onClick={async ()=>{
  return (
  <div style={{ minHeight:'100vh', background:'#f6f6f6', fontFamily:'Arial, sans-serif' }}>
  {toast && <div style={{ position:'fixed', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 24px', borderRadius:'12px', fontWeight:'bold', boxShadow:'0 6px 18px rgba(0,0,0,0.25)' }}>{toast.msg}</div>}
+ {renderAppUpdateBanner()}
 
  <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', color:'white', padding:isMobile?'18px 14px':'20px 28px', boxShadow:'0 4px 18px rgba(0,0,0,0.18)' }}>
  <div style={{ maxWidth:'1180px', margin:'0 auto', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
@@ -32420,6 +32569,11 @@ onClick={async ()=>{
  {resellerPortalView==='orders' && (
  <div>
  <h2 style={h2s}> Order Requests</h2>
+ {lastSubmittedOrderNotice && (
+ <div style={{...portalCard, border:'2px solid #2d8a4e', background:'#f0fff4', color:'#155724', fontSize:'13px', fontWeight:'800', lineHeight:1.5 }}>
+  {lastSubmittedOrderNotice}
+ </div>
+ )}
  {resellerOrders.length===0? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No orders yet. Place your first order.</p>: resellerOrders.map(ord=>(
  <div key={ord.id} style={{...portalCard, marginBottom:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
@@ -32446,6 +32600,11 @@ onClick={async ()=>{
  {resellerPortalView==='place_order' && (
  <div>
  <h2 style={h2s}>{editingResellerOrderId?' Edit Pending Order':' Place Order'}</h2>
+ {lastSubmittedOrderNotice && (
+ <div style={{...portalCard, border:'2px solid #2d8a4e', background:'#f0fff4', color:'#155724', fontSize:'13px', fontWeight:'800', lineHeight:1.5 }}>
+  {lastSubmittedOrderNotice}
+ </div>
+ )}
  {(()=>{
  const selectedOrderCutoff = resellerOrderDeliveryDate? getOrderCutoffStatus(resellerOrderDeliveryDate): { locked:false, message:'' }
  return (
@@ -32520,7 +32679,7 @@ onClick={async ()=>{
  <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
  <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
  </div>
- <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' ORDER SUBMITTED - PROCESSING...':' SUBMIT ORDER REQUEST')}</button>
+ <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' SAVING ORDER - PLEASE WAIT...':' SUBMIT ORDER REQUEST')}</button>
  {editingResellerOrderId && <button style={{...btnGray, marginTop:'8px' }} disabled={updatingResellerOrder} onClick={cancelResellerOrderEdit}>CANCEL EDIT</button>}
  </div>
  </>
@@ -32620,6 +32779,7 @@ onClick={async ()=>{
  {toast && (
  <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
  )}
+ {renderAppUpdateBanner()}
  <div style={{ background:'white', borderRadius:'24px', boxShadow:'0 20px 60px rgba(0,0,0,0.25)', width:'100%', maxWidth:'440px', padding:'36px 32px', boxSizing:'border-box' }}>
  <div style={{ textAlign:'center', marginBottom:'24px' }}>
  <img src="/logo.png" alt="Logo" style={{ width:'90px', height:'90px', objectFit:'contain', display:'block', margin:'0 auto 10px' }} />
