@@ -2133,9 +2133,11 @@ export default function App() {
  const [donutVariants, setDonutVariants] = useState([])
  const [variantsLoading, setVariantsLoading] = useState(false)
  const [baseDoughIngredients, setBaseDoughIngredients] = useState([])
+ const [powderBaseIngredients, setPowderBaseIngredients] = useState([])
  const [variantRecipes, setVariantRecipes] = useState({})
  const [selectedRecipeVariantId, setSelectedRecipeVariantId] = useState(null)
  const [editingBaseDough, setEditingBaseDough] = useState([])
+ const [editingPowderBase, setEditingPowderBase] = useState([])
  const [editingVariantRecipe, setEditingVariantRecipe] = useState([])
  const [savingRecipe, setSavingRecipe] = useState(false)
  const [productionLogs, setProductionLogs] = useState([])
@@ -5812,6 +5814,16 @@ Cancel = create batch record only for existing stock.`)
  setCostingLoadErrors(p => [...p.filter(x=>!x.includes('base_dough_recipe')), `base_dough_recipe: ${err.message || err}`])
  }
  try {
+ const { data: powder, error: powderErr } = await supabase.from('powder_base_recipe').select('*').order('created_at')
+ if (powderErr) throw powderErr
+ setPowderBaseIngredients(powder || [])
+ setCostingLoadErrors(p => p.filter(x=>!x.includes('powder_base_recipe')))
+ } catch (err) {
+ console.warn('Powder base recipe could not be loaded:', err)
+ setPowderBaseIngredients([])
+ setCostingLoadErrors(p => [...p.filter(x=>!x.includes('powder_base_recipe')), `powder_base_recipe: ${err.message || err}`])
+ }
+ try {
  const { data: variant, error: variantErr } = await supabase.from('variant_recipes').select('*').order('variant_id')
  if (variantErr) throw variantErr
  const grouped = {}
@@ -5844,6 +5856,26 @@ Cancel = create batch record only for existing stock.`)
  if (error) throw error
  }
  showToast(' Base dough recipe saved!'); loadRecipes()
+ } catch(err) { showToast(' Failed: '+err.message,'red') }
+ setSavingRecipe(false)
+ }
+ async function savePowderBase() {
+ setSavingRecipe(true)
+ try {
+ // Delete existing and re-insert. Powder base is a shared production recipe like base dough.
+ await supabase.from('powder_base_recipe').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+ const validRows = editingPowderBase.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
+ if (validRows.length > 0) {
+ const { error } = await supabase.from('powder_base_recipe').insert(validRows.map(r => ({
+ inventory_item_id: r.inventory_item_id || null,
+ item_name: r.item_name.trim(),
+ quantity_per_batch: productionRecipeQuantityGrams(r),
+ unit: 'g',
+ notes: r.notes || null
+ })))
+ if (error) throw error
+ }
+ showToast(' Powder base recipe saved!'); loadRecipes()
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setSavingRecipe(false)
  }
@@ -5916,12 +5948,16 @@ Cancel = create batch record only for existing stock.`)
  const baseCostPerPiece = baseDoughIngredients.reduce((sum, ing) => {
  return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
  }, 0)
+ // Powder base cost per piece (shared recipe like base dough)
+ const powderBaseCostPerPiece = powderBaseIngredients.reduce((sum, ing) => {
+ return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
+ }, 0)
  // Variant topping/filling cost per piece
  const variantIngs = variantRecipes[variantId] || []
  const variantCostPerPiece = variantIngs.reduce((sum, ing) => {
  return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
  }, 0)
- const ingredientCost = baseCostPerPiece + variantCostPerPiece
+ const ingredientCost = baseCostPerPiece + powderBaseCostPerPiece + variantCostPerPiece
  const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
  const laborPerPiece = safeNum(costSettings.daily_labor_cost) / totalDailyPieces
  const monthlyDepreciation =
@@ -6025,9 +6061,9 @@ Cancel = create batch record only for existing stock.`)
  log_id: logData.id, variant_id: e.variant_id,
  variant_name: d.variant?.name || '', pieces_produced: d.pieces, ingredient_cost: d.ingCost
  })
- // Deduct stock for base dough
+ // Deduct stock for shared recipes: base dough + powder base
  const batchEquiv = d.pieces / d.piecesPerBatch
- for (const ing of baseDoughIngredients) {
+ for (const ing of [...baseDoughIngredients, ...powderBaseIngredients]) {
  if (!ing.inventory_item_id) continue
  const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
  if (deductQtyGrams <= 0) continue
@@ -8570,11 +8606,11 @@ function buildDeliveryInvoicePrintCSS() {
    // maximum possible invoice (all 17 donut variants at once) — even that
    // fits comfortably within 165mm with room to spare, so this size is
    // safe for every invoice this system can produce, not just typical ones.
-   const widths = [1746, 1207, 900, 900, 900]
+   // Keep the product table as five separate columns. The Amount column is slightly wider
+   // so totals and peso amounts do not clip, while the Unsold column stays separate for returns.
+   const widths = [1746, 1100, 850, 1150, 807]
    const full = widths.reduce((sum, w) => sum + w, 0)
    const valueSpan4 = widths[1] + widths[2] + widths[3] + widths[4]
-  const totalLabelSpan2 = widths[1] + widths[2]
-  const totalAmountSpan2 = widths[3] + widths[4]
 
    // Brand palette — same red/gold used across the rest of the system.
    const BRAND_RED = 'CA1B1B'
@@ -8627,8 +8663,10 @@ function buildDeliveryInvoicePrintCSS() {
    ], 320))
    rows.push(wordRow([
      wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
-     wordCell('TOTAL', { width:totalLabelSpan2, span:2, align:'center', bold:true, size:20, shade:BRAND_GOLD }),
-     wordCell(data.total, { width:totalAmountSpan2, span:2, align:'right', bold:true, size:20, shade:BRAND_GOLD })
+     wordCell('', { width:widths[1], align:'center', size:20, shade:BRAND_GOLD }),
+     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:20, shade:BRAND_GOLD }),
+     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:20, shade:BRAND_GOLD }),
+     wordCell('', { width:widths[4], align:'center', size:20, shade:BRAND_GOLD })
    ], 340))
    rows.push(wordRow([
      wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
@@ -26629,6 +26667,7 @@ function printCompanyDocumentRecord(record) {
  <strong style={{ color:'#ca1b1b' }}> Required Supabase Tables:</strong>
  <p style={{ color:'#555', margin:'6px 0 2px' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> id (uuid PK), name, category, selling_price (numeric), pieces_per_batch (numeric), is_active (bool default true), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>base_dough_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
+ <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>powder_base_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>variant_recipes</code> id (uuid PK), variant_id (uuid), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), ingredient_type (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_logs</code> id (uuid PK), production_date (date), total_pieces (numeric), ingredient_cost (numeric), labor_cost (numeric), overhead_cost (numeric), total_cost (numeric), notes (text), logged_by (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_log_items</code> id (uuid PK), log_id (uuid), variant_id (uuid), variant_name (text), pieces_produced (numeric), ingredient_cost (numeric), created_at</p>
@@ -26710,6 +26749,72 @@ function printCompanyDocumentRecord(record) {
  )}
  </div>
 
+
+ {/* POWDER BASE RECIPE */}
+ <div style={{ background:'white', border:'2px solid #7b4f9e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+ <div>
+ <h3 style={{ color:'#7b4f9e', margin:'0 0 4px', fontSize:'15px' }}> Powder Base Recipe</h3>
+ <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across variants like Base Dough. Enter all powder base quantities in grams (g) per batch.</p>
+ </div>
+ {selectedRecipeVariantId!== 'powder_base'? (
+ <button style={{...btnBlack, background:'#7b4f9e', width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('powder_base'); setEditingPowderBase(powderBaseIngredients.length>0?powderBaseIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT POWDER BASE</button>
+ ): (
+ <div style={{ display:'flex', gap:'8px' }}>
+ <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={savePowderBase}>{savingRecipe?' Saving...':' SAVE'}</button>
+ <button style={{...btnGray, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setSelectedRecipeVariantId(null)}>CANCEL</button>
+ </div>
+ )}
+ </div>
+ {selectedRecipeVariantId === 'powder_base'? (
+ <div>
+ {editingPowderBase.map((row,i)=>(
+ <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
+ <div>
+ <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingPowderBase]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:'g'}; setEditingPowderBase(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
+ <option value=""> Link to inventory item </option>
+ {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
+ </select>
+ <input placeholder="Or type ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],item_name:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'4px' }} />
+ </div>
+ <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],quantity_per_batch:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }} min="0" step="0.01" />
+ <select value={row.unit||'g'} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],unit:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
+ {['g'].map(u=><option key={u} value={u}>{u}</option>)}
+ </select>
+ <input placeholder="Notes (optional)" value={row.notes||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],notes:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} />
+ <button onClick={()=>setEditingPowderBase(editingPowderBase.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}> </button>
+ </div>
+ ))}
+ <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 16px', marginTop:'8px', fontSize:'12px' }} onClick={()=>setEditingPowderBase([...editingPowderBase, { item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }])}>+ ADD INGREDIENT</button>
+ </div>
+ ): (
+ <div>
+ {powderBaseIngredients.length === 0? (
+ <p style={{ color:'#aaa', fontSize:'13px', fontStyle:'italic' }}>No powder base recipe set yet. Click Edit to define your powder base ingredients.</p>
+ ): (
+ <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
+ <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#f9f9f9', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#888' }}>
+ <span>Ingredient</span><span style={{ textAlign:'right' }}>Qty/batch</span><span style={{ textAlign:'right' }}>Unit</span><span style={{ textAlign:'right' }}>Cost/batch</span>
+ </div>
+ {powderBaseIngredients.map((r,i)=>{
+ const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r): 0
+ return (
+ <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
+ <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
+ </div>
+ )
+ }) }
+ </div>
+ )}
+ </div>
+ )}
+ </div>
+
  {/* VARIANT RECIPES */}
  <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}> Per-Variant Topping / Filling Recipes</h3>
  <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define toppings, fillings, and glazes in grams (g) only. Costing uses converted cost per gram.</p>
@@ -26725,9 +26830,10 @@ function printCompanyDocumentRecord(record) {
  const variantExtraRows = variantRecipes[v.id] || []
  const hasVariantRecipe = variantExtraRows.length > 0
  const hasBaseRecipe = (baseDoughIngredients || []).length > 0
- const hasAnyRecipeIngredients = hasBaseRecipe || hasVariantRecipe
- const totalIngredientRows = (baseDoughIngredients || []).length + variantExtraRows.length
- const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId!== 'base'
+ const hasPowderBaseRecipe = (powderBaseIngredients || []).length > 0
+ const hasAnyRecipeIngredients = hasBaseRecipe || hasPowderBaseRecipe || hasVariantRecipe
+ const totalIngredientRows = (baseDoughIngredients || []).length + (powderBaseIngredients || []).length + variantExtraRows.length
+ const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId!== 'base' && selectedRecipeVariantId!== 'powder_base'
  return (
  <div key={v.id} style={{ border:`1px solid ${catColor}33`, borderTop:'none', background:i%2===0?'white':'#fafafa', padding:'10px 14px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
@@ -26738,9 +26844,9 @@ function printCompanyDocumentRecord(record) {
  {!editingVariantId || editingVariantId!== v.id? (
  <span style={{ fontSize:'11px', color:'#888' }}>{v.pieces_per_batch} pcs/batch</span>
  ): null}
- {hasAnyRecipeIngredients &&!isEditing && <Badge label={`${totalIngredientRows} ingredient(s) incl. base`} color="green" />}
+ {hasAnyRecipeIngredients &&!isEditing && <Badge label={`${totalIngredientRows} ingredient(s) incl. shared base`} color="green" />}
  {!hasAnyRecipeIngredients &&!isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No recipe set</span>}
- {hasBaseRecipe && !hasVariantRecipe && !isEditing && <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'700' }}>Base dough auto-included. Add topping/filling only if needed.</span>}
+ {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && !isEditing && <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'700' }}>Shared base recipes auto-included. Add topping/filling only if needed.</span>}
  </div>
  {editingVariantId === v.id && (
  <div style={{ display:'flex', gap:'8px', marginTop:'8px', alignItems:'center', flexWrap:'wrap' }}>
@@ -26768,7 +26874,7 @@ function printCompanyDocumentRecord(record) {
  {isEditing && (
  <div style={{ marginTop:'10px', background:'#f9f9f9', padding:'12px', borderRadius:'8px', border:'1px solid #eee' }}>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', marginBottom:'10px', fontSize:'11px', color:'#555', lineHeight:1.45 }}>
- <strong style={{ color:'#ca1b1b' }}>Base dough is automatically included.</strong> Add only the extra topping, filling, glaze, or coating for this variant. Do not add Donut Premix, Yeast, or Ice again here.
+ <strong style={{ color:'#ca1b1b' }}>Base dough and powder base are automatically included.</strong> Add only the extra topping, filling, glaze, or coating for this variant. Do not add shared base ingredients again here.
  </div>
  {editingVariantRecipe.map((row,ri)=>(
  <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
@@ -26801,11 +26907,13 @@ function printCompanyDocumentRecord(record) {
  {(() => {
  const pieces = Math.max(1, Number(v.pieces_per_batch) || 1)
  const basePerPc = (baseDoughIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
+ const powderPerPc = (powderBaseIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
  const variantPerPc = variantExtraRows.reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
  return (
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'7px 9px', marginBottom:'7px', fontSize:'11px', color:'#555', display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
- <strong style={{ color:'#ca1b1b' }}>Total ingredients/pc: {php(basePerPc + variantPerPc)}</strong>
+ <strong style={{ color:'#ca1b1b' }}>Total ingredients/pc: {php(basePerPc + powderPerPc + variantPerPc)}</strong>
  <span>Base dough: {php(basePerPc)}</span>
+ <span>Powder base: {php(powderPerPc)}</span>
  <span>Variant extras: {php(variantPerPc)}</span>
  </div>
  )
@@ -26821,6 +26929,16 @@ function printCompanyDocumentRecord(record) {
  </div>
  )
  }) }
+ {(powderBaseIngredients || []).map((r,ri)=>{
+ const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
+ return (
+ <div key={`powder-${ri}`} style={{ background:'#f3e8ff', border:'1px solid #e4d0ff', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+ <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>(powder base)</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+ </div>
+ )
+ }) }
  {variantExtraRows.map((r,ri)=>{
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
  const qtyGrams = productionRecipeQuantityGrams(r)
@@ -26831,8 +26949,8 @@ function printCompanyDocumentRecord(record) {
  </div>
  )
  }) }
- {hasBaseRecipe && !hasVariantRecipe && (
- <div style={{ background:'#f7f7f7', borderRadius:'6px', padding:'4px 8px', fontSize:'11px', color:'#777', fontStyle:'italic' }}>No extra topping/filling added yet. This variant currently uses base dough only.</div>
+ {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && (
+ <div style={{ background:'#f7f7f7', borderRadius:'6px', padding:'4px 8px', fontSize:'11px', color:'#777', fontStyle:'italic' }}>No extra topping/filling added yet. This variant currently uses shared base recipes only.</div>
  )}
  </div>
  </div>
