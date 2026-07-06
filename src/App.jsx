@@ -2483,12 +2483,17 @@ export default function App() {
  const [showAddItem, setShowAddItem] = useState(false)
  const [newItemName, setNewItemName] = useState('')
  const [newItemCategory, setNewItemCategory] = useState('Raw Ingredients')
- const [newItemUnit, setNewItemUnit] = useState('kg')
+ const [newItemUnit, setNewItemUnit] = useState('g')
  const [newItemMinStock, setNewItemMinStock] = useState('')
  const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
  const [newItemBuyingPrice, setNewItemBuyingPrice] = useState('')
  const [newItemCurrentStock, setNewItemCurrentStock] = useState('')
  const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
+ const [newItemPurchaseUnit, setNewItemPurchaseUnit] = useState('sack')
+ const [newItemPurchaseUnitSize, setNewItemPurchaseUnitSize] = useState('')
+ const [newItemPurchaseUnitCost, setNewItemPurchaseUnitCost] = useState('')
+ const [newItemStockPurchaseQty, setNewItemStockPurchaseQty] = useState('')
+ const [newItemMinPurchaseQty, setNewItemMinPurchaseQty] = useState('')
  const [newItemExpiryDate, setNewItemExpiryDate] = useState('')
  const [newItemSupplierId, setNewItemSupplierId] = useState('')
  const [inventoryTransactions, setInventoryTransactions] = useState([])
@@ -2615,6 +2620,80 @@ export default function App() {
  const isSnackDrinkCategoryName = (category) => {
   const label = getInventoryCategoryLabel({ category })
   return label === 'Snacks, Drinks and Others'
+ }
+ const RAW_MATERIAL_PURCHASE_UNITS = ['sack','kg','pack','bag','box','pail','bottle','gallon','container','pc']
+ const isRawMaterialCategoryName = (category) => getInventoryCategoryLabel({ category }) === 'Raw Ingredients'
+ const isRawMaterialItem = (item = {}) => isRawMaterialCategoryName(item.category)
+ const normalizeInventoryBaseUnit = (unit = '') => {
+  const u = String(unit || '').trim().toLowerCase()
+  if (['kg','kgs','kilogram','kilograms'].includes(u)) return 'kg'
+  if (['g','gram','grams'].includes(u)) return 'g'
+  if (['l','liter','liters','litre','litres'].includes(u)) return 'L'
+  if (['ml','milliliter','milliliters','millilitre','millilitres'].includes(u)) return 'mL'
+  if (['pc','pcs','piece','pieces'].includes(u)) return 'pcs'
+  return unit || 'unit'
+ }
+ const getRawMaterialBaseUnit = (item = {}) => normalizeInventoryBaseUnit(item.base_unit || item.unit || 'g')
+ const getFriendlyRawStockInfo = (item = {}, qtyOverride = null) => {
+  const qty = safeNum(qtyOverride ?? item.current_stock, 0)
+  const baseUnit = getRawMaterialBaseUnit(item)
+  const purchaseUnit = String(item.purchase_unit || '').trim()
+  const purchaseSize = safeNum(item.purchase_unit_size, 0)
+  const purchaseCost = safeNum(item.purchase_unit_cost, 0)
+  let primary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${baseUnit}`
+  let secondary = ''
+  if (baseUnit === 'g') {
+   primary = qty >= 1000 ? `${(qty / 1000).toLocaleString('en-PH', { maximumFractionDigits:2 })} kg` : `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} g`
+   secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} g`
+  } else if (baseUnit === 'mL') {
+   primary = qty >= 1000 ? `${(qty / 1000).toLocaleString('en-PH', { maximumFractionDigits:2 })} L` : `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} mL`
+   secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} mL`
+  }
+  if (purchaseUnit && purchaseSize > 0) {
+   const eq = qty / purchaseSize
+   const eqText = `${eq.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${purchaseUnit}${Math.abs(eq) > 1 ? 's' : ''}`
+   secondary = secondary ? `${secondary} | ${eqText}` : eqText
+  }
+  const costPerBase = safeNum(item.cost_per_unit, 0)
+  const costPerKg = baseUnit === 'g' ? costPerBase * 1000 : 0
+  const costPerL = baseUnit === 'mL' ? costPerBase * 1000 : 0
+  const purchaseCostText = purchaseUnit && purchaseCost > 0 ? `${php(purchaseCost)}/${purchaseUnit}` : ''
+  return { qty, baseUnit, purchaseUnit, purchaseSize, purchaseCost, primary, secondary, costPerBase, costPerKg, costPerL, purchaseCostText }
+ }
+ const computeRawMaterialAddSetup = () => {
+  const purchaseSize = safeNum(newItemPurchaseUnitSize, 0)
+  const purchaseCost = safeNum(newItemPurchaseUnitCost, 0)
+  const stockPurchaseQty = safeNum(newItemStockPurchaseQty, 0)
+  const minPurchaseQty = safeNum(newItemMinPurchaseQty, 0)
+  const currentStock = purchaseSize > 0 && stockPurchaseQty > 0 ? moneyRound(purchaseSize * stockPurchaseQty) : safeNum(newItemCurrentStock, 0)
+  const minStock = purchaseSize > 0 && minPurchaseQty > 0 ? moneyRound(purchaseSize * minPurchaseQty) : safeNum(newItemMinStock, 0)
+  const costPerUnit = purchaseSize > 0 && purchaseCost > 0 ? Math.round(((purchaseCost / purchaseSize) + Number.EPSILON) * 1000000) / 1000000 : safeNum(newItemCostPerUnit, 0)
+  return { purchaseSize, purchaseCost, stockPurchaseQty, minPurchaseQty, currentStock, minStock, costPerUnit }
+ }
+ const stripOptionalPurchaseColumns = (payload = {}) => {
+  const clean = { ...payload }
+  ;['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost'].forEach(k => delete clean[k])
+  return clean
+ }
+ const isMissingPurchaseColumnError = (error) => {
+  const msg = String(error?.message || error || '').toLowerCase()
+  return ['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost'].some(col => msg.includes(col))
+ }
+ async function insertInventoryItemSafe(payload) {
+  const first = await supabase.from('inventory_items').insert(payload)
+  if (first.error && isMissingPurchaseColumnError(first.error)) {
+   showToast('Professional purchase-unit columns are not installed yet. Item was saved using base inventory fields only.', 'orange')
+   return await supabase.from('inventory_items').insert(stripOptionalPurchaseColumns(payload))
+  }
+  return first
+ }
+ async function updateInventoryItemSafe(itemId, payload) {
+  const first = await supabase.from('inventory_items').update(payload).eq('id', itemId)
+  if (first.error && isMissingPurchaseColumnError(first.error)) {
+   showToast('Professional purchase-unit columns are not installed yet. Basic inventory fields were updated only.', 'orange')
+   return await supabase.from('inventory_items').update(stripOptionalPurchaseColumns(payload)).eq('id', itemId)
+  }
+  return first
  }
  // Suppliers
  const [suppliers, setSuppliers] = useState([])
@@ -4534,31 +4613,44 @@ Cancel = create batch record only for existing stock.`)
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
 
  const isNewSnackDrink = isSnackDrinkCategoryName(newItemCategory)
+ const isNewRawMaterial = isRawMaterialCategoryName(newItemCategory)
  const enteredBuyingPrice = safeNum(newItemBuyingPrice, 0)
+ const rawSetup = computeRawMaterialAddSetup()
 
  // For Snacks/Drinks: existing/old price is SELLING PRICE.
  // Buying price is a separate field. Only compute selling price when buying price is entered.
- const itemBuyingPrice = isNewSnackDrink ? enteredBuyingPrice : 0
- const itemCostPerUnit = isNewSnackDrink
-  ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
-  : safeNum(newItemCostPerUnit, 0)
+ const itemCostPerUnit = isNewRawMaterial
+  ? rawSetup.costPerUnit
+  : (isNewSnackDrink
+   ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
+   : safeNum(newItemCostPerUnit, 0))
  const itemSellingPrice = isNewSnackDrink
   ? (enteredBuyingPrice > 0 ? snackDrinkAutoSellingPrice(enteredBuyingPrice) : safeNum(newItemSellingPrice, 0))
   : safeNum(newItemSellingPrice, 0)
- setAddItemLoading(true)
- try {
- const { error } = await supabase.from('inventory_items').insert({
+ const itemUnit = isNewRawMaterial ? 'g' : (newItemUnit.trim() || 'kg')
+ const itemCurrentStock = isNewRawMaterial ? rawSetup.currentStock : Number(newItemCurrentStock || 0)
+ const itemMinStock = isNewRawMaterial ? rawSetup.minStock : Number(newItemMinStock || 0)
+ const itemPayload = {
  name: newItemName.trim(),
  category: newItemCategory,
- unit: newItemUnit.trim()||'kg',
- current_stock: Number(newItemCurrentStock||0),
- min_stock: Number(newItemMinStock||0),
- cost_per_unit: Number(newItemCostPerUnit||0),
- selling_price: Number(newItemSellingPrice||0),
+ unit: itemUnit,
+ current_stock: itemCurrentStock,
+ min_stock: itemMinStock,
+ cost_per_unit: Number(itemCostPerUnit || 0),
+ selling_price: Number(itemSellingPrice || 0),
  expiry_date: newItemExpiryDate || null,
  supplier_id: newItemSupplierId||null,
- is_active: true
- })
+ is_active: true,
+ ...(isNewRawMaterial ? {
+  base_unit:'g',
+  purchase_unit:String(newItemPurchaseUnit || '').trim() || null,
+  purchase_unit_size:rawSetup.purchaseSize || null,
+  purchase_unit_cost:rawSetup.purchaseCost || null
+ } : {})
+ }
+ setAddItemLoading(true)
+ try {
+ const { error } = await insertInventoryItemSafe(itemPayload)
  if (error) { showToast(' Failed: '+error.message,'red'); return }
  const addedName = newItemName.trim()
  const addedCategory = newItemCategory
@@ -4574,8 +4666,13 @@ Cancel = create batch record only for existing stock.`)
  setNewItemSellingPrice('')
  setNewItemExpiryDate('')
  setNewItemSupplierId('')
+ setNewItemPurchaseUnit('sack')
+ setNewItemPurchaseUnitSize('')
+ setNewItemPurchaseUnitCost('')
+ setNewItemStockPurchaseQty('')
+ setNewItemMinPurchaseQty('')
  setNewItemCategory('Raw Ingredients')
- setNewItemUnit('kg')
+ setNewItemUnit('g')
  // 3. Close form item is already in the list below
  setShowAddItem(false)
  // 4. Show success make sure category filter shows the new item
@@ -4599,6 +4696,7 @@ Cancel = create batch record only for existing stock.`)
   const f = editItemFields
   const updatedCategory = f.category ?? item.category
   const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
+  const isEditingRawMaterial = isRawMaterialCategoryName(updatedCategory)
 
   const supplierPrice = isEditingSnackDrink
    ? safeNum(f.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item), 0)
@@ -4609,9 +4707,13 @@ Cancel = create batch record only for existing stock.`)
    return
   }
 
+  const rawPurchaseSize = safeNum(f.purchase_unit_size ?? item.purchase_unit_size, 0)
+  const rawPurchaseCost = safeNum(f.purchase_unit_cost ?? item.purchase_unit_cost, 0)
   const finalCostPerUnit = isEditingSnackDrink
    ? supplierPrice
-   : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
+   : (isEditingRawMaterial && rawPurchaseSize > 0 && rawPurchaseCost > 0
+    ? Math.round(((rawPurchaseCost / rawPurchaseSize) + Number.EPSILON) * 1000000) / 1000000
+    : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0))
 
   const finalSellingPrice = isEditingSnackDrink
    ? snackDrinkAutoSellingPrice(supplierPrice)
@@ -4620,13 +4722,19 @@ Cancel = create batch record only for existing stock.`)
   const payload = {
    name: f.name || item.name,
    category: f.category || item.category,
-   unit: f.unit || item.unit,
+   unit: isEditingRawMaterial ? 'g' : (f.unit || item.unit),
    current_stock: Number(f.current_stock ?? item.current_stock ?? 0),
    min_stock: Number(f.min_stock ?? item.min_stock),
    cost_per_unit: finalCostPerUnit,
    selling_price: finalSellingPrice,
    expiry_date: f.expiry_date !== undefined ? (f.expiry_date || null) : (item.expiry_date || null),
-   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null)
+   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null),
+   ...(isEditingRawMaterial ? {
+    base_unit:'g',
+    purchase_unit:String(f.purchase_unit ?? item.purchase_unit ?? '').trim() || null,
+    purchase_unit_size:rawPurchaseSize || null,
+    purchase_unit_cost:rawPurchaseCost || null
+   } : {})
   }
 
   if (isEditingSnackDrink) {
@@ -4634,7 +4742,7 @@ Cancel = create batch record only for existing stock.`)
    payload.markup_percent = 30
   }
 
-  const { error } = await supabase.from('inventory_items').update(payload).eq('id', item.id)
+  const { error } = await updateInventoryItemSafe(item.id, payload)
 
   if (error) { showToast(' Failed: ' + error.message, 'red'); return }
 
@@ -4746,7 +4854,7 @@ Cancel = create batch record only for existing stock.`)
  ${byCategory.map(g=>`
  <div class="cat-title"> ${g.cat}</div>
  <table>
- <tr><th>Item Name</th><th>Unit</th><th>Current Stock</th><th>Min Stock</th><th>Cost/Unit</th><th>Total Value</th><th>Status</th></tr>
+ <tr><th>Item Name</th><th>Base</th><th>Current Stock</th><th>Min Stock</th><th>Cost/Unit</th><th>Total Value</th><th>Status</th></tr>
  ${g.items.map(i=>{
  const isLow = Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0
  return `<tr>
@@ -4952,7 +5060,7 @@ Cancel = create batch record only for existing stock.`)
  ${Object.values(groupedBySupplier).map(group=>`
  <div class="supplier-title">${group.supplierName} - ${group.items.length} item(s)</div>
  <table>
- <thead><tr><th>Item</th><th>Category</th><th class="center">Unit</th><th class="right">On Hand</th><th class="right">Min</th><th class="right">Suggested Order</th><th class="right">Cost/Unit</th></tr></thead>
+ <thead><tr><th>Item</th><th>Category</th><th class="center">Unit</th><th class="right">Stock</th><th class="right">Min</th><th class="right">Suggested Order</th><th class="right">Cost/Unit</th></tr></thead>
  <tbody>
  ${group.items.map(i=>`
  <tr>
@@ -25848,7 +25956,7 @@ function printCompanyDocumentRecord(record) {
   return `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(searchText)
  })
  if (!catItems.length) return null
- return <optgroup key={cat} label={cat}>{catItems.map(i=><option key={i.id} value={i.id}>{i.name} {Number(i.current_stock||0).toFixed(2)} {i.unit} on hand</option>)}</optgroup>
+ return <optgroup key={cat} label={cat}>{catItems.map(i=>{ const info=isRawMaterialItem(i)?getFriendlyRawStockInfo(i):null; return <option key={i.id} value={i.id}>{i.name} {info ? info.primary : `${Number(i.current_stock||0).toFixed(2)} ${i.unit}`} on hand</option> })}</optgroup>
  }) }
  </select>
  {wastageItemSearch && !INVENTORY_CATEGORIES.some(cat=>inventoryItems.some(i=>getInventoryCategoryLabel(i)===cat && `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(String(wastageItemSearch || '').trim().toLowerCase()))) && (
@@ -26325,6 +26433,7 @@ function printCompanyDocumentRecord(record) {
  </select>
  <label style={lblS}>Quantity ({stockTxItemId? (inventoryItems.find(i=>i.id===stockTxItemId)?.unit||'units'): 'units'}):</label>
  <input type="number" placeholder="Enter quantity" value={stockTxQty} onChange={e=>setStockTxQty(e.target.value)} style={inputStyle} min="0.01" step="0.01" />
+ {stockTxItemId && isRawMaterialItem(inventoryItems.find(i=>i.id===stockTxItemId) || {}) && (()=>{ const info=getFriendlyRawStockInfo(inventoryItems.find(i=>i.id===stockTxItemId) || {}); return <p style={{ margin:'-6px 0 10px', color:'#4a90d9', fontSize:'11px', fontWeight:'800' }}>Raw material base unit is grams. Current display: {info.primary}{info.secondary ? ` (${info.secondary})` : ''}. {info.purchaseUnit && info.purchaseSize>0 ? `1 ${info.purchaseUnit} = ${info.purchaseSize.toLocaleString('en-PH')} g.` : ''}</p> })()}
  <label style={lblS}>Reference <span style={{ color:'#aaa', fontWeight:'normal' }}>(e.g. DR#, PO#, batch no.)</span>:</label>
  <input type="text" placeholder="Optional reference number" value={stockTxReference} onChange={e=>setStockTxReference(e.target.value)} style={inputStyle} />
  {stockTxType==='in' && stockTxItemId && isExpiryTrackedItem(inventoryItems.find(i=>i.id===stockTxItemId)) && (
@@ -26427,6 +26536,9 @@ function printCompanyDocumentRecord(record) {
  <select value={newItemCategory} onChange={e=>{
  const category = e.target.value
  setNewItemCategory(category)
+ if (isRawMaterialCategoryName(category)) {
+  setNewItemUnit('g')
+ }
  if (isSnackDrinkCategoryName(category) && safeNum(newItemBuyingPrice, 0) > 0) {
   setNewItemSellingPrice(snackDrinkAutoSellingPrice(newItemBuyingPrice))
  }
@@ -26438,6 +26550,49 @@ function printCompanyDocumentRecord(record) {
  <option value=""> No supplier assigned </option>
  {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
  </select>
+ {isRawMaterialCategoryName(newItemCategory) ? (()=>{
+ const setup = computeRawMaterialAddSetup()
+ const previewItem = { current_stock:setup.currentStock, unit:'g', base_unit:'g', purchase_unit:newItemPurchaseUnit, purchase_unit_size:setup.purchaseSize, purchase_unit_cost:setup.purchaseCost, cost_per_unit:setup.costPerUnit }
+ const stockInfo = getFriendlyRawStockInfo(previewItem)
+ return (
+ <div style={{ background:'#fff', border:'1px solid #b7d9ff', borderRadius:'12px', padding:'12px', marginBottom:'10px' }}>
+  <p style={{ margin:'0 0 6px', color:'#4a90d9', fontSize:'12px', fontWeight:'900' }}>Professional Raw Material Setup</p>
+  <p style={{ margin:'0 0 10px', color:'#777', fontSize:'11px', lineHeight:1.4 }}>Recipes and costing will use grams internally. You can encode inventory using sack/kg/pack so the screen stays easy to understand.</p>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px' }}>
+   <div>
+    <label style={lblS}>Purchase Unit</label>
+    <select value={newItemPurchaseUnit} onChange={e=>setNewItemPurchaseUnit(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+     {RAW_MATERIAL_PURCHASE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
+    </select>
+   </div>
+   <div>
+    <label style={lblS}>Size per Purchase Unit (grams)</label>
+    <input type="number" placeholder="e.g. 25000 for 25kg sack" value={newItemPurchaseUnitSize} onChange={e=>setNewItemPurchaseUnitSize(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+   </div>
+   <div>
+    <label style={lblS}>Cost per Purchase Unit</label>
+    <input type="number" placeholder="e.g. 4825" value={newItemPurchaseUnitCost} onChange={e=>setNewItemPurchaseUnitCost(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+   </div>
+   <div>
+    <label style={lblS}>Current Stock ({newItemPurchaseUnit || 'unit'} count)</label>
+    <input type="number" placeholder="e.g. 2" value={newItemStockPurchaseQty} onChange={e=>setNewItemStockPurchaseQty(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+   </div>
+   <div>
+    <label style={lblS}>Minimum Stock ({newItemPurchaseUnit || 'unit'} count)</label>
+    <input type="number" placeholder="e.g. 1" value={newItemMinPurchaseQty} onChange={e=>setNewItemMinPurchaseQty(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+   </div>
+   <div>
+    <label style={lblS}>Expiry Date / FEFO Date</label>
+    <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+   </div>
+  </div>
+  <div style={{ marginTop:'10px', background:'#f0fff4', border:'1px solid #b7ebc6', borderRadius:'10px', padding:'10px', color:'#1f7a3a', fontSize:'11px', fontWeight:'800', lineHeight:1.5 }}>
+   Preview: Stock will save as {setup.currentStock.toLocaleString('en-PH', { maximumFractionDigits:2 })} g ({stockInfo.primary}) | Min: {setup.minStock.toLocaleString('en-PH', { maximumFractionDigits:2 })} g | Cost: {php(setup.costPerUnit)}/g{setup.costPerUnit > 0 ? ` (${php(setup.costPerUnit * 1000)}/kg)` : ''}
+  </div>
+  {setup.purchaseSize <= 0 || setup.purchaseCost <= 0 ? <p style={{ margin:'8px 0 0', color:'#ca1b1b', fontSize:'11px', fontWeight:'800' }}>Enter purchase size and purchase cost to auto-compute cost per gram.</p> : null}
+ </div>
+ )
+})() : (
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
  <div>
  <label style={lblS}>Unit of Measure:</label>
@@ -26491,6 +26646,7 @@ function printCompanyDocumentRecord(record) {
  </div>
  )}
  </div>
+)}
  <button style={{...btnBlack, background:'#4a90d9', marginTop:'14px', opacity:addItemLoading?0.6:1 }} disabled={addItemLoading} onClick={addInventoryItem}>{addItemLoading?' Adding...':' ADD ITEM'}</button>
  </div>
  )}
@@ -26566,12 +26722,12 @@ function printCompanyDocumentRecord(record) {
  <thead>
  <tr style={{ background:'#fff8dc', borderBottom:'1px solid #eadf9a' }}>
  <th style={{ padding:'6px 7px', textAlign:'left', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Item</th>
- <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Unit</th>
- <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>On Hand</th>
+ <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Base</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Stock Display</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Used/Sold</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Added</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Min</th>
- <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Cost</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Costing / Purchase</th>
  <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Status</th>
  <th style={{ padding:'6px 7px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Action</th>
  </tr>
@@ -26580,6 +26736,9 @@ function printCompanyDocumentRecord(record) {
  {group.items.map(item=>{
  const isLow = Number(item.current_stock||0)<=Number(item.min_stock||0)&&Number(item.min_stock||0)>0
  const isEditing = editingItemId===item.id
+ const isRawMaterialRow = isRawMaterialItem(item)
+ const rawStockInfo = isRawMaterialRow ? getFriendlyRawStockInfo(item) : null
+ const rawMinInfo = isRawMaterialRow ? getFriendlyRawStockInfo(item, item.min_stock) : null
  const movement = movementByItem[String(item.id)] || { inQty:0, outQty:0 }
  const manualCurrent = editItemFields.current_stock!==undefined && editItemFields.current_stock!=='' ? Number(editItemFields.current_stock) : Number(item.current_stock || 0)
  const addQty = Number(editItemFields.additional_stock_today || 0)
@@ -26611,6 +26770,16 @@ function printCompanyDocumentRecord(record) {
  <option value="">No supplier</option>
  {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
  </select>
+ {isRawMaterialCategoryName(editItemFields.category ?? item.category) && (
+  <div style={{ background:'#f7fbff', border:'1px solid #cfe4ff', borderRadius:'8px', padding:'7px', display:'grid', gap:'5px' }}>
+   <div style={{ fontSize:'9.5px', color:'#4a90d9', fontWeight:'900' }}>Purchase unit setup</div>
+   <select value={editItemFields.purchase_unit??item.purchase_unit??'sack'} onChange={e=>setEditItemFields(p=>({...p,purchase_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }}>
+    {RAW_MATERIAL_PURCHASE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
+   </select>
+   <input type="number" placeholder="Size in grams per unit" value={editItemFields.purchase_unit_size??item.purchase_unit_size??''} onChange={e=>setEditItemFields(p=>({...p,purchase_unit_size:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }} min="0" step="0.01" />
+   <input type="number" placeholder="Cost per purchase unit" value={editItemFields.purchase_unit_cost??item.purchase_unit_cost??''} onChange={e=>setEditItemFields(p=>({...p,purchase_unit_cost:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }} min="0" step="0.01" />
+  </div>
+ )}
  {EXPIRY_TRACKED_CATEGORIES.includes(editItemFields.category??item.category) && (
  <input type="date" title="Expiry / FEFO date" value={editItemFields.expiry_date??item.expiry_date??''} onChange={e=>setEditItemFields(p=>({...p,expiry_date:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }} />
  )}
@@ -26619,6 +26788,7 @@ function printCompanyDocumentRecord(record) {
  <div>
  <div style={{ fontWeight:'700', color:'#1a1a2e', fontSize:'11.5px', lineHeight:1.2, textTransform:'none' }}>{item.name}</div>
  <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', lineHeight:1.15 }}>{suppliers.find(s=>s.id===item.supplier_id)?.name || 'No supplier'}</div>
+ {isRawMaterialRow && rawStockInfo?.purchaseUnit && rawStockInfo?.purchaseSize > 0 && <div style={{ fontSize:'9.5px', color:'#4a90d9', marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>Purchase: {rawStockInfo.purchaseUnit} = {rawStockInfo.purchaseSize.toLocaleString('en-PH')} g{rawStockInfo.purchaseCostText ? ` | ${rawStockInfo.purchaseCostText}` : ''}</div>}
  {item.expiry_date && (()=>{ const ex = getExpiryStatusInfo(item); return <div style={{ fontSize:'9.5px', color:ex.color, marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>FEFO: {ex.label}</div> })()}
  {(() => { const bs = getBatchSummaryForItem(item); return bs.batchCount > 0 ? <div style={{ fontSize:'9.5px', color:bs.expiredQty>0?'#ca1b1b':bs.nearQty>0?'#f57c00':'#4a90d9', marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>Lots: {bs.batchCount} | Batch qty: {safeNum(bs.totalBatchQty,0).toLocaleString('en-PH')} | Nearest: {bs.nearest?.expiry_date || 'No expiry'}</div> : null })()}
  </div>
@@ -26627,17 +26797,28 @@ function printCompanyDocumentRecord(record) {
 
  <td style={{ ...rowBase, textAlign:'center', color:'#666' }}>
  {isEditing? (
- <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 6px' }}>
- {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
- </select>
- ): item.unit}
+ isRawMaterialCategoryName(editItemFields.category ?? item.category) ? (
+  <div style={{ fontSize:'10px', fontWeight:'900', color:'#4a90d9' }}>g<div style={{ fontSize:'9px', color:'#888', fontWeight:'600' }}>base</div></div>
+ ) : (
+  <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 6px' }}>
+  {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+  </select>
+ )
+ ): (isRawMaterialRow ? <><strong style={{ color:'#4a90d9' }}>g</strong><div style={{ fontSize:'9px', color:'#888' }}>base</div></> : item.unit)}
  </td>
 
  <td style={numStyle}>
  {isEditing? (
  <input type="number" value={editItemFields.current_stock??item.current_stock} onChange={e=>setEditItemFields(p=>({...p,current_stock:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
  ): (
- <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'700' }}>{Number(item.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}</strong>
+ isRawMaterialRow ? (
+  <div>
+   <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'800' }}>{rawStockInfo.primary}</strong>
+   {rawStockInfo.secondary && <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', fontWeight:'700' }}>{rawStockInfo.secondary}</div>}
+  </div>
+ ) : (
+  <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'700' }}>{Number(item.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}</strong>
+ )
  )}
  </td>
 
@@ -26660,7 +26841,7 @@ function printCompanyDocumentRecord(record) {
  <td style={{ ...numStyle, color:'#777' }}>
  {isEditing? (
  <input type="number" value={editItemFields.min_stock??item.min_stock} onChange={e=>setEditItemFields(p=>({...p,min_stock:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
- ): Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}
+ ): (isRawMaterialRow && rawMinInfo ? <><strong>{rawMinInfo.primary}</strong>{rawMinInfo.secondary && <div style={{ fontSize:'9px', color:'#999' }}>{rawMinInfo.secondary}</div>}</> : Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 }))}
  </td>
 
  
@@ -26690,6 +26871,14 @@ function printCompanyDocumentRecord(record) {
      Auto Sell: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)))}
     </div>
    </div>
+  ) : isRawMaterialCategoryName(editItemFields.category ?? item.category) ? (
+   <div>
+    <input type="number" value={(() => { const size=safeNum(editItemFields.purchase_unit_size ?? item.purchase_unit_size,0); const cost=safeNum(editItemFields.purchase_unit_cost ?? item.purchase_unit_cost,0); return size>0&&cost>0 ? Math.round(((cost/size)+Number.EPSILON)*1000000)/1000000 : (editItemFields.cost_per_unit??item.cost_per_unit) })()} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value,purchase_unit_cost:''}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.000001" />
+    <div style={{ fontSize:'9px', color:'#4a90d9', fontWeight:'900', marginTop:'3px' }}>Cost per g</div>
+    {safeNum(editItemFields.purchase_unit_size ?? item.purchase_unit_size,0)>0 && safeNum(editItemFields.purchase_unit_cost ?? item.purchase_unit_cost,0)>0 && (
+     <div style={{ fontSize:'9px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Auto from purchase</div>
+    )}
+   </div>
   ) : (
    <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
   )
@@ -26701,6 +26890,12 @@ function printCompanyDocumentRecord(record) {
      Supplier: {php(getSnackDrinkDisplayBuyingPrice(item))}
     </div>
    </>
+  ) : isRawMaterialRow ? (
+   <div>
+    <div style={{ color:'#1a1a2e', fontWeight:'900' }}>{php(rawStockInfo.costPerBase)}/g</div>
+    {rawStockInfo.costPerKg > 0 && <div style={{ fontSize:'9.5px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>{php(rawStockInfo.costPerKg)}/kg</div>}
+    {rawStockInfo.purchaseCostText && <div style={{ fontSize:'9.5px', color:'#4a90d9', fontWeight:'800', marginTop:'2px' }}>{rawStockInfo.purchaseCostText}</div>}
+   </div>
   ) : php(item.cost_per_unit || 0)
  )}
  </td>
