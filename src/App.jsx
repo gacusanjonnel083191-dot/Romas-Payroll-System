@@ -597,6 +597,52 @@ function isPaidLeaveCoveringDate(leaves = [], dateStr = '') {
  })
 }
 
+function dateStringDiffDays(a = '', b = '') {
+ const da = parseLocalDate(String(a || '').slice(0, 10))
+ const db = parseLocalDate(String(b || '').slice(0, 10))
+ if (!da || !db) return null
+ return Math.round((db.getTime() - da.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+function medicalCertificateCoversAbsenceRange(cert = {}, absenceStart = '', absenceEnd = '') {
+ const certStart = String(cert?.absence_start || cert?.leave_start || '').slice(0, 10)
+ const certEnd = String(cert?.absence_end || cert?.leave_end || certStart || '').slice(0, 10)
+ const status = String(cert?.status || 'uploaded').trim().toLowerCase()
+ if (!certStart || !certEnd || !absenceStart || !absenceEnd) return false
+ if (['rejected', 'void', 'voided', 'cancelled', 'deleted'].includes(status)) return false
+ return certStart <= absenceStart && certEnd >= absenceEnd
+}
+
+function getMedicalCertificateAbsenceLock(attendanceLogs = [], medicalCertificates = [], referenceDate = '') {
+ const refDate = String(referenceDate || getTodayDate()).slice(0, 10)
+ const byDate = new Map()
+ ;(attendanceLogs || []).forEach(log => {
+  const dateStr = String(log?.attendance_date || '').slice(0, 10)
+  if (!dateStr || dateStr >= refDate) return
+  const existing = byDate.get(dateStr)
+  if (!existing || (isAbsentAttendanceLog(log) && !isAbsentAttendanceLog(existing))) byDate.set(dateStr, log)
+ })
+ const dates = Array.from(byDate.keys()).sort().reverse()
+ for (const endDate of dates) {
+  const endLog = byDate.get(endDate)
+  if (!isAbsentAttendanceLog(endLog)) continue
+  const startDate = addDaysToDateString(endDate, -1)
+  const startLog = byDate.get(startDate)
+  if (!isAbsentAttendanceLog(startLog)) continue
+  const covered = (medicalCertificates || []).some(cert => medicalCertificateCoversAbsenceRange(cert, startDate, endDate))
+  if (!covered) {
+   return {
+    locked: true,
+    absenceStart: startDate,
+    absenceEnd: endDate,
+    absentDays: 2,
+    message: `Time In locked. Medical certificate required for 2 consecutive absences (${formatDateForDisplay(startDate)} - ${formatDateForDisplay(endDate)}).`
+   }
+  }
+ }
+ return { locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
+}
+
 function getHolidayAbsenceGuardDates(holidayDate = '') {
  const dateStr = String(holidayDate || '').slice(0, 10)
  if (!dateStr) return []
@@ -1806,6 +1852,8 @@ export default function App() {
  const [disputeReasonPresets, setDisputeReasonPresets] = useState({})
  const [profilePhotoUrl, setProfilePhotoUrl] = useState(null)
  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+ const [medicalCertLock, setMedicalCertLock] = useState({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' })
+ const [medicalCertUploading, setMedicalCertUploading] = useState(false)
  const [showOTRequest, setShowOTRequest] = useState(false)
  const [otRequestType, setOtRequestType] = useState('overtime')
  const [otRequestReason, setOtRequestReason] = useState('')
@@ -2751,7 +2799,7 @@ export default function App() {
 
  loadTodayLog(activeEmployee); loadTodaySchedule(activeEmployee)
  loadMyPayslips(activeEmployee); loadMyCashAdvances(activeEmployee)
- loadMyAttendanceHistory(activeEmployee); loadMyLeaveBalance(activeEmployee)
+ loadMyAttendanceHistory(activeEmployee); loadMyLeaveBalance(activeEmployee); loadMedicalCertificateLock(activeEmployee)
  checkAnnouncements(activeEmployee); loadMyCharges(activeEmployee); loadMySops(activeEmployee)
  }
 
@@ -3272,6 +3320,7 @@ export default function App() {
  setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
  setTodaySchedule(null); setMyPayslips([]); setCameraMode(null)
  setCapturedPhoto(null); stopCamera(); setPendingAnnouncement(null); setShowAnnouncementPopup(false)
+ setMedicalCertLock({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }); setMedicalCertUploading(false)
  setShowMySops(false); setMySopDocuments([]); setMySopAckRecords([]); setViewingMySop(null)
  }
  function closeAllPanels() {
@@ -11712,6 +11761,105 @@ function buildDeliveryInvoicePrintCSS() {
  const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
  setMyAttendance(data || [])
  }
+
+ async function loadMedicalCertificateLock(emp) {
+ if (!emp?.id) return { locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
+ setMedicalCertLock(prev => ({...prev, checking:true }))
+ try {
+  const lookbackStart = addDaysToDateString(today, -14)
+  const { data:logs, error:logsError } = await supabase
+   .from('attendance_logs')
+   .select('id,attendance_date,status,time_in,time_out')
+   .eq('employee_id', emp.id)
+   .gte('attendance_date', lookbackStart)
+   .lte('attendance_date', today)
+   .order('attendance_date', { ascending:false })
+  if (logsError) throw logsError
+
+  let certificates = []
+  let certificateTableReady = true
+  try {
+   const { data:certRows, error:certError } = await supabase
+    .from('employee_medical_certificates')
+    .select('*')
+    .eq('employee_id', emp.id)
+    .order('created_at', { ascending:false })
+   if (certError) throw certError
+   certificates = certRows || []
+  } catch(certErr) {
+   console.warn('Medical certificate table not available yet:', certErr)
+   certificateTableReady = false
+   certificates = []
+  }
+
+  if (!certificateTableReady) {
+   const unlocked = { checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
+   setMedicalCertLock(unlocked)
+   return unlocked
+  }
+
+  const lockInfo = getMedicalCertificateAbsenceLock(logs || [], certificates, today)
+  setMedicalCertLock({...lockInfo, checking:false })
+  return lockInfo
+ } catch(err) {
+  console.error('Medical certificate lock check failed:', err)
+  const fallback = { checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
+  setMedicalCertLock(fallback)
+  return fallback
+ }
+ }
+
+ async function handleMedicalCertificateUpload(e) {
+ const file = e.target.files?.[0]
+ if (!file) return
+ if (!employee?.id) { e.target.value=''; return }
+ if (!medicalCertLock?.locked) { showToast('No medical certificate lock is active.', 'red'); e.target.value=''; return }
+ const validTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']
+ if (file.type && !validTypes.includes(file.type)) {
+  showToast('Please upload PDF, JPG, PNG, or WEBP medical certificate only.', 'red')
+  e.target.value = ''
+  return
+ }
+ if (file.size > 10 * 1024 * 1024) {
+  showToast('Medical certificate file is too large. Maximum is 10MB.', 'red')
+  e.target.value = ''
+  return
+ }
+ setMedicalCertUploading(true)
+ try {
+  const ext = (file.name?.split('.').pop() || 'pdf').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'pdf'
+  const safeCode = String(employee.employee_code || employee.id).replace(/[^a-zA-Z0-9_-]/g, '_')
+  const fileName = `${safeCode}_${medicalCertLock.absenceStart}_to_${medicalCertLock.absenceEnd}_${Date.now()}.${ext}`
+  const { error:uploadError } = await supabase.storage
+   .from('medical-certificates')
+   .upload(fileName, file, { upsert:false, contentType:file.type || 'application/octet-stream' })
+  if (uploadError) throw uploadError
+  const { data:urlData } = supabase.storage.from('medical-certificates').getPublicUrl(fileName)
+  const fileUrl = urlData?.publicUrl || null
+  const { error:insertError } = await supabase.from('employee_medical_certificates').insert({
+   employee_id:employee.id,
+   employee_code:employee.employee_code,
+   employee_name:employee.full_name,
+   absence_start:medicalCertLock.absenceStart,
+   absence_end:medicalCertLock.absenceEnd,
+   absent_days:medicalCertLock.absentDays || 2,
+   file_name:fileName,
+   file_url:fileUrl,
+   status:'uploaded'
+  })
+  if (insertError) throw insertError
+  await logAudit('MEDICAL CERTIFICATE UPLOADED', employee.full_name || employee.employee_code || 'Employee', employee.full_name || '', `Uploaded medical certificate for ${medicalCertLock.absenceStart} to ${medicalCertLock.absenceEnd}`)
+  showToast(' Medical certificate uploaded. Time In is unlocked.')
+  setMedicalCertLock({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' })
+  await loadMedicalCertificateLock(employee)
+ } catch(err) {
+  console.error('Medical certificate upload failed:', err)
+  showToast('Medical certificate upload failed: ' + (err?.message || err), 'red')
+ } finally {
+  setMedicalCertUploading(false)
+  e.target.value = ''
+ }
+ }
  async function loadMyLeaveBalance(emp) {
  if (!emp?.id) return
 
@@ -11776,6 +11924,10 @@ function buildDeliveryInvoicePrintCSS() {
  }
  }
  async function initiateTimeIn() {
+ if (medicalCertLock?.locked) {
+  alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
+  return
+ }
  setCapturedPhoto(null); setCameraMode('timein')
  }
  async function initiateTimeOut() {
@@ -11806,6 +11958,11 @@ function buildDeliveryInvoicePrintCSS() {
  }
  async function confirmTimeIn() {
  if (!capturedPhoto) { alert('Please take a selfie first.'); return }
+ if (medicalCertLock?.locked) {
+  alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
+  setCameraMode(null); setCapturedPhoto(null)
+  return
+ }
  setLoading(true)
  // Offline handling
  if (!isOnline) {
@@ -21450,6 +21607,7 @@ function printCompanyDocumentRecord(record) {
  loadMyCashAdvances(adminEmployee)
  loadMyAttendanceHistory(adminEmployee)
  loadMyLeaveBalance(adminEmployee)
+ loadMedicalCertificateLock(adminEmployee)
  checkAnnouncements(adminEmployee)
  setCameFromAdmin(true)
  setAdminMode(false)
@@ -31888,6 +32046,18 @@ onClick={async ()=>{
  )}
  {geoStatus && <p style={{ color:'#f5a623', textAlign:'center', fontWeight:'bold', fontSize:'13px', margin:'0 0 8px' }}>{geoStatus}</p>}
 
+ {medicalCertLock?.locked && (
+ <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'12px', boxShadow:'0 4px 14px rgba(202,27,27,0.12)' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', textAlign:'center' }}> Time In Locked — Medical Certificate Required</p>
+ <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px', textAlign:'center' }}>{medicalCertLock.message || 'You were marked absent for 2 consecutive days. Upload a medical certificate to unlock Time In.'}</p>
+ <label style={{ display:'block', background:medicalCertUploading?'#f0f0f0':'#ca1b1b', color:medicalCertUploading?'#999':'white', borderRadius:'10px', padding:'11px 14px', textAlign:'center', fontWeight:'bold', fontSize:'12px', cursor:medicalCertUploading?'wait':'pointer' }}>
+ {medicalCertUploading?'UPLOADING MEDICAL CERTIFICATE...':'UPLOAD MEDICAL CERTIFICATE'}
+ <input type="file" accept="image/*,.pdf" disabled={medicalCertUploading} onChange={handleMedicalCertificateUpload} style={{ display:'none' }} />
+ </label>
+ <p style={{ color:'#888', fontSize:'10px', margin:'8px 0 0', textAlign:'center' }}>Accepted: PDF, JPG, PNG, WEBP. After upload, Time In unlocks automatically.</p>
+ </div>
+ )}
+
  <div style={{ background:'#f8f9fa', borderRadius:'12px', padding:'14px', marginBottom:'12px', border:'1px solid #eee' }}>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Today's Attendance</p>
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
@@ -31948,10 +32118,12 @@ onClick={async ()=>{
  {(()=>{
  const needsCompanyDevice = DEVICE_RESTRICTED_DEPTS.includes(employee?.department)
  const deviceOk =!needsCompanyDevice || isCompanyDevice
+ const timeInLockedByMedicalCert = !!medicalCertLock?.locked
+ const canTimeInNow = !todayLog && deviceOk && !timeInLockedByMedicalCert
  return (
  <div>
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
- <button style={{ background:todayLog?'#f0f0f0':deviceOk?'#ca1b1b':'#e0e0e0', color:todayLog?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(todayLog||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog}> TIME IN</button>
+ <button style={{ background:!canTimeInNow?'#f0f0f0':'#ca1b1b', color:!canTimeInNow?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:!canTimeInNow?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={timeInLockedByMedicalCert?()=>showToast(' Upload medical certificate first to unlock Time In.','red'):deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog||timeInLockedByMedicalCert||!deviceOk}> TIME IN</button>
  <button style={{ background:(!todayLog||!!todayLog?.time_out)?'#f0f0f0':deviceOk?'#1a1a2e':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out)?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeOut:()=>showToast(' Production staff must time out on the company tablet.','red')} disabled={loading||!todayLog||!!todayLog?.time_out}> TIME OUT</button>
  <button style={{ background:(!todayLog||!!todayLog?.time_out||onBreak)?'#f0f0f0':deviceOk?'#4a90d9':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out||onBreak)?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakOut:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!todayLog||!!todayLog?.time_out||onBreak}> BREAK OUT</button>
  <button style={{ background:!onBreak?'#f0f0f0':deviceOk?'#2d8a4e':'#e0e0e0', color:!onBreak?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakIn:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!onBreak}> BREAK IN</button>
