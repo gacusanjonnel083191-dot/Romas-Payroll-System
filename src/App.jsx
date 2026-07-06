@@ -8572,7 +8572,9 @@ function buildDeliveryInvoicePrintCSS() {
    // safe for every invoice this system can produce, not just typical ones.
    const widths = [1746, 1207, 900, 900, 900]
    const full = widths.reduce((sum, w) => sum + w, 0)
-   const valueSpan3 = widths[1] + widths[2] + widths[3]
+   const valueSpan4 = widths[1] + widths[2] + widths[3] + widths[4]
+  const totalLabelSpan2 = widths[1] + widths[2]
+  const totalAmountSpan2 = widths[3] + widths[4]
 
    // Brand palette — same red/gold used across the rest of the system.
    const BRAND_RED = 'CA1B1B'
@@ -8584,18 +8586,15 @@ function buildDeliveryInvoicePrintCSS() {
    rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:20, line:240, shade:BRAND_RED, color:'FFFFFF' })], 360))
    rows.push(wordRow([
      wordCell('Date:', { width:widths[0], align:'center', bold:true, size:20 }),
-     wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:20, shade:PALE_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:20 })
+     wordCell(data.date, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
    ], 320))
    rows.push(wordRow([
      wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:20 }),
-     wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:20, shade:PALE_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:20 })
+     wordCell(data.customerName, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
    ], 320))
    rows.push(wordRow([
      wordCell('Address:', { width:widths[0], align:'center', bold:true, size:20 }),
-     wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:20, shade:PALE_RED }),
-     wordCell('', { width:widths[4], align:'center', size:20 })
+     wordCell(data.customerAddress, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_RED })
    ], 320))
    rows.push(wordRow([
      wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:20, line:240, shade:PALE_GOLD })
@@ -8628,16 +8627,12 @@ function buildDeliveryInvoicePrintCSS() {
    ], 320))
    rows.push(wordRow([
      wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
-     wordCell('', { width:widths[1], align:'center', size:20 }),
-     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:20, shade:BRAND_GOLD }),
-     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:20, shade:BRAND_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:20 })
+     wordCell('TOTAL', { width:totalLabelSpan2, span:2, align:'center', bold:true, size:20, shade:BRAND_GOLD }),
+     wordCell(data.total, { width:totalAmountSpan2, span:2, align:'right', bold:true, size:20, shade:BRAND_GOLD })
    ], 340))
    rows.push(wordRow([
      wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
-     wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:20, shade:PALE_GOLD }),
-     wordCell('', { width:widths[3], align:'center', size:20 }),
-     wordCell('', { width:widths[4], align:'center', size:20 })
+     wordCell(data.preparedBy, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
    ], 320))
 
    return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
