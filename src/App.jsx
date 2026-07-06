@@ -8521,7 +8521,8 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  function wordRun(text, opts = {}) {
-   const size = opts.size || 13
+   // Word DOCX uses half-points: 20 = Arial 10pt.
+   const size = opts.size || 20
    // Use bold as the default for invoice readability on 4x6 thermal/photo paper.
    // Pass bold:false only for intentionally light text.
    const bold = opts.bold === false ? '' : '<w:b/><w:bCs/>'
@@ -8532,10 +8533,9 @@ function buildDeliveryInvoicePrintCSS() {
 
  function wordParagraph(text, opts = {}) {
    const align = opts.align || 'left'
-   // A line-height equal to the font size clips bold text in Word print preview.
-   // Give each line a small safety allowance while keeping the exact 4x6 table height.
-   const size = opts.size || 13
-   const line = opts.line || Math.max(150, Math.ceil(size * 12))
+   // Arial 10 needs enough exact line height so Word does not display it as 5pt or clip bold text.
+   const size = opts.size || 20
+   const line = opts.line || Math.max(240, Math.ceil(size * 12))
    return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:before="0" w:after="0" w:line="${line}" w:lineRule="exact"/></w:pPr>${wordRun(text, opts)}</w:p>`
  }
 
@@ -8563,7 +8563,7 @@ function buildDeliveryInvoicePrintCSS() {
 
  function buildDeliveryInvoiceDocxTable(invoice) {
    const data = getDeliveryInvoicePrintData(invoice)
-   // Fixed physical paper size: 105mm x 165mm, confirmed from the Word custom
+   // Fixed physical paper size:20mm x 165mm, confirmed from the Word custom
    // paper setup screenshot — this matches real paper stock, not a computed value. Table width is sized to fit
    // within the page margins (147 twips ≈ 2.6mm each side), leaving a
    // little clearance on all 4 sides as requested. Checked against the
@@ -8581,63 +8581,63 @@ function buildDeliveryInvoicePrintCSS() {
    const PALE_RED = 'FBDCDC'
 
    const rows = []
-   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:15, line:170, shade:BRAND_RED, color:'FFFFFF' })], 360))
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:20, line:240, shade:BRAND_RED, color:'FFFFFF' })], 360))
    rows.push(wordRow([
-     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:13 }),
-     wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:13, shade:PALE_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
+     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:20 }),
+     wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:20, shade:PALE_GOLD }),
+     wordCell('', { width:widths[4], align:'center', size:20 })
    ], 320))
    rows.push(wordRow([
-     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:13 }),
-     wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:13, shade:PALE_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
+     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:20 }),
+     wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:20, shade:PALE_GOLD }),
+     wordCell('', { width:widths[4], align:'center', size:20 })
    ], 320))
    rows.push(wordRow([
-     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:13 }),
-     wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:12, shade:PALE_RED }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
+     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:20 }),
+     wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:20, shade:PALE_RED }),
+     wordCell('', { width:widths[4], align:'center', size:20 })
    ], 320))
    rows.push(wordRow([
-     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:12, line:150, shade:PALE_GOLD })
+     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:20, line:240, shade:PALE_GOLD })
    ], 290))
    rows.push(wordRow([
-     wordCell('Product', { width:widths[0], align:'center', bold:true, size:13 }),
-     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:13 }),
-     wordCell('Price', { width:widths[2], align:'center', bold:true, size:13 }),
-     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:13 }),
-     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:13 })
+     wordCell('Product', { width:widths[0], align:'center', bold:true, size:20 }),
+     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:20 }),
+     wordCell('Price', { width:widths[2], align:'center', bold:true, size:20 }),
+     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:20 }),
+     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:20 })
    ], 320))
 
    data.productRows.forEach(row => {
      rows.push(wordRow([
-       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:11 }),
-       wordCell(row.delivered, { width:widths[1], align:'center', size:12 }),
-       wordCell(row.price, { width:widths[2], align:'right', size:11 }),
-       wordCell(row.amount, { width:widths[3], align:'right', size:11 }),
-       wordCell(row.unsold, { width:widths[4], align:'center', size:12 })
+       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:20 }),
+       wordCell(row.delivered, { width:widths[1], align:'center', size:20 }),
+       wordCell(row.price, { width:widths[2], align:'right', size:20 }),
+       wordCell(row.amount, { width:widths[3], align:'right', size:20 }),
+       wordCell(row.unsold, { width:widths[4], align:'center', size:20 })
      ], 340))
    })
 
-   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:8 })), 40))
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:20 })), 40))
    rows.push(wordRow([
-     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:11 }),
-     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:12 }),
-     wordCell('', { width:widths[2], align:'center', size:12 }),
-     wordCell('', { width:widths[3], align:'center', size:12 }),
-     wordCell('', { width:widths[4], align:'center', size:12 })
+     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
+     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:20 }),
+     wordCell('', { width:widths[2], align:'center', size:20 }),
+     wordCell('', { width:widths[3], align:'center', size:20 }),
+     wordCell('', { width:widths[4], align:'center', size:20 })
    ], 320))
    rows.push(wordRow([
-     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:11 }),
-     wordCell('', { width:widths[1], align:'center', size:12 }),
-     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:14, shade:BRAND_GOLD }),
-     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:14, shade:BRAND_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:12 })
+     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
+     wordCell('', { width:widths[1], align:'center', size:20 }),
+     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:20, shade:BRAND_GOLD }),
+     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:20, shade:BRAND_GOLD }),
+     wordCell('', { width:widths[4], align:'center', size:20 })
    ], 340))
    rows.push(wordRow([
-     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:11, shade:PALE_GOLD }),
-     wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:11, shade:PALE_GOLD }),
-     wordCell('', { width:widths[3], align:'center', size:12 }),
-     wordCell('', { width:widths[4], align:'center', size:12 })
+     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
+     wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:20, shade:PALE_GOLD }),
+     wordCell('', { width:widths[3], align:'center', size:20 }),
+     wordCell('', { width:widths[4], align:'center', size:20 })
    ], 320))
 
    return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
@@ -8767,7 +8767,7 @@ function buildDeliveryInvoicePrintCSS() {
    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`
-   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
+   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
    const settings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`
 
    return createStoredZipBlob([
