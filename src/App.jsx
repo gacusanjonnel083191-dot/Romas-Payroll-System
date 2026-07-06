@@ -26636,7 +26636,7 @@ function printCompanyDocumentRecord(record) {
  <div>
  <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingBaseDough]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:inv?.unit||upd[i].unit}; setEditingBaseDough(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
  <option value=""> Link to inventory item </option>
- {inventoryItems.filter(it=>it.category==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
+ {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
  </select>
  <input placeholder="Or type ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],item_name:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'4px' }} />
  </div>
@@ -26734,7 +26734,7 @@ function printCompanyDocumentRecord(record) {
  <div>
  <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingVariantRecipe]; upd[ri]={...upd[ri],inventory_item_id:e.target.value,item_name:inv?.name||upd[ri].item_name,unit:inv?.unit||upd[ri].unit}; setEditingVariantRecipe(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value=""> Link inventory item </option>
- {inventoryItems.map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
+ {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
  </select>
  <input placeholder="Ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],item_name:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'3px' }} />
  </div>
