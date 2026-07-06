@@ -5837,8 +5837,8 @@ Cancel = create batch record only for existing stock.`)
  const { error } = await supabase.from('base_dough_recipe').insert(validRows.map(r => ({
  inventory_item_id: r.inventory_item_id || null,
  item_name: r.item_name.trim(),
- quantity_per_batch: Number(r.quantity_per_batch),
- unit: r.unit || 'g',
+ quantity_per_batch: productionRecipeQuantityGrams(r),
+ unit: 'g',
  notes: r.notes || null
  })))
  if (error) throw error
@@ -5857,8 +5857,8 @@ Cancel = create batch record only for existing stock.`)
  variant_id: variantId,
  inventory_item_id: r.inventory_item_id || null,
  item_name: r.item_name.trim(),
- quantity_per_batch: Number(r.quantity_per_batch),
- unit: r.unit || 'g',
+ quantity_per_batch: productionRecipeQuantityGrams(r),
+ unit: 'g',
  ingredient_type: r.ingredient_type || 'topping',
  notes: r.notes || null
  })))
@@ -5868,20 +5868,58 @@ Cancel = create batch record only for existing stock.`)
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setSavingRecipe(false)
  }
+ function normalizeProductionRecipeUnit(unit) {
+ const u = String(unit || 'g').trim().toLowerCase()
+ if (['kg','kgs','kilogram','kilograms'].includes(u)) return 'kg'
+ if (['g','gram','grams'].includes(u)) return 'g'
+ if (['l','liter','liters','litre','litres'].includes(u)) return 'l'
+ if (['ml','milliliter','milliliters','millilitre','millilitres'].includes(u)) return 'ml'
+ return u || 'g'
+ }
+ function productionRecipeQuantityGrams(row = {}) {
+ const qty = safeNum(row.quantity_per_batch, 0)
+ const unit = normalizeProductionRecipeUnit(row.unit)
+ if (unit === 'kg') return qty * 1000
+ if (unit === 'l') return qty * 1000
+ if (unit === 'ml') return qty
+ return qty
+ }
+ function productionRecipeCostPerGram(item = null) {
+ const cost = safeNum(item?.cost_per_unit, 0)
+ const unit = normalizeProductionRecipeUnit(item?.unit)
+ if (unit === 'kg') return cost / 1000
+ if (unit === 'l') return cost / 1000
+ return cost
+ }
+ function productionRecipeStockQtyFromGrams(qtyGrams, item = null) {
+ const qty = safeNum(qtyGrams, 0)
+ const unit = normalizeProductionRecipeUnit(item?.unit)
+ if (unit === 'kg') return qty / 1000
+ if (unit === 'l') return qty / 1000
+ return qty
+ }
+ function productionRecipeInventoryOptionLabel(item = {}) {
+ const costPerGram = productionRecipeCostPerGram(item)
+ const originalUnit = item?.unit || 'unit'
+ const originalCost = `${php(item?.cost_per_unit || 0)}/${originalUnit}`
+ const gramCost = `${php(costPerGram)}/g`
+ return normalizeProductionRecipeUnit(originalUnit) === 'g' ? gramCost : `${gramCost} from ${originalCost}`
+ }
+ function productionRecipeIngredientCost(row = {}) {
+ const invItem = inventoryItems.find(i => String(i.id) === String(row.inventory_item_id))
+ if (!invItem) return 0
+ return moneyRound(productionRecipeQuantityGrams(row) * productionRecipeCostPerGram(invItem))
+ }
  function computeVariantCost(variantId, piecesPerBatch) {
  const safePiecesPerBatch = positiveNum(piecesPerBatch)
  // Base dough cost per piece (from inventory item cost_per_unit)
  const baseCostPerPiece = baseDoughIngredients.reduce((sum, ing) => {
- const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
- const costPerUnit = safeNum(invItem?.cost_per_unit)
- return sum + (safeNum(ing.quantity_per_batch) / safePiecesPerBatch) * costPerUnit
+ return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
  }, 0)
  // Variant topping/filling cost per piece
  const variantIngs = variantRecipes[variantId] || []
  const variantCostPerPiece = variantIngs.reduce((sum, ing) => {
- const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
- const costPerUnit = safeNum(invItem?.cost_per_unit)
- return sum + (safeNum(ing.quantity_per_batch) / safePiecesPerBatch) * costPerUnit
+ return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
  }, 0)
  const ingredientCost = baseCostPerPiece + variantCostPerPiece
  const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
@@ -5991,31 +6029,30 @@ Cancel = create batch record only for existing stock.`)
  const batchEquiv = d.pieces / d.piecesPerBatch
  for (const ing of baseDoughIngredients) {
  if (!ing.inventory_item_id) continue
- const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
- if (deductQty <= 0) continue
- const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
+ const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
+ if (deductQtyGrams <= 0) continue
+ const { data: inv } = await supabase.from('inventory_items').select('current_stock,name,min_stock,unit').eq('id', ing.inventory_item_id).single()
  if (inv) {
+ const deductQty = productionRecipeStockQtyFromGrams(deductQtyGrams, inv)
  const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
  await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
- // Low stock alert
- const { data:invFull } = await supabase.from('inventory_items').select('name,min_stock,unit').eq('id', ing.inventory_item_id).single()
- if (invFull && newStock <= Number(invFull.min_stock||0)) {
- await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${invFull.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${invFull.unit}`)
+ if (newStock <= Number(inv.min_stock||0)) {
+ await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit}`)
  }
  }
  }
  // Deduct variant-specific ingredients
  for (const ing of (variantRecipes[e.variant_id] || [])) {
  if (!ing.inventory_item_id) continue
- const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
- if (deductQty <= 0) continue
- const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
+ const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
+ if (deductQtyGrams <= 0) continue
+ const { data: inv } = await supabase.from('inventory_items').select('current_stock,name,min_stock,unit').eq('id', ing.inventory_item_id).single()
  if (inv) {
+ const deductQty = productionRecipeStockQtyFromGrams(deductQtyGrams, inv)
  const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
  await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
- const { data:invFull } = await supabase.from('inventory_items').select('name,min_stock,unit').eq('id', ing.inventory_item_id).single()
- if (invFull && newStock <= Number(invFull.min_stock||0)) {
- await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${invFull.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${invFull.unit}`)
+ if (newStock <= Number(inv.min_stock||0)) {
+ await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit}`)
  }
  }
  }
@@ -26618,10 +26655,10 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Base Dough Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across ALL variants. Enter ingredients per batch.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across ALL variants. Enter all production recipe quantities in grams (g) per batch.</p>
  </div>
  {selectedRecipeVariantId!== 'base'? (
- <button style={{...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
+ <button style={{...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
  ): (
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={saveBaseDough}>{savingRecipe?' Saving...':' SAVE'}</button>
@@ -26634,15 +26671,15 @@ function printCompanyDocumentRecord(record) {
  {editingBaseDough.map((row,i)=>(
  <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
  <div>
- <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingBaseDough]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:inv?.unit||upd[i].unit}; setEditingBaseDough(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
+ <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingBaseDough]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:'g'}; setEditingBaseDough(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
  <option value=""> Link to inventory item </option>
- {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
+ {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
  </select>
  <input placeholder="Or type ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],item_name:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'4px' }} />
  </div>
  <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],quantity_per_batch:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }} min="0" step="0.01" />
  <select value={row.unit||'g'} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],unit:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
- {['g','kg','mL','L','pcs','tbsp','tsp','cups'].map(u=><option key={u} value={u}>{u}</option>)}
+ {['g'].map(u=><option key={u} value={u}>{u}</option>)}
  </select>
  <input placeholder="Notes (optional)" value={row.notes||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],notes:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} />
  <button onClick={()=>setEditingBaseDough(editingBaseDough.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}> </button>
@@ -26661,12 +26698,13 @@ function printCompanyDocumentRecord(record) {
  </div>
  {baseDoughIngredients.map((r,i)=>{
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const cost = inv? Number(r.quantity_per_batch||0) * Number(inv.cost_per_unit||0): 0
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r): 0
  return (
  <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
  <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{r.quantity_per_batch}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{r.unit}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
  <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
  </div>
  )
@@ -26679,7 +26717,7 @@ function printCompanyDocumentRecord(record) {
 
  {/* VARIANT RECIPES */}
  <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}> Per-Variant Topping / Filling Recipes</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define the additional ingredients (toppings, fillings, glazes) for each variant on top of the base dough.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define toppings, fillings, and glazes in grams (g) only. Costing uses converted cost per gram.</p>
  {variantsLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading variants...</p>}
  {VARIANT_CATEGORIES.map(cat => {
  const catVariants = donutVariants.filter(v => v.category === cat)
@@ -26718,7 +26756,7 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', gap:'6px' }}>
  {editingVariantId!== v.id && <button style={{...btnYellow, padding:'5px 10px', fontSize:'11px' }} onClick={()=>{ setEditingVariantId(v.id); setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price }) }}> EDIT</button>}
  {!isEditing? (
- <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasRecipe?variantRecipes[v.id].map(r=>({...r})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasRecipe?'EDIT':'ADD'} RECIPE</button>
+ <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasRecipe?variantRecipes[v.id].map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasRecipe?'EDIT':'ADD'} RECIPE</button>
  ): (
  <div style={{ display:'flex', gap:'6px' }}>
  <button style={{...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?' ':' SAVE'}</button>
@@ -26732,15 +26770,15 @@ function printCompanyDocumentRecord(record) {
  {editingVariantRecipe.map((row,ri)=>(
  <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
  <div>
- <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingVariantRecipe]; upd[ri]={...upd[ri],inventory_item_id:e.target.value,item_name:inv?.name||upd[ri].item_name,unit:inv?.unit||upd[ri].unit}; setEditingVariantRecipe(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
+ <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingVariantRecipe]; upd[ri]={...upd[ri],inventory_item_id:e.target.value,item_name:inv?.name||upd[ri].item_name,unit:'g'}; setEditingVariantRecipe(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value=""> Link inventory item </option>
- {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
+ {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
  </select>
  <input placeholder="Ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],item_name:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'3px' }} />
  </div>
  <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],quantity_per_batch:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" step="0.01" />
  <select value={row.unit||'g'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],unit:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
- {['g','kg','mL','L','pcs','tbsp','tsp','cups'].map(u=><option key={u} value={u}>{u}</option>)}
+ {['g'].map(u=><option key={u} value={u}>{u}</option>)}
  </select>
  <select value={row.ingredient_type||'topping'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],ingredient_type:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value="topping">Topping</option>
@@ -26759,10 +26797,11 @@ function printCompanyDocumentRecord(record) {
  <div style={{ marginTop:'8px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
  {variantRecipes[v.id].map((r,ri)=>{
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const cost = inv? Number(r.quantity_per_batch||0)*Number(inv.cost_per_unit||0)/Math.max(1,Number(v.pieces_per_batch)): 0
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
  return (
  <div key={ri} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {r.quantity_per_batch}{r.unit} <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({r.ingredient_type})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+ <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({r.ingredient_type})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
  </div>
  )
  }) }
