@@ -1269,11 +1269,69 @@ function getCAProcessedBy(req = {}, ledger = null) {
  return req.approved_by || req.processed_by || ledger?.approved_by || ledger?.created_by || ledger?.recorded_by || 'Admin'
 }
 
+function getCashAdvanceRawBalance(ca = {}) {
+ const raw = Number(ca?.balance)
+ return Number.isFinite(raw) ? moneyRound(Math.max(0, raw)) : 0
+}
+
+function getCashAdvancePaidAmount(ca = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
+ const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
+ const balance = getCashAdvanceEffectiveBalance(ca)
+ if (amount > 0) return moneyRound(Math.min(amount, Math.max(0, amount - balance)))
+ return paid
+}
+
+function getCashAdvanceEffectiveBalance(ca = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
+ const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
+ const rawBalance = getCashAdvanceRawBalance(ca)
+ const status = String(ca?.status || '').trim().toLowerCase()
+
+ if (amount > 0) {
+  if (paid > 0) return moneyRound(Math.max(0, amount - paid))
+  if (rawBalance > 0.009) {
+   const perPayroll = safeNum(ca?.per_payroll_deduction, 0)
+   const totalInstallments = safeNum(ca?.installments_total, 0)
+   const remainingInstallments = safeNum(ca?.installments_remaining, 0)
+   const looksLikeNewInstallmentBalanceBug = totalInstallments > 1 && remainingInstallments >= totalInstallments && perPayroll > 0.009 && rawBalance < amount && rawBalance <= perPayroll + 0.01
+   return looksLikeNewInstallmentBalanceBug ? amount : rawBalance
+  }
+  if (status === 'paid' || status === 'settled') return 0
+  return amount
+ }
+
+ return rawBalance
+}
+
+function getCashAdvanceStatusForBalance(balance = 0, currentStatus = '') {
+ const status = String(currentStatus || '').trim()
+ const statusKey = status.toLowerCase()
+ if (['cancelled','canceled','void','voided'].includes(statusKey)) return status || 'Void'
+ return isMoneySettled(balance) ? 'Paid' : 'Unpaid'
+}
+
+function getCashAdvanceRemainingInstallments(ca = {}, req = {}) {
+ const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
+ const recordedRemaining = Math.max(0, safeNum(ca?.installments_remaining ?? req?.installments_remaining, 0))
+ const balance = getCashAdvanceEffectiveBalance(ca)
+ if (isMoneySettled(balance)) return 0
+
+ const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
+ if (perPayroll > 0.009) {
+  const computed = Math.max(1, Math.ceil((balance - 0.009) / perPayroll))
+  return total > 0 ? Math.min(total, computed) : computed
+ }
+
+ if (recordedRemaining > 0) return recordedRemaining
+ return total > 0 ? total : 1
+}
+
 function getCAInstallmentInfo(ca = {}, req = {}) {
- const total = Math.max(0, safeNum(ca.installments_total ?? req.request_installments_total ?? req.installments_total, 0))
- const remaining = Math.max(0, safeNum(ca.installments_remaining ?? req.installments_remaining, 0))
+ const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
+ const remaining = getCashAdvanceRemainingInstallments(ca, req)
  const completed = total > 0 ? Math.max(0, total - remaining) : 0
- const perPayroll = safeNum(ca.per_payroll_deduction ?? req.request_per_payroll_deduction ?? req.per_payroll_deduction, 0)
+ const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
  return { total, remaining, completed, perPayroll }
 }
 
@@ -13568,17 +13626,16 @@ function buildDeliveryInvoicePrintCSS() {
 
  // Payroll Approval Workflow 
  function isOutstandingCashAdvance(ca) {
- const balance = Math.max(0, safeNum(ca?.balance, 0))
  const status = String(ca?.status || '').trim().toLowerCase()
- if (status === 'cancelled' || status === 'void') return false
- return balance > 0.009
+ if (['cancelled','canceled','void','voided'].includes(status)) return false
+ return getCashAdvanceEffectiveBalance(ca) > 0.009
  }
 
  function getCashAdvancePayrollDeduction(ca) {
  if (!isOutstandingCashAdvance(ca)) return 0
- const balance = Math.max(0, safeNum(ca?.balance, 0))
+ const balance = getCashAdvanceEffectiveBalance(ca)
  const scheduled = safeNum(ca?.per_payroll_deduction, 0) > 0? safeNum(ca?.per_payroll_deduction, 0): balance
- return Math.min(balance, scheduled)
+ return moneyRound(Math.min(balance, scheduled))
  }
 
  function buildCADeductionTag(start, end) {
@@ -13655,19 +13712,21 @@ function buildDeliveryInvoicePrintCSS() {
  const openCAs = (cas || []).filter(isOutstandingCashAdvance)
  for (const ca of openCAs) {
  if (remaining <= 0) break
- const balance = Math.max(0, safeNum(ca.balance, 0))
- if (balance <= 0) continue
+ const balance = getCashAdvanceEffectiveBalance(ca)
+ if (balance <= 0.009) continue
 
- const deduction = Math.min(balance, remaining)
- const newPaid = moneyRound(safeNum(ca.amount_paid, 0) + deduction)
+ const deduction = moneyRound(Math.min(balance, remaining))
+ const currentPaid = getCashAdvancePaidAmount(ca)
+ const newPaid = moneyRound(currentPaid + deduction)
  const newBal = moneyRound(Math.max(0, balance - deduction))
- const newRem = Math.max(0, safeNum(ca.installments_remaining, 1) - 1)
+ const newRem = getCashAdvanceRemainingInstallments({ ...ca, amount_paid:newPaid, balance:newBal })
+ const newStatus = getCashAdvanceStatusForBalance(newBal, ca.status)
 
  const { error:updateError } = await supabase.from('cash_advances').update({
  amount_paid:newPaid,
  balance:newBal,
  installments_remaining:newRem,
- status:isMoneySettled(newBal)? 'Paid': 'Unpaid'
+ status:newStatus
  }).eq('id', ca.id)
 
  if (updateError) return { applied:false, amount:totalApplied, error:updateError.message }
@@ -13737,24 +13796,21 @@ function buildDeliveryInvoicePrintCSS() {
 
   for (const ca of caRows) {
    if (remaining <= 0.009) break
-   const paidNow = Math.max(0, safeNum(ca.amount_paid, 0))
-   if (paidNow <= 0) continue
+   const paidNow = getCashAdvancePaidAmount(ca)
+   if (paidNow <= 0.009) continue
 
    const reversal = moneyRound(Math.min(paidNow, remaining))
-   const totalAmount = safeNum(ca.amount, paidNow + safeNum(ca.balance, 0))
+   const totalAmount = safeNum(ca.amount, paidNow + getCashAdvanceEffectiveBalance(ca))
    const newPaid = moneyRound(Math.max(0, paidNow - reversal))
    const newBalance = moneyRound(Math.max(0, totalAmount - newPaid))
-   const totalInstallments = safeNum(ca.installments_total, 0)
-   const currentRemainingInstallments = safeNum(ca.installments_remaining, 0)
-   const restoredInstallments = totalInstallments > 0
-    ? Math.min(totalInstallments, currentRemainingInstallments + 1)
-    : currentRemainingInstallments + 1
+   const restoredInstallments = getCashAdvanceRemainingInstallments({ ...ca, amount_paid:newPaid, balance:newBalance })
+   const newStatus = getCashAdvanceStatusForBalance(newBalance, ca.status)
 
    const { error:updateError } = await supabase.from('cash_advances').update({
     amount_paid:newPaid,
     balance:newBalance,
     installments_remaining:restoredInstallments,
-    status:isMoneySettled(newBalance)? 'Paid': 'Unpaid'
+    status:newStatus
    }).eq('id', ca.id)
 
    if (updateError) return { reversed:false, amount:totalReversed, error:updateError.message }
@@ -13878,7 +13934,11 @@ function buildDeliveryInvoicePrintCSS() {
  async function approvePayroll(start, end) {
  if (!requireOwnerOrPayrollAction('release payroll')) return
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
+ const releaseKey = `release_payroll_${start}_${end}`
+ if (processingItems[releaseKey]) return
+ setProcessingItems(prev => ({ ...prev, [releaseKey]:true }))
 
+ try {
  const { data: records, error:recordsError } = await supabase
  .from('payroll_records')
  .select('id,employee_name,employee_code,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction,total_earnings,total_deductions,non_ca_deduction_overflow')
@@ -13980,6 +14040,9 @@ function buildDeliveryInvoicePrintCSS() {
  loadSILCashouts({ skipAuto:true })
  loadDailyExpenses()
  refreshFoundationAfterDataChange('payroll-approved')
+ } finally {
+  setProcessingItems(prev => { const copy = { ...prev }; delete copy[releaseKey]; return copy })
+ }
  }
 
  function buildPayrollExpenseTag(start, end) {
@@ -18138,8 +18201,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  else if (finalPayReason==='authorized') separationPay=Number(activeEmp.daily_rate||0)*13*yearsOfService
  else if (finalPayReason==='retirement') separationPay=Number(activeEmp.daily_rate||0)*22.5*yearsOfService
 
- const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', finalPayEmployeeId).eq('status', 'Unpaid')
- const totalCA=cas?.reduce((s,c)=>s+Number(c.balance||0),0)||0
+ const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', finalPayEmployeeId)
+ const totalCA=(cas || []).filter(isOutstandingCashAdvance).reduce((s,c)=>s+getCashAdvanceEffectiveBalance(c),0)||0
  const lastSalary=unpaidDays*Number(activeEmp.daily_rate||0)
 
  setFinalPayResult({
@@ -18246,9 +18309,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const coveredCAs = (caRows || []).filter(ca => {
  const key = String(ca.employee_id || '')
  const advanceDate = String(ca.advance_date || ca.created_at || '').slice(0, 10)
- const status = String(ca.status || '').toLowerCase()
  const employeeHasPayrollDeduction = safeNum(payrollByEmployee[key]?.cash_advance_deduction, 0) > 0
- const currentlyOutstanding = status === 'unpaid' || safeNum(ca.balance, 0) > 0
+ const currentlyOutstanding = isOutstandingCashAdvance(ca)
  const createdWithinPayrollDates = advanceDate && advanceDate >= start && advanceDate <= end
 
  // Shows cash advances actually deducted in the selected payroll period,
@@ -18276,12 +18338,15 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  installmentsRemaining: 0
  }
  }
+ const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
+ const effectivePaid = getCashAdvancePaidAmount(ca)
+ const effectiveInstallmentsRemaining = getCashAdvanceRemainingInstallments(ca)
  grouped[key].caItems.push(ca)
  grouped[key].totalOriginal += safeNum(ca.amount, 0)
- grouped[key].totalPaid += safeNum(ca.amount_paid, 0)
- grouped[key].totalBalance += safeNum(ca.balance, 0)
+ grouped[key].totalPaid += effectivePaid
+ grouped[key].totalBalance += effectiveBalance
  grouped[key].totalPerPayroll += safeNum(ca.per_payroll_deduction, 0)
- grouped[key].installmentsRemaining += safeNum(ca.installments_remaining, 0)
+ grouped[key].installmentsRemaining += effectiveInstallmentsRemaining
  })
 
 ;(payrollRows || [])
@@ -23362,7 +23427,7 @@ function printCompanyDocumentRecord(record) {
  )}
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT CSV</button>
- <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> RELEASE FINAL PAYROLL</button>
+ <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
  {payrollSummary && (
@@ -23549,7 +23614,10 @@ function printCompanyDocumentRecord(record) {
  </thead>
  <tbody>
  {row.caItems.map(ca => {
- const inst = getCAInstallmentInfo(ca, {})
+ const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
+ const effectivePaid = getCashAdvancePaidAmount(ca)
+ const effectiveStatus = getCashAdvanceStatusForBalance(effectiveBalance, ca.status)
+ const inst = getCAInstallmentInfo({ ...ca, balance:effectiveBalance, amount_paid:effectivePaid }, {})
  const sourceReq = ca.source_request_id || ca.cash_advance_request_id || ca.approved_request_id || ''
  return (
  <tr key={ca.id}>
@@ -23565,11 +23633,14 @@ function printCompanyDocumentRecord(record) {
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount)}</td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(inst.perPayroll)}</td>
  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>{inst.total? `${inst.completed}/${inst.total} done · ${inst.remaining} left` : `${ca.installments_remaining?? 'Not recorded'} left`}</td>
- <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount_paid)}</td>
- <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:safeNum(ca.balance,0)>0?'#ca1b1b':'#2d8a4e' }}>{php(ca.balance)}</td>
+ <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(effectivePaid)}</td>
+ <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:effectiveBalance>0?'#ca1b1b':'#2d8a4e' }}>{php(effectiveBalance)}</td>
  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>
- <Badge label={String(ca.status||'Unknown')} color={String(ca.status||'').toLowerCase()==='paid'?'green':'orange'} />
- {adminRole==='owner' && String(ca.status||'').toLowerCase()==='paid' && safeNum(ca.balance,0)<=0 && safeNum(ca.amount,0)>0 && safeNum(ca.amount_paid,0)>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
+ <Badge label={effectiveStatus} color={effectiveStatus.toLowerCase()==='paid'?'green':'orange'} />
+ {String(ca.status || '').trim().toLowerCase() !== effectiveStatus.toLowerCase() && (
+  <div style={{ color:'#b45309', fontSize:'10px', fontWeight:'bold', marginTop:'4px' }}>stored: {String(ca.status || 'Blank')}</div>
+ )}
+ {adminRole==='owner' && effectiveStatus.toLowerCase()==='paid' && effectiveBalance<=0.009 && safeNum(ca.amount,0)>0 && effectivePaid>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
  <button
  style={{ background:'#fff8dc', color:'#ca1b1b', border:'1px solid #FDD412', borderRadius:'8px', padding:'5px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'10px', marginTop:'6px' }}
  onClick={()=>reopenCashAdvanceForPayrollDeduction(ca)}
@@ -24328,7 +24399,10 @@ function printCompanyDocumentRecord(record) {
  <button style={{...btnBlack, marginTop:'20px' }} onClick={async()=>{ await loadResolvedCARequests(); setShowResolvedCA(!showResolvedCA) }}>{showResolvedCA?' HIDE':' VIEW'} RESOLVED REQUESTS</button>
  {showResolvedCA && resolvedCARequests.map(req=>{
  const ledger = req.cashAdvanceLedger || null
- const inst = getCAInstallmentInfo(ledger || {}, req)
+ const ledgerEffectiveBalance = ledger ? getCashAdvanceEffectiveBalance(ledger) : 0
+ const ledgerEffectivePaid = ledger ? getCashAdvancePaidAmount(ledger) : 0
+ const ledgerEffectiveStatus = ledger ? getCashAdvanceStatusForBalance(ledgerEffectiveBalance, ledger.status) : 'Unknown'
+ const inst = getCAInstallmentInfo(ledger ? { ...ledger, balance:ledgerEffectiveBalance, amount_paid:ledgerEffectivePaid } : {}, req)
  const approved = String(req.status || '').toLowerCase() === 'approved'
  const disapproved = String(req.status || '').toLowerCase() === 'disapproved'
  return (
@@ -24383,13 +24457,13 @@ function printCompanyDocumentRecord(record) {
   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'8px' }}>
   {[
    ['Original Amount', php(ledger.amount)],
-   ['Already Paid/Deducted', php(ledger.amount_paid)],
-   ['Current Balance', php(ledger.balance)],
-   ['Ledger Status', ledger.status || 'Unknown']
+   ['Already Paid/Deducted', php(ledgerEffectivePaid)],
+   ['Current Balance', php(ledgerEffectiveBalance)],
+   ['Ledger Status', ledgerEffectiveStatus]
   ].map(([label,value])=>(
    <div key={label} style={{ background:'#fff', border:'1px solid #eee', borderRadius:'8px', padding:'8px' }}>
    <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
-   <p style={{ margin:0, fontWeight:'bold', color:label==='Current Balance' && safeNum(ledger.balance,0)>0?'#ca1b1b':'#333', fontSize:'12px' }}>{value}</p>
+   <p style={{ margin:0, fontWeight:'bold', color:label==='Current Balance' && ledgerEffectiveBalance>0?'#ca1b1b':'#333', fontSize:'12px' }}>{value}</p>
    </div>
   ))}
   </div>
@@ -32828,7 +32902,12 @@ onClick={async ()=>{
  {myActiveCAs.length > 0 && (
  <div style={{ background:'#fff8dc', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginBottom:'12px' }}>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 10px' }}> Outstanding Cash Advance Balance</p>
- {myActiveCAs.map(ca => (
+ {myActiveCAs.map(ca => {
+ const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
+ const effectivePaid = getCashAdvancePaidAmount(ca)
+ const effectiveInstallments = getCashAdvanceRemainingInstallments(ca)
+ const paidPct = Math.min(100, (effectivePaid / Math.max(1, safeNum(ca.amount, 1))) * 100)
+ return (
  <div key={ca.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'8px', border:'1px solid #eee' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'6px' }}>
  <div>
@@ -32838,31 +32917,32 @@ onClick={async ()=>{
  <p style={cps}>Date: {ca.advance_date} | Reason: {ca.notes||' '}</p>
  </div>
  <div style={{ textAlign:'right' }}>
- <p style={{ margin:0, fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{php(ca.balance)}</p>
+ <p style={{ margin:0, fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{php(effectiveBalance)}</p>
  <p style={{ margin:0, fontSize:'11px', color:'#888' }}>remaining</p>
  </div>
  </div>
  {/* Progress bar */}
  <div style={{ marginTop:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
- <span style={{ fontSize:'11px', color:'#888' }}>Paid: {php(ca.amount_paid||0)}</span>
- <span style={{ fontSize:'11px', color:'#888' }}>Remaining: {php(ca.balance)}</span>
+ <span style={{ fontSize:'11px', color:'#888' }}>Paid: {php(effectivePaid)}</span>
+ <span style={{ fontSize:'11px', color:'#888' }}>Remaining: {php(effectiveBalance)}</span>
  </div>
  <div style={{ background:'#eee', borderRadius:'999px', height:'8px', overflow:'hidden' }}>
- <div style={{ background:'#2d8a4e', height:'100%', borderRadius:'999px', width:`${Math.min(100, ((Number(ca.amount_paid)||0)/Number(ca.amount||1))*100).toFixed(0)}%`, transition:'width 0.3s' }} />
+ <div style={{ background:'#2d8a4e', height:'100%', borderRadius:'999px', width:`${paidPct.toFixed(0)}%`, transition:'width 0.3s' }} />
  </div>
  <p style={{ fontSize:'11px', color:'#888', margin:'4px 0 0', textAlign:'center' }}>
- {Math.min(100,((Number(ca.amount_paid)||0)/Number(ca.amount||1))*100).toFixed(0)}% paid 
- {ca.installments_remaining} installment(s) left 
+ {paidPct.toFixed(0)}% paid 
+ {effectiveInstallments} installment(s) left 
  {php(ca.per_payroll_deduction)} per cutoff
  </p>
  </div>
  </div>
- ))}
+ )
+})}
  {/* Total outstanding */}
  <div style={{ background:'#ca1b1b', color:'white', borderRadius:'8px', padding:'10px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'8px' }}>
  <span style={{ fontWeight:'bold', fontSize:'13px' }}>TOTAL OUTSTANDING</span>
- <span style={{ fontWeight:'bold', fontSize:'16px' }}>{php(myActiveCAs.reduce((s,c)=>s+Number(c.balance||0),0))}</span>
+ <span style={{ fontWeight:'bold', fontSize:'16px' }}>{php(myActiveCAs.reduce((s,c)=>s+getCashAdvanceEffectiveBalance(c),0))}</span>
  </div>
  </div>
  )}
