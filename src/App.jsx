@@ -260,6 +260,51 @@ function employeeRuleEnabled(value, fallback = true) {
  return fallback
 }
 
+
+function getEmployeeHourlyRateInfo(emp = {}) {
+ const payrollBasis = normalizePayrollBasis(emp.payroll_basis || emp.pay_type)
+ const monthlySalary = safeNum(emp.monthly_salary, 0)
+ const semiMonthlySalary = safeNum(emp.semi_monthly_salary, 0)
+ const annualWorkingDays = positiveNum(emp.annual_working_days, 313)
+ const rawDailyRate = safeNum(emp.daily_rate, 0)
+ const savedHourlyRate = safeNum(emp.hourly_rate, 0)
+ const fixedMonthlyEquivalent = payrollBasis === 'monthly'
+  ? monthlySalary
+  : payrollBasis === 'semi_monthly'
+   ? (semiMonthlySalary > 0 ? semiMonthlySalary * 2 : monthlySalary)
+   : 0
+ const derivedFixedDailyRate = fixedMonthlyEquivalent > 0 ? fixedMonthlyEquivalent * 12 / annualWorkingDays : 0
+ const dailyEquivalent = payrollBasis === 'daily'
+  ? (rawDailyRate > 0 ? rawDailyRate : (savedHourlyRate > 0 ? savedHourlyRate * 8 : 0))
+  : (derivedFixedDailyRate > 0 ? derivedFixedDailyRate : (rawDailyRate > 0 ? rawDailyRate : (savedHourlyRate > 0 ? savedHourlyRate * 8 : 0)))
+ const hourlyRate = dailyEquivalent > 0 ? dailyEquivalent / 8 : savedHourlyRate
+ const basisLabel = payrollBasis === 'monthly'
+  ? 'Fixed Monthly'
+  : payrollBasis === 'semi_monthly'
+   ? 'Fixed Semi-Monthly'
+   : (String(emp.pay_type || '').toLowerCase() === 'hourly' ? 'Hourly / Daily Fallback' : 'Daily Rate')
+ const formulaNote = payrollBasis === 'monthly'
+  ? `Monthly salary × 12 ÷ ${annualWorkingDays} working days ÷ 8 hours`
+  : payrollBasis === 'semi_monthly'
+   ? `${semiMonthlySalary > 0 ? 'Semi-monthly salary × 2' : 'Monthly salary'} × 12 ÷ ${annualWorkingDays} working days ÷ 8 hours`
+   : rawDailyRate > 0
+    ? 'Daily rate ÷ 8 hours'
+    : savedHourlyRate > 0
+     ? 'Saved hourly rate fallback'
+     : 'Missing daily/monthly/hourly rate'
+ return {
+  payrollBasis,
+  basisLabel,
+  monthlySalary,
+  semiMonthlySalary,
+  annualWorkingDays,
+  dailyEquivalent: moneyRound(dailyEquivalent),
+  hourlyRate: moneyRound(hourlyRate),
+  formulaNote,
+  isConfigured: hourlyRate > 0
+ }
+}
+
 function isMissingEmployeeHolidayEligibilityColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
  return msg.includes('regular_holiday_pay_eligible') || msg.includes('special_holiday_pay_eligible') || ((msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')) && msg.includes('holiday'))
@@ -17061,6 +17106,31 @@ This recovery button creates one approved expense record using GROSS payroll ear
  await logAudit('EMPLOYEE DEACTIVATED','Admin',empName,'Employee deactivated')
  showToast(` ${empName} deactivated.`); loadEmployees()
  }
+
+ function buildEmployeeHourlyRateRows() {
+ return (employees || []).map(emp => {
+  const rateInfo = getEmployeeHourlyRateInfo(emp)
+  return {
+   'Employee Code': emp.employee_code || '',
+   'Employee Name': emp.full_name || '',
+   'Position': emp.position || '',
+   'Department': emp.department || '',
+   'Payroll Basis': rateInfo.basisLabel,
+   'Daily Equivalent': moneyRound(rateInfo.dailyEquivalent),
+   'Monthly Salary': moneyRound(rateInfo.monthlySalary),
+   'Semi-Monthly Salary': moneyRound(rateInfo.semiMonthlySalary),
+   'Hourly Rate': moneyRound(rateInfo.hourlyRate),
+   'Formula': rateInfo.formulaNote
+  }
+ })
+ }
+ function exportEmployeeHourlyRatesCSV() {
+ const rows = buildEmployeeHourlyRateRows()
+ if (rows.length === 0) { showToast('No active employees to export.', 'red'); return }
+ downloadTextFile(`romas-staff-hourly-rates-${today}.csv`, rowsToCSV(rows), 'text/csv')
+ showToast(' Staff hourly rates CSV exported.')
+ }
+
  async function loadCashAdvanceRequests() {
  const { data } = await supabase.from('cash_advance_requests').select('*').eq('status', 'pending').order('created_at', { ascending:false })
  setCashAdvanceRequests(data || [])
@@ -22153,6 +22223,44 @@ function printCompanyDocumentRecord(record) {
  </div>
  </div>
  ))}
+
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'14px', marginBottom:'16px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'8px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Staff Hourly Rates</h3>
+ <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Computed using the same payroll basis: daily rate ÷ 8, or fixed monthly/semi-monthly converted using annual working days.</p>
+ </div>
+ <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={exportEmployeeHourlyRatesCSV}>EXPORT CSV</button>
+ </div>
+ <div style={{ overflowX:'auto', border:'1px solid #eee', borderRadius:'10px' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'900px', fontSize:'12px' }}>
+ <thead>
+ <tr style={{ background:'#1a1a2e', color:'white' }}>
+ {['Employee','Position','Basis','Daily Equivalent','Monthly','Semi-Monthly','Hourly Rate','Formula / Source','Status'].map(h => <th key={h} style={{ padding:'8px', textAlign:h==='Employee'||h==='Position'||h==='Formula / Source'?'left':'right' }}>{h}</th>)}
+ </tr>
+ </thead>
+ <tbody>
+ {(employees || []).map(emp => {
+ const rateInfo = getEmployeeHourlyRateInfo(emp)
+ return (
+ <tr key={emp.id} style={{ borderBottom:'1px solid #f0f0f0', background:rateInfo.isConfigured?'white':'#fff5f5' }}>
+ <td style={{ padding:'8px', fontWeight:'bold', color:'#333', textAlign:'left' }}>{emp.full_name}<div style={{ color:'#888', fontSize:'10px', fontWeight:'500' }}>{emp.employee_code || ''}</div></td>
+ <td style={{ padding:'8px', textAlign:'left' }}>{emp.position || '-'}<div style={{ color:'#999', fontSize:'10px' }}>{emp.department || ''}</div></td>
+ <td style={{ padding:'8px', textAlign:'right', whiteSpace:'nowrap' }}>{rateInfo.basisLabel}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'bold' }}>{rateInfo.dailyEquivalent > 0 ? php(rateInfo.dailyEquivalent) : '-'}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.monthlySalary > 0 ? php(rateInfo.monthlySalary) : '-'}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.semiMonthlySalary > 0 ? php(rateInfo.semiMonthlySalary) : '-'}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:rateInfo.isConfigured?'#2d8a4e':'#ca1b1b' }}>{rateInfo.isConfigured ? php(rateInfo.hourlyRate) : 'Missing'}</td>
+ <td style={{ padding:'8px', textAlign:'left', color:'#666', fontSize:'11px' }}>{rateInfo.formulaNote}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.isConfigured ? <Badge label="OK" color="green" /> : <Badge label="MISSING RATE" color="red" />}</td>
+ </tr>
+ )
+ })}
+ </tbody>
+ </table>
+ </div>
+ </div>
 
  <h3 style={{ color:'#ca1b1b', marginTop:'16px', marginBottom:'10px' }}> Add New Employee</h3>
  <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
