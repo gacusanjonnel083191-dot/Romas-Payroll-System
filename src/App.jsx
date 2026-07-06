@@ -1883,6 +1883,7 @@ export default function App() {
  const [showMyAttendance, setShowMyAttendance] = useState(false)
  const [requestCashAmount, setRequestCashAmount] = useState('')
  const [requestCashReason, setRequestCashReason] = useState('')
+ const [submittingCashAdvanceRequest, setSubmittingCashAdvanceRequest] = useState(false)
  const [leaveStartDate, setLeaveStartDate] = useState('')
  const [leaveEndDate, setLeaveEndDate] = useState('')
  const [leaveType, setLeaveType] = useState('')
@@ -12350,12 +12351,58 @@ function buildDeliveryInvoicePrintCSS() {
  loadMyLeaveBalance(activeEmployee)
  }
  async function submitCashAdvanceRequest() {
- if (!requestCashAmount||!requestCashReason) { alert('Please enter amount and reason.'); return }
- const amount=Number(requestCashAmount); if (amount<=0) { alert('Amount must be greater than 0.'); return }
- const { error } = await supabase.from('cash_advance_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, amount, reason:requestCashReason, status:'pending' })
- if (error) { alert('Failed: '+error.message); return }
- alert('Request submitted! Waiting for admin approval.')
- setRequestCashAmount(''); setRequestCashReason(''); setRequestCashReasonPreset(''); setShowCashAdvanceRequest(false); loadMyCashAdvances(employee)
+ if (submittingCashAdvanceRequest) return
+ const cleanReason = String(requestCashReason || '').trim()
+ if (!requestCashAmount || !cleanReason) { alert('Please enter amount and reason.'); return }
+ const amount = Number(requestCashAmount)
+ if (!amount || amount <= 0) { alert('Amount must be greater than 0.'); return }
+ setSubmittingCashAdvanceRequest(true)
+ try {
+  const { data:existingPending, error:existingError } = await supabase
+   .from('cash_advance_requests')
+   .select('id,amount,created_at,status')
+   .eq('employee_id', employee.id)
+   .eq('status', 'pending')
+   .limit(1)
+
+  if (existingError) {
+   alert('Failed checking existing cash advance request: ' + existingError.message)
+   return
+  }
+
+  if ((existingPending || []).length > 0) {
+   alert('You already have a pending cash advance request. Please wait for admin review before submitting another request.')
+   setShowCashAdvanceRequest(false)
+   loadMyCashAdvances(employee)
+   return
+  }
+
+  const { error } = await supabase.from('cash_advance_requests').insert({
+   employee_id:employee.id,
+   employee_code:employee.employee_code,
+   employee_name:employee.full_name,
+   amount,
+   reason:cleanReason,
+   status:'pending'
+  })
+
+  if (error) {
+   const msg = String(error.message || '').toLowerCase()
+   if (error.code === '23505' || msg.includes('duplicate') || msg.includes('unique')) {
+    alert('Cash advance request already submitted. Please wait for admin review instead of submitting again.')
+    setShowCashAdvanceRequest(false)
+    loadMyCashAdvances(employee)
+    return
+   }
+   alert('Failed: '+error.message)
+   return
+  }
+
+  alert('Request submitted! Waiting for admin approval.')
+  setRequestCashAmount(''); setRequestCashReason(''); setRequestCashReasonPreset(''); setShowCashAdvanceRequest(false); loadMyCashAdvances(employee)
+ } finally {
+  setSubmittingCashAdvanceRequest(false)
+ }
  }
  async function agreePayslip(payId) {
  const { error } = await supabase.from('payroll_records').update({ employee_acknowledgement:'agreed' }).eq('id', payId)
@@ -32764,7 +32811,11 @@ onClick={async ()=>{
  style={{...inputStyle, minHeight:'70px', resize:'none' }}
  />
  )}
- <button style={btnGreen} onClick={submitCashAdvanceRequest}>SUBMIT REQUEST</button>
+ <button
+ style={{...btnGreen, opacity:submittingCashAdvanceRequest?0.65:1, cursor:submittingCashAdvanceRequest?'not-allowed':'pointer' }}
+ disabled={submittingCashAdvanceRequest}
+ onClick={submitCashAdvanceRequest}
+ >{submittingCashAdvanceRequest?'SUBMITTING...':'SUBMIT REQUEST'}</button>
  </div>
  )}
 
