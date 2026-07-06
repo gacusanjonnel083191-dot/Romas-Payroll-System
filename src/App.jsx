@@ -26727,7 +26727,11 @@ function printCompanyDocumentRecord(record) {
  <div key={cat} style={{ marginBottom:'16px' }}>
  <div style={{ background:catColor, color:'white', padding:'8px 14px', borderRadius:'10px 10px 0 0', fontWeight:'bold', fontSize:'13px' }}> {cat}</div>
  {catVariants.map((v,i)=>{
- const hasRecipe = (variantRecipes[v.id]||[]).length > 0
+ const variantExtraRows = variantRecipes[v.id] || []
+ const hasVariantRecipe = variantExtraRows.length > 0
+ const hasBaseRecipe = (baseDoughIngredients || []).length > 0
+ const hasAnyRecipeIngredients = hasBaseRecipe || hasVariantRecipe
+ const totalIngredientRows = (baseDoughIngredients || []).length + variantExtraRows.length
  const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId!== 'base'
  return (
  <div key={v.id} style={{ border:`1px solid ${catColor}33`, borderTop:'none', background:i%2===0?'white':'#fafafa', padding:'10px 14px' }}>
@@ -26739,8 +26743,9 @@ function printCompanyDocumentRecord(record) {
  {!editingVariantId || editingVariantId!== v.id? (
  <span style={{ fontSize:'11px', color:'#888' }}>{v.pieces_per_batch} pcs/batch</span>
  ): null}
- {hasRecipe &&!isEditing && <Badge label={`${variantRecipes[v.id].length} ingredient(s)`} color="green" />}
- {!hasRecipe &&!isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No toppings/filling set</span>}
+ {hasAnyRecipeIngredients &&!isEditing && <Badge label={`${totalIngredientRows} ingredient(s) incl. base`} color="green" />}
+ {!hasAnyRecipeIngredients &&!isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No recipe set</span>}
+ {hasBaseRecipe && !hasVariantRecipe && !isEditing && <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'700' }}>Base dough auto-included. Add topping/filling only if needed.</span>}
  </div>
  {editingVariantId === v.id && (
  <div style={{ display:'flex', gap:'8px', marginTop:'8px', alignItems:'center', flexWrap:'wrap' }}>
@@ -26756,7 +26761,7 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', gap:'6px' }}>
  {editingVariantId!== v.id && <button style={{...btnYellow, padding:'5px 10px', fontSize:'11px' }} onClick={()=>{ setEditingVariantId(v.id); setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price }) }}> EDIT</button>}
  {!isEditing? (
- <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasRecipe?variantRecipes[v.id].map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasRecipe?'EDIT':'ADD'} RECIPE</button>
+ <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasVariantRecipe?variantExtraRows.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasVariantRecipe?'EDIT':'ADD'} RECIPE</button>
  ): (
  <div style={{ display:'flex', gap:'6px' }}>
  <button style={{...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?' ':' SAVE'}</button>
@@ -26767,6 +26772,9 @@ function printCompanyDocumentRecord(record) {
  </div>
  {isEditing && (
  <div style={{ marginTop:'10px', background:'#f9f9f9', padding:'12px', borderRadius:'8px', border:'1px solid #eee' }}>
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', marginBottom:'10px', fontSize:'11px', color:'#555', lineHeight:1.45 }}>
+ <strong style={{ color:'#ca1b1b' }}>Base dough is automatically included.</strong> Add only the extra topping, filling, glaze, or coating for this variant. Do not add Donut Premix, Yeast, or Ice again here.
+ </div>
  {editingVariantRecipe.map((row,ri)=>(
  <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
  <div>
@@ -26793,18 +26801,45 @@ function printCompanyDocumentRecord(record) {
  </div>
  )}
  {/* Show existing recipe (read mode) */}
- {!isEditing && hasRecipe && (
- <div style={{ marginTop:'8px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
- {variantRecipes[v.id].map((r,ri)=>{
+ {!isEditing && hasAnyRecipeIngredients && (
+ <div style={{ marginTop:'8px' }}>
+ {(() => {
+ const pieces = Math.max(1, Number(v.pieces_per_batch) || 1)
+ const basePerPc = (baseDoughIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
+ const variantPerPc = variantExtraRows.reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
+ return (
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'7px 9px', marginBottom:'7px', fontSize:'11px', color:'#555', display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
+ <strong style={{ color:'#ca1b1b' }}>Total ingredients/pc: {php(basePerPc + variantPerPc)}</strong>
+ <span>Base dough: {php(basePerPc)}</span>
+ <span>Variant extras: {php(variantPerPc)}</span>
+ </div>
+ )
+ })()}
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ {(baseDoughIngredients || []).map((r,ri)=>{
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
  const qtyGrams = productionRecipeQuantityGrams(r)
  const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
  return (
- <div key={ri} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+ <div key={`base-${ri}`} style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+ <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#2d8a4e', fontSize:'10px' }}>(base dough)</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+ </div>
+ )
+ }) }
+ {variantExtraRows.map((r,ri)=>{
+ const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
+ return (
+ <div key={`variant-${ri}`} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
  <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({r.ingredient_type})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
  </div>
  )
  }) }
+ {hasBaseRecipe && !hasVariantRecipe && (
+ <div style={{ background:'#f7f7f7', borderRadius:'6px', padding:'4px 8px', fontSize:'11px', color:'#777', fontStyle:'italic' }}>No extra topping/filling added yet. This variant currently uses base dough only.</div>
+ )}
+ </div>
  </div>
  )}
  </div>
