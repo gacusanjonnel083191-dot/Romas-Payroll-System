@@ -19638,7 +19638,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [closingActualCash, setClosingActualCash] = useState(() => readSagsDraft('closingActualCash', ''))
  const [closingClosedBy, setClosingClosedBy] = useState(() => readSagsDraft('closingClosedBy', ''))
  const [closingRemarks, setClosingRemarks] = useState(() => readSagsDraft('closingRemarks', ''))
- const [inventorySearch, setInventorySearch] = useState(() => readSagsDraft('inventorySearch', ''))
+ const [inventorySearch, setInventorySearch] = useState('')
  const [inventoryDrafts, setInventoryDrafts] = useState(() => readSagsDraftObject('inventoryDrafts', {}))
  const [inventorySavingId, setInventorySavingId] = useState('')
  const [showAddOutletItem, setShowAddOutletItem] = useState(() => readSagsDraft('showAddOutletItem', false) === true)
@@ -19671,6 +19671,32 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const next = { ...prev }
    delete next[key]
    return next
+  })
+ }
+
+ function sanitizeInventoryDraftsForLoadedProducts(products = []) {
+  // Prevent stale blank product-name drafts from making products look missing after refresh/reload.
+  // The real database product_name is still the source of truth until the row is intentionally saved.
+  setInventoryDrafts(prev => {
+   if (!prev || typeof prev !== 'object') return prev
+   let changed = false
+   const validKeys = new Set((products || []).map(item => getInventoryDraftKey(item)).filter(Boolean))
+   const next = { ...prev }
+   Object.keys(next).forEach(key => {
+    const draft = next[key]
+    if (!validKeys.has(key)) {
+     delete next[key]
+     changed = true
+     return
+    }
+    if (draft && typeof draft === 'object' && draft.productName !== undefined && !String(draft.productName || '').trim()) {
+     next[key] = { ...draft }
+     delete next[key].productName
+     if (Object.keys(next[key]).length === 0) delete next[key]
+     changed = true
+    }
+   })
+   return changed ? next : prev
   })
  }
 
@@ -20086,6 +20112,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    setPosItems(filteredItems)
    setPosMovements(filteredMovements)
    const nextProducts = productsRes.data || []
+   sanitizeInventoryDraftsForLoadedProducts(nextProducts)
    const hasUnsavedAddItem = showAddOutletItem && Object.values(newOutletItem || {}).some(value => String(value || '').trim() !== '')
    const hasUnsavedRowEdits = Object.values(inventoryDrafts || {}).some(draft =>
     draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
@@ -20772,7 +20799,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     voidReason,
     voidedBy,
     voidAdminPin,
-    inventorySearch,
     inventoryDrafts,
     showAddOutletItem,
     newOutletItem
@@ -20795,7 +20821,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   voidReason,
   voidedBy,
   voidAdminPin,
-  inventorySearch,
   inventoryDrafts,
   showAddOutletItem,
   newOutletItem
@@ -21164,12 +21189,23 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <p style={{ margin:'3px 0 0', color:'#087a37', fontSize:'10.5px', fontWeight:'850' }}>Silent refresh is safe — unsaved Add Item details and row edits are preserved.</p>
      </div>
      <div style={{ display:'flex', gap:'7px', alignItems:'center', flexWrap:'wrap', justifyContent:isMobile ? 'stretch' : 'flex-end' }}>
+      <span style={{ background:'#fff', border:'1px solid #f1d35a', color:'#7c2d12', borderRadius:'999px', padding:'7px 10px', fontSize:'11px', fontWeight:'950', whiteSpace:'nowrap' }}>
+       Showing {filteredOutletInventoryRows.length} / {outletBalances.length} products
+      </span>
       <input
        value={inventorySearch}
        onChange={e=>setInventorySearch(e.target.value)}
        placeholder="Search product, SKU, barcode, category..."
        style={{...inputStyle, width:isMobile ? '100%' : '300px', marginBottom:0, padding:'8px 10px', border:'1.5px solid #d7bf42', color:'#111827', fontWeight:'800', background:'#ffffff', fontSize:'12px'}}
       />
+      {inventorySearch.trim() && (
+       <button
+        onClick={()=>setInventorySearch('')}
+        style={{...btnGray, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px', fontWeight:'900'}}
+       >
+        Clear Search
+       </button>
+      )}
       {canEditOutletInventory && (
        <button
         onClick={()=>setShowAddOutletItem(v=>!v)}
@@ -21261,6 +21297,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
     {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
      <div style={{ overflowX:'auto' }}>
+      {outletBalances.length > 0 && filteredOutletInventoryRows.length === 0 && inventorySearch.trim() && (
+       <div style={{ margin:'0 0 10px', padding:'12px', background:'#fff7ed', border:'1px solid #fed7aa', borderRadius:'12px', color:'#9a3412', fontSize:'13px', fontWeight:'850', display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+        <span>Your products are hidden by the current search filter: <strong>"{inventorySearch}"</strong>.</span>
+        <button onClick={()=>setInventorySearch('')} style={{...btnYellow, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'12px'}}>Show All Products</button>
+       </div>
+      )}
       <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:'12px', minWidth:'1320px', color:'#111827', background:'white', border:'1px solid #f1d35a', borderRadius:'12px', overflow:'hidden' }}>
        <thead>
         <tr style={{ background:'linear-gradient(90deg,#ca1b1b 0%,#d9362d 100%)', color:'white' }}>
@@ -21295,7 +21337,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          const saving = inventorySavingId === draftKey
          return (
           <tr key={row.id || row.product_name} style={{ background:projectedStock < 0 ? '#fff1f1' : (rowIndex % 2 === 0 ? '#ffffff' : '#fffdf5') }}>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'850', minWidth:'190px' }}>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'850', minWidth:'205px', position:'sticky', left:0, zIndex:2, background:projectedStock < 0 ? '#fff1f1' : '#ffffff' }}>
             <input
              disabled={!canEditOutletInventory}
              value={draft.productName ?? row.product_name}
@@ -21390,7 +21432,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         })}
        </tbody>
       </table>
-      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>No product matched your search.</p>}
+      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>{outletBalances.length > 0 ? 'No product matched your search. Clear the search to show all products.' : 'No POS products loaded yet. Click Refresh, or check the pos_products table if this remains empty.'}</p>}
      </div>
     )}
    </div>
