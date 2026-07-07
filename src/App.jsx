@@ -1274,60 +1274,22 @@ function getCashAdvanceRawBalance(ca = {}) {
  return Number.isFinite(raw) ? moneyRound(Math.max(0, raw)) : 0
 }
 
-function getCashAdvanceInstallmentMeta(ca = {}, req = {}) {
- const amount = moneyRound(Math.max(0, safeNum(ca?.amount ?? req?.amount, 0)))
- const total = Math.max(0, Math.round(safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0)))
- const rawRemaining = ca?.installments_remaining ?? req?.installments_remaining
- const hasRecordedRemaining = rawRemaining !== undefined && rawRemaining !== null && String(rawRemaining).trim() !== ''
- const recordedRemaining = Math.max(0, Math.round(safeNum(rawRemaining, 0)))
- const remaining = total > 0 ? Math.min(total, recordedRemaining) : recordedRemaining
- const perPayroll = moneyRound(safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0))
- const isInstallmentPlan = amount > 0 && total > 1 && perPayroll > 0.009
- const completed = isInstallmentPlan && hasRecordedRemaining ? Math.max(0, Math.min(total, total - remaining)) : null
- const paidFromInstallmentCount = completed === null
-  ? null
-  : completed >= total
-   ? amount
-   : moneyRound(Math.min(amount, completed * perPayroll))
- return {
-  amount,
-  total,
-  perPayroll,
-  hasRecordedRemaining,
-  recordedRemaining:remaining,
-  isInstallmentPlan,
-  completed,
-  paidFromInstallmentCount
- }
-}
-
-function getCashAdvancePaidAmount(ca = {}, req = {}) {
- const amount = moneyRound(Math.max(0, safeNum(ca?.amount ?? req?.amount, 0)))
+function getCashAdvancePaidAmount(ca = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
  const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
- const rawBalance = getCashAdvanceRawBalance(ca)
- const meta = getCashAdvanceInstallmentMeta(ca, req)
-
- // For installment cash advances, the payroll deduction count must be the source of truth.
- // This prevents old/wrong amount_paid values from showing inflated paid amounts such as
- // 3 cutoffs done but almost 4 cutoffs worth of money deducted.
- if (meta.paidFromInstallmentCount !== null) return moneyRound(Math.min(amount, Math.max(0, meta.paidFromInstallmentCount)))
-
- if (amount > 0) {
-  if (paid > 0) return moneyRound(Math.min(amount, paid))
-  if (rawBalance > 0.009 && rawBalance < amount) return moneyRound(Math.max(0, amount - rawBalance))
-  return 0
- }
+ const balance = getCashAdvanceEffectiveBalance(ca)
+ if (amount > 0) return moneyRound(Math.min(amount, Math.max(0, amount - balance)))
  return paid
 }
 
-function getCashAdvanceEffectiveBalance(ca = {}, req = {}) {
- const amount = moneyRound(Math.max(0, safeNum(ca?.amount ?? req?.amount, 0)))
- const paid = getCashAdvancePaidAmount(ca, req)
+function getCashAdvanceEffectiveBalance(ca = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
+ const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
  const rawBalance = getCashAdvanceRawBalance(ca)
  const status = String(ca?.status || '').trim().toLowerCase()
 
  if (amount > 0) {
-  if (paid > 0.009 || getCashAdvanceInstallmentMeta(ca, req).paidFromInstallmentCount !== null) return moneyRound(Math.max(0, amount - paid))
+  if (paid > 0) return moneyRound(Math.max(0, amount - paid))
   if (rawBalance > 0.009) {
    const perPayroll = safeNum(ca?.per_payroll_deduction, 0)
    const totalInstallments = safeNum(ca?.installments_total, 0)
@@ -1350,10 +1312,9 @@ function getCashAdvanceStatusForBalance(balance = 0, currentStatus = '') {
 }
 
 function getCashAdvanceRemainingInstallments(ca = {}, req = {}) {
- const total = Math.max(0, Math.round(safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0)))
- const recordedRemaining = Math.max(0, Math.round(safeNum(ca?.installments_remaining ?? req?.installments_remaining, 0)))
- const hasExplicitBalance = ca?.balance !== undefined && ca?.balance !== null && String(ca.balance).trim() !== ''
- const balance = hasExplicitBalance ? getCashAdvanceRawBalance(ca) : getCashAdvanceEffectiveBalance(ca, req)
+ const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
+ const recordedRemaining = Math.max(0, safeNum(ca?.installments_remaining ?? req?.installments_remaining, 0))
+ const balance = getCashAdvanceEffectiveBalance(ca)
  if (isMoneySettled(balance)) return 0
 
  const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
@@ -1362,16 +1323,15 @@ function getCashAdvanceRemainingInstallments(ca = {}, req = {}) {
   return total > 0 ? Math.min(total, computed) : computed
  }
 
- if (recordedRemaining > 0) return total > 0 ? Math.min(total, recordedRemaining) : recordedRemaining
+ if (recordedRemaining > 0) return recordedRemaining
  return total > 0 ? total : 1
 }
 
 function getCAInstallmentInfo(ca = {}, req = {}) {
- const meta = getCashAdvanceInstallmentMeta(ca, req)
- const total = meta.total
+ const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
  const remaining = getCashAdvanceRemainingInstallments(ca, req)
- const completed = total > 0 ? Math.max(0, Math.min(total, total - remaining)) : 0
- const perPayroll = meta.perPayroll
+ const completed = total > 0 ? Math.max(0, total - remaining) : 0
+ const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
  return { total, remaining, completed, perPayroll }
 }
 
@@ -1947,61 +1907,6 @@ export default function App() {
  const resellerOrderSubmitLockRef = useRef(false)
  const resellerOrderRecentSubmitKeysRef = useRef(new Set())
  const approvingResellerOrderIdsRef = useRef(new Set())
- const globalSaveScrollSnapshotRef = useRef(null)
- const globalSaveScrollTimersRef = useRef([])
-
- useEffect(() => {
-  if (typeof document === 'undefined' || typeof window === 'undefined') return
-
-  const actionKeywordPattern = /(save|saved|submit|submitted|update|updated|approve|approved|reject|rejected|release|released|reopen|fix|correct|record|deduct|deduction|settle|settlement|void|delete|remove|archive|restore|create|add|generate|upload|send|pay|paid|mark|confirm|process)/i
-  const passiveNavigationPattern = /^(dashboard|payroll|ca coverage|ot \/ ut|adjustment|13th month|final pay|history|remittance|dtr|bank csv|cash adv|disputes|inventory|sop library|documents center|recipe vault|costing|sales & expenses|analytics|foundation|payables \/ pdc|franchise|logout admin|change password)$/i
-
-  const getActionText = (el) => {
-   if (!el) return ''
-   return [
-    el.getAttribute?.('data-preserve-scroll'),
-    el.getAttribute?.('aria-label'),
-    el.getAttribute?.('title'),
-    el.getAttribute?.('value'),
-    el.textContent
-   ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
-  }
-
-  const shouldPreserveScrollForAction = (event) => {
-   if (event.type === 'submit') return true
-   const target = event.target
-   const actionEl = target?.closest?.('button, input[type="button"], input[type="submit"], [role="button"]')
-   if (!actionEl) return false
-   if (actionEl.disabled || actionEl.getAttribute?.('aria-disabled') === 'true') return false
-   const actionText = getActionText(actionEl)
-   if (!actionText) return false
-   if (passiveNavigationPattern.test(actionText.toLowerCase())) return false
-   return actionKeywordPattern.test(actionText)
-  }
-
-  const captureBeforeSaveAction = (event) => {
-   if (!shouldPreserveScrollForAction(event)) return
-   captureGlobalSaveScrollSnapshot()
-  }
-
-  document.addEventListener('click', captureBeforeSaveAction, true)
-  document.addEventListener('submit', captureBeforeSaveAction, true)
-  return () => {
-   document.removeEventListener('click', captureBeforeSaveAction, true)
-   document.removeEventListener('submit', captureBeforeSaveAction, true)
-   clearGlobalSaveScrollTimers()
-  }
- }, [])
-
- useEffect(() => {
-  const snapshot = globalSaveScrollSnapshotRef.current
-  if (!snapshot) return
-  if (Date.now() > snapshot.expiresAt) {
-   globalSaveScrollSnapshotRef.current = null
-   return
-  }
-  restoreGlobalSaveScrollSnapshot(snapshot)
- })
 
  const [employeeCode, setEmployeeCode] = useState('')
  const [pin, setPin] = useState('')
@@ -17605,88 +17510,33 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return
  }
 
- const amount = moneyRound(Math.max(0, safeNum(ca.amount, 0)))
+ const amount = Math.max(0, safeNum(ca.amount, 0))
  if (!amount) { showToast('Invalid cash advance amount.', 'red'); return }
 
- const installments = Math.max(1, Math.round(safeNum(ca.installments_total, ca.installments_remaining || 1)))
- const perPayroll = moneyRound(safeNum(ca.per_payroll_deduction, 0) > 0
+ const installments = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || 1))
+ const perPayroll = safeNum(ca.per_payroll_deduction, 0) > 0
 ? safeNum(ca.per_payroll_deduction, 0)
-: Math.ceil((amount / installments) * 100) / 100)
+: Math.ceil((amount / installments) * 100) / 100
 
- const ledgerPaid = moneyRound(Math.max(0, safeNum(ca.amount_paid, 0)))
- const ledgerBalance = getCashAdvanceRawBalance(ca)
- const ledgerStatus = String(ca.status || '').trim().toLowerCase()
- const looksWronglyFullyPaidInstallment = ledgerPaid >= amount - 0.009 && ledgerBalance <= 0.009 && ledgerStatus === 'paid' && installments > 1 && perPayroll > 0.009 && perPayroll < amount
- const suggestedAlreadyDeducted = looksWronglyFullyPaidInstallment
-  ? perPayroll
-  : ledgerPaid > 0 && ledgerPaid < amount
-   ? ledgerPaid
-   : 0
-
- const paidAnswer = window.prompt(
-  'Reopen this cash advance for payroll deduction.\n\n' +
-  'Employee: ' + (ca.employee_name || ca.employee_code || 'Employee') + '\n' +
-  'Original CA Amount: ' + php(amount) + '\n' +
-  'Planned Deduction / Payroll: ' + php(perPayroll) + '\n' +
-  'Planned Cutoffs: ' + installments + '\n\n' +
-  'Enter the ACTUAL amount already deducted/paid before reopening.\n' +
-  'Use 0 only if nothing was actually deducted. This protects valid partial deduction history.',
-  String(suggestedAlreadyDeducted)
- )
-
- if (paidAnswer === null) return
-
- const cleanedPaid = String(paidAnswer).replace(/[₱,\s]/g, '')
- const actualPaid = moneyRound(Math.max(0, safeNum(cleanedPaid, 0)))
- if (!Number.isFinite(actualPaid) || actualPaid < 0 || actualPaid > amount + 0.009) {
-  showToast('Invalid actual deducted amount. It must be between ₱0.00 and the original CA amount.', 'red')
-  return
- }
-
- const newPaid = moneyRound(Math.min(amount, actualPaid))
- const newBalance = moneyRound(Math.max(0, amount - newPaid))
- const newInstallmentsRemaining = getCashAdvanceRemainingInstallments({
-  ...ca,
-  amount_paid:newPaid,
-  balance:newBalance,
-  installments_total:installments,
-  per_payroll_deduction:perPayroll
- })
- const completed = installments > 0 ? Math.max(0, installments - newInstallmentsRemaining) : 0
- const newStatus = getCashAdvanceStatusForBalance(newBalance, ca.status)
-
- if (!window.confirm(
-  'Confirm CA reopen correction?\n\n' +
-  'Original CA Amount: ' + php(amount) + '\n' +
-  'Actual Already Deducted/Paid: ' + php(newPaid) + '\n' +
-  'Balance to Reopen: ' + php(newBalance) + '\n' +
-  'Installments: ' + completed + '/' + installments + ' done · ' + newInstallmentsRemaining + ' left\n' +
-  'New Status: ' + newStatus + '\n\n' +
-  'This will preserve actual paid history and reopen only the unpaid balance.'
- )) return
+ if (!window.confirm(`Reopen this cash advance as ACTIVE/UNPAID?\n\nAmount: ${php(amount)}\nThis will set Paid/Deducted to PHP 0.00 and Balance to ${php(amount)} so it can be deducted in the next payroll release.`)) return
 
  const existingNotes = String(ca.notes || '').trim()
- const newNotes = `${existingNotes}${existingNotes? ' | ': ''}REOPENED / PARTIAL CA BALANCE CORRECTED BY OWNER ${new Date().toISOString().slice(0,10)}: actual deducted preserved ${php(newPaid)}; reopened balance ${php(newBalance)}; ${completed}/${installments} done, ${newInstallmentsRemaining} left`
+ const newNotes = `${existingNotes}${existingNotes? ' | ': ''}REOPENED AS ACTIVE CA BY OWNER ${new Date().toISOString().slice(0,10)}`
 
  const { error } = await supabase.from('cash_advances').update({
- amount_paid:newPaid,
- balance:newBalance,
+ amount_paid:0,
+ balance:amount,
  per_payroll_deduction:perPayroll,
  installments_total:installments,
- installments_remaining:newInstallmentsRemaining,
- status:newStatus,
+ installments_remaining:installments,
+ status:'Unpaid',
  notes:newNotes
  }).eq('id', ca.id)
 
  if (error) { showToast('Failed to reopen cash advance: ' + error.message, 'red'); return }
 
- await logAudit(
-  'CA REOPENED WITH PARTIAL DEDUCTION PRESERVED',
-  currentAdminLabel || adminRole,
-  ca.employee_name || ca.employee_code || 'Employee',
-  `CA ID: ${ca.id} | Original: ${php(amount)} | Preserved paid: ${php(newPaid)} | Reopened balance: ${php(newBalance)} | ${completed}/${installments} done, ${newInstallmentsRemaining} left`
- )
- showToast(` Cash advance reopened safely. Preserved paid: ${php(newPaid)}. Remaining balance: ${php(newBalance)}.`)
+ await logAudit('CA REOPENED AS ACTIVE', adminRole, ca.employee_name || ca.employee_code || 'Employee', `${php(amount)} reopened for payroll deduction. CA ID: ${ca.id}`)
+ showToast(' Cash advance reopened as active/unpaid. It can now deduct in the next payroll release.')
  await loadCashAdvanceCoverage(payrollStart, payrollEnd)
  if (employee?.id) loadMyCashAdvances(employee)
  }
@@ -19756,6 +19606,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   category:'Donuts',
   sku:'',
   barcode:'',
+  buying_price:'',
   selling_price:'',
   stock:'',
   min_stock:'10'
@@ -19821,73 +19672,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    delete next[key]
    return next
   })
- }
-
- function clearGlobalSaveScrollTimers() {
-  ;(globalSaveScrollTimersRef.current || []).forEach(timerId => {
-   try { window.clearTimeout(timerId) } catch {}
-  })
-  globalSaveScrollTimersRef.current = []
- }
-
- function captureGlobalSaveScrollSnapshot() {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return null
-  const scrollingElement = document.scrollingElement || document.documentElement || document.body
-  const active = document.activeElement
-  const activeSnapshot = active && active !== document.body ? {
-   element: active,
-   selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
-   selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
-  } : null
-  const snapshot = {
-   x: window.scrollX || scrollingElement?.scrollLeft || 0,
-   y: window.scrollY || scrollingElement?.scrollTop || 0,
-   docTop: scrollingElement?.scrollTop || window.scrollY || 0,
-   docLeft: scrollingElement?.scrollLeft || window.scrollX || 0,
-   activeSnapshot,
-   createdAt:Date.now(),
-   expiresAt:Date.now() + 4500
-  }
-  globalSaveScrollSnapshotRef.current = snapshot
-  scheduleGlobalSaveScrollRestore(snapshot)
-  return snapshot
- }
-
- function restoreGlobalSaveScrollSnapshot(snapshot = globalSaveScrollSnapshotRef.current) {
-  if (!snapshot || typeof window === 'undefined' || typeof document === 'undefined') return
-  if (Date.now() > snapshot.expiresAt) {
-   if (globalSaveScrollSnapshotRef.current === snapshot) globalSaveScrollSnapshotRef.current = null
-   return
-  }
-  try {
-   const scrollingElement = document.scrollingElement || document.documentElement || document.body
-   const targetTop = snapshot.docTop ?? snapshot.y ?? 0
-   const targetLeft = snapshot.docLeft ?? snapshot.x ?? 0
-   if (scrollingElement) {
-    scrollingElement.scrollTop = targetTop
-    scrollingElement.scrollLeft = targetLeft
-   }
-   window.scrollTo({ left:targetLeft, top:targetTop, behavior:'auto' })
-   const active = snapshot.activeSnapshot
-   if (active?.element && typeof active.element.focus === 'function' && document.contains(active.element)) {
-    active.element.focus({ preventScroll:true })
-    if (typeof active.element.setSelectionRange === 'function' && active.selectionStart !== null && active.selectionEnd !== null) {
-     active.element.setSelectionRange(active.selectionStart, active.selectionEnd)
-    }
-   }
-  } catch {}
- }
-
- function scheduleGlobalSaveScrollRestore(snapshot = globalSaveScrollSnapshotRef.current) {
-  if (!snapshot || typeof window === 'undefined') return
-  clearGlobalSaveScrollTimers()
-  const restore = () => restoreGlobalSaveScrollSnapshot(snapshot)
-  restore()
-  window.requestAnimationFrame?.(() => {
-   restore()
-   window.requestAnimationFrame?.(restore)
-  })
-  globalSaveScrollTimersRef.current = [80, 200, 450, 900, 1600, 2600, 4200].map(delay => window.setTimeout(restore, delay))
  }
 
  function capturePosSilentScrollSnapshot() {
@@ -19966,6 +19750,62 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    .replace(/^-+|-+$/g, '')
    .replace(/-{2,}/g, '-')
    .toUpperCase() || 'ITEM'
+ }
+
+
+ function isOutletMarkupPricingCategory(category = '') {
+  const label = String(category || '').trim().toLowerCase()
+  // Donuts are company-made items with direct retail prices. Bought-price markup
+  // is for bought/resold outlet items such as biscuits, drinks, noodles, coffee,
+  // snacks, and other non-donut POS products.
+  return !!label && label !== 'donuts' && label !== 'donut'
+ }
+
+ function getOutletMarkupSellingPrice(buyingPrice) {
+  return moneyRound(safeNum(buyingPrice, 0) * 1.30)
+ }
+
+ function getOutletBuyingPrice(product = {}) {
+  const explicitBuying = safeNum(product.buyingPrice ?? product.buying_price, 0)
+  if (explicitBuying > 0) return moneyRound(explicitBuying)
+  const costPerUnit = safeNum(product.costPerUnit ?? product.cost_per_unit, 0)
+  if (costPerUnit > 0) return moneyRound(costPerUnit)
+  const selling = safeNum(product.sellingPrice ?? product.selling_price ?? product.price, 0)
+  return isOutletMarkupPricingCategory(product.category) && selling > 0 ? moneyRound(selling / 1.30) : 0
+ }
+
+ function getOutletDisplaySellingPrice(product = {}) {
+  const explicitSelling = safeNum(product.sellingPrice ?? product.selling_price ?? product.price, 0)
+  const buying = getOutletBuyingPrice(product)
+  if (isOutletMarkupPricingCategory(product.category) && buying > 0) return getOutletMarkupSellingPrice(buying)
+  return explicitSelling
+ }
+
+ function isPosProductsOptionalColumnError(error = null) {
+  const msg = String(error?.message || error || '').toLowerCase()
+  if (!msg) return false
+  const optionalColumns = ['name', 'price', 'buying_price', 'markup_percent', 'cost_per_unit']
+  return optionalColumns.some(col => msg.includes(col)) && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column') || msg.includes('record'))
+ }
+
+ function stripPosProductsOptionalColumns(payload = {}) {
+  const clean = { ...payload }
+  delete clean.name
+  delete clean.price
+  delete clean.buying_price
+  delete clean.markup_percent
+  delete clean.cost_per_unit
+  return clean
+ }
+
+ async function updatePosProductSafe(productId, payload = {}) {
+  const first = await supabase.from('pos_products').update(payload).eq('id', productId)
+  if (!first.error) return { error:null, optionalColumnsSaved:true }
+  if (!isPosProductsOptionalColumnError(first.error)) return first
+  const corePayload = stripPosProductsOptionalColumns(payload)
+  const second = await supabase.from('pos_products').update(corePayload).eq('id', productId)
+  if (second.error) return second
+  return { error:null, optionalColumnsSaved:false, skippedOptionalColumns:Object.keys(payload).filter(key => !(key in corePayload)) }
  }
 
  function getOutletCategoryPluStart(category) {
@@ -20261,6 +20101,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        String(prev.sku || '') !== String(item.sku || '') ||
        String(prev.barcode || '') !== String(item.barcode || '') ||
        safeNum(prev.selling_price, 0) !== safeNum(item.selling_price, 0) ||
+       safeNum(prev.buying_price, 0) !== safeNum(item.buying_price, 0) ||
        safeNum(prev.stock, 0) !== safeNum(item.stock, 0) ||
        safeNum(prev.min_stock, 0) !== safeNum(item.min_stock, 0)
      })
@@ -20376,12 +20217,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const oldPrice = safeNum(product.selling_price, 0)
 
   try {
-   const { error } = await supabase
-    .from('pos_products')
-    .update({ selling_price: newPrice })
-    .eq('id', product.id)
-
-   if (error) throw error
+   const updateResult = await updatePosProductSafe(product.id, { selling_price: newPrice, price: newPrice })
+   if (updateResult.error) throw updateResult.error
 
    if (logAudit) {
     await logAudit(
@@ -20420,12 +20257,32 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const stockInQty = Math.round(safeNum(draft.stockIn, 0))
   const stockOutQty = Math.round(safeNum(draft.stockOut, 0))
   const currentStock = safeNum(product.remainingStock ?? product.stock, 0)
-  const currentPrice = safeNum(product.sellingPrice ?? product.selling_price, 0)
-  const newPrice = draft.price !== undefined && String(draft.price).trim() !== '' ? safeNum(draft.price, -1) : currentPrice
+  const currentName = String(product.product_name || product.name || 'Unnamed Product').trim()
+  const newName = draft.productName !== undefined ? String(draft.productName || '').trim() : currentName
+  const category = String(product.category || '').trim()
+  const usesMarkupPricing = isOutletMarkupPricingCategory(category)
+  const currentBuyingPrice = getOutletBuyingPrice(product)
+  const currentPrice = getOutletDisplaySellingPrice(product)
+  const draftBuyingEntered = draft.buyingPrice !== undefined && String(draft.buyingPrice).trim() !== ''
+  const draftPriceEntered = draft.price !== undefined && String(draft.price).trim() !== ''
+  const newBuyingPrice = draftBuyingEntered ? safeNum(draft.buyingPrice, -1) : currentBuyingPrice
+  const newPrice = usesMarkupPricing && draftBuyingEntered
+   ? getOutletMarkupSellingPrice(newBuyingPrice)
+   : (draftPriceEntered ? safeNum(draft.price, -1) : currentPrice)
   const remarks = String(draft.remarks || '').trim()
+
+  if (!newName) {
+   alert('Product name cannot be blank.')
+   return
+  }
 
   if (stockInQty < 0 || stockOutQty < 0) {
    alert('Stock In and Stock Out cannot be negative.')
+   return
+  }
+
+  if (usesMarkupPricing && draftBuyingEntered && newBuyingPrice < 0) {
+   alert('Please enter a valid bought price.')
    return
   }
 
@@ -20434,16 +20291,23 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    return
   }
 
+  const duplicateName = newName.toLowerCase() !== currentName.toLowerCase()
+   ? posProducts.find(p => String(p.id) !== String(product.id) && String(p.product_name || p.name || '').trim().toLowerCase() === newName.toLowerCase())
+   : null
+  if (duplicateName && !confirm(`Another POS item already uses the name "${newName}". Continue saving this name?`)) return
+
   const newStock = currentStock + stockInQty - stockOutQty
   if (newStock < 0) {
    alert('Stock Out is greater than current stock. Current stock cannot go below zero.')
    return
   }
 
+  const nameChanged = newName !== currentName
+  const buyingChanged = usesMarkupPricing && draftBuyingEntered && Math.abs(newBuyingPrice - currentBuyingPrice) > 0.009
   const priceChanged = Math.abs(newPrice - currentPrice) > 0.009
   const stockChanged = stockInQty > 0 || stockOutQty > 0
 
-  if (!priceChanged && !stockChanged) {
+  if (!nameChanged && !buyingChanged && !priceChanged && !stockChanged) {
    alert('No changes to save for this product.')
    return
   }
@@ -20453,15 +20317,23 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   try {
    const updatePayload = {}
+   if (nameChanged) {
+    updatePayload.product_name = newName
+    updatePayload.name = newName
+   }
    if (stockChanged) updatePayload.stock = newStock
-   if (priceChanged) updatePayload.selling_price = newPrice
+   if (usesMarkupPricing && draftBuyingEntered) {
+    updatePayload.buying_price = moneyRound(newBuyingPrice)
+    updatePayload.cost_per_unit = moneyRound(newBuyingPrice)
+    updatePayload.markup_percent = 30
+   }
+   if (priceChanged || (usesMarkupPricing && draftBuyingEntered)) {
+    updatePayload.selling_price = moneyRound(newPrice)
+    updatePayload.price = moneyRound(newPrice)
+   }
 
-   const { error: updateError } = await supabase
-    .from('pos_products')
-    .update(updatePayload)
-    .eq('id', product.id)
-
-   if (updateError) throw updateError
+   const updateResult = await updatePosProductSafe(product.id, updatePayload)
+   if (updateResult.error) throw updateResult.error
 
    const movementRows = []
    if (stockInQty > 0) {
@@ -20470,7 +20342,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      product_id: product.id,
      sku: product.sku || '',
      barcode: product.barcode || '',
-     product_name: product.product_name || product.name || 'Unnamed Product',
+     product_name: newName,
      movement_type: 'stock_in',
      qty: stockInQty,
      reference_no: referenceBase + '-IN',
@@ -20484,7 +20356,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      product_id: product.id,
      sku: product.sku || '',
      barcode: product.barcode || '',
-     product_name: product.product_name || product.name || 'Unnamed Product',
+     product_name: newName,
      movement_type: 'stock_out',
      qty: -stockOutQty,
      reference_no: referenceBase + '-OUT',
@@ -20501,14 +20373,20 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
    if (logAudit) {
     const changes = []
+    if (nameChanged) changes.push(`Name ${currentName} → ${newName}`)
+    if (usesMarkupPricing && draftBuyingEntered) changes.push(`Bought ₱${newBuyingPrice.toFixed(2)} + 30% markup = Sell ₱${newPrice.toFixed(2)}`)
+    else if (priceChanged) changes.push(`Price ₱${currentPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`)
     if (stockChanged) changes.push(`Stock ${currentStock} → ${newStock} (${stockInQty ? '+' + stockInQty : ''}${stockInQty && stockOutQty ? ', ' : ''}${stockOutQty ? '-' + stockOutQty : ''})`)
-    if (priceChanged) changes.push(`Price ₱${currentPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`)
     await logAudit(
      'OUTLET INVENTORY UPDATED',
      currentAdminLabel || 'Admin',
-     product.product_name || product.name || product.id,
+     newName || product.product_name || product.name || product.id,
      changes.join(' | ') + (remarks ? ' | ' + remarks : '')
     )
+   }
+
+   if (updateResult.optionalColumnsSaved === false && (usesMarkupPricing && draftBuyingEntered)) {
+    alert('Saved selling price using bought price + 30%. Note: your pos_products table is missing buying_price/markup columns, so the bought price itself was not stored. Add those Supabase columns for permanent bought-price tracking.')
    }
 
    clearInventoryDraft(product)
@@ -20536,11 +20414,18 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const skuForDb = sku || null
   const barcodeForDb = barcode || null
   const startingStock = Math.round(safeNum(newOutletItem.stock, 0))
-  const sellingPrice = safeNum(newOutletItem.selling_price, -1)
+  const usesMarkupPricing = isOutletMarkupPricingCategory(category)
+  const buyingPrice = safeNum(newOutletItem.buying_price, 0)
+  const sellingPrice = usesMarkupPricing && buyingPrice > 0 ? getOutletMarkupSellingPrice(buyingPrice) : safeNum(newOutletItem.selling_price, -1)
   const minStock = Math.round(safeNum(newOutletItem.min_stock, 10))
 
   if (!productName) {
    alert('Please enter a product name.')
+   return
+  }
+
+  if (usesMarkupPricing && buyingPrice < 0) {
+   alert('Please enter a valid bought price.')
    return
   }
 
@@ -20604,6 +20489,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     category,
     sku: skuForDb,
     barcode: barcodeForDb,
+    buying_price: usesMarkupPricing && buyingPrice > 0 ? moneyRound(buyingPrice) : null,
+    cost_per_unit: usesMarkupPricing && buyingPrice > 0 ? moneyRound(buyingPrice) : null,
+    markup_percent: usesMarkupPricing && buyingPrice > 0 ? 30 : null,
     selling_price: sellingPrice,
     price: sellingPrice,
     stock: startingStock,
@@ -20679,7 +20567,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      'OUTLET POS ITEM ADDED',
      currentAdminLabel || 'Admin',
      productName,
-     `Category: ${category} | Price: ₱${sellingPrice.toFixed(2)} | Starting stock: ${startingStock}`
+     `Category: ${category} | ${usesMarkupPricing && buyingPrice > 0 ? `Bought: ₱${buyingPrice.toFixed(2)} | Markup: 30% | ` : ''}Price: ₱${sellingPrice.toFixed(2)} | Starting stock: ${startingStock}`
     )
    }
 
@@ -21024,7 +20912,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    category: product.category || '',
    sku: product.sku || '',
    barcode: product.barcode || '',
-   sellingPrice: safeNum(product.selling_price, 0),
+   buyingPrice: getOutletBuyingPrice(product),
+   markupPercent: safeNum(product.markup_percent, isOutletMarkupPricingCategory(product.category) ? 30 : 0),
+   usesMarkupPricing: isOutletMarkupPricingCategory(product.category),
+   sellingPrice: getOutletDisplaySellingPrice(product),
    stock: currentStock,
    startingStock: currentStock,
    soldQty,
@@ -21045,7 +20936,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const filteredOutletInventoryRows = outletBalances.filter(row => {
   const search = inventorySearch.trim().toLowerCase()
   if (!search) return true
-  return [row.product_name, row.category, row.sku, row.barcode, row.sellingPrice, row.remainingStock].join(' ').toLowerCase().includes(search)
+  return [row.product_name, row.category, row.sku, row.barcode, row.buyingPrice, row.sellingPrice, row.remainingStock].join(' ').toLowerCase().includes(search)
  })
 
  const outletCategoryCounts = filteredOutletInventoryRows.reduce((acc, row) => {
@@ -21312,14 +21203,21 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     {showAddOutletItem && canEditOutletInventory && (
      <div style={{ background:'#fffbe8', border:'1px solid #f4d35e', borderRadius:'12px', padding:'10px', marginBottom:'10px' }}>
       <h4 style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'14px', fontWeight:'900' }}>Add New POS Item</h4>
-      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.5fr 1fr 1fr 1fr 0.8fr 0.8fr 0.8fr', gap:'8px', alignItems:'end' }}>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.5fr 1fr 1fr 1fr 0.85fr 0.85fr 0.8fr 0.8fr', gap:'8px', alignItems:'end' }}>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Product Name</label>
         <input value={newOutletItem.product_name} onChange={e=>setNewOutletItem(prev=>({...prev, product_name:e.target.value}))} placeholder="Example: Bavarian Pops" style={{...inputStyle, marginBottom:0}} />
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Category</label>
-        <input value={newOutletItem.category} onChange={e=>setNewOutletItem(prev=>({...prev, category:e.target.value}))} placeholder="Donuts / Coffee" style={{...inputStyle, marginBottom:0}} />
+        <input value={newOutletItem.category} onChange={e=>{
+         const category = e.target.value
+         setNewOutletItem(prev=>({
+          ...prev,
+          category,
+          ...(isOutletMarkupPricingCategory(category) && safeNum(prev.buying_price,0) > 0 ? { selling_price:getOutletMarkupSellingPrice(prev.buying_price) } : {})
+         }))
+        }} placeholder="Donuts / Coffee" style={{...inputStyle, marginBottom:0}} />
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>SKU</label>
@@ -21330,8 +21228,20 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         <input value={newOutletItem.barcode} onChange={e=>setNewOutletItem(prev=>({...prev, barcode:e.target.value}))} placeholder="Scan/type" style={{...inputStyle, marginBottom:0}} />
        </div>
        <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Price</label>
-        <input type="number" min="0" step="0.01" value={newOutletItem.selling_price} onChange={e=>setNewOutletItem(prev=>({...prev, selling_price:e.target.value}))} placeholder="0.00" style={{...inputStyle, marginBottom:0}} />
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Bought Price</label>
+        <input type="number" min="0" step="0.01" value={newOutletItem.buying_price || ''} onChange={e=>{
+         const bought = e.target.value
+         setNewOutletItem(prev=>({
+          ...prev,
+          buying_price:bought,
+          ...(isOutletMarkupPricingCategory(prev.category) && String(bought).trim() !== '' ? { selling_price:getOutletMarkupSellingPrice(bought) } : {})
+         }))
+        }} placeholder="Supplier" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Sell Price</label>
+        <input type="number" min="0" step="0.01" value={newOutletItem.selling_price} onChange={e=>setNewOutletItem(prev=>({...prev, selling_price:e.target.value}))} placeholder="Auto +30%" style={{...inputStyle, marginBottom:0}} />
+        {isOutletMarkupPricingCategory(newOutletItem.category) && safeNum(newOutletItem.buying_price,0) > 0 && <div style={{ fontSize:'9.5px', color:'#087a37', fontWeight:'900', marginTop:'3px' }}>Auto: bought + 30%</div>}
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Start Stock</label>
@@ -21351,12 +21261,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
     {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
      <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:'12px', minWidth:'1180px', color:'#111827', background:'white', border:'1px solid #f1d35a', borderRadius:'12px', overflow:'hidden' }}>
+      <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:'12px', minWidth:'1320px', color:'#111827', background:'white', border:'1px solid #f1d35a', borderRadius:'12px', overflow:'hidden' }}>
        <thead>
         <tr style={{ background:'linear-gradient(90deg,#ca1b1b 0%,#d9362d 100%)', color:'white' }}>
          <th style={{ textAlign:'left', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Product</th>
          <th style={{ textAlign:'left', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>SKU / Barcode</th>
-         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Price</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Bought Price</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Sell Price</th>
          <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Current Stock</th>
          <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Sold Today</th>
          <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Movement Today</th>
@@ -21372,7 +21283,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          if (row.__categoryHeader) {
           return (
            <tr key={`category-${row.category}`}>
-            <td colSpan={11} style={{ padding:'7px 10px', background:'#fff4b8', borderTop:'1px solid #f1d35a', borderBottom:'1px solid #f1d35a', color:'#7c2d12', fontSize:'11px', fontWeight:'950', letterSpacing:'0.05em', textTransform:'uppercase' }}>
+            <td colSpan={12} style={{ padding:'7px 10px', background:'#fff4b8', borderTop:'1px solid #f1d35a', borderBottom:'1px solid #f1d35a', color:'#7c2d12', fontSize:'11px', fontWeight:'950', letterSpacing:'0.05em', textTransform:'uppercase' }}>
              {row.category} <span style={{ color:'#92400e', fontWeight:'800', textTransform:'none', letterSpacing:0 }}>({row.count} item{row.count === 1 ? '' : 's'})</span>
             </td>
            </tr>
@@ -21384,8 +21295,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          const saving = inventorySavingId === draftKey
          return (
           <tr key={row.id || row.product_name} style={{ background:projectedStock < 0 ? '#fff1f1' : (rowIndex % 2 === 0 ? '#ffffff' : '#fffdf5') }}>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'850' }}>
-            <strong style={{ color:'#111827', fontSize:'12px', fontWeight:'950', lineHeight:1.1 }}>{row.product_name}</strong><br/>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'850', minWidth:'190px' }}>
+            <input
+             disabled={!canEditOutletInventory}
+             value={draft.productName ?? row.product_name}
+             onChange={e=>setInventoryDraftValue(row, 'productName', e.target.value)}
+             placeholder="Item name"
+             style={{...inputStyle, width:'170px', marginBottom:'3px', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#ffffff'}}
+            />
             <span style={{ color:'#6b7280', fontSize:'10px', fontWeight:'750' }}>{row.category || '-'}</span>
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#374151', fontWeight:'750' }}>
@@ -21407,15 +21324,42 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
             </div>
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
+            {row.usesMarkupPricing ? (
+             <input
+              type="number"
+              min="0"
+              step="0.01"
+              disabled={!canEditOutletInventory}
+              value={draft.buyingPrice ?? (row.buyingPrice || '')}
+              onChange={e=>{
+               const buying = e.target.value
+               setInventoryDrafts(prev => ({
+                ...prev,
+                [draftKey]: {
+                 ...(prev[draftKey] || {}),
+                 buyingPrice:buying,
+                 price:String(buying).trim() !== '' ? getOutletMarkupSellingPrice(buying) : ''
+                }
+               }))
+              }}
+              placeholder="Bought"
+              style={{...inputStyle, width:'78px', marginBottom:0, textAlign:'right', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}}
+             />
+            ) : (
+             <span style={{ color:'#6b7280', fontSize:'10px', fontWeight:'800' }}>Direct</span>
+            )}
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
             <input
              type="number"
              min="0"
              step="0.01"
-             disabled={!canEditOutletInventory}
+             disabled={!canEditOutletInventory || row.usesMarkupPricing}
              value={draft.price ?? row.sellingPrice}
              onChange={e=>setInventoryDraftValue(row, 'price', e.target.value)}
-             style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}}
+             style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:row.usesMarkupPricing ? '#f8fafc' : '#fffdf2'}}
             />
+            {row.usesMarkupPricing && <div style={{ fontSize:'9px', color:'#087a37', fontWeight:'900', marginTop:'2px', whiteSpace:'nowrap' }}>+30%</div>}
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', fontWeight:'950', color:'#111827', fontSize:'12px' }}>{row.remainingStock}</td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:'#ca1b1b', fontWeight:'950', fontSize:'12px' }}>{row.soldQty}</td>
@@ -23857,12 +23801,12 @@ function printCompanyDocumentRecord(record) {
  {String(ca.status || '').trim().toLowerCase() !== effectiveStatus.toLowerCase() && (
   <div style={{ color:'#b45309', fontSize:'10px', fontWeight:'bold', marginTop:'4px' }}>stored: {String(ca.status || 'Blank')}</div>
  )}
- {adminRole==='owner' && safeNum(ca.amount,0)>0 && safeNum(row.payrollDeduction,0)<=0 && (
+ {adminRole==='owner' && effectiveStatus.toLowerCase()==='paid' && effectiveBalance<=0.009 && safeNum(ca.amount,0)>0 && effectivePaid>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
  <button
  style={{ background:'#fff8dc', color:'#ca1b1b', border:'1px solid #FDD412', borderRadius:'8px', padding:'5px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'10px', marginTop:'6px' }}
  onClick={()=>reopenCashAdvanceForPayrollDeduction(ca)}
- title="Owner correction: preserve actual deducted amount and reopen only the remaining unpaid CA balance."
- >{effectiveStatus.toLowerCase()==='paid' ? 'REOPEN' : 'FIX BALANCE'}</button>
+ title="Owner correction: use only if this CA was wrongly marked paid before payroll deduction."
+ > REOPEN</button>
  )}
  </td>
  </tr>
@@ -24653,7 +24597,6 @@ function printCompanyDocumentRecord(record) {
    {safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
     <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
    )}
-   <button style={{...btnYellow, background:'#FDD412', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>reopenCashAdvanceForPayrollDeduction(ledger)}>CORRECT PAID/BALANCE</button>
    <button style={{...btnYellow, background:'#FDD412', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>correctCashAdvanceAmount(ledger, req)}>CORRECT CA AMOUNT</button>
   </div>
  )}
