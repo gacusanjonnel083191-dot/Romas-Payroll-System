@@ -1947,6 +1947,61 @@ export default function App() {
  const resellerOrderSubmitLockRef = useRef(false)
  const resellerOrderRecentSubmitKeysRef = useRef(new Set())
  const approvingResellerOrderIdsRef = useRef(new Set())
+ const globalSaveScrollSnapshotRef = useRef(null)
+ const globalSaveScrollTimersRef = useRef([])
+
+ useEffect(() => {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return
+
+  const actionKeywordPattern = /(save|saved|submit|submitted|update|updated|approve|approved|reject|rejected|release|released|reopen|fix|correct|record|deduct|deduction|settle|settlement|void|delete|remove|archive|restore|create|add|generate|upload|send|pay|paid|mark|confirm|process)/i
+  const passiveNavigationPattern = /^(dashboard|payroll|ca coverage|ot \/ ut|adjustment|13th month|final pay|history|remittance|dtr|bank csv|cash adv|disputes|inventory|sop library|documents center|recipe vault|costing|sales & expenses|analytics|foundation|payables \/ pdc|franchise|logout admin|change password)$/i
+
+  const getActionText = (el) => {
+   if (!el) return ''
+   return [
+    el.getAttribute?.('data-preserve-scroll'),
+    el.getAttribute?.('aria-label'),
+    el.getAttribute?.('title'),
+    el.getAttribute?.('value'),
+    el.textContent
+   ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+  }
+
+  const shouldPreserveScrollForAction = (event) => {
+   if (event.type === 'submit') return true
+   const target = event.target
+   const actionEl = target?.closest?.('button, input[type="button"], input[type="submit"], [role="button"]')
+   if (!actionEl) return false
+   if (actionEl.disabled || actionEl.getAttribute?.('aria-disabled') === 'true') return false
+   const actionText = getActionText(actionEl)
+   if (!actionText) return false
+   if (passiveNavigationPattern.test(actionText.toLowerCase())) return false
+   return actionKeywordPattern.test(actionText)
+  }
+
+  const captureBeforeSaveAction = (event) => {
+   if (!shouldPreserveScrollForAction(event)) return
+   captureGlobalSaveScrollSnapshot()
+  }
+
+  document.addEventListener('click', captureBeforeSaveAction, true)
+  document.addEventListener('submit', captureBeforeSaveAction, true)
+  return () => {
+   document.removeEventListener('click', captureBeforeSaveAction, true)
+   document.removeEventListener('submit', captureBeforeSaveAction, true)
+   clearGlobalSaveScrollTimers()
+  }
+ }, [])
+
+ useEffect(() => {
+  const snapshot = globalSaveScrollSnapshotRef.current
+  if (!snapshot) return
+  if (Date.now() > snapshot.expiresAt) {
+   globalSaveScrollSnapshotRef.current = null
+   return
+  }
+  restoreGlobalSaveScrollSnapshot(snapshot)
+ })
 
  const [employeeCode, setEmployeeCode] = useState('')
  const [pin, setPin] = useState('')
@@ -19766,6 +19821,73 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    delete next[key]
    return next
   })
+ }
+
+ function clearGlobalSaveScrollTimers() {
+  ;(globalSaveScrollTimersRef.current || []).forEach(timerId => {
+   try { window.clearTimeout(timerId) } catch {}
+  })
+  globalSaveScrollTimersRef.current = []
+ }
+
+ function captureGlobalSaveScrollSnapshot() {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return null
+  const scrollingElement = document.scrollingElement || document.documentElement || document.body
+  const active = document.activeElement
+  const activeSnapshot = active && active !== document.body ? {
+   element: active,
+   selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+   selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
+  } : null
+  const snapshot = {
+   x: window.scrollX || scrollingElement?.scrollLeft || 0,
+   y: window.scrollY || scrollingElement?.scrollTop || 0,
+   docTop: scrollingElement?.scrollTop || window.scrollY || 0,
+   docLeft: scrollingElement?.scrollLeft || window.scrollX || 0,
+   activeSnapshot,
+   createdAt:Date.now(),
+   expiresAt:Date.now() + 4500
+  }
+  globalSaveScrollSnapshotRef.current = snapshot
+  scheduleGlobalSaveScrollRestore(snapshot)
+  return snapshot
+ }
+
+ function restoreGlobalSaveScrollSnapshot(snapshot = globalSaveScrollSnapshotRef.current) {
+  if (!snapshot || typeof window === 'undefined' || typeof document === 'undefined') return
+  if (Date.now() > snapshot.expiresAt) {
+   if (globalSaveScrollSnapshotRef.current === snapshot) globalSaveScrollSnapshotRef.current = null
+   return
+  }
+  try {
+   const scrollingElement = document.scrollingElement || document.documentElement || document.body
+   const targetTop = snapshot.docTop ?? snapshot.y ?? 0
+   const targetLeft = snapshot.docLeft ?? snapshot.x ?? 0
+   if (scrollingElement) {
+    scrollingElement.scrollTop = targetTop
+    scrollingElement.scrollLeft = targetLeft
+   }
+   window.scrollTo({ left:targetLeft, top:targetTop, behavior:'auto' })
+   const active = snapshot.activeSnapshot
+   if (active?.element && typeof active.element.focus === 'function' && document.contains(active.element)) {
+    active.element.focus({ preventScroll:true })
+    if (typeof active.element.setSelectionRange === 'function' && active.selectionStart !== null && active.selectionEnd !== null) {
+     active.element.setSelectionRange(active.selectionStart, active.selectionEnd)
+    }
+   }
+  } catch {}
+ }
+
+ function scheduleGlobalSaveScrollRestore(snapshot = globalSaveScrollSnapshotRef.current) {
+  if (!snapshot || typeof window === 'undefined') return
+  clearGlobalSaveScrollTimers()
+  const restore = () => restoreGlobalSaveScrollSnapshot(snapshot)
+  restore()
+  window.requestAnimationFrame?.(() => {
+   restore()
+   window.requestAnimationFrame?.(restore)
+  })
+  globalSaveScrollTimersRef.current = [80, 200, 450, 900, 1600, 2600, 4200].map(delay => window.setTimeout(restore, delay))
  }
 
  function capturePosSilentScrollSnapshot() {
