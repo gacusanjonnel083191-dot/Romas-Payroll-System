@@ -19604,6 +19604,17 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    return fallback
   }
  }
+ const OUTLET_POS_CATEGORY_OPTIONS = [
+  'Donuts',
+  'Biscuits',
+  'Coffee',
+  'Drinks',
+  'Noodles',
+  'Refreshing Drinks',
+  'Snacks',
+  'Others'
+ ]
+
  const getDefaultNewOutletItem = () => ({
   product_name:'',
   category:'Donuts',
@@ -21249,14 +21260,18 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Category</label>
-        <input value={newOutletItem.category} onChange={e=>{
+        <select value={newOutletItem.category || 'Donuts'} onChange={e=>{
          const category = e.target.value
          setNewOutletItem(prev=>({
           ...prev,
           category,
           ...(isOutletMarkupPricingCategory(category) && safeNum(prev.buying_price,0) > 0 ? { selling_price:getOutletMarkupSellingPrice(prev.buying_price) } : {})
          }))
-        }} placeholder="Donuts / Coffee" style={{...inputStyle, marginBottom:0}} />
+        }} style={{...inputStyle, marginBottom:0, cursor:'pointer', color:'#111827', fontWeight:'800'}}>
+         {OUTLET_POS_CATEGORY_OPTIONS.map(category => (
+          <option key={category} value={category}>{category}</option>
+         ))}
+        </select>
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>SKU</label>
