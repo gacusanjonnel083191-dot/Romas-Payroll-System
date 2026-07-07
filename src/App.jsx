@@ -2847,7 +2847,7 @@ export default function App() {
  const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
 
  // Security & Owner Control Lockdown v1 helpers 
- const ADMIN_ROLE_VALUES = ['owner','manager','hr','payroll','supervisor','asst_supervisor']
+ const ADMIN_ROLE_VALUES = ['owner','manager','pos_admin','hr','payroll','supervisor','asst_supervisor']
  const normalizedAdminRole = String(adminRole || '').trim().toLowerCase()
  const isOwnerRole = normalizedAdminRole === 'owner'
  const isPayrollRole = normalizedAdminRole === 'payroll'
@@ -12520,7 +12520,8 @@ function buildDeliveryInvoicePrintCSS() {
  function canAccess(tab) {
  const role = normalizeAdminRole(adminRole)
  if (role === 'owner') return true
- if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise'].includes(tab)
+ if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
+ if (role === 'pos_admin') return ['posMonitor'].includes(tab)
  if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops'].includes(tab)
  if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
  if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops'].includes(tab)
@@ -16732,7 +16733,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  } else {
  setAdminEmployee(null)
  }
- const defaultTab = safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
+ const defaultTab = safeRole==='pos_admin'?'posMonitor':safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
  setActiveTab(defaultTab)
  loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
  loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
@@ -19582,7 +19583,9 @@ async function computePayroll() {
 
  
 function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }) {
- const canEditOutletInventory = isOwnerRole || String(adminRole || '').trim().toLowerCase() === 'manager'
+ const POS_INVENTORY_EDIT_ROLES = ['owner','manager','pos_admin']
+ const canEditOutletInventory = POS_INVENTORY_EDIT_ROLES.includes(String(adminRole || '').trim().toLowerCase())
+ const posInventoryEditRoleLabel = 'Owner, Manager, or SAGS POS Admin'
  const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
  const readSagsDraft = (key, fallback = '') => {
   try {
@@ -19994,7 +19997,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  async function generateBarcodeForProduct(product, options = {}) {
   if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can generate POS barcodes.')
+   alert(`Only ${posInventoryEditRoleLabel} can generate POS barcodes.`)
    return null
   }
   if (!product?.id) {
@@ -20023,7 +20026,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  async function generateMissingBarcodes() {
   if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can generate POS barcodes.')
+   alert(`Only ${posInventoryEditRoleLabel} can generate POS barcodes.`)
    return
   }
   const missingRows = outletBalances.filter(row => !cleanOutletBarcodeCode(row.barcode))
@@ -20146,7 +20149,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  async function saveOutletStockIn() {
   if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can log stock in for the outlet.')
+   alert(`Only ${posInventoryEditRoleLabel} can log stock in for the outlet.`)
    return
   }
 
@@ -20220,7 +20223,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  async function saveProductPrice() {
   if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can change outlet prices.')
+   alert(`Only ${posInventoryEditRoleLabel} can change outlet prices.`)
    return
   }
 
@@ -20270,7 +20273,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  async function saveOutletInventoryRow(product) {
   if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can update outlet inventory.')
+   alert(`Only ${posInventoryEditRoleLabel} can update outlet inventory.`)
    return
   }
 
@@ -20428,7 +20431,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  async function saveNewOutletItem() {
   if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can add new POS items.')
+   alert(`Only ${posInventoryEditRoleLabel} can add new POS items.`)
    return
   }
 
@@ -21219,7 +21222,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
     {!canEditOutletInventory && (
      <p style={{ margin:'0 0 12px', color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
-      Viewing only — Owner or Manager access is needed to add items, edit prices, or change outlet stock.
+      Viewing only — Owner, Manager, or SAGS POS Admin access is needed to add items, edit prices, or change outlet stock.
      </p>
     )}
 
@@ -21514,7 +21517,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  // Admin Render 
  if (adminMode) {
  const SECTIONS = [
- { key:'posMonitor', icon:<img src="/icons/pos-machine.svg" alt="" style={{width:18,height:18,objectFit:'contain'}} />, label:'SAGS POS', tabs:[{key:'posMonitor',label:'Outlet POS Monitor'}], roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
+ { key:'posMonitor', icon:<img src="/icons/pos-machine.svg" alt="" style={{width:18,height:18,objectFit:'contain'}} />, label:'SAGS POS', tabs:[{key:'posMonitor',label:'Outlet POS Monitor'}], roles:['owner','manager','pos_admin','hr','payroll','supervisor','asst_supervisor'] },
  { key:'dashboard', icon:'\uD83C\uDFE0', label:'Dashboard',
  tabs:[{key:'dashboard',label:'Overview'}],
  roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
@@ -22195,7 +22198,7 @@ function printCompanyDocumentRecord(record) {
  <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
  <div style={{ background:'#ca1b1b', borderRadius:'6px', padding:'5px 10px', textAlign:'center', marginBottom: availableRoles.length > 1? '8px': '0' }}>
  <p style={{ color:'white', fontSize:'11px', fontWeight:'bold', margin:0 }}>
- {adminRole==='owner'?' Owner':adminRole==='manager'?' Manager':adminRole==='hr'?' HR Admin':adminRole==='payroll'?' Payroll Officer':adminRole==='supervisor'?' Supervisor':adminRole==='asst_supervisor'?' Asst. Supervisor':' Owner'}
+ {adminRole==='owner'?' Owner':adminRole==='manager'?' Manager':adminRole==='pos_admin'?' SAGS POS Admin':adminRole==='hr'?' HR Admin':adminRole==='payroll'?' Payroll Officer':adminRole==='supervisor'?' Supervisor':adminRole==='asst_supervisor'?' Asst. Supervisor':' Owner'}
  </p>
  {(adminEmployee || adminAuthProfile || adminAuthUser) && <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'2px 0 0' }}>{adminEmployee?.full_name || adminAuthProfile?.full_name || adminAuthUser?.email}</p>}
  </div>
@@ -22205,8 +22208,8 @@ function printCompanyDocumentRecord(record) {
  <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'9px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.5px', textAlign:'center' }}>Switch Role</p>
  <div style={{ display:'flex', flexDirection:'column', gap:'3px' }}>
  {availableRoles.map(role => (
- <button key={role} onClick={()=>{ setAdminRole(role); setActiveTab(role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'); showToast(` Switched to ${role==='owner'?'Owner':role==='manager'?'Manager':role==='hr'?'HR Admin':role==='payroll'?'Payroll Officer':role==='supervisor'?'Supervisor':'Asst. Supervisor'}`) }} style={{ padding:'5px 8px', borderRadius:'6px', border:`1px solid ${adminRole===role?'#ca1b1b':'rgba(255,255,255,0.15)'}`, background:adminRole===role?'#ca1b1b':'rgba(255,255,255,0.05)', color:adminRole===role?'white':'rgba(255,255,255,0.6)', cursor:'pointer', fontSize:'10px', fontWeight:adminRole===role?'bold':'normal', textAlign:'left', transition:'all 0.15s' }}>
- {role==='owner'?' Owner':role==='manager'?' Manager':role==='hr'?' HR Admin':role==='payroll'?' Payroll':role==='supervisor'?' Supervisor':' Asst. Supervisor'}
+ <button key={role} onClick={()=>{ setAdminRole(role); setActiveTab(role==='pos_admin'?'posMonitor':role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'); showToast(` Switched to ${role==='owner'?'Owner':role==='manager'?'Manager':role==='pos_admin'?'SAGS POS Admin':role==='hr'?'HR Admin':role==='payroll'?'Payroll Officer':role==='supervisor'?'Supervisor':'Asst. Supervisor'}`) }} style={{ padding:'5px 8px', borderRadius:'6px', border:`1px solid ${adminRole===role?'#ca1b1b':'rgba(255,255,255,0.15)'}`, background:adminRole===role?'#ca1b1b':'rgba(255,255,255,0.05)', color:adminRole===role?'white':'rgba(255,255,255,0.6)', cursor:'pointer', fontSize:'10px', fontWeight:adminRole===role?'bold':'normal', textAlign:'left', transition:'all 0.15s' }}>
+ {role==='owner'?' Owner':role==='manager'?' Manager':role==='pos_admin'?' SAGS POS Admin':role==='hr'?' HR Admin':role==='payroll'?' Payroll':role==='supervisor'?' Supervisor':' Asst. Supervisor'}
  {adminRole===role && <span style={{ float:'right', fontSize:'9px' }}> Active</span>}
  </button>
  ))}
@@ -22851,6 +22854,7 @@ function printCompanyDocumentRecord(record) {
  <option value=""> None (Regular Employee) </option>
  <option value="owner"> Owner Full Access</option>
  <option value="manager"> Manager Full Access</option>
+ <option value="pos_admin"> SAGS POS Admin POS edits only</option>
  <option value="hr"> HR Admin People & Attendance</option>
  <option value="payroll"> Payroll Officer Payroll & Finance</option>
  <option value="supervisor"> Supervisor Attendance & Inventory</option>
@@ -22860,6 +22864,7 @@ function printCompanyDocumentRecord(record) {
  <select multiple value={(editFields.extra_roles||'').split(',').filter(r=>r)} onChange={e=>{ const selected=Array.from(e.target.selectedOptions).map(o=>o.value); setEditFields(p=>({...p,extra_roles:selected.join(',')})) }} style={{...inputStyle, height:'100px', borderColor:'#4a90d9' }}>
  <option value="owner"> Owner</option>
  <option value="manager"> Manager</option>
+ <option value="pos_admin"> SAGS POS Admin</option>
  <option value="hr"> HR Admin</option>
  <option value="payroll"> Payroll Officer</option>
  <option value="supervisor"> Supervisor</option>
