@@ -6063,6 +6063,43 @@ Cancel = create batch record only for existing stock.`)
  if (error) { showToast(' Failed: '+error.message,'red'); return }
  showToast(' Variant updated!'); setEditingVariantId(null); loadDonutVariants()
  }
+
+ function isPowderBaseTableMissingError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('powder_base_recipe') && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('does not exist') || msg.includes('relation') || msg.includes('pgrst205'))
+ }
+ function getPowderBaseLocalBackupRows() {
+ if (typeof window === 'undefined') return []
+ try {
+ const rows = JSON.parse(window.localStorage.getItem('romas_powder_base_recipe_backup') || '[]')
+ return Array.isArray(rows)? rows.map((r, i) => ({
+  ...r,
+  id: r.id || `local-powder-${i}`,
+  quantity_per_batch: productionRecipeQuantityGrams(r),
+  unit: 'g',
+  is_local_powder_backup: true
+ })) : []
+ } catch (err) {
+ console.warn('Could not read local powder base backup:', err)
+ return []
+ }
+ }
+ function savePowderBaseLocalBackupRows(rows = []) {
+ if (typeof window === 'undefined') return
+ try {
+ const cleaned = (rows || []).map((r, i) => ({
+  id: r.id || `local-powder-${Date.now()}-${i}`,
+  inventory_item_id: r.inventory_item_id || '',
+  item_name: String(r.item_name || '').trim(),
+  quantity_per_batch: productionRecipeQuantityGrams(r),
+  unit: 'g',
+  notes: r.notes || ''
+ }))
+ window.localStorage.setItem('romas_powder_base_recipe_backup', JSON.stringify(cleaned))
+ } catch (err) {
+ console.warn('Could not save local powder base backup:', err)
+ }
+ }
  async function loadRecipes() {
  try {
  const { data: base, error: baseErr } = await supabase.from('base_dough_recipe').select('*').order('created_at')
@@ -6079,10 +6116,20 @@ Cancel = create batch record only for existing stock.`)
  if (powderErr) throw powderErr
  setPowderBaseIngredients(powder || [])
  setCostingLoadErrors(p => p.filter(x=>!x.includes('powder_base_recipe')))
+ if ((powder || []).length > 0) savePowderBaseLocalBackupRows(powder || [])
  } catch (err) {
  console.warn('Powder base recipe could not be loaded:', err)
- setPowderBaseIngredients([])
- setCostingLoadErrors(p => [...p.filter(x=>!x.includes('powder_base_recipe')), `powder_base_recipe: ${err.message || err}`])
+ if (isPowderBaseTableMissingError(err) || isOptionalSupabaseObjectMissing(err)) {
+  const localRows = getPowderBaseLocalBackupRows()
+  setPowderBaseIngredients(localRows)
+  setCostingLoadErrors(p => [
+   ...p.filter(x=>!x.includes('powder_base_recipe')),
+   'powder_base_recipe table is missing in Supabase. Powder Base is using this browser backup temporarily; create the table in Supabase so costing is shared across all devices.'
+  ])
+ } else {
+  setPowderBaseIngredients([])
+  setCostingLoadErrors(p => [...p.filter(x=>!x.includes('powder_base_recipe')), `powder_base_recipe: ${err.message || err}`])
+ }
  }
  try {
  const { data: variant, error: variantErr } = await supabase.from('variant_recipes').select('*').order('variant_id')
@@ -6122,22 +6169,38 @@ Cancel = create batch record only for existing stock.`)
  }
  async function savePowderBase() {
  setSavingRecipe(true)
- try {
- // Delete existing and re-insert. Powder base is a shared production recipe like base dough.
- await supabase.from('powder_base_recipe').delete().neq('id', '00000000-0000-0000-0000-000000000000')
  const validRows = editingPowderBase.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
- if (validRows.length > 0) {
- const { error } = await supabase.from('powder_base_recipe').insert(validRows.map(r => ({
+ const payloadRows = validRows.map(r => ({
  inventory_item_id: r.inventory_item_id || null,
  item_name: r.item_name.trim(),
  quantity_per_batch: productionRecipeQuantityGrams(r),
  unit: 'g',
  notes: r.notes || null
- })))
+ }))
+ try {
+ // Delete existing and re-insert. Powder base is a shared production recipe like base dough.
+ const { error: deleteError } = await supabase.from('powder_base_recipe').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+ if (deleteError) throw deleteError
+ if (payloadRows.length > 0) {
+ const { error } = await supabase.from('powder_base_recipe').insert(payloadRows)
  if (error) throw error
  }
- showToast(' Powder base recipe saved!'); loadRecipes()
- } catch(err) { showToast(' Failed: '+err.message,'red') }
+ savePowderBaseLocalBackupRows(payloadRows)
+ showToast(' Powder base recipe saved!'); setSelectedRecipeVariantId(null); loadRecipes()
+ } catch(err) {
+  if (isPowderBaseTableMissingError(err) || isOptionalSupabaseObjectMissing(err)) {
+   savePowderBaseLocalBackupRows(payloadRows)
+   setPowderBaseIngredients(payloadRows.map((r, i) => ({...r, id:`local-powder-${i}`, is_local_powder_backup:true })))
+   setCostingLoadErrors(p => [
+    ...p.filter(x=>!x.includes('powder_base_recipe')),
+    'powder_base_recipe table is missing in Supabase. Powder Base was saved only as a browser backup. Create the Supabase table so this recipe is permanent and visible to other devices.'
+   ])
+   showToast(' Powder base saved as browser backup. Create the Supabase powder_base_recipe table for permanent shared saving.', 'orange')
+   setSelectedRecipeVariantId(null)
+  } else {
+   showToast(' Failed: '+err.message,'red')
+  }
+ }
  setSavingRecipe(false)
  }
  async function saveVariantRecipe(variantId) {
@@ -27491,7 +27554,7 @@ function printCompanyDocumentRecord(record) {
  <strong style={{ color:'#ca1b1b' }}> Required Supabase Tables:</strong>
  <p style={{ color:'#555', margin:'6px 0 2px' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> id (uuid PK), name, category, selling_price (numeric), pieces_per_batch (numeric), is_active (bool default true), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>base_dough_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
- <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>powder_base_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
+ <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>powder_base_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at <strong style={{ color:'#ca1b1b' }}>required for permanent Powder Base saving</strong></p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>variant_recipes</code> id (uuid PK), variant_id (uuid), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), ingredient_type (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_logs</code> id (uuid PK), production_date (date), total_pieces (numeric), ingredient_cost (numeric), labor_cost (numeric), overhead_cost (numeric), total_cost (numeric), notes (text), logged_by (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_log_items</code> id (uuid PK), log_id (uuid), variant_id (uuid), variant_name (text), pieces_produced (numeric), ingredient_cost (numeric), created_at</p>
