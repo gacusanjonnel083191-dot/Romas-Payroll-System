@@ -1274,22 +1274,60 @@ function getCashAdvanceRawBalance(ca = {}) {
  return Number.isFinite(raw) ? moneyRound(Math.max(0, raw)) : 0
 }
 
-function getCashAdvancePaidAmount(ca = {}) {
- const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
+function getCashAdvanceInstallmentMeta(ca = {}, req = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount ?? req?.amount, 0)))
+ const total = Math.max(0, Math.round(safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0)))
+ const rawRemaining = ca?.installments_remaining ?? req?.installments_remaining
+ const hasRecordedRemaining = rawRemaining !== undefined && rawRemaining !== null && String(rawRemaining).trim() !== ''
+ const recordedRemaining = Math.max(0, Math.round(safeNum(rawRemaining, 0)))
+ const remaining = total > 0 ? Math.min(total, recordedRemaining) : recordedRemaining
+ const perPayroll = moneyRound(safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0))
+ const isInstallmentPlan = amount > 0 && total > 1 && perPayroll > 0.009
+ const completed = isInstallmentPlan && hasRecordedRemaining ? Math.max(0, Math.min(total, total - remaining)) : null
+ const paidFromInstallmentCount = completed === null
+  ? null
+  : completed >= total
+   ? amount
+   : moneyRound(Math.min(amount, completed * perPayroll))
+ return {
+  amount,
+  total,
+  perPayroll,
+  hasRecordedRemaining,
+  recordedRemaining:remaining,
+  isInstallmentPlan,
+  completed,
+  paidFromInstallmentCount
+ }
+}
+
+function getCashAdvancePaidAmount(ca = {}, req = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount ?? req?.amount, 0)))
  const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
- const balance = getCashAdvanceEffectiveBalance(ca)
- if (amount > 0) return moneyRound(Math.min(amount, Math.max(0, amount - balance)))
+ const rawBalance = getCashAdvanceRawBalance(ca)
+ const meta = getCashAdvanceInstallmentMeta(ca, req)
+
+ // For installment cash advances, the payroll deduction count must be the source of truth.
+ // This prevents old/wrong amount_paid values from showing inflated paid amounts such as
+ // 3 cutoffs done but almost 4 cutoffs worth of money deducted.
+ if (meta.paidFromInstallmentCount !== null) return moneyRound(Math.min(amount, Math.max(0, meta.paidFromInstallmentCount)))
+
+ if (amount > 0) {
+  if (paid > 0) return moneyRound(Math.min(amount, paid))
+  if (rawBalance > 0.009 && rawBalance < amount) return moneyRound(Math.max(0, amount - rawBalance))
+  return 0
+ }
  return paid
 }
 
-function getCashAdvanceEffectiveBalance(ca = {}) {
- const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
- const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
+function getCashAdvanceEffectiveBalance(ca = {}, req = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount ?? req?.amount, 0)))
+ const paid = getCashAdvancePaidAmount(ca, req)
  const rawBalance = getCashAdvanceRawBalance(ca)
  const status = String(ca?.status || '').trim().toLowerCase()
 
  if (amount > 0) {
-  if (paid > 0) return moneyRound(Math.max(0, amount - paid))
+  if (paid > 0.009 || getCashAdvanceInstallmentMeta(ca, req).paidFromInstallmentCount !== null) return moneyRound(Math.max(0, amount - paid))
   if (rawBalance > 0.009) {
    const perPayroll = safeNum(ca?.per_payroll_deduction, 0)
    const totalInstallments = safeNum(ca?.installments_total, 0)
@@ -1312,9 +1350,10 @@ function getCashAdvanceStatusForBalance(balance = 0, currentStatus = '') {
 }
 
 function getCashAdvanceRemainingInstallments(ca = {}, req = {}) {
- const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
- const recordedRemaining = Math.max(0, safeNum(ca?.installments_remaining ?? req?.installments_remaining, 0))
- const balance = getCashAdvanceEffectiveBalance(ca)
+ const total = Math.max(0, Math.round(safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0)))
+ const recordedRemaining = Math.max(0, Math.round(safeNum(ca?.installments_remaining ?? req?.installments_remaining, 0)))
+ const hasExplicitBalance = ca?.balance !== undefined && ca?.balance !== null && String(ca.balance).trim() !== ''
+ const balance = hasExplicitBalance ? getCashAdvanceRawBalance(ca) : getCashAdvanceEffectiveBalance(ca, req)
  if (isMoneySettled(balance)) return 0
 
  const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
@@ -1323,15 +1362,16 @@ function getCashAdvanceRemainingInstallments(ca = {}, req = {}) {
   return total > 0 ? Math.min(total, computed) : computed
  }
 
- if (recordedRemaining > 0) return recordedRemaining
+ if (recordedRemaining > 0) return total > 0 ? Math.min(total, recordedRemaining) : recordedRemaining
  return total > 0 ? total : 1
 }
 
 function getCAInstallmentInfo(ca = {}, req = {}) {
- const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
+ const meta = getCashAdvanceInstallmentMeta(ca, req)
+ const total = meta.total
  const remaining = getCashAdvanceRemainingInstallments(ca, req)
- const completed = total > 0 ? Math.max(0, total - remaining) : 0
- const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
+ const completed = total > 0 ? Math.max(0, Math.min(total, total - remaining)) : 0
+ const perPayroll = meta.perPayroll
  return { total, remaining, completed, perPayroll }
 }
 
