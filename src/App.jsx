@@ -21259,19 +21259,38 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         <input value={newOutletItem.product_name} onChange={e=>setNewOutletItem(prev=>({...prev, product_name:e.target.value}))} placeholder="Example: Bavarian Pops" style={{...inputStyle, marginBottom:0}} />
        </div>
        <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Category</label>
-        <select value={newOutletItem.category || 'Donuts'} onChange={e=>{
-         const category = e.target.value
-         setNewOutletItem(prev=>({
-          ...prev,
-          category,
-          ...(isOutletMarkupPricingCategory(category) && safeNum(prev.buying_price,0) > 0 ? { selling_price:getOutletMarkupSellingPrice(prev.buying_price) } : {})
-         }))
-        }} style={{...inputStyle, marginBottom:0, cursor:'pointer', color:'#111827', fontWeight:'800'}}>
-         {OUTLET_POS_CATEGORY_OPTIONS.map(category => (
-          <option key={category} value={category}>{category}</option>
-         ))}
-        </select>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Category ▼</label>
+        <div style={{ position:'relative' }}>
+         <select
+          value={newOutletItem.category || 'Donuts'}
+          onChange={e=>{
+           const category = e.target.value
+           setNewOutletItem(prev=>({
+            ...prev,
+            category,
+            ...(isOutletMarkupPricingCategory(category) && safeNum(prev.buying_price,0) > 0 ? { selling_price:getOutletMarkupSellingPrice(prev.buying_price) } : {})
+           }))
+          }}
+          style={{
+           ...inputStyle,
+           marginBottom:0,
+           cursor:'pointer',
+           color:'#111827',
+           fontWeight:'900',
+           background:'#ffffff',
+           border:'2px solid #d7bf42',
+           paddingRight:'34px',
+           WebkitAppearance:'menulist',
+           MozAppearance:'menulist',
+           appearance:'menulist'
+          }}
+         >
+          {OUTLET_POS_CATEGORY_OPTIONS.map(category => (
+           <option key={category} value={category}>{category}</option>
+          ))}
+         </select>
+         <span style={{ position:'absolute', right:'10px', top:'50%', transform:'translateY(-50%)', pointerEvents:'none', color:'#1a1a2e', fontSize:'13px', fontWeight:'950' }}>▾</span>
+        </div>
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>SKU</label>
