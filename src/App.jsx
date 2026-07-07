@@ -16,19 +16,6 @@ const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
 
-// Payroll policy: all active employees are holiday-pay candidates, but attendance rules still apply.
-// Regular holiday rule: employee receives holiday pay only when NOT marked absent
-// on the day before the holiday, on the holiday, or on the day after the holiday.
-// If the employee worked the regular holiday, basic pay already covers the worked day,
-// so the added daily-rate holiday pay produces 200% total pay for that holiday.
-// Special holiday rule: no work, no premium; worked special holiday receives the 30% premium,
-// also subject to the same absence guard.
-const HOLIDAY_PAY_ALL_EMPLOYEES_ELIGIBLE = true
-const REGULAR_HOLIDAY_WORKED_PREMIUM_RATE = 1
-const REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE = 1
-const SPECIAL_HOLIDAY_WORKED_PREMIUM_RATE = 0.30
-const HOLIDAY_ABSENCE_GUARD_DAY_OFFSETS = [-1, 0, 1]
-
 // Design System 
 // Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
 const pageStyle = { position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(150deg,#1a1a2e 0%,#2d1515 50%,#ca1b1b 100%)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'auto' }
@@ -236,73 +223,10 @@ function formatDutyHours(minutes = 0) {
 }
 
 function isHolidayPayEligible(emp = {}, holidayType = '') {
- // Default company rule: active employees are holiday-pay candidates.
- // Explicit employee-level false values are still respected for owner/manager
- // exceptions such as staff with no holiday-pay arrangement.
  const type = String(holidayType || '').trim().toLowerCase()
  if (type === 'regular') return emp?.regular_holiday_pay_eligible !== false
  if (type === 'special') return emp?.special_holiday_pay_eligible !== false
  return true
-}
-
-function normalizePayrollBasis(value) {
- const raw = String(value || 'daily').trim().toLowerCase().replace(/[\s-]+/g, '_')
- if (raw === 'monthly' || raw === 'fixed_monthly') return 'monthly'
- if (raw === 'semi_monthly' || raw === 'semimonthly' || raw === 'fixed_semi_monthly') return 'semi_monthly'
- return 'daily'
-}
-
-function employeeRuleEnabled(value, fallback = true) {
- if (value === false) return false
- if (value === true) return true
- if (String(value).toLowerCase() === 'false') return false
- if (String(value).toLowerCase() === 'true') return true
- return fallback
-}
-
-
-function getEmployeeHourlyRateInfo(emp = {}) {
- const payrollBasis = normalizePayrollBasis(emp.payroll_basis || emp.pay_type)
- const monthlySalary = safeNum(emp.monthly_salary, 0)
- const semiMonthlySalary = safeNum(emp.semi_monthly_salary, 0)
- const annualWorkingDays = positiveNum(emp.annual_working_days, 313)
- const rawDailyRate = safeNum(emp.daily_rate, 0)
- const savedHourlyRate = safeNum(emp.hourly_rate, 0)
- const fixedMonthlyEquivalent = payrollBasis === 'monthly'
-  ? monthlySalary
-  : payrollBasis === 'semi_monthly'
-   ? (semiMonthlySalary > 0 ? semiMonthlySalary * 2 : monthlySalary)
-   : 0
- const derivedFixedDailyRate = fixedMonthlyEquivalent > 0 ? fixedMonthlyEquivalent * 12 / annualWorkingDays : 0
- const dailyEquivalent = payrollBasis === 'daily'
-  ? (rawDailyRate > 0 ? rawDailyRate : (savedHourlyRate > 0 ? savedHourlyRate * 8 : 0))
-  : (derivedFixedDailyRate > 0 ? derivedFixedDailyRate : (rawDailyRate > 0 ? rawDailyRate : (savedHourlyRate > 0 ? savedHourlyRate * 8 : 0)))
- const hourlyRate = dailyEquivalent > 0 ? dailyEquivalent / 8 : savedHourlyRate
- const basisLabel = payrollBasis === 'monthly'
-  ? 'Fixed Monthly'
-  : payrollBasis === 'semi_monthly'
-   ? 'Fixed Semi-Monthly'
-   : (String(emp.pay_type || '').toLowerCase() === 'hourly' ? 'Hourly / Daily Fallback' : 'Daily Rate')
- const formulaNote = payrollBasis === 'monthly'
-  ? `Monthly salary × 12 ÷ ${annualWorkingDays} working days ÷ 8 hours`
-  : payrollBasis === 'semi_monthly'
-   ? `${semiMonthlySalary > 0 ? 'Semi-monthly salary × 2' : 'Monthly salary'} × 12 ÷ ${annualWorkingDays} working days ÷ 8 hours`
-   : rawDailyRate > 0
-    ? 'Daily rate ÷ 8 hours'
-    : savedHourlyRate > 0
-     ? 'Saved hourly rate fallback'
-     : 'Missing daily/monthly/hourly rate'
- return {
-  payrollBasis,
-  basisLabel,
-  monthlySalary,
-  semiMonthlySalary,
-  annualWorkingDays,
-  dailyEquivalent: moneyRound(dailyEquivalent),
-  hourlyRate: moneyRound(hourlyRate),
-  formulaNote,
-  isConfigured: hourlyRate > 0
- }
 }
 
 function isMissingEmployeeHolidayEligibilityColumnError(error) {
@@ -628,87 +552,6 @@ function addDaysToDateString(dateStr, days = 0) {
  return formatDateLocal(date)
 }
 
-function isAbsentAttendanceLog(log = {}) {
- return String(log?.status || '').trim().toLowerCase() === 'absent'
-}
-
-function isPaidLeaveCoveringDate(leaves = [], dateStr = '') {
- if (!dateStr) return false
- return (leaves || []).some(leave => {
-  if (!isPaidLeaveRecord(leave)) return false
-  const start = String(leave?.leave_start || '').slice(0, 10)
-  const end = String(leave?.leave_end || '').slice(0, 10)
-  return start && end && start <= dateStr && end >= dateStr
- })
-}
-
-function dateStringDiffDays(a = '', b = '') {
- const da = parseLocalDate(String(a || '').slice(0, 10))
- const db = parseLocalDate(String(b || '').slice(0, 10))
- if (!da || !db) return null
- return Math.round((db.getTime() - da.getTime()) / (1000 * 60 * 60 * 24))
-}
-
-function medicalCertificateCoversAbsenceRange(cert = {}, absenceStart = '', absenceEnd = '') {
- const certStart = String(cert?.absence_start || cert?.leave_start || '').slice(0, 10)
- const certEnd = String(cert?.absence_end || cert?.leave_end || certStart || '').slice(0, 10)
- const status = String(cert?.status || 'uploaded').trim().toLowerCase()
- if (!certStart || !certEnd || !absenceStart || !absenceEnd) return false
- if (['rejected', 'void', 'voided', 'cancelled', 'deleted'].includes(status)) return false
- return certStart <= absenceStart && certEnd >= absenceEnd
-}
-
-function getMedicalCertificateAbsenceLock(attendanceLogs = [], medicalCertificates = [], referenceDate = '') {
- const refDate = String(referenceDate || getTodayDate()).slice(0, 10)
- const byDate = new Map()
- ;(attendanceLogs || []).forEach(log => {
-  const dateStr = String(log?.attendance_date || '').slice(0, 10)
-  if (!dateStr || dateStr >= refDate) return
-  const existing = byDate.get(dateStr)
-  if (!existing || (isAbsentAttendanceLog(log) && !isAbsentAttendanceLog(existing))) byDate.set(dateStr, log)
- })
- const dates = Array.from(byDate.keys()).sort().reverse()
- for (const endDate of dates) {
-  const endLog = byDate.get(endDate)
-  if (!isAbsentAttendanceLog(endLog)) continue
-  const startDate = addDaysToDateString(endDate, -1)
-  const startLog = byDate.get(startDate)
-  if (!isAbsentAttendanceLog(startLog)) continue
-  const covered = (medicalCertificates || []).some(cert => medicalCertificateCoversAbsenceRange(cert, startDate, endDate))
-  if (!covered) {
-   return {
-    locked: true,
-    absenceStart: startDate,
-    absenceEnd: endDate,
-    absentDays: 2,
-    message: `Time In locked. Medical certificate required for 2 consecutive absences (${formatDateForDisplay(startDate)} - ${formatDateForDisplay(endDate)}).`
-   }
-  }
- }
- return { locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
-}
-
-function getHolidayAbsenceGuardDates(holidayDate = '') {
- const dateStr = String(holidayDate || '').slice(0, 10)
- if (!dateStr) return []
- return HOLIDAY_ABSENCE_GUARD_DAY_OFFSETS
-  .map(offset => addDaysToDateString(dateStr, offset))
-  .filter(Boolean)
-}
-
-function getHolidayAbsenceGuardFailure(holidayDate = '', attendanceByDate = {}, paidLeaves = []) {
- const guardDates = getHolidayAbsenceGuardDates(holidayDate)
- const absentDates = guardDates.filter(dateStr => {
-  const log = attendanceByDate?.[dateStr]
-  return isAbsentAttendanceLog(log) && !isPaidLeaveCoveringDate(paidLeaves, dateStr)
- })
- return {
-  eligible: absentDates.length === 0,
-  absentDates,
-  guardDates
- }
-}
-
 function buildDateRangeRows(startDate, endDate, mapper = null) {
  const totalDays = daysInclusive(startDate, endDate)
  return Array.from({ length: totalDays }, (_, i) => {
@@ -972,20 +815,6 @@ function getEmployeeLeaveInfo(emp) {
 ? 'You are SIL-qualified, but you have no SIL balance left. This request will be unpaid.'
 : 'SIL becomes available after 1 year of service. This request will be unpaid.'
  }
-}
-
-const LEAVE_FILING_TYPE_OPTIONS = [
- { value:'planned', label:'Planned Leave', note:'Must be filed at least 3 days before the leave date.' },
- { value:'emergency_sick', label:'Emergency Sick Leave', note:'For sudden illness or medical emergency. 3-day advance filing is bypassed and subject to admin approval.' },
- { value:'emergency_personal', label:'Emergency Personal Leave', note:'For urgent family or personal emergency. 3-day advance filing is bypassed and subject to admin approval.' }
-]
-
-function getLeaveFilingTypeInfo(value) {
- return LEAVE_FILING_TYPE_OPTIONS.find(option => option.value === value) || LEAVE_FILING_TYPE_OPTIONS[0]
-}
-
-function isEmergencyLeaveFiling(value) {
- return value === 'emergency_sick' || value === 'emergency_personal'
 }
 
 
@@ -1269,69 +1098,11 @@ function getCAProcessedBy(req = {}, ledger = null) {
  return req.approved_by || req.processed_by || ledger?.approved_by || ledger?.created_by || ledger?.recorded_by || 'Admin'
 }
 
-function getCashAdvanceRawBalance(ca = {}) {
- const raw = Number(ca?.balance)
- return Number.isFinite(raw) ? moneyRound(Math.max(0, raw)) : 0
-}
-
-function getCashAdvancePaidAmount(ca = {}) {
- const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
- const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
- const balance = getCashAdvanceEffectiveBalance(ca)
- if (amount > 0) return moneyRound(Math.min(amount, Math.max(0, amount - balance)))
- return paid
-}
-
-function getCashAdvanceEffectiveBalance(ca = {}) {
- const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
- const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
- const rawBalance = getCashAdvanceRawBalance(ca)
- const status = String(ca?.status || '').trim().toLowerCase()
-
- if (amount > 0) {
-  if (paid > 0) return moneyRound(Math.max(0, amount - paid))
-  if (rawBalance > 0.009) {
-   const perPayroll = safeNum(ca?.per_payroll_deduction, 0)
-   const totalInstallments = safeNum(ca?.installments_total, 0)
-   const remainingInstallments = safeNum(ca?.installments_remaining, 0)
-   const looksLikeNewInstallmentBalanceBug = totalInstallments > 1 && remainingInstallments >= totalInstallments && perPayroll > 0.009 && rawBalance < amount && rawBalance <= perPayroll + 0.01
-   return looksLikeNewInstallmentBalanceBug ? amount : rawBalance
-  }
-  if (status === 'paid' || status === 'settled') return 0
-  return amount
- }
-
- return rawBalance
-}
-
-function getCashAdvanceStatusForBalance(balance = 0, currentStatus = '') {
- const status = String(currentStatus || '').trim()
- const statusKey = status.toLowerCase()
- if (['cancelled','canceled','void','voided'].includes(statusKey)) return status || 'Void'
- return isMoneySettled(balance) ? 'Paid' : 'Unpaid'
-}
-
-function getCashAdvanceRemainingInstallments(ca = {}, req = {}) {
- const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
- const recordedRemaining = Math.max(0, safeNum(ca?.installments_remaining ?? req?.installments_remaining, 0))
- const balance = getCashAdvanceEffectiveBalance(ca)
- if (isMoneySettled(balance)) return 0
-
- const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
- if (perPayroll > 0.009) {
-  const computed = Math.max(1, Math.ceil((balance - 0.009) / perPayroll))
-  return total > 0 ? Math.min(total, computed) : computed
- }
-
- if (recordedRemaining > 0) return recordedRemaining
- return total > 0 ? total : 1
-}
-
 function getCAInstallmentInfo(ca = {}, req = {}) {
- const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
- const remaining = getCashAdvanceRemainingInstallments(ca, req)
+ const total = Math.max(0, safeNum(ca.installments_total ?? req.request_installments_total ?? req.installments_total, 0))
+ const remaining = Math.max(0, safeNum(ca.installments_remaining ?? req.installments_remaining, 0))
  const completed = total > 0 ? Math.max(0, total - remaining) : 0
- const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
+ const perPayroll = safeNum(ca.per_payroll_deduction ?? req.request_per_payroll_deduction ?? req.per_payroll_deduction, 0)
  return { total, remaining, completed, perPayroll }
 }
 
@@ -1827,41 +1598,6 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  </div>`
 }
 
-
-
-// ------------------------------------------------------------
-// APP UPDATE CHECKER
-// Compares the currently loaded Vercel bundle with the latest index.html bundle.
-// If Vercel has deployed a newer build, users see a clear refresh banner instead
-// of unknowingly using an old cached reseller/PWA screen.
-// ------------------------------------------------------------
-const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 1000
-
-function getLoadedBundleSignature() {
- if (typeof document === 'undefined') return ''
- const assetPaths = Array.from(document.querySelectorAll('script[src], link[rel="modulepreload"][href], link[rel="stylesheet"][href]'))
-  .map(node => node.getAttribute('src') || node.getAttribute('href') || '')
-  .filter(src => /\/assets\//.test(src))
-  .map(src => {
-   try { return new URL(src, window.location.origin).pathname }
-   catch { return src }
-  })
-  .sort()
- return assetPaths.join('|')
-}
-
-function getIndexBundleSignature(html = '') {
- const matches = []
- const re = /<(?:script|link)[^>]+(?:src|href)=["']([^"']*\/assets\/[^"']+)["'][^>]*>/gi
- let match
- while ((match = re.exec(String(html || '')))) {
-  const src = match[1]
-  try { matches.push(new URL(src, window.location.origin).pathname) }
-  catch { matches.push(src) }
- }
- return matches.sort().join('|')
-}
-
 const printCSS = `
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
@@ -1905,8 +1641,6 @@ export default function App() {
  const canvasRef = useRef(null)
  const profilePhotoInputRef = useRef(null)
  const resellerOrderSubmitLockRef = useRef(false)
- const resellerOrderRecentSubmitKeysRef = useRef(new Set())
- const approvingResellerOrderIdsRef = useRef(new Set())
 
  const [employeeCode, setEmployeeCode] = useState('')
  const [pin, setPin] = useState('')
@@ -1941,11 +1675,9 @@ export default function App() {
  const [showMyAttendance, setShowMyAttendance] = useState(false)
  const [requestCashAmount, setRequestCashAmount] = useState('')
  const [requestCashReason, setRequestCashReason] = useState('')
- const [submittingCashAdvanceRequest, setSubmittingCashAdvanceRequest] = useState(false)
  const [leaveStartDate, setLeaveStartDate] = useState('')
  const [leaveEndDate, setLeaveEndDate] = useState('')
  const [leaveType, setLeaveType] = useState('')
- const [leaveFilingType, setLeaveFilingType] = useState('planned')
  const [leaveReason, setLeaveReason] = useState('')
  const [disputeReasons, setDisputeReasons] = useState({})
  const [showDisputeBox, setShowDisputeBox] = useState({})
@@ -1956,8 +1688,6 @@ export default function App() {
  const [disputeReasonPresets, setDisputeReasonPresets] = useState({})
  const [profilePhotoUrl, setProfilePhotoUrl] = useState(null)
  const [uploadingPhoto, setUploadingPhoto] = useState(false)
- const [medicalCertLock, setMedicalCertLock] = useState({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' })
- const [medicalCertUploading, setMedicalCertUploading] = useState(false)
  const [showOTRequest, setShowOTRequest] = useState(false)
  const [otRequestType, setOtRequestType] = useState('overtime')
  const [otRequestReason, setOtRequestReason] = useState('')
@@ -1990,9 +1720,6 @@ export default function App() {
  const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
  const [saveSuccess, setSaveSuccess] = useState(null)
  const [toast, setToast] = useState(null)
- const appUpdateCurrentSignatureRef = useRef('')
- const [appUpdateInfo, setAppUpdateInfo] = useState({ available:false, latestSignature:'', currentSignature:'', checkedAt:null })
- const [appUpdateChecking, setAppUpdateChecking] = useState(false)
  // Audit trail
  const [auditLogs, setAuditLogs] = useState([])
  const [auditSearch, setAuditSearch] = useState('')
@@ -2245,7 +1972,6 @@ export default function App() {
  const [resellerOrderDeliveryDate, setResellerOrderDeliveryDate] = useState('')
  const [resellerOrderNotes, setResellerOrderNotes] = useState('')
  const [submittingOrder, setSubmittingOrder] = useState(false)
- const [lastSubmittedOrderNotice, setLastSubmittedOrderNotice] = useState('')
  const [editingResellerOrderId, setEditingResellerOrderId] = useState(null)
  const [updatingResellerOrder, setUpdatingResellerOrder] = useState(false)
  const [resellerOrders, setResellerOrders] = useState([])
@@ -2285,11 +2011,9 @@ export default function App() {
  const [donutVariants, setDonutVariants] = useState([])
  const [variantsLoading, setVariantsLoading] = useState(false)
  const [baseDoughIngredients, setBaseDoughIngredients] = useState([])
- const [powderBaseIngredients, setPowderBaseIngredients] = useState([])
  const [variantRecipes, setVariantRecipes] = useState({})
  const [selectedRecipeVariantId, setSelectedRecipeVariantId] = useState(null)
  const [editingBaseDough, setEditingBaseDough] = useState([])
- const [editingPowderBase, setEditingPowderBase] = useState([])
  const [editingVariantRecipe, setEditingVariantRecipe] = useState([])
  const [savingRecipe, setSavingRecipe] = useState(false)
  const [productionLogs, setProductionLogs] = useState([])
@@ -2542,17 +2266,12 @@ export default function App() {
  const [showAddItem, setShowAddItem] = useState(false)
  const [newItemName, setNewItemName] = useState('')
  const [newItemCategory, setNewItemCategory] = useState('Raw Ingredients')
- const [newItemUnit, setNewItemUnit] = useState('g')
+ const [newItemUnit, setNewItemUnit] = useState('kg')
  const [newItemMinStock, setNewItemMinStock] = useState('')
  const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
  const [newItemBuyingPrice, setNewItemBuyingPrice] = useState('')
  const [newItemCurrentStock, setNewItemCurrentStock] = useState('')
  const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
- const [newItemPurchaseUnit, setNewItemPurchaseUnit] = useState('sack')
- const [newItemPurchaseUnitSize, setNewItemPurchaseUnitSize] = useState('')
- const [newItemPurchaseUnitCost, setNewItemPurchaseUnitCost] = useState('')
- const [newItemStockPurchaseQty, setNewItemStockPurchaseQty] = useState('')
- const [newItemMinPurchaseQty, setNewItemMinPurchaseQty] = useState('')
  const [newItemExpiryDate, setNewItemExpiryDate] = useState('')
  const [newItemSupplierId, setNewItemSupplierId] = useState('')
  const [inventoryTransactions, setInventoryTransactions] = useState([])
@@ -2679,80 +2398,6 @@ export default function App() {
  const isSnackDrinkCategoryName = (category) => {
   const label = getInventoryCategoryLabel({ category })
   return label === 'Snacks, Drinks and Others'
- }
- const RAW_MATERIAL_PURCHASE_UNITS = ['sack','kg','pack','bag','box','pail','bottle','gallon','container','pc']
- const isRawMaterialCategoryName = (category) => getInventoryCategoryLabel({ category }) === 'Raw Ingredients'
- const isRawMaterialItem = (item = {}) => isRawMaterialCategoryName(item.category)
- const normalizeInventoryBaseUnit = (unit = '') => {
-  const u = String(unit || '').trim().toLowerCase()
-  if (['kg','kgs','kilogram','kilograms'].includes(u)) return 'kg'
-  if (['g','gram','grams'].includes(u)) return 'g'
-  if (['l','liter','liters','litre','litres'].includes(u)) return 'L'
-  if (['ml','milliliter','milliliters','millilitre','millilitres'].includes(u)) return 'mL'
-  if (['pc','pcs','piece','pieces'].includes(u)) return 'pcs'
-  return unit || 'unit'
- }
- const getRawMaterialBaseUnit = (item = {}) => normalizeInventoryBaseUnit(item.base_unit || item.unit || 'g')
- const getFriendlyRawStockInfo = (item = {}, qtyOverride = null) => {
-  const qty = safeNum(qtyOverride ?? item.current_stock, 0)
-  const baseUnit = getRawMaterialBaseUnit(item)
-  const purchaseUnit = String(item.purchase_unit || '').trim()
-  const purchaseSize = safeNum(item.purchase_unit_size, 0)
-  const purchaseCost = safeNum(item.purchase_unit_cost, 0)
-  let primary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${baseUnit}`
-  let secondary = ''
-  if (baseUnit === 'g') {
-   primary = qty >= 1000 ? `${(qty / 1000).toLocaleString('en-PH', { maximumFractionDigits:2 })} kg` : `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} g`
-   secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} g`
-  } else if (baseUnit === 'mL') {
-   primary = qty >= 1000 ? `${(qty / 1000).toLocaleString('en-PH', { maximumFractionDigits:2 })} L` : `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} mL`
-   secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} mL`
-  }
-  if (purchaseUnit && purchaseSize > 0) {
-   const eq = qty / purchaseSize
-   const eqText = `${eq.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${purchaseUnit}${Math.abs(eq) > 1 ? 's' : ''}`
-   secondary = secondary ? `${secondary} | ${eqText}` : eqText
-  }
-  const costPerBase = safeNum(item.cost_per_unit, 0)
-  const costPerKg = baseUnit === 'g' ? costPerBase * 1000 : 0
-  const costPerL = baseUnit === 'mL' ? costPerBase * 1000 : 0
-  const purchaseCostText = purchaseUnit && purchaseCost > 0 ? `${php(purchaseCost)}/${purchaseUnit}` : ''
-  return { qty, baseUnit, purchaseUnit, purchaseSize, purchaseCost, primary, secondary, costPerBase, costPerKg, costPerL, purchaseCostText }
- }
- const computeRawMaterialAddSetup = () => {
-  const purchaseSize = safeNum(newItemPurchaseUnitSize, 0)
-  const purchaseCost = safeNum(newItemPurchaseUnitCost, 0)
-  const stockPurchaseQty = safeNum(newItemStockPurchaseQty, 0)
-  const minPurchaseQty = safeNum(newItemMinPurchaseQty, 0)
-  const currentStock = purchaseSize > 0 && stockPurchaseQty > 0 ? moneyRound(purchaseSize * stockPurchaseQty) : safeNum(newItemCurrentStock, 0)
-  const minStock = purchaseSize > 0 && minPurchaseQty > 0 ? moneyRound(purchaseSize * minPurchaseQty) : safeNum(newItemMinStock, 0)
-  const costPerUnit = purchaseSize > 0 && purchaseCost > 0 ? Math.round(((purchaseCost / purchaseSize) + Number.EPSILON) * 1000000) / 1000000 : safeNum(newItemCostPerUnit, 0)
-  return { purchaseSize, purchaseCost, stockPurchaseQty, minPurchaseQty, currentStock, minStock, costPerUnit }
- }
- const stripOptionalPurchaseColumns = (payload = {}) => {
-  const clean = { ...payload }
-  ;['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost'].forEach(k => delete clean[k])
-  return clean
- }
- const isMissingPurchaseColumnError = (error) => {
-  const msg = String(error?.message || error || '').toLowerCase()
-  return ['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost'].some(col => msg.includes(col))
- }
- async function insertInventoryItemSafe(payload) {
-  const first = await supabase.from('inventory_items').insert(payload)
-  if (first.error && isMissingPurchaseColumnError(first.error)) {
-   showToast('Professional purchase-unit columns are not installed yet. Item was saved using base inventory fields only.', 'orange')
-   return await supabase.from('inventory_items').insert(stripOptionalPurchaseColumns(payload))
-  }
-  return first
- }
- async function updateInventoryItemSafe(itemId, payload) {
-  const first = await supabase.from('inventory_items').update(payload).eq('id', itemId)
-  if (first.error && isMissingPurchaseColumnError(first.error)) {
-   showToast('Professional purchase-unit columns are not installed yet. Basic inventory fields were updated only.', 'orange')
-   return await supabase.from('inventory_items').update(stripOptionalPurchaseColumns(payload)).eq('id', itemId)
-  }
-  return first
  }
  // Suppliers
  const [suppliers, setSuppliers] = useState([])
@@ -2924,13 +2569,9 @@ export default function App() {
  }, [])
 
  useEffect(() => {
- // Keep SAGS POS completely steady while the owner is working in it.
- // The old 30-second global tick re-rendered the whole admin app and could
- // feel like the POS was refreshing, causing the screen to jump while typing.
- if (activeTab === 'posMonitor') return undefined
  const timer = window.setInterval(() => setOrderCutoffTick(Date.now()), 30 * 1000)
  return () => window.clearInterval(timer)
- }, [activeTab])
+ }, [])
 
  useEffect(() => {
  const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
@@ -2982,7 +2623,7 @@ export default function App() {
 
  loadTodayLog(activeEmployee); loadTodaySchedule(activeEmployee)
  loadMyPayslips(activeEmployee); loadMyCashAdvances(activeEmployee)
- loadMyAttendanceHistory(activeEmployee); loadMyLeaveBalance(activeEmployee); loadMedicalCertificateLock(activeEmployee)
+ loadMyAttendanceHistory(activeEmployee); loadMyLeaveBalance(activeEmployee)
  checkAnnouncements(activeEmployee); loadMyCharges(activeEmployee); loadMySops(activeEmployee)
  }
 
@@ -3075,86 +2716,6 @@ export default function App() {
  setToast({ msg, color })
  setTimeout(() => setToast(null), 3000)
  }
-
- async function checkForAppUpdate(manual = false) {
-  if (typeof window === 'undefined' || typeof fetch === 'undefined') return
-  if (manual) setAppUpdateChecking(true)
-  try {
-   const currentSignature = appUpdateCurrentSignatureRef.current || getLoadedBundleSignature()
-   if (!appUpdateCurrentSignatureRef.current) appUpdateCurrentSignatureRef.current = currentSignature
-   const url = `${window.location.origin}${window.location.pathname}?app_version_check=${Date.now()}`
-   const res = await fetch(url, { cache:'no-store', headers:{ 'Cache-Control':'no-cache' } })
-   if (!res.ok) throw new Error(`Version check failed: ${res.status}`)
-   const html = await res.text()
-   const latestSignature = getIndexBundleSignature(html)
-   if (latestSignature && currentSignature && latestSignature !== currentSignature) {
-    setAppUpdateInfo({ available:true, latestSignature, currentSignature, checkedAt:new Date().toISOString() })
-    return true
-   }
-   if (manual) showToast('App is already updated.', 'green')
-   return false
-  } catch (err) {
-   if (manual) showToast('Could not check app update. Please try again.', 'red')
-   console.warn('App update check failed:', err)
-   return false
-  } finally {
-   if (manual) setAppUpdateChecking(false)
-  }
- }
-
- async function reloadToLatestApp() {
-  try {
-   if ('serviceWorker' in navigator) {
-    const registrations = await navigator.serviceWorker.getRegistrations()
-    await Promise.all(registrations.map(reg => reg.update().catch(()=>null)))
-   }
-  } catch (err) {
-   console.warn('Service worker update request failed:', err)
-  }
-  try {
-   if ('caches' in window) {
-    const keys = await caches.keys()
-    await Promise.all(keys.filter(key => /roma|workbox|vite|precache|runtime/i.test(key)).map(key => caches.delete(key).catch(()=>false)))
-   }
-  } catch (err) {
-   console.warn('Cache cleanup failed:', err)
-  }
-  const url = new URL(window.location.href)
-  url.searchParams.set('app_updated', Date.now().toString())
-  window.location.replace(url.toString())
- }
-
- function renderAppUpdateBanner() {
-  if (!appUpdateInfo.available) return null
-  return (
-   <div style={{ position:'fixed', left:'50%', bottom:isMobile?'12px':'18px', transform:'translateX(-50%)', zIndex:99997, width:isMobile?'calc(100% - 24px)':'min(620px, calc(100% - 40px))', background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'16px', boxShadow:'0 12px 40px rgba(0,0,0,0.22)', padding:isMobile?'12px':'14px 16px', display:'flex', alignItems:isMobile?'stretch':'center', justifyContent:'space-between', gap:'12px', flexDirection:isMobile?'column':'row' }}>
-    <div style={{ minWidth:0 }}>
-     <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontWeight:'900', fontSize:'14px' }}>New update available</p>
-     <p style={{ margin:0, color:'#555', fontSize:'12px', lineHeight:1.45, fontWeight:'700' }}>Tap refresh to load the latest Roma’s Donuts system version before submitting orders or printing invoices.</p>
-    </div>
-    <div style={{ display:'flex', gap:'8px', flexShrink:0 }}>
-     <button style={{...btnGray, width:'auto', padding:'9px 12px', marginTop:0, fontSize:'12px' }} disabled={appUpdateChecking} onClick={()=>checkForAppUpdate(true)}>{appUpdateChecking?'Checking...':'Check'}</button>
-     <button style={{...btnRed, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={reloadToLatestApp}>Refresh Now</button>
-    </div>
-   </div>
-  )
- }
-
- useEffect(() => {
-  if (typeof window === 'undefined') return
-  appUpdateCurrentSignatureRef.current = getLoadedBundleSignature()
-  const timer = window.setTimeout(() => checkForAppUpdate(false), 8000)
-  const interval = window.setInterval(() => checkForAppUpdate(false), APP_UPDATE_CHECK_INTERVAL_MS)
-  const onVisible = () => { if (!document.hidden) checkForAppUpdate(false) }
-  window.addEventListener('focus', onVisible)
-  document.addEventListener('visibilitychange', onVisible)
-  return () => {
-   window.clearTimeout(timer)
-   window.clearInterval(interval)
-   window.removeEventListener('focus', onVisible)
-   document.removeEventListener('visibilitychange', onVisible)
-  }
- }, [])
 
  // Camera 
  async function startCamera() {
@@ -3503,7 +3064,6 @@ export default function App() {
  setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
  setTodaySchedule(null); setMyPayslips([]); setCameraMode(null)
  setCapturedPhoto(null); stopCamera(); setPendingAnnouncement(null); setShowAnnouncementPopup(false)
- setMedicalCertLock({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }); setMedicalCertUploading(false)
  setShowMySops(false); setMySopDocuments([]); setMySopAckRecords([]); setViewingMySop(null)
  }
  function closeAllPanels() {
@@ -4672,44 +4232,31 @@ Cancel = create batch record only for existing stock.`)
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
 
  const isNewSnackDrink = isSnackDrinkCategoryName(newItemCategory)
- const isNewRawMaterial = isRawMaterialCategoryName(newItemCategory)
  const enteredBuyingPrice = safeNum(newItemBuyingPrice, 0)
- const rawSetup = computeRawMaterialAddSetup()
 
  // For Snacks/Drinks: existing/old price is SELLING PRICE.
  // Buying price is a separate field. Only compute selling price when buying price is entered.
- const itemCostPerUnit = isNewRawMaterial
-  ? rawSetup.costPerUnit
-  : (isNewSnackDrink
-   ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
-   : safeNum(newItemCostPerUnit, 0))
+ const itemBuyingPrice = isNewSnackDrink ? enteredBuyingPrice : 0
+ const itemCostPerUnit = isNewSnackDrink
+  ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
+  : safeNum(newItemCostPerUnit, 0)
  const itemSellingPrice = isNewSnackDrink
   ? (enteredBuyingPrice > 0 ? snackDrinkAutoSellingPrice(enteredBuyingPrice) : safeNum(newItemSellingPrice, 0))
   : safeNum(newItemSellingPrice, 0)
- const itemUnit = isNewRawMaterial ? 'g' : (newItemUnit.trim() || 'kg')
- const itemCurrentStock = isNewRawMaterial ? rawSetup.currentStock : Number(newItemCurrentStock || 0)
- const itemMinStock = isNewRawMaterial ? rawSetup.minStock : Number(newItemMinStock || 0)
- const itemPayload = {
- name: newItemName.trim(),
- category: newItemCategory,
- unit: itemUnit,
- current_stock: itemCurrentStock,
- min_stock: itemMinStock,
- cost_per_unit: Number(itemCostPerUnit || 0),
- selling_price: Number(itemSellingPrice || 0),
- expiry_date: newItemExpiryDate || null,
- supplier_id: newItemSupplierId||null,
- is_active: true,
- ...(isNewRawMaterial ? {
-  base_unit:'g',
-  purchase_unit:String(newItemPurchaseUnit || '').trim() || null,
-  purchase_unit_size:rawSetup.purchaseSize || null,
-  purchase_unit_cost:rawSetup.purchaseCost || null
- } : {})
- }
  setAddItemLoading(true)
  try {
- const { error } = await insertInventoryItemSafe(itemPayload)
+ const { error } = await supabase.from('inventory_items').insert({
+ name: newItemName.trim(),
+ category: newItemCategory,
+ unit: newItemUnit.trim()||'kg',
+ current_stock: Number(newItemCurrentStock||0),
+ min_stock: Number(newItemMinStock||0),
+ cost_per_unit: Number(newItemCostPerUnit||0),
+ selling_price: Number(newItemSellingPrice||0),
+ expiry_date: newItemExpiryDate || null,
+ supplier_id: newItemSupplierId||null,
+ is_active: true
+ })
  if (error) { showToast(' Failed: '+error.message,'red'); return }
  const addedName = newItemName.trim()
  const addedCategory = newItemCategory
@@ -4725,13 +4272,8 @@ Cancel = create batch record only for existing stock.`)
  setNewItemSellingPrice('')
  setNewItemExpiryDate('')
  setNewItemSupplierId('')
- setNewItemPurchaseUnit('sack')
- setNewItemPurchaseUnitSize('')
- setNewItemPurchaseUnitCost('')
- setNewItemStockPurchaseQty('')
- setNewItemMinPurchaseQty('')
  setNewItemCategory('Raw Ingredients')
- setNewItemUnit('g')
+ setNewItemUnit('kg')
  // 3. Close form item is already in the list below
  setShowAddItem(false)
  // 4. Show success make sure category filter shows the new item
@@ -4755,7 +4297,6 @@ Cancel = create batch record only for existing stock.`)
   const f = editItemFields
   const updatedCategory = f.category ?? item.category
   const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
-  const isEditingRawMaterial = isRawMaterialCategoryName(updatedCategory)
 
   const supplierPrice = isEditingSnackDrink
    ? safeNum(f.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item), 0)
@@ -4766,13 +4307,9 @@ Cancel = create batch record only for existing stock.`)
    return
   }
 
-  const rawPurchaseSize = safeNum(f.purchase_unit_size ?? item.purchase_unit_size, 0)
-  const rawPurchaseCost = safeNum(f.purchase_unit_cost ?? item.purchase_unit_cost, 0)
   const finalCostPerUnit = isEditingSnackDrink
    ? supplierPrice
-   : (isEditingRawMaterial && rawPurchaseSize > 0 && rawPurchaseCost > 0
-    ? Math.round(((rawPurchaseCost / rawPurchaseSize) + Number.EPSILON) * 1000000) / 1000000
-    : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0))
+   : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
 
   const finalSellingPrice = isEditingSnackDrink
    ? snackDrinkAutoSellingPrice(supplierPrice)
@@ -4781,19 +4318,13 @@ Cancel = create batch record only for existing stock.`)
   const payload = {
    name: f.name || item.name,
    category: f.category || item.category,
-   unit: isEditingRawMaterial ? 'g' : (f.unit || item.unit),
+   unit: f.unit || item.unit,
    current_stock: Number(f.current_stock ?? item.current_stock ?? 0),
    min_stock: Number(f.min_stock ?? item.min_stock),
    cost_per_unit: finalCostPerUnit,
    selling_price: finalSellingPrice,
    expiry_date: f.expiry_date !== undefined ? (f.expiry_date || null) : (item.expiry_date || null),
-   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null),
-   ...(isEditingRawMaterial ? {
-    base_unit:'g',
-    purchase_unit:String(f.purchase_unit ?? item.purchase_unit ?? '').trim() || null,
-    purchase_unit_size:rawPurchaseSize || null,
-    purchase_unit_cost:rawPurchaseCost || null
-   } : {})
+   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null)
   }
 
   if (isEditingSnackDrink) {
@@ -4801,7 +4332,7 @@ Cancel = create batch record only for existing stock.`)
    payload.markup_percent = 30
   }
 
-  const { error } = await updateInventoryItemSafe(item.id, payload)
+  const { error } = await supabase.from('inventory_items').update(payload).eq('id', item.id)
 
   if (error) { showToast(' Failed: ' + error.message, 'red'); return }
 
@@ -4913,7 +4444,7 @@ Cancel = create batch record only for existing stock.`)
  ${byCategory.map(g=>`
  <div class="cat-title"> ${g.cat}</div>
  <table>
- <tr><th>Item Name</th><th>Base</th><th>Current Stock</th><th>Min Stock</th><th>Cost/Unit</th><th>Total Value</th><th>Status</th></tr>
+ <tr><th>Item Name</th><th>Unit</th><th>Current Stock</th><th>Min Stock</th><th>Cost/Unit</th><th>Total Value</th><th>Status</th></tr>
  ${g.items.map(i=>{
  const isLow = Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0
  return `<tr>
@@ -5119,7 +4650,7 @@ Cancel = create batch record only for existing stock.`)
  ${Object.values(groupedBySupplier).map(group=>`
  <div class="supplier-title">${group.supplierName} - ${group.items.length} item(s)</div>
  <table>
- <thead><tr><th>Item</th><th>Category</th><th class="center">Unit</th><th class="right">Stock</th><th class="right">Min</th><th class="right">Suggested Order</th><th class="right">Cost/Unit</th></tr></thead>
+ <thead><tr><th>Item</th><th>Category</th><th class="center">Unit</th><th class="right">On Hand</th><th class="right">Min</th><th class="right">Suggested Order</th><th class="right">Cost/Unit</th></tr></thead>
  <tbody>
  ${group.items.map(i=>`
  <tr>
@@ -6075,16 +5606,6 @@ Cancel = create batch record only for existing stock.`)
  setCostingLoadErrors(p => [...p.filter(x=>!x.includes('base_dough_recipe')), `base_dough_recipe: ${err.message || err}`])
  }
  try {
- const { data: powder, error: powderErr } = await supabase.from('powder_base_recipe').select('*').order('created_at')
- if (powderErr) throw powderErr
- setPowderBaseIngredients(powder || [])
- setCostingLoadErrors(p => p.filter(x=>!x.includes('powder_base_recipe')))
- } catch (err) {
- console.warn('Powder base recipe could not be loaded:', err)
- setPowderBaseIngredients([])
- setCostingLoadErrors(p => [...p.filter(x=>!x.includes('powder_base_recipe')), `powder_base_recipe: ${err.message || err}`])
- }
- try {
  const { data: variant, error: variantErr } = await supabase.from('variant_recipes').select('*').order('variant_id')
  if (variantErr) throw variantErr
  const grouped = {}
@@ -6110,33 +5631,13 @@ Cancel = create batch record only for existing stock.`)
  const { error } = await supabase.from('base_dough_recipe').insert(validRows.map(r => ({
  inventory_item_id: r.inventory_item_id || null,
  item_name: r.item_name.trim(),
- quantity_per_batch: productionRecipeQuantityGrams(r),
- unit: 'g',
+ quantity_per_batch: Number(r.quantity_per_batch),
+ unit: r.unit || 'g',
  notes: r.notes || null
  })))
  if (error) throw error
  }
  showToast(' Base dough recipe saved!'); loadRecipes()
- } catch(err) { showToast(' Failed: '+err.message,'red') }
- setSavingRecipe(false)
- }
- async function savePowderBase() {
- setSavingRecipe(true)
- try {
- // Delete existing and re-insert. Powder base is a shared production recipe like base dough.
- await supabase.from('powder_base_recipe').delete().neq('id', '00000000-0000-0000-0000-000000000000')
- const validRows = editingPowderBase.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
- if (validRows.length > 0) {
- const { error } = await supabase.from('powder_base_recipe').insert(validRows.map(r => ({
- inventory_item_id: r.inventory_item_id || null,
- item_name: r.item_name.trim(),
- quantity_per_batch: productionRecipeQuantityGrams(r),
- unit: 'g',
- notes: r.notes || null
- })))
- if (error) throw error
- }
- showToast(' Powder base recipe saved!'); loadRecipes()
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setSavingRecipe(false)
  }
@@ -6150,8 +5651,8 @@ Cancel = create batch record only for existing stock.`)
  variant_id: variantId,
  inventory_item_id: r.inventory_item_id || null,
  item_name: r.item_name.trim(),
- quantity_per_batch: productionRecipeQuantityGrams(r),
- unit: 'g',
+ quantity_per_batch: Number(r.quantity_per_batch),
+ unit: r.unit || 'g',
  ingredient_type: r.ingredient_type || 'topping',
  notes: r.notes || null
  })))
@@ -6161,64 +5662,22 @@ Cancel = create batch record only for existing stock.`)
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setSavingRecipe(false)
  }
- function normalizeProductionRecipeUnit(unit) {
- const u = String(unit || 'g').trim().toLowerCase()
- if (['kg','kgs','kilogram','kilograms'].includes(u)) return 'kg'
- if (['g','gram','grams'].includes(u)) return 'g'
- if (['l','liter','liters','litre','litres'].includes(u)) return 'l'
- if (['ml','milliliter','milliliters','millilitre','millilitres'].includes(u)) return 'ml'
- return u || 'g'
- }
- function productionRecipeQuantityGrams(row = {}) {
- const qty = safeNum(row.quantity_per_batch, 0)
- const unit = normalizeProductionRecipeUnit(row.unit)
- if (unit === 'kg') return qty * 1000
- if (unit === 'l') return qty * 1000
- if (unit === 'ml') return qty
- return qty
- }
- function productionRecipeCostPerGram(item = null) {
- const cost = safeNum(item?.cost_per_unit, 0)
- const unit = normalizeProductionRecipeUnit(item?.unit)
- if (unit === 'kg') return cost / 1000
- if (unit === 'l') return cost / 1000
- return cost
- }
- function productionRecipeStockQtyFromGrams(qtyGrams, item = null) {
- const qty = safeNum(qtyGrams, 0)
- const unit = normalizeProductionRecipeUnit(item?.unit)
- if (unit === 'kg') return qty / 1000
- if (unit === 'l') return qty / 1000
- return qty
- }
- function productionRecipeInventoryOptionLabel(item = {}) {
- const costPerGram = productionRecipeCostPerGram(item)
- const originalUnit = item?.unit || 'unit'
- const originalCost = `${php(item?.cost_per_unit || 0)}/${originalUnit}`
- const gramCost = `${php(costPerGram)}/g`
- return normalizeProductionRecipeUnit(originalUnit) === 'g' ? gramCost : `${gramCost} from ${originalCost}`
- }
- function productionRecipeIngredientCost(row = {}) {
- const invItem = inventoryItems.find(i => String(i.id) === String(row.inventory_item_id))
- if (!invItem) return 0
- return moneyRound(productionRecipeQuantityGrams(row) * productionRecipeCostPerGram(invItem))
- }
  function computeVariantCost(variantId, piecesPerBatch) {
  const safePiecesPerBatch = positiveNum(piecesPerBatch)
  // Base dough cost per piece (from inventory item cost_per_unit)
  const baseCostPerPiece = baseDoughIngredients.reduce((sum, ing) => {
- return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
- }, 0)
- // Powder base cost per piece (shared recipe like base dough)
- const powderBaseCostPerPiece = powderBaseIngredients.reduce((sum, ing) => {
- return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
+ const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
+ const costPerUnit = safeNum(invItem?.cost_per_unit)
+ return sum + (safeNum(ing.quantity_per_batch) / safePiecesPerBatch) * costPerUnit
  }, 0)
  // Variant topping/filling cost per piece
  const variantIngs = variantRecipes[variantId] || []
  const variantCostPerPiece = variantIngs.reduce((sum, ing) => {
- return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
+ const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
+ const costPerUnit = safeNum(invItem?.cost_per_unit)
+ return sum + (safeNum(ing.quantity_per_batch) / safePiecesPerBatch) * costPerUnit
  }, 0)
- const ingredientCost = baseCostPerPiece + powderBaseCostPerPiece + variantCostPerPiece
+ const ingredientCost = baseCostPerPiece + variantCostPerPiece
  const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
  const laborPerPiece = safeNum(costSettings.daily_labor_cost) / totalDailyPieces
  const monthlyDepreciation =
@@ -6322,34 +5781,35 @@ Cancel = create batch record only for existing stock.`)
  log_id: logData.id, variant_id: e.variant_id,
  variant_name: d.variant?.name || '', pieces_produced: d.pieces, ingredient_cost: d.ingCost
  })
- // Deduct stock for shared recipes: base dough + powder base
+ // Deduct stock for base dough
  const batchEquiv = d.pieces / d.piecesPerBatch
- for (const ing of [...baseDoughIngredients, ...powderBaseIngredients]) {
+ for (const ing of baseDoughIngredients) {
  if (!ing.inventory_item_id) continue
- const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
- if (deductQtyGrams <= 0) continue
- const { data: inv } = await supabase.from('inventory_items').select('current_stock,name,min_stock,unit').eq('id', ing.inventory_item_id).single()
+ const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
+ if (deductQty <= 0) continue
+ const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
  if (inv) {
- const deductQty = productionRecipeStockQtyFromGrams(deductQtyGrams, inv)
  const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
  await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
- if (newStock <= Number(inv.min_stock||0)) {
- await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit}`)
+ // Low stock alert
+ const { data:invFull } = await supabase.from('inventory_items').select('name,min_stock,unit').eq('id', ing.inventory_item_id).single()
+ if (invFull && newStock <= Number(invFull.min_stock||0)) {
+ await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${invFull.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${invFull.unit}`)
  }
  }
  }
  // Deduct variant-specific ingredients
  for (const ing of (variantRecipes[e.variant_id] || [])) {
  if (!ing.inventory_item_id) continue
- const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
- if (deductQtyGrams <= 0) continue
- const { data: inv } = await supabase.from('inventory_items').select('current_stock,name,min_stock,unit').eq('id', ing.inventory_item_id).single()
+ const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
+ if (deductQty <= 0) continue
+ const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
  if (inv) {
- const deductQty = productionRecipeStockQtyFromGrams(deductQtyGrams, inv)
  const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
  await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
- if (newStock <= Number(inv.min_stock||0)) {
- await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit}`)
+ const { data:invFull } = await supabase.from('inventory_items').select('name,min_stock,unit').eq('id', ing.inventory_item_id).single()
+ if (invFull && newStock <= Number(invFull.min_stock||0)) {
+ await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${invFull.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${invFull.unit}`)
  }
  }
  }
@@ -6994,138 +6454,6 @@ Cancel = create batch record only for existing stock.`)
  return buildResellerCreditStatus(resellerId, data || [], today)
  }
 
- function isOptionalSupabaseObjectMissing(error) {
- const msg = String(error?.message || error || '').toLowerCase()
- return msg.includes('does not exist') || msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')
- }
-
- function isResellerPortalReturnRecord(row) {
- return String(row?.recorded_by || '').toLowerCase().includes('reseller portal')
- }
-
- function getInvoiceReturnRecordsForPrint(invoice) {
- const allReturns = Array.isArray(invoice?.reseller_returns) ? invoice.reseller_returns : []
- if (!allReturns.length) return []
- const adminEncoded = allReturns.filter(row => !isResellerPortalReturnRecord(row))
- // Admin/owner/driver/settlement entry is treated as final. Reseller portal entry is used only when no admin return exists yet.
- return adminEncoded.length ? adminEncoded : allReturns
- }
-
- function getInvoiceReturnLookups(invoice) {
- const byVariantId = {}
- const byName = {}
- getInvoiceReturnRecordsForPrint(invoice).forEach(ret => {
- ;(ret.reseller_return_items || []).forEach(item => {
- const qty = safeNum(item.returned_quantity ?? item.returned_qty ?? item.quantity ?? item.qty, 0)
- if (!qty) return
- const variantId = String(item.variant_id || '').trim()
- const nameKey = normalizeDonutVariantName(item.variant_name || item.product_name || item.item_name || item.name || '')
- if (variantId) byVariantId[variantId] = safeNum(byVariantId[variantId], 0) + qty
- if (nameKey) byName[nameKey] = safeNum(byName[nameKey], 0) + qty
- })
- })
- return { byVariantId, byName }
- }
-
- function getInvoiceItemDeliveredQty(item = {}) {
- return Math.max(0, safeNum(item.delivered_quantity ?? item.actual_quantity ?? item.quantity, 0))
- }
-
- function getInvoiceItemPrice(item = {}) {
- return moneyRound(item.reseller_price ?? item.unit_price ?? item.price ?? item.selling_price ?? 0)
- }
-
- function getInvoiceItemGrossAmount(item = {}) {
- const stored = safeNum(item.total_price ?? item.amount ?? item.line_total, NaN)
- if (Number.isFinite(stored)) return moneyRound(stored)
- return moneyRound(getInvoiceItemDeliveredQty(item) * getInvoiceItemPrice(item))
- }
-
- function getInvoiceItemUnsoldQuantity(invoice, item = {}) {
- const direct = safeNum(item.unsold_quantity ?? item.returned_quantity ?? item.returns_qty ?? item.returned_qty, NaN)
- if (Number.isFinite(direct) && direct > 0) return Math.min(getInvoiceItemDeliveredQty(item), direct)
- const lookups = getInvoiceReturnLookups(invoice)
- const variantId = String(item.variant_id || '').trim()
- if (variantId && Object.prototype.hasOwnProperty.call(lookups.byVariantId, variantId)) {
- return Math.min(getInvoiceItemDeliveredQty(item), safeNum(lookups.byVariantId[variantId], 0))
- }
- const nameKey = normalizeDonutVariantName(item.variant_name || item.product_name || item.name || '')
- if (nameKey && Object.prototype.hasOwnProperty.call(lookups.byName, nameKey)) {
- return Math.min(getInvoiceItemDeliveredQty(item), safeNum(lookups.byName[nameKey], 0))
- }
- return 0
- }
-
- function attachUnsoldQuantitiesToInvoice(invoice) {
- const inv = invoice || {}
- const items = Array.isArray(inv.delivery_invoice_items) ? inv.delivery_invoice_items : []
- return {
- ...inv,
- delivery_invoice_items:items.map(item => ({
- ...item,
- unsold_quantity:getInvoiceItemUnsoldQuantity(inv, item)
- }))
- }
- }
-
- function mergeDeliveryInvoicesWithReturns(invoiceRows = [], returnRows = []) {
- const returnsByInvoiceId = {}
- ;(returnRows || []).forEach(row => {
- const key = String(row.invoice_id || '')
- if (!key) return
- if (!returnsByInvoiceId[key]) returnsByInvoiceId[key] = []
- returnsByInvoiceId[key].push(row)
- })
- return (invoiceRows || []).map(inv => attachUnsoldQuantitiesToInvoice({
- ...inv,
- reseller_returns:returnsByInvoiceId[String(inv.id || '')] || inv.reseller_returns || []
- }))
- }
-
- async function attachReturnsToDeliveryInvoices(invoiceRows = []) {
- const rows = Array.isArray(invoiceRows) ? invoiceRows : []
- const ids = rows.map(inv => inv?.id).filter(Boolean)
- if (!ids.length) return rows.map(attachUnsoldQuantitiesToInvoice)
- try {
- const { data, error } = await supabase
- .from('reseller_returns')
- .select('*, reseller_return_items(*)')
- .in('invoice_id', ids)
- if (error) {
- if (!isOptionalSupabaseObjectMissing(error)) console.warn('attachReturnsToDeliveryInvoices:', error)
- return rows.map(attachUnsoldQuantitiesToInvoice)
- }
- return mergeDeliveryInvoicesWithReturns(rows, data || [])
- } catch(e) {
- console.warn('attachReturnsToDeliveryInvoices:', e)
- return rows.map(attachUnsoldQuantitiesToInvoice)
- }
- }
-
- function getInvoiceViewItemRows(invoice) {
- const items = Array.isArray(invoice?.delivery_invoice_items) ? invoice.delivery_invoice_items : []
- return items.map(item => {
- const deliveredQty = getInvoiceItemDeliveredQty(item)
- const unsoldQty = Math.min(deliveredQty, getInvoiceItemUnsoldQuantity(invoice, item))
- const soldQty = Math.max(0, deliveredQty - unsoldQty)
- const price = getInvoiceItemPrice(item)
- const grossAmount = moneyRound(deliveredQty * price)
- const returnsCredit = moneyRound(unsoldQty * price)
- const netAmount = moneyRound(soldQty * price)
- return {
- ...item,
- deliveredQty,
- unsoldQty,
- soldQty,
- price,
- grossAmount,
- returnsCredit,
- netAmount
- }
- })
- }
-
-
  function getDaysUntilLocal(targetDate, asOfDate = today) {
  const target = parseLocalDate(targetDate)
  const asOf = parseLocalDate(asOfDate)
@@ -7253,9 +6581,7 @@ Cancel = create batch record only for existing stock.`)
  await autoMarkTodayDelivered()
  const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(500)
  if (!withItems.error) {
- const normalized = await normalizePaidInvoiceRows(withItems.data || [])
- const withReturns = await attachReturnsToDeliveryInvoices(normalized)
- setDeliveryInvoices(withReturns.sort(sortDeliveryInvoicesNewestFirst))
+ setDeliveryInvoices((await normalizePaidInvoiceRows(withItems.data || [])).sort(sortDeliveryInvoicesNewestFirst))
  return
  }
  console.warn('delivery_invoices with items failed, trying basic invoice list:', withItems.error)
@@ -7265,9 +6591,7 @@ Cancel = create batch record only for existing stock.`)
  setDeliveryInvoices([])
  return
  }
- const normalizedBasic = await normalizePaidInvoiceRows(basic.data || [])
- const basicWithReturns = await attachReturnsToDeliveryInvoices(normalizedBasic)
- setDeliveryInvoices(basicWithReturns.sort(sortDeliveryInvoicesNewestFirst))
+ setDeliveryInvoices((await normalizePaidInvoiceRows(basic.data || [])).sort(sortDeliveryInvoicesNewestFirst))
  } catch(e) {
  console.warn('loadDeliveryInvoices:', e)
  setDeliveryInvoices([])
@@ -7988,12 +7312,10 @@ Cancel = create batch record only for existing stock.`)
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
 
  if (customerType === 'reseller') {
- // Manual invoice creation must be checked against the actual selected reseller/branch only.
- // Do not use the copy-template branch, parent account, or sibling branches for duplicate blocking.
- const duplicateCheck = await checkSameDayInvoiceForExactBranch(invoiceResellerId, invoiceDate, { resellerName:reseller?.name || '' })
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(invoiceResellerId, invoiceDate)
  if (duplicateCheck.blocked) {
  showToast(duplicateCheck.message, 'red')
- await logAudit('INVOICE CREATE BLOCKED - EXACT BRANCH DUPLICATE', adminRole, reseller?.name || '', duplicateCheck.message)
+ await logAudit('INVOICE CREATE BLOCKED - DUPLICATE SAME DAY', adminRole, reseller?.name || '', duplicateCheck.message)
  setSavingInvoice(false)
  return
  }
@@ -8301,7 +7623,7 @@ function getInvoiceProductionDispatchNote(invoice) {
 function buildDeliveryInvoicePrintCSS() {
   return [
     '<style>',
-    '@page { size: 10.5cm 16.5cm; margin: 0; }',
+    '@page { size: 4in 6in; margin: 0; }',
 
     '* {',
     '  box-sizing: border-box !important;',
@@ -8310,8 +7632,8 @@ function buildDeliveryInvoicePrintCSS() {
     '}',
 
     'html, body {',
-    '  width: 10.5cm !important;',
-    '  height: 16.5cm !important;',
+    '  width: 4in !important;',
+    '  height: 6in !important;',
     '  margin: 0 !important;',
     '  padding: 0 !important;',
     '  background: white !important;',
@@ -8322,10 +7644,10 @@ function buildDeliveryInvoicePrintCSS() {
     '.no-print { display: none !important; }',
 
     '.invoice-page {',
-    '  width: 10.5cm !important;',
-    '  height: 16.5cm !important;',
+    '  width: 4in !important;',
+    '  height: 6in !important;',
     '  margin: 0 auto !important;',
-    '  padding: 0.12cm !important;',
+    '  padding: 0.04in !important;',
     '  background: white !important;',
     '  overflow: hidden !important;',
     '}',
@@ -8406,8 +7728,8 @@ function buildDeliveryInvoicePrintCSS() {
     '}',
 
     '@media print {',
-    '  html, body { width: 10.5cm !important; height: 16.5cm !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }',
-    '  .invoice-page { width: 10.5cm !important; height: 16.5cm !important; margin: 0 !important; padding: 0.12cm !important; box-shadow: none !important; page-break-after: always !important; }',
+    '  html, body { width: 4in !important; height: 6in !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }',
+    '  .invoice-page { width: 4in !important; height: 6in !important; margin: 0 !important; padding: 0.04in !important; box-shadow: none !important; page-break-after: always !important; }',
     '  .invoice-page:last-of-type { page-break-after: auto !important; }',
     '}',
     '</style>'
@@ -8524,14 +7846,13 @@ function buildDeliveryInvoicePrintCSS() {
       const first = matched[0] || null;
       const price = first ? getPrice(first) : 0;
       const amount = matched.reduce((sum, item) => sum + getAmount(item), 0);
-      const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0);
 
       return `<tr class="product-row">
         <td class="product-name">${escapeHtml(row.label)}</td>
         <td class="number-cell">${qty ? qty.toLocaleString('en-PH') : ''}</td>
         <td class="money-cell">${price ? peso(price) : ''}</td>
         <td class="money-cell">${amount ? peso(amount) : ''}</td>
-        <td class="number-cell">${unsoldQty ? unsoldQty.toLocaleString('en-PH') : ''}</td>
+        <td></td>
       </tr>`;
     }).join('');
 
@@ -8772,20 +8093,18 @@ function buildDeliveryInvoicePrintCSS() {
    }
 
    const productRows = productTemplate.map(row => {
-     if (!row.label) return { product:'', delivered:'', price:'', amount:'', unsold:'', _spacer:true }
+     if (!row.label) return { product:'', delivered:'', price:'', amount:'', unsold:'' }
      const matched = findMatchingItems(row)
      const qty = matched.reduce((sum, item) => sum + getQty(item), 0)
      const first = matched[0] || null
      const price = first ? getPrice(first) : 0
      const amount = matched.reduce((sum, item) => sum + getAmount(item), 0)
-     const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0)
      return {
        product: row.label,
        delivered: qty ? qty.toLocaleString('en-PH') : '',
        price: price ? peso(price) : '',
        amount: amount ? peso(amount) : '',
-       unsold: unsoldQty ? unsoldQty.toLocaleString('en-PH') : '',
-       _ordered: qty > 0
+       unsold: ''
      }
    })
 
@@ -8818,21 +8137,20 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  function wordRun(text, opts = {}) {
-   // Word DOCX uses half-points: 20 = Arial 10pt.
-   const size = opts.size || 20
+   const size = opts.size || 15
    // Use bold as the default for invoice readability on 4x6 thermal/photo paper.
    // Pass bold:false only for intentionally light text.
    const bold = opts.bold === false ? '' : '<w:b/><w:bCs/>'
    const italic = opts.italic ? '<w:i/><w:iCs/>' : ''
-   const color = opts.color ? `<w:color w:val="${opts.color}"/>` : ''
-   return `<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${bold}${italic}${color}</w:rPr><w:t xml:space="preserve">${wordXmlText(text)}</w:t></w:r>`
+   return `<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${bold}${italic}</w:rPr><w:t xml:space="preserve">${wordXmlText(text)}</w:t></w:r>`
  }
 
  function wordParagraph(text, opts = {}) {
    const align = opts.align || 'left'
-   // Arial 10 needs enough exact line height so Word does not display it as 5pt or clip bold text.
-   const size = opts.size || 20
-   const line = opts.line || Math.max(240, Math.ceil(size * 12))
+   // A line-height equal to the font size clips bold text in Word print preview.
+   // Give each line a small safety allowance while keeping the exact 4x6 table height.
+   const size = opts.size || 15
+   const line = opts.line || Math.max(205, Math.ceil(size * 13))
    return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:before="0" w:after="0" w:line="${line}" w:lineRule="exact"/></w:pPr>${wordRun(text, opts)}</w:p>`
  }
 
@@ -8841,7 +8159,7 @@ function buildDeliveryInvoicePrintCSS() {
    const span = opts.span ? `<w:gridSpan w:val="${opts.span}"/>` : ''
    const shade = opts.shade ? `<w:shd w:fill="${opts.shade}"/>` : ''
    const vAlign = '<w:vAlign w:val="center"/>'
-   const cellMargins = '<w:tcMar><w:top w:w="0" w:type="dxa"/><w:left w:w="14" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="14" w:type="dxa"/></w:tcMar>'
+   const cellMargins = '<w:tcMar><w:top w:w="4" w:type="dxa"/><w:left w:w="24" w:type="dxa"/><w:bottom w:w="4" w:type="dxa"/><w:right w:w="24" w:type="dxa"/></w:tcMar>'
    return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${span}${shade}${vAlign}${cellMargins}</w:tcPr>${wordParagraph(text, opts)}</w:tc>`
  }
 
@@ -8855,86 +8173,78 @@ function buildDeliveryInvoicePrintCSS() {
    // after each invoice. A trailing page-break paragraph can be forced onto its own sheet,
    // which creates the blank pages seen between invoices in Word print preview.
    const pageBreak = startNewPage ? '<w:pageBreakBefore/>' : ''
-   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/></w:pPr></w:p>`
+   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="351" w:lineRule="exact"/></w:pPr></w:p>`
  }
 
  function buildDeliveryInvoiceDocxTable(invoice) {
    const data = getDeliveryInvoicePrintData(invoice)
-   // Fixed physical paper size:20mm x 165mm, confirmed from the Word custom
-   // paper setup screenshot — this matches real paper stock, not a computed value. Table width is sized to fit
-   // within the page margins (147 twips ≈ 2.6mm each side), leaving a
-   // little clearance on all 4 sides as requested. Checked against the
-   // maximum possible invoice (all 17 donut variants at once) — even that
-   // fits comfortably within 165mm with room to spare, so this size is
-   // safe for every invoice this system can produce, not just typical ones.
-   // Keep the product table as five separate columns. The Amount column is slightly wider
-   // so totals and peso amounts do not clip, while the Unsold column stays separate for returns.
-   const widths = [1746, 1100, 850, 1150, 807]
+   // Keep the invoice body at exactly 100mm x 140mm and center it
+   // inside the 4x6 inch Word page. 100mm = 5669 twips, 140mm = about 7937 twips.
+   const widths = [1750, 1210, 903, 903, 903]
    const full = widths.reduce((sum, w) => sum + w, 0)
-   const valueSpan4 = widths[1] + widths[2] + widths[3] + widths[4]
-
-   // Brand palette — same red/gold used across the rest of the system.
-   const BRAND_RED = 'CA1B1B'
-   const BRAND_GOLD = 'FDD412'
-   const PALE_GOLD = 'FCEEC0'
-   const PALE_RED = 'FBDCDC'
+   const valueSpan3 = widths[1] + widths[2] + widths[3]
 
    const rows = []
-   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:20, line:240, shade:BRAND_RED, color:'FFFFFF' })], 360))
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:19, line:235 })], 420))
    rows.push(wordRow([
-     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:20 }),
-     wordCell(data.date, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
-   ], 320))
+     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:16 }),
+     wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:16, shade:'CFE2F3' }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 350))
    rows.push(wordRow([
-     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:20 }),
-     wordCell(data.customerName, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
-   ], 320))
+     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:16 }),
+     wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:16, shade:'CFE2F3' }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 350))
    rows.push(wordRow([
-     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:20 }),
-     wordCell(data.customerAddress, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_RED })
-   ], 320))
+     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:16 }),
+     wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:15, shade:'B6D7A8' }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 350))
    rows.push(wordRow([
-     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:20, line:240, shade:PALE_GOLD })
-   ], 290))
+     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:14, line:175, shade:'FFF2CC' })
+   ], 360))
    rows.push(wordRow([
-     wordCell('Product', { width:widths[0], align:'center', bold:true, size:20 }),
-     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:20 }),
-     wordCell('Price', { width:widths[2], align:'center', bold:true, size:20 }),
-     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:20 }),
-     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:20 })
-   ], 320))
+     wordCell('Product', { width:widths[0], align:'center', bold:true, size:16 }),
+     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:16 }),
+     wordCell('Price', { width:widths[2], align:'center', bold:true, size:16 }),
+     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:16 }),
+     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:16 })
+   ], 350))
 
    data.productRows.forEach(row => {
      rows.push(wordRow([
-       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:20 }),
-       wordCell(row.delivered, { width:widths[1], align:'center', size:20 }),
-       wordCell(row.price, { width:widths[2], align:'right', size:20 }),
-       wordCell(row.amount, { width:widths[3], align:'right', size:20 }),
-       wordCell(row.unsold, { width:widths[4], align:'center', size:20 })
-     ], 340))
+       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:14 }),
+       wordCell(row.delivered, { width:widths[1], align:'center', size:15 }),
+       wordCell(row.price, { width:widths[2], align:'right', size:14 }),
+       wordCell(row.amount, { width:widths[3], align:'right', size:14 }),
+       wordCell(row.unsold, { width:widths[4], align:'center', size:15 })
+     ], 267))
    })
 
-   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:20 })), 40))
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
    rows.push(wordRow([
-     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
-     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:20 }),
-     wordCell('', { width:widths[2], align:'center', size:20 }),
-     wordCell('', { width:widths[3], align:'center', size:20 }),
-     wordCell('', { width:widths[4], align:'center', size:20 })
-   ], 320))
+     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
+     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:15 }),
+     wordCell('', { width:widths[2], align:'center', size:15 }),
+     wordCell('', { width:widths[3], align:'center', size:15 }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 350))
    rows.push(wordRow([
-     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
-     wordCell('', { width:widths[1], align:'center', size:20, shade:BRAND_GOLD }),
-     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:20, shade:BRAND_GOLD }),
-     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:20, shade:BRAND_GOLD }),
-     wordCell('', { width:widths[4], align:'center', size:20, shade:BRAND_GOLD })
-   ], 340))
+     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
+     wordCell('', { width:widths[1], align:'center', size:15 }),
+     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:17 }),
+     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:17, shade:'D9D9D9' }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 390))
    rows.push(wordRow([
-     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
-     wordCell(data.preparedBy, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
-   ], 320))
+     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:14, shade:'B6D7A8' }),
+     wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:14, shade:'B6D7A8' }),
+     wordCell('', { width:widths[3], align:'center', size:15 }),
+     wordCell('', { width:widths[4], align:'center', size:15 })
+   ], 400))
 
-   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
+   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
  function buildDeliveryInvoicesDocxDocument(invoices) {
@@ -8945,15 +8255,8 @@ function buildDeliveryInvoicePrintCSS() {
      bodyParts.push(buildDeliveryInvoiceDocxTable(invoice))
    })
 
-   // Fixed physical paper size: 105mm x 165mm (5953 x 9354 twips) — real
-   // paper stock, confirmed exact from the Word custom paper setup screenshot. Margins of 147 twips (~2.6mm) on all 4
-   // sides, per request. Verified safe for every invoice this system can
-   // produce: even the maximum possible order (all 17 donut variants at
-   // once) uses a full-height 10.5cm x 16.5cm layout with no second-page spill
-   // and minimal blank space at the bottom.
-   const MARGIN = 72
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5953" w:h="9354"/><w:pgMar w:top="${MARGIN}" w:right="${MARGIN}" w:bottom="${MARGIN}" w:left="${MARGIN}" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5760" w:h="8640"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
  }
 
  function createCrc32Table() {
@@ -9061,7 +8364,7 @@ function buildDeliveryInvoicePrintCSS() {
    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`
-   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
+   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
    const settings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`
 
    return createStoredZipBlob([
@@ -9086,49 +8389,11 @@ function buildDeliveryInvoicePrintCSS() {
    setTimeout(() => URL.revokeObjectURL(url), 1500)
  }
 
- async function getFreshDeliveryInvoicesForPrintByDate(date) {
-   const { data, error } = await supabase
-     .from('delivery_invoices')
-     .select('*, delivery_invoice_items(*)')
-     .eq('delivery_date', date)
-     .order('created_at', { ascending:false })
-
-   if (error) throw error
-   const normalized = await normalizePaidInvoiceRows(data || [])
-   const withReturns = await attachReturnsToDeliveryInvoices(normalized)
-   return withReturns.sort(sortDeliveryInvoicesNewestFirst)
- }
-
- function validateDeliveryInvoiceForPrint(invoice) {
-   if (!invoice?.id || !invoice?.invoice_number) {
-     return 'This invoice is not a saved database invoice yet. Refresh the invoice list and print only from the saved Delivery Invoices list.'
-   }
-
-   const rows = invoice.delivery_invoice_items || []
-   if (!rows.length) {
-     return 'This invoice has no saved line items. Refresh the invoice list before printing.'
-   }
-
-   const itemTotal = moneyRound(rows.reduce((sum, item) => sum + safeNum(item.total_price, safeNum(item.quantity,0) * safeNum(item.reseller_price,0)), 0))
-   const headerTotal = moneyRound(invoice.total_amount ?? invoice.subtotal ?? 0)
-   if (Math.abs(itemTotal - headerTotal) > 0.01) {
-     return `Invoice total mismatch. Saved header is ${php(headerTotal)} but saved item rows total ${php(itemTotal)}. Please edit/recalculate the invoice before printing.`
-   }
-
-   return ''
- }
-
- async function printAllDailyInvoices(date) {
-   try {
-     const dayInvoices = await getFreshDeliveryInvoicesForPrintByDate(date)
-     if (dayInvoices.length === 0) { showToast(' No saved invoices for this date.','red'); return }
-     const invalid = dayInvoices.map(inv => ({ inv, error: validateDeliveryInvoiceForPrint(inv) })).find(row => row.error)
-     if (invalid) { showToast(` Print blocked for ${invalid.inv?.invoice_number || 'invoice'}: ${invalid.error}`, 'red'); return }
-     downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
-     showToast(` Downloaded ${dayInvoices.length} fresh invoice(s) from database as Word file.`)
-   } catch (err) {
-     showToast(' Failed to fetch fresh invoices for printing: ' + (err?.message || err), 'red')
-   }
+ function printAllDailyInvoices(date) {
+   const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
+   if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
+   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
+   showToast(` Downloaded ${dayInvoices.length} invoice(s) as 100x140mm centered 4x6 Word file.`)
  }
  async function recordPayment(invoice) {
  const amt = Number(paymentAmount[invoice.id] || 0)
@@ -9151,50 +8416,11 @@ function buildDeliveryInvoicePrintCSS() {
  loadDailySalesOnlinePayments()
  refreshFoundationAfterDataChange('reseller-payment-recorded')
  }
- async function getFreshDeliveryInvoiceForAction(invoice, options = {}) {
- if (!invoice?.id) {
-   if (options.requireSaved) throw new Error('This invoice is not saved in the database yet.')
-   return attachUnsoldQuantitiesToInvoice(invoice)
- }
- try {
- const { data, error } = await supabase
- .from('delivery_invoices')
- .select('*, delivery_invoice_items(*)')
- .eq('id', invoice.id)
- .single()
- if (error) {
- console.warn('getFreshDeliveryInvoiceForAction:', error)
- if (options.requireSaved) throw error
- return attachUnsoldQuantitiesToInvoice(invoice)
- }
- const [normalized] = await normalizePaidInvoiceRows([data || invoice])
- const [withReturns] = await attachReturnsToDeliveryInvoices([normalized || invoice])
- return withReturns || attachUnsoldQuantitiesToInvoice(invoice)
- } catch(e) {
- console.warn('getFreshDeliveryInvoiceForAction:', e)
- if (options.requireSaved) throw e
- return attachUnsoldQuantitiesToInvoice(invoice)
- }
- }
-
- async function viewDeliveryInvoice(invoice) {
+ function printDeliveryInvoice(invoice) {
  if (!invoice) { showToast(' No invoice selected.','red'); return }
- const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice)
- setViewingInvoice(freshInvoice)
- }
-
- async function printDeliveryInvoice(invoice) {
- if (!invoice) { showToast(' No invoice selected.','red'); return }
- try {
-   const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice, { requireSaved:true })
-   const validationError = validateDeliveryInvoiceForPrint(freshInvoice)
-   if (validationError) { showToast(` Print blocked: ${validationError}`, 'red'); return }
-   const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
-   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
-   showToast(' Downloaded fresh invoice Word file from database.')
- } catch (err) {
-   showToast(' Print blocked: invoice could not be verified from database. Refresh invoices and try again. ' + (err?.message || err), 'red')
- }
+ const invoiceNumber = invoice.invoice_number || invoice.id || 'invoice'
+ downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [invoice])
+ showToast(' Downloaded 100x140mm centered 4x6 invoice Word file.')
  }
  function buildInvoiceAdjustmentRows(invoice) {
  if (!invoice) return []
@@ -10821,7 +10047,6 @@ function buildDeliveryInvoicePrintCSS() {
  setResellerNotices([])
  setEditingResellerOrderId(null)
  setUpdatingResellerOrder(false)
- setLastSubmittedOrderNotice('')
  setResellerOrderNotes('')
  setResellerOrderItems([])
  }
@@ -10924,80 +10149,6 @@ function buildDeliveryInvoicePrintCSS() {
  return !['cancelled','canceled','void','deleted'].includes(s)
  }
 
- async function checkSameDayInvoiceForExactBranch(resellerId, deliveryDate, options = {}) {
- const targetResellerId = String(resellerId || '').trim()
- const targetDate = String(deliveryDate || '').slice(0, 10)
- const excludeInvoiceId = options.excludeInvoiceId ? String(options.excludeInvoiceId) : ''
- const resellerName = options.resellerName || 'this branch'
-
- if (!targetResellerId || !targetDate) return { blocked:false, message:'' }
-
- // Critical rule: a manual invoice duplicate check is branch-exact only.
- // JV1-MANGALDAN and JV2-MAPANDAN may share an owner/account or copy each other's quantity template,
- // but they are different reseller branches and must not block each other.
- const { data:existingInvoices, error } = await supabase
- .from('delivery_invoices')
- .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
- .eq('delivery_date', targetDate)
- .eq('reseller_id', targetResellerId)
- .limit(50)
- if (error) throw error
-
- const duplicateInvoice = (existingInvoices || []).find(inv =>
-  String(inv.id) !== excludeInvoiceId &&
-  isActiveDuplicateInvoiceStatus(inv.status)
- )
-
- if (duplicateInvoice) {
-  return {
-   blocked:true,
-   type:'invoice',
-   record:duplicateInvoice,
-   message:`Duplicate blocked: ${resellerName || duplicateInvoice.reseller_name || 'this branch'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Same exact branch + same delivery date is not allowed.`
-  }
- }
-
- return { blocked:false, message:'' }
- }
-
- function normalizeOutletDuplicateKey(value) {
- return String(value || '')
- .trim()
- .toLowerCase()
- .replace(/[^a-z0-9]+/g, ' ')
- .replace(/\s+/g, ' ')
- .trim()
- }
-
- function getOutletDuplicateProfile(resellerId, fallbackName = '') {
- const id = String(resellerId || '')
- const knownRows = [
- ...(Array.isArray(resellers)? resellers: []),
- ...(Array.isArray(resellerPortalBranches)? resellerPortalBranches: [])
- ]
- const branch = knownRows.find(r => String(r?.id || '') === id)
- const name = branch?.name || branch?.reseller_name || fallbackName || ''
- const accountId = branch?.reseller_account_id || resellerPortalAccount?.id || ''
- return {
- id,
- name,
- normalizedName:normalizeOutletDuplicateKey(name),
- accountId:String(accountId || '')
- }
- }
-
- function isSameDuplicateOutletRecord(row, targetProfile, relatedIds = []) {
- if (!row || !targetProfile) return false
- const rowResellerId = String(row.reseller_id || '')
- const sameId = targetProfile.id && rowResellerId === targetProfile.id
- const rowNameKey = normalizeOutletDuplicateKey(row.reseller_name || row.name || '')
- const sameName = targetProfile.normalizedName && rowNameKey && rowNameKey === targetProfile.normalizedName
- // IMPORTANT: Do not treat sibling branches under the same reseller account as duplicates.
- // Example: JV1-MANGALDAN and JV2-MAPANDAN can share one owner/account,
- // but they are different outlets and must be allowed to receive separate invoices on the same date.
- return Boolean(sameId || sameName)
- }
-
  async function checkSameDayOutletOrderOrInvoice(resellerId, deliveryDate, options = {}) {
  const targetResellerId = String(resellerId || '')
  const targetDate = String(deliveryDate || '').slice(0, 10)
@@ -11006,56 +10157,43 @@ function buildDeliveryInvoicePrintCSS() {
 
  if (!targetResellerId || !targetDate) return { blocked:false, message:'' }
 
- const targetProfile = getOutletDuplicateProfile(targetResellerId, options.resellerName || options.outletName || '')
- const relatedIds = getResellerBranchIds(targetResellerId).map(id => String(id)).filter(Boolean)
- const ignoreOrders = options.ignoreOrders === true
-
- // Important: query the whole delivery date, not only the exact reseller_id.
- // Some duplicate reseller records can share the same outlet name but have different IDs.
- // Without the name/date check, the app can create two invoices for the same reseller and same date.
- // When approving a pending order, do not block the approval just because the same pending
- // order is active. Approval only needs to check for an existing active invoice.
- if (!ignoreOrders) {
  const { data:existingOrders, error:orderErr } = await supabase
  .from('reseller_orders')
- .select('id,status,delivery_date,reseller_id,reseller_name,invoice_id')
+ .select('id,status,delivery_date,reseller_name,invoice_id')
+ .eq('reseller_id', targetResellerId)
  .eq('delivery_date', targetDate)
- .limit(300)
+ .limit(20)
  if (orderErr) throw orderErr
 
  const duplicateOrder = (existingOrders || []).find(o =>
- String(o.id) !== excludeOrderId &&
- isActiveDuplicateOrderStatus(o.status) &&
- isSameDuplicateOutletRecord(o, targetProfile, relatedIds)
+ String(o.id) !== excludeOrderId && isActiveDuplicateOrderStatus(o.status)
  )
  if (duplicateOrder) {
  return {
  blocked:true,
  type:'order',
  record:duplicateOrder,
- message:`Duplicate blocked: ${duplicateOrder.reseller_name || targetProfile.name || 'this outlet'} already has an active order for ${targetDate}. Same reseller/outlet name + same delivery date is not allowed.`
- }
+ message:`Duplicate blocked: ${duplicateOrder.reseller_name || 'this outlet'} already has an active order for ${targetDate}. Only one order/invoice per outlet per delivery date is allowed.`
  }
  }
 
  const { data:existingInvoices, error:invoiceErr } = await supabase
  .from('delivery_invoices')
- .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
+ .select('id,invoice_number,status,delivery_date,reseller_name')
+ .eq('reseller_id', targetResellerId)
  .eq('delivery_date', targetDate)
- .limit(300)
+ .limit(20)
  if (invoiceErr) throw invoiceErr
 
  const duplicateInvoice = (existingInvoices || []).find(inv =>
- String(inv.id) !== excludeInvoiceId &&
- isActiveDuplicateInvoiceStatus(inv.status) &&
- isSameDuplicateOutletRecord(inv, targetProfile, relatedIds)
+ String(inv.id) !== excludeInvoiceId && isActiveDuplicateInvoiceStatus(inv.status)
  )
  if (duplicateInvoice) {
  return {
  blocked:true,
  type:'invoice',
  record:duplicateInvoice,
- message:`Duplicate blocked: ${duplicateInvoice.reseller_name || targetProfile.name || 'this outlet'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Same reseller/outlet name + same delivery date is not allowed.`
+ message:`Duplicate blocked: ${duplicateInvoice.reseller_name || 'this outlet'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Only one order/invoice per outlet per delivery date is allowed.`
  }
  }
 
@@ -11137,9 +10275,8 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
+ const validItems = resellerOrderItems.filter(i => Number(i.quantity) > 0)
  if (validItems.length === 0) { showToast(' Enter at least one quantity.', 'red'); return }
- if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before saving. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.', 'red'); return }
  const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
  if (cutoffStatus.locked) {
@@ -11210,67 +10347,17 @@ function buildDeliveryInvoicePrintCSS() {
  setUpdatingResellerOrder(false)
  }
 
-
- function collapseDuplicateOrderItemsByProduct(items = []) {
- const map = new Map()
- const duplicates = []
- ;(items || []).forEach((item, idx) => {
-  const qty = safeNum(item?.quantity, 0)
-  if (qty <= 0) return
-  const nameKey = normalizeOutletDuplicateKey(item?.variant_name || item?.product_name || item?.name || '')
-  const idKey = String(item?.variant_id || item?.product_id || '').trim()
-  // Use product name first because old duplicate variant records can have different IDs but the same visible product.
-  const key = nameKey || idKey || `row-${idx}`
-  const clean = {
-   ...item,
-   quantity:qty,
-   variant_name:item?.variant_name || item?.product_name || item?.name || 'Product',
-   retail_price:safeNum(item?.retail_price, 0),
-   reseller_price:safeNum(item?.reseller_price, 0)
-  }
-  if (!map.has(key)) {
-   map.set(key, clean)
-   return
-  }
-  const existing = map.get(key)
-  duplicates.push({ name:clean.variant_name, keptQty:safeNum(existing.quantity, 0), duplicateQty:qty })
-  // Same product should only appear once per order. Keep the largest entered quantity instead of summing,
-  // because summing accidental duplicate rows is what doubles the invoice.
-  if (qty > safeNum(existing.quantity, 0)) {
-   map.set(key, {
-    ...existing,
-    ...clean,
-    quantity:qty,
-    retail_price:safeNum(clean.retail_price, existing.retail_price),
-    reseller_price:safeNum(clean.reseller_price, existing.reseller_price)
-   })
-  }
- })
- return { items:[...map.values()], duplicates }
- }
-
  async function submitResellerOrder() {
  if (resellerOrderSubmitLockRef.current || submittingOrder) {
- showToast(' Order is already being submitted. Please wait until it appears in Order Requests.', 'red')
+ showToast(' Order already submitted. Please wait while the system records it.', 'red')
  return
  }
  const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
  if (!orderBranch?.id) { showToast(' Select the branch/outlet for this order.','red'); return }
 
- const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
+ const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
  if (validItems.length===0) { showToast(' Enter at least one quantity.','red'); return }
- if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before submitting. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.','red'); return }
- const deliveryDateKey = String(resellerOrderDeliveryDate || '').slice(0, 10)
- const submitKey = `${String(orderBranch.id)}|${deliveryDateKey}`
- if (resellerOrderRecentSubmitKeysRef.current.has(submitKey)) {
-  const notice = `Order already received for ${orderBranch.name} on ${deliveryDateKey}. Check Order Requests or edit the existing pending order instead of submitting again.`
-  setLastSubmittedOrderNotice(notice)
-  showToast(' Duplicate submit blocked. ' + notice, 'red')
-  setResellerPortalView('orders')
-  await loadResellerPortalData(orderBranch.id)
-  return
- }
  const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
  if (cutoffStatus.locked) {
  showToast(` Order cut-off reached for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Please choose a later delivery date.`, 'red')
@@ -11279,41 +10366,13 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  resellerOrderSubmitLockRef.current = true
- resellerOrderRecentSubmitKeysRef.current.add(submitKey)
  setSubmittingOrder(true)
- setLastSubmittedOrderNotice(`Submitting order for ${orderBranch.name} on ${deliveryDateKey}. Please wait — do not tap Submit again.`)
- let confirmedOrderReceived = false
  try {
- const { data:existingPendingOrder, error:existingPendingErr } = await supabase
- .from('reseller_orders')
- .select('id,status,delivery_date,reseller_id,reseller_name,created_at,invoice_id')
- .eq('reseller_id', orderBranch.id)
- .eq('delivery_date', deliveryDateKey)
- .eq('status', 'pending')
- .is('invoice_id', null)
- .order('created_at', { ascending:false })
- .limit(1)
- .maybeSingle()
- if (existingPendingErr) throw existingPendingErr
- if (existingPendingOrder) {
-  confirmedOrderReceived = true
-  const notice = `${orderBranch.name} already has a pending order for ${deliveryDateKey}. It is now shown in Order Requests. Use EDIT PENDING ORDER if quantities need correction.`
-  setLastSubmittedOrderNotice(notice)
-  showToast(' Duplicate order blocked. ' + notice, 'red')
-  setResellerPortalView('orders')
-  await loadResellerPortalData(orderBranch.id)
-  return
- }
-
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, deliveryDateKey, { resellerName:orderBranch.name || '' })
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, resellerOrderDeliveryDate)
  if (duplicateCheck.blocked) {
-  confirmedOrderReceived = true
-  setLastSubmittedOrderNotice(duplicateCheck.message)
-  showToast(duplicateCheck.message, 'red')
-  await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
-  setResellerPortalView('orders')
-  await loadResellerPortalData(orderBranch.id)
-  return
+ showToast(duplicateCheck.message, 'red')
+ await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
+ return
  }
 
  const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
@@ -11326,33 +10385,18 @@ function buildDeliveryInvoicePrintCSS() {
  const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
  const { data:order, error } = await supabase.from('reseller_orders').insert({
  reseller_id:orderBranch.id, reseller_name:orderBranch.name,
- order_date:today, delivery_date:deliveryDateKey,
+ order_date:today, delivery_date:resellerOrderDeliveryDate,
  total_qty:totalQty, estimated_amount:total,
  status:'pending', notes:resellerOrderNotes||null
  }).select().single()
- if (error) {
-  if (String(error?.code || '') === '23505') {
-   confirmedOrderReceived = true
-   const notice = `${orderBranch.name} already has an order for ${deliveryDateKey}. The duplicate submit was blocked by the database.`
-   setLastSubmittedOrderNotice(notice)
-   showToast(notice, 'red')
-   setResellerPortalView('orders')
-   await loadResellerPortalData(orderBranch.id)
-   return
-  }
-  throw error
- }
- const { error:itemInsertErr } = await supabase.from('reseller_order_items').insert(validItems.map(i=>({
+ if (error) throw error
+ await supabase.from('reseller_order_items').insert(validItems.map(i=>({
  order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
  quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
  })))
- if (itemInsertErr) throw itemInsertErr
- confirmedOrderReceived = true
  const accountLabel = resellerPortalAccount?.account_name? `${resellerPortalAccount.account_name} / ${orderBranch.name}`: orderBranch.name
- await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${deliveryDateKey}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
- await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${deliveryDateKey} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
- const notice = `Order received for ${orderBranch.name} on ${deliveryDateKey}. It is now waiting for admin approval. Do not submit this same order again; use Edit Pending Order if changes are needed.`
- setLastSubmittedOrderNotice(notice)
+ await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
+ await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
  showToast(` Order submitted for ${orderBranch.name}! Waiting for admin approval${hasCreditWarning?' with credit warning.':'.'}`)
  setEditingResellerOrderId(null)
  setResellerOrderNotes('')
@@ -11362,124 +10406,60 @@ function buildDeliveryInvoicePrintCSS() {
  } catch(err) {
  showToast(' Failed: '+(err?.message || err),'red')
  } finally {
- if (!confirmedOrderReceived) resellerOrderRecentSubmitKeysRef.current.delete(submitKey)
  resellerOrderSubmitLockRef.current = false
  setSubmittingOrder(false)
  }
  }
+
  // Feature: Admin Order Management 
  async function loadPendingResellerOrders() {
  const { data } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').eq('status','pending').order('created_at',{ascending:false})
  setPendingResellerOrders(data||[])
  }
  async function approveResellerOrder(order, customItems) {
- const orderId = String(order?.id || '')
- if (!orderId) { showToast(' Order ID missing. Please refresh pending orders.', 'red'); return }
- if (approvingResellerOrderIdsRef.current.has(orderId)) {
-  showToast(' This order is already being approved. Please wait.', 'red')
-  return
- }
- approvingResellerOrderIdsRef.current.add(orderId)
- try {
  const cutoffStatus = getOrderCutoffStatus(order?.delivery_date)
  if (cutoffStatus.locked) {
  showToast(` Approval into invoice is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance delivery dates are still allowed.`, 'red')
  await logAudit('ORDER APPROVAL BLOCKED - ORDER CUT-OFF', adminRole, order?.reseller_name || '', cutoffStatus.message)
  return
  }
-
- // Always re-read the order before approval. This prevents approving stale/duplicated UI data.
- const { data:freshOrder, error:freshOrderErr } = await supabase
- .from('reseller_orders')
- .select('*, reseller_order_items(*)')
- .eq('id', orderId)
- .maybeSingle()
- if (freshOrderErr) throw freshOrderErr
- if (!freshOrder) { showToast(' Order was not found. Please refresh pending orders.', 'red'); return }
- if (String(freshOrder.status || '').toLowerCase() !== 'pending' || freshOrder.invoice_id) {
-  showToast(' This order was already approved/rejected or already has an invoice. Please refresh.', 'red')
-  await loadPendingResellerOrders()
-  return
- }
-
- const approvalOrder = { ...order, ...freshOrder }
- const rawItems = customItems || freshOrder.reseller_order_items || []
- const { items:validItems, duplicates:duplicateOrderRows } = collapseDuplicateOrderItemsByProduct(rawItems)
+ const items = customItems || order.reseller_order_items || []
+ const validItems = items.filter(i=>Number(i.quantity)>0)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
- if (duplicateOrderRows.length > 0) {
-  const duplicateNames = [...new Set(duplicateOrderRows.map(row => row.name).filter(Boolean))].slice(0, 8).join(', ')
-  showToast(` Duplicate product rows were detected and merged before approval${duplicateNames ? ': ' + duplicateNames : ''}. Quantities were not summed, so the invoice will not double.`, 'red')
-  await logAudit('ORDER APPROVAL DUPLICATE ROWS MERGED', adminRole, approvalOrder.reseller_name || '', `${approvalOrder.delivery_date}: ${duplicateNames || duplicateOrderRows.length + ' duplicate row(s)'}`)
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(order.reseller_id, order.delivery_date, { excludeOrderId:order.id })
+ if (duplicateCheck.blocked) {
+ showToast(duplicateCheck.message, 'red')
+ await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY', adminRole, order?.reseller_name || '', duplicateCheck.message)
+ return
  }
-
- // Approval safety: pending order approval must NOT be blocked by the same pending order itself.
- // At this stage, only an already-existing active invoice for the same outlet/date should block approval.
- const approvalTargetDate = String(approvalOrder?.delivery_date || '').slice(0, 10)
- const approvalTargetNameKey = normalizeOutletDuplicateKey(approvalOrder?.reseller_name || '')
- const approvalTargetResellerId = String(approvalOrder?.reseller_id || '')
- const { data:approvalExistingInvoices, error:approvalInvoiceErr } = await supabase
- .from('delivery_invoices')
- .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
- .eq('delivery_date', approvalTargetDate)
- .limit(500)
- if (approvalInvoiceErr) throw approvalInvoiceErr
- const duplicateApprovalInvoice = (approvalExistingInvoices || []).find(inv => {
-  if (!isActiveDuplicateInvoiceStatus(inv.status)) return false
-  const sameId = approvalTargetResellerId && String(inv.reseller_id || '') === approvalTargetResellerId
-  const sameName = approvalTargetNameKey && normalizeOutletDuplicateKey(inv.reseller_name || '') === approvalTargetNameKey
-  return sameId || sameName
- })
- if (duplicateApprovalInvoice) {
-  const duplicateMessage = `Duplicate blocked: ${duplicateApprovalInvoice.reseller_name || approvalOrder?.reseller_name || 'this outlet'} already has invoice ${duplicateApprovalInvoice.invoice_number || ''} for ${approvalTargetDate}. Same reseller/outlet name + same delivery date is not allowed.`
-  showToast(duplicateMessage, 'red')
-  await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY INVOICE', adminRole, approvalOrder?.reseller_name || '', duplicateMessage)
-  return
- }
- const creditStatus = await checkResellerCreditBlockFresh(approvalOrder.reseller_id)
+ const creditStatus = await checkResellerCreditBlockFresh(order.reseller_id)
  const hasCreditWarning = creditStatus.blocked
  if (hasCreditWarning) {
- showToast(` Credit warning for ${approvalOrder.reseller_name}. Approval is allowed, but review/collect before releasing delivery. ${creditStatus.message}`, 'red')
- await logAudit('ORDER APPROVAL CREDIT WARNING', adminRole, approvalOrder.reseller_name, creditStatus.message)
+ showToast(` Credit warning for ${order.reseller_name}. Approval is allowed, but review/collect before releasing delivery. ${creditStatus.message}`, 'red')
+ await logAudit('ORDER APPROVAL CREDIT WARNING', adminRole, order.reseller_name, creditStatus.message)
  }
  // Create invoice automatically
- const invoiceNum = `INV-${approvalOrder.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
- const dueDate = new Date(approvalOrder.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
- const lineItems = validItems.map(i=>{ const rp=Math.round((safeNum(i.retail_price,0))*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*safeNum(i.quantity,0)} })
+ const reseller = resellers.find(r=>r.id===order.reseller_id)
+ const invoiceNum = `INV-${order.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
+ const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
+ const lineItems = validItems.map(i=>{ const rp=Math.round((i.retail_price||0)*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
  const subtotal = lineItems.reduce((s,i)=>s+i.total_price,0)
- const resellerRequestNote = String(approvalOrder?.notes || '').trim()
- const invoiceOrderNotes = [`From order ${orderId.slice(0,8)}`, duplicateOrderRows.length > 0 ? 'System note: duplicate order rows were merged before approval to prevent doubled quantities.' : '', resellerRequestNote ? `Reseller note: ${resellerRequestNote}` : ''].filter(Boolean).join(' | ')
+ const resellerRequestNote = String(order?.notes || '').trim()
+ const invoiceOrderNotes = [`From order ${order.id.slice(0,8)}`, resellerRequestNote ? `Reseller note: ${resellerRequestNote}` : ''].filter(Boolean).join(' | ')
  const { data:inv, error } = await supabase.from('delivery_invoices').insert({
- invoice_number:invoiceNum, reseller_id:approvalOrder.reseller_id, reseller_name:approvalOrder.reseller_name,
- delivery_date:approvalOrder.delivery_date, due_date:dueDate.toISOString().slice(0,10),
+ invoice_number:invoiceNum, reseller_id:order.reseller_id, reseller_name:order.reseller_name,
+ delivery_date:order.delivery_date, due_date:dueDate.toISOString().slice(0,10),
  subtotal, discount_pct:20, total_amount:subtotal, status:'unpaid',
  prepared_by:'Ronald Reyes / Jomar Cerezo', dispatched_by:'Ronald Reyes / Jomar Cerezo',
  notes:invoiceOrderNotes, created_by:adminRole
  }).select().single()
  if (error) { showToast(' Failed: '+error.message,'red'); return }
- await supabase.from('delivery_invoice_items').insert(lineItems.map(i=>({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:safeNum(i.retail_price,0), reseller_price:i.reseller_price, quantity:safeNum(i.quantity,0), total_price:i.total_price })))
- const { data:approvedOrder, error:approveErr } = await supabase
- .from('reseller_orders')
- .update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString(), invoice_id:inv.id })
- .eq('id',orderId)
- .eq('status','pending')
- .is('invoice_id', null)
- .select('id')
- .maybeSingle()
- if (approveErr) throw approveErr
- if (!approvedOrder) {
-  showToast(' Invoice was created, but order status changed before approval finished. Please check for duplicate invoices immediately.', 'red')
-  await logAudit('ORDER APPROVAL WARNING - STATUS CHANGED AFTER INVOICE CREATE', adminRole, approvalOrder.reseller_name || '', invoiceNum)
- } else {
-  await createNotification(null,'System','order',` Order Approved: ${approvalOrder.reseller_name}`,`Your order for ${approvalOrder.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
-  await logAudit('ORDER APPROVED', adminRole, approvalOrder.reseller_name, `${invoiceNum} ${php(subtotal)}`)
-  showToast(` Order approved! Invoice ${invoiceNum} created.`)
- }
+ await supabase.from('delivery_invoice_items').insert(lineItems.map(i=>({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:i.retail_price||0, reseller_price:i.reseller_price, quantity:Number(i.quantity), total_price:i.total_price })))
+ await supabase.from('reseller_orders').update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString(), invoice_id:inv.id }).eq('id',order.id)
+ await createNotification(null,'System','order',` Order Approved: ${order.reseller_name}`,`Your order for ${order.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
+ await logAudit('ORDER APPROVED', adminRole, order.reseller_name, `${invoiceNum} ${php(subtotal)}`)
+ showToast(` Order approved! Invoice ${invoiceNum} created.`)
  loadPendingResellerOrders(); loadDeliveryInvoices()
- } catch(err) {
-  showToast(' Approval failed: ' + (err?.message || err), 'red')
- } finally {
-  approvingResellerOrderIdsRef.current.delete(orderId)
- }
  }
  async function rejectResellerOrder(orderId, resellerName) {
  const reason = window.prompt('Reason for rejection:')
@@ -11973,105 +10953,6 @@ function buildDeliveryInvoicePrintCSS() {
  const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
  setMyAttendance(data || [])
  }
-
- async function loadMedicalCertificateLock(emp) {
- if (!emp?.id) return { locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
- setMedicalCertLock(prev => ({...prev, checking:true }))
- try {
-  const lookbackStart = addDaysToDateString(today, -14)
-  const { data:logs, error:logsError } = await supabase
-   .from('attendance_logs')
-   .select('id,attendance_date,status,time_in,time_out')
-   .eq('employee_id', emp.id)
-   .gte('attendance_date', lookbackStart)
-   .lte('attendance_date', today)
-   .order('attendance_date', { ascending:false })
-  if (logsError) throw logsError
-
-  let certificates = []
-  let certificateTableReady = true
-  try {
-   const { data:certRows, error:certError } = await supabase
-    .from('employee_medical_certificates')
-    .select('*')
-    .eq('employee_id', emp.id)
-    .order('created_at', { ascending:false })
-   if (certError) throw certError
-   certificates = certRows || []
-  } catch(certErr) {
-   console.warn('Medical certificate table not available yet:', certErr)
-   certificateTableReady = false
-   certificates = []
-  }
-
-  if (!certificateTableReady) {
-   const unlocked = { checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
-   setMedicalCertLock(unlocked)
-   return unlocked
-  }
-
-  const lockInfo = getMedicalCertificateAbsenceLock(logs || [], certificates, today)
-  setMedicalCertLock({...lockInfo, checking:false })
-  return lockInfo
- } catch(err) {
-  console.error('Medical certificate lock check failed:', err)
-  const fallback = { checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
-  setMedicalCertLock(fallback)
-  return fallback
- }
- }
-
- async function handleMedicalCertificateUpload(e) {
- const file = e.target.files?.[0]
- if (!file) return
- if (!employee?.id) { e.target.value=''; return }
- if (!medicalCertLock?.locked) { showToast('No medical certificate lock is active.', 'red'); e.target.value=''; return }
- const validTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']
- if (file.type && !validTypes.includes(file.type)) {
-  showToast('Please upload PDF, JPG, PNG, or WEBP medical certificate only.', 'red')
-  e.target.value = ''
-  return
- }
- if (file.size > 10 * 1024 * 1024) {
-  showToast('Medical certificate file is too large. Maximum is 10MB.', 'red')
-  e.target.value = ''
-  return
- }
- setMedicalCertUploading(true)
- try {
-  const ext = (file.name?.split('.').pop() || 'pdf').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'pdf'
-  const safeCode = String(employee.employee_code || employee.id).replace(/[^a-zA-Z0-9_-]/g, '_')
-  const fileName = `${safeCode}_${medicalCertLock.absenceStart}_to_${medicalCertLock.absenceEnd}_${Date.now()}.${ext}`
-  const { error:uploadError } = await supabase.storage
-   .from('medical-certificates')
-   .upload(fileName, file, { upsert:false, contentType:file.type || 'application/octet-stream' })
-  if (uploadError) throw uploadError
-  const { data:urlData } = supabase.storage.from('medical-certificates').getPublicUrl(fileName)
-  const fileUrl = urlData?.publicUrl || null
-  const { error:insertError } = await supabase.from('employee_medical_certificates').insert({
-   employee_id:employee.id,
-   employee_code:employee.employee_code,
-   employee_name:employee.full_name,
-   absence_start:medicalCertLock.absenceStart,
-   absence_end:medicalCertLock.absenceEnd,
-   absent_days:medicalCertLock.absentDays || 2,
-   file_name:fileName,
-   file_url:fileUrl,
-   status:'uploaded'
-  })
-  if (insertError) throw insertError
-  await logAudit('MEDICAL CERTIFICATE UPLOADED', employee.full_name || employee.employee_code || 'Employee', employee.full_name || '', `Uploaded medical certificate for ${medicalCertLock.absenceStart} to ${medicalCertLock.absenceEnd}`)
-  showToast(' Medical certificate uploaded. Time In is unlocked.')
-  setMedicalCertLock({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' })
-  await loadMedicalCertificateLock(employee)
- } catch(err) {
-  console.error('Medical certificate upload failed:', err)
-  showToast('Medical certificate upload failed: ' + (err?.message || err), 'red')
- } finally {
-  setMedicalCertUploading(false)
-  e.target.value = ''
- }
- }
  async function loadMyLeaveBalance(emp) {
  if (!emp?.id) return
 
@@ -12136,10 +11017,6 @@ function buildDeliveryInvoicePrintCSS() {
  }
  }
  async function initiateTimeIn() {
- if (medicalCertLock?.locked) {
-  alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
-  return
- }
  setCapturedPhoto(null); setCameraMode('timein')
  }
  async function initiateTimeOut() {
@@ -12170,11 +11047,6 @@ function buildDeliveryInvoicePrintCSS() {
  }
  async function confirmTimeIn() {
  if (!capturedPhoto) { alert('Please take a selfie first.'); return }
- if (medicalCertLock?.locked) {
-  alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
-  setCameraMode(null); setCapturedPhoto(null)
-  return
- }
  setLoading(true)
  // Offline handling
  if (!isOnline) {
@@ -12225,17 +11097,15 @@ function buildDeliveryInvoicePrintCSS() {
  const activeAttendanceDate = todayLog.attendance_date || today
  const shiftStartForCalc = todayLog.shift_start || todaySchedule?.shift_start || null
  const shiftEndForCalc = todayLog.shift_end || todaySchedule?.shift_end || null
- const undertimeDeductionApplicable = employeeRuleEnabled(employee.undertime_deduction_applicable, true)
 
- let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
+ let undertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
  const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
  const excessBreakMins = Math.max(0, totalBreakMins-ALLOWED_BREAK_MINUTES)
 
  // Correctly compare time-out vs scheduled shift end even when the shift crosses midnight.
  if (shiftEndForCalc) {
  const diff = diffFromShiftEndMinutes(shiftStartForCalc, shiftEndForCalc, timeOut, timeIn)
- rawUndertimeMinutes = diff < 0? Math.abs(diff): 0
- undertimeMinutes = undertimeDeductionApplicable ? rawUndertimeMinutes : 0
+ undertimeMinutes = diff < 0? Math.abs(diff): 0
  overtimeMinutes = diff > 0? diff: 0
  if (undertimeMinutes>0) status='Undertime - Pending Filing'
  if (overtimeMinutes>0) status='Overtime - Pending Filing'
@@ -12266,75 +11136,18 @@ function buildDeliveryInvoicePrintCSS() {
  }).eq('id', todayLog.id).select().single()
  setLoading(false)
  if (error) { alert('Time Out failed: '+error.message); return }
-
- let autoUTRequestCreated = false
- let autoUTRequestSkipped = false
- let autoUTRequestError = ''
- if (undertimeMinutes > 0) {
-  try {
-   const { data:existingUTRequests, error:existingUTError } = await supabase
-    .from('time_adjustment_requests')
-    .select('id,status')
-    .eq('employee_id', employee.id)
-    .eq('attendance_date', activeAttendanceDate)
-    .eq('request_type', 'undertime')
-    .in('status', ['pending', 'approved'])
-    .limit(1)
-
-   if (existingUTError) throw existingUTError
-   if (existingUTRequests?.length) {
-    autoUTRequestSkipped = true
-   } else {
-    const { error:autoUTError } = await supabase.from('time_adjustment_requests').insert({
-     employee_id:employee.id,
-     employee_code:employee.employee_code,
-     employee_name:employee.full_name,
-     attendance_date:activeAttendanceDate,
-     request_type:'undertime',
-     minutes:undertimeMinutes,
-     employee_reason:'System auto-filed: employee timed out before scheduled shift end. For admin review.',
-     status:'pending'
-    })
-    if (autoUTError) throw autoUTError
-    autoUTRequestCreated = true
-   }
-  } catch(autoUTErr) {
-   autoUTRequestError = autoUTErr?.message || String(autoUTErr)
-   console.error('Auto undertime request failed:', autoUTErr)
-  }
- }
-
  setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
- await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}${autoUTRequestCreated?' | Auto UT request created':''}`)
+ await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}`)
  let msg = ' Time Out saved successfully!'
  if (activeAttendanceDate!== today) msg += `\n\n Night shift time-out saved under attendance date: ${activeAttendanceDate}.`
  if (nsdMinutes > 0) msg += `\n\n Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) will be computed in payroll at 10% premium.`
  if (overtimeMinutes>0) msg += `\n\n ${overtimeMinutes} min overtime please file an OT request.`
- if (undertimeMinutes>0) {
-  if (autoUTRequestCreated) msg += `\n\n ${undertimeMinutes} min undertime was automatically filed for admin review.`
-  else if (autoUTRequestSkipped) msg += `\n\n ${undertimeMinutes} min undertime already has a pending or approved UT request.`
-  else msg += `\n\n ${undertimeMinutes} min undertime was detected, but auto-filing failed. Please file a UT request manually${autoUTRequestError?': '+autoUTRequestError:''}.`
- }
- if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No UT request or deduction was created.`
+ if (undertimeMinutes>0) msg += `\n\n ${undertimeMinutes} min undertime please file a UT request.`
  if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break will be deducted.`
  alert(msg)
  }
  async function submitTimeAdjRequest() {
  if (!otRequestReason ||!otRequestMinutes ||!otRequestDate) { alert('Please enter date, minutes and reason.'); return }
- if (otRequestType === 'undertime' && !employeeRuleEnabled(employee.undertime_deduction_applicable, true)) { alert('You are exempted from undertime filing. No undertime request is needed.'); return }
- const { data:existingRequests, error:existingError } = await supabase
- .from('time_adjustment_requests')
- .select('id,status')
- .eq('employee_id', employee.id)
- .eq('attendance_date', otRequestDate)
- .eq('request_type', otRequestType)
- .in('status', ['pending', 'approved'])
- .limit(1)
- if (existingError) { alert('Failed checking existing request: '+existingError.message); return }
- if (existingRequests?.length) {
-  alert(`You already have a ${otRequestType==='overtime'?'overtime':'undertime'} request for this date. Please wait for admin review instead of filing another one.`)
-  return
- }
  const { error } = await supabase.from('time_adjustment_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:otRequestDate, request_type:otRequestType, minutes:Number(otRequestMinutes), employee_reason:otRequestReason, status:'pending' })
  if (error) { alert('Failed: '+error.message); return }
  alert(`${otRequestType==='overtime'?'Overtime':'Undertime'} request filed! Waiting for admin approval.`)
@@ -12346,8 +11159,6 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- const filingInfo = getLeaveFilingTypeInfo(leaveFilingType)
- const emergencyFiling = isEmergencyLeaveFiling(leaveFilingType)
  const todayMid = parseLocalDate(today)
  const startD = parseLocalDate(leaveStartDate)
 
@@ -12356,8 +11167,8 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- if (!emergencyFiling && (startD.getTime() - todayMid.getTime()) / (1000 * 60 * 60 * 24) < 2) {
- alert('Planned leave must be filed at least 3 days in advance. For sudden illness or emergency, choose Emergency Sick Leave or Emergency Personal Leave.')
+ if ((startD.getTime() - todayMid.getTime()) / (1000 * 60 * 60 * 24) < 2) {
+ alert('Must be filed at least 3 days in advance.')
  return
  }
 
@@ -12376,9 +11187,6 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- const cleanReason = String(leaveReason || '').trim()
- const reasonWithFilingType = `[${filingInfo.label}] ${cleanReason}`
-
  const { error } = await supabase.from('leave_requests').insert({
  employee_id: activeEmployee.id,
  employee_code: activeEmployee.employee_code,
@@ -12387,7 +11195,7 @@ function buildDeliveryInvoicePrintCSS() {
  leave_end: leaveEndDate,
  duration_days: dur,
  leave_type: leaveInfo.type,
- reason: reasonWithFilingType,
+ reason: leaveReason,
  status: 'pending',
  is_paid: leaveInfo.isPaid
  })
@@ -12397,70 +11205,23 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- alert(`${filingInfo.label} request submitted! ${leaveInfo.isPaid? 'If approved, it will be charged as paid SIL.': 'If approved, it will be treated as unpaid excused leave.'} Waiting for admin approval.`)
+ alert(leaveInfo.isPaid? 'SIL request submitted! Waiting for admin approval.': 'Unpaid leave request submitted! Waiting for admin approval.')
 
  setEmployee(activeEmployee)
  setLeaveStartDate('')
  setLeaveEndDate('')
  setLeaveType('')
- setLeaveFilingType('planned')
  setLeaveReason('')
  setShowLeaveRequest(false)
  loadMyLeaveBalance(activeEmployee)
  }
  async function submitCashAdvanceRequest() {
- if (submittingCashAdvanceRequest) return
- const cleanReason = String(requestCashReason || '').trim()
- if (!requestCashAmount || !cleanReason) { alert('Please enter amount and reason.'); return }
- const amount = Number(requestCashAmount)
- if (!amount || amount <= 0) { alert('Amount must be greater than 0.'); return }
- setSubmittingCashAdvanceRequest(true)
- try {
-  const { data:existingPending, error:existingError } = await supabase
-   .from('cash_advance_requests')
-   .select('id,amount,created_at,status')
-   .eq('employee_id', employee.id)
-   .eq('status', 'pending')
-   .limit(1)
-
-  if (existingError) {
-   alert('Failed checking existing cash advance request: ' + existingError.message)
-   return
-  }
-
-  if ((existingPending || []).length > 0) {
-   alert('You already have a pending cash advance request. Please wait for admin review before submitting another request.')
-   setShowCashAdvanceRequest(false)
-   loadMyCashAdvances(employee)
-   return
-  }
-
-  const { error } = await supabase.from('cash_advance_requests').insert({
-   employee_id:employee.id,
-   employee_code:employee.employee_code,
-   employee_name:employee.full_name,
-   amount,
-   reason:cleanReason,
-   status:'pending'
-  })
-
-  if (error) {
-   const msg = String(error.message || '').toLowerCase()
-   if (error.code === '23505' || msg.includes('duplicate') || msg.includes('unique')) {
-    alert('Cash advance request already submitted. Please wait for admin review instead of submitting again.')
-    setShowCashAdvanceRequest(false)
-    loadMyCashAdvances(employee)
-    return
-   }
-   alert('Failed: '+error.message)
-   return
-  }
-
-  alert('Request submitted! Waiting for admin approval.')
-  setRequestCashAmount(''); setRequestCashReason(''); setRequestCashReasonPreset(''); setShowCashAdvanceRequest(false); loadMyCashAdvances(employee)
- } finally {
-  setSubmittingCashAdvanceRequest(false)
- }
+ if (!requestCashAmount||!requestCashReason) { alert('Please enter amount and reason.'); return }
+ const amount=Number(requestCashAmount); if (amount<=0) { alert('Amount must be greater than 0.'); return }
+ const { error } = await supabase.from('cash_advance_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, amount, reason:requestCashReason, status:'pending' })
+ if (error) { alert('Failed: '+error.message); return }
+ alert('Request submitted! Waiting for admin approval.')
+ setRequestCashAmount(''); setRequestCashReason(''); setRequestCashReasonPreset(''); setShowCashAdvanceRequest(false); loadMyCashAdvances(employee)
  }
  async function agreePayslip(payId) {
  const { error } = await supabase.from('payroll_records').update({ employee_acknowledgement:'agreed' }).eq('id', payId)
@@ -13626,16 +12387,17 @@ function buildDeliveryInvoicePrintCSS() {
 
  // Payroll Approval Workflow 
  function isOutstandingCashAdvance(ca) {
+ const balance = Math.max(0, safeNum(ca?.balance, 0))
  const status = String(ca?.status || '').trim().toLowerCase()
- if (['cancelled','canceled','void','voided'].includes(status)) return false
- return getCashAdvanceEffectiveBalance(ca) > 0.009
+ if (status === 'cancelled' || status === 'void') return false
+ return balance > 0.009
  }
 
  function getCashAdvancePayrollDeduction(ca) {
  if (!isOutstandingCashAdvance(ca)) return 0
- const balance = getCashAdvanceEffectiveBalance(ca)
+ const balance = Math.max(0, safeNum(ca?.balance, 0))
  const scheduled = safeNum(ca?.per_payroll_deduction, 0) > 0? safeNum(ca?.per_payroll_deduction, 0): balance
- return moneyRound(Math.min(balance, scheduled))
+ return Math.min(balance, scheduled)
  }
 
  function buildCADeductionTag(start, end) {
@@ -13712,21 +12474,19 @@ function buildDeliveryInvoicePrintCSS() {
  const openCAs = (cas || []).filter(isOutstandingCashAdvance)
  for (const ca of openCAs) {
  if (remaining <= 0) break
- const balance = getCashAdvanceEffectiveBalance(ca)
- if (balance <= 0.009) continue
+ const balance = Math.max(0, safeNum(ca.balance, 0))
+ if (balance <= 0) continue
 
- const deduction = moneyRound(Math.min(balance, remaining))
- const currentPaid = getCashAdvancePaidAmount(ca)
- const newPaid = moneyRound(currentPaid + deduction)
+ const deduction = Math.min(balance, remaining)
+ const newPaid = moneyRound(safeNum(ca.amount_paid, 0) + deduction)
  const newBal = moneyRound(Math.max(0, balance - deduction))
- const newRem = getCashAdvanceRemainingInstallments({ ...ca, amount_paid:newPaid, balance:newBal })
- const newStatus = getCashAdvanceStatusForBalance(newBal, ca.status)
+ const newRem = Math.max(0, safeNum(ca.installments_remaining, 1) - 1)
 
  const { error:updateError } = await supabase.from('cash_advances').update({
  amount_paid:newPaid,
  balance:newBal,
  installments_remaining:newRem,
- status:newStatus
+ status:isMoneySettled(newBal)? 'Paid': 'Unpaid'
  }).eq('id', ca.id)
 
  if (updateError) return { applied:false, amount:totalApplied, error:updateError.message }
@@ -13796,21 +12556,24 @@ function buildDeliveryInvoicePrintCSS() {
 
   for (const ca of caRows) {
    if (remaining <= 0.009) break
-   const paidNow = getCashAdvancePaidAmount(ca)
-   if (paidNow <= 0.009) continue
+   const paidNow = Math.max(0, safeNum(ca.amount_paid, 0))
+   if (paidNow <= 0) continue
 
    const reversal = moneyRound(Math.min(paidNow, remaining))
-   const totalAmount = safeNum(ca.amount, paidNow + getCashAdvanceEffectiveBalance(ca))
+   const totalAmount = safeNum(ca.amount, paidNow + safeNum(ca.balance, 0))
    const newPaid = moneyRound(Math.max(0, paidNow - reversal))
    const newBalance = moneyRound(Math.max(0, totalAmount - newPaid))
-   const restoredInstallments = getCashAdvanceRemainingInstallments({ ...ca, amount_paid:newPaid, balance:newBalance })
-   const newStatus = getCashAdvanceStatusForBalance(newBalance, ca.status)
+   const totalInstallments = safeNum(ca.installments_total, 0)
+   const currentRemainingInstallments = safeNum(ca.installments_remaining, 0)
+   const restoredInstallments = totalInstallments > 0
+    ? Math.min(totalInstallments, currentRemainingInstallments + 1)
+    : currentRemainingInstallments + 1
 
    const { error:updateError } = await supabase.from('cash_advances').update({
     amount_paid:newPaid,
     balance:newBalance,
     installments_remaining:restoredInstallments,
-    status:newStatus
+    status:isMoneySettled(newBalance)? 'Paid': 'Unpaid'
    }).eq('id', ca.id)
 
    if (updateError) return { reversed:false, amount:totalReversed, error:updateError.message }
@@ -13934,11 +12697,7 @@ function buildDeliveryInvoicePrintCSS() {
  async function approvePayroll(start, end) {
  if (!requireOwnerOrPayrollAction('release payroll')) return
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
- const releaseKey = `release_payroll_${start}_${end}`
- if (processingItems[releaseKey]) return
- setProcessingItems(prev => ({ ...prev, [releaseKey]:true }))
 
- try {
  const { data: records, error:recordsError } = await supabase
  .from('payroll_records')
  .select('id,employee_name,employee_code,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction,total_earnings,total_deductions,non_ca_deduction_overflow')
@@ -14040,9 +12799,6 @@ function buildDeliveryInvoicePrintCSS() {
  loadSILCashouts({ skipAuto:true })
  loadDailyExpenses()
  refreshFoundationAfterDataChange('payroll-approved')
- } finally {
-  setProcessingItems(prev => { const copy = { ...prev }; delete copy[releaseKey]; return copy })
- }
  }
 
  function buildPayrollExpenseTag(start, end) {
@@ -17205,8 +15961,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  has_sss:editFields.hasSss,
  has_pagibig:editFields.hasPagibig,
  has_philhealth:editFields.hasPhilhealth,
- regular_holiday_pay_eligible:true,
- special_holiday_pay_eligible:true,
+ regular_holiday_pay_eligible:editFields.regularHolidayEligible !== false,
+ special_holiday_pay_eligible:editFields.specialHolidayEligible !== false,
  hire_date:editFields.hireDate,
  sick_leave_balance:0,
  vacation_leave_balance:0,
@@ -17263,8 +16019,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  has_sss:f.hasSss,
  has_pagibig:f.hasPagibig,
  has_philhealth:f.hasPhilhealth,
- regular_holiday_pay_eligible:true,
- special_holiday_pay_eligible:true,
+ regular_holiday_pay_eligible:f.regularHolidayEligible !== false,
+ special_holiday_pay_eligible:f.specialHolidayEligible !== false,
  hire_date:f.hire_date,
  sick_leave_balance:0,
  vacation_leave_balance:0,
@@ -17324,31 +16080,6 @@ This recovery button creates one approved expense record using GROSS payroll ear
  await logAudit('EMPLOYEE DEACTIVATED','Admin',empName,'Employee deactivated')
  showToast(` ${empName} deactivated.`); loadEmployees()
  }
-
- function buildEmployeeHourlyRateRows() {
- return (employees || []).map(emp => {
-  const rateInfo = getEmployeeHourlyRateInfo(emp)
-  return {
-   'Employee Code': emp.employee_code || '',
-   'Employee Name': emp.full_name || '',
-   'Position': emp.position || '',
-   'Department': emp.department || '',
-   'Payroll Basis': rateInfo.basisLabel,
-   'Daily Equivalent': moneyRound(rateInfo.dailyEquivalent),
-   'Monthly Salary': moneyRound(rateInfo.monthlySalary),
-   'Semi-Monthly Salary': moneyRound(rateInfo.semiMonthlySalary),
-   'Hourly Rate': moneyRound(rateInfo.hourlyRate),
-   'Formula': rateInfo.formulaNote
-  }
- })
- }
- function exportEmployeeHourlyRatesCSV() {
- const rows = buildEmployeeHourlyRateRows()
- if (rows.length === 0) { showToast('No active employees to export.', 'red'); return }
- downloadTextFile(`romas-staff-hourly-rates-${today}.csv`, rowsToCSV(rows), 'text/csv')
- showToast(' Staff hourly rates CSV exported.')
- }
-
  async function loadCashAdvanceRequests() {
  const { data } = await supabase.from('cash_advance_requests').select('*').eq('status', 'pending').order('created_at', { ascending:false })
  setCashAdvanceRequests(data || [])
@@ -17539,163 +16270,6 @@ This recovery button creates one approved expense record using GROSS payroll ear
  showToast(' Cash advance reopened as active/unpaid. It can now deduct in the next payroll release.')
  await loadCashAdvanceCoverage(payrollStart, payrollEnd)
  if (employee?.id) loadMyCashAdvances(employee)
- }
-
-
-async function correctCashAdvanceAmount(ca, req = null) {
-  if (!ca?.id) {
-   showToast('Cash advance ledger not found. Refresh cash advance requests first.', 'red')
-   return
-  }
-
-  if (adminRole !== 'owner') {
-   showToast('Owner access is required to correct an approved cash advance amount.', 'red')
-   return
-  }
-
-  const oldAmount = Math.max(0, safeNum(ca.amount, 0))
-  const amountPaid = Math.max(0, safeNum(ca.amount_paid, 0))
-  const currentTotal = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || req?.request_installments_total || 1))
-  const currentRemaining = Math.max(0, safeNum(ca.installments_remaining, currentTotal))
-  const completed = Math.max(0, currentTotal - currentRemaining)
-
-  if (!oldAmount) {
-   showToast('Invalid cash advance amount.', 'red')
-   return
-  }
-
-  if (amountPaid > 0 || completed > 0) {
-   showToast('This cash advance already has payroll deduction history. Do not rewrite the approved amount. Use a CA correction/reversal entry instead so payroll history stays clean.', 'red')
-   return
-  }
-
-  const amountAnswer = window.prompt(
-   'Enter corrected approved cash advance amount:\n\n' +
-   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
-   'Current Approved Amount: ' + php(oldAmount) + '\n\n' +
-   'This is allowed only because no payroll deduction has been applied yet.',
-   String(oldAmount)
-  )
-
-  if (amountAnswer === null) return
-
-  const cleanedAmount = String(amountAnswer).replace(/[₱,\s]/g, '')
-  const newAmount = moneyRound(safeNum(cleanedAmount, 0))
-
-  if (!Number.isFinite(newAmount) || newAmount <= 0) {
-   showToast('Invalid corrected cash advance amount.', 'red')
-   return
-  }
-
-  if (Math.abs(newAmount - oldAmount) < 0.01) {
-   showToast('No amount change detected.', 'red')
-   return
-  }
-
-  const installmentsAnswer = window.prompt(
-   'Enter number of payroll deductions/installments for the corrected amount:\n\n' +
-   'Corrected Amount: ' + php(newAmount) + '\n' +
-   'Current Plan: ' + currentTotal + ' payroll(s)',
-   String(currentTotal)
-  )
-
-  if (installmentsAnswer === null) return
-
-  const newInstallments = Math.max(1, Math.round(safeNum(installmentsAnswer, 0)))
-
-  if (!Number.isFinite(newInstallments) || newInstallments < 1) {
-   showToast('Invalid number of payroll deductions.', 'red')
-   return
-  }
-
-  const correctionReason = window.prompt(
-   'Enter reason for correcting this approved cash advance amount.\n\nThis reason will be saved in notes and audit log.',
-   'Amount encoding correction before first payroll deduction'
-  )
-
-  if (correctionReason === null) return
-  if (!String(correctionReason).trim()) {
-   showToast('Correction reason is required.', 'red')
-   return
-  }
-
-  const newPerPayroll = moneyRound(newAmount / newInstallments)
-
-  if (!window.confirm(
-   'Correct approved cash advance amount?\n\n' +
-   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
-   'Old Amount: ' + php(oldAmount) + '\n' +
-   'New Amount: ' + php(newAmount) + '\n' +
-   'New Payroll Count: ' + newInstallments + '\n' +
-   'New Deduction / Payroll: ' + php(newPerPayroll) + '\n\n' +
-   'This will update the CA ledger amount, balance, installment plan, and linked CA request. Continue?'
-  )) return
-
-  const existingNotes = String(ca.notes || '').trim()
-  const newNotes = existingNotes +
-   (existingNotes ? ' | ' : '') +
-   'CA AMOUNT CORRECTED BY OWNER ' + new Date().toISOString().slice(0,10) +
-   ': ' + php(oldAmount) + ' to ' + php(newAmount) +
-   '; plan ' + currentTotal + ' to ' + newInstallments + ' payroll(s)' +
-   '; reason: ' + String(correctionReason).trim()
-
-  try {
-   const { error } = await supabase.from('cash_advances').update({
-    amount:newAmount,
-    amount_paid:0,
-    balance:newAmount,
-    per_payroll_deduction:newPerPayroll,
-    installments_total:newInstallments,
-    installments_remaining:newInstallments,
-    status:'Unpaid',
-    notes:newNotes
-   }).eq('id', ca.id)
-
-   if (error) throw error
-
-   if (req?.id) {
-    let { error:reqError } = await supabase.from('cash_advance_requests').update({
-     amount:newAmount,
-     request_installments_total:newInstallments,
-     request_per_payroll_deduction:newPerPayroll
-    }).eq('id', req.id)
-
-    if (reqError && isMissingCashAdvanceDetailColumnError(reqError)) {
-     ;({ error:reqError } = await supabase.from('cash_advance_requests').update({ amount:newAmount }).eq('id', req.id))
-    }
-
-    if (reqError) {
-     console.warn('Cash advance request amount sync skipped:', reqError)
-    }
-   }
-
-   await logAudit(
-    'CA AMOUNT CORRECTED',
-    currentAdminLabel || adminRole,
-    ca.employee_name || req?.employee_name || 'Employee',
-    'CA ID: ' + ca.id + ' | ' + php(oldAmount) + ' corrected to ' + php(newAmount) + ' | ' + newInstallments + ' payroll(s) at ' + php(newPerPayroll) + ' | Reason: ' + String(correctionReason).trim()
-   )
-
-   if (ca.employee_id || req?.employee_id) {
-    await createNotification(
-     ca.employee_id || req?.employee_id,
-     ca.employee_name || req?.employee_name || 'Employee',
-     'cash_advance',
-     ' Cash Advance Amount Corrected',
-     'Your approved cash advance amount was corrected from ' + php(oldAmount) + ' to ' + php(newAmount) + '. New deduction plan: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).'
-    )
-   }
-
-   await loadCashAdvanceRequests()
-   await loadResolvedCARequests()
-   await loadCashAdvanceCoverage(payrollStart, payrollEnd)
-   if (employee?.id) loadMyCashAdvances(employee)
-
-   showToast('Cash advance amount corrected to ' + php(newAmount) + '. New deduction: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).', 'green')
-  } catch (err) {
-   console.warn('correctCashAdvanceAmount:', err)
-   showToast('Failed to correct cash advance amount: ' + (err?.message || err), 'red')
-  }
  }
 
 async function editCashAdvanceDeductionPlan(ca, req = null) {
@@ -18201,8 +16775,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  else if (finalPayReason==='authorized') separationPay=Number(activeEmp.daily_rate||0)*13*yearsOfService
  else if (finalPayReason==='retirement') separationPay=Number(activeEmp.daily_rate||0)*22.5*yearsOfService
 
- const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', finalPayEmployeeId)
- const totalCA=(cas || []).filter(isOutstandingCashAdvance).reduce((s,c)=>s+getCashAdvanceEffectiveBalance(c),0)||0
+ const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', finalPayEmployeeId).eq('status', 'Unpaid')
+ const totalCA=cas?.reduce((s,c)=>s+Number(c.balance||0),0)||0
  const lastSalary=unpaidDays*Number(activeEmp.daily_rate||0)
 
  setFinalPayResult({
@@ -18309,8 +16883,9 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const coveredCAs = (caRows || []).filter(ca => {
  const key = String(ca.employee_id || '')
  const advanceDate = String(ca.advance_date || ca.created_at || '').slice(0, 10)
+ const status = String(ca.status || '').toLowerCase()
  const employeeHasPayrollDeduction = safeNum(payrollByEmployee[key]?.cash_advance_deduction, 0) > 0
- const currentlyOutstanding = isOutstandingCashAdvance(ca)
+ const currentlyOutstanding = status === 'unpaid' || safeNum(ca.balance, 0) > 0
  const createdWithinPayrollDates = advanceDate && advanceDate >= start && advanceDate <= end
 
  // Shows cash advances actually deducted in the selected payroll period,
@@ -18338,15 +16913,12 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  installmentsRemaining: 0
  }
  }
- const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
- const effectivePaid = getCashAdvancePaidAmount(ca)
- const effectiveInstallmentsRemaining = getCashAdvanceRemainingInstallments(ca)
  grouped[key].caItems.push(ca)
  grouped[key].totalOriginal += safeNum(ca.amount, 0)
- grouped[key].totalPaid += effectivePaid
- grouped[key].totalBalance += effectiveBalance
+ grouped[key].totalPaid += safeNum(ca.amount_paid, 0)
+ grouped[key].totalBalance += safeNum(ca.balance, 0)
  grouped[key].totalPerPayroll += safeNum(ca.per_payroll_deduction, 0)
- grouped[key].installmentsRemaining += effectiveInstallmentsRemaining
+ grouped[key].installmentsRemaining += safeNum(ca.installments_remaining, 0)
  })
 
 ;(payrollRows || [])
@@ -18960,24 +17532,10 @@ async function computePayroll() {
  const startDay = Number(payrollStart.split('-')[2])
  const isFirstCutoff = startDay>=11&&startDay<=25
  for (const emp of empList||[]) {
-  const holidayGuardStart = addDaysToDateString(payrollStart, -1) || payrollStart
-  const holidayGuardEnd = addDaysToDateString(payrollEnd, 1) || payrollEnd
-  const { data:allLogs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', holidayGuardStart).lte('attendance_date', holidayGuardEnd)
+  const { data:logs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', payrollStart).lte('attendance_date', payrollEnd)
   if (logsError) throw logsError
-  const logs = (allLogs || []).filter(log => {
-   const dateKey = String(log.attendance_date || '').slice(0, 10)
-   return dateKey >= payrollStart && dateKey <= payrollEnd
-  })
-  const guardLogsByDate = groupDTRLogsByDate(allLogs || [])
-  const guardAttendanceByDate = {}
-  Object.entries(guardLogsByDate).forEach(([dateKey, dayLogs]) => {
-   guardAttendanceByDate[dateKey] = mergeDTRDayLogs(dayLogs)
-  })
-
-  const { data:allLeaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', holidayGuardEnd).gte('leave_end', holidayGuardStart)
+  const { data:leaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', payrollEnd).gte('leave_end', payrollStart)
   if (leavesError) throw leavesError
-  const leaves = (allLeaves || []).filter(leave => getLeaveOverlapDays(leave, payrollStart, payrollEnd) > 0)
-  const holidayGuardPaidLeaves = (allLeaves || []).filter(isPaidLeaveRecord)
   const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id)
   if (caError) throw caError
   const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
@@ -18992,7 +17550,6 @@ async function computePayroll() {
   if (timeAdjError) throw timeAdjError
 
   const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
-  const workedDateKeys=[...new Set((workedLogs||[]).map(l=>String(l.attendance_date||'').slice(0,10)).filter(Boolean))]
   let breakRowsByLogId={}
   if (workedLogs.length>0) {
    const logIds = workedLogs.map(l=>l.id).filter(Boolean)
@@ -19010,43 +17567,19 @@ async function computePayroll() {
    }
   }
 
-  const workedDays=workedDateKeys.length||0
+  const workedDays=workedLogs.length||0
   const absentDays=logs?.filter(l=>l.status==='Absent').length||0
   const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
   const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
-  const payrollBasis = normalizePayrollBasis(emp.payroll_basis)
-  const monthlySalary = safeNum(emp.monthly_salary, 0)
-  const semiMonthlySalary = safeNum(emp.semi_monthly_salary, 0)
-  const annualWorkingDays = positiveNum(emp.annual_working_days, 313)
-  const attendanceRequiredForPay = employeeRuleEnabled(emp.attendance_required_for_pay, payrollBasis === 'daily')
-  const absenceDeductionApplicable = employeeRuleEnabled(emp.absence_deduction_applicable, payrollBasis !== 'daily')
-  const overtimePayEligible = employeeRuleEnabled(emp.overtime_pay_eligible, true)
-  const undertimeDeductionApplicable = employeeRuleEnabled(emp.undertime_deduction_applicable, true)
-  const nightDifferentialPayEligible = employeeRuleEnabled(emp.night_differential_pay_eligible, true)
-
   const rawDailyRate=safeNum(emp.daily_rate, 0)
   const savedHourlyRate=safeNum(emp.hourly_rate, 0)
-  const fixedMonthlyEquivalent = payrollBasis === 'monthly'
-   ? monthlySalary
-   : payrollBasis === 'semi_monthly'
-    ? (semiMonthlySalary > 0 ? semiMonthlySalary * 2 : monthlySalary)
-    : 0
-  const derivedFixedDailyRate = fixedMonthlyEquivalent > 0 ? fixedMonthlyEquivalent * 12 / annualWorkingDays : 0
-  const dailyRate = payrollBasis === 'daily'
-   ? (rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0))
-   : (derivedFixedDailyRate>0?derivedFixedDailyRate:(rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0)))
+  const dailyRate=rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0)
   const hourlyRate=dailyRate>0?dailyRate/8:savedHourlyRate
   const minuteRate=hourlyRate/60
-  const fixedCutoffBasePay = payrollBasis === 'monthly'
-   ? monthlySalary / 2
-   : payrollBasis === 'semi_monthly'
-    ? (semiMonthlySalary > 0 ? semiMonthlySalary : monthlySalary / 2)
-    : 0
 
-  // Payroll basis rule:
-  // Daily-paid: attendance earns salary. No attendance = no pay.
-  // Monthly/semi-monthly fixed: salary is paid per cutoff first, then attendance
-  // creates allowed deductions/premiums depending on employee rule switches.
+  // Daily-rate rule: one completed attendance day earns one full daily rate.
+  // Time-in/time-out minutes do not reduce basic pay automatically.
+  // Minutes are used only for approved OT, approved UT, and night differential premium.
   let totalWorkedMinutes=0
   let nightDiffMinutes=0
   const workDetailByDate={}
@@ -19058,35 +17591,15 @@ async function computePayroll() {
    const recordedBreak=safeNum(log.total_break_minutes, 0)
    const effectiveBreak=recordedBreak>0?recordedBreak:(rawMins>=9*60?ALLOWED_BREAK_MINUTES:0)
    const actualMins=Math.max(0,rawMins-effectiveBreak)
-   const computedNightDiffMinutes=nightDifferentialPayEligible ? calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows) : 0
+   const computedNightDiffMinutes=calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows)
    nightDiffMinutes+=computedNightDiffMinutes
    totalWorkedMinutes+=actualMins
-   const logDateKey=String(log.attendance_date||'').slice(0,10)
-   if (logDateKey) {
-    workDetailByDate[logDateKey]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes }
-    // Overnight shift support: if a shift starts before midnight and ends on the next day,
-    // mark the next calendar date as worked too so holiday premium is not missed.
-    if (minutesFromTime(log.time_out) < minutesFromTime(log.time_in)) {
-     const nextDateKey=addDaysToDateString(logDateKey, 1)
-     if (nextDateKey && nextDateKey >= payrollStart && nextDateKey <= payrollEnd && !workDetailByDate[nextDateKey]) {
-      workDetailByDate[nextDateKey]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes, overnightCarryover:true }
-     }
-    }
-   }
+   workDetailByDate[String(log.attendance_date||'').slice(0,10)]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes }
   }
 
-  let workedBasicPay = 0
-  let paidLeavePay = 0
-  let absenceDeduction = 0
-  if (payrollBasis === 'daily') {
-   workedBasicPay = attendanceRequiredForPay ? workedDays * dailyRate : dailyRate
-   paidLeavePay = paidLeaveDays * dailyRate
-  } else {
-   workedBasicPay = fixedCutoffBasePay
-   paidLeavePay = 0
-   absenceDeduction = absenceDeductionApplicable ? (absentDays + unpaidLeaveDays) * dailyRate : 0
-  }
-  const basicPay = moneyRound(workedBasicPay + paidLeavePay)
+  const workedBasicPay=workedDays*dailyRate
+  const paidLeavePay=paidLeaveDays*dailyRate
+  const basicPay=workedBasicPay+paidLeavePay
   const regularPaidMinutes=(workedDays+paidLeaveDays)*8*60
 
   // Birthday Pay: no work, no pay. If employee worked on birthday, add extra 100%.
@@ -19103,58 +17616,35 @@ async function computePayroll() {
    }
   }
 
-  const overtimeMinutesRaw=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='overtime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
-  const overtimeMinutes=overtimePayEligible ? overtimeMinutesRaw : 0
-  const overtimePay=overtimePayEligible ? overtimeMinutes*minuteRate*1.25 : 0
-  const undertimeMinutesRaw=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='undertime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
-  const undertimeMinutesApproved=undertimeDeductionApplicable ? undertimeMinutesRaw : 0
-  const undertimeDeduction=undertimeDeductionApplicable ? undertimeMinutesApproved*minuteRate : 0
+  const overtimeMinutes=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='overtime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
+  const overtimePay=overtimeMinutes*minuteRate*1.25
+  const undertimeMinutesApproved=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='undertime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
+  const undertimeDeduction=undertimeMinutesApproved*minuteRate
 
   // Night differential premium: break time inside 10PM-6AM is excluded.
-  // Employees marked night_differential_pay_eligible = false still keep worked hours,
-  // but receive ₱0 night differential premium.
-  const nightDiffPay=nightDifferentialPayEligible ? nightDiffMinutes*minuteRate*0.10 : 0
+  const nightDiffPay=nightDiffMinutes*minuteRate*0.10
 
-  // Holiday pay policy.
-  // Absence guard: no holiday pay/premium when employee is marked ABSENT
-  // on the day before the holiday, on the holiday, or on the day after the holiday.
-  // Paid leave on any guard date is treated as not absent.
-  // Regular holiday: eligible employee receives one daily-rate holiday pay;
-  // if they worked, basic pay already covers the worked day, so total becomes 200%.
-  // Special holiday: premium is added only when the employee worked the special holiday.
+  // Holiday premium based on worked holiday attendance date.
   let holidayPay=0
-  const holidayEligibilityNotes=[]
   for (const h of holidayList||[]) {
-   const holidayDate=String(h.holiday_date||'').slice(0,10)
-   const workedInfo=workDetailByDate[holidayDate]
+   const workedInfo=workDetailByDate[String(h.holiday_date||'').slice(0,10)]
+   const holidayBasePay=workedInfo?dailyRate:0
    const holidayType = String(h.holiday_type || '').toLowerCase()
-   const activeOnHoliday = !emp.hire_date || String(emp.hire_date).slice(0,10) <= holidayDate
-   const absenceGuard = getHolidayAbsenceGuardFailure(holidayDate, guardAttendanceByDate, holidayGuardPaidLeaves)
-   if (!absenceGuard.eligible) {
-    holidayEligibilityNotes.push(`${h.holiday_name || holidayDate}: no holiday pay due to ABS on ${absenceGuard.absentDates.join(', ')}`)
-    continue
-   }
-   if (holidayType === 'regular' && activeOnHoliday && isHolidayPayEligible(emp, 'regular')) {
-    const rate = workedInfo ? REGULAR_HOLIDAY_WORKED_PREMIUM_RATE : REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE
-    holidayPay += dailyRate * rate
-   } else if (holidayType === 'special' && workedInfo && isHolidayPayEligible(emp, 'special')) {
-    holidayPay += dailyRate * SPECIAL_HOLIDAY_WORKED_PREMIUM_RATE
-   }
+   if (holidayType === 'regular' && isHolidayPayEligible(emp, 'regular')) holidayPay+=holidayBasePay
+   else if (holidayType === 'special' && isHolidayPayEligible(emp, 'special')) holidayPay+=holidayBasePay*0.3
   }
 
   let adjEarnings=0,adjDeductions=0
   for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
-  const hasPayForCutoff = moneyRound(basicPay + paidLeavePay + overtimePay + nightDiffPay + holidayPay + adjEarnings) > 0
-  const sssDeduction=hasPayForCutoff&&emp.has_sss&&isFirstCutoff?375:0
-  const pagibigDeduction=hasPayForCutoff&&emp.has_pagibig&&!isFirstCutoff?200:0
-  const philhealthDeduction=hasPayForCutoff&&emp.has_philhealth&&!isFirstCutoff?250:0
+  const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
+  const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
+  const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
   const totalEarnings=moneyRound(basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings)
   const undertimeDeductionRounded=moneyRound(undertimeDeduction)
-  const absenceDeductionRounded=moneyRound(absenceDeduction)
   const sssDeductionRounded=moneyRound(sssDeduction)
   const pagibigDeductionRounded=moneyRound(pagibigDeduction)
   const philhealthDeductionRounded=moneyRound(philhealthDeduction)
-  const adjDeductionsRounded=moneyRound(adjDeductions+absenceDeductionRounded)
+  const adjDeductionsRounded=moneyRound(adjDeductions)
   const nonCADeductions=moneyRound(undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
 
   // Payroll safety rule: deductions must never create negative net pay.
@@ -19171,7 +17661,7 @@ async function computePayroll() {
   const undertimeMinutesInfo=undertimeMinutesApproved
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -19581,8 +18071,7 @@ async function computePayroll() {
 
 
  
-function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }) {
- const canEditOutletInventory = isOwnerRole || String(adminRole || '').trim().toLowerCase() === 'manager'
+function PosMonitorPanel() {
  const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
  const readSagsDraft = (key, fallback = '') => {
   try {
@@ -19592,24 +18081,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    return fallback
   }
  }
- const readSagsDraftObject = (key, fallback = {}) => {
-  try {
-   const saved = JSON.parse(localStorage.getItem(SAGS_POS_DRAFT_KEY) || '{}')
-   const value = saved[key]
-   return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback
-  } catch {
-   return fallback
-  }
- }
- const getDefaultNewOutletItem = () => ({
-  product_name:'',
-  category:'Donuts',
-  sku:'',
-  barcode:'',
-  selling_price:'',
-  stock:'',
-  min_stock:'10'
- })
  const [posDate, setPosDate] = useState(getTodayDate())
  const [posLoading, setPosLoading] = useState(false)
  const [posSales, setPosSales] = useState([])
@@ -19617,7 +18088,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [posMovements, setPosMovements] = useState([])
  const [posProducts, setPosProducts] = useState([])
  const [posRefreshing, setPosRefreshing] = useState(false)
- const posSilentScrollSnapshotRef = useRef(null)
  const [stockInProductId, setStockInProductId] = useState(() => readSagsDraft('stockInProductId', ''))
  const [stockInSearch, setStockInSearch] = useState(() => readSagsDraft('stockInSearch', ''))
  const [stockInQty, setStockInQty] = useState(() => readSagsDraft('stockInQty', ''))
@@ -19625,9 +18095,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [stockInTransferNo, setStockInTransferNo] = useState(() => readSagsDraft('stockInTransferNo', ''))
  const [stockInTransferredBy, setStockInTransferredBy] = useState(() => readSagsDraft('stockInTransferredBy', ''))
  const [stockInReceivedBy, setStockInReceivedBy] = useState(() => readSagsDraft('stockInReceivedBy', ''))
- const [priceEditProductId, setPriceEditProductId] = useState('')
- const [priceEditSearch, setPriceEditSearch] = useState('')
- const [priceEditValue, setPriceEditValue] = useState('')
  const [transactionSearch, setTransactionSearch] = useState(() => readSagsDraft('transactionSearch', ''))
  const [voidReceiptNo, setVoidReceiptNo] = useState(() => readSagsDraft('voidReceiptNo', ''))
  const [voidReason, setVoidReason] = useState(() => readSagsDraft('voidReason', ''))
@@ -19637,357 +18104,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [closingActualCash, setClosingActualCash] = useState(() => readSagsDraft('closingActualCash', ''))
  const [closingClosedBy, setClosingClosedBy] = useState(() => readSagsDraft('closingClosedBy', ''))
  const [closingRemarks, setClosingRemarks] = useState(() => readSagsDraft('closingRemarks', ''))
- const [inventorySearch, setInventorySearch] = useState(() => readSagsDraft('inventorySearch', ''))
- const [inventoryDrafts, setInventoryDrafts] = useState(() => readSagsDraftObject('inventoryDrafts', {}))
- const [inventorySavingId, setInventorySavingId] = useState('')
- const [showAddOutletItem, setShowAddOutletItem] = useState(() => readSagsDraft('showAddOutletItem', false) === true)
- const [newOutletItem, setNewOutletItem] = useState(() => ({
-  ...getDefaultNewOutletItem(),
-  ...readSagsDraftObject('newOutletItem', {})
- }))
  const [posError, setPosError] = useState('')
-
- function getInventoryDraftKey(product = {}) {
-  return String(product.id || product.product_name || product.name || '')
- }
-
- function setInventoryDraftValue(product, field, value) {
-  const key = getInventoryDraftKey(product)
-  if (!key) return
-  setInventoryDrafts(prev => ({
-   ...prev,
-   [key]: {
-    ...(prev[key] || {}),
-    [field]: value
-   }
-  }))
- }
-
- function clearInventoryDraft(product) {
-  const key = getInventoryDraftKey(product)
-  if (!key) return
-  setInventoryDrafts(prev => {
-   const next = { ...prev }
-   delete next[key]
-   return next
-  })
- }
-
- function capturePosSilentScrollSnapshot() {
-  if (typeof window === 'undefined') return null
-  const active = document.activeElement
-  const scrollingElement = document.scrollingElement || document.documentElement || document.body
-  const activeSnapshot = active && active !== document.body ? {
-   element: active,
-   selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
-   selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
-  } : null
-  return {
-   x: window.scrollX || scrollingElement?.scrollLeft || 0,
-   y: window.scrollY || scrollingElement?.scrollTop || 0,
-   docTop: scrollingElement?.scrollTop || 0,
-   docLeft: scrollingElement?.scrollLeft || 0,
-   activeSnapshot
-  }
- }
-
- function restorePosSilentScrollSnapshot(snapshot) {
-  if (!snapshot || typeof window === 'undefined') return
-  const restore = () => {
-   try {
-    const scrollingElement = document.scrollingElement || document.documentElement || document.body
-    if (scrollingElement) {
-     scrollingElement.scrollTop = snapshot.docTop ?? snapshot.y ?? 0
-     scrollingElement.scrollLeft = snapshot.docLeft ?? snapshot.x ?? 0
-    }
-    window.scrollTo({ left:snapshot.x || snapshot.docLeft || 0, top:snapshot.y || snapshot.docTop || 0, behavior:'auto' })
-    const active = snapshot.activeSnapshot
-    if (active?.element && typeof active.element.focus === 'function' && document.contains(active.element)) {
-     active.element.focus({ preventScroll:true })
-     if (typeof active.element.setSelectionRange === 'function' && active.selectionStart !== null && active.selectionEnd !== null) {
-      active.element.setSelectionRange(active.selectionStart, active.selectionEnd)
-     }
-    }
-   } catch {}
-  }
-  restore()
-  window.requestAnimationFrame?.(() => {
-   restore()
-   window.requestAnimationFrame?.(restore)
-  })
-  window.setTimeout(restore, 80)
-  window.setTimeout(restore, 250)
- }
-
-
- function isPosEditingNow() {
-  if (typeof document === 'undefined') return false
-  const active = document.activeElement
-  if (!active) return false
-  const tag = String(active.tagName || '').toLowerCase()
-  return tag === 'input' || tag === 'textarea' || tag === 'select' || active.isContentEditable === true
- }
-
- function hasAnyUnsavedPosDrafts() {
-  const hasAddItemDraft = showAddOutletItem && Object.values(newOutletItem || {}).some(value => String(value || '').trim() !== '')
-  const hasRowDraft = Object.values(inventoryDrafts || {}).some(draft =>
-   draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
-  )
-  return hasAddItemDraft || hasRowDraft
- }
-
- function cleanOutletBarcodeCode(value) {
-  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9 ./$+%-]+/g, '-')
- }
-
- function makeOutletSkuFromName(value) {
-  return String(value || 'ITEM')
-   .normalize('NFKD')
-   .replace(/[̀-ͯ]/g, '')
-   .replace(/&/g, 'AND')
-   .replace(/[^a-z0-9]+/gi, '-')
-   .replace(/^-+|-+$/g, '')
-   .replace(/-{2,}/g, '-')
-   .toUpperCase() || 'ITEM'
- }
-
- function getOutletCategoryPluStart(category) {
-  const map = {
-   Donuts:1000,
-   Biscuits:2000,
-   Coffee:3000,
-   Drinks:4000,
-   Noodles:5000,
-   'Refreshing Drinks':6000,
-   Snacks:7000,
-   Others:8000
-  }
-  return map[category] || 8000
- }
-
- function getNextAvailableOutletBarcode(category, products = []) {
-  const usedCodes = new Set((products || []).map(p => cleanOutletBarcodeCode(p.barcode)).filter(Boolean))
-  let next = getOutletCategoryPluStart(category) + 1
-  let code = String(next).padStart(4, '0')
-  while (usedCodes.has(code) && next < 9999) {
-   next += 1
-   code = String(next).padStart(4, '0')
-  }
-  return code
- }
-
- function buildCode39BarcodeSvg(codeValue, productName) {
-  const patterns = {
-   '0':'nnnwwnwnn','1':'wnnwnnnnw','2':'nnwwnnnnw','3':'wnwwnnnnn','4':'nnnwwnnnw',
-   '5':'wnnwwnnnn','6':'nnwwwnnnn','7':'nnnwnnwnw','8':'wnnwnnwnn','9':'nnwwnnwnn',
-   'A':'wnnnnwnnw','B':'nnwnnwnnw','C':'wnwnnwnnn','D':'nnnnwwnnw','E':'wnnnwwnnn',
-   'F':'nnwnwwnnn','G':'nnnnnwwnw','H':'wnnnnwwnn','I':'nnwnnwwnn','J':'nnnnwwwnn',
-   'K':'wnnnnnnww','L':'nnwnnnnww','M':'wnwnnnnwn','N':'nnnnwnnww','O':'wnnnwnnwn',
-   'P':'nnwnwnnwn','Q':'nnnnnnwww','R':'wnnnnnwwn','S':'nnwnnnwwn','T':'nnnnwnwwn',
-   'U':'wwnnnnnnw','V':'nwwnnnnnw','W':'wwwnnnnnn','X':'nwnnwnnnw','Y':'wwnnwnnnn',
-   'Z':'nwwnwnnnn','-':'nwnnnnwnw','.':'wwnnnnwnn',' ':'nwwnnnwnn','$':'nwnwnwnnn',
-   '/':'nwnwnnnwn','+':'nwnnnwnwn','%':'nnnwnwnwn','*':'nwnnwnwnn'
-  }
-  const escapeSvg = value => String(value || '')
-   .replace(/&/g, '&amp;')
-   .replace(/</g, '&lt;')
-   .replace(/>/g, '&gt;')
-   .replace(/"/g, '&quot;')
-   .replace(/'/g, '&apos;')
-  const cleanCode = cleanOutletBarcodeCode(codeValue).replace(/[^0-9A-Z ./$+%-]/g, '-')
-  const encoded = ('*' + cleanCode + '*').split('')
-  const narrow = 2
-  const wide = 5
-  const quiet = 18
-  const barY = 38
-  const barHeight = 72
-  let x = quiet
-  const rects = []
-  encoded.forEach(char => {
-   const pattern = patterns[char] || patterns['-']
-   for (let i = 0; i < pattern.length; i += 1) {
-    const width = pattern[i] === 'w' ? wide : narrow
-    if (i % 2 === 0) rects.push(`<rect x="${x}" y="${barY}" width="${width}" height="${barHeight}" fill="#111827"/>`)
-    x += width
-   }
-   x += narrow
-  })
-  const labelWidth = Math.max(330, x + quiet)
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${labelWidth}" height="178" viewBox="0 0 ${labelWidth} 178">
-   <rect width="100%" height="100%" fill="#ffffff"/>
-   <rect x="8" y="8" width="${labelWidth - 16}" height="162" rx="12" fill="#fffdf7" stroke="#f4d35e" stroke-width="2"/>
-   <text x="${labelWidth / 2}" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ca1b1b">Roma's Donuts POS Label</text>
-   ${rects.join('')}
-   <text x="${labelWidth / 2}" y="128" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="900" fill="#111827">${escapeSvg(cleanCode)}</text>
-   <text x="${labelWidth / 2}" y="152" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" font-weight="800" fill="#1a1a2e">${escapeSvg(productName)}</text>
-  </svg>`
- }
-
- function downloadBlobAsFile(blob, filename) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = filename
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
- }
-
- function downloadTextAsFile(content, filename, type = 'image/svg+xml;charset=utf-8') {
-  downloadBlobAsFile(new Blob([content], { type }), filename)
- }
-
- function downloadSvgAsPng(svg, filename, scale = 3) {
-  if (typeof window === 'undefined') return
-  const svgBlob = new Blob([svg], { type:'image/svg+xml;charset=utf-8' })
-  const svgUrl = URL.createObjectURL(svgBlob)
-  const image = new Image()
-  image.onload = () => {
-   try {
-    const width = Math.max(1, image.naturalWidth || image.width || 360)
-    const height = Math.max(1, image.naturalHeight || image.height || 180)
-    const canvas = document.createElement('canvas')
-    canvas.width = width * scale
-    canvas.height = height * scale
-    const ctx = canvas.getContext('2d')
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
-    canvas.toBlob(blob => {
-     URL.revokeObjectURL(svgUrl)
-     if (blob) {
-      downloadBlobAsFile(blob, filename)
-     } else {
-      alert('PNG conversion failed. Please try again or use Print / Download Labels.')
-     }
-    }, 'image/png')
-   } catch (err) {
-    URL.revokeObjectURL(svgUrl)
-    alert('PNG conversion failed: ' + (err?.message || String(err)))
-   }
-  }
-  image.onerror = () => {
-   URL.revokeObjectURL(svgUrl)
-   alert('Barcode image could not be prepared. Please try again.')
-  }
-  image.src = svgUrl
- }
-
- function downloadBarcodeLabel(product) {
-  const code = cleanOutletBarcodeCode(product?.barcode || product?.sku || product?.id)
-  if (!code) {
-   alert('This product has no barcode or SKU to print. Generate a barcode first.')
-   return
-  }
-  const productName = product?.product_name || product?.name || 'POS Item'
-  const svg = buildCode39BarcodeSvg(code, productName)
-  const safeName = makeOutletSkuFromName(productName).slice(0, 60) || 'POS-LABEL'
-  downloadSvgAsPng(svg, `${safeName}-${code}-barcode.png`)
- }
-
- function printBarcodeLabelSheet(productsToPrint = []) {
-  const labelRows = (productsToPrint || []).filter(row => cleanOutletBarcodeCode(row.barcode || row.sku || row.id))
-  if (!labelRows.length) {
-   alert('No barcode labels available to print. Generate barcodes first.')
-   return
-  }
-  const labels = labelRows.map(row => {
-   const code = cleanOutletBarcodeCode(row.barcode || row.sku || row.id)
-   return `<div class="label">${buildCode39BarcodeSvg(code, row.product_name || row.name || 'POS Item')}</div>`
-  }).join('')
-  const html = `<!doctype html><html><head><title>Roma's Donuts POS Barcode Labels</title><style>
-   @page{size:A4;margin:10mm} body{font-family:Arial,sans-serif;margin:0;background:#fff;color:#111827} .sheet{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:8px} .label{break-inside:avoid;border:1px dashed #ddd;padding:5px;border-radius:10px;display:flex;justify-content:center} svg{max-width:100%;height:auto} @media print{.no-print{display:none}.sheet{gap:6px;padding:0}.label{border:0}}
-  </style></head><body><div class="no-print" style="padding:10px;text-align:center"><button onclick="window.print()" style="padding:10px 18px;border:0;border-radius:10px;background:#ca1b1b;color:white;font-weight:800;cursor:pointer">Print Labels</button></div><div class="sheet">${labels}</div></body></html>`
-  const printWindow = window.open('', '_blank')
-  if (!printWindow) {
-   downloadTextAsFile(html, 'romas-pos-barcode-label-sheet.html', 'text/html;charset=utf-8')
-   return
-  }
-  printWindow.document.write(html)
-  printWindow.document.close()
-  printWindow.focus()
- }
-
- async function generateBarcodeForProduct(product, options = {}) {
-  if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can generate POS barcodes.')
-   return null
-  }
-  if (!product?.id) {
-   alert('Product record is missing an ID. Please refresh and try again.')
-   return null
-  }
-  const existingBarcode = cleanOutletBarcodeCode(product.barcode)
-  if (existingBarcode && !options.force) return existingBarcode
-  const barcode = options.barcode || getNextAvailableOutletBarcode(product.category || 'Others', posProducts)
-  const { error } = await supabase
-   .from('pos_products')
-   .update({ barcode })
-   .eq('id', product.id)
-  if (error) throw error
-  if (logAudit) {
-   await logAudit(
-    'POS BARCODE GENERATED',
-    currentAdminLabel || 'Admin',
-    product.product_name || product.name || product.id,
-    `Barcode: ${barcode}`
-   )
-  }
-  await loadPosMonitor({ silent:true, forceProducts:true })
-  return barcode
- }
-
- async function generateMissingBarcodes() {
-  if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can generate POS barcodes.')
-   return
-  }
-  const missingRows = outletBalances.filter(row => !cleanOutletBarcodeCode(row.barcode))
-  if (!missingRows.length) {
-   alert('All visible POS products already have barcodes.')
-   return
-  }
-  const proceed = confirm(`Generate barcodes for ${missingRows.length} product(s) without barcode?`)
-  if (!proceed) return
-  const usedCodes = new Set((posProducts || []).map(p => cleanOutletBarcodeCode(p.barcode)).filter(Boolean))
-  const updates = []
-  for (const row of missingRows) {
-   let code = getNextAvailableOutletBarcode(row.category || 'Others', [...posProducts, ...updates.map(u => ({ barcode:u.barcode }))])
-   while (usedCodes.has(code)) {
-    const numeric = safeNum(code, 8000) + 1
-    code = String(numeric).padStart(4, '0')
-   }
-   usedCodes.add(code)
-   updates.push({ id:row.id, barcode:code, product_name:row.product_name })
-  }
-  try {
-   for (const update of updates) {
-    const { error } = await supabase.from('pos_products').update({ barcode:update.barcode }).eq('id', update.id)
-    if (error) throw error
-   }
-   if (logAudit) {
-    await logAudit('POS BARCODES GENERATED', currentAdminLabel || 'Admin', 'SAGS POS', `${updates.length} barcode(s) generated`)
-   }
-   alert(`Generated ${updates.length} barcode(s). You can now download or print labels.`)
-   await loadPosMonitor({ silent:true, forceProducts:true })
-  } catch (err) {
-   console.error('Barcode generation failed:', err)
-   alert('Barcode generation failed: ' + (err?.message || String(err)))
-  }
- }
 
  async function loadPosMonitor(options = {}) {
   const silent = options && options.silent
-  const isAutoRefresh = options && options.auto === true
-  // Auto refresh must never interrupt typing or stock/barcode editing.
-  // When the user is actively working, skip the background refresh entirely.
-  if (silent && isAutoRefresh && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
-  const scrollSnapshot = silent ? capturePosSilentScrollSnapshot() : null
-  posSilentScrollSnapshotRef.current = scrollSnapshot
-  // A true silent refresh must not toggle visible loading state, because that
-  // causes layout shifts and can push the admin back to the top while typing.
-  if (!silent) setPosLoading(true)
+  silent ? setPosRefreshing(true) : setPosLoading(true)
   setPosError('')
   try {
    const start = posDate + 'T00:00:00'
@@ -20028,43 +18149,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    setPosSales(filteredSales)
    setPosItems(filteredItems)
    setPosMovements(filteredMovements)
-   const nextProducts = productsRes.data || []
-   const hasUnsavedAddItem = showAddOutletItem && Object.values(newOutletItem || {}).some(value => String(value || '').trim() !== '')
-   const hasUnsavedRowEdits = Object.values(inventoryDrafts || {}).some(draft =>
-    draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
-   )
-   const preserveProductRows = silent && !options.forceProducts && (hasUnsavedAddItem || hasUnsavedRowEdits)
-   if (!preserveProductRows) {
-    setPosProducts(prevProducts => {
-     if (!Array.isArray(prevProducts) || prevProducts.length !== nextProducts.length) return nextProducts
-     const changed = nextProducts.some((item, index) => {
-      const prev = prevProducts[index] || {}
-      return String(prev.id || '') !== String(item.id || '') ||
-       String(prev.product_name || prev.name || '') !== String(item.product_name || item.name || '') ||
-       String(prev.sku || '') !== String(item.sku || '') ||
-       String(prev.barcode || '') !== String(item.barcode || '') ||
-       safeNum(prev.selling_price, 0) !== safeNum(item.selling_price, 0) ||
-       safeNum(prev.stock, 0) !== safeNum(item.stock, 0) ||
-       safeNum(prev.min_stock, 0) !== safeNum(item.min_stock, 0)
-     })
-     return changed ? nextProducts : prevProducts
-    })
-   }
+   setPosProducts(productsRes.data || [])
   } catch (err) {
    console.error('POS monitor error:', err)
    setPosError(err?.message || String(err))
   } finally {
-   if (!silent) setPosLoading(false)
-   if (silent) restorePosSilentScrollSnapshot(posSilentScrollSnapshotRef.current || scrollSnapshot)
+   silent ? setPosRefreshing(false) : setPosLoading(false)
   }
  }
 
  async function saveOutletStockIn() {
-  if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can log stock in for the outlet.')
-   return
-  }
-
   if (!stockInProductId) {
    alert('Please select a product.')
    return
@@ -20099,25 +18193,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
    if (error) throw error
 
-   // Logging the movement alone doesn't restock anything the POS can
-   // actually sell — this is what makes the delivery real.
-   const newStock = safeNum(product.stock, 0) + qty
-   const { error: stockError } = await supabase
-    .from('pos_products')
-    .update({ stock: newStock })
-    .eq('id', product.id)
-
-   if (stockError) throw stockError
-
-   if (logAudit) {
-    await logAudit(
-     'OUTLET STOCK IN',
-     currentAdminLabel || 'Admin',
-     product.product_name || product.name || product.id,
-     `+${qty} (${safeNum(product.stock,0)} → ${newStock}) | Ref: ${referenceNo}${stockInNote ? ' | ' + stockInNote : ''}`
-    )
-   }
-
    alert('Stock in saved successfully.')
    setStockInProductId('')
    setStockInSearch('')
@@ -20130,348 +18205,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   } catch (err) {
    console.error('Stock in failed:', err)
    alert('Stock in failed: ' + (err?.message || String(err)))
-  }
- }
-
- async function saveProductPrice() {
-  if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can change outlet prices.')
-   return
-  }
-
-  if (!priceEditProductId) {
-   alert('Please select a product.')
-   return
-  }
-
-  const newPrice = safeNum(priceEditValue, -1)
-  if (newPrice < 0) {
-   alert('Please enter a valid price.')
-   return
-  }
-
-  const product = posProducts.find(p => String(p.id) === String(priceEditProductId))
-  if (!product) {
-   alert('Selected product not found.')
-   return
-  }
-
-  const oldPrice = safeNum(product.selling_price, 0)
-
-  try {
-   const { error } = await supabase
-    .from('pos_products')
-    .update({ selling_price: newPrice })
-    .eq('id', product.id)
-
-   if (error) throw error
-
-   if (logAudit) {
-    await logAudit(
-     'OUTLET PRICE CHANGE',
-     currentAdminLabel || 'Admin',
-     product.product_name || product.name || product.id,
-     `₱${oldPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`
-    )
-   }
-
-   alert('Price updated successfully.')
-   setPriceEditProductId('')
-   setPriceEditSearch('')
-   setPriceEditValue('')
-   await loadPosMonitor()
-  } catch (err) {
-   console.error('Price update failed:', err)
-   alert('Price update failed: ' + (err?.message || String(err)))
-  }
- }
-
-
- async function saveOutletInventoryRow(product) {
-  if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can update outlet inventory.')
-   return
-  }
-
-  if (!product?.id) {
-   alert('Product record is missing an ID. Please refresh and try again.')
-   return
-  }
-
-  const key = getInventoryDraftKey(product)
-  const draft = inventoryDrafts[key] || {}
-  const stockInQty = Math.round(safeNum(draft.stockIn, 0))
-  const stockOutQty = Math.round(safeNum(draft.stockOut, 0))
-  const currentStock = safeNum(product.remainingStock ?? product.stock, 0)
-  const currentPrice = safeNum(product.sellingPrice ?? product.selling_price, 0)
-  const newPrice = draft.price !== undefined && String(draft.price).trim() !== '' ? safeNum(draft.price, -1) : currentPrice
-  const remarks = String(draft.remarks || '').trim()
-
-  if (stockInQty < 0 || stockOutQty < 0) {
-   alert('Stock In and Stock Out cannot be negative.')
-   return
-  }
-
-  if (newPrice < 0) {
-   alert('Please enter a valid selling price.')
-   return
-  }
-
-  const newStock = currentStock + stockInQty - stockOutQty
-  if (newStock < 0) {
-   alert('Stock Out is greater than current stock. Current stock cannot go below zero.')
-   return
-  }
-
-  const priceChanged = Math.abs(newPrice - currentPrice) > 0.009
-  const stockChanged = stockInQty > 0 || stockOutQty > 0
-
-  if (!priceChanged && !stockChanged) {
-   alert('No changes to save for this product.')
-   return
-  }
-
-  const referenceBase = 'INV-' + Date.now()
-  setInventorySavingId(key)
-
-  try {
-   const updatePayload = {}
-   if (stockChanged) updatePayload.stock = newStock
-   if (priceChanged) updatePayload.selling_price = newPrice
-
-   const { error: updateError } = await supabase
-    .from('pos_products')
-    .update(updatePayload)
-    .eq('id', product.id)
-
-   if (updateError) throw updateError
-
-   const movementRows = []
-   if (stockInQty > 0) {
-    movementRows.push({
-     outlet_id: 'OUTLET-MALUED',
-     product_id: product.id,
-     sku: product.sku || '',
-     barcode: product.barcode || '',
-     product_name: product.product_name || product.name || 'Unnamed Product',
-     movement_type: 'stock_in',
-     qty: stockInQty,
-     reference_no: referenceBase + '-IN',
-     remarks: remarks || 'Stock in from unified POS inventory manager'
-    })
-   }
-
-   if (stockOutQty > 0) {
-    movementRows.push({
-     outlet_id: 'OUTLET-MALUED',
-     product_id: product.id,
-     sku: product.sku || '',
-     barcode: product.barcode || '',
-     product_name: product.product_name || product.name || 'Unnamed Product',
-     movement_type: 'stock_out',
-     qty: -stockOutQty,
-     reference_no: referenceBase + '-OUT',
-     remarks: remarks || 'Stock out from unified POS inventory manager'
-    })
-   }
-
-   if (movementRows.length > 0) {
-    const { error: movementError } = await supabase
-     .from('pos_inventory_movements')
-     .insert(movementRows)
-    if (movementError) throw movementError
-   }
-
-   if (logAudit) {
-    const changes = []
-    if (stockChanged) changes.push(`Stock ${currentStock} → ${newStock} (${stockInQty ? '+' + stockInQty : ''}${stockInQty && stockOutQty ? ', ' : ''}${stockOutQty ? '-' + stockOutQty : ''})`)
-    if (priceChanged) changes.push(`Price ₱${currentPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`)
-    await logAudit(
-     'OUTLET INVENTORY UPDATED',
-     currentAdminLabel || 'Admin',
-     product.product_name || product.name || product.id,
-     changes.join(' | ') + (remarks ? ' | ' + remarks : '')
-    )
-   }
-
-   clearInventoryDraft(product)
-   await loadPosMonitor({ silent:true, forceProducts:true })
-  } catch (err) {
-   console.error('Inventory update failed:', err)
-   alert('Inventory update failed: ' + (err?.message || String(err)))
-  } finally {
-   setInventorySavingId('')
-  }
- }
-
- async function saveNewOutletItem() {
-  if (!canEditOutletInventory) {
-   alert('Only Owner or Manager can add new POS items.')
-   return
-  }
-
-  const productName = String(newOutletItem.product_name || '').trim()
-  const category = String(newOutletItem.category || '').trim() || 'Donuts'
-  const sku = String(newOutletItem.sku || '').trim()
-  const barcode = String(newOutletItem.barcode || '').trim()
-  // Database unique constraints treat empty strings as real values.
-  // Keep SKU/barcode optional by saving blanks as NULL, not ''.
-  const skuForDb = sku || null
-  const barcodeForDb = barcode || null
-  const startingStock = Math.round(safeNum(newOutletItem.stock, 0))
-  const sellingPrice = safeNum(newOutletItem.selling_price, -1)
-  const minStock = Math.round(safeNum(newOutletItem.min_stock, 10))
-
-  if (!productName) {
-   alert('Please enter a product name.')
-   return
-  }
-
-  if (sellingPrice < 0) {
-   alert('Please enter a valid selling price.')
-   return
-  }
-
-  if (startingStock < 0 || minStock < 0) {
-   alert('Starting stock and minimum stock cannot be negative.')
-   return
-  }
-
-  const duplicateName = posProducts.find(p =>
-   String(p.product_name || p.name || '').trim().toLowerCase() === productName.toLowerCase()
-  )
-  const duplicateSku = sku ? posProducts.find(p =>
-   String(p.sku || '').trim().toLowerCase() === sku.toLowerCase()
-  ) : null
-  const duplicateBarcode = barcode ? posProducts.find(p =>
-   String(p.barcode || '').trim() === barcode
-  ) : null
-
-  if (duplicateSku) {
-   alert(`SKU already exists for ${duplicateSku.product_name || duplicateSku.name || 'another POS item'}. Use a different SKU or leave SKU blank.`)
-   return
-  }
-
-  if (duplicateBarcode) {
-   alert(`Barcode already exists for ${duplicateBarcode.product_name || duplicateBarcode.name || 'another POS item'}. Use a different barcode or leave Barcode blank.`)
-   return
-  }
-
-  if (duplicateName && !confirm('A product with the same name already exists. Continue adding this item?')) return
-
-  try {
-   const makeCleanProductId = (suffix = '') => {
-    const rawBase = sku || barcode || productName || ('POS-' + Date.now())
-    const cleanBase = String(rawBase)
-     .trim()
-     .toUpperCase()
-     .replace(/[^A-Z0-9]+/g, '-')
-     .replace(/^-+|-+$/g, '')
-     .slice(0, 42) || 'POS-ITEM'
-    return suffix ? `${cleanBase}-${suffix}` : cleanBase
-   }
-
-   const uniqueSuffix = Date.now().toString().slice(-8)
-   const idCandidates = [
-    makeCleanProductId(),
-    makeCleanProductId(uniqueSuffix),
-    Number(Date.now()),
-    (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `POS-${Date.now()}-${Math.round(Math.random() * 9999)}`)
-   ]
-
-   const buildFullPayload = id => ({
-    id,
-    outlet_id: 'OUTLET-MALUED',
-    product_name: productName,
-    name: productName,
-    category,
-    sku: skuForDb,
-    barcode: barcodeForDb,
-    selling_price: sellingPrice,
-    price: sellingPrice,
-    stock: startingStock,
-    min_stock: minStock,
-    is_active:true
-   })
-
-   const buildCorePayload = id => ({
-    id,
-    outlet_id: 'OUTLET-MALUED',
-    product_name: productName,
-    category,
-    sku: skuForDb,
-    barcode: barcodeForDb,
-    selling_price: sellingPrice,
-    stock: startingStock,
-    min_stock: minStock
-   })
-
-   let data = null
-   let insertError = null
-
-   for (const idCandidate of idCandidates) {
-    const payloadAttempts = [buildFullPayload(idCandidate), buildCorePayload(idCandidate)]
-
-    for (const payload of payloadAttempts) {
-     const result = await supabase
-      .from('pos_products')
-      .insert([payload])
-      .select()
-      .single()
-
-     if (!result.error) {
-      data = result.data
-      insertError = null
-      break
-     }
-
-     insertError = result.error
-     const msg = String(result.error?.message || '').toLowerCase()
-
-     // Retry with the core payload if this database does not have optional compatibility columns.
-     if (payload.name !== undefined && (msg.includes('name') || msg.includes('price') || msg.includes('is_active') || msg.includes('schema cache') || msg.includes('could not find'))) {
-      continue
-     }
-
-     // Wrong ID type or duplicate ID: try the next generated ID candidate.
-     break
-    }
-
-    if (data) break
-   }
-
-   if (insertError) throw insertError
-
-   if (startingStock > 0 && data?.id) {
-    const { error: movementError } = await supabase.from('pos_inventory_movements').insert([{
-     outlet_id: 'OUTLET-MALUED',
-     product_id: data.id,
-     sku: skuForDb,
-     barcode: barcodeForDb,
-     product_name: productName,
-     movement_type: 'new_item_stock',
-     qty: startingStock,
-     reference_no: 'NEWITEM-' + Date.now(),
-     remarks: 'Initial stock for new POS item'
-    }])
-    if (movementError) console.error('Initial stock movement log failed:', movementError)
-   }
-
-   if (logAudit) {
-    await logAudit(
-     'OUTLET POS ITEM ADDED',
-     currentAdminLabel || 'Admin',
-     productName,
-     `Category: ${category} | Price: ₱${sellingPrice.toFixed(2)} | Starting stock: ${startingStock}`
-    )
-   }
-
-   setNewOutletItem(getDefaultNewOutletItem())
-   setShowAddOutletItem(false)
-   await loadPosMonitor({ silent:true, forceProducts:true })
-  } catch (err) {
-   console.error('Add POS item failed:', err)
-   alert('Add POS item failed: ' + (err?.message || String(err)))
   }
  }
 
@@ -20507,7 +18240,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    return
   }
 
-  if (String(sale.status || 'completed').toLowerCase() === 'voided') {
+  if (String(sale.status || 'completed').toLowerCase() === 'void') {
    alert('This receipt is already voided.')
    return
   }
@@ -20527,7 +18260,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const { error: updateError } = await supabase
     .from('pos_sales')
     .update({
-     status: 'voided',
+     status: 'void',
      voided_at: new Date().toISOString(),
      voided_by: userName,
      void_reason: reason
@@ -20566,29 +18299,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      .insert(returnMovements)
 
     if (movementError) throw movementError
-
-    // Actually give the stock back — logging the movement alone never
-    // changed what the POS shows as available, which meant a voided sale's
-    // items silently stayed "sold" forever from the register's point of view.
-    for (const move of returnMovements) {
-     if (!move.product_id) continue
-     const product = posProducts.find(p => String(p.id) === String(move.product_id))
-     if (!product) continue
-     const { error: stockError } = await supabase
-      .from('pos_products')
-      .update({ stock: safeNum(product.stock, 0) + move.qty })
-      .eq('id', move.product_id)
-     if (stockError) console.error('Stock restore failed for', move.product_id, stockError)
-    }
-   }
-
-   if (logAudit) {
-    await logAudit(
-     'POS SALE VOIDED',
-     currentAdminLabel || userName || 'Admin',
-     receiptNo,
-     `Voided receipt ${receiptNo} (₱${originalTotal.toFixed(2)}) | Reason: ${reason} | Stock restored for ${returnMovements.length} item(s)`
-    )
    }
 
    alert('Receipt voided successfully.')
@@ -20666,11 +18376,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     voidReceiptNo,
     voidReason,
     voidedBy,
-    voidAdminPin,
-    inventorySearch,
-    inventoryDrafts,
-    showAddOutletItem,
-    newOutletItem
+    voidAdminPin
    }))
   } catch {}
  }, [
@@ -20689,14 +18395,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   voidReceiptNo,
   voidReason,
   voidedBy,
-  voidAdminPin,
-  inventorySearch,
-  inventoryDrafts,
-  showAddOutletItem,
-  newOutletItem
+  voidAdminPin
  ])
 
- useEffect(() => { loadPosMonitor({ silent:true, auto:true }) }, [posDate])
+ useEffect(() => { loadPosMonitor({ silent:true }) }, [posDate])
 
  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
@@ -20738,21 +18440,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  const selectedStockInProduct = posProducts.find(p => String(p.id) === String(stockInProductId))
 
- const filteredPriceEditProducts = posProducts.filter(p => {
-  const text = [
-   p.product_name,
-   p.name,
-   p.sku,
-   p.barcode,
-   p.category
-  ].join(' ').toLowerCase()
-  return priceEditSearch.trim() && text.includes(priceEditSearch.toLowerCase())
- }).slice(0, 12)
-
- const selectedPriceEditProduct = posProducts.find(p => String(p.id) === String(priceEditProductId))
-
  const lowStockProducts = posProducts.map(product => {
-  const remainingStock = safeNum(product.stock, 0)
+  const key = product.id || product.product_name
+  const movementQty = safeNum(movementMap[key], 0)
+  const remainingStock = safeNum(product.stock, 0) + movementQty
   const minStock = safeNum(product.min_stock, 10)
   return {
    id: product.id,
@@ -20795,82 +18486,49 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  const outletBalances = posProducts.map(product => {
   const key = product.id || product.product_name
-  const currentStock = safeNum(product.stock, 0)
+  const startingStock = safeNum(product.stock, 0)
   const soldQty = safeNum(soldMap[key], 0)
   const movementQty = safeNum(movementMap[key], 0)
+  const remainingStock = startingStock + movementQty
   const minStock = safeNum(product.min_stock, 10)
-  const status = currentStock <= 0 ? 'Out of Stock' : currentStock <= minStock ? 'Low Stock' : 'OK'
+  const status = remainingStock <= 0 ? 'Out of Stock' : remainingStock <= minStock ? 'Low Stock' : 'OK'
   return {
    id: product.id,
    product_name: product.product_name || product.name || 'Unnamed Product',
-   name: product.name || product.product_name || 'Unnamed Product',
    category: product.category || '',
-   sku: product.sku || '',
-   barcode: product.barcode || '',
-   sellingPrice: safeNum(product.selling_price, 0),
-   stock: currentStock,
-   startingStock: currentStock,
+   startingStock,
    soldQty,
    movementQty,
-   remainingStock: currentStock,
+   remainingStock,
    minStock,
    status
   }
- }).sort((a,b) => {
-  const outletCategoryOrder = ['Donuts', 'Biscuits', 'Coffee', 'Drinks', 'Noodles', 'Refreshing Drinks', 'Snacks', 'Others', 'Uncategorized']
-  const categoryA = a.category || 'Uncategorized'
-  const categoryB = b.category || 'Uncategorized'
-  const indexA = outletCategoryOrder.indexOf(categoryA) === -1 ? 998 : outletCategoryOrder.indexOf(categoryA)
-  const indexB = outletCategoryOrder.indexOf(categoryB) === -1 ? 998 : outletCategoryOrder.indexOf(categoryB)
-  return indexA - indexB || String(categoryA).localeCompare(String(categoryB)) || String(a.product_name).localeCompare(String(b.product_name))
- })
-
- const filteredOutletInventoryRows = outletBalances.filter(row => {
-  const search = inventorySearch.trim().toLowerCase()
-  if (!search) return true
-  return [row.product_name, row.category, row.sku, row.barcode, row.sellingPrice, row.remainingStock].join(' ').toLowerCase().includes(search)
- })
-
- const outletCategoryCounts = filteredOutletInventoryRows.reduce((acc, row) => {
-  const category = row.category || 'Uncategorized'
-  acc[category] = (acc[category] || 0) + 1
-  return acc
- }, {})
- const categorizedOutletInventoryRows = []
- let lastOutletCategory = null
- filteredOutletInventoryRows.forEach(row => {
-  const category = row.category || 'Uncategorized'
-  if (category !== lastOutletCategory) {
-   categorizedOutletInventoryRows.push({ __categoryHeader:true, category, count:outletCategoryCounts[category] || 0 })
-   lastOutletCategory = category
-  }
-  categorizedOutletInventoryRows.push(row)
- })
+ }).sort((a,b) => a.remainingStock - b.remainingStock)
 
  const card = (label, value, note, color) => (
-  <div style={{ background:'#ffffff', border:'1px solid #f1e1a6', borderRadius:'12px', padding:'10px 12px', boxShadow:'0 2px 8px rgba(26,26,46,0.04)' }}>
-   <p style={{ margin:'0 0 4px', color:'#6b5b1d', fontSize:'10px', textTransform:'uppercase', letterSpacing:'0.45px', fontWeight:'900' }}>{label}</p>
-   <h3 style={{ margin:'0 0 2px', color:color || '#ca1b1b', fontSize:'18px', lineHeight:1.05, fontWeight:'900' }}>{value}</h3>
-   <p style={{ margin:0, color:'#6b7280', fontSize:'10px', fontWeight:'700' }}>{note}</p>
+  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)' }}>
+   <p style={{ margin:'0 0 6px', color:'#777', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px', fontWeight:'bold' }}>{label}</p>
+   <h3 style={{ margin:'0 0 4px', color:color || '#ca1b1b', fontSize:'22px' }}>{value}</h3>
+   <p style={{ margin:0, color:'#999', fontSize:'11px' }}>{note}</p>
   </div>
  )
 
  return (
   <div>
-   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'16px' }}>
     <div>
-     <h2 style={{...h2s, marginBottom:'4px', fontSize:'22px'}}>SAGS POS</h2>
-     <p style={{ margin:0, color:'#555', fontSize:'12px', fontWeight:'650' }}>Outlet POS sales, payment breakdown, product movement, and inventory deductions.</p>
+     <h2 style={h2s}>SAGS POS</h2>
+     <p style={{ margin:0, color:'#777', fontSize:'13px' }}>Outlet POS sales, payment breakdown, product movement, and inventory deductions.</p>
     </div>
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
      <input type="date" value={posDate} onChange={e=>setPosDate(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0}} />
-     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true, manual:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
+     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
     </div>
    </div>
 
    {posError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'12px', padding:'12px', marginBottom:'14px', fontSize:'12px' }}>POS Monitor error: {posError}</div>}
 
-   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'8px', marginBottom:'10px' }}>
+   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'12px', marginBottom:'16px' }}>
     {card('Total POS Sales', php(totalSales), posDate, '#ca1b1b')}
     {card('Cash Sales', php(cashSales), 'Cash collected', '#2d8a4e')}
     {card('GCash Sales', php(gcashSales), 'Digital payment', '#4a90d9')}
@@ -20878,9 +18536,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     {card('Transactions', posSales.length, 'Avg: ' + php(avgSale), '#ca1b1b')}
    </div>
 
-   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'10px', marginBottom:'10px' }}>
-    <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'10px', padding:'7px 9px' }}>
-     <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'16px' }}>Top Selling Products</h3>
+   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'14px', marginBottom:'14px' }}>
+    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Top Selling Products</h3>
      {topProducts.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS items found for this date.</p> : (
       <div style={{ overflowX:'auto' }}>
        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
@@ -20897,8 +18555,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      )}
     </div>
 
-    <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'10px', padding:'7px 9px' }}>
-     <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'16px' }}>Recent Receipts</h3>
+    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Recent Receipts</h3>
     <input value={transactionSearch} onChange={e=>setTransactionSearch(e.target.value)} placeholder="Search receipt, cashier, payment method..." style={{...inputStyle, marginBottom:'10px'}} />
      {posSales.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS receipts found for this date.</p> : (
       <div style={{ display:'grid', gap:'8px' }}>
@@ -20914,9 +18572,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    </div>
 
    
-   <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'12px', padding:'10px 12px', marginBottom:'10px' }}>
-    <h3 style={{ margin:'0 0 5px', color:'#ca1b1b', fontSize:'16px' }}>Void / Cancel Sale</h3>
-    <p style={{ margin:'0 0 8px', color:'#555', fontSize:'12px' }}>
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Void / Cancel Sale</h3>
+    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>
      Void a receipt using admin PIN. The sale will be marked as void and inventory will be returned.
     </p>
 
@@ -20960,61 +18618,35 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    </div>
 
 
-   <div style={{ background:'#fffdf7', border:'1px solid #f6d85c', borderRadius:'14px', padding:'10px 12px', marginBottom:'14px', boxShadow:'0 2px 10px rgba(202,27,27,0.04)' }}>
-    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:lowStockProducts.length === 0 ? 0 : '8px' }}>
-     <div>
-      <h3 style={{ margin:0, color:'#ca1b1b', fontSize:'17px', fontWeight:'900', letterSpacing:'-0.2px' }}>Low Stock Alerts</h3>
-      <p style={{ margin:'2px 0 0', color:'#7c2d12', fontSize:'11px', fontWeight:'700' }}>Compact view for items that need refill or review.</p>
-     </div>
-     <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', minHeight:'28px', padding:'0 10px', borderRadius:'999px', background:lowStockProducts.length > 0 ? '#fff1f2' : '#ecfdf5', border:`1px solid ${lowStockProducts.length > 0 ? '#fecdd3' : '#bbf7d0'}`, color:lowStockProducts.length > 0 ? '#b91c1c' : '#166534', fontSize:'12px', fontWeight:'900' }}>
-      {lowStockProducts.length} alert{lowStockProducts.length === 1 ? '' : 's'}
-     </span>
-    </div>
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Low Stock Alert Dashboard</h3>
     {lowStockProducts.length === 0 ? (
-     <p style={{ color:'#166534', fontSize:'12px', fontWeight:'800', margin:0 }}>All POS products are above minimum stock.</p>
+     <p style={{ color:'#2d8a4e', fontSize:'13px', margin:0 }}>No low stock alerts for this outlet.</p>
     ) : (
-     <>
-      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(auto-fill, minmax(160px, 1fr))', gap:'6px', maxHeight:isMobile ? 'none' : '140px', overflowY:isMobile ? 'visible' : 'auto', paddingRight:isMobile ? 0 : '2px' }}>
-       {lowStockProducts.slice(0, 24).map(p => {
-        const outOfStock = safeNum(p.remainingStock, 0) <= 0
-        return (
-         <div key={p.id || p.product_name} style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:'6px', alignItems:'center', border:`1px solid ${outOfStock ? '#fecaca' : '#fde68a'}`, background:outOfStock ? '#fff7f7' : '#fffbeb', borderRadius:'10px', padding:'6px 8px', minHeight:'46px' }}>
-          <div style={{ minWidth:0 }}>
-           <strong style={{ color:'#1a1a2e', display:'block', fontSize:'12px', lineHeight:1.15, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{p.product_name}</strong>
-           <span style={{ display:'block', marginTop:'2px', fontSize:'10px', color:'#6b7280', fontWeight:'700', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{p.category || 'Uncategorized'}</span>
-          </div>
-          <div style={{ textAlign:'right', minWidth:'52px' }}>
-           <strong style={{ display:'block', color:outOfStock ? '#ca1b1b' : '#b45309', fontSize:'14px', lineHeight:1 }}>{p.remainingStock}</strong>
-           <span style={{ color:'#6b7280', fontSize:'10px', fontWeight:'800' }}>Min {p.minStock}</span>
-          </div>
-          <div style={{ gridColumn:'1 / -1', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'6px', marginTop:'1px' }}>
-           <span style={{ fontSize:'10px', color:outOfStock ? '#b91c1c' : '#92400e', fontWeight:'900' }}>{p.status}</span>
-           <span style={{ height:'5px', flex:1, borderRadius:'999px', background:'#f3f4f6', overflow:'hidden' }}>
-            <span style={{ display:'block', height:'100%', width:`${Math.max(0, Math.min(100, (safeNum(p.remainingStock,0) / Math.max(1, safeNum(p.minStock,1))) * 100))}%`, background:outOfStock ? '#ca1b1b' : '#f5a623' }} />
-           </span>
-          </div>
-         </div>
-        )
-       })}
-      </div>
-      {lowStockProducts.length > 24 && (
-       <p style={{ margin:'7px 0 0', color:'#7c2d12', fontSize:'11px', fontWeight:'800' }}>Showing first 24 of {lowStockProducts.length} alerts. Use the inventory search below to review more items.</p>
-      )}
-     </>
+     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(3, 1fr)', gap:'10px' }}>
+      {lowStockProducts.slice(0, 12).map(p => (
+       <div key={p.id || p.product_name} style={{ border:'1px solid #ffd4d4', background:'#fff7f7', borderRadius:'12px', padding:'10px' }}>
+        <strong style={{ color:'#ca1b1b', display:'block' }}>{p.product_name}</strong>
+        <span style={{ fontSize:'12px', color:'#777' }}>{p.category}</span><br/>
+        <span style={{ fontSize:'12px' }}>Remaining: <strong>{p.remainingStock}</strong> / Min: {p.minStock}</span><br/>
+        <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>{p.status}</span>
+       </div>
+      ))}
+     </div>
     )}
    </div>
 
-   <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'12px', padding:'10px 12px', marginBottom:'10px' }}>
-    <h3 style={{ margin:'0 0 8px', color:'#ca1b1b', fontSize:'16px' }}>Shift Closing Report</h3>
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'8px', marginBottom:'8px' }}>
-     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'10px', padding:'7px 9px' }}>
-      <small>Cash Sales</small><br/><strong>{php(closingCashSales)}</strong>
-     </div>
-     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'10px', padding:'7px 9px' }}>
-      <small>GCash Sales</small><br/><strong>{php(closingGcashSales)}</strong>
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Shift Closing Report</h3>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'10px', marginBottom:'12px' }}>
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+      <small>Cash Sales</small><br/><strong>?{closingCashSales.toLocaleString()}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>Total POS Sales</small><br/><strong>{php(closingTotalSales)}</strong>
+      <small>GCash Sales</small><br/><strong>?{closingGcashSales.toLocaleString()}</strong>
+     </div>
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
+      <small>Total POS Sales</small><br/><strong>?{closingTotalSales.toLocaleString()}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
       <small>Transactions</small><br/><strong>{posSales.length}</strong>
@@ -21041,195 +18673,129 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
 
     <div style={{ marginTop:'12px', padding:'10px', borderRadius:'12px', background:'#f8f8f8', fontSize:'13px' }}>
-     Expected Cash: <strong>{php(closingExpectedCash)}</strong> | 
-     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>{php(closingVariance)}</strong>
+     Expected Cash: <strong>?{closingExpectedCash.toLocaleString()}</strong> | 
+     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>?{closingVariance.toLocaleString()}</strong>
     </div>
 
     <button onClick={saveShiftClosing} style={{...btnGreen, marginTop:'12px'}}>Save Shift Closing</button>
    </div>
 
-   <div style={{ background:'#ffffff', border:'1px solid #f1d35a', borderRadius:'14px', padding:'10px', marginBottom:'12px', boxShadow:'0 2px 10px rgba(26,26,46,0.04)' }}>
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'minmax(280px, 1fr) auto', gap:'10px', alignItems:'center', marginBottom:'8px', background:'#fff9db', border:'1px solid #f4d35e', borderRadius:'12px', padding:'9px 10px' }}>
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Stock In to Outlet</h3>
+    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>Record products delivered or transferred to Roma�s Donuts - Malued.</p>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
      <div>
-      <h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'17px', fontWeight:'900', letterSpacing:'-0.2px' }}>Outlet Inventory Manager</h3>
-      <p style={{ margin:0, color:'#374151', fontSize:'11.5px', fontWeight:'750' }}>Manage POS items, stock, price, barcode, and balance in one compact screen.</p>
-      <p style={{ margin:'3px 0 0', color:'#087a37', fontSize:'10.5px', fontWeight:'850' }}>Silent refresh is safe — unsaved Add Item details and row edits are preserved.</p>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transfer No.</label>
+      <input value={stockInTransferNo} onChange={e=>setStockInTransferNo(e.target.value)} placeholder="Example: TR-MALUED-001" style={{...inputStyle, marginBottom:0}} />
      </div>
-     <div style={{ display:'flex', gap:'7px', alignItems:'center', flexWrap:'wrap', justifyContent:isMobile ? 'stretch' : 'flex-end' }}>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transferred By</label>
+      <input value={stockInTransferredBy} onChange={e=>setStockInTransferredBy(e.target.value)} placeholder="Sender name" style={{...inputStyle, marginBottom:0}} />
+     </div>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Received By</label>
+      <input value={stockInReceivedBy} onChange={e=>setStockInReceivedBy(e.target.value)} placeholder="Receiver name" style={{...inputStyle, marginBottom:0}} />
+     </div>
+    </div>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '2fr 1fr 2fr auto', gap:'10px', alignItems:'end' }}>
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Search Product</label>
       <input
-       value={inventorySearch}
-       onChange={e=>setInventorySearch(e.target.value)}
-       placeholder="Search product, SKU, barcode, category..."
-       style={{...inputStyle, width:isMobile ? '100%' : '300px', marginBottom:0, padding:'8px 10px', border:'1.5px solid #d7bf42', color:'#111827', fontWeight:'800', background:'#ffffff', fontSize:'12px'}}
+       value={stockInSearch}
+       onChange={e=>{
+        setStockInSearch(e.target.value)
+        setStockInProductId('')
+       }}
+       placeholder="Search product, SKU, barcode..."
+       style={{...inputStyle, marginBottom:'6px'}}
       />
-      {canEditOutletInventory && (
-       <button
-        onClick={()=>setShowAddOutletItem(v=>!v)}
-        style={{...btnGreen, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px'}}
-       >
-        {showAddOutletItem ? 'Close Add Item' : '+ Add New Item'}
-       </button>
+
+      {selectedStockInProduct && (
+       <div style={{ border:'1px solid #d9f2e3', background:'#f0fff6', borderRadius:'10px', padding:'8px 10px', marginBottom:'6px', fontSize:'12px' }}>
+        <strong style={{ color:'#2d8a4e' }}>Selected:</strong> {selectedStockInProduct.product_name || selectedStockInProduct.name}
+       </div>
+      )}
+
+      {stockInSearch.trim() && !stockInProductId && (
+       <div style={{ border:'1px solid #eee', borderRadius:'12px', background:'white', maxHeight:'220px', overflowY:'auto', boxShadow:'0 6px 18px rgba(0,0,0,0.08)' }}>
+        {filteredStockInProducts.length === 0 ? (
+         <div style={{ padding:'10px', color:'#999', fontSize:'12px' }}>No product found.</div>
+        ) : (
+         filteredStockInProducts.map(p => (
+          <button
+           key={p.id}
+           type="button"
+           onClick={()=>{
+            setStockInProductId(p.id)
+            setStockInSearch(p.product_name || p.name || '')
+           }}
+           style={{
+            width:'100%',
+            textAlign:'left',
+            border:'none',
+            borderBottom:'1px solid #f2f2f2',
+            background:'white',
+            padding:'10px',
+            cursor:'pointer',
+            fontFamily:'inherit'
+           }}
+          >
+           <strong style={{ display:'block', color:'#222', fontSize:'13px' }}>{p.product_name || p.name}</strong>
+           <span style={{ color:'#888', fontSize:'11px' }}>{p.category || ''} {p.sku ? '� ' + p.sku : ''} {p.barcode ? '� ' + p.barcode : ''}</span>
+          </button>
+         ))
+        )}
+       </div>
       )}
      </div>
-    </div>
 
-    {!canEditOutletInventory && (
-     <p style={{ margin:'0 0 12px', color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
-      Viewing only — Owner or Manager access is needed to add items, edit prices, or change outlet stock.
-     </p>
-    )}
-
-    <div style={{ background:'#f8fafc', border:'1px solid #e5e7eb', borderLeft:'4px solid #FDD412', borderRadius:'12px', padding:'8px 10px', marginBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
      <div>
-      <h4 style={{ margin:'0 0 2px', color:'#ca1b1b', fontSize:'13px', fontWeight:'900' }}>Barcode & Label Generator</h4>
-      <p style={{ margin:0, color:'#374151', fontSize:'11px', fontWeight:'750' }}>Generate 4-digit scan codes, then download labels or print a label sheet.</p>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Qty</label>
+      <input type="number" min="1" value={stockInQty} onChange={e=>setStockInQty(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
      </div>
-     <div style={{ display:'flex', gap:'7px', flexWrap:'wrap' }}>
-      {canEditOutletInventory && (
-       <button onClick={generateMissingBarcodes} style={{...btnYellow, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>Generate Missing Barcodes</button>
-      )}
-      <button onClick={()=>printBarcodeLabelSheet(filteredOutletInventoryRows)} style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>Print / Download Labels</button>
+
+     <div>
+      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Remarks</label>
+      <input value={stockInNote} onChange={e=>setStockInNote(e.target.value)} placeholder="Delivery / transfer note" style={{...inputStyle, marginBottom:0}} />
      </div>
+
+     <button onClick={saveOutletStockIn} style={{...btnGreen, width:'auto', marginTop:0}}>Save Stock In</button>
     </div>
+   </div>
 
-    {showAddOutletItem && canEditOutletInventory && (
-     <div style={{ background:'#fffbe8', border:'1px solid #f4d35e', borderRadius:'12px', padding:'10px', marginBottom:'10px' }}>
-      <h4 style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'14px', fontWeight:'900' }}>Add New POS Item</h4>
-      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.5fr 1fr 1fr 1fr 0.8fr 0.8fr 0.8fr', gap:'8px', alignItems:'end' }}>
-       <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Product Name</label>
-        <input value={newOutletItem.product_name} onChange={e=>setNewOutletItem(prev=>({...prev, product_name:e.target.value}))} placeholder="Example: Bavarian Pops" style={{...inputStyle, marginBottom:0}} />
-       </div>
-       <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Category</label>
-        <input value={newOutletItem.category} onChange={e=>setNewOutletItem(prev=>({...prev, category:e.target.value}))} placeholder="Donuts / Coffee" style={{...inputStyle, marginBottom:0}} />
-       </div>
-       <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>SKU</label>
-        <input value={newOutletItem.sku} onChange={e=>setNewOutletItem(prev=>({...prev, sku:e.target.value}))} placeholder="Optional" style={{...inputStyle, marginBottom:0}} />
-       </div>
-       <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Barcode</label>
-        <input value={newOutletItem.barcode} onChange={e=>setNewOutletItem(prev=>({...prev, barcode:e.target.value}))} placeholder="Scan/type" style={{...inputStyle, marginBottom:0}} />
-       </div>
-       <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Price</label>
-        <input type="number" min="0" step="0.01" value={newOutletItem.selling_price} onChange={e=>setNewOutletItem(prev=>({...prev, selling_price:e.target.value}))} placeholder="0.00" style={{...inputStyle, marginBottom:0}} />
-       </div>
-       <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Start Stock</label>
-        <input type="number" min="0" value={newOutletItem.stock} onChange={e=>setNewOutletItem(prev=>({...prev, stock:e.target.value}))} placeholder="0" style={{...inputStyle, marginBottom:0}} />
-       </div>
-       <div>
-        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Min Stock</label>
-        <input type="number" min="0" value={newOutletItem.min_stock} onChange={e=>setNewOutletItem(prev=>({...prev, min_stock:e.target.value}))} placeholder="10" style={{...inputStyle, marginBottom:0}} />
-       </div>
-      </div>
-      <div style={{ display:'flex', justifyContent:'flex-end', gap:'8px', marginTop:'10px', flexWrap:'wrap' }}>
-       <button onClick={()=>setNewOutletItem(getDefaultNewOutletItem())} style={{...btnGray, width:'auto', marginTop:0}}>Clear</button>
-       <button onClick={saveNewOutletItem} style={{...btnGreen, width:'auto', marginTop:0}}>Save New Item</button>
-      </div>
-     </div>
-    )}
-
+   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Outlet Inventory Balance</h3>
     {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
      <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:'12px', minWidth:'1180px', color:'#111827', background:'white', border:'1px solid #f1d35a', borderRadius:'12px', overflow:'hidden' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'760px' }}>
        <thead>
-        <tr style={{ background:'linear-gradient(90deg,#ca1b1b 0%,#d9362d 100%)', color:'white' }}>
-         <th style={{ textAlign:'left', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Product</th>
-         <th style={{ textAlign:'left', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>SKU / Barcode</th>
-         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Price</th>
-         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Current Stock</th>
-         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Sold Today</th>
-         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Movement Today</th>
-         <th style={{ textAlign:'right', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Stock In</th>
-         <th style={{ textAlign:'right', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Stock Out</th>
-         <th style={{ textAlign:'left', padding:'8px 8px', width:'180px', fontSize:'11px', fontWeight:'900', color:'white' }}>Remarks</th>
-         <th style={{ textAlign:'center', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Status</th>
-         <th style={{ textAlign:'center', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Action</th>
+        <tr style={{ background:'#f8f8f8' }}>
+         <th style={{ textAlign:'left', padding:'8px' }}>Product</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Starting</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Sold</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Movement</th>
+         <th style={{ textAlign:'right', padding:'8px' }}>Remaining</th>
+         <th style={{ textAlign:'center', padding:'8px', width:'90px' }}>Status</th>
         </tr>
        </thead>
        <tbody>
-        {categorizedOutletInventoryRows.map((row, rowIndex) => {
-         if (row.__categoryHeader) {
-          return (
-           <tr key={`category-${row.category}`}>
-            <td colSpan={11} style={{ padding:'7px 10px', background:'#fff4b8', borderTop:'1px solid #f1d35a', borderBottom:'1px solid #f1d35a', color:'#7c2d12', fontSize:'11px', fontWeight:'950', letterSpacing:'0.05em', textTransform:'uppercase' }}>
-             {row.category} <span style={{ color:'#92400e', fontWeight:'800', textTransform:'none', letterSpacing:0 }}>({row.count} item{row.count === 1 ? '' : 's'})</span>
-            </td>
-           </tr>
-          )
-         }
-         const draftKey = getInventoryDraftKey(row)
-         const draft = inventoryDrafts[draftKey] || {}
-         const projectedStock = safeNum(row.remainingStock, 0) + safeNum(draft.stockIn, 0) - safeNum(draft.stockOut, 0)
-         const saving = inventorySavingId === draftKey
-         return (
-          <tr key={row.id || row.product_name} style={{ background:projectedStock < 0 ? '#fff1f1' : (rowIndex % 2 === 0 ? '#ffffff' : '#fffdf5') }}>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'850' }}>
-            <strong style={{ color:'#111827', fontSize:'12px', fontWeight:'950', lineHeight:1.1 }}>{row.product_name}</strong><br/>
-            <span style={{ color:'#6b7280', fontSize:'10px', fontWeight:'750' }}>{row.category || '-'}</span>
-           </td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#374151', fontWeight:'750' }}>
-            <strong style={{ fontSize:'11px', color:'#111827', fontWeight:'950' }}>{row.sku || '-'}</strong>
-            <span style={{ fontSize:'10px', color:'#6b7280', fontWeight:'750', marginLeft:'6px' }}>{row.barcode || '-'}</span>
-            <div style={{ display:'flex', gap:'4px', marginTop:'4px', flexWrap:'wrap' }}>
-             {!row.barcode && canEditOutletInventory && (
-              <button
-               onClick={()=>generateBarcodeForProduct(row).catch(err=>alert('Barcode generation failed: ' + (err?.message || String(err))))}
-               style={{ background:'#FDD412', color:'#111827', border:'none', borderRadius:'7px', padding:'3px 6px', fontSize:'9.5px', fontWeight:'900', cursor:'pointer' }}
-              >Generate</button>
-             )}
-             {(row.barcode || row.sku || row.id) && (
-              <button
-               onClick={()=>downloadBarcodeLabel(row)}
-               style={{ background:'#ffffff', color:'#ca1b1b', border:'1px solid #f1d35a', borderRadius:'7px', padding:'3px 6px', fontSize:'9.5px', fontWeight:'900', cursor:'pointer' }}
-              >PNG Label</button>
-             )}
-            </div>
-           </td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
-            <input
-             type="number"
-             min="0"
-             step="0.01"
-             disabled={!canEditOutletInventory}
-             value={draft.price ?? row.sellingPrice}
-             onChange={e=>setInventoryDraftValue(row, 'price', e.target.value)}
-             style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}}
-            />
-           </td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', fontWeight:'950', color:'#111827', fontSize:'12px' }}>{row.remainingStock}</td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:'#ca1b1b', fontWeight:'950', fontSize:'12px' }}>{row.soldQty}</td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:row.movementQty < 0 ? '#ca1b1b' : '#087a37', fontWeight:'950', fontSize:'12px' }}>{row.movementQty}</td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
-            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockIn || ''} onChange={e=>setInventoryDraftValue(row, 'stockIn', e.target.value)} placeholder="0" style={{...inputStyle, width:'62px', marginBottom:0, textAlign:'right', padding:'5px 6px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}} />
-           </td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
-            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockOut || ''} onChange={e=>setInventoryDraftValue(row, 'stockOut', e.target.value)} placeholder="0" style={{...inputStyle, width:'62px', marginBottom:0, textAlign:'right', padding:'5px 6px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}} />
-           </td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'800' }}>
-            <input disabled={!canEditOutletInventory} value={draft.remarks || ''} onChange={e=>setInventoryDraftValue(row, 'remarks', e.target.value)} placeholder="Reason / note" style={{...inputStyle, width:'145px', marginBottom:0, padding:'5px 7px', color:'#111827', fontWeight:'750', fontSize:'11px', border:'1px solid #e2d078', background:'#ffffff'}} />
-           </td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center', color:row.status === 'OK' ? '#087a37' : '#ca1b1b', fontWeight:'950', fontSize:'11px' }}>
-            {projectedStock < 0 ? 'Invalid' : row.status}
-           </td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center' }}>
-            <button
-             disabled={!canEditOutletInventory || saving}
-             onClick={()=>saveOutletInventoryRow(row)}
-             style={{...btnGreen, width:'auto', marginTop:0, padding:'6px 10px', opacity:(!canEditOutletInventory || saving) ? 0.65 : 1, fontSize:'11px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(45,138,78,0.18)'}}
-            >
-             {saving ? 'Saving...' : 'Save'}
-            </button>
-           </td>
-          </tr>
-         )
-        })}
+        {outletBalances.map(row => (
+         <tr key={row.id || row.product_name}>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
+           <strong>{row.product_name}</strong><br/>
+           <span style={{ color:'#999', fontSize:'10px' }}>{row.category}</span>
+          </td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.startingStock}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{row.soldQty}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.movementQty}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{row.remainingStock}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center', width:'90px', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>{row.status}</td>
+         </tr>
+        ))}
        </tbody>
       </table>
-      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>No product matched your search.</p>}
      </div>
     )}
    </div>
@@ -21897,7 +19463,6 @@ function printCompanyDocumentRecord(record) {
  loadMyCashAdvances(adminEmployee)
  loadMyAttendanceHistory(adminEmployee)
  loadMyLeaveBalance(adminEmployee)
- loadMedicalCertificateLock(adminEmployee)
  checkAnnouncements(adminEmployee)
  setCameFromAdmin(true)
  setAdminMode(false)
@@ -21915,7 +19480,6 @@ function printCompanyDocumentRecord(record) {
  {toast.msg}
  </div>
  )}
- {renderAppUpdateBanner()}
  {showAdminPasswordForm && (
  <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:99998, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
  <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'420px', width:'100%', boxShadow:'0 10px 40px rgba(0,0,0,0.35)' }}>
@@ -22066,7 +19630,7 @@ function printCompanyDocumentRecord(record) {
  <SectionErrorBoundary resetKey={activeTab}>
 
  {/* POS MONITOR */}
- {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
+ {activeTab==='posMonitor' && <PosMonitorPanel />}
 
  {/* DASHBOARD */}
  {activeTab==='dashboard' && (
@@ -22444,44 +20008,6 @@ function printCompanyDocumentRecord(record) {
  </div>
  ))}
 
-
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'14px', marginBottom:'16px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'8px' }}>
- <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Staff Hourly Rates</h3>
- <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Computed using the same payroll basis: daily rate ÷ 8, or fixed monthly/semi-monthly converted using annual working days.</p>
- </div>
- <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={exportEmployeeHourlyRatesCSV}>EXPORT CSV</button>
- </div>
- <div style={{ overflowX:'auto', border:'1px solid #eee', borderRadius:'10px' }}>
- <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'900px', fontSize:'12px' }}>
- <thead>
- <tr style={{ background:'#1a1a2e', color:'white' }}>
- {['Employee','Position','Basis','Daily Equivalent','Monthly','Semi-Monthly','Hourly Rate','Formula / Source','Status'].map(h => <th key={h} style={{ padding:'8px', textAlign:h==='Employee'||h==='Position'||h==='Formula / Source'?'left':'right' }}>{h}</th>)}
- </tr>
- </thead>
- <tbody>
- {(employees || []).map(emp => {
- const rateInfo = getEmployeeHourlyRateInfo(emp)
- return (
- <tr key={emp.id} style={{ borderBottom:'1px solid #f0f0f0', background:rateInfo.isConfigured?'white':'#fff5f5' }}>
- <td style={{ padding:'8px', fontWeight:'bold', color:'#333', textAlign:'left' }}>{emp.full_name}<div style={{ color:'#888', fontSize:'10px', fontWeight:'500' }}>{emp.employee_code || ''}</div></td>
- <td style={{ padding:'8px', textAlign:'left' }}>{emp.position || '-'}<div style={{ color:'#999', fontSize:'10px' }}>{emp.department || ''}</div></td>
- <td style={{ padding:'8px', textAlign:'right', whiteSpace:'nowrap' }}>{rateInfo.basisLabel}</td>
- <td style={{ padding:'8px', textAlign:'right', fontWeight:'bold' }}>{rateInfo.dailyEquivalent > 0 ? php(rateInfo.dailyEquivalent) : '-'}</td>
- <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.monthlySalary > 0 ? php(rateInfo.monthlySalary) : '-'}</td>
- <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.semiMonthlySalary > 0 ? php(rateInfo.semiMonthlySalary) : '-'}</td>
- <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:rateInfo.isConfigured?'#2d8a4e':'#ca1b1b' }}>{rateInfo.isConfigured ? php(rateInfo.hourlyRate) : 'Missing'}</td>
- <td style={{ padding:'8px', textAlign:'left', color:'#666', fontSize:'11px' }}>{rateInfo.formulaNote}</td>
- <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.isConfigured ? <Badge label="OK" color="green" /> : <Badge label="MISSING RATE" color="red" />}</td>
- </tr>
- )
- })}
- </tbody>
- </table>
- </div>
- </div>
-
  <h3 style={{ color:'#ca1b1b', marginTop:'16px', marginBottom:'10px' }}> Add New Employee</h3>
  <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
  {[[' Basic Information'],[['Employee Code *','code'],['Full Name *','name'],['Position *','position'],['PIN *','pin'],['Department','department']]].length && null}
@@ -22513,10 +20039,10 @@ function printCompanyDocumentRecord(record) {
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Production Labor / COGS will be included in COGS after payroll is released. Other classifications remain operating payroll expense.</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
- <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Policy</p>
- <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Regular Holiday premium</label>
- <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Special Holiday premium</label>
- <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Company rule: no staff or supervisor is exempted from worked-holiday premium computation.</p>
+ <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
+ <label style={lblS}><input type="checkbox" checked={newEmpFields.regularHolidayEligible !== false} onChange={e=>setNewEmpFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
+ <label style={lblS}><input type="checkbox" checked={newEmpFields.specialHolidayEligible !== false} onChange={e=>setNewEmpFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Uncheck for supervisors or employees you want exempted from holiday premium computation.</p>
  </div>
  {adminRole==='owner' && (<>
  <label style={lblS}> Admin Role (Owner only grants system access):</label>
@@ -22599,13 +20125,13 @@ function printCompanyDocumentRecord(record) {
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
  {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
- <p style={cps}>Holiday Pay: <Badge label="All Employees Eligible" color="green" /> <Badge label="No Exemptions" color="blue" /></p>
+ <p style={cps}>Holiday Pay: <Badge label={emp.regular_holiday_pay_eligible === false?'Regular Exempt':'Regular Eligible'} color={emp.regular_holiday_pay_eligible === false?'red':'green'} /> <Badge label={emp.special_holiday_pay_eligible === false?'Special Exempt':'Special Eligible'} color={emp.special_holiday_pay_eligible === false?'red':'green'} /></p>
  </div>
  </div>
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:true, specialHolidayEligible:true, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -22637,10 +20163,10 @@ function printCompanyDocumentRecord(record) {
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Use Production Labor / COGS for mixers, frymen, bakers, finishers, and packers directly making products.</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
- <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Policy</p>
- <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Regular Holiday premium</label>
- <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Special Holiday premium</label>
- <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Company rule: no staff or supervisor is exempted from worked-holiday premium computation.</p>
+ <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
+ <label style={lblS}><input type="checkbox" checked={editFields.regularHolidayEligible !== false} onChange={e=>setEditFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
+ <label style={lblS}><input type="checkbox" checked={editFields.specialHolidayEligible !== false} onChange={e=>setEditFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Uncheck Regular and/or Special if this employee should not receive that holiday premium.</p>
  </div>
  {adminRole==='owner'||adminRole==='manager'? (<>
  <label style={lblS}> Primary Role (grants system access):</label>
@@ -23069,7 +20595,7 @@ function printCompanyDocumentRecord(record) {
  <h2 style={h2s}>Holiday Calendar</h2>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'13px', color:'#555' }}>
  <strong style={{ color:'#ca1b1b' }}>Holiday Pay Rules (DOLE):</strong><br/>
- Regular Holiday Worked: <strong>200%</strong> | Not Worked: <strong>100%</strong> only if not ABS before/on/after holiday<br/>
+ Regular Holiday Worked: <strong>200%</strong> | Not Worked: <strong>100%</strong> (paid even if absent)<br/>
  Special Non-Working Worked: <strong>130%</strong> | Not Worked: <strong>No Pay (NWNP)</strong>
  </div>
 
@@ -23427,7 +20953,7 @@ function printCompanyDocumentRecord(record) {
  )}
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT CSV</button>
- <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
+ <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> RELEASE FINAL PAYROLL</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
  {payrollSummary && (
@@ -23614,10 +21140,7 @@ function printCompanyDocumentRecord(record) {
  </thead>
  <tbody>
  {row.caItems.map(ca => {
- const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
- const effectivePaid = getCashAdvancePaidAmount(ca)
- const effectiveStatus = getCashAdvanceStatusForBalance(effectiveBalance, ca.status)
- const inst = getCAInstallmentInfo({ ...ca, balance:effectiveBalance, amount_paid:effectivePaid }, {})
+ const inst = getCAInstallmentInfo(ca, {})
  const sourceReq = ca.source_request_id || ca.cash_advance_request_id || ca.approved_request_id || ''
  return (
  <tr key={ca.id}>
@@ -23633,14 +21156,11 @@ function printCompanyDocumentRecord(record) {
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount)}</td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(inst.perPayroll)}</td>
  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>{inst.total? `${inst.completed}/${inst.total} done · ${inst.remaining} left` : `${ca.installments_remaining?? 'Not recorded'} left`}</td>
- <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(effectivePaid)}</td>
- <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:effectiveBalance>0?'#ca1b1b':'#2d8a4e' }}>{php(effectiveBalance)}</td>
+ <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount_paid)}</td>
+ <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:safeNum(ca.balance,0)>0?'#ca1b1b':'#2d8a4e' }}>{php(ca.balance)}</td>
  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>
- <Badge label={effectiveStatus} color={effectiveStatus.toLowerCase()==='paid'?'green':'orange'} />
- {String(ca.status || '').trim().toLowerCase() !== effectiveStatus.toLowerCase() && (
-  <div style={{ color:'#b45309', fontSize:'10px', fontWeight:'bold', marginTop:'4px' }}>stored: {String(ca.status || 'Blank')}</div>
- )}
- {adminRole==='owner' && effectiveStatus.toLowerCase()==='paid' && effectiveBalance<=0.009 && safeNum(ca.amount,0)>0 && effectivePaid>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
+ <Badge label={String(ca.status||'Unknown')} color={String(ca.status||'').toLowerCase()==='paid'?'green':'orange'} />
+ {adminRole==='owner' && String(ca.status||'').toLowerCase()==='paid' && safeNum(ca.balance,0)<=0 && safeNum(ca.amount,0)>0 && safeNum(ca.amount_paid,0)>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
  <button
  style={{ background:'#fff8dc', color:'#ca1b1b', border:'1px solid #FDD412', borderRadius:'8px', padding:'5px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'10px', marginTop:'6px' }}
  onClick={()=>reopenCashAdvanceForPayrollDeduction(ca)}
@@ -24399,10 +21919,7 @@ function printCompanyDocumentRecord(record) {
  <button style={{...btnBlack, marginTop:'20px' }} onClick={async()=>{ await loadResolvedCARequests(); setShowResolvedCA(!showResolvedCA) }}>{showResolvedCA?' HIDE':' VIEW'} RESOLVED REQUESTS</button>
  {showResolvedCA && resolvedCARequests.map(req=>{
  const ledger = req.cashAdvanceLedger || null
- const ledgerEffectiveBalance = ledger ? getCashAdvanceEffectiveBalance(ledger) : 0
- const ledgerEffectivePaid = ledger ? getCashAdvancePaidAmount(ledger) : 0
- const ledgerEffectiveStatus = ledger ? getCashAdvanceStatusForBalance(ledgerEffectiveBalance, ledger.status) : 'Unknown'
- const inst = getCAInstallmentInfo(ledger ? { ...ledger, balance:ledgerEffectiveBalance, amount_paid:ledgerEffectivePaid } : {}, req)
+ const inst = getCAInstallmentInfo(ledger || {}, req)
  const approved = String(req.status || '').toLowerCase() === 'approved'
  const disapproved = String(req.status || '').toLowerCase() === 'disapproved'
  return (
@@ -24431,12 +21948,9 @@ function printCompanyDocumentRecord(record) {
  {approved && (
  <div style={{ marginTop:'10px', background:'white', border:'1px solid #d9f2df', borderRadius:'10px', padding:'10px' }}>
  <p style={{ margin:'0 0 8px', color:'#2d8a4e', fontWeight:'bold', fontSize:'13px' }}>Cash Advance Ledger / Payroll Deduction Plan</p>
- {ledger && adminRole === 'owner' && (
+ {ledger && safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', margin:'0 0 10px' }}>
-   {safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
-    <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
-   )}
-   <button style={{...btnYellow, background:'#FDD412', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>correctCashAdvanceAmount(ledger, req)}>CORRECT CA AMOUNT</button>
+   <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
   </div>
  )}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px' }}>
@@ -24457,13 +21971,13 @@ function printCompanyDocumentRecord(record) {
   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'8px' }}>
   {[
    ['Original Amount', php(ledger.amount)],
-   ['Already Paid/Deducted', php(ledgerEffectivePaid)],
-   ['Current Balance', php(ledgerEffectiveBalance)],
-   ['Ledger Status', ledgerEffectiveStatus]
+   ['Already Paid/Deducted', php(ledger.amount_paid)],
+   ['Current Balance', php(ledger.balance)],
+   ['Ledger Status', ledger.status || 'Unknown']
   ].map(([label,value])=>(
    <div key={label} style={{ background:'#fff', border:'1px solid #eee', borderRadius:'8px', padding:'8px' }}>
    <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
-   <p style={{ margin:0, fontWeight:'bold', color:label==='Current Balance' && ledgerEffectiveBalance>0?'#ca1b1b':'#333', fontSize:'12px' }}>{value}</p>
+   <p style={{ margin:0, fontWeight:'bold', color:label==='Current Balance' && safeNum(ledger.balance,0)>0?'#ca1b1b':'#333', fontSize:'12px' }}>{value}</p>
    </div>
   ))}
   </div>
@@ -26077,7 +23591,7 @@ function printCompanyDocumentRecord(record) {
   return `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(searchText)
  })
  if (!catItems.length) return null
- return <optgroup key={cat} label={cat}>{catItems.map(i=>{ const info=isRawMaterialItem(i)?getFriendlyRawStockInfo(i):null; return <option key={i.id} value={i.id}>{i.name} {info ? info.primary : `${Number(i.current_stock||0).toFixed(2)} ${i.unit}`} on hand</option> })}</optgroup>
+ return <optgroup key={cat} label={cat}>{catItems.map(i=><option key={i.id} value={i.id}>{i.name} {Number(i.current_stock||0).toFixed(2)} {i.unit} on hand</option>)}</optgroup>
  }) }
  </select>
  {wastageItemSearch && !INVENTORY_CATEGORIES.some(cat=>inventoryItems.some(i=>getInventoryCategoryLabel(i)===cat && `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(String(wastageItemSearch || '').trim().toLowerCase()))) && (
@@ -26554,7 +24068,6 @@ function printCompanyDocumentRecord(record) {
  </select>
  <label style={lblS}>Quantity ({stockTxItemId? (inventoryItems.find(i=>i.id===stockTxItemId)?.unit||'units'): 'units'}):</label>
  <input type="number" placeholder="Enter quantity" value={stockTxQty} onChange={e=>setStockTxQty(e.target.value)} style={inputStyle} min="0.01" step="0.01" />
- {stockTxItemId && isRawMaterialItem(inventoryItems.find(i=>i.id===stockTxItemId) || {}) && (()=>{ const info=getFriendlyRawStockInfo(inventoryItems.find(i=>i.id===stockTxItemId) || {}); return <p style={{ margin:'-6px 0 10px', color:'#4a90d9', fontSize:'11px', fontWeight:'800' }}>Raw material base unit is grams. Current display: {info.primary}{info.secondary ? ` (${info.secondary})` : ''}. {info.purchaseUnit && info.purchaseSize>0 ? `1 ${info.purchaseUnit} = ${info.purchaseSize.toLocaleString('en-PH')} g.` : ''}</p> })()}
  <label style={lblS}>Reference <span style={{ color:'#aaa', fontWeight:'normal' }}>(e.g. DR#, PO#, batch no.)</span>:</label>
  <input type="text" placeholder="Optional reference number" value={stockTxReference} onChange={e=>setStockTxReference(e.target.value)} style={inputStyle} />
  {stockTxType==='in' && stockTxItemId && isExpiryTrackedItem(inventoryItems.find(i=>i.id===stockTxItemId)) && (
@@ -26657,9 +24170,6 @@ function printCompanyDocumentRecord(record) {
  <select value={newItemCategory} onChange={e=>{
  const category = e.target.value
  setNewItemCategory(category)
- if (isRawMaterialCategoryName(category)) {
-  setNewItemUnit('g')
- }
  if (isSnackDrinkCategoryName(category) && safeNum(newItemBuyingPrice, 0) > 0) {
   setNewItemSellingPrice(snackDrinkAutoSellingPrice(newItemBuyingPrice))
  }
@@ -26671,49 +24181,6 @@ function printCompanyDocumentRecord(record) {
  <option value=""> No supplier assigned </option>
  {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
  </select>
- {isRawMaterialCategoryName(newItemCategory) ? (()=>{
- const setup = computeRawMaterialAddSetup()
- const previewItem = { current_stock:setup.currentStock, unit:'g', base_unit:'g', purchase_unit:newItemPurchaseUnit, purchase_unit_size:setup.purchaseSize, purchase_unit_cost:setup.purchaseCost, cost_per_unit:setup.costPerUnit }
- const stockInfo = getFriendlyRawStockInfo(previewItem)
- return (
- <div style={{ background:'#fff', border:'1px solid #b7d9ff', borderRadius:'12px', padding:'12px', marginBottom:'10px' }}>
-  <p style={{ margin:'0 0 6px', color:'#4a90d9', fontSize:'12px', fontWeight:'900' }}>Professional Raw Material Setup</p>
-  <p style={{ margin:'0 0 10px', color:'#777', fontSize:'11px', lineHeight:1.4 }}>Recipes and costing will use grams internally. You can encode inventory using sack/kg/pack so the screen stays easy to understand.</p>
-  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px' }}>
-   <div>
-    <label style={lblS}>Purchase Unit</label>
-    <select value={newItemPurchaseUnit} onChange={e=>setNewItemPurchaseUnit(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
-     {RAW_MATERIAL_PURCHASE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
-    </select>
-   </div>
-   <div>
-    <label style={lblS}>Size per Purchase Unit (grams)</label>
-    <input type="number" placeholder="e.g. 25000 for 25kg sack" value={newItemPurchaseUnitSize} onChange={e=>setNewItemPurchaseUnitSize(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
-   </div>
-   <div>
-    <label style={lblS}>Cost per Purchase Unit</label>
-    <input type="number" placeholder="e.g. 4825" value={newItemPurchaseUnitCost} onChange={e=>setNewItemPurchaseUnitCost(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
-   </div>
-   <div>
-    <label style={lblS}>Current Stock ({newItemPurchaseUnit || 'unit'} count)</label>
-    <input type="number" placeholder="e.g. 2" value={newItemStockPurchaseQty} onChange={e=>setNewItemStockPurchaseQty(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
-   </div>
-   <div>
-    <label style={lblS}>Minimum Stock ({newItemPurchaseUnit || 'unit'} count)</label>
-    <input type="number" placeholder="e.g. 1" value={newItemMinPurchaseQty} onChange={e=>setNewItemMinPurchaseQty(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
-   </div>
-   <div>
-    <label style={lblS}>Expiry Date / FEFO Date</label>
-    <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
-   </div>
-  </div>
-  <div style={{ marginTop:'10px', background:'#f0fff4', border:'1px solid #b7ebc6', borderRadius:'10px', padding:'10px', color:'#1f7a3a', fontSize:'11px', fontWeight:'800', lineHeight:1.5 }}>
-   Preview: Stock will save as {setup.currentStock.toLocaleString('en-PH', { maximumFractionDigits:2 })} g ({stockInfo.primary}) | Min: {setup.minStock.toLocaleString('en-PH', { maximumFractionDigits:2 })} g | Cost: {php(setup.costPerUnit)}/g{setup.costPerUnit > 0 ? ` (${php(setup.costPerUnit * 1000)}/kg)` : ''}
-  </div>
-  {setup.purchaseSize <= 0 || setup.purchaseCost <= 0 ? <p style={{ margin:'8px 0 0', color:'#ca1b1b', fontSize:'11px', fontWeight:'800' }}>Enter purchase size and purchase cost to auto-compute cost per gram.</p> : null}
- </div>
- )
-})() : (
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
  <div>
  <label style={lblS}>Unit of Measure:</label>
@@ -26767,7 +24234,6 @@ function printCompanyDocumentRecord(record) {
  </div>
  )}
  </div>
-)}
  <button style={{...btnBlack, background:'#4a90d9', marginTop:'14px', opacity:addItemLoading?0.6:1 }} disabled={addItemLoading} onClick={addInventoryItem}>{addItemLoading?' Adding...':' ADD ITEM'}</button>
  </div>
  )}
@@ -26843,12 +24309,12 @@ function printCompanyDocumentRecord(record) {
  <thead>
  <tr style={{ background:'#fff8dc', borderBottom:'1px solid #eadf9a' }}>
  <th style={{ padding:'6px 7px', textAlign:'left', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Item</th>
- <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Base</th>
- <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Stock Display</th>
+ <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Unit</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>On Hand</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Used/Sold</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Added</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Min</th>
- <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Costing / Purchase</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Cost</th>
  <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Status</th>
  <th style={{ padding:'6px 7px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Action</th>
  </tr>
@@ -26857,9 +24323,6 @@ function printCompanyDocumentRecord(record) {
  {group.items.map(item=>{
  const isLow = Number(item.current_stock||0)<=Number(item.min_stock||0)&&Number(item.min_stock||0)>0
  const isEditing = editingItemId===item.id
- const isRawMaterialRow = isRawMaterialItem(item)
- const rawStockInfo = isRawMaterialRow ? getFriendlyRawStockInfo(item) : null
- const rawMinInfo = isRawMaterialRow ? getFriendlyRawStockInfo(item, item.min_stock) : null
  const movement = movementByItem[String(item.id)] || { inQty:0, outQty:0 }
  const manualCurrent = editItemFields.current_stock!==undefined && editItemFields.current_stock!=='' ? Number(editItemFields.current_stock) : Number(item.current_stock || 0)
  const addQty = Number(editItemFields.additional_stock_today || 0)
@@ -26891,16 +24354,6 @@ function printCompanyDocumentRecord(record) {
  <option value="">No supplier</option>
  {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
  </select>
- {isRawMaterialCategoryName(editItemFields.category ?? item.category) && (
-  <div style={{ background:'#f7fbff', border:'1px solid #cfe4ff', borderRadius:'8px', padding:'7px', display:'grid', gap:'5px' }}>
-   <div style={{ fontSize:'9.5px', color:'#4a90d9', fontWeight:'900' }}>Purchase unit setup</div>
-   <select value={editItemFields.purchase_unit??item.purchase_unit??'sack'} onChange={e=>setEditItemFields(p=>({...p,purchase_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }}>
-    {RAW_MATERIAL_PURCHASE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
-   </select>
-   <input type="number" placeholder="Size in grams per unit" value={editItemFields.purchase_unit_size??item.purchase_unit_size??''} onChange={e=>setEditItemFields(p=>({...p,purchase_unit_size:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }} min="0" step="0.01" />
-   <input type="number" placeholder="Cost per purchase unit" value={editItemFields.purchase_unit_cost??item.purchase_unit_cost??''} onChange={e=>setEditItemFields(p=>({...p,purchase_unit_cost:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }} min="0" step="0.01" />
-  </div>
- )}
  {EXPIRY_TRACKED_CATEGORIES.includes(editItemFields.category??item.category) && (
  <input type="date" title="Expiry / FEFO date" value={editItemFields.expiry_date??item.expiry_date??''} onChange={e=>setEditItemFields(p=>({...p,expiry_date:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }} />
  )}
@@ -26909,7 +24362,6 @@ function printCompanyDocumentRecord(record) {
  <div>
  <div style={{ fontWeight:'700', color:'#1a1a2e', fontSize:'11.5px', lineHeight:1.2, textTransform:'none' }}>{item.name}</div>
  <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', lineHeight:1.15 }}>{suppliers.find(s=>s.id===item.supplier_id)?.name || 'No supplier'}</div>
- {isRawMaterialRow && rawStockInfo?.purchaseUnit && rawStockInfo?.purchaseSize > 0 && <div style={{ fontSize:'9.5px', color:'#4a90d9', marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>Purchase: {rawStockInfo.purchaseUnit} = {rawStockInfo.purchaseSize.toLocaleString('en-PH')} g{rawStockInfo.purchaseCostText ? ` | ${rawStockInfo.purchaseCostText}` : ''}</div>}
  {item.expiry_date && (()=>{ const ex = getExpiryStatusInfo(item); return <div style={{ fontSize:'9.5px', color:ex.color, marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>FEFO: {ex.label}</div> })()}
  {(() => { const bs = getBatchSummaryForItem(item); return bs.batchCount > 0 ? <div style={{ fontSize:'9.5px', color:bs.expiredQty>0?'#ca1b1b':bs.nearQty>0?'#f57c00':'#4a90d9', marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>Lots: {bs.batchCount} | Batch qty: {safeNum(bs.totalBatchQty,0).toLocaleString('en-PH')} | Nearest: {bs.nearest?.expiry_date || 'No expiry'}</div> : null })()}
  </div>
@@ -26918,28 +24370,17 @@ function printCompanyDocumentRecord(record) {
 
  <td style={{ ...rowBase, textAlign:'center', color:'#666' }}>
  {isEditing? (
- isRawMaterialCategoryName(editItemFields.category ?? item.category) ? (
-  <div style={{ fontSize:'10px', fontWeight:'900', color:'#4a90d9' }}>g<div style={{ fontSize:'9px', color:'#888', fontWeight:'600' }}>base</div></div>
- ) : (
-  <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 6px' }}>
-  {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
-  </select>
- )
- ): (isRawMaterialRow ? <><strong style={{ color:'#4a90d9' }}>g</strong><div style={{ fontSize:'9px', color:'#888' }}>base</div></> : item.unit)}
+ <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 6px' }}>
+ {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+ </select>
+ ): item.unit}
  </td>
 
  <td style={numStyle}>
  {isEditing? (
  <input type="number" value={editItemFields.current_stock??item.current_stock} onChange={e=>setEditItemFields(p=>({...p,current_stock:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
  ): (
- isRawMaterialRow ? (
-  <div>
-   <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'800' }}>{rawStockInfo.primary}</strong>
-   {rawStockInfo.secondary && <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', fontWeight:'700' }}>{rawStockInfo.secondary}</div>}
-  </div>
- ) : (
-  <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'700' }}>{Number(item.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}</strong>
- )
+ <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'700' }}>{Number(item.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}</strong>
  )}
  </td>
 
@@ -26962,7 +24403,7 @@ function printCompanyDocumentRecord(record) {
  <td style={{ ...numStyle, color:'#777' }}>
  {isEditing? (
  <input type="number" value={editItemFields.min_stock??item.min_stock} onChange={e=>setEditItemFields(p=>({...p,min_stock:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
- ): (isRawMaterialRow && rawMinInfo ? <><strong>{rawMinInfo.primary}</strong>{rawMinInfo.secondary && <div style={{ fontSize:'9px', color:'#999' }}>{rawMinInfo.secondary}</div>}</> : Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 }))}
+ ): Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}
  </td>
 
  
@@ -26992,14 +24433,6 @@ function printCompanyDocumentRecord(record) {
      Auto Sell: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)))}
     </div>
    </div>
-  ) : isRawMaterialCategoryName(editItemFields.category ?? item.category) ? (
-   <div>
-    <input type="number" value={(() => { const size=safeNum(editItemFields.purchase_unit_size ?? item.purchase_unit_size,0); const cost=safeNum(editItemFields.purchase_unit_cost ?? item.purchase_unit_cost,0); return size>0&&cost>0 ? Math.round(((cost/size)+Number.EPSILON)*1000000)/1000000 : (editItemFields.cost_per_unit??item.cost_per_unit) })()} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value,purchase_unit_cost:''}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.000001" />
-    <div style={{ fontSize:'9px', color:'#4a90d9', fontWeight:'900', marginTop:'3px' }}>Cost per g</div>
-    {safeNum(editItemFields.purchase_unit_size ?? item.purchase_unit_size,0)>0 && safeNum(editItemFields.purchase_unit_cost ?? item.purchase_unit_cost,0)>0 && (
-     <div style={{ fontSize:'9px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Auto from purchase</div>
-    )}
-   </div>
   ) : (
    <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
   )
@@ -27011,12 +24444,6 @@ function printCompanyDocumentRecord(record) {
      Supplier: {php(getSnackDrinkDisplayBuyingPrice(item))}
     </div>
    </>
-  ) : isRawMaterialRow ? (
-   <div>
-    <div style={{ color:'#1a1a2e', fontWeight:'900' }}>{php(rawStockInfo.costPerBase)}/g</div>
-    {rawStockInfo.costPerKg > 0 && <div style={{ fontSize:'9.5px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>{php(rawStockInfo.costPerKg)}/kg</div>}
-    {rawStockInfo.purchaseCostText && <div style={{ fontSize:'9.5px', color:'#4a90d9', fontWeight:'800', marginTop:'2px' }}>{rawStockInfo.purchaseCostText}</div>}
-   </div>
   ) : php(item.cost_per_unit || 0)
  )}
  </td>
@@ -27249,7 +24676,6 @@ function printCompanyDocumentRecord(record) {
  <strong style={{ color:'#ca1b1b' }}> Required Supabase Tables:</strong>
  <p style={{ color:'#555', margin:'6px 0 2px' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> id (uuid PK), name, category, selling_price (numeric), pieces_per_batch (numeric), is_active (bool default true), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>base_dough_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
- <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>powder_base_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>variant_recipes</code> id (uuid PK), variant_id (uuid), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), ingredient_type (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_logs</code> id (uuid PK), production_date (date), total_pieces (numeric), ingredient_cost (numeric), labor_cost (numeric), overhead_cost (numeric), total_cost (numeric), notes (text), logged_by (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_log_items</code> id (uuid PK), log_id (uuid), variant_id (uuid), variant_name (text), pieces_produced (numeric), ingredient_cost (numeric), created_at</p>
@@ -27271,10 +24697,10 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Base Dough Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across ALL variants. Enter all production recipe quantities in grams (g) per batch.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across ALL variants. Enter ingredients per batch.</p>
  </div>
  {selectedRecipeVariantId!== 'base'? (
- <button style={{...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
+ <button style={{...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
  ): (
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={saveBaseDough}>{savingRecipe?' Saving...':' SAVE'}</button>
@@ -27287,15 +24713,15 @@ function printCompanyDocumentRecord(record) {
  {editingBaseDough.map((row,i)=>(
  <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
  <div>
- <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingBaseDough]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:'g'}; setEditingBaseDough(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
+ <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingBaseDough]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:inv?.unit||upd[i].unit}; setEditingBaseDough(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
  <option value=""> Link to inventory item </option>
- {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
+ {inventoryItems.filter(it=>it.category==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
  </select>
  <input placeholder="Or type ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],item_name:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'4px' }} />
  </div>
  <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],quantity_per_batch:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }} min="0" step="0.01" />
  <select value={row.unit||'g'} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],unit:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
- {['g'].map(u=><option key={u} value={u}>{u}</option>)}
+ {['g','kg','mL','L','pcs','tbsp','tsp','cups'].map(u=><option key={u} value={u}>{u}</option>)}
  </select>
  <input placeholder="Notes (optional)" value={row.notes||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],notes:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} />
  <button onClick={()=>setEditingBaseDough(editingBaseDough.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}> </button>
@@ -27314,79 +24740,12 @@ function printCompanyDocumentRecord(record) {
  </div>
  {baseDoughIngredients.map((r,i)=>{
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const qtyGrams = productionRecipeQuantityGrams(r)
- const cost = inv? productionRecipeIngredientCost(r): 0
+ const cost = inv? Number(r.quantity_per_batch||0) * Number(inv.cost_per_unit||0): 0
  return (
  <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
  <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
- <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
- </div>
- )
- }) }
- </div>
- )}
- </div>
- )}
- </div>
-
-
- {/* POWDER BASE RECIPE */}
- <div style={{ background:'white', border:'2px solid #7b4f9e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
- <div>
- <h3 style={{ color:'#7b4f9e', margin:'0 0 4px', fontSize:'15px' }}> Powder Base Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across variants like Base Dough. Enter all powder base quantities in grams (g) per batch.</p>
- </div>
- {selectedRecipeVariantId!== 'powder_base'? (
- <button style={{...btnBlack, background:'#7b4f9e', width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('powder_base'); setEditingPowderBase(powderBaseIngredients.length>0?powderBaseIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT POWDER BASE</button>
- ): (
- <div style={{ display:'flex', gap:'8px' }}>
- <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={savePowderBase}>{savingRecipe?' Saving...':' SAVE'}</button>
- <button style={{...btnGray, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setSelectedRecipeVariantId(null)}>CANCEL</button>
- </div>
- )}
- </div>
- {selectedRecipeVariantId === 'powder_base'? (
- <div>
- {editingPowderBase.map((row,i)=>(
- <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
- <div>
- <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingPowderBase]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:'g'}; setEditingPowderBase(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
- <option value=""> Link to inventory item </option>
- {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
- </select>
- <input placeholder="Or type ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],item_name:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'4px' }} />
- </div>
- <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],quantity_per_batch:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }} min="0" step="0.01" />
- <select value={row.unit||'g'} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],unit:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
- {['g'].map(u=><option key={u} value={u}>{u}</option>)}
- </select>
- <input placeholder="Notes (optional)" value={row.notes||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],notes:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} />
- <button onClick={()=>setEditingPowderBase(editingPowderBase.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}> </button>
- </div>
- ))}
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 16px', marginTop:'8px', fontSize:'12px' }} onClick={()=>setEditingPowderBase([...editingPowderBase, { item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }])}>+ ADD INGREDIENT</button>
- </div>
- ): (
- <div>
- {powderBaseIngredients.length === 0? (
- <p style={{ color:'#aaa', fontSize:'13px', fontStyle:'italic' }}>No powder base recipe set yet. Click Edit to define your powder base ingredients.</p>
- ): (
- <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#f9f9f9', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#888' }}>
- <span>Ingredient</span><span style={{ textAlign:'right' }}>Qty/batch</span><span style={{ textAlign:'right' }}>Unit</span><span style={{ textAlign:'right' }}>Cost/batch</span>
- </div>
- {powderBaseIngredients.map((r,i)=>{
- const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const qtyGrams = productionRecipeQuantityGrams(r)
- const cost = inv? productionRecipeIngredientCost(r): 0
- return (
- <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>{r.quantity_per_batch}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>{r.unit}</span>
  <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
  </div>
  )
@@ -27399,7 +24758,7 @@ function printCompanyDocumentRecord(record) {
 
  {/* VARIANT RECIPES */}
  <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}> Per-Variant Topping / Filling Recipes</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define toppings, fillings, and glazes in grams (g) only. Costing uses converted cost per gram.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define the additional ingredients (toppings, fillings, glazes) for each variant on top of the base dough.</p>
  {variantsLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading variants...</p>}
  {VARIANT_CATEGORIES.map(cat => {
  const catVariants = donutVariants.filter(v => v.category === cat)
@@ -27409,13 +24768,8 @@ function printCompanyDocumentRecord(record) {
  <div key={cat} style={{ marginBottom:'16px' }}>
  <div style={{ background:catColor, color:'white', padding:'8px 14px', borderRadius:'10px 10px 0 0', fontWeight:'bold', fontSize:'13px' }}> {cat}</div>
  {catVariants.map((v,i)=>{
- const variantExtraRows = variantRecipes[v.id] || []
- const hasVariantRecipe = variantExtraRows.length > 0
- const hasBaseRecipe = (baseDoughIngredients || []).length > 0
- const hasPowderBaseRecipe = (powderBaseIngredients || []).length > 0
- const hasAnyRecipeIngredients = hasBaseRecipe || hasPowderBaseRecipe || hasVariantRecipe
- const totalIngredientRows = (baseDoughIngredients || []).length + (powderBaseIngredients || []).length + variantExtraRows.length
- const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId!== 'base' && selectedRecipeVariantId!== 'powder_base'
+ const hasRecipe = (variantRecipes[v.id]||[]).length > 0
+ const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId!== 'base'
  return (
  <div key={v.id} style={{ border:`1px solid ${catColor}33`, borderTop:'none', background:i%2===0?'white':'#fafafa', padding:'10px 14px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
@@ -27426,9 +24780,8 @@ function printCompanyDocumentRecord(record) {
  {!editingVariantId || editingVariantId!== v.id? (
  <span style={{ fontSize:'11px', color:'#888' }}>{v.pieces_per_batch} pcs/batch</span>
  ): null}
- {hasAnyRecipeIngredients &&!isEditing && <Badge label={`${totalIngredientRows} ingredient(s) incl. shared base`} color="green" />}
- {!hasAnyRecipeIngredients &&!isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No recipe set</span>}
- {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && !isEditing && <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'700' }}>Shared base recipes auto-included. Add topping/filling only if needed.</span>}
+ {hasRecipe &&!isEditing && <Badge label={`${variantRecipes[v.id].length} ingredient(s)`} color="green" />}
+ {!hasRecipe &&!isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No toppings/filling set</span>}
  </div>
  {editingVariantId === v.id && (
  <div style={{ display:'flex', gap:'8px', marginTop:'8px', alignItems:'center', flexWrap:'wrap' }}>
@@ -27444,7 +24797,7 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', gap:'6px' }}>
  {editingVariantId!== v.id && <button style={{...btnYellow, padding:'5px 10px', fontSize:'11px' }} onClick={()=>{ setEditingVariantId(v.id); setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price }) }}> EDIT</button>}
  {!isEditing? (
- <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasVariantRecipe?variantExtraRows.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasVariantRecipe?'EDIT':'ADD'} RECIPE</button>
+ <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasRecipe?variantRecipes[v.id].map(r=>({...r})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasRecipe?'EDIT':'ADD'} RECIPE</button>
  ): (
  <div style={{ display:'flex', gap:'6px' }}>
  <button style={{...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?' ':' SAVE'}</button>
@@ -27455,21 +24808,18 @@ function printCompanyDocumentRecord(record) {
  </div>
  {isEditing && (
  <div style={{ marginTop:'10px', background:'#f9f9f9', padding:'12px', borderRadius:'8px', border:'1px solid #eee' }}>
- <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', marginBottom:'10px', fontSize:'11px', color:'#555', lineHeight:1.45 }}>
- <strong style={{ color:'#ca1b1b' }}>Base dough and powder base are automatically included.</strong> Add only the extra topping, filling, glaze, or coating for this variant. Do not add shared base ingredients again here.
- </div>
  {editingVariantRecipe.map((row,ri)=>(
  <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
  <div>
- <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingVariantRecipe]; upd[ri]={...upd[ri],inventory_item_id:e.target.value,item_name:inv?.name||upd[ri].item_name,unit:'g'}; setEditingVariantRecipe(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
+ <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingVariantRecipe]; upd[ri]={...upd[ri],inventory_item_id:e.target.value,item_name:inv?.name||upd[ri].item_name,unit:inv?.unit||upd[ri].unit}; setEditingVariantRecipe(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value=""> Link inventory item </option>
- {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
+ {inventoryItems.map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
  </select>
  <input placeholder="Ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],item_name:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'3px' }} />
  </div>
  <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],quantity_per_batch:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" step="0.01" />
  <select value={row.unit||'g'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],unit:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
- {['g'].map(u=><option key={u} value={u}>{u}</option>)}
+ {['g','kg','mL','L','pcs','tbsp','tsp','cups'].map(u=><option key={u} value={u}>{u}</option>)}
  </select>
  <select value={row.ingredient_type||'topping'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],ingredient_type:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value="topping">Topping</option>
@@ -27484,57 +24834,17 @@ function printCompanyDocumentRecord(record) {
  </div>
  )}
  {/* Show existing recipe (read mode) */}
- {!isEditing && hasAnyRecipeIngredients && (
- <div style={{ marginTop:'8px' }}>
- {(() => {
- const pieces = Math.max(1, Number(v.pieces_per_batch) || 1)
- const basePerPc = (baseDoughIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
- const powderPerPc = (powderBaseIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
- const variantPerPc = variantExtraRows.reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
- return (
- <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'7px 9px', marginBottom:'7px', fontSize:'11px', color:'#555', display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
- <strong style={{ color:'#ca1b1b' }}>Total ingredients/pc: {php(basePerPc + powderPerPc + variantPerPc)}</strong>
- <span>Base dough: {php(basePerPc)}</span>
- <span>Powder base: {php(powderPerPc)}</span>
- <span>Variant extras: {php(variantPerPc)}</span>
- </div>
- )
- })()}
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- {(baseDoughIngredients || []).map((r,ri)=>{
+ {!isEditing && hasRecipe && (
+ <div style={{ marginTop:'8px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ {variantRecipes[v.id].map((r,ri)=>{
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const qtyGrams = productionRecipeQuantityGrams(r)
- const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
+ const cost = inv? Number(r.quantity_per_batch||0)*Number(inv.cost_per_unit||0)/Math.max(1,Number(v.pieces_per_batch)): 0
  return (
- <div key={`base-${ri}`} style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#2d8a4e', fontSize:'10px' }}>(base dough)</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+ <div key={ri} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+ <strong>{r.item_name}</strong>: {r.quantity_per_batch}{r.unit} <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({r.ingredient_type})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
  </div>
  )
  }) }
- {(powderBaseIngredients || []).map((r,ri)=>{
- const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const qtyGrams = productionRecipeQuantityGrams(r)
- const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
- return (
- <div key={`powder-${ri}`} style={{ background:'#f3e8ff', border:'1px solid #e4d0ff', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>(powder base)</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
- </div>
- )
- }) }
- {variantExtraRows.map((r,ri)=>{
- const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const qtyGrams = productionRecipeQuantityGrams(r)
- const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
- return (
- <div key={`variant-${ri}`} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({r.ingredient_type})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
- </div>
- )
- }) }
- {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && (
- <div style={{ background:'#f7f7f7', borderRadius:'6px', padding:'4px 8px', fontSize:'11px', color:'#777', fontStyle:'italic' }}>No extra topping/filling added yet. This variant currently uses shared base recipes only.</div>
- )}
- </div>
  </div>
  )}
  </div>
@@ -28672,16 +25982,6 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked? ' CREDIT WARNING': ''}</option>
 })}
 </select>
-{invoiceResellerId && (()=>{
- const target = resellers.find(r=>String(r.id)===String(invoiceResellerId))
- const source = invoiceCopyFromResellerId ? resellers.find(r=>String(r.id)===String(invoiceCopyFromResellerId)) : null
- return (
-  <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'9px 10px', marginTop:'6px' }}>
-   <p style={{ margin:'0 0 3px', color:'#1b5e20', fontSize:'12px', fontWeight:'900' }}>THIS INVOICE WILL BE CREATED FOR: {target?.name || 'Selected branch'} {target?.area?`(${target.area})`:''}</p>
-   <p style={{ margin:0, color:'#555', fontSize:'11px', lineHeight:1.4 }}>Copy Template is quantities only. It does not change the invoice branch. {source && String(source.id)!==String(target?.id || '') ? `Currently copying quantities from: ${source.name}${source.area?` (${source.area})`:''}.` : 'Template source is the same as the selected branch.'}</p>
-  </div>
- )
-})()}
 </div>
 ) : (
 <>
@@ -28738,7 +26038,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 </div>
 {invoiceCustomerType === 'reseller' && (
 <div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
-<label style={lblS}>Copy quantities only from another branch/template:</label>
+<label style={lblS}>Copy order quantities from another branch/template:</label>
 <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
 <select value={invoiceCopyFromResellerId} onChange={e=>setInvoiceCopyFromResellerId(e.target.value)} style={{...inputStyle, marginBottom:0, flex:'1 1 240px' }}>
 <option value="">Select branch template to copy</option>
@@ -28746,7 +26046,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 </select>
 <button style={{...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(invoiceCopyFromResellerId || invoiceResellerId, 'invoice')}>COPY TEMPLATE</button>
 </div>
-<p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>This copies quantities only. It does not change the invoice recipient/reseller selected above. You can still edit quantities before saving.</p>
+<p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>Use this when one branch will receive the same quantities/variants as another branch. You can still edit quantities before saving.</p>
 </div>
 )}
 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
@@ -28875,7 +26175,7 @@ onClick={async ()=>{
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
  <button style={{...btnYellow, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>startInvoiceAdjustment(inv)}> ADJUST</button>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
+ <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setViewingInvoice(inv)}> VIEW</button>
  {inv.status==='unpaid' && (
  <button style={{...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#4a90d9' }} onClick={()=>markAsDelivered(inv)} disabled={markingDelivered[inv.id]}> {markingDelivered[inv.id]?'Saving...':'MARK DELIVERED'}</button>
  )}
@@ -29177,7 +26477,7 @@ onClick={async ()=>{
  {/* VIEW INVOICE MODAL */}
  {viewingInvoice && (
  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setViewingInvoice(null)}>
- <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'820px', width:'100%', maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
+ <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'580px', width:'100%', maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'14px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:'0 0 2px' }}>{viewingInvoice.invoice_number}</p>
@@ -29205,55 +26505,32 @@ onClick={async ()=>{
  ))}
  </div>
  {/* Items */}
- {(()=>{
- const viewRows = getInvoiceViewItemRows(viewingInvoice)
- const totalDelivered = viewRows.reduce((s,i)=>s+i.deliveredQty,0)
- const totalUnsold = viewRows.reduce((s,i)=>s+i.unsoldQty,0)
- const totalSold = viewRows.reduce((s,i)=>s+i.soldQty,0)
- const totalGross = viewRows.reduce((s,i)=>moneyRound(s+i.grossAmount),0)
- const totalNet = viewRows.reduce((s,i)=>moneyRound(s+i.netAmount),0)
- return (
- <div style={{ border:'1px solid #eee', borderRadius:'8px', overflowX:'auto', marginBottom:'12px' }}>
- <table style={{ width:'100%', minWidth:'760px', borderCollapse:'collapse', fontSize:'11px' }}>
- <thead>
- <tr style={{ background:'#ca1b1b', color:'white' }}>
- {['Variant','Delivered','Unsold','Sold','Price','Gross','Net Amount'].map(h=>(
- <th key={h} style={{ padding:'7px 8px', textAlign:h==='Variant'?'left':'right', fontSize:'10px' }}>{h}</th>
- ))}
- </tr>
- </thead>
- <tbody>
- {viewRows.map((item,i)=>(
- <tr key={item.id || `${item.variant_name}-${i}`} style={{ background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <td style={{ padding:'7px 8px', fontWeight:'bold', color:'#333' }}>{item.variant_name}</td>
- <td style={{ padding:'7px 8px', textAlign:'right' }}>{item.deliveredQty.toLocaleString('en-PH')}</td>
- <td style={{ padding:'7px 8px', textAlign:'right', color:item.unsoldQty>0?'#ca1b1b':'#777', fontWeight:item.unsoldQty>0?'bold':'normal' }}>{item.unsoldQty ? item.unsoldQty.toLocaleString('en-PH') : '-'}</td>
- <td style={{ padding:'7px 8px', textAlign:'right', fontWeight:'bold', color:'#2d8a4e' }}>{item.soldQty.toLocaleString('en-PH')}</td>
- <td style={{ padding:'7px 8px', textAlign:'right', color:'#2d8a4e' }}>{php(item.price)}</td>
- <td style={{ padding:'7px 8px', textAlign:'right' }}>{php(item.grossAmount)}</td>
- <td style={{ padding:'7px 8px', textAlign:'right', fontWeight:'bold', color:'#ca1b1b' }}>{php(item.netAmount)}</td>
- </tr>
- ))}
- <tr style={{ background:'#fff9e6', borderTop:'2px solid #ca1b1b', fontWeight:'bold' }}>
- <td style={{ padding:'9px 8px', color:'#ca1b1b' }}>TOTAL</td>
- <td style={{ padding:'9px 8px', textAlign:'right' }}>{totalDelivered.toLocaleString('en-PH')}</td>
- <td style={{ padding:'9px 8px', textAlign:'right', color:'#ca1b1b' }}>{totalUnsold.toLocaleString('en-PH')}</td>
- <td style={{ padding:'9px 8px', textAlign:'right', color:'#2d8a4e' }}>{totalSold.toLocaleString('en-PH')}</td>
- <td></td>
- <td style={{ padding:'9px 8px', textAlign:'right' }}>{php(totalGross)}</td>
- <td style={{ padding:'9px 8px', textAlign:'right', color:'#ca1b1b', fontSize:'14px' }}>{php(totalNet)}</td>
- </tr>
- </tbody>
- </table>
+ <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', marginBottom:'12px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#ca1b1b', padding:'6px 10px' }}>
+ {['Variant','Qty','Reseller Price','Amount'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', textAlign:'right' }}>{h==='Variant'?h:h}</span>)}
  </div>
- )
- })()}
+ {(viewingInvoice.delivery_invoice_items||[]).map((item,i)=>(
+ <div key={item.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>{Number(item.quantity).toLocaleString()}</span>
+ <span style={{ textAlign:'right', fontSize:'12px', color:'#2d8a4e' }}>{php(item.reseller_price)}</span>
+ <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(item.total_price)}</span>
+ </div>
+ ))}
+ <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'10px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
+ <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</span>
+ <span style={{ textAlign:'right', fontWeight:'bold', fontSize:'12px' }}>{(viewingInvoice.delivery_invoice_items||[]).reduce((s,i)=>s+Number(i.quantity||0),0).toLocaleString()} pcs</span>
+ <span></span>
+ <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>{php(viewingInvoice.total_amount)}</span>
+ </div>
+ </div>
  {/* Payment status */}
- <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', marginBottom:'12px', display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
- <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>Paid: {php(viewingInvoice.paid_amount||0)}</span>
- <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>Balance: {php(Math.max(0, safeNum(viewingInvoice.total_amount,0)-safeNum(viewingInvoice.paid_amount,0)))}</span>
- <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Reported Unsold: {getInvoiceViewItemRows(viewingInvoice).reduce((s,i)=>s+i.unsoldQty,0).toLocaleString('en-PH')} pcs</span>
+ {viewingInvoice.paid_amount > 0 && (
+ <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', marginBottom:'12px', display:'flex', justifyContent:'space-between' }}>
+ <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>Paid: {php(viewingInvoice.paid_amount)}</span>
+ <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>Balance: {php(Number(viewingInvoice.total_amount)-Number(viewingInvoice.paid_amount))}</span>
  </div>
+ )}
  {viewingInvoice.notes && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}> {viewingInvoice.notes}</p>}
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}> PRINT INVOICE</button>
@@ -29352,7 +26629,6 @@ onClick={async ()=>{
  {/* Action Buttons */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {displayStatus!=='paid' && (
  <button style={{...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>openInvoiceSettlement(inv)}>
  {showPaymentFormMap[inv.id]?' CANCEL SETTLEMENT':' RECORD PAYMENT'}
@@ -32439,7 +29715,6 @@ onClick={async ()=>{
  <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
  )}
 
- {renderAppUpdateBanner()}
  {/* Scrollable Content Area */}
  <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'20px', display:'flex', justifyContent:'center', background:'#f8f7f5' }}>
  <div style={{ background:'white', borderRadius:'16px', padding:isMobile?'16px':'20px', width:'100%', maxWidth:'560px', boxShadow:'0 4px 20px rgba(0,0,0,0.08)', marginBottom:'16px', border:'1px solid #eee' }}>
@@ -32469,18 +29744,6 @@ onClick={async ()=>{
  </div>
  )}
  {geoStatus && <p style={{ color:'#f5a623', textAlign:'center', fontWeight:'bold', fontSize:'13px', margin:'0 0 8px' }}>{geoStatus}</p>}
-
- {medicalCertLock?.locked && (
- <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'12px', boxShadow:'0 4px 14px rgba(202,27,27,0.12)' }}>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', textAlign:'center' }}> Time In Locked — Medical Certificate Required</p>
- <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px', textAlign:'center' }}>{medicalCertLock.message || 'You were marked absent for 2 consecutive days. Upload a medical certificate to unlock Time In.'}</p>
- <label style={{ display:'block', background:medicalCertUploading?'#f0f0f0':'#ca1b1b', color:medicalCertUploading?'#999':'white', borderRadius:'10px', padding:'11px 14px', textAlign:'center', fontWeight:'bold', fontSize:'12px', cursor:medicalCertUploading?'wait':'pointer' }}>
- {medicalCertUploading?'UPLOADING MEDICAL CERTIFICATE...':'UPLOAD MEDICAL CERTIFICATE'}
- <input type="file" accept="image/*,.pdf" disabled={medicalCertUploading} onChange={handleMedicalCertificateUpload} style={{ display:'none' }} />
- </label>
- <p style={{ color:'#888', fontSize:'10px', margin:'8px 0 0', textAlign:'center' }}>Accepted: PDF, JPG, PNG, WEBP. After upload, Time In unlocks automatically.</p>
- </div>
- )}
 
  <div style={{ background:'#f8f9fa', borderRadius:'12px', padding:'14px', marginBottom:'12px', border:'1px solid #eee' }}>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Today's Attendance</p>
@@ -32542,12 +29805,10 @@ onClick={async ()=>{
  {(()=>{
  const needsCompanyDevice = DEVICE_RESTRICTED_DEPTS.includes(employee?.department)
  const deviceOk =!needsCompanyDevice || isCompanyDevice
- const timeInLockedByMedicalCert = !!medicalCertLock?.locked
- const canTimeInNow = !todayLog && deviceOk && !timeInLockedByMedicalCert
  return (
  <div>
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
- <button style={{ background:!canTimeInNow?'#f0f0f0':'#ca1b1b', color:!canTimeInNow?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:!canTimeInNow?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={timeInLockedByMedicalCert?()=>showToast(' Upload medical certificate first to unlock Time In.','red'):deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog||timeInLockedByMedicalCert||!deviceOk}> TIME IN</button>
+ <button style={{ background:todayLog?'#f0f0f0':deviceOk?'#ca1b1b':'#e0e0e0', color:todayLog?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(todayLog||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog}> TIME IN</button>
  <button style={{ background:(!todayLog||!!todayLog?.time_out)?'#f0f0f0':deviceOk?'#1a1a2e':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out)?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeOut:()=>showToast(' Production staff must time out on the company tablet.','red')} disabled={loading||!todayLog||!!todayLog?.time_out}> TIME OUT</button>
  <button style={{ background:(!todayLog||!!todayLog?.time_out||onBreak)?'#f0f0f0':deviceOk?'#4a90d9':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out||onBreak)?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakOut:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!todayLog||!!todayLog?.time_out||onBreak}> BREAK OUT</button>
  <button style={{ background:!onBreak?'#f0f0f0':deviceOk?'#2d8a4e':'#e0e0e0', color:!onBreak?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakIn:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!onBreak}> BREAK IN</button>
@@ -32728,24 +29989,13 @@ onClick={async ()=>{
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'6px', padding:'5px 10px', cursor:'pointer', fontSize:'11px', color:'#555' }} onClick={()=>setShowLeaveRequest(false)}> Close</button>
  </div>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
- <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Leave Pay Type: {getEmployeeLeaveInfo(employee).label}</p>
+ <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Leave Type: {getEmployeeLeaveInfo(employee).label}</p>
  <p style={{ margin:0, color:'#666', fontSize:'12px' }}>{getEmployeeLeaveInfo(employee).note}</p>
  </div>
- <label style={{...lblS, marginTop:'8px' }}>FILING TYPE</label>
- <select
- value={leaveFilingType}
- onChange={e=>setLeaveFilingType(e.target.value)}
- style={inputStyle}
- >
- {LEAVE_FILING_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
- </select>
- <div style={{ background:isEmergencyLeaveFiling(leaveFilingType)?'#fff5f5':'#f8f9fa', border:`1px solid ${isEmergencyLeaveFiling(leaveFilingType)?'#ffd0d0':'#eee'}`, borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
- <p style={{ margin:0, color:isEmergencyLeaveFiling(leaveFilingType)?'#ca1b1b':'#555', fontSize:'12px', fontWeight:'700' }}>{getLeaveFilingTypeInfo(leaveFilingType).note}</p>
- </div>
- <input type="date" value={leaveStartDate} min={isEmergencyLeaveFiling(leaveFilingType)?'':new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
+ <input type="date" value={leaveStartDate} min={new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
  <input type="date" value={leaveEndDate} onChange={e=>setLeaveEndDate(e.target.value)} style={inputStyle} />
  {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {daysInclusive(leaveStartDate, leaveEndDate)} day(s)</p>}
- <textarea placeholder={isEmergencyLeaveFiling(leaveFilingType)?'Explain the emergency / illness clearly...':'Reason for planned leave...'} value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'none' }} />
+ <textarea placeholder="Reason for leave..." value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'none' }} />
  <button style={{...btnRed }} onClick={submitLeaveRequest}>{getEmployeeLeaveInfo(employee).type==='SIL'?'SUBMIT SIL REQUEST':'SUBMIT LEAVE REQUEST'}</button>
  </div>
  )}
@@ -32885,11 +30135,7 @@ onClick={async ()=>{
  style={{...inputStyle, minHeight:'70px', resize:'none' }}
  />
  )}
- <button
- style={{...btnGreen, opacity:submittingCashAdvanceRequest?0.65:1, cursor:submittingCashAdvanceRequest?'not-allowed':'pointer' }}
- disabled={submittingCashAdvanceRequest}
- onClick={submitCashAdvanceRequest}
- >{submittingCashAdvanceRequest?'SUBMITTING...':'SUBMIT REQUEST'}</button>
+ <button style={btnGreen} onClick={submitCashAdvanceRequest}>SUBMIT REQUEST</button>
  </div>
  )}
 
@@ -32902,12 +30148,7 @@ onClick={async ()=>{
  {myActiveCAs.length > 0 && (
  <div style={{ background:'#fff8dc', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginBottom:'12px' }}>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 10px' }}> Outstanding Cash Advance Balance</p>
- {myActiveCAs.map(ca => {
- const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
- const effectivePaid = getCashAdvancePaidAmount(ca)
- const effectiveInstallments = getCashAdvanceRemainingInstallments(ca)
- const paidPct = Math.min(100, (effectivePaid / Math.max(1, safeNum(ca.amount, 1))) * 100)
- return (
+ {myActiveCAs.map(ca => (
  <div key={ca.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'8px', border:'1px solid #eee' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'6px' }}>
  <div>
@@ -32917,32 +30158,31 @@ onClick={async ()=>{
  <p style={cps}>Date: {ca.advance_date} | Reason: {ca.notes||' '}</p>
  </div>
  <div style={{ textAlign:'right' }}>
- <p style={{ margin:0, fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{php(effectiveBalance)}</p>
+ <p style={{ margin:0, fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{php(ca.balance)}</p>
  <p style={{ margin:0, fontSize:'11px', color:'#888' }}>remaining</p>
  </div>
  </div>
  {/* Progress bar */}
  <div style={{ marginTop:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
- <span style={{ fontSize:'11px', color:'#888' }}>Paid: {php(effectivePaid)}</span>
- <span style={{ fontSize:'11px', color:'#888' }}>Remaining: {php(effectiveBalance)}</span>
+ <span style={{ fontSize:'11px', color:'#888' }}>Paid: {php(ca.amount_paid||0)}</span>
+ <span style={{ fontSize:'11px', color:'#888' }}>Remaining: {php(ca.balance)}</span>
  </div>
  <div style={{ background:'#eee', borderRadius:'999px', height:'8px', overflow:'hidden' }}>
- <div style={{ background:'#2d8a4e', height:'100%', borderRadius:'999px', width:`${paidPct.toFixed(0)}%`, transition:'width 0.3s' }} />
+ <div style={{ background:'#2d8a4e', height:'100%', borderRadius:'999px', width:`${Math.min(100, ((Number(ca.amount_paid)||0)/Number(ca.amount||1))*100).toFixed(0)}%`, transition:'width 0.3s' }} />
  </div>
  <p style={{ fontSize:'11px', color:'#888', margin:'4px 0 0', textAlign:'center' }}>
- {paidPct.toFixed(0)}% paid 
- {effectiveInstallments} installment(s) left 
+ {Math.min(100,((Number(ca.amount_paid)||0)/Number(ca.amount||1))*100).toFixed(0)}% paid 
+ {ca.installments_remaining} installment(s) left 
  {php(ca.per_payroll_deduction)} per cutoff
  </p>
  </div>
  </div>
- )
-})}
+ ))}
  {/* Total outstanding */}
  <div style={{ background:'#ca1b1b', color:'white', borderRadius:'8px', padding:'10px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'8px' }}>
  <span style={{ fontWeight:'bold', fontSize:'13px' }}>TOTAL OUTSTANDING</span>
- <span style={{ fontWeight:'bold', fontSize:'16px' }}>{php(myActiveCAs.reduce((s,c)=>s+getCashAdvanceEffectiveBalance(c),0))}</span>
+ <span style={{ fontWeight:'bold', fontSize:'16px' }}>{php(myActiveCAs.reduce((s,c)=>s+Number(c.balance||0),0))}</span>
  </div>
  </div>
  )}
@@ -33267,7 +30507,6 @@ onClick={async ()=>{
  return (
  <div style={{ minHeight:'100vh', background:'#f6f6f6', fontFamily:'Arial, sans-serif' }}>
  {toast && <div style={{ position:'fixed', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 24px', borderRadius:'12px', fontWeight:'bold', boxShadow:'0 6px 18px rgba(0,0,0,0.25)' }}>{toast.msg}</div>}
- {renderAppUpdateBanner()}
 
  <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', color:'white', padding:isMobile?'18px 14px':'20px 28px', boxShadow:'0 4px 18px rgba(0,0,0,0.18)' }}>
  <div style={{ maxWidth:'1180px', margin:'0 auto', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
@@ -33421,11 +30660,6 @@ onClick={async ()=>{
  {resellerPortalView==='orders' && (
  <div>
  <h2 style={h2s}> Order Requests</h2>
- {lastSubmittedOrderNotice && (
- <div style={{...portalCard, border:'2px solid #2d8a4e', background:'#f0fff4', color:'#155724', fontSize:'13px', fontWeight:'800', lineHeight:1.5 }}>
-  {lastSubmittedOrderNotice}
- </div>
- )}
  {resellerOrders.length===0? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No orders yet. Place your first order.</p>: resellerOrders.map(ord=>(
  <div key={ord.id} style={{...portalCard, marginBottom:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
@@ -33452,11 +30686,6 @@ onClick={async ()=>{
  {resellerPortalView==='place_order' && (
  <div>
  <h2 style={h2s}>{editingResellerOrderId?' Edit Pending Order':' Place Order'}</h2>
- {lastSubmittedOrderNotice && (
- <div style={{...portalCard, border:'2px solid #2d8a4e', background:'#f0fff4', color:'#155724', fontSize:'13px', fontWeight:'800', lineHeight:1.5 }}>
-  {lastSubmittedOrderNotice}
- </div>
- )}
  {(()=>{
  const selectedOrderCutoff = resellerOrderDeliveryDate? getOrderCutoffStatus(resellerOrderDeliveryDate): { locked:false, message:'' }
  return (
@@ -33531,7 +30760,7 @@ onClick={async ()=>{
  <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
  <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
  </div>
- <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' SAVING ORDER - PLEASE WAIT...':' SUBMIT ORDER REQUEST')}</button>
+ <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' ORDER SUBMITTED - PROCESSING...':' SUBMIT ORDER REQUEST')}</button>
  {editingResellerOrderId && <button style={{...btnGray, marginTop:'8px' }} disabled={updatingResellerOrder} onClick={cancelResellerOrderEdit}>CANCEL EDIT</button>}
  </div>
  </>
@@ -33571,6 +30800,16 @@ onClick={async ()=>{
  </>
  )}
  </div>
+
+
+  "${i}: $($lines[$i-1])"
+}
+
+  "${i}: $($lines[$i-1])"
+}
+
+  "${i}: $($lines[$i-1])"
+}
 
  <div style={{...portalCard, marginTop:'14px' }}>
  <h3 style={{ color:'#333', margin:'0 0 10px', fontSize:'14px' }}>Submitted Reports</h3>
@@ -33631,7 +30870,6 @@ onClick={async ()=>{
  {toast && (
  <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
  )}
- {renderAppUpdateBanner()}
  <div style={{ background:'white', borderRadius:'24px', boxShadow:'0 20px 60px rgba(0,0,0,0.25)', width:'100%', maxWidth:'440px', padding:'36px 32px', boxSizing:'border-box' }}>
  <div style={{ textAlign:'center', marginBottom:'24px' }}>
  <img src="/logo.png" alt="Logo" style={{ width:'90px', height:'90px', objectFit:'contain', display:'block', margin:'0 auto 10px' }} />
