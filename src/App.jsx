@@ -19744,6 +19744,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [closingClosedBy, setClosingClosedBy] = useState(() => readSagsDraft('closingClosedBy', ''))
  const [closingRemarks, setClosingRemarks] = useState(() => readSagsDraft('closingRemarks', ''))
  const [inventorySearch, setInventorySearch] = useState('')
+ const [showDisabledOutletItems, setShowDisabledOutletItems] = useState(false)
  const [inventoryDrafts, setInventoryDrafts] = useState(() => readSagsDraftObject('inventoryDrafts', {}))
  const [inventorySavingId, setInventorySavingId] = useState('')
  const [showAddOutletItem, setShowAddOutletItem] = useState(() => readSagsDraft('showAddOutletItem', false) === true)
@@ -19927,10 +19928,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return explicitSelling
  }
 
+ function isOutletProductDisabled(product = {}) {
+  const activeValue = product.is_active
+  const status = String(product.status || '').trim().toLowerCase()
+  return activeValue === false || String(activeValue).trim().toLowerCase() === 'false' || ['disabled', 'inactive', 'archived', 'deleted'].includes(status)
+ }
+
  function isPosProductsOptionalColumnError(error = null) {
   const msg = String(error?.message || error || '').toLowerCase()
   if (!msg) return false
-  const optionalColumns = ['name', 'price', 'buying_price', 'markup_percent', 'cost_per_unit']
+  const optionalColumns = ['name', 'price', 'buying_price', 'markup_percent', 'cost_per_unit', 'status', 'disabled_at', 'disabled_by', 'disabled_reason']
   return optionalColumns.some(col => msg.includes(col)) && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column') || msg.includes('record'))
  }
 
@@ -20183,11 +20190,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  async function loadPosMonitor(options = {}) {
   const silent = options && options.silent
   const isAutoRefresh = options && options.auto === true
-  // Auto refresh must never interrupt typing or stock/barcode editing after products are already loaded.
-  // But on a fresh browser/computer, posProducts starts empty; never let a focused input or saved
-  // local draft block the first database product load, otherwise the inventory table appears missing.
-  const hasLoadedProducts = Array.isArray(posProducts) && posProducts.length > 0
-  if (silent && isAutoRefresh && !options.forceProducts && hasLoadedProducts && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
+  // Auto refresh must never interrupt typing or stock/barcode editing.
+  // When the user is actively working, skip the background refresh entirely.
+  if (silent && isAutoRefresh && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
   const scrollSnapshot = silent ? capturePosSilentScrollSnapshot() : null
   posSilentScrollSnapshotRef.current = scrollSnapshot
   // A true silent refresh must not toggle visible loading state, because that
@@ -20543,6 +20548,64 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   } catch (err) {
    console.error('Inventory update failed:', err)
    alert('Inventory update failed: ' + (err?.message || String(err)))
+  } finally {
+   setInventorySavingId('')
+  }
+ }
+
+ async function setOutletInventoryItemActive(product, makeActive) {
+  if (!canEditOutletInventory) {
+   alert(`Only ${posInventoryEditRoleLabel} can disable or restore outlet items.`)
+   return
+  }
+
+  if (!product?.id) {
+   alert('Product record is missing an ID. Please refresh and try again.')
+   return
+  }
+
+  const productName = String(product.product_name || product.name || 'this POS item').trim() || 'this POS item'
+  const actionLabel = makeActive ? 'restore' : 'disable'
+  const reason = prompt(`${makeActive ? 'Reason for restoring' : 'Reason for disabling'} ${productName}:`)
+  if (reason === null) return
+  const cleanReason = String(reason || '').trim()
+  if (!cleanReason) {
+   alert('Reason is required for inventory item status changes.')
+   return
+  }
+
+  const warning = makeActive
+   ? `Restore ${productName}? It will appear again in SAGS POS active inventory.`
+   : `Disable ${productName}? It will be hidden from active SAGS POS inventory and should no longer be used for selling, but sales/history records will be preserved.`
+  if (!confirm(warning)) return
+
+  const key = getInventoryDraftKey(product)
+  setInventorySavingId(key)
+
+  try {
+   const nowIso = new Date().toISOString()
+   const payload = makeActive
+    ? { is_active:true, status:'active', disabled_at:null, disabled_by:null, disabled_reason:null }
+    : { is_active:false, status:'disabled', disabled_at:nowIso, disabled_by:currentAdminLabel || 'Admin', disabled_reason:cleanReason }
+
+   const updateResult = await updatePosProductSafe(product.id, payload)
+   if (updateResult.error) throw updateResult.error
+
+   if (logAudit) {
+    await logAudit(
+     makeActive ? 'POS ITEM RESTORED' : 'POS ITEM DISABLED',
+     currentAdminLabel || 'Admin',
+     productName,
+     `${makeActive ? 'Restored' : 'Disabled'} POS item ${productName} | Reason: ${cleanReason}`
+    )
+   }
+
+   clearInventoryDraft(product)
+   alert(`${productName} ${makeActive ? 'restored' : 'disabled'} successfully.`)
+   await loadPosMonitor({ silent:true, forceProducts:true })
+  } catch (err) {
+   console.error(`${actionLabel} POS item failed:`, err)
+   alert(`${makeActive ? 'Restore' : 'Disable'} item failed: ` + (err?.message || String(err)))
   } finally {
    setInventorySavingId('')
   }
@@ -20948,11 +21011,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   newOutletItem
  ])
 
- useEffect(() => {
-  // Always force-load product master rows on each POS date entry/mount. This prevents browser-specific
-  // localStorage/PWA state from hiding the Outlet Inventory Manager on another computer.
-  loadPosMonitor({ silent:true, auto:true, forceProducts:true })
- }, [posDate])
+ useEffect(() => { loadPosMonitor({ silent:true, auto:true }) }, [posDate])
 
  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
@@ -20981,7 +21040,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   movementMap[key] = (movementMap[key] || 0) + safeNum(move.qty, 0)
  })
 
- const filteredStockInProducts = posProducts.filter(p => {
+ const activePosProducts = posProducts.filter(product => !isOutletProductDisabled(product))
+ const disabledOutletProductCount = posProducts.length - activePosProducts.length
+ const visibleOutletProducts = showDisabledOutletItems ? posProducts : activePosProducts
+
+ const filteredStockInProducts = activePosProducts.filter(p => {
   const text = [
    p.product_name,
    p.name,
@@ -20992,9 +21055,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return stockInSearch.trim() && text.includes(stockInSearch.toLowerCase())
  }).slice(0, 12)
 
- const selectedStockInProduct = posProducts.find(p => String(p.id) === String(stockInProductId))
+ const selectedStockInProduct = activePosProducts.find(p => String(p.id) === String(stockInProductId))
 
- const filteredPriceEditProducts = posProducts.filter(p => {
+ const filteredPriceEditProducts = activePosProducts.filter(p => {
   const text = [
    p.product_name,
    p.name,
@@ -21005,9 +21068,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return priceEditSearch.trim() && text.includes(priceEditSearch.toLowerCase())
  }).slice(0, 12)
 
- const selectedPriceEditProduct = posProducts.find(p => String(p.id) === String(priceEditProductId))
+ const selectedPriceEditProduct = activePosProducts.find(p => String(p.id) === String(priceEditProductId))
 
- const lowStockProducts = posProducts.map(product => {
+ const lowStockProducts = activePosProducts.map(product => {
   const remainingStock = safeNum(product.stock, 0)
   const minStock = safeNum(product.min_stock, 10)
   return {
@@ -21049,13 +21112,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const closingExpectedCash = safeNum(closingOpeningCash, 0) + closingCashSales
  const closingVariance = safeNum(closingActualCash, 0) - closingExpectedCash
 
- const outletBalances = posProducts.map(product => {
+ const outletBalances = visibleOutletProducts.map(product => {
   const key = product.id || product.product_name
   const currentStock = safeNum(product.stock, 0)
   const soldQty = safeNum(soldMap[key], 0)
   const movementQty = safeNum(movementMap[key], 0)
   const minStock = safeNum(product.min_stock, 10)
-  const status = currentStock <= 0 ? 'Out of Stock' : currentStock <= minStock ? 'Low Stock' : 'OK'
+  const disabled = isOutletProductDisabled(product)
+  const status = disabled ? 'Disabled' : currentStock <= 0 ? 'Out of Stock' : currentStock <= minStock ? 'Low Stock' : 'OK'
   return {
    id: product.id,
    product_name: product.product_name || product.name || 'Unnamed Product',
@@ -21073,6 +21137,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    movementQty,
    remainingStock: currentStock,
    minStock,
+   disabled,
    status
   }
  }).sort((a,b) => {
@@ -21316,8 +21381,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      </div>
      <div style={{ display:'flex', gap:'7px', alignItems:'center', flexWrap:'wrap', justifyContent:isMobile ? 'stretch' : 'flex-end' }}>
       <span style={{ background:'#fff', border:'1px solid #f1d35a', color:'#7c2d12', borderRadius:'999px', padding:'7px 10px', fontSize:'11px', fontWeight:'950', whiteSpace:'nowrap' }}>
-       Showing {filteredOutletInventoryRows.length} / {outletBalances.length} products
+       Showing {filteredOutletInventoryRows.length} / {outletBalances.length} products{disabledOutletProductCount > 0 && !showDisabledOutletItems ? ` • ${disabledOutletProductCount} disabled hidden` : ''}
       </span>
+      {disabledOutletProductCount > 0 && (
+       <button
+        onClick={()=>setShowDisabledOutletItems(prev=>!prev)}
+        style={{...btnGray, width:'auto', marginTop:0, padding:'8px 10px', fontSize:'11px', fontWeight:'950', border:'1px solid #f1d35a', whiteSpace:'nowrap'}}
+       >
+        {showDisabledOutletItems ? 'Hide Disabled' : `Show Disabled (${disabledOutletProductCount})`}
+       </button>
+      )}
       <input
        value={inventorySearch}
        onChange={e=>setInventorySearch(e.target.value)}
@@ -21466,7 +21539,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          <th style={{ textAlign:'right', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Stock Out</th>
          <th style={{ textAlign:'left', padding:'8px 8px', width:'180px', fontSize:'11px', fontWeight:'900', color:'white' }}>Remarks</th>
          <th style={{ textAlign:'center', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Status</th>
-         <th style={{ textAlign:'center', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Action</th>
+         <th style={{ textAlign:'center', padding:'8px 8px', width:'160px', fontSize:'11px', fontWeight:'900', color:'white' }}>Action</th>
         </tr>
        </thead>
        <tbody>
@@ -21484,11 +21557,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          const draft = inventoryDrafts[draftKey] || {}
          const projectedStock = safeNum(row.remainingStock, 0) + safeNum(draft.stockIn, 0) - safeNum(draft.stockOut, 0)
          const saving = inventorySavingId === draftKey
+         const rowDisabled = row.disabled === true
+         const rowBackground = rowDisabled ? '#f3f4f6' : projectedStock < 0 ? '#fff1f1' : (rowIndex % 2 === 0 ? '#ffffff' : '#fffdf5')
          return (
-          <tr key={row.id || row.product_name} style={{ background:projectedStock < 0 ? '#fff1f1' : (rowIndex % 2 === 0 ? '#ffffff' : '#fffdf5') }}>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'850', minWidth:'205px', position:'sticky', left:0, zIndex:2, background:projectedStock < 0 ? '#fff1f1' : '#ffffff' }}>
+          <tr key={row.id || row.product_name} style={{ background:rowBackground, opacity:rowDisabled ? 0.74 : 1 }}>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'850', minWidth:'205px', position:'sticky', left:0, zIndex:2, background:rowBackground }}>
             <input
-             disabled={!canEditOutletInventory}
+             disabled={!canEditOutletInventory || rowDisabled}
              value={draft.productName ?? row.product_name}
              onChange={e=>setInventoryDraftValue(row, 'productName', e.target.value)}
              placeholder="Item name"
@@ -21520,7 +21595,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
               type="number"
               min="0"
               step="0.01"
-              disabled={!canEditOutletInventory}
+              disabled={!canEditOutletInventory || rowDisabled}
               value={draft.buyingPrice ?? (row.buyingPrice || '')}
               onChange={e=>{
                const buying = e.target.value
@@ -21545,7 +21620,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
              type="number"
              min="0"
              step="0.01"
-             disabled={!canEditOutletInventory || row.usesMarkupPricing}
+             disabled={!canEditOutletInventory || rowDisabled || row.usesMarkupPricing}
              value={draft.price ?? row.sellingPrice}
              onChange={e=>setInventoryDraftValue(row, 'price', e.target.value)}
              style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:row.usesMarkupPricing ? '#f8fafc' : '#fffdf2'}}
@@ -21556,32 +21631,46 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:'#ca1b1b', fontWeight:'950', fontSize:'12px' }}>{row.soldQty}</td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:row.movementQty < 0 ? '#ca1b1b' : '#087a37', fontWeight:'950', fontSize:'12px' }}>{row.movementQty}</td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
-            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockIn || ''} onChange={e=>setInventoryDraftValue(row, 'stockIn', e.target.value)} placeholder="0" style={{...inputStyle, width:'62px', marginBottom:0, textAlign:'right', padding:'5px 6px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}} />
+            <input type="number" min="0" disabled={!canEditOutletInventory || rowDisabled} value={draft.stockIn || ''} onChange={e=>setInventoryDraftValue(row, 'stockIn', e.target.value)} placeholder="0" style={{...inputStyle, width:'62px', marginBottom:0, textAlign:'right', padding:'5px 6px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}} />
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
-            <input type="number" min="0" disabled={!canEditOutletInventory} value={draft.stockOut || ''} onChange={e=>setInventoryDraftValue(row, 'stockOut', e.target.value)} placeholder="0" style={{...inputStyle, width:'62px', marginBottom:0, textAlign:'right', padding:'5px 6px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}} />
+            <input type="number" min="0" disabled={!canEditOutletInventory || rowDisabled} value={draft.stockOut || ''} onChange={e=>setInventoryDraftValue(row, 'stockOut', e.target.value)} placeholder="0" style={{...inputStyle, width:'62px', marginBottom:0, textAlign:'right', padding:'5px 6px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}} />
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'800' }}>
-            <input disabled={!canEditOutletInventory} value={draft.remarks || ''} onChange={e=>setInventoryDraftValue(row, 'remarks', e.target.value)} placeholder="Reason / note" style={{...inputStyle, width:'145px', marginBottom:0, padding:'5px 7px', color:'#111827', fontWeight:'750', fontSize:'11px', border:'1px solid #e2d078', background:'#ffffff'}} />
+            <input disabled={!canEditOutletInventory || rowDisabled} value={draft.remarks || ''} onChange={e=>setInventoryDraftValue(row, 'remarks', e.target.value)} placeholder="Reason / note" style={{...inputStyle, width:'145px', marginBottom:0, padding:'5px 7px', color:'#111827', fontWeight:'750', fontSize:'11px', border:'1px solid #e2d078', background:'#ffffff'}} />
            </td>
-           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center', color:row.status === 'OK' ? '#087a37' : '#ca1b1b', fontWeight:'950', fontSize:'11px' }}>
-            {projectedStock < 0 ? 'Invalid' : row.status}
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center', color:rowDisabled ? '#6b7280' : row.status === 'OK' ? '#087a37' : '#ca1b1b', fontWeight:'950', fontSize:'11px' }}>
+            {rowDisabled ? 'Disabled' : projectedStock < 0 ? 'Invalid' : row.status}
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center' }}>
-            <button
-             disabled={!canEditOutletInventory || saving}
-             onClick={()=>saveOutletInventoryRow(row)}
-             style={{...btnGreen, width:'auto', marginTop:0, padding:'6px 10px', opacity:(!canEditOutletInventory || saving) ? 0.65 : 1, fontSize:'11px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(45,138,78,0.18)'}}
-            >
-             {saving ? 'Saving...' : 'Save'}
-            </button>
+            <div style={{ display:'flex', justifyContent:'center', gap:'5px', flexWrap:'wrap' }}>
+             {!rowDisabled && (
+              <button
+               disabled={!canEditOutletInventory || saving}
+               onClick={()=>saveOutletInventoryRow(row)}
+               style={{...btnGreen, width:'auto', marginTop:0, padding:'6px 10px', opacity:(!canEditOutletInventory || saving) ? 0.65 : 1, fontSize:'11px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(45,138,78,0.18)'}}
+              >
+               {saving ? 'Saving...' : 'Save'}
+              </button>
+             )}
+             {canEditOutletInventory && (
+              <button
+               disabled={saving}
+               onClick={()=>setOutletInventoryItemActive(row, rowDisabled)}
+               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:rowDisabled ? '#1a1a2e' : '#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)'}}
+               title={rowDisabled ? 'Restore this item to active POS inventory' : 'Disable this item without deleting sales history'}
+              >
+               {rowDisabled ? 'Restore' : 'Disable'}
+              </button>
+             )}
+            </div>
            </td>
           </tr>
          )
         })}
        </tbody>
       </table>
-      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>{outletBalances.length > 0 ? 'No product matched your search. Clear the search to show all products.' : 'No POS products loaded yet. Click Refresh, or check the pos_products table if this remains empty.'}</p>}
+      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>{outletBalances.length > 0 ? 'No product matched your search. Clear the search to show all products.' : disabledOutletProductCount > 0 && !showDisabledOutletItems ? 'All available products are disabled or hidden. Click Show Disabled to review disabled items.' : 'No POS products loaded yet. Click Refresh, or check the pos_products table if this remains empty.'}</p>}
      </div>
     )}
    </div>
