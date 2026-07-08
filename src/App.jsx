@@ -19931,13 +19931,18 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  function isOutletProductDisabled(product = {}) {
   const activeValue = product.is_active
   const status = String(product.status || '').trim().toLowerCase()
-  return activeValue === false || String(activeValue).trim().toLowerCase() === 'false' || ['disabled', 'inactive', 'archived', 'deleted'].includes(status)
+  return activeValue === false || String(activeValue).trim().toLowerCase() === 'false' || ['disabled', 'inactive', 'archived'].includes(status)
+ }
+
+ function isOutletProductDeleted(product = {}) {
+  const status = String(product.status || '').trim().toLowerCase()
+  return ['deleted', 'permanently_deleted', 'removed'].includes(status) || !!product.deleted_at
  }
 
  function isPosProductsOptionalColumnError(error = null) {
   const msg = String(error?.message || error || '').toLowerCase()
   if (!msg) return false
-  const optionalColumns = ['name', 'price', 'buying_price', 'markup_percent', 'cost_per_unit', 'status', 'disabled_at', 'disabled_by', 'disabled_reason']
+  const optionalColumns = ['name', 'price', 'buying_price', 'markup_percent', 'cost_per_unit', 'status', 'is_active', 'disabled_at', 'disabled_by', 'disabled_reason', 'deleted_at', 'deleted_by', 'deleted_reason']
   return optionalColumns.some(col => msg.includes(col)) && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column') || msg.includes('record'))
  }
 
@@ -19948,6 +19953,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   delete clean.buying_price
   delete clean.markup_percent
   delete clean.cost_per_unit
+  delete clean.status
+  delete clean.is_active
+  delete clean.disabled_at
+  delete clean.disabled_by
+  delete clean.disabled_reason
+  delete clean.deleted_at
+  delete clean.deleted_by
+  delete clean.deleted_reason
   return clean
  }
 
@@ -20554,6 +20567,115 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
  }
 
+ async function hardDeletePosProductById(productId) {
+  // Supabase/RLS can return success with zero deleted rows. Use select() so the app
+  // can prove the row was actually removed before telling the user it is deleted.
+  const result = await supabase
+   .from('pos_products')
+   .delete()
+   .eq('id', productId)
+   .select('id, product_name, sku, barcode')
+  return result
+ }
+
+ async function tombstonePosProduct(product, reason) {
+  // If a product already has protected sales/history links, physical deletion may
+  // be blocked by foreign keys. This fallback removes it from active POS use by
+  // clearing scan codes and marking it deleted, while preserving old sales history.
+  const deletedAt = new Date().toISOString()
+  const deletedBy = currentAdminLabel || 'Admin'
+  const payloadAttempts = [
+   {
+    barcode:null,
+    sku:null,
+    stock:0,
+    status:'deleted',
+    is_active:false,
+    deleted_at:deletedAt,
+    deleted_by:deletedBy,
+    deleted_reason:reason
+   },
+   {
+    barcode:null,
+    sku:null,
+    stock:0,
+    status:'deleted',
+    is_active:false
+   },
+   {
+    barcode:null,
+    sku:null,
+    stock:0
+   }
+  ]
+
+  let lastError = null
+  for (const payload of payloadAttempts) {
+   const result = await supabase
+    .from('pos_products')
+    .update(payload)
+    .eq('id', product.id)
+    .select('id, product_name, sku, barcode, status')
+   if (!result.error && Array.isArray(result.data) && result.data.length > 0) return { error:null, data:result.data, mode:payload.status === 'deleted' ? 'tombstone' : 'barcode_cleared' }
+   if (result.error) lastError = result.error
+  }
+  return { error:lastError || new Error('Supabase did not update any POS product row. Delete was not applied.'), data:[], mode:'failed' }
+ }
+
+ function removeDeletedPosProductFromLocalState(product) {
+  const productId = String(product?.id || '')
+  const productBarcode = cleanOutletBarcodeCode(product?.barcode || '')
+  const productSku = cleanOutletBarcodeCode(product?.sku || '')
+  const productName = String(product?.product_name || product?.name || '').trim().toLowerCase()
+
+  setPosProducts(prev => (prev || []).filter(row => {
+   if (productId && String(row.id || '') === productId) return false
+   if (productBarcode && cleanOutletBarcodeCode(row.barcode || '') === productBarcode && String(row.product_name || row.name || '').trim().toLowerCase() === productName) return false
+   if (productSku && cleanOutletBarcodeCode(row.sku || '') === productSku && String(row.product_name || row.name || '').trim().toLowerCase() === productName) return false
+   return true
+  }))
+
+  setInventoryDrafts(prev => {
+   if (!prev || typeof prev !== 'object') return prev
+   const next = { ...prev }
+   const keysToDelete = [getInventoryDraftKey(product), productId, productBarcode, productSku].filter(Boolean)
+   keysToDelete.forEach(key => delete next[key])
+   return next
+  })
+
+  setStockInProductId(current => String(current || '') === productId ? '' : current)
+  setPriceEditProductId(current => String(current || '') === productId ? '' : current)
+ }
+
+ async function findRemainingPosScanMatches(product) {
+  const matches = []
+  const productId = String(product?.id || '')
+  const barcode = String(product?.barcode || '').trim()
+  const sku = String(product?.sku || '').trim()
+
+  if (barcode) {
+   const { data, error } = await supabase
+    .from('pos_products')
+    .select('id, product_name, sku, barcode, status')
+    .eq('barcode', barcode)
+   if (!error) matches.push(...(data || []).filter(row => String(row.id || '') !== productId && !isOutletProductDeleted(row)))
+  }
+
+  if (sku) {
+   const { data, error } = await supabase
+    .from('pos_products')
+    .select('id, product_name, sku, barcode, status')
+    .eq('sku', sku)
+   if (!error) {
+    ;(data || []).forEach(row => {
+     if (String(row.id || '') === productId || isOutletProductDeleted(row)) return
+     if (!matches.some(existing => String(existing.id || '') === String(row.id || ''))) matches.push(row)
+    })
+   }
+  }
+  return matches
+ }
+
  async function deleteOutletInventoryItem(product) {
   if (!canEditOutletInventory) {
    alert(`Only ${posInventoryEditRoleLabel} can delete POS items.`)
@@ -20566,7 +20688,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
 
   const productName = String(product.product_name || product.name || 'this POS item').trim() || 'this POS item'
-  const typed = prompt(`This will permanently delete "${productName}" from the SAGS POS product master list. Type DELETE to continue.`)
+  const typed = prompt(`This will delete "${productName}" from active SAGS POS products. Type DELETE to continue.`)
   if (String(typed || '').trim().toUpperCase() !== 'DELETE') return
 
   const reason = String(prompt('Reason for deleting this POS item? This is required for audit trail.') || '').trim()
@@ -20579,29 +20701,41 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   setInventorySavingId(key)
 
   try {
-   const { error } = await supabase
-    .from('pos_products')
-    .delete()
-    .eq('id', product.id)
+   const hardDelete = await hardDeletePosProductById(product.id)
+   let deleteMode = 'hard_delete'
 
-   if (error) throw error
+   if (hardDelete.error || !Array.isArray(hardDelete.data) || hardDelete.data.length === 0) {
+    const fallback = await tombstonePosProduct(product, reason)
+    if (fallback.error || !Array.isArray(fallback.data) || fallback.data.length === 0) {
+     throw hardDelete.error || fallback.error || new Error('Delete was not applied. Supabase returned zero affected rows.')
+    }
+    deleteMode = fallback.mode || 'tombstone'
+   }
+
+   removeDeletedPosProductFromLocalState(product)
+   const remainingMatches = await findRemainingPosScanMatches(product)
 
    if (logAudit) {
     await logAudit(
-     'OUTLET POS ITEM DELETED',
+     deleteMode === 'hard_delete' ? 'OUTLET POS ITEM HARD DELETED' : 'OUTLET POS ITEM REMOVED FROM POS',
      currentAdminLabel || 'Admin',
      productName,
-     `Deleted from SAGS POS product master list. Reason: ${reason}`
+     `${deleteMode === 'hard_delete' ? 'Physically deleted from pos_products.' : 'Removed from active POS use and barcode/SKU cleared because history may be protected.'} Reason: ${reason}`
     )
    }
 
    clearInventoryDraft(product)
-   alert(`Deleted ${productName}.`)
    await loadPosMonitor({ silent:true, forceProducts:true })
+
+   if (remainingMatches.length > 0) {
+    alert(`Deleted/removed ${productName}, but ${remainingMatches.length} other POS item(s) still use the same barcode/SKU. Search the barcode/SKU and delete the duplicate too, otherwise the scanner can still find that other item.`)
+   } else {
+    alert(`Deleted ${productName}. It was removed from active POS products and its barcode should no longer scan.`)
+   }
   } catch (err) {
    console.error('Delete POS item failed:', err)
    const msg = String(err?.message || err || '')
-   alert('Delete failed: ' + msg + '\\n\\nIf this product already has protected sales/history links, Supabase may block permanent deletion. If that happens, keep the item for sales history and create a new corrected item instead.')
+   alert('Delete failed and no product was removed: ' + msg + '\n\nThis usually means Supabase blocked the delete/update by policy or table restrictions. Do not assume the item is deleted until it disappears after Force Reload Products From Database.')
   } finally {
    setInventorySavingId('')
   }
@@ -21036,8 +21170,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   movementMap[key] = (movementMap[key] || 0) + safeNum(move.qty, 0)
  })
 
- const activePosProducts = posProducts.filter(product => !isOutletProductDisabled(product))
- const disabledOutletProductCount = posProducts.length - activePosProducts.length
+ const activePosProducts = posProducts.filter(product => !isOutletProductDeleted(product))
+ const deletedOutletProductCount = posProducts.length - activePosProducts.length
+ const disabledOutletProductCount = deletedOutletProductCount
  const visibleOutletProducts = showDisabledOutletItems ? posProducts : activePosProducts
 
  const filteredStockInProducts = activePosProducts.filter(p => {
@@ -21114,8 +21249,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const soldQty = safeNum(soldMap[key], 0)
   const movementQty = safeNum(movementMap[key], 0)
   const minStock = safeNum(product.min_stock, 10)
-  const disabled = isOutletProductDisabled(product)
-  const status = disabled ? 'Disabled' : currentStock <= 0 ? 'Out of Stock' : currentStock <= minStock ? 'Low Stock' : 'OK'
+  const disabled = isOutletProductDeleted(product)
+  const status = disabled ? 'Deleted' : currentStock <= 0 ? 'Out of Stock' : currentStock <= minStock ? 'Low Stock' : 'OK'
   return {
    id: product.id,
    product_name: product.product_name || product.name || 'Unnamed Product',
@@ -21377,14 +21512,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      </div>
      <div style={{ display:'flex', gap:'7px', alignItems:'center', flexWrap:'wrap', justifyContent:isMobile ? 'stretch' : 'flex-end' }}>
       <span style={{ background:'#fff', border:'1px solid #f1d35a', color:'#7c2d12', borderRadius:'999px', padding:'7px 10px', fontSize:'11px', fontWeight:'950', whiteSpace:'nowrap' }}>
-       Showing {filteredOutletInventoryRows.length} / {outletBalances.length} products{disabledOutletProductCount > 0 && !showDisabledOutletItems ? ` • ${disabledOutletProductCount} disabled hidden` : ''}
+       Showing {filteredOutletInventoryRows.length} / {outletBalances.length} products{disabledOutletProductCount > 0 && !showDisabledOutletItems ? ` • ${disabledOutletProductCount} deleted hidden` : ''}
       </span>
       {disabledOutletProductCount > 0 && (
        <button
         onClick={()=>setShowDisabledOutletItems(prev=>!prev)}
         style={{...btnGray, width:'auto', marginTop:0, padding:'8px 10px', fontSize:'11px', fontWeight:'950', border:'1px solid #f1d35a', whiteSpace:'nowrap'}}
        >
-        {showDisabledOutletItems ? 'Hide Disabled' : `Show Disabled (${disabledOutletProductCount})`}
+        {showDisabledOutletItems ? 'Hide Deleted' : `Show Deleted (${disabledOutletProductCount})`}
        </button>
       )}
       <input
@@ -21651,7 +21786,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
             <input disabled={!canEditOutletInventory || rowDisabled} value={draft.remarks || ''} onChange={e=>setInventoryDraftValue(row, 'remarks', e.target.value)} placeholder="Reason / note" style={{...inputStyle, width:'145px', marginBottom:0, padding:'5px 7px', color:'#111827', fontWeight:'750', fontSize:'11px', border:'1px solid #e2d078', background:'#ffffff'}} />
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center', color:rowDisabled ? '#6b7280' : row.status === 'OK' ? '#087a37' : '#ca1b1b', fontWeight:'950', fontSize:'11px' }}>
-            {rowDisabled ? 'Disabled' : projectedStock < 0 ? 'Invalid' : row.status}
+            {rowDisabled ? 'Deleted' : projectedStock < 0 ? 'Invalid' : row.status}
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center' }}>
             <div style={{ display:'flex', justifyContent:'center', gap:'5px', flexWrap:'wrap' }}>
@@ -21681,7 +21816,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         })}
        </tbody>
       </table>
-      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>{outletBalances.length > 0 ? 'No product matched your search. Clear the search to show all products.' : disabledOutletProductCount > 0 && !showDisabledOutletItems ? 'All available products are disabled or hidden. Click Show Disabled to review disabled items.' : 'No POS products loaded yet. Click Refresh, or check the pos_products table if this remains empty.'}</p>}
+      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>{outletBalances.length > 0 ? 'No product matched your search. Clear the search to show all products.' : disabledOutletProductCount > 0 && !showDisabledOutletItems ? 'All available products are deleted/hidden. Click Show Deleted to review deleted items.' : 'No POS products loaded yet. Click Refresh, or check the pos_products table if this remains empty.'}</p>}
      </div>
     )}
    </div>
