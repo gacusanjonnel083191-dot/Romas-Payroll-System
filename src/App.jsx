@@ -6327,26 +6327,15 @@ Cancel = create batch record only for existing stock.`)
  function computeVariantCost(variantId, piecesPerBatch) {
  const safePiecesPerBatch = positiveNum(piecesPerBatch)
  const variantIngs = variantRecipes[variantId] || []
- // A variant that explicitly links Base Dough / Powder Base as its own
- // ingredient row replaces the automatic shared-batch inclusion for that
- // one — never both at once, so double-counting can't happen structurally.
- const hasManualBaseDough = variantIngs.some(ing => String(ing.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID)
- const hasManualPowderBase = variantIngs.some(ing => String(ing.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID)
- // Base dough cost per piece (from inventory item cost_per_unit) — skipped
- // when this variant manually links Base Dough itself instead.
- const baseCostPerPiece = hasManualBaseDough ? 0 : baseDoughIngredients.reduce((sum, ing) => {
+ // Base Dough and Powder Base are no longer automatically included for
+ // every variant. They only count when explicitly added as an ingredient
+ // here (via the "Base Dough Recipe" / "Powder Base Recipe" dropdown
+ // options), exactly like any other raw material. This sums variantIngs
+ // exactly once, so double-counting is impossible by construction — there
+ // is no separate automatic total to accidentally add on top.
+ const ingredientCost = variantIngs.reduce((sum, ing) => {
  return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
  }, 0)
- // Powder base cost per piece (shared recipe like base dough) — same rule.
- const powderBaseCostPerPiece = hasManualPowderBase ? 0 : powderBaseIngredients.reduce((sum, ing) => {
- return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
- }, 0)
- // Variant topping/filling cost per piece — includes any manually linked
- // Base Dough / Powder Base rows too, since those are just rows here.
- const variantCostPerPiece = variantIngs.reduce((sum, ing) => {
- return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
- }, 0)
- const ingredientCost = baseCostPerPiece + powderBaseCostPerPiece + variantCostPerPiece
  const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
  const laborPerPiece = safeNum(costSettings.daily_labor_cost) / totalDailyPieces
  const monthlyDepreciation =
@@ -28068,7 +28057,7 @@ function printCompanyDocumentRecord(record) {
  {isEditing && (
  <div style={{ marginTop:'10px', background:'#f9f9f9', padding:'12px', borderRadius:'8px', border:'1px solid #eee' }}>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', marginBottom:'10px', fontSize:'11px', color:'#555', lineHeight:1.45 }}>
- <strong style={{ color:'#ca1b1b' }}>Base dough and powder base are automatically included.</strong> Add only the extra topping, filling, glaze, or coating for this variant. Do not add shared base ingredients again here.
+ <strong style={{ color:'#ca1b1b' }}>Base dough and powder base are NOT automatic anymore.</strong> If this variant uses them, select "Base Dough Recipe" or "Powder Base Recipe" from the dropdown below and enter the gram amount, the same way you'd add any other ingredient. Leave them out only if this variant genuinely doesn't need them.
  </div>
  {editingVariantRecipe.map((row,ri)=>(
  <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
@@ -28116,17 +28105,18 @@ function printCompanyDocumentRecord(record) {
  const pieces = Math.max(1, Number(v.pieces_per_batch) || 1)
  const baseDoughLinkRow = variantExtraRows.find(r => String(r.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID)
  const powderBaseLinkRow = variantExtraRows.find(r => String(r.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID)
- const baseDoughStatus = !baseDoughLinkRow ? 'Auto-included' : (safeNum(baseDoughLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
- const powderBaseStatus = !powderBaseLinkRow ? 'Auto-included' : (safeNum(powderBaseLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
- const basePerPc = baseDoughLinkRow ? 0 : (baseDoughIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
- const powderPerPc = powderBaseLinkRow ? 0 : (powderBaseIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
- const variantPerPc = variantExtraRows.reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
+ const baseDoughStatus = !baseDoughLinkRow ? 'Not added' : (safeNum(baseDoughLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
+ const powderBaseStatus = !powderBaseLinkRow ? 'Not added' : (safeNum(powderBaseLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
+ const basePerPc = baseDoughLinkRow ? (productionRecipeIngredientCost(baseDoughLinkRow) / pieces) : 0
+ const powderPerPc = powderBaseLinkRow ? (productionRecipeIngredientCost(powderBaseLinkRow) / pieces) : 0
+ const otherRows = variantExtraRows.filter(r => String(r.inventory_item_id) !== BASE_DOUGH_RECIPE_LINK_ID && String(r.inventory_item_id) !== POWDER_BASE_RECIPE_LINK_ID)
+ const variantPerPc = otherRows.reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
  return (
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'7px 9px', marginBottom:'7px', fontSize:'11px', color:'#555', display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
  <strong style={{ color:'#ca1b1b' }}>Total ingredients/pc: {php(basePerPc + powderPerPc + variantPerPc)}</strong>
  <span>Base dough: {php(basePerPc)} <span style={{ color:'#888', fontSize:'9px' }}>({baseDoughStatus})</span></span>
  <span>Powder base: {php(powderPerPc)} <span style={{ color:'#888', fontSize:'9px' }}>({powderBaseStatus})</span></span>
- <span>Variant extras: {php(variantPerPc)}</span>
+ <span>Other ingredients: {php(variantPerPc)}</span>
  </div>
  )
  })()}
@@ -28166,7 +28156,7 @@ function printCompanyDocumentRecord(record) {
  )
  }) }
  {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && (
- <div style={{ background:'#f7f7f7', borderRadius:'6px', padding:'4px 8px', fontSize:'11px', color:'#777', fontStyle:'italic' }}>No extra topping/filling added yet. This variant currently uses shared base recipes only.</div>
+ <div style={{ background:'#fff3cd', border:'1px solid #f5c518', borderRadius:'6px', padding:'4px 8px', fontSize:'11px', color:'#856404' }}>⚠ No ingredients added for this variant yet — ingredient cost is currently ₱0. Add Base Dough, Powder Base, and/or toppings from the dropdown above if this variant should be costed.</div>
  )}
  </div>
  </div>
