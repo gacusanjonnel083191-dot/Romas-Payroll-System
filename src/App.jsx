@@ -6288,7 +6288,37 @@ Cancel = create batch record only for existing stock.`)
  const gramCost = `${php(costPerGram)}/g`
  return normalizeProductionRecipeUnit(originalUnit) === 'g' && !(purchaseSize > 0 && purchaseCost > 0) ? gramCost : `${gramCost} from ${originalCost}`
  }
+ // Well-known sentinel IDs letting a per-variant ingredient row reference the
+ // computed Base Dough / Powder Base recipes themselves, instead of a raw
+ // inventory item. Valid-format UUIDs so the existing uuid-typed
+ // inventory_item_id column accepts them with zero schema changes, but
+ // deliberately non-random so they can never collide with a real item.
+ const BASE_DOUGH_RECIPE_LINK_ID = '00000000-0000-0000-0000-000000000001'
+ const POWDER_BASE_RECIPE_LINK_ID = '00000000-0000-0000-0000-000000000002'
+
+ function computeBaseDoughTotals() {
+ const totalGrams = (baseDoughIngredients || []).reduce((sum, r) => sum + productionRecipeQuantityGrams(r), 0)
+ const totalCost = (baseDoughIngredients || []).reduce((sum, r) => sum + productionRecipeIngredientCost(r), 0)
+ const costPerGram = totalGrams > 0 ? totalCost / totalGrams : 0
+ return { totalCost, totalGrams, costPerGram }
+ }
+ function computePowderBaseTotals() {
+ const totalGrams = (powderBaseIngredients || []).reduce((sum, r) => sum + productionRecipeQuantityGrams(r), 0)
+ const totalCost = (powderBaseIngredients || []).reduce((sum, r) => sum + productionRecipeIngredientCost(r), 0)
+ const costPerGram = totalGrams > 0 ? totalCost / totalGrams : 0
+ return { totalCost, totalGrams, costPerGram }
+ }
  function productionRecipeIngredientCost(row = {}) {
+ // A row linking to the computed Base Dough or Powder Base recipe uses
+ // that recipe's own real cost-per-gram, not an inventory lookup — this is
+ // what lets a variant explicitly reference "200g of base dough" as an
+ // ingredient without needing a matching inventory_items row.
+ if (String(row.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID) {
+ return moneyRound(productionRecipeQuantityGrams(row) * computeBaseDoughTotals().costPerGram)
+ }
+ if (String(row.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID) {
+ return moneyRound(productionRecipeQuantityGrams(row) * computePowderBaseTotals().costPerGram)
+ }
  const invItem = inventoryItems.find(i => String(i.id) === String(row.inventory_item_id))
  if (!invItem) return 0
  if (isProductionRecipeCostSetupSuspicious(invItem)) return 0
@@ -6296,16 +6326,23 @@ Cancel = create batch record only for existing stock.`)
  }
  function computeVariantCost(variantId, piecesPerBatch) {
  const safePiecesPerBatch = positiveNum(piecesPerBatch)
- // Base dough cost per piece (from inventory item cost_per_unit)
- const baseCostPerPiece = baseDoughIngredients.reduce((sum, ing) => {
- return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
- }, 0)
- // Powder base cost per piece (shared recipe like base dough)
- const powderBaseCostPerPiece = powderBaseIngredients.reduce((sum, ing) => {
- return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
- }, 0)
- // Variant topping/filling cost per piece
  const variantIngs = variantRecipes[variantId] || []
+ // A variant that explicitly links Base Dough / Powder Base as its own
+ // ingredient row replaces the automatic shared-batch inclusion for that
+ // one — never both at once, so double-counting can't happen structurally.
+ const hasManualBaseDough = variantIngs.some(ing => String(ing.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID)
+ const hasManualPowderBase = variantIngs.some(ing => String(ing.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID)
+ // Base dough cost per piece (from inventory item cost_per_unit) — skipped
+ // when this variant manually links Base Dough itself instead.
+ const baseCostPerPiece = hasManualBaseDough ? 0 : baseDoughIngredients.reduce((sum, ing) => {
+ return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
+ }, 0)
+ // Powder base cost per piece (shared recipe like base dough) — same rule.
+ const powderBaseCostPerPiece = hasManualPowderBase ? 0 : powderBaseIngredients.reduce((sum, ing) => {
+ return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
+ }, 0)
+ // Variant topping/filling cost per piece — includes any manually linked
+ // Base Dough / Powder Base rows too, since those are just rows here.
  const variantCostPerPiece = variantIngs.reduce((sum, ing) => {
  return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
  }, 0)
@@ -27824,7 +27861,17 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Base Dough Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across ALL variants. Enter all production recipe quantities in grams (g) per batch.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Shared across ALL variants. Enter all production recipe quantities in grams (g) per batch.</p>
+ {baseDoughIngredients.length > 0 && (() => {
+ const { totalCost, totalGrams, costPerGram } = computeBaseDoughTotals()
+ return (
+ <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', fontSize:'12px', fontWeight:'800' }}>
+ <span style={{ color:'#ca1b1b' }}>Total batch cost: {php(totalCost)}</span>
+ <span style={{ color:'#555' }}>Total batch weight: {totalGrams.toLocaleString('en-PH')}g</span>
+ <span style={{ color:'#2d8a4e' }}>Cost per gram: ₱{costPerGram.toFixed(4)}/g</span>
+ </div>
+ )
+ })()}
  </div>
  {selectedRecipeVariantId!== 'base'? (
  <button style={{...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
@@ -27891,7 +27938,17 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <h3 style={{ color:'#7b4f9e', margin:'0 0 4px', fontSize:'15px' }}> Powder Base Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across variants like Base Dough. Enter all powder base quantities in grams (g) per batch.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Shared across variants like Base Dough. Enter all powder base quantities in grams (g) per batch.</p>
+ {powderBaseIngredients.length > 0 && (() => {
+ const { totalCost, totalGrams, costPerGram } = computePowderBaseTotals()
+ return (
+ <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', fontSize:'12px', fontWeight:'800' }}>
+ <span style={{ color:'#7b4f9e' }}>Total batch cost: {php(totalCost)}</span>
+ <span style={{ color:'#555' }}>Total batch weight: {totalGrams.toLocaleString('en-PH')}g</span>
+ <span style={{ color:'#2d8a4e' }}>Cost per gram: ₱{costPerGram.toFixed(4)}/g</span>
+ </div>
+ )
+ })()}
  </div>
  {selectedRecipeVariantId!== 'powder_base'? (
  <button style={{...btnBlack, background:'#7b4f9e', width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('powder_base'); setEditingPowderBase(powderBaseIngredients.length>0?powderBaseIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT POWDER BASE</button>
@@ -28016,8 +28073,22 @@ function printCompanyDocumentRecord(record) {
  {editingVariantRecipe.map((row,ri)=>(
  <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
  <div>
- <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingVariantRecipe]; upd[ri]={...upd[ri],inventory_item_id:e.target.value,item_name:inv?.name||upd[ri].item_name,unit:'g'}; setEditingVariantRecipe(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
+ <select value={row.inventory_item_id||''} onChange={e=>{
+ const val = e.target.value
+ const upd=[...editingVariantRecipe]
+ if (val === BASE_DOUGH_RECIPE_LINK_ID) {
+ upd[ri]={...upd[ri],inventory_item_id:val,item_name:'Base Dough Recipe',unit:'g'}
+ } else if (val === POWDER_BASE_RECIPE_LINK_ID) {
+ upd[ri]={...upd[ri],inventory_item_id:val,item_name:'Powder Base Recipe',unit:'g'}
+ } else {
+ const inv=inventoryItems.find(it=>it.id===val)
+ upd[ri]={...upd[ri],inventory_item_id:val,item_name:inv?.name||upd[ri].item_name,unit:'g'}
+ }
+ setEditingVariantRecipe(upd)
+ }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value=""> Link inventory item </option>
+ <option value={BASE_DOUGH_RECIPE_LINK_ID}> Base Dough Recipe ({php(computeBaseDoughTotals().costPerGram)}/g computed)</option>
+ <option value={POWDER_BASE_RECIPE_LINK_ID}> Powder Base Recipe ({php(computePowderBaseTotals().costPerGram)}/g computed)</option>
  {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
  </select>
  <input placeholder="Ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],item_name:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'3px' }} />
@@ -28043,14 +28114,18 @@ function printCompanyDocumentRecord(record) {
  <div style={{ marginTop:'8px' }}>
  {(() => {
  const pieces = Math.max(1, Number(v.pieces_per_batch) || 1)
- const basePerPc = (baseDoughIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
- const powderPerPc = (powderBaseIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
+ const baseDoughLinkRow = variantExtraRows.find(r => String(r.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID)
+ const powderBaseLinkRow = variantExtraRows.find(r => String(r.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID)
+ const baseDoughStatus = !baseDoughLinkRow ? 'Auto-included' : (safeNum(baseDoughLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
+ const powderBaseStatus = !powderBaseLinkRow ? 'Auto-included' : (safeNum(powderBaseLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
+ const basePerPc = baseDoughLinkRow ? 0 : (baseDoughIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
+ const powderPerPc = powderBaseLinkRow ? 0 : (powderBaseIngredients || []).reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
  const variantPerPc = variantExtraRows.reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
  return (
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'7px 9px', marginBottom:'7px', fontSize:'11px', color:'#555', display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
  <strong style={{ color:'#ca1b1b' }}>Total ingredients/pc: {php(basePerPc + powderPerPc + variantPerPc)}</strong>
- <span>Base dough: {php(basePerPc)}</span>
- <span>Powder base: {php(powderPerPc)}</span>
+ <span>Base dough: {php(basePerPc)} <span style={{ color:'#888', fontSize:'9px' }}>({baseDoughStatus})</span></span>
+ <span>Powder base: {php(powderPerPc)} <span style={{ color:'#888', fontSize:'9px' }}>({powderBaseStatus})</span></span>
  <span>Variant extras: {php(variantPerPc)}</span>
  </div>
  )
@@ -28078,12 +28153,15 @@ function printCompanyDocumentRecord(record) {
  )
  }) }
  {variantExtraRows.map((r,ri)=>{
- const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+ const isBaseDoughLink = String(r.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID
+ const isPowderBaseLink = String(r.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID
+ const inv = (isBaseDoughLink || isPowderBaseLink) ? true : inventoryItems.find(it=>it.id===r.inventory_item_id)
  const qtyGrams = productionRecipeQuantityGrams(r)
  const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
+ const typeLabel = isBaseDoughLink ? 'linked: base dough' : isPowderBaseLink ? 'linked: powder base' : r.ingredient_type
  return (
- <div key={`variant-${ri}`} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({r.ingredient_type})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+ <div key={`variant-${ri}`} style={{ background:(isBaseDoughLink||isPowderBaseLink)?'#fff8dc':'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+ <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({typeLabel})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
  </div>
  )
  }) }
