@@ -19724,6 +19724,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [posProducts, setPosProducts] = useState([])
  const [posRefreshing, setPosRefreshing] = useState(false)
  const posSilentScrollSnapshotRef = useRef(null)
+ const posDeleteClickGuardRef = useRef({})
  const [stockInProductId, setStockInProductId] = useState(() => readSagsDraft('stockInProductId', ''))
  const [stockInSearch, setStockInSearch] = useState(() => readSagsDraft('stockInSearch', ''))
  const [stockInQty, setStockInQty] = useState(() => readSagsDraft('stockInQty', ''))
@@ -19936,7 +19937,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  function isOutletProductDeleted(product = {}) {
   const status = String(product.status || '').trim().toLowerCase()
-  return ['deleted', 'permanently_deleted', 'removed'].includes(status) || !!product.deleted_at
+  const name = String(product.product_name || product.name || '').trim().toLowerCase()
+  const category = String(product.category || '').trim().toLowerCase()
+  return ['deleted', 'permanently_deleted', 'removed'].includes(status) || !!product.deleted_at || name.startsWith('[deleted]') || category === 'deleted'
  }
 
  function isPosProductsOptionalColumnError(error = null) {
@@ -20582,13 +20585,22 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   // If a product already has protected sales/history links, physical deletion may
   // be blocked by foreign keys. This fallback removes it from active POS use by
   // clearing scan codes and marking it deleted, while preserving old sales history.
+  // The final core payload uses only common pos_products columns so it still works
+  // even when optional status/deleted columns are not present in Supabase.
   const deletedAt = new Date().toISOString()
   const deletedBy = currentAdminLabel || 'Admin'
+  const originalName = String(product?.product_name || product?.name || 'POS Item').trim() || 'POS Item'
+  const deletedName = originalName.toLowerCase().startsWith('[deleted]') ? originalName : `[DELETED] ${originalName}`
   const payloadAttempts = [
    {
+    product_name:deletedName,
+    name:deletedName,
+    category:'Deleted',
     barcode:null,
     sku:null,
     stock:0,
+    selling_price:0,
+    price:0,
     status:'deleted',
     is_active:false,
     deleted_at:deletedAt,
@@ -20596,11 +20608,22 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     deleted_reason:reason
    },
    {
+    product_name:deletedName,
+    category:'Deleted',
     barcode:null,
     sku:null,
     stock:0,
+    selling_price:0,
     status:'deleted',
     is_active:false
+   },
+   {
+    product_name:deletedName,
+    category:'Deleted',
+    barcode:null,
+    sku:null,
+    stock:0,
+    selling_price:0
    },
    {
     barcode:null,
@@ -20615,8 +20638,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     .from('pos_products')
     .update(payload)
     .eq('id', product.id)
-    .select('id, product_name, sku, barcode, status')
-   if (!result.error && Array.isArray(result.data) && result.data.length > 0) return { error:null, data:result.data, mode:payload.status === 'deleted' ? 'tombstone' : 'barcode_cleared' }
+    .select('id, product_name, sku, barcode')
+   if (!result.error && Array.isArray(result.data) && result.data.length > 0) return { error:null, data:result.data, mode:payload.product_name ? 'tombstone' : 'barcode_cleared' }
    if (result.error) lastError = result.error
   }
   return { error:lastError || new Error('Supabase did not update any POS product row. Delete was not applied.'), data:[], mode:'failed' }
@@ -20656,7 +20679,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   if (barcode) {
    const { data, error } = await supabase
     .from('pos_products')
-    .select('id, product_name, sku, barcode, status')
+    .select('id, product_name, sku, barcode')
     .eq('barcode', barcode)
    if (!error) matches.push(...(data || []).filter(row => String(row.id || '') !== productId && !isOutletProductDeleted(row)))
   }
@@ -20664,7 +20687,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   if (sku) {
    const { data, error } = await supabase
     .from('pos_products')
-    .select('id, product_name, sku, barcode, status')
+    .select('id, product_name, sku, barcode')
     .eq('sku', sku)
    if (!error) {
     ;(data || []).forEach(row => {
@@ -20674,6 +20697,19 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    }
   }
   return matches
+ }
+
+ function triggerDeleteOutletInventoryItem(product, event = null) {
+  if (event) {
+   event.preventDefault?.()
+   event.stopPropagation?.()
+  }
+  const key = String(product?.id || getInventoryDraftKey(product) || '')
+  const now = Date.now()
+  const lastClick = key ? safeNum(posDeleteClickGuardRef.current?.[key], 0) : 0
+  if (key && now - lastClick < 900) return
+  if (key) posDeleteClickGuardRef.current = { ...(posDeleteClickGuardRef.current || {}), [key]:now }
+  deleteOutletInventoryItem(product)
  }
 
  async function deleteOutletInventoryItem(product) {
@@ -21801,9 +21837,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
              )}
              {canEditOutletInventory && (
               <button
+               type="button"
                disabled={saving}
-               onClick={()=>deleteOutletInventoryItem(row)}
-               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:'#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)'}}
+               onPointerDown={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
+               onClick={e=>{ e.preventDefault(); e.stopPropagation() }}
+               onKeyDown={e=>{ if (!saving && (e.key === 'Enter' || e.key === ' ')) triggerDeleteOutletInventoryItem(row, e) }}
+               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:'#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)', position:'relative', zIndex:20, pointerEvents:'auto', cursor:saving ? 'not-allowed' : 'pointer'}}
                title='Permanently delete this POS item from the product master list'
               >
                Delete
