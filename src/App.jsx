@@ -21838,11 +21838,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
              {canEditOutletInventory && (
               <button
                type="button"
+               data-pos-delete-button="true"
                disabled={saving}
-               onPointerDown={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
-               onClick={e=>{ e.preventDefault(); e.stopPropagation() }}
+               onMouseDown={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
+               onTouchStart={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
+               onClick={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
                onKeyDown={e=>{ if (!saving && (e.key === 'Enter' || e.key === ' ')) triggerDeleteOutletInventoryItem(row, e) }}
-               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:'#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)', position:'relative', zIndex:20, pointerEvents:'auto', cursor:saving ? 'not-allowed' : 'pointer'}}
+               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:'#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)', position:'relative', zIndex:9999, pointerEvents:'auto', cursor:saving ? 'not-allowed' : 'pointer'}}
                title='Permanently delete this POS item from the product master list'
               >
                Delete
