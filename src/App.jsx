@@ -6241,11 +6241,33 @@ Cancel = create batch record only for existing stock.`)
  return qty
  }
  function productionRecipeCostPerGram(item = null) {
+ // Costing recipes are entered in grams. For raw materials, always prefer
+ // professional purchase-unit setup (ex: 1 bottle = 250g at ₱250) so the
+ // recipe uses true cost per gram instead of accidentally treating the full
+ // bottle/pack price as ₱/g.
+ const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+ const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+ if (purchaseSize > 0 && purchaseCost > 0) return purchaseCost / purchaseSize
  const cost = safeNum(item?.cost_per_unit, 0)
- const unit = normalizeProductionRecipeUnit(item?.unit)
+ const unit = normalizeProductionRecipeUnit(item?.base_unit || item?.unit)
  if (unit === 'kg') return cost / 1000
  if (unit === 'l') return cost / 1000
  return cost
+ }
+ function isProductionRecipeCostSetupSuspicious(item = null) {
+ if (!item) return false
+ const unit = normalizeProductionRecipeUnit(item?.base_unit || item?.unit)
+ const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+ const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+ const cost = safeNum(item?.cost_per_unit, 0)
+ // If a raw ingredient is stored as grams but the ₱/g value is extremely high
+ // and no purchase-unit conversion exists, it is usually a package/bottle price
+ // accidentally saved as cost per gram. Do not let it silently inflate recipe cost.
+ return isRawMaterialItem(item) && ['g','ml'].includes(unit) && purchaseSize <= 0 && purchaseCost <= 0 && cost > 50
+ }
+ function productionRecipeCostWarning(item = null) {
+ if (!isProductionRecipeCostSetupSuspicious(item)) return ''
+ return 'Cost setup needs review: this item looks like a package/bottle price saved as cost per gram. Edit the inventory item and set purchase unit size + purchase unit cost.'
  }
  function productionRecipeStockQtyFromGrams(qtyGrams, item = null) {
  const qty = safeNum(qtyGrams, 0)
@@ -6255,15 +6277,21 @@ Cancel = create batch record only for existing stock.`)
  return qty
  }
  function productionRecipeInventoryOptionLabel(item = {}) {
+ if (isProductionRecipeCostSetupSuspicious(item)) return 'NEEDS COST SETUP - add purchase size + cost'
  const costPerGram = productionRecipeCostPerGram(item)
  const originalUnit = item?.unit || 'unit'
- const originalCost = `${php(item?.cost_per_unit || 0)}/${originalUnit}`
+ const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+ const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+ const originalCost = purchaseSize > 0 && purchaseCost > 0
+  ? `${php(purchaseCost)}/${item?.purchase_unit || 'purchase unit'} (${purchaseSize.toLocaleString('en-PH')}g)`
+  : `${php(item?.cost_per_unit || 0)}/${originalUnit}`
  const gramCost = `${php(costPerGram)}/g`
- return normalizeProductionRecipeUnit(originalUnit) === 'g' ? gramCost : `${gramCost} from ${originalCost}`
+ return normalizeProductionRecipeUnit(originalUnit) === 'g' && !(purchaseSize > 0 && purchaseCost > 0) ? gramCost : `${gramCost} from ${originalCost}`
  }
  function productionRecipeIngredientCost(row = {}) {
  const invItem = inventoryItems.find(i => String(i.id) === String(row.inventory_item_id))
  if (!invItem) return 0
+ if (isProductionRecipeCostSetupSuspicious(invItem)) return 0
  return moneyRound(productionRecipeQuantityGrams(row) * productionRecipeCostPerGram(invItem))
  }
  function computeVariantCost(variantId, piecesPerBatch) {
@@ -20155,9 +20183,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  async function loadPosMonitor(options = {}) {
   const silent = options && options.silent
   const isAutoRefresh = options && options.auto === true
-  // Auto refresh must never interrupt typing or stock/barcode editing.
-  // When the user is actively working, skip the background refresh entirely.
-  if (silent && isAutoRefresh && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
+  // Auto refresh must never interrupt typing or stock/barcode editing after products are already loaded.
+  // But on a fresh browser/computer, posProducts starts empty; never let a focused input or saved
+  // local draft block the first database product load, otherwise the inventory table appears missing.
+  const hasLoadedProducts = Array.isArray(posProducts) && posProducts.length > 0
+  if (silent && isAutoRefresh && !options.forceProducts && hasLoadedProducts && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
   const scrollSnapshot = silent ? capturePosSilentScrollSnapshot() : null
   posSilentScrollSnapshotRef.current = scrollSnapshot
   // A true silent refresh must not toggle visible loading state, because that
@@ -20918,7 +20948,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   newOutletItem
  ])
 
- useEffect(() => { loadPosMonitor({ silent:true, auto:true }) }, [posDate])
+ useEffect(() => {
+  // Always force-load product master rows on each POS date entry/mount. This prevents browser-specific
+  // localStorage/PWA state from hiding the Outlet Inventory Manager on another computer.
+  loadPosMonitor({ silent:true, auto:true, forceProducts:true })
+ }, [posDate])
 
  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
@@ -27636,9 +27670,10 @@ function printCompanyDocumentRecord(record) {
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
  const qtyGrams = productionRecipeQuantityGrams(r)
  const cost = inv? productionRecipeIngredientCost(r): 0
+ const warning = inv? productionRecipeCostWarning(inv): ''
  return (
  <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}</span>
+ <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ {warning}</div>:null}</span>
  <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
  <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
  <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
@@ -27702,9 +27737,10 @@ function printCompanyDocumentRecord(record) {
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
  const qtyGrams = productionRecipeQuantityGrams(r)
  const cost = inv? productionRecipeIngredientCost(r): 0
+ const warning = inv? productionRecipeCostWarning(inv): ''
  return (
  <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}</span>
+ <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ {warning}</div>:null}</span>
  <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
  <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
  <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
@@ -27835,9 +27871,10 @@ function printCompanyDocumentRecord(record) {
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
  const qtyGrams = productionRecipeQuantityGrams(r)
  const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
+ const warning = inv? productionRecipeCostWarning(inv): ''
  return (
  <div key={`powder-${ri}`} style={{ background:'#f3e8ff', border:'1px solid #e4d0ff', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>(powder base)</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+ <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>(powder base)</span> {inv?<span style={{ color:warning?'#f57c00':'#ca1b1b', fontSize:'10px', fontWeight:'800' }}>= {warning?'COST SETUP NEEDED':`${php(cost)}/pc`}</span>:null}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ excluded from costing until purchase size/cost is fixed</div>:null}
  </div>
  )
  }) }
