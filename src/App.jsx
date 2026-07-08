@@ -19832,8 +19832,23 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return tag === 'input' || tag === 'textarea' || tag === 'select' || active.isContentEditable === true
  }
 
+ function hasMeaningfulNewOutletItemDraft(item = newOutletItem) {
+  // Default values such as category=Donuts and min_stock=10 are not real unsaved work.
+  // Treat only fields the user actually typed as a draft, otherwise the first silent
+  // SAGS POS load can be skipped and the product list appears missing after deploy.
+  const draft = item || {}
+  return [
+   draft.product_name,
+   draft.sku,
+   draft.barcode,
+   draft.buying_price,
+   draft.selling_price,
+   draft.stock
+  ].some(value => String(value || '').trim() !== '')
+ }
+
  function hasAnyUnsavedPosDrafts() {
-  const hasAddItemDraft = showAddOutletItem && Object.values(newOutletItem || {}).some(value => String(value || '').trim() !== '')
+  const hasAddItemDraft = showAddOutletItem && hasMeaningfulNewOutletItemDraft(newOutletItem)
   const hasRowDraft = Object.values(inventoryDrafts || {}).some(draft =>
    draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
   )
@@ -20190,11 +20205,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    setPosMovements(filteredMovements)
    const nextProducts = productsRes.data || []
    sanitizeInventoryDraftsForLoadedProducts(nextProducts)
-   const hasUnsavedAddItem = showAddOutletItem && Object.values(newOutletItem || {}).some(value => String(value || '').trim() !== '')
+   const hasUnsavedAddItem = showAddOutletItem && hasMeaningfulNewOutletItemDraft(newOutletItem)
    const hasUnsavedRowEdits = Object.values(inventoryDrafts || {}).some(draft =>
     draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
    )
-   const preserveProductRows = silent && !options.forceProducts && (hasUnsavedAddItem || hasUnsavedRowEdits)
+   const preserveProductRows = silent && !options.forceProducts && posProducts.length > 0 && (hasUnsavedAddItem || hasUnsavedRowEdits)
    if (!preserveProductRows) {
     setPosProducts(prevProducts => {
      if (!Array.isArray(prevProducts) || prevProducts.length !== nextProducts.length) return nextProducts
