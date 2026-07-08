@@ -2847,7 +2847,7 @@ export default function App() {
  const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
 
  // Security & Owner Control Lockdown v1 helpers 
- const ADMIN_ROLE_VALUES = ['owner','manager','pos_admin','hr','payroll','supervisor','asst_supervisor']
+ const ADMIN_ROLE_VALUES = ['owner','manager','admin','pos_admin','hr','payroll','supervisor','asst_supervisor']
  const normalizedAdminRole = String(adminRole || '').trim().toLowerCase()
  const isOwnerRole = normalizedAdminRole === 'owner'
  const isPayrollRole = normalizedAdminRole === 'payroll'
@@ -12612,7 +12612,7 @@ function buildDeliveryInvoicePrintCSS() {
  const role = normalizeAdminRole(adminRole)
  if (role === 'owner') return true
  if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
- if (role === 'pos_admin') return ['posMonitor'].includes(tab)
+ if (role === 'admin' || role === 'pos_admin') return ['posMonitor'].includes(tab)
  if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops'].includes(tab)
  if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
  if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops'].includes(tab)
@@ -16824,7 +16824,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  } else {
  setAdminEmployee(null)
  }
- const defaultTab = safeRole==='pos_admin'?'posMonitor':safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
+ const defaultTab = (safeRole==='admin'||safeRole==='pos_admin')?'posMonitor':safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
  setActiveTab(defaultTab)
  loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
  loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
@@ -19674,9 +19674,9 @@ async function computePayroll() {
 
  
 function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }) {
- const POS_INVENTORY_EDIT_ROLES = ['owner','manager','pos_admin']
+ const POS_INVENTORY_EDIT_ROLES = ['owner','manager','admin','pos_admin']
  const canEditOutletInventory = POS_INVENTORY_EDIT_ROLES.includes(String(adminRole || '').trim().toLowerCase())
- const posInventoryEditRoleLabel = 'Owner, Manager, or SAGS POS Admin'
+ const posInventoryEditRoleLabel = 'Owner, Manager, Admin, or SAGS POS Admin'
  const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
  const readSagsDraft = (key, fallback = '') => {
   try {
@@ -20192,7 +20192,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const isAutoRefresh = options && options.auto === true
   // Auto refresh must never interrupt typing or stock/barcode editing.
   // When the user is actively working, skip the background refresh entirely.
-  if (silent && isAutoRefresh && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
+  if (silent && isAutoRefresh && !options.forceProducts && Array.isArray(posProducts) && posProducts.length > 0 && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
   const scrollSnapshot = silent ? capturePosSilentScrollSnapshot() : null
   posSilentScrollSnapshotRef.current = scrollSnapshot
   // A true silent refresh must not toggle visible loading state, because that
@@ -20244,7 +20244,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const hasUnsavedRowEdits = Object.values(inventoryDrafts || {}).some(draft =>
     draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
    )
-   const preserveProductRows = silent && !options.forceProducts && posProducts.length > 0 && (hasUnsavedAddItem || hasUnsavedRowEdits)
+   const productListCurrentlyEmpty = !Array.isArray(posProducts) || posProducts.length === 0
+   const preserveProductRows = silent && !options.forceProducts && !productListCurrentlyEmpty && (hasUnsavedAddItem || hasUnsavedRowEdits)
    if (!preserveProductRows) {
     setPosProducts(prevProducts => {
      if (!Array.isArray(prevProducts) || prevProducts.length !== nextProducts.length) return nextProducts
@@ -20553,9 +20554,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
  }
 
- async function setOutletInventoryItemActive(product, makeActive) {
+ async function deleteOutletInventoryItem(product) {
   if (!canEditOutletInventory) {
-   alert(`Only ${posInventoryEditRoleLabel} can disable or restore outlet items.`)
+   alert(`Only ${posInventoryEditRoleLabel} can delete POS items.`)
    return
   }
 
@@ -20565,47 +20566,42 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
 
   const productName = String(product.product_name || product.name || 'this POS item').trim() || 'this POS item'
-  const actionLabel = makeActive ? 'restore' : 'disable'
-  const reason = prompt(`${makeActive ? 'Reason for restoring' : 'Reason for disabling'} ${productName}:`)
-  if (reason === null) return
-  const cleanReason = String(reason || '').trim()
-  if (!cleanReason) {
-   alert('Reason is required for inventory item status changes.')
+  const typed = prompt(`This will permanently delete "${productName}" from the SAGS POS product master list. Type DELETE to continue.`)
+  if (String(typed || '').trim().toUpperCase() !== 'DELETE') return
+
+  const reason = String(prompt('Reason for deleting this POS item? This is required for audit trail.') || '').trim()
+  if (!reason) {
+   alert('Delete cancelled. Please enter a reason before deleting an item.')
    return
   }
-
-  const warning = makeActive
-   ? `Restore ${productName}? It will appear again in SAGS POS active inventory.`
-   : `Disable ${productName}? It will be hidden from active SAGS POS inventory and should no longer be used for selling, but sales/history records will be preserved.`
-  if (!confirm(warning)) return
 
   const key = getInventoryDraftKey(product)
   setInventorySavingId(key)
 
   try {
-   const nowIso = new Date().toISOString()
-   const payload = makeActive
-    ? { is_active:true, status:'active', disabled_at:null, disabled_by:null, disabled_reason:null }
-    : { is_active:false, status:'disabled', disabled_at:nowIso, disabled_by:currentAdminLabel || 'Admin', disabled_reason:cleanReason }
+   const { error } = await supabase
+    .from('pos_products')
+    .delete()
+    .eq('id', product.id)
 
-   const updateResult = await updatePosProductSafe(product.id, payload)
-   if (updateResult.error) throw updateResult.error
+   if (error) throw error
 
    if (logAudit) {
     await logAudit(
-     makeActive ? 'POS ITEM RESTORED' : 'POS ITEM DISABLED',
+     'OUTLET POS ITEM DELETED',
      currentAdminLabel || 'Admin',
      productName,
-     `${makeActive ? 'Restored' : 'Disabled'} POS item ${productName} | Reason: ${cleanReason}`
+     `Deleted from SAGS POS product master list. Reason: ${reason}`
     )
    }
 
    clearInventoryDraft(product)
-   alert(`${productName} ${makeActive ? 'restored' : 'disabled'} successfully.`)
+   alert(`Deleted ${productName}.`)
    await loadPosMonitor({ silent:true, forceProducts:true })
   } catch (err) {
-   console.error(`${actionLabel} POS item failed:`, err)
-   alert(`${makeActive ? 'Restore' : 'Disable'} item failed: ` + (err?.message || String(err)))
+   console.error('Delete POS item failed:', err)
+   const msg = String(err?.message || err || '')
+   alert('Delete failed: ' + msg + '\\n\\nIf this product already has protected sales/history links, Supabase may block permanent deletion. If that happens, keep the item for sales history and create a new corrected item instead.')
   } finally {
    setInventorySavingId('')
   }
@@ -21011,7 +21007,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   newOutletItem
  ])
 
- useEffect(() => { loadPosMonitor({ silent:true, auto:true }) }, [posDate])
+ useEffect(() => { loadPosMonitor({ silent:true, auto:true, forceProducts:true }) }, [posDate])
 
  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
@@ -21188,7 +21184,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
      <input type="date" value={posDate} onChange={e=>setPosDate(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0}} />
-     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true, manual:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
+     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true, manual:true, forceProducts:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
     </div>
    </div>
 
@@ -21418,7 +21414,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
     {!canEditOutletInventory && (
      <p style={{ margin:'0 0 12px', color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
-      Viewing only — Owner, Manager, or SAGS POS Admin access is needed to add items, edit prices, or change outlet stock.
+      Viewing only — Owner, Manager, Admin, or SAGS POS Admin access is needed to add items, edit prices, delete items, or change outlet stock.
      </p>
     )}
 
@@ -21517,7 +21513,22 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      </div>
     )}
 
-    {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
+    {outletBalances.length === 0 ? (
+     <div style={{ background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'12px', padding:'12px', color:'#7c2d12', fontSize:'12px', fontWeight:'800' }}>
+      <p style={{ margin:'0 0 8px' }}>No outlet product balance found on this device. Products may be hidden by stale browser draft/cache, not deleted.</p>
+      <button
+       style={{...btnYellow, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'12px'}}
+       onClick={() => {
+        try { localStorage.removeItem(SAGS_POS_DRAFT_KEY) } catch {}
+        setInventorySearch('')
+        setInventoryDrafts({})
+        setShowAddOutletItem(false)
+        setNewOutletItem(getDefaultNewOutletItem())
+        loadPosMonitor({ silent:false, manual:true, forceProducts:true })
+       }}
+      >Force Reload Products From Database</button>
+     </div>
+    ) : (
      <div style={{ overflowX:'auto' }}>
       {outletBalances.length > 0 && filteredOutletInventoryRows.length === 0 && inventorySearch.trim() && (
        <div style={{ margin:'0 0 10px', padding:'12px', background:'#fff7ed', border:'1px solid #fed7aa', borderRadius:'12px', color:'#9a3412', fontSize:'13px', fontWeight:'850', display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
@@ -21656,11 +21667,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
              {canEditOutletInventory && (
               <button
                disabled={saving}
-               onClick={()=>setOutletInventoryItemActive(row, rowDisabled)}
-               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:rowDisabled ? '#1a1a2e' : '#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)'}}
-               title={rowDisabled ? 'Restore this item to active POS inventory' : 'Disable this item without deleting sales history'}
+               onClick={()=>deleteOutletInventoryItem(row)}
+               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:'#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)'}}
+               title='Permanently delete this POS item from the product master list'
               >
-               {rowDisabled ? 'Restore' : 'Disable'}
+               Delete
               </button>
              )}
             </div>
