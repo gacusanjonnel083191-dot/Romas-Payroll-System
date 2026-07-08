@@ -9755,79 +9755,6 @@ function buildDeliveryInvoicePrintCSS() {
  setSavingDriverReturn(false)
  }
 
- // Print Production Release Form 
- function printProductionReleaseForm(report) {
- const pw = window.open('','_blank','width=700,height=600')
- const items = (report.production_report_items||[]).filter(i=>i.actual_qty>0)
- const totalPieces = items.reduce((s,i)=>s+Number(i.actual_qty||0),0)
- pw.document.write(`<!DOCTYPE html><html><head><title>Production Release Form</title>
- <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;font-size:10px;width:150mm;}
- @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
-.wrap{padding:6mm;}h1{font-size:13px;color:#ca1b1b;}
- table{width:100%;border-collapse:collapse;margin:8px 0;}th{background:#ca1b1b;color:white;padding:5px 6px;font-size:9px;text-align:left;}
- td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
-.sig{border-top:1px solid #000;margin-top:30px;padding-top:4px;font-size:8px;text-align:center;}
-.total{background:#fff9e6;font-weight:bold;}
- </style></head><body><div class="wrap">
- <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
- <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">PRODUCTION RELEASE FORM</div></div>
- <div style="text-align:right;font-size:8px;"><div>Production Date: <strong>${report.report_date}</strong></div><div>Delivery Date: <strong>${report.delivery_date}</strong></div></div>
- </div>
- <table>
- <tr><th>Variant</th><th style="text-align:right">Forecast</th><th style="text-align:right">Produced</th><th style="text-align:right">Variance</th></tr>
- ${items.map(i=>`<tr><td><strong>${i.variant_name}</strong></td><td style="text-align:right">${i.forecast_qty}</td><td style="text-align:right;font-weight:bold">${i.actual_qty}</td><td style="text-align:right;color:${i.variance!==0?'#ca1b1b':'#2d8a4e'}">${i.variance>0?'+':''}${i.variance}</td></tr>`).join('')}
- <tr class="total"><td>TOTAL</td><td style="text-align:right">${report.total_forecast}</td><td style="text-align:right">${report.total_produced}</td><td style="text-align:right;color:${report.variance!==0?'#ca1b1b':'#2d8a4e'}">${report.variance>0?'+':''}${report.variance}</td></tr>
- </table>
- ${report.variance_reason?`<div style="background:#fff3cd;padding:6px;border-radius:4px;font-size:8px;margin-bottom:8px;"><strong>Variance Reason:</strong> ${report.variance_reason}</div>`:''}
- <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:16px;">
- <div class="sig">Produced by<br/><br/>${report.submitted_by||'_______________'}</div>
- <div class="sig">Released by<br/><br/>_______________</div>
- <div class="sig">Received by (Driver)<br/><br/>_______________</div>
- </div>
- <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;cursor:pointer;"> PRINT</button></div>
- </div></body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
- }
-
- // Print Return Form 
- function printReturnForm(invoice, returns) {
- const pw = window.open('','_blank','width=700,height=600')
- const items = invoice.delivery_invoice_items||[]
- const returnMap = {}
-;(returns||[]).forEach(r=>{ returnMap[r.variant_name]=Number(r.returned_quantity||0) })
- pw.document.write(`<!DOCTYPE html><html><head><title>Return Form</title>
- <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;font-size:10px;width:150mm;}
- @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
-.wrap{padding:6mm;}h1{font-size:13px;color:#ca1b1b;}
- table{width:100%;border-collapse:collapse;margin:8px 0;}th{background:#1a1a2e;color:white;padding:5px 6px;font-size:9px;text-align:left;}
- td{padding:5px 6px;border-bottom:1px solid #eee;font-size:9px;}
-.sig{border-top:1px solid #000;margin-top:28px;padding-top:4px;font-size:8px;text-align:center;}
-.total{background:#fff9e6;font-weight:bold;}
- </style></head><body><div class="wrap">
- <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
- <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">UNSOLD RETURN FORM</div></div>
- <div style="text-align:right;font-size:8px;"><div>Date: <strong>${today}</strong></div><div>Invoice: <strong>${invoice.invoice_number}</strong></div></div>
- </div>
- <div style="font-size:9px;margin-bottom:8px;"><strong>Reseller:</strong> ${invoice.reseller_name} &nbsp;&nbsp; <strong>Area:</strong> ${invoice.reseller_area||'___'}</div>
- <table>
- <tr><th>Variant</th><th style="text-align:right">Delivered</th><th style="text-align:right">Returned</th><th style="text-align:right">Sold</th><th style="text-align:right">Amount</th></tr>
- ${items.map(i=>{
- const ret=returnMap[i.variant_name]||0
- const sold=Number(i.quantity||0)-ret
- const amt=sold*Number(i.reseller_price||0)
- return `<tr><td><strong>${i.variant_name}</strong></td><td style="text-align:right">${i.quantity}</td><td style="text-align:right;color:#ca1b1b;font-weight:bold">${ret||'___'}</td><td style="text-align:right;color:#2d8a4e">${sold}</td><td style="text-align:right">${amt>0?' '+amt.toFixed(2):'___'}</td></tr>`
- }).join('')}
- <tr class="total"><td>TOTAL</td><td style="text-align:right">${items.reduce((s,i)=>s+Number(i.quantity||0),0)}</td><td style="text-align:right;color:#ca1b1b">${Object.values(returnMap).reduce((s,v)=>s+v,0)||'___'}</td><td style="text-align:right">${items.reduce((s,i)=>s+Number(i.quantity||0),0)-Object.values(returnMap).reduce((s,v)=>s+v,0)}</td><td style="text-align:right"> ${(Number(invoice.total_amount||0)).toFixed(2)}</td></tr>
- </table>
- <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;">
- <div class="sig">Driver / Assistant<br/><br/>_______________</div>
- <div class="sig">Reseller Signature<br/><br/>_______________</div>
- </div>
- <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#1a1a2e;color:white;border:none;border-radius:6px;cursor:pointer;"> PRINT</button></div>
- </div></body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
- }
-
  // Print Cash Collection Summary 
  function printCashCollection(date) {
  const dayInvoices = deliveryInvoices.filter(i=>i.delivery_date===date||i.paid_date===date)
@@ -21838,13 +21765,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
              {canEditOutletInventory && (
               <button
                type="button"
-               data-pos-delete-button="true"
                disabled={saving}
-               onMouseDown={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
-               onTouchStart={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
                onClick={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
-               onKeyDown={e=>{ if (!saving && (e.key === 'Enter' || e.key === ' ')) triggerDeleteOutletInventoryItem(row, e) }}
-               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:'#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)', position:'relative', zIndex:9999, pointerEvents:'auto', cursor:saving ? 'not-allowed' : 'pointer'}}
+               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:'#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)', position:'relative', zIndex:20, pointerEvents:'auto', cursor:saving ? 'not-allowed' : 'pointer'}}
                title='Permanently delete this POS item from the product master list'
               >
                Delete
@@ -29519,7 +29442,7 @@ onClick={async ()=>{
  <button style={{...btnRed, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>initDriverReturn(inv)}> RECORD RETURNS</button>
  )}
  {inv.status!=='unpaid' && (
- <button style={{...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv,[])}> RETURN FORM</button>
+ <button style={{...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv)}> RETURN FORM</button>
  )}
  {adminRole==='owner' && (
  <button title="Owner-only force delete" style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:processingItems[`delete_invoice_${inv.id}`]?'not-allowed':'pointer', opacity:processingItems[`delete_invoice_${inv.id}`]?0.65:1, fontWeight:'bold', fontSize:'11px' }} disabled={processingItems[`delete_invoice_${inv.id}`]} onClick={()=>deleteInvoice(inv)}>{processingItems[`delete_invoice_${inv.id}`]?' DELETING...':' OWNER DELETE'}</button>
