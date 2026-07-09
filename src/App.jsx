@@ -19955,6 +19955,29 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return code
  }
 
+ function normalizeOutletScanCodeForCompare(value) {
+  return cleanOutletBarcodeCode(value).replace(/[^A-Z0-9]/g, '')
+ }
+
+ async function findActiveOutletProductCodeOwnerFromDatabase(codeValue, currentProductId = '') {
+  const normalizedCode = normalizeOutletScanCodeForCompare(codeValue)
+  if (!normalizedCode) return null
+
+  const { data, error } = await supabase
+   .from('pos_products')
+   .select('id, product_name, category, sku, barcode')
+
+  if (error) throw error
+
+  return (data || []).find(row => {
+   if (String(row.id || '') === String(currentProductId || '')) return false
+   if (isOutletProductDeleted(row)) return false
+   const rowBarcode = normalizeOutletScanCodeForCompare(row.barcode)
+   const rowSku = normalizeOutletScanCodeForCompare(row.sku)
+   return rowBarcode === normalizedCode || rowSku === normalizedCode
+  }) || null
+ }
+
  function buildCode39BarcodeSvg(codeValue, productName) {
   const patterns = {
    '0':'nnnwwnwnn','1':'wnnwnnnnw','2':'nnwwnnnnw','3':'wnwwnnnnn','4':'nnnwwnnnw',
@@ -20100,6 +20123,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const existingBarcode = cleanOutletBarcodeCode(product.barcode)
   if (existingBarcode && !options.force) return existingBarcode
   const barcode = options.barcode || getNextAvailableOutletBarcode(product.category || 'Others', posProducts)
+  const existingOwner = await findActiveOutletProductCodeOwnerFromDatabase(barcode, product.id)
+  if (existingOwner) {
+   alert(`Barcode ${barcode} is already registered to ${existingOwner.product_name || existingOwner.name || 'another active POS item'}.`)
+   return null
+  }
   const { error } = await supabase
    .from('pos_products')
    .update({ barcode })
@@ -20773,26 +20801,25 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const duplicateName = posProducts.find(p =>
    String(p.product_name || p.name || '').trim().toLowerCase() === productName.toLowerCase()
   )
-  const duplicateSku = sku ? posProducts.find(p =>
-   String(p.sku || '').trim().toLowerCase() === sku.toLowerCase()
-  ) : null
-  const duplicateBarcode = barcode ? posProducts.find(p =>
-   String(p.barcode || '').trim() === barcode
-  ) : null
-
-  if (duplicateSku) {
-   alert(`SKU already exists for ${duplicateSku.product_name || duplicateSku.name || 'another POS item'}. Use a different SKU or leave SKU blank.`)
-   return
-  }
-
-  if (duplicateBarcode) {
-   alert(`Barcode already exists for ${duplicateBarcode.product_name || duplicateBarcode.name || 'another POS item'}. Use a different barcode or leave Barcode blank.`)
-   return
-  }
 
   if (duplicateName && !confirm('A product with the same name already exists. Continue adding this item?')) return
 
   try {
+   // Verify SKU/barcode ownership from Supabase, not stale browser state.
+   // This prevents false "already registered" blocks after deleted/old local rows.
+   const duplicateSku = sku ? await findActiveOutletProductCodeOwnerFromDatabase(sku, '') : null
+   const duplicateBarcode = barcode ? await findActiveOutletProductCodeOwnerFromDatabase(barcode, '') : null
+
+   if (duplicateSku) {
+    alert(`SKU already exists for ${duplicateSku.product_name || duplicateSku.name || 'another active POS item'}. Use a different SKU or leave SKU blank.`)
+    return
+   }
+
+   if (duplicateBarcode) {
+    alert(`Barcode already exists for ${duplicateBarcode.product_name || duplicateBarcode.name || 'another active POS item'}. Use a different barcode or leave Barcode blank.`)
+    return
+   }
+
    const makeCleanProductId = (suffix = '') => {
     const rawBase = sku || barcode || productName || ('POS-' + Date.now())
     const cleanBase = String(rawBase)
