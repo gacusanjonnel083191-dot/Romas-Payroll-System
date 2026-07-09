@@ -19959,7 +19959,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return cleanOutletBarcodeCode(value).replace(/[^A-Z0-9]/g, '')
  }
 
- async function findActiveOutletProductCodeOwnerFromDatabase(codeValue, currentProductId = '') {
+ async function findActiveOutletProductCodeOwnerFromDatabase(codeValue, currentProductId = '', fieldsToCheck = ['barcode', 'sku']) {
   const normalizedCode = normalizeOutletScanCodeForCompare(codeValue)
   if (!normalizedCode) return null
 
@@ -19974,7 +19974,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    if (isOutletProductDeleted(row)) return false
    const rowBarcode = normalizeOutletScanCodeForCompare(row.barcode)
    const rowSku = normalizeOutletScanCodeForCompare(row.sku)
-   return rowBarcode === normalizedCode || rowSku === normalizedCode
+   return (fieldsToCheck.includes('barcode') && rowBarcode === normalizedCode) || (fieldsToCheck.includes('sku') && rowSku === normalizedCode)
   }) || null
  }
 
@@ -20123,7 +20123,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const existingBarcode = cleanOutletBarcodeCode(product.barcode)
   if (existingBarcode && !options.force) return existingBarcode
   const barcode = options.barcode || getNextAvailableOutletBarcode(product.category || 'Others', posProducts)
-  const existingOwner = await findActiveOutletProductCodeOwnerFromDatabase(barcode, product.id)
+  const existingOwner = await findActiveOutletProductCodeOwnerFromDatabase(barcode, product.id, ['barcode'])
   if (existingOwner) {
    alert(`Barcode ${barcode} is already registered to ${existingOwner.product_name || existingOwner.name || 'another active POS item'}.`)
    return null
@@ -20807,8 +20807,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   try {
    // Verify SKU/barcode ownership from Supabase, not stale browser state.
    // This prevents false "already registered" blocks after deleted/old local rows.
-   const duplicateSku = sku ? await findActiveOutletProductCodeOwnerFromDatabase(sku, '') : null
-   const duplicateBarcode = barcode ? await findActiveOutletProductCodeOwnerFromDatabase(barcode, '') : null
+   const duplicateSku = sku ? await findActiveOutletProductCodeOwnerFromDatabase(sku, '', ['sku']) : null
+   const duplicateBarcode = barcode ? await findActiveOutletProductCodeOwnerFromDatabase(barcode, '', ['barcode']) : null
 
    if (duplicateSku) {
     alert(`SKU already exists for ${duplicateSku.product_name || duplicateSku.name || 'another active POS item'}. Use a different SKU or leave SKU blank.`)
