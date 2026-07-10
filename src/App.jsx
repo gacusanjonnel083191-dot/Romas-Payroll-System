@@ -2652,22 +2652,18 @@ export default function App() {
  const [editingItemId, setEditingItemId] = useState(null)
  const [editItemFields, setEditItemFields] = useState({})
 
- const SNACK_DRINK_MARKUP_PERCENT = 40
- const SNACK_DRINK_MARKUP_MULTIPLIER = 1 + SNACK_DRINK_MARKUP_PERCENT / 100
- const SNACK_DRINK_PREVIOUS_MARKUP_MULTIPLIER = 1.30
- const roundSnackDrinkSellingPrice = (value) => Math.round(safeNum(value, 0))
- const snackDrinkAutoSellingPrice = (cost) => roundSnackDrinkSellingPrice(safeNum(cost, 0) * SNACK_DRINK_MARKUP_MULTIPLIER)
- const snackDrinkAutoBuyingPrice = (sellingPrice) => moneyRound(safeNum(sellingPrice, 0) / SNACK_DRINK_MARKUP_MULTIPLIER)
+ const snackDrinkAutoSellingPrice = (cost) => moneyRound(safeNum(cost, 0) * 1.30)
+ const snackDrinkAutoBuyingPrice = (sellingPrice) => moneyRound(safeNum(sellingPrice, 0) / 1.30)
 
  const getSnackDrinkDisplaySellingPrice = (item = {}) => {
   const sell = safeNum(item.selling_price, 0)
   const oldPrice = safeNum(item.cost_per_unit, 0)
   const buy = safeNum(item.buying_price, 0)
 
-  // Safety for rows affected by the wrong previous 30% markup display/save:
+  // Safety for rows affected by the wrong previous markup display/save:
   // if selling_price equals oldPrice × 1.30 and buying price is empty,
   // treat oldPrice as the original selling price.
-  if (buy <= 0 && oldPrice > 0 && sell > 0 && Math.abs(sell - roundSnackDrinkSellingPrice(oldPrice * SNACK_DRINK_PREVIOUS_MARKUP_MULTIPLIER)) <= 0.05) {
+  if (buy <= 0 && oldPrice > 0 && sell > 0 && Math.abs(sell - snackDrinkAutoSellingPrice(oldPrice)) <= 0.05) {
    return oldPrice
   }
 
@@ -4714,10 +4710,6 @@ Cancel = create batch record only for existing stock.`)
  expiry_date: newItemExpiryDate || null,
  supplier_id: newItemSupplierId||null,
  is_active: true,
- ...(isNewSnackDrink ? {
-  buying_price: enteredBuyingPrice > 0 ? enteredBuyingPrice : null,
-  markup_percent: enteredBuyingPrice > 0 ? SNACK_DRINK_MARKUP_PERCENT : null
- } : {}),
  ...(isNewRawMaterial ? {
   base_unit:'g',
   purchase_unit:String(newItemPurchaseUnit || '').trim() || null,
@@ -4816,7 +4808,7 @@ Cancel = create batch record only for existing stock.`)
 
   if (isEditingSnackDrink) {
    payload.buying_price = supplierPrice
-   payload.markup_percent = SNACK_DRINK_MARKUP_PERCENT
+   payload.markup_percent = 30
   }
 
   const { error } = await updateInventoryItemSafe(item.id, payload)
@@ -19904,29 +19896,49 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return !!label && label !== 'donuts' && label !== 'donut'
  }
 
- const OUTLET_MARKUP_PERCENT = 40
- const OUTLET_MARKUP_MULTIPLIER = 1 + OUTLET_MARKUP_PERCENT / 100
- const roundOutletPeso = (value) => Math.round(safeNum(value, 0))
- const formatOutletPeso = (value) => `₱${roundOutletPeso(value).toLocaleString('en-PH')}`
-
- function getOutletMarkupSellingPrice(buyingPrice) {
-  return roundOutletPeso(safeNum(buyingPrice, 0) * OUTLET_MARKUP_MULTIPLIER)
+ function isOutletDrinkMarkupCategory(category = '') {
+  const label = String(category || '').trim().toLowerCase()
+  return label === 'drinks' || label === 'refreshing drinks'
  }
 
- function getOutletBuyingPrice(product = {}) {
+ function getOutletMarkupPercentForCategory(category = '') {
+  return isOutletDrinkMarkupCategory(category) ? 40 : 30
+ }
+
+ function getOutletMarkupMultiplierForCategory(category = '') {
+  return 1 + (getOutletMarkupPercentForCategory(category) / 100)
+ }
+
+ function roundOutletSellingPrice(value) {
+  return Math.round(safeNum(value, 0))
+ }
+
+ function getOutletExplicitBuyingPrice(product = {}) {
   const explicitBuying = safeNum(product.buyingPrice ?? product.buying_price, 0)
   if (explicitBuying > 0) return moneyRound(explicitBuying)
   const costPerUnit = safeNum(product.costPerUnit ?? product.cost_per_unit, 0)
   if (costPerUnit > 0) return moneyRound(costPerUnit)
+  return 0
+ }
+
+ function getOutletMarkupSellingPrice(buyingPrice, category = '') {
+  return roundOutletSellingPrice(safeNum(buyingPrice, 0) * getOutletMarkupMultiplierForCategory(category))
+ }
+
+ function getOutletBuyingPrice(product = {}) {
+  const explicitBuying = getOutletExplicitBuyingPrice(product)
+  if (explicitBuying > 0) return explicitBuying
   const selling = safeNum(product.sellingPrice ?? product.selling_price ?? product.price, 0)
-  return isOutletMarkupPricingCategory(product.category) && selling > 0 ? moneyRound(selling / OUTLET_MARKUP_MULTIPLIER) : 0
+  const storedMarkupPercent = safeNum(product.markup_percent, 0)
+  const fallbackMarkupPercent = storedMarkupPercent > 0 ? storedMarkupPercent : 30
+  return isOutletMarkupPricingCategory(product.category) && selling > 0 ? moneyRound(selling / (1 + fallbackMarkupPercent / 100)) : 0
  }
 
  function getOutletDisplaySellingPrice(product = {}) {
   const explicitSelling = safeNum(product.sellingPrice ?? product.selling_price ?? product.price, 0)
-  const buying = getOutletBuyingPrice(product)
-  if (isOutletMarkupPricingCategory(product.category) && buying > 0) return getOutletMarkupSellingPrice(buying)
-  return roundOutletPeso(explicitSelling)
+  const explicitBuying = getOutletExplicitBuyingPrice(product)
+  if (isOutletMarkupPricingCategory(product.category) && explicitBuying > 0) return getOutletMarkupSellingPrice(explicitBuying, product.category)
+  return roundOutletSellingPrice(explicitSelling)
  }
 
  function isOutletProductDisabled(product = {}) {
@@ -20401,7 +20413,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    return
   }
 
-  const newPrice = roundOutletPeso(priceEditValue)
+  const newPrice = String(priceEditValue || '').trim() === '' ? -1 : roundOutletSellingPrice(priceEditValue)
   if (newPrice < 0) {
    alert('Please enter a valid price.')
    return
@@ -20424,7 +20436,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      'OUTLET PRICE CHANGE',
      currentAdminLabel || 'Admin',
      product.product_name || product.name || product.id,
-     `${formatOutletPeso(oldPrice)} → ${formatOutletPeso(newPrice)}`
+     `₱${oldPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`
     )
    }
 
@@ -20466,8 +20478,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const draftPriceEntered = draft.price !== undefined && String(draft.price).trim() !== ''
   const newBuyingPrice = draftBuyingEntered ? safeNum(draft.buyingPrice, -1) : currentBuyingPrice
   const newPrice = usesMarkupPricing && draftBuyingEntered
-   ? getOutletMarkupSellingPrice(newBuyingPrice)
-   : (draftPriceEntered ? roundOutletPeso(draft.price) : currentPrice)
+   ? getOutletMarkupSellingPrice(newBuyingPrice, category)
+   : (draftPriceEntered ? roundOutletSellingPrice(draft.price) : currentPrice)
   const remarks = String(draft.remarks || '').trim()
 
   if (!newName) {
@@ -20524,11 +20536,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    if (usesMarkupPricing && draftBuyingEntered) {
     updatePayload.buying_price = moneyRound(newBuyingPrice)
     updatePayload.cost_per_unit = moneyRound(newBuyingPrice)
-    updatePayload.markup_percent = OUTLET_MARKUP_PERCENT
+    updatePayload.markup_percent = getOutletMarkupPercentForCategory(category)
    }
    if (priceChanged || (usesMarkupPricing && draftBuyingEntered)) {
-    updatePayload.selling_price = roundOutletPeso(newPrice)
-    updatePayload.price = roundOutletPeso(newPrice)
+    updatePayload.selling_price = moneyRound(newPrice)
+    updatePayload.price = moneyRound(newPrice)
    }
 
    const updateResult = await updatePosProductSafe(product.id, updatePayload)
@@ -20573,8 +20585,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    if (logAudit) {
     const changes = []
     if (nameChanged) changes.push(`Name ${currentName} → ${newName}`)
-    if (usesMarkupPricing && draftBuyingEntered) changes.push(`Bought ${formatOutletPeso(newBuyingPrice)} + ${OUTLET_MARKUP_PERCENT}% markup = Sell ${formatOutletPeso(newPrice)}`)
-    else if (priceChanged) changes.push(`Price ${formatOutletPeso(currentPrice)} → ${formatOutletPeso(newPrice)}`)
+    if (usesMarkupPricing && draftBuyingEntered) changes.push(`Bought ₱${newBuyingPrice.toFixed(2)} + ${getOutletMarkupPercentForCategory(category)}% markup = Sell ₱${newPrice.toFixed(2)}`)
+    else if (priceChanged) changes.push(`Price ₱${currentPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`)
     if (stockChanged) changes.push(`Stock ${currentStock} → ${newStock} (${stockInQty ? '+' + stockInQty : ''}${stockInQty && stockOutQty ? ', ' : ''}${stockOutQty ? '-' + stockOutQty : ''})`)
     await logAudit(
      'OUTLET INVENTORY UPDATED',
@@ -20585,7 +20597,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    }
 
    if (updateResult.optionalColumnsSaved === false && (usesMarkupPricing && draftBuyingEntered)) {
-    alert('Saved selling price using bought price + 40%. Note: your pos_products table is missing buying_price/markup columns, so the bought price itself was not stored. Add those Supabase columns for permanent bought-price tracking.')
+    alert(`Saved selling price using bought price + ${getOutletMarkupPercentForCategory(category)}%. Note: your pos_products table is missing buying_price/markup columns, so the bought price itself was not stored. Add those Supabase columns for permanent bought-price tracking.`)
    }
 
    clearInventoryDraft(product)
@@ -20822,7 +20834,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const startingStock = Math.round(safeNum(newOutletItem.stock, 0))
   const usesMarkupPricing = isOutletMarkupPricingCategory(category)
   const buyingPrice = safeNum(newOutletItem.buying_price, 0)
-  const sellingPrice = usesMarkupPricing && buyingPrice > 0 ? getOutletMarkupSellingPrice(buyingPrice) : roundOutletPeso(newOutletItem.selling_price)
+  const sellingPrice = usesMarkupPricing && buyingPrice > 0 ? getOutletMarkupSellingPrice(buyingPrice, category) : (String(newOutletItem.selling_price || '').trim() === '' ? -1 : roundOutletSellingPrice(newOutletItem.selling_price))
   const minStock = Math.round(safeNum(newOutletItem.min_stock, 10))
 
   if (!productName) {
@@ -20896,7 +20908,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     barcode: barcodeForDb,
     buying_price: usesMarkupPricing && buyingPrice > 0 ? moneyRound(buyingPrice) : null,
     cost_per_unit: usesMarkupPricing && buyingPrice > 0 ? moneyRound(buyingPrice) : null,
-    markup_percent: usesMarkupPricing && buyingPrice > 0 ? OUTLET_MARKUP_PERCENT : null,
+    markup_percent: usesMarkupPricing && buyingPrice > 0 ? getOutletMarkupPercentForCategory(category) : null,
     selling_price: sellingPrice,
     price: sellingPrice,
     stock: startingStock,
@@ -20972,7 +20984,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      'OUTLET POS ITEM ADDED',
      currentAdminLabel || 'Admin',
      productName,
-     `Category: ${category} | ${usesMarkupPricing && buyingPrice > 0 ? `Bought: ${formatOutletPeso(buyingPrice)} | Markup: ${OUTLET_MARKUP_PERCENT}% | ` : ''}Price: ${formatOutletPeso(sellingPrice)} | Starting stock: ${startingStock}`
+     `Category: ${category} | ${usesMarkupPricing && buyingPrice > 0 ? `Bought: ₱${buyingPrice.toFixed(2)} | Markup: 30% | ` : ''}Price: ₱${sellingPrice.toFixed(2)} | Starting stock: ${startingStock}`
     )
    }
 
@@ -21097,7 +21109,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      'POS SALE VOIDED',
      currentAdminLabel || userName || 'Admin',
      receiptNo,
-     `Voided receipt ${receiptNo} (${formatOutletPeso(originalTotal)}) | Reason: ${reason} | Stock restored for ${returnMovements.length} item(s)`
+     `Voided receipt ${receiptNo} (₱${originalTotal.toFixed(2)}) | Reason: ${reason} | Stock restored for ${returnMovements.length} item(s)`
     )
    }
 
@@ -21322,7 +21334,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    sku: product.sku || '',
    barcode: product.barcode || '',
    buyingPrice: getOutletBuyingPrice(product),
-   markupPercent: safeNum(product.markup_percent, isOutletMarkupPricingCategory(product.category) ? OUTLET_MARKUP_PERCENT : 0),
+   markupPercent: safeNum(product.markup_percent, isOutletMarkupPricingCategory(product.category) ? getOutletMarkupPercentForCategory(product.category) : 0),
    usesMarkupPricing: isOutletMarkupPricingCategory(product.category),
    sellingPrice: getOutletDisplaySellingPrice(product),
    stock: currentStock,
@@ -21389,11 +21401,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    {posError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'12px', padding:'12px', marginBottom:'14px', fontSize:'12px' }}>POS Monitor error: {posError}</div>}
 
    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'8px', marginBottom:'10px' }}>
-    {card('Total POS Sales', formatOutletPeso(totalSales), posDate, '#ca1b1b')}
-    {card('Cash Sales', formatOutletPeso(cashSales), 'Cash collected', '#2d8a4e')}
-    {card('GCash Sales', formatOutletPeso(gcashSales), 'Digital payment', '#4a90d9')}
-    {card('Online Sales', formatOutletPeso(onlineSales), 'Other online payments', '#1a1a2e')}
-    {card('Transactions', posSales.length, 'Avg: ' + formatOutletPeso(avgSale), '#ca1b1b')}
+    {card('Total POS Sales', php(totalSales), posDate, '#ca1b1b')}
+    {card('Cash Sales', php(cashSales), 'Cash collected', '#2d8a4e')}
+    {card('GCash Sales', php(gcashSales), 'Digital payment', '#4a90d9')}
+    {card('Online Sales', php(onlineSales), 'Other online payments', '#1a1a2e')}
+    {card('Transactions', posSales.length, 'Avg: ' + php(avgSale), '#ca1b1b')}
    </div>
 
    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'10px', marginBottom:'10px' }}>
@@ -21407,7 +21419,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          <tr key={p.product_name + i}>
           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}><strong>{p.product_name}</strong><br/><span style={{ color:'#999', fontSize:'10px' }}>{p.category}</span></td>
           <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{p.qty}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b' }}>{formatOutletPeso(p.total)}</td>
+          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold', color:'#ca1b1b' }}>{php(p.total)}</td>
          </tr>
         ))}</tbody>
        </table>
@@ -21422,7 +21434,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <div style={{ display:'grid', gap:'8px' }}>
        {posSales.slice(0,12).map(s=>(
         <div key={s.id} style={{ border:'1px solid #f0f0f0', borderRadius:'10px', padding:'10px', background:'#fafafa' }}>
-         <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><strong style={{ fontSize:'12px' }}>{s.receipt_no}</strong><strong style={{ color:'#ca1b1b', fontSize:'12px' }}>{formatOutletPeso(s.net_total)}</strong></div>
+         <div style={{ display:'flex', justifyContent:'space-between', gap:'8px' }}><strong style={{ fontSize:'12px' }}>{s.receipt_no}</strong><strong style={{ color:'#ca1b1b', fontSize:'12px' }}>{php(s.net_total)}</strong></div>
          <p style={{ margin:'4px 0 0', color:'#777', fontSize:'11px' }}>{s.outlet_name || 'Outlet'} | {s.cashier_name || 'Cashier'} | {s.payment_method || '-'}</p>
         </div>
        ))}
@@ -21526,13 +21538,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <h3 style={{ margin:'0 0 8px', color:'#ca1b1b', fontSize:'16px' }}>Shift Closing Report</h3>
     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'8px', marginBottom:'8px' }}>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'10px', padding:'7px 9px' }}>
-      <small>Cash Sales</small><br/><strong>{formatOutletPeso(closingCashSales)}</strong>
+      <small>Cash Sales</small><br/><strong>{php(closingCashSales)}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'10px', padding:'7px 9px' }}>
-      <small>GCash Sales</small><br/><strong>{formatOutletPeso(closingGcashSales)}</strong>
+      <small>GCash Sales</small><br/><strong>{php(closingGcashSales)}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>Total POS Sales</small><br/><strong>{formatOutletPeso(closingTotalSales)}</strong>
+      <small>Total POS Sales</small><br/><strong>{php(closingTotalSales)}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
       <small>Transactions</small><br/><strong>{posSales.length}</strong>
@@ -21559,8 +21571,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
 
     <div style={{ marginTop:'12px', padding:'10px', borderRadius:'12px', background:'#f8f8f8', fontSize:'13px' }}>
-     Expected Cash: <strong>{formatOutletPeso(closingExpectedCash)}</strong> | 
-     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>{formatOutletPeso(closingVariance)}</strong>
+     Expected Cash: <strong>{php(closingExpectedCash)}</strong> | 
+     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>{php(closingVariance)}</strong>
     </div>
 
     <button onClick={saveShiftClosing} style={{...btnGreen, marginTop:'12px'}}>Save Shift Closing</button>
@@ -21647,7 +21659,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
            setNewOutletItem(prev=>({
             ...prev,
             category,
-            ...(isOutletMarkupPricingCategory(category) && safeNum(prev.buying_price,0) > 0 ? { selling_price:getOutletMarkupSellingPrice(prev.buying_price) } : {})
+            ...(isOutletMarkupPricingCategory(category) && safeNum(prev.buying_price,0) > 0 ? { selling_price:getOutletMarkupSellingPrice(prev.buying_price, category) } : {})
            }))
           }}
           style={{
@@ -21686,14 +21698,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          setNewOutletItem(prev=>({
           ...prev,
           buying_price:bought,
-          ...(isOutletMarkupPricingCategory(prev.category) && String(bought).trim() !== '' ? { selling_price:getOutletMarkupSellingPrice(bought) } : {})
+          ...(isOutletMarkupPricingCategory(prev.category) && String(bought).trim() !== '' ? { selling_price:getOutletMarkupSellingPrice(bought, prev.category) } : {})
          }))
         }} placeholder="Supplier" style={{...inputStyle, marginBottom:0}} />
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Sell Price</label>
-        <input type="number" min="0" step="1" value={newOutletItem.selling_price} onChange={e=>setNewOutletItem(prev=>({...prev, selling_price:e.target.value}))} placeholder="Auto +40%" style={{...inputStyle, marginBottom:0}} />
-        {isOutletMarkupPricingCategory(newOutletItem.category) && safeNum(newOutletItem.buying_price,0) > 0 && <div style={{ fontSize:'9.5px', color:'#087a37', fontWeight:'900', marginTop:'3px' }}>Auto: bought + 40%</div>}
+        <input type="number" min="0" step="0.01" value={newOutletItem.selling_price} onChange={e=>setNewOutletItem(prev=>({...prev, selling_price:e.target.value}))} placeholder={`Auto +${getOutletMarkupPercentForCategory(newOutletItem.category)}%`} style={{...inputStyle, marginBottom:0}} />
+        {isOutletMarkupPricingCategory(newOutletItem.category) && safeNum(newOutletItem.buying_price,0) > 0 && <div style={{ fontSize:'9.5px', color:'#087a37', fontWeight:'900', marginTop:'3px' }}>Auto: bought + {getOutletMarkupPercentForCategory(newOutletItem.category)}%</div>}
        </div>
        <div>
         <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Start Stock</label>
@@ -21813,7 +21825,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
                 [draftKey]: {
                  ...(prev[draftKey] || {}),
                  buyingPrice:buying,
-                 price:String(buying).trim() !== '' ? getOutletMarkupSellingPrice(buying) : ''
+                 price:String(buying).trim() !== '' ? getOutletMarkupSellingPrice(buying, row.category) : ''
                 }
                }))
               }}
@@ -21834,7 +21846,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
              onChange={e=>setInventoryDraftValue(row, 'price', e.target.value)}
              style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:row.usesMarkupPricing ? '#f8fafc' : '#fffdf2'}}
             />
-            {row.usesMarkupPricing && <div style={{ fontSize:'9px', color:'#087a37', fontWeight:'900', marginTop:'2px', whiteSpace:'nowrap' }}>{`+${OUTLET_MARKUP_PERCENT}%`}</div>}
+            {row.usesMarkupPricing && <div style={{ fontSize:'9px', color:'#087a37', fontWeight:'900', marginTop:'2px', whiteSpace:'nowrap' }}>{`+${getOutletMarkupPercentForCategory(row.category)}%`}</div>}
            </td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', fontWeight:'950', color:'#111827', fontSize:'12px' }}>{row.remainingStock}</td>
            <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:'#ca1b1b', fontWeight:'950', fontSize:'12px' }}>{row.soldQty}</td>
@@ -27416,7 +27428,7 @@ function printCompanyDocumentRecord(record) {
 {(newItemCategory==='Finished Products' || isSnackDrinkCategoryName(newItemCategory)) && (
  <div>
  <label style={lblS}>Selling Price (PHP):</label>
- <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnackDrinkCategoryName(newItemCategory)} title={isSnackDrinkCategoryName(newItemCategory)?'Auto-computed from Buying Price + 40% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnackDrinkCategoryName(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
+ <input type="number" placeholder="0.00" value={newItemSellingPrice} onChange={e=>setNewItemSellingPrice(e.target.value)} readOnly={isSnackDrinkCategoryName(newItemCategory)} title={isSnackDrinkCategoryName(newItemCategory)?'Auto-computed from Buying Price + 30% markup':'Manual selling price'} style={{...inputStyle, marginBottom:0, background:isSnackDrinkCategoryName(newItemCategory)?'#f7f9fc':'white' }} min="0" step="0.01" />
  </div>
  )}
  </div>
