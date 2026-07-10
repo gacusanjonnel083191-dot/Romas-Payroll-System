@@ -7162,6 +7162,28 @@ Cancel = create batch record only for existing stock.`)
  return moneyRound(item.reseller_price ?? item.unit_price ?? item.price ?? item.selling_price ?? 0)
  }
 
+ function getDeliveryInvoiceCustomerType(invoice = {}) {
+ const explicitType = String(invoice?.customer_type || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+ if (explicitType === 'non_reseller' || explicitType === 'nonreseller') return 'non_reseller'
+ if (explicitType === 'reseller') return 'reseller'
+ if (invoice?.reseller_id) return 'reseller'
+ const notes = String(invoice?.notes || '').toLowerCase()
+ if (notes.includes('non-reseller invoice') || notes.includes('non reseller invoice')) return 'non_reseller'
+ return 'non_reseller'
+ }
+
+ function getDeliveryInvoiceDiscountPct(invoice = {}) {
+ const customerType = getDeliveryInvoiceCustomerType(invoice)
+ if (customerType === 'non_reseller') return 0
+ const storedDiscount = safeNum(invoice?.discount_pct, NaN)
+ return Number.isFinite(storedDiscount) ? storedDiscount : 20
+ }
+
+ function getDeliveryInvoiceEditUnitPrice(invoice = {}, retailPrice = 0) {
+ const discountPct = getDeliveryInvoiceDiscountPct(invoice)
+ return moneyRound(safeNum(retailPrice, 0) * (1 - discountPct / 100))
+ }
+
  function getInvoiceItemGrossAmount(item = {}) {
  const stored = safeNum(item.total_price ?? item.amount ?? item.line_total, NaN)
  if (Number.isFinite(stored)) return moneyRound(stored)
@@ -8241,17 +8263,19 @@ Cancel = create batch record only for existing stock.`)
  if (validItems.length === 0) { showToast(' Please add at least one item.','red'); return }
  setSavingEditInvoice(true)
  try {
- // Recalculate totals
+ // Recalculate totals using the original invoice pricing rule.
+ // Non-reseller / online customer invoices must stay at retail price (0% discount) when edited.
+ const discountPercent = getDeliveryInvoiceDiscountPct(editingInvoice)
  const lineItems = validItems.map(i => {
  const variant = donutVariants.find(v => v.id === i.variant_id)
- const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
- const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
- return {...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
+ const retailPrice = safeNum(variant?.selling_price ?? i.retail_price, 0)
+ const invoicePrice = getDeliveryInvoiceEditUnitPrice(editingInvoice, retailPrice)
+ return {...i, retail_price:retailPrice, reseller_price:invoicePrice, total_price:moneyRound(invoicePrice * Number(i.quantity || 0)) }
  })
- const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
+ const subtotal = moneyRound(lineItems.reduce((s,i) => s + safeNum(i.total_price, 0), 0))
  // Update invoice header
  await supabase.from('delivery_invoices').update({
- subtotal, total_amount:subtotal,
+ subtotal, total_amount:subtotal, discount_pct:discountPercent,
  notes:editingInvoice.notes||null,
  prepared_by:editingInvoice.prepared_by||null,
  dispatched_by:editingInvoice.dispatched_by||null,
@@ -9353,7 +9377,7 @@ function buildDeliveryInvoicePrintCSS() {
  variant_id: v.id || '',
  variant_name: v.name || 'Variant',
  retail_price: retailPrice,
- reseller_price: Math.round(retailPrice * 0.80 * 100) / 100,
+ reseller_price: getDeliveryInvoiceEditUnitPrice(invoice, retailPrice),
  original_quantity: 0,
  actual_quantity: 0,
  adjustment_type: 'Additional / Overproduced',
@@ -29801,21 +29825,21 @@ onClick={async ()=>{
  {/* Line items */}
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>Items:</p>
  <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
- {['Variant','Qty','Retail','Reseller',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+ {['Variant','Qty','Retail',getDeliveryInvoiceCustomerType(editingInvoice)==='non_reseller'?'Invoice Price':`${getDeliveryInvoiceDiscountPct(editingInvoice)}% Price`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
  </div>
  {editInvoiceItems.map((item,i)=>{
  const variant = donutVariants.find(v=>v.id===item.variant_id)
- const retailPrice = variant?.selling_price || Number(item.retail_price) || 0
- const resellerPrice = Math.round(retailPrice*0.80*100)/100
+ const retailPrice = safeNum(variant?.selling_price ?? item.retail_price, 0)
+ const invoicePrice = getDeliveryInvoiceEditUnitPrice(editingInvoice, retailPrice)
  return (
  <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
- <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...editInvoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setEditInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
+ <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const retail=safeNum(v?.selling_price,0); const upd=[...editInvoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||'',retail_price:retail,reseller_price:getDeliveryInvoiceEditUnitPrice(editingInvoice, retail)}; setEditInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value=""> Select </option>
  {donutVariants.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
  </select>
  <input type="number" value={item.quantity} onChange={e=>{ const upd=[...editInvoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setEditInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" />
  <span style={{ fontSize:'11px', color:'#888', textAlign:'center' }}>{php(retailPrice)}</span>
- <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold', textAlign:'center' }}>{php(resellerPrice)}</span>
+ <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold', textAlign:'center' }}>{php(invoicePrice)}</span>
  <button onClick={()=>setEditInvoiceItems(editInvoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}> </button>
  </div>
  )
@@ -29825,7 +29849,7 @@ onClick={async ()=>{
  <div style={{ background:'#fff9e6', borderRadius:'8px', padding:'8px 12px', margin:'6px 0', display:'flex', justifyContent:'space-between' }}>
  <span style={{ fontSize:'12px', color:'#555' }}>{editInvoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)} pieces</span>
  <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px' }}>
- New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); return s+Math.round((v?.selling_price||0)*0.80*100)/100*Number(i.quantity||0) },0))}
+ New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const retail=safeNum(v?.selling_price ?? i.retail_price,0); return s+getDeliveryInvoiceEditUnitPrice(editingInvoice, retail)*Number(i.quantity||0) },0))}
  </span>
  </div>
  )}
