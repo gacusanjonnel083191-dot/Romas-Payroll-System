@@ -29340,6 +29340,8 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 <label style={lblS}>Discount:</label>
 <select value={invoiceDiscountPct} onChange={e=>setInvoiceDiscountPct(e.target.value)} style={inputStyle}>
 <option value="20">20% discount</option>
+<option value="10">10% discount</option>
+<option value="5">5% discount</option>
 <option value="0">0% discount</option>
 </select>
 </div>
