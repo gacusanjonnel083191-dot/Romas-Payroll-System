@@ -7174,9 +7174,9 @@ Cancel = create batch record only for existing stock.`)
 
  function getDeliveryInvoiceDiscountPct(invoice = {}) {
  const customerType = getDeliveryInvoiceCustomerType(invoice)
- if (customerType === 'non_reseller') return 0
  const storedDiscount = safeNum(invoice?.discount_pct, NaN)
- return Number.isFinite(storedDiscount) ? storedDiscount : 20
+ if (Number.isFinite(storedDiscount)) return storedDiscount
+ return customerType === 'reseller' ? 20 : 0
  }
 
  function getDeliveryInvoiceEditUnitPrice(invoice = {}, retailPrice = 0) {
@@ -8263,8 +8263,8 @@ Cancel = create batch record only for existing stock.`)
  if (validItems.length === 0) { showToast(' Please add at least one item.','red'); return }
  setSavingEditInvoice(true)
  try {
- // Recalculate totals using the original invoice pricing rule.
- // Non-reseller / online customer invoices must stay at retail price (0% discount) when edited.
+ // Recalculate totals using the selected invoice discount.
+ // Existing invoices keep their stored discount until the user changes it in Edit Invoice.
  const discountPercent = getDeliveryInvoiceDiscountPct(editingInvoice)
  const lineItems = validItems.map(i => {
  const variant = donutVariants.find(v => v.id === i.variant_id)
@@ -29819,6 +29819,19 @@ onClick={async ()=>{
  )}
  {/* Invoice details editable */}
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'12px' }}>
+ <div>
+ <label style={lblS}>Invoice Type:</label>
+ <input value={getDeliveryInvoiceCustomerType(editingInvoice)==='reseller'?'Reseller Invoice':'Non-reseller Invoice'} readOnly style={{...inputStyle, marginBottom:0, background:'#f7f7f7', color:'#555' }} />
+ </div>
+ <div>
+ <label style={lblS}>Discount:</label>
+ <select value={String(getDeliveryInvoiceDiscountPct(editingInvoice))} onChange={e=>setEditingInvoice(p=>({...p,discount_pct:Number(e.target.value)}))} style={{...inputStyle, marginBottom:0 }}>
+ <option value="20">20% discount</option>
+ <option value="10">10% discount</option>
+ <option value="5">5% discount</option>
+ <option value="0">0% discount</option>
+ </select>
+ </div>
  <div><label style={lblS}>Dispatcher:</label><input value={editingInvoice.prepared_by||''} onChange={e=>setEditingInvoice(p=>({...p,prepared_by:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Delivery Personnel:</label><input value={editingInvoice.dispatched_by||''} onChange={e=>setEditingInvoice(p=>({...p,dispatched_by:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Crates Used:</label><input type="number" value={editingInvoice.crates_used||0} onChange={e=>setEditingInvoice(p=>({...p,crates_used:e.target.value}))} style={{...inputStyle, marginBottom:0 }} min="0" /></div>
@@ -29827,7 +29840,7 @@ onClick={async ()=>{
  {/* Line items */}
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>Items:</p>
  <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
- {['Variant','Qty','Retail',getDeliveryInvoiceCustomerType(editingInvoice)==='non_reseller'?'Invoice Price':`${getDeliveryInvoiceDiscountPct(editingInvoice)}% Price`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+ {['Variant','Qty','Retail',`${getDeliveryInvoiceDiscountPct(editingInvoice)}% Price`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
  </div>
  {editInvoiceItems.map((item,i)=>{
  const variant = donutVariants.find(v=>v.id===item.variant_id)
