@@ -2680,7 +2680,7 @@ export default function App() {
   const label = getInventoryCategoryLabel({ category })
   return label === 'Snacks, Drinks and Others'
  }
- const RAW_MATERIAL_PURCHASE_UNITS = ['sack','kg','pack','bag','box','pail','bottle','gallon','container','pc']
+ const RAW_MATERIAL_PURCHASE_UNITS = ['sack','kg','pack','bag','box','pail','bottle','gallon','container','can','jar','tub','tray','carton','roll','pc','pair','set']
  const INVENTORY_STOCK_DISPLAY_UNITS = ['g','kg','mL','L','pcs','bottles','packs','bags','boxes','sacks','pails','gallons','containers','cans','jars','tubs','trays','cartons','rolls','pairs','sets']
  const isRawMaterialCategoryName = (category) => getInventoryCategoryLabel({ category }) === 'Raw Ingredients'
  const isRawMaterialItem = (item = {}) => isRawMaterialCategoryName(item.category)
@@ -2720,14 +2720,17 @@ export default function App() {
  }
  const getInventoryStockDisplayUnitOptions = (item = {}, fields = {}) => {
   const category = fields.category ?? item.category
+  const currentUnit = String(fields.stock_display_unit ?? item.stock_display_unit ?? fields.unit ?? item.unit ?? 'pcs').trim()
   if (isRawMaterialCategoryName(category)) {
    const baseUnit = normalizeInventoryBaseUnit(fields.base_unit ?? item.base_unit ?? item.unit ?? 'g')
    const purchaseUnit = String(fields.purchase_unit ?? item.purchase_unit ?? '').trim()
-   const options = baseUnit === 'g' ? ['g','kg'] : baseUnit === 'mL' ? ['mL','L'] : [baseUnit]
-   if (purchaseUnit) options.push(purchaseUnit)
-   return Array.from(new Map(options.filter(Boolean).map(unit => [getInventoryUnitKey(unit), unit])).values())
+   const metricOptions = baseUnit === 'g' ? ['g','kg'] : baseUnit === 'mL' ? ['mL','L'] : [baseUnit]
+   return Array.from(new Map(
+    [currentUnit, ...metricOptions, purchaseUnit, ...INVENTORY_STOCK_DISPLAY_UNITS]
+     .filter(Boolean)
+     .map(unit => [getInventoryUnitKey(unit), unit])
+   ).values())
   }
-  const currentUnit = String(fields.stock_display_unit ?? item.stock_display_unit ?? fields.unit ?? item.unit ?? 'pcs').trim()
   return Array.from(new Map([currentUnit, ...INVENTORY_STOCK_DISPLAY_UNITS].filter(Boolean).map(unit => [getInventoryUnitKey(unit), unit])).values())
  }
  const getInventoryStockDisplayFactor = (item = {}, displayUnit = '', fields = {}) => {
@@ -27713,10 +27716,17 @@ function printCompanyDocumentRecord(record) {
       ? p.stock_display_quantity
       : convertInventoryBaseToDisplay(item, item.current_stock, oldUnit, p)
      const baseQty = convertInventoryDisplayToBase(item, oldDisplayQty, oldUnit, p)
+     const rawMaterialEdit = isRawMaterialCategoryName(p.category ?? item.category)
+     const baseUnit = normalizeInventoryBaseUnit(p.base_unit ?? item.base_unit ?? item.unit ?? 'g')
+     const newUnitKey = getInventoryUnitKey(newUnit)
+     const isMetricStockUnit = newUnitKey === getInventoryUnitKey(baseUnit)
+      || (getInventoryUnitKey(baseUnit) === 'g' && newUnitKey === 'kg')
+      || (getInventoryUnitKey(baseUnit) === 'ml' && newUnitKey === 'l')
      const nextFields = {
       ...p,
       stock_display_unit:newUnit,
-      ...(!isRawMaterialCategoryName(p.category ?? item.category) ? { unit:newUnit } : {})
+      ...(!rawMaterialEdit ? { unit:newUnit } : {}),
+      ...(rawMaterialEdit && !isMetricStockUnit ? { purchase_unit:newUnit } : {})
      }
      return {
       ...nextFields,
