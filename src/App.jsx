@@ -2681,6 +2681,7 @@ export default function App() {
   return label === 'Snacks, Drinks and Others'
  }
  const RAW_MATERIAL_PURCHASE_UNITS = ['sack','kg','pack','bag','box','pail','bottle','gallon','container','pc']
+ const INVENTORY_STOCK_DISPLAY_UNITS = ['g','kg','mL','L','pcs','bottles','packs','bags','boxes','sacks','pails','gallons','containers','cans','jars','tubs','trays','cartons','rolls','pairs','sets']
  const isRawMaterialCategoryName = (category) => getInventoryCategoryLabel({ category }) === 'Raw Ingredients'
  const isRawMaterialItem = (item = {}) => isRawMaterialCategoryName(item.category)
  const normalizeInventoryBaseUnit = (unit = '') => {
@@ -2692,6 +2693,78 @@ export default function App() {
   if (['pc','pcs','piece','pieces'].includes(u)) return 'pcs'
   return unit || 'unit'
  }
+ const getInventoryUnitKey = (unit = '') => {
+  const u = String(unit || '').trim().toLowerCase()
+  if (['kilogram','kilograms','kgs'].includes(u)) return 'kg'
+  if (['gram','grams'].includes(u)) return 'g'
+  if (['liter','liters','litre','litres'].includes(u)) return 'l'
+  if (['milliliter','milliliters','millilitre','millilitres'].includes(u)) return 'ml'
+  if (['pc','pcs','piece','pieces'].includes(u)) return 'pc'
+  if (u.endsWith('ies')) return `${u.slice(0,-3)}y`
+  if (u.endsWith('ses')) return u.slice(0,-2)
+  if (u.endsWith('s') && !u.endsWith('ss')) return u.slice(0,-1)
+  return u
+ }
+ const formatInventoryStockUnit = (unit = '', quantity = 0) => {
+  const raw = String(unit || 'unit').trim()
+  const key = getInventoryUnitKey(raw)
+  if (key === 'g') return 'g'
+  if (key === 'kg') return 'kg'
+  if (key === 'ml') return 'mL'
+  if (key === 'l') return 'L'
+  if (key === 'pc') return Math.abs(safeNum(quantity,0)) === 1 ? 'pc' : 'pcs'
+  if (Math.abs(safeNum(quantity,0)) === 1) return key || raw
+  if (key.endsWith('y')) return `${key.slice(0,-1)}ies`
+  if (key.endsWith('s')) return key
+  return `${key || raw}s`
+ }
+ const getInventoryStockDisplayUnitOptions = (item = {}, fields = {}) => {
+  const category = fields.category ?? item.category
+  if (isRawMaterialCategoryName(category)) {
+   const baseUnit = normalizeInventoryBaseUnit(fields.base_unit ?? item.base_unit ?? item.unit ?? 'g')
+   const purchaseUnit = String(fields.purchase_unit ?? item.purchase_unit ?? '').trim()
+   const options = baseUnit === 'g' ? ['g','kg'] : baseUnit === 'mL' ? ['mL','L'] : [baseUnit]
+   if (purchaseUnit) options.push(purchaseUnit)
+   return Array.from(new Map(options.filter(Boolean).map(unit => [getInventoryUnitKey(unit), unit])).values())
+  }
+  const currentUnit = String(fields.stock_display_unit ?? item.stock_display_unit ?? fields.unit ?? item.unit ?? 'pcs').trim()
+  return Array.from(new Map([currentUnit, ...INVENTORY_STOCK_DISPLAY_UNITS].filter(Boolean).map(unit => [getInventoryUnitKey(unit), unit])).values())
+ }
+ const getInventoryStockDisplayFactor = (item = {}, displayUnit = '', fields = {}) => {
+  const category = fields.category ?? item.category
+  if (!isRawMaterialCategoryName(category)) return 1
+  const baseUnit = normalizeInventoryBaseUnit(fields.base_unit ?? item.base_unit ?? item.unit ?? 'g')
+  const displayKey = getInventoryUnitKey(displayUnit || baseUnit)
+  const baseKey = getInventoryUnitKey(baseUnit)
+  if (displayKey === baseKey) return 1
+  if (baseKey === 'g' && displayKey === 'kg') return 1000
+  if (baseKey === 'ml' && displayKey === 'l') return 1000
+  const purchaseUnit = fields.purchase_unit ?? item.purchase_unit
+  const purchaseSize = safeNum(fields.purchase_unit_size ?? item.purchase_unit_size, 0)
+  if (purchaseUnit && getInventoryUnitKey(purchaseUnit) === displayKey && purchaseSize > 0) return purchaseSize
+  return 0
+ }
+ const getDefaultInventoryStockDisplayUnit = (item = {}, fields = {}) => {
+  const explicit = fields.stock_display_unit ?? item.stock_display_unit
+  if (explicit) return explicit
+  const category = fields.category ?? item.category
+  if (!isRawMaterialCategoryName(category)) return fields.unit ?? item.unit ?? 'pcs'
+  const baseUnit = normalizeInventoryBaseUnit(fields.base_unit ?? item.base_unit ?? item.unit ?? 'g')
+  const stockQty = safeNum(fields.current_stock ?? item.current_stock, 0)
+  if (baseUnit === 'g') return Math.abs(stockQty) >= 1000 ? 'kg' : 'g'
+  if (baseUnit === 'mL') return Math.abs(stockQty) >= 1000 ? 'L' : 'mL'
+  return baseUnit
+ }
+ const convertInventoryBaseToDisplay = (item = {}, baseQuantity = 0, displayUnit = '', fields = {}) => {
+  const factor = getInventoryStockDisplayFactor(item, displayUnit, fields)
+  if (!(factor > 0)) return safeNum(baseQuantity, 0)
+  return Math.round(((safeNum(baseQuantity,0) / factor) + Number.EPSILON) * 1000000) / 1000000
+ }
+ const convertInventoryDisplayToBase = (item = {}, displayQuantity = 0, displayUnit = '', fields = {}) => {
+  const factor = getInventoryStockDisplayFactor(item, displayUnit, fields)
+  if (!(factor > 0)) return safeNum(displayQuantity, 0)
+  return Math.round(((safeNum(displayQuantity,0) * factor) + Number.EPSILON) * 1000000) / 1000000
+ }
  const getRawMaterialBaseUnit = (item = {}) => normalizeInventoryBaseUnit(item.base_unit || item.unit || 'g')
  const getFriendlyRawStockInfo = (item = {}, qtyOverride = null) => {
   const qty = safeNum(qtyOverride ?? item.current_stock, 0)
@@ -2701,16 +2774,22 @@ export default function App() {
   const purchaseCost = safeNum(item.purchase_unit_cost, 0)
   let primary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${baseUnit}`
   let secondary = ''
-  if (baseUnit === 'g') {
+  const preferredDisplayUnit = getDefaultInventoryStockDisplayUnit(item, { current_stock:qty })
+  const preferredFactor = getInventoryStockDisplayFactor(item, preferredDisplayUnit)
+  if (preferredFactor > 0) {
+   const displayQty = convertInventoryBaseToDisplay(item, qty, preferredDisplayUnit)
+   primary = `${displayQty.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${formatInventoryStockUnit(preferredDisplayUnit, displayQty)}`
+   secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${baseUnit}`
+  } else if (baseUnit === 'g') {
    primary = qty >= 1000 ? `${(qty / 1000).toLocaleString('en-PH', { maximumFractionDigits:2 })} kg` : `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} g`
    secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} g`
   } else if (baseUnit === 'mL') {
    primary = qty >= 1000 ? `${(qty / 1000).toLocaleString('en-PH', { maximumFractionDigits:2 })} L` : `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} mL`
    secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} mL`
   }
-  if (purchaseUnit && purchaseSize > 0) {
+  if (purchaseUnit && purchaseSize > 0 && getInventoryUnitKey(preferredDisplayUnit) !== getInventoryUnitKey(purchaseUnit)) {
    const eq = qty / purchaseSize
-   const eqText = `${eq.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${purchaseUnit}${Math.abs(eq) > 1 ? 's' : ''}`
+   const eqText = `${eq.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${formatInventoryStockUnit(purchaseUnit, eq)}`
    secondary = secondary ? `${secondary} | ${eqText}` : eqText
   }
   const costPerBase = safeNum(item.cost_per_unit, 0)
@@ -2731,12 +2810,12 @@ export default function App() {
  }
  const stripOptionalPurchaseColumns = (payload = {}) => {
   const clean = { ...payload }
-  ;['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost'].forEach(k => delete clean[k])
+  ;['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost','stock_display_unit'].forEach(k => delete clean[k])
   return clean
  }
  const isMissingPurchaseColumnError = (error) => {
   const msg = String(error?.message || error || '').toLowerCase()
-  return ['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost'].some(col => msg.includes(col))
+  return ['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost','stock_display_unit'].some(col => msg.includes(col))
  }
  async function insertInventoryItemSafe(payload) {
   const first = await supabase.from('inventory_items').insert(payload)
@@ -4712,6 +4791,7 @@ Cancel = create batch record only for existing stock.`)
  is_active: true,
  ...(isNewRawMaterial ? {
   base_unit:'g',
+  stock_display_unit:Math.abs(rawSetup.currentStock) >= 1000 ? 'kg' : 'g',
   purchase_unit:String(newItemPurchaseUnit || '').trim() || null,
   purchase_unit_size:rawSetup.purchaseSize || null,
   purchase_unit_cost:rawSetup.purchaseCost || null
@@ -4778,6 +4858,18 @@ Cancel = create batch record only for existing stock.`)
 
   const rawPurchaseSize = safeNum(f.purchase_unit_size ?? item.purchase_unit_size, 0)
   const rawPurchaseCost = safeNum(f.purchase_unit_cost ?? item.purchase_unit_cost, 0)
+  const selectedStockDisplayUnit = f.stock_display_unit ?? getDefaultInventoryStockDisplayUnit(item, f)
+  const stockDisplayFactor = getInventoryStockDisplayFactor(item, selectedStockDisplayUnit, f)
+
+  if (isEditingRawMaterial && !(stockDisplayFactor > 0)) {
+   showToast(`Cannot convert stock to ${selectedStockDisplayUnit}. Set the matching purchase unit and its size in grams first.`, 'red')
+   return
+  }
+
+  const finalCurrentStock = f.stock_display_quantity !== undefined
+   ? convertInventoryDisplayToBase(item, f.stock_display_quantity, selectedStockDisplayUnit, f)
+   : Number(f.current_stock ?? item.current_stock ?? 0)
+
   const finalCostPerUnit = isEditingSnackDrink
    ? supplierPrice
    : (isEditingRawMaterial && rawPurchaseSize > 0 && rawPurchaseCost > 0
@@ -4791,8 +4883,9 @@ Cancel = create batch record only for existing stock.`)
   const payload = {
    name: f.name || item.name,
    category: f.category || item.category,
-   unit: isEditingRawMaterial ? 'g' : (f.unit || item.unit),
-   current_stock: Number(f.current_stock ?? item.current_stock ?? 0),
+   unit: isEditingRawMaterial ? 'g' : (selectedStockDisplayUnit || f.unit || item.unit),
+   stock_display_unit:selectedStockDisplayUnit || null,
+   current_stock: finalCurrentStock,
    min_stock: Number(f.min_stock ?? item.min_stock),
    cost_per_unit: finalCostPerUnit,
    selling_price: finalSellingPrice,
@@ -27526,7 +27619,13 @@ function printCompanyDocumentRecord(record) {
  const rawStockInfo = isRawMaterialRow ? getFriendlyRawStockInfo(item) : null
  const rawMinInfo = isRawMaterialRow ? getFriendlyRawStockInfo(item, item.min_stock) : null
  const movement = movementByItem[String(item.id)] || { inQty:0, outQty:0 }
- const manualCurrent = editItemFields.current_stock!==undefined && editItemFields.current_stock!=='' ? Number(editItemFields.current_stock) : Number(item.current_stock || 0)
+ const activeStockDisplayUnit = editItemFields.stock_display_unit ?? getDefaultInventoryStockDisplayUnit(item, editItemFields)
+ const activeStockDisplayQty = editItemFields.stock_display_quantity !== undefined
+  ? editItemFields.stock_display_quantity
+  : convertInventoryBaseToDisplay(item, item.current_stock, activeStockDisplayUnit, editItemFields)
+ const manualCurrent = isEditing
+  ? convertInventoryDisplayToBase(item, activeStockDisplayQty, activeStockDisplayUnit, editItemFields)
+  : Number(item.current_stock || 0)
  const addQty = Number(editItemFields.additional_stock_today || 0)
  const usedQty = Number(editItemFields.used_sold_today || 0)
  const finalPreview = manualCurrent + Math.max(0, addQty) - Math.max(0, usedQty)
@@ -27595,7 +27694,47 @@ function printCompanyDocumentRecord(record) {
 
  <td style={numStyle}>
  {isEditing? (
- <input type="number" value={editItemFields.current_stock??item.current_stock} onChange={e=>setEditItemFields(p=>({...p,current_stock:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
+ <div style={{ display:'grid', gridTemplateColumns:'minmax(78px,1fr) 78px', gap:'5px', alignItems:'center', minWidth:'158px' }}>
+  <input
+   type="number"
+   value={activeStockDisplayQty}
+   onChange={e=>setEditItemFields(p=>({...p,stock_display_quantity:e.target.value}))}
+   style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }}
+   min="0"
+   step="0.01"
+  />
+  <select
+   value={activeStockDisplayUnit}
+   onChange={e=>{
+    const newUnit = e.target.value
+    setEditItemFields(p=>{
+     const oldUnit = p.stock_display_unit ?? getDefaultInventoryStockDisplayUnit(item, p)
+     const oldDisplayQty = p.stock_display_quantity !== undefined
+      ? p.stock_display_quantity
+      : convertInventoryBaseToDisplay(item, item.current_stock, oldUnit, p)
+     const baseQty = convertInventoryDisplayToBase(item, oldDisplayQty, oldUnit, p)
+     const nextFields = {
+      ...p,
+      stock_display_unit:newUnit,
+      ...(!isRawMaterialCategoryName(p.category ?? item.category) ? { unit:newUnit } : {})
+     }
+     return {
+      ...nextFields,
+      stock_display_quantity:convertInventoryBaseToDisplay(item, baseQty, newUnit, nextFields)
+     }
+    })
+   }}
+   style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'8px 5px' }}
+   title="Choose how stock is entered and displayed"
+  >
+   {getInventoryStockDisplayUnitOptions(item, editItemFields).map(unit=><option key={unit} value={unit}>{unit}</option>)}
+  </select>
+  {isRawMaterialCategoryName(editItemFields.category ?? item.category) && (
+   <div style={{ gridColumn:'1 / -1', fontSize:'9px', color:'#4a90d9', fontWeight:'800', textAlign:'right' }}>
+    Saves internally as {manualCurrent.toLocaleString('en-PH', { maximumFractionDigits:2 })} g
+   </div>
+  )}
+ </div>
  ): (
  isRawMaterialRow ? (
   <div>
@@ -27712,7 +27851,14 @@ function printCompanyDocumentRecord(record) {
  ): (
  <div style={{ display:'flex', gap:'5px', justifyContent:'flex-end', flexWrap:'nowrap' }}>
  {isLow && item.supplier_id && <button style={{...btnGreen, background:'#2d6a4f', width:'auto', padding:'6px 7px', marginTop:0, fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>addReorderToPODraft(item)}>PO</button>}
- <button style={{...btnYellow, padding:'6px 8px', fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>{ setEditingItemId(item.id); setEditItemFields({}) }}>EDIT</button>
+ <button style={{...btnYellow, padding:'6px 8px', fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>{
+  const stockDisplayUnit = getDefaultInventoryStockDisplayUnit(item)
+  setEditingItemId(item.id)
+  setEditItemFields({
+   stock_display_unit:stockDisplayUnit,
+   stock_display_quantity:convertInventoryBaseToDisplay(item, item.current_stock, stockDisplayUnit)
+  })
+ }}>EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>deleteInventoryItem(item)}>DEL</button>
  </div>
  )}
