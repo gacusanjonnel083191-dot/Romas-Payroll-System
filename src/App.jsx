@@ -22659,8 +22659,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    .replace(/"/g, '&quot;')
    .replace(/'/g, '&#039;')
 
-  // Short coupon bond / Letter landscape. Up to 100 items use one sheet;
-  // more than 100 items are divided evenly between exactly two sheets.
+  // Clean physical-count sheet: product name plus one blank count line only.
+  // Up to 100 active items use one short coupon-bond sheet; larger lists use two.
   const pageCount = rows.length <= 100 ? 1 : 2
   const itemsPerPage = Math.ceil(rows.length / pageCount)
   const pageGroups = Array.from({ length:pageCount }, (_, pageIndex) =>
@@ -22671,30 +22671,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const pagesHtml = pageGroups.map((pageRows, pageIndex) => {
    const columnCount = 4
    const rowsPerColumn = Math.max(1, Math.ceil(pageRows.length / columnCount))
-   const rowHeightMm = Math.max(4.2, Math.min(7.05, 177 / rowsPerColumn))
-   const nameFontPt = rowsPerColumn > 34 ? 5.4 : rowsPerColumn > 28 ? 6.0 : 6.8
-   const metaFontPt = rowsPerColumn > 34 ? 4.3 : rowsPerColumn > 28 ? 4.7 : 5.2
+   const rowHeightMm = Math.max(6.1, Math.min(7.1, 176 / rowsPerColumn))
+   const nameFontPt = rowsPerColumn > 28 ? 7.2 : 8.2
+
    const columnsHtml = Array.from({ length:columnCount }, (_, columnIndex) => {
     const columnRows = pageRows.slice(columnIndex * rowsPerColumn, (columnIndex + 1) * rowsPerColumn)
-    const itemsHtml = columnRows.map((row, localIndex) => {
-     const itemNumber = pageIndex * itemsPerPage + columnIndex * rowsPerColumn + localIndex + 1
+    const itemsHtml = columnRows.map(row => {
      const name = row.product_name || row.name || 'Unnamed Product'
-     const category = row.category || 'Uncategorized'
-     const code = row.barcode || row.sku || '-'
-     const sku = row.sku && row.sku !== code ? row.sku : ''
-     const price = safeNum(row.sellingPrice ?? row.selling_price ?? row.price, 0)
-     const stock = safeNum(row.remainingStock ?? row.stock, 0)
-     return `<div class="inventory-item" style="--item-height:${rowHeightMm.toFixed(2)}mm;--name-font:${nameFontPt}pt;--meta-font:${metaFontPt}pt">
-      <div class="item-name"><span class="item-number">${itemNumber}.</span> ${escapeHtml(name)}</div>
-      <div class="item-meta">
-       <span>${escapeHtml(category)}</span>
-       <span>${escapeHtml(code)}${sku ? ` / ${escapeHtml(sku)}` : ''}</span>
-      </div>
-      <div class="item-counts">
-       <span>Price: ₱${price.toLocaleString('en-PH', { minimumFractionDigits:0, maximumFractionDigits:2 })}</span>
-       <span>System: <strong>${stock}</strong></span>
-       <span>Actual: <b class="actual-line"></b></span>
-      </div>
+     return `<div class="inventory-item" style="--item-height:${rowHeightMm.toFixed(2)}mm;--name-font:${nameFontPt}pt">
+      <div class="item-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+      <div class="count-field"><span>COUNT</span><b></b></div>
      </div>`
     }).join('')
     return `<div class="inventory-column">${itemsHtml}</div>`
@@ -22704,7 +22690,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <header class="page-header">
      <div>
       <div class="company">ROMA'S DONUTS</div>
-      <div class="title">SAGS POS — COMPLETE ITEM & PHYSICAL COUNT SHEET</div>
+      <div class="title">SAGS POS — PHYSICAL INVENTORY COUNT SHEET</div>
      </div>
      <div class="header-meta">
       <div>${rows.length} active items</div>
@@ -22712,7 +22698,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <div>Page ${pageIndex + 1} of ${pageCount}</div>
      </div>
     </header>
-    <div class="instructions">Write the verified physical quantity under <strong>Actual</strong>. This compact format is designed to fit the complete SAGS POS item master in no more than two short coupon-bond sheets.</div>
+    <div class="instructions">Write the verified physical quantity on the blank line beside each item.</div>
     <div class="inventory-columns">${columnsHtml}</div>
     <footer class="page-footer">
      <span>Counted by: ______________________________</span>
@@ -22722,40 +22708,37 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    </section>`
   }).join('')
 
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Roma's Donuts SAGS POS Complete Item List</title><style>
-   @page{size:Letter landscape;margin:5mm}
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Roma's Donuts SAGS POS Physical Count Sheet</title><style>
+   @page{size:Letter landscape;margin:6mm}
    *{box-sizing:border-box}
    html,body{margin:0;padding:0;background:#fff;color:#111827;font-family:Arial,Helvetica,sans-serif}
    .print-toolbar{position:sticky;top:0;z-index:10;padding:9px;text-align:center;background:#fff7d6;border-bottom:1px solid #f4d35e}
    .print-toolbar button{padding:9px 18px;border:0;border-radius:9px;background:#ca1b1b;color:#fff;font-weight:900;cursor:pointer}
-   .print-page{height:203mm;overflow:hidden;page-break-after:always;padding:0;display:flex;flex-direction:column}
+   .print-page{height:201mm;overflow:hidden;page-break-after:always;display:flex;flex-direction:column}
    .print-page:last-child{page-break-after:auto}
-   .page-header{height:11mm;display:flex;align-items:center;justify-content:space-between;border-bottom:1.2px solid #ca1b1b;padding:0 1mm}
+   .page-header{height:12mm;display:flex;align-items:center;justify-content:space-between;border-bottom:1.2px solid #ca1b1b;padding:0 1mm}
    .company{font-size:10pt;font-weight:900;color:#ca1b1b;letter-spacing:.2px}
-   .title{font-size:7.8pt;font-weight:900;color:#1a1a2e;margin-top:.7mm}
+   .title{font-size:8pt;font-weight:900;color:#1a1a2e;margin-top:.7mm}
    .header-meta{text-align:right;font-size:6.2pt;line-height:1.35;font-weight:700;color:#374151}
-   .instructions{height:5mm;padding:1.1mm 1mm .8mm;font-size:5.8pt;line-height:1.25;color:#374151;border-bottom:1px solid #e5e7eb}
-   .inventory-columns{height:181mm;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1.7mm;padding:1mm 0}
-   .inventory-column{border:1px solid #d8c35a;border-radius:1.5mm;overflow:hidden;align-self:start}
-   .inventory-item{height:var(--item-height);min-height:var(--item-height);padding:.35mm .8mm;border-bottom:.25mm solid #eee3ad;overflow:hidden;background:#fff}
+   .instructions{height:6mm;padding:1.4mm 1mm;font-size:6.3pt;line-height:1.2;color:#374151;border-bottom:1px solid #e5e7eb}
+   .inventory-columns{height:176mm;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2mm;padding:1.2mm 0}
+   .inventory-column{border:1px solid #d8c35a;border-radius:1.5mm;overflow:hidden;align-self:start;background:#fff}
+   .inventory-item{height:var(--item-height);min-height:var(--item-height);padding:.7mm 1.1mm;border-bottom:.25mm solid #e7dfb6;display:grid;grid-template-columns:minmax(0,1fr) 21mm;align-items:center;gap:1.5mm;overflow:hidden;background:#fff}
    .inventory-item:nth-child(even){background:#fffdf4}
    .inventory-item:last-child{border-bottom:0}
-   .item-name{font-size:var(--name-font);font-weight:900;line-height:.96;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827}
-   .item-number{color:#ca1b1b;display:inline-block;min-width:5mm}
-   .item-meta{display:flex;justify-content:space-between;gap:1mm;font-size:var(--meta-font);font-weight:700;color:#6b7280;line-height:.96;margin-top:.18mm;white-space:nowrap;overflow:hidden}
-   .item-meta span{overflow:hidden;text-overflow:ellipsis}
-   .item-counts{display:flex;justify-content:space-between;gap:.7mm;align-items:flex-end;font-size:var(--meta-font);font-weight:800;color:#1f2937;line-height:.96;margin-top:.22mm;white-space:nowrap}
-   .actual-line{display:inline-block;width:10mm;border-bottom:.3mm solid #111827;height:2.2mm;vertical-align:bottom}
-   .page-footer{height:6mm;border-top:1px solid #d1d5db;display:flex;align-items:center;justify-content:space-between;gap:3mm;padding:0 1mm;font-size:5.8pt;font-weight:700;color:#374151}
+   .item-name{font-size:var(--name-font);font-weight:800;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827}
+   .count-field{display:flex;align-items:flex-end;gap:1.2mm;font-size:5.8pt;font-weight:800;color:#6b7280;white-space:nowrap}
+   .count-field b{display:block;flex:1;min-width:12mm;height:3mm;border-bottom:.35mm solid #111827}
+   .page-footer{height:7mm;border-top:1px solid #d1d5db;display:flex;align-items:center;justify-content:space-between;gap:3mm;padding:0 1mm;font-size:6pt;font-weight:700;color:#374151}
    @media print{.print-toolbar{display:none}.print-page{break-after:page}.print-page:last-child{break-after:auto}}
   </style></head><body>
-   <div class="print-toolbar"><button onclick="window.print()">Print Complete Item List</button></div>
+   <div class="print-toolbar"><button onclick="window.print()">Print Physical Count Sheet</button></div>
    ${pagesHtml}
   </body></html>`
 
   const printWindow = window.open('', '_blank')
   if (!printWindow) {
-   downloadTextAsFile(html, 'romas-sags-pos-complete-item-list.html', 'text/html;charset=utf-8')
+   downloadTextAsFile(html, 'romas-sags-pos-physical-count-sheet.html', 'text/html;charset=utf-8')
    alert('The browser blocked the print window, so an HTML print file was downloaded instead.')
    return
   }
