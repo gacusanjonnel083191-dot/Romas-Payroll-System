@@ -22242,6 +22242,28 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   setDocumentFormDraft(prev => ({ ...prev, [field]:value }))
  }
 
+ const openDocumentBatch1AForm = (formKey) => {
+  const form = DOCUMENT_BATCH1A_FORMS.find(row => row.key === formKey)
+  if (!form) {
+   showToast('This document is listed but its fillable form is not active yet.', 'red')
+   return
+  }
+
+  setDocumentFormDraft(prev => ({
+   ...prev,
+   formKey,
+   documentDate:prev.documentDate || today,
+   incidentDate:formKey === 'FIN-CHARGE-SLIP' ? (prev.incidentDate || today) : prev.incidentDate,
+   preparedBy:prev.preparedBy || currentAdminLabel || 'Admin'
+  }))
+
+  if (!employees.length) loadEmployees()
+  showToast(form.title + ' form opened.')
+  setTimeout(() => {
+   document.getElementById('document-batch1a-form-builder')?.scrollIntoView({ behavior:'smooth', block:'start' })
+  }, 100)
+ }
+
 
  async function loadCompanyDocumentRecords() {
   setCompanyDocumentRecordsLoading(true)
@@ -22686,6 +22708,7 @@ function printCompanyDocumentRecord(record) {
  if(key==='remittance') loadPayrollHistory()
  if(key==='dtr') loadEmployees()
  if(key==='contracts') { loadContracts(); loadEmployees(); setTimeout(()=>autoGenerateMissingContracts({ silent:true }), 800) }
+ if(key==='documents') { loadEmployees(); loadCompanyDocumentRecords() }
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
@@ -25663,13 +25686,13 @@ function printCompanyDocumentRecord(record) {
  <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Documents Center Batch 0 is active. Choose the next batch to build real forms.')}>BATCH 0 ACTIVE</button>
  </div>
 
- <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
+ <div id="document-batch1a-form-builder" style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px', scrollMarginTop:'18px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Batch 1A Printable Forms Builder</h3>
- <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Create professional printable HR, payroll, NTE, clearance, PPE, and acknowledgment forms. Database saving will be added in the next batch.</p>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Create, save, print, serve, close, and reprint supported HR, payroll, NTE, accountability, finance, and acknowledgment forms.</p>
  </div>
- <Badge label="Printable Only" color="yellow" />
+ <Badge label="Save + Print Active" color="green" />
  </div>
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
@@ -25882,6 +25905,7 @@ function printCompanyDocumentRecord(record) {
  {filteredDocs.map(doc => {
  const statusColor = doc.status === 'Existing Module' ? 'green' : doc.priority === 'High' ? 'red' : 'gray'
  const canOpenContracts = doc.code === 'HR-EMP-CONTRACT'
+ const canOpenBatch1AForm = DOCUMENT_BATCH1A_FORMS.some(form => form.key === doc.code)
  return (
  <div key={doc.code} style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.04)' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px', flexWrap:'wrap', marginBottom:'8px' }}>
@@ -25900,6 +25924,8 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  {canOpenContracts ? (
  <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>handleTabClick('contracts')}>OPEN CONTRACTS</button>
+ ) : canOpenBatch1AForm ? (
+ <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>openDocumentBatch1AForm(doc.code)}>{doc.code === 'FIN-CHARGE-SLIP' ? 'OPEN CHARGE SLIP' : 'OPEN FORM'}</button>
  ) : (
  <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px', opacity:0.8 }} onClick={()=>showToast(doc.name + ' is listed. We will activate this form in ' + doc.batch + '.')}>BUILD NEXT</button>
  )}
