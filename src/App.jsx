@@ -19830,8 +19830,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  has_sss:editFields.hasSss,
  has_pagibig:editFields.hasPagibig,
  has_philhealth:editFields.hasPhilhealth,
- regular_holiday_pay_eligible:true,
- special_holiday_pay_eligible:true,
+ regular_holiday_pay_eligible:editFields.regularHolidayEligible !== false,
+ special_holiday_pay_eligible:editFields.specialHolidayEligible !== false,
  hire_date:editFields.hireDate,
  sick_leave_balance:0,
  vacation_leave_balance:0,
@@ -19867,7 +19867,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return
  }
 
- await logAudit('EMPLOYEE UPDATED','Admin',editFields.name,'Employee details updated')
+ await logAudit('EMPLOYEE UPDATED','Admin',editFields.name,`Employee details updated | Regular holiday pay: ${editFields.regularHolidayEligible !== false ? 'Eligible' : 'Not eligible'} | Special holiday pay: ${editFields.specialHolidayEligible !== false ? 'Eligible' : 'Not eligible'} | Strict camera Time In: ${editFields.strictCameraTimeIn === true ? 'Enabled' : 'Disabled'}`)
  setSaveSuccess(editingEmployeeId)
  await loadEmployees()
  setTimeout(() => { setSaveSuccess(null); setEditingEmployeeId('') }, 2500)
@@ -26663,13 +26663,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
  {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
- <p style={cps}>Holiday Pay: <Badge label="All Employees Eligible" color="green" /> <Badge label="No Exemptions" color="blue" /></p>
+ <p style={cps}>Holiday Pay: <Badge label={emp.regular_holiday_pay_eligible !== false ? "Regular Eligible" : "No Regular Holiday Pay"} color={emp.regular_holiday_pay_eligible !== false ? "green" : "red"} /> <Badge label={emp.special_holiday_pay_eligible !== false ? "Special Eligible" : "No Special Holiday Pay"} color={emp.special_holiday_pay_eligible !== false ? "green" : "red"} /></p>
  </div>
  </div>
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:true, specialHolidayEligible:true, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -26701,10 +26701,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Use Production Labor / COGS for mixers, frymen, bakers, finishers, and packers directly making products.</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
- <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Policy</p>
- <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Regular Holiday premium</label>
- <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Special Holiday premium</label>
- <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Company rule: no staff or supervisor is exempted from worked-holiday premium computation.</p>
+ <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
+ <label style={{...lblS, marginBottom:'8px'}}><input type="checkbox" checked={editFields.regularHolidayEligible !== false} disabled={adminRole!=='owner'} onChange={e=>setEditFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Eligible for Regular Holiday pay</label>
+ <label style={{...lblS, marginBottom:'8px'}}><input type="checkbox" checked={editFields.specialHolidayEligible !== false} disabled={adminRole!=='owner'} onChange={e=>setEditFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Eligible for Special Holiday premium</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0', lineHeight:1.5 }}>{adminRole==='owner' ? 'Owner-only control. Uncheck both boxes only for an employee whose approved pay arrangement excludes holiday pay.' : 'Only the Owner can change holiday-pay eligibility.'}</p>
  </div>
  {adminRole==='owner'||adminRole==='manager'? (<>
  <label style={lblS}> Primary Role (grants system access):</label>
