@@ -260,6 +260,15 @@ function employeeRuleEnabled(value, fallback = true) {
  return fallback
 }
 
+function requiresStrictCameraTimeIn(emp = {}) {
+ return employeeRuleEnabled(emp?.strict_camera_timein, false)
+}
+
+function isMissingStrictCameraTimeInColumnError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('strict_camera_timein') && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column'))
+}
+
 
 function getEmployeeHourlyRateInfo(emp = {}) {
  const payrollBasis = normalizePayrollBasis(emp.payroll_basis || emp.pay_type)
@@ -317,6 +326,7 @@ function stripUnsupportedEmployeeOptionalColumns(payload = {}, error = null) {
   delete clean.regular_holiday_pay_eligible
   delete clean.special_holiday_pay_eligible
  }
+ if (!error || isMissingStrictCameraTimeInColumnError(error)) delete clean.strict_camera_timein
  return clean
 }
 
@@ -5615,29 +5625,66 @@ export default function App() {
 
  // Camera 
  async function startCamera() {
+ const strictTimeIn = cameraMode === 'timein' && requiresStrictCameraTimeIn(employee)
  try {
- const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user' }, audio:false })
- setCameraStream(stream)
- if (videoRef.current) videoRef.current.srcObject = stream
- } catch { alert('Camera access denied.'); setCameraMode(null) }
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser does not support live camera access.')
+  let stream
+  if (strictTimeIn) {
+   try {
+    stream = await navigator.mediaDevices.getUserMedia({
+     video:{ facingMode:{ ideal:'user' }, width:{ ideal:1280 }, height:{ ideal:720 } },
+     audio:false
+    })
+   } catch(firstError) {
+    if (['NotAllowedError','SecurityError'].includes(firstError?.name)) throw firstError
+    stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false })
+   }
+  } else {
+   stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user' }, audio:false })
+  }
+  setCameraStream(stream)
+  if (videoRef.current) {
+   videoRef.current.srcObject = stream
+   if (strictTimeIn) await videoRef.current.play().catch(()=>{})
+  }
+ } catch(error) {
+  console.error('Camera start failed:', error)
+  if (strictTimeIn) {
+   const denied = ['NotAllowedError','SecurityError'].includes(error?.name)
+   alert(denied
+    ? 'Camera permission is blocked. Please allow Camera permission for this website, then tap Time In again.'
+    : `Unable to open the camera. ${error?.message || 'Please check the device camera and browser permissions.'}`)
+  } else {
+   alert('Camera access denied.')
+  }
+  setCameraMode(null)
+ }
  }
  function stopCamera() {
  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); setCameraStream(null) }
  }
  function capturePhoto() {
  const cv = canvasRef.current, vd = videoRef.current
- if (!cv ||!vd) return
+ const strictTimeIn = cameraMode === 'timein' && requiresStrictCameraTimeIn(employee)
+ if (!cv ||!vd || (strictTimeIn && (!vd.videoWidth || !vd.videoHeight))) {
+  if (strictTimeIn) alert('Camera is still loading. Please wait a moment and try again.')
+  return
+ }
  cv.width = vd.videoWidth; cv.height = vd.videoHeight
  cv.getContext('2d').drawImage(vd, 0, 0)
- setCapturedPhoto(cv.toDataURL('image/jpeg', 0.7)); stopCamera()
+ const photoData = cv.toDataURL('image/jpeg', strictTimeIn? 0.78: 0.7)
+ setCapturedPhoto(photoData); stopCamera()
+ if (strictTimeIn) void confirmTimeIn(photoData)
  }
- function retakePhoto() { setCapturedPhoto(null); startCamera() }
+ function retakePhoto() { if (loading) return; setCapturedPhoto(null); startCamera() }
  async function uploadSelfie(dataUrl, fileName) {
  const b64=dataUrl.split(',')[1], bs=atob(b64), ab=new ArrayBuffer(bs.length), ia=new Uint8Array(ab)
  for (let i=0;i<bs.length;i++) ia[i]=bs.charCodeAt(i)
  const blob = new Blob([ab], { type:'image/jpeg' })
- await supabase.storage.from('selfies').upload(fileName, blob, { upsert:true })
+ const { error:uploadError } = await supabase.storage.from('selfies').upload(fileName, blob, { upsert:true, contentType:'image/jpeg' })
+ if (uploadError) throw uploadError
  const { data } = supabase.storage.from('selfies').getPublicUrl(fileName)
+ if (!data?.publicUrl) throw new Error('Supabase did not return a selfie photo URL.')
  return data.publicUrl
  }
  async function uploadProfilePhoto(file, empId) {
@@ -14689,6 +14736,16 @@ function buildDeliveryInvoicePrintCSS() {
   alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
   return
  }
+ if (requiresStrictCameraTimeIn(employee)) {
+  if (!navigator.onLine || !isOnline) {
+   alert('Internet connection is required for your Time In because the live selfie must upload before attendance is recorded.')
+   return
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+   alert('Live camera access is unavailable in this browser. Please use the company tablet or a supported browser and allow Camera permission.')
+   return
+  }
+ }
  setCapturedPhoto(null); setCameraMode('timein')
  }
  async function initiateTimeOut() {
@@ -14717,29 +14774,37 @@ function buildDeliveryInvoicePrintCSS() {
  if (error) { showToast('Failed: '+error.message,'red'); return }
  loadTodayBreaks(todayLog.id); showToast(' Break ended!')
  }
- async function confirmTimeIn() {
- if (!capturedPhoto) { alert('Please take a selfie first.'); return }
+ async function confirmTimeIn(photoOverride = null) {
+ const selfiePhoto = photoOverride || capturedPhoto
+ if (!selfiePhoto) { alert('Please take a selfie first.'); return }
  if (medicalCertLock?.locked) {
   alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
   setCameraMode(null); setCapturedPhoto(null)
   return
  }
+ const strictTimeIn = requiresStrictCameraTimeIn(employee)
  setLoading(true)
- // Offline handling
- if (!isOnline) {
- const gracePeriod = employee.grace_period_minutes?? 10
- let lateMinutes = 0, status = 'No Assigned Shift'
- if (todaySchedule?.shift_start) {
- const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
- const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
- status = lateMinutes > 0? 'Late': 'On Time'
- }
- const offlineLog = { employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:null }
- queueOfflineAction('timein', { employee_id:employee.id, attendance_date:today, data:offlineLog })
- setTodayLog({...offlineLog, id:'offline_'+Date.now() })
- setLoading(false); setCameraMode(null); setCapturedPhoto(null)
- showToast(' Offline Time In saved locally. Will sync when online.')
- return
+ // Keep the existing offline Time In behavior for normal employees. Only
+ // employees explicitly enabled for strict camera Time In must upload first.
+ if (!isOnline || !navigator.onLine) {
+  if (strictTimeIn) {
+   setLoading(false)
+   alert('Time In was not saved because the device is offline. Connect to the internet and try again so the selfie uploads first.')
+   return
+  }
+  const gracePeriod = employee.grace_period_minutes?? 10
+  let lateMinutes = 0, status = 'No Assigned Shift'
+  if (todaySchedule?.shift_start) {
+   const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
+   const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
+   status = lateMinutes > 0? 'Late': 'On Time'
+  }
+  const offlineLog = { employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:null }
+  queueOfflineAction('timein', { employee_id:employee.id, attendance_date:today, data:offlineLog })
+  setTodayLog({...offlineLog, id:'offline_'+Date.now() })
+  setLoading(false); setCameraMode(null); setCapturedPhoto(null)
+  showToast(' Offline Time In saved locally. Will sync when online.')
+  return
  }
  const { data:existing } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', today).maybeSingle()
  if (existing) { setLoading(false); setTodayLog(existing); alert('Already timed in today.'); setCameraMode(null); return }
@@ -14749,19 +14814,29 @@ function buildDeliveryInvoicePrintCSS() {
  const { data:openShift } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', yestStr2).is('time_out', null).maybeSingle()
  if (openShift) { setLoading(false); setTodayLog(openShift); alert('You still have an open shift from yesterday. Please Time Out first.'); setCameraMode(null); return }
  let selfieUrl = null
- try { selfieUrl = await uploadSelfie(capturedPhoto, `timein_${employee.id}_${today}.jpg`) } catch(e){}
+ try {
+  const strictSuffix = strictTimeIn? `_${Date.now()}`: ''
+  selfieUrl = await uploadSelfie(selfiePhoto, `timein_${employee.id}_${today}${strictSuffix}.jpg`)
+ } catch(e) {
+  console.error('Time In selfie upload failed:', e)
+  if (strictTimeIn) {
+   setLoading(false)
+   alert(`Time In was not saved because the selfie failed to upload. Please check the internet connection and try again.\n\n${e?.message || ''}`)
+   return
+  }
+ }
  const gracePeriod = employee.grace_period_minutes?? 10
  let lateMinutes = 0, status = 'No Assigned Shift'
  if (todaySchedule?.shift_start) {
- const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
- const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
- status = lateMinutes > 0? 'Late': 'On Time'
+  const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
+  const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
+  status = lateMinutes > 0? 'Late': 'On Time'
  }
  const { data, error } = await supabase.from('attendance_logs').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:selfieUrl }).select().single()
  setLoading(false)
  if (error) { alert('Time In failed: '+error.message); return }
  setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
- await logAudit('TIME IN', employee.full_name, employee.full_name, `Timed in at ${data.time_in}`)
+ await logAudit('TIME IN', employee.full_name, employee.full_name, `Timed in at ${data.time_in}${strictTimeIn?' | Strict camera upload':''}`)
  alert('Time In saved successfully!')
  }
  async function confirmTimeOut() {
@@ -19775,13 +19850,14 @@ This recovery button creates one approved expense record using GROSS payroll ear
  payroll_cost_type:editFields.payroll_cost_type||'auto',
  department:editFields.department||'',
  admin_role:editFields.admin_role||null,
- extra_roles:editFields.extra_roles||null
+ extra_roles:editFields.extra_roles||null,
+ strict_camera_timein:editFields.strictCameraTimeIn === true
  }
  let { error } = await supabase.from('employees').update(employeeUpdatePayload).eq('id', editingEmployeeId)
- if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error))) {
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error) || isMissingStrictCameraTimeInColumnError(error))) {
  const fallbackEmployeeUpdatePayload = stripUnsupportedEmployeeOptionalColumns(employeeUpdatePayload, error)
  ;({ error } = await supabase.from('employees').update(fallbackEmployeeUpdatePayload).eq('id', editingEmployeeId))
- if (!error) console.warn('Employee saved with optional payroll/holiday columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
+ if (!error) console.warn('Employee saved with optional payroll/holiday/camera columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
  }
 
  setSaveEmployeeLoading(false)
@@ -19842,13 +19918,14 @@ This recovery button creates one approved expense record using GROSS payroll ear
  location_radius:f.location_radius?Number(f.location_radius):null,
  bank_name:f.bank_name||'',
  bank_account_number:f.bank_account_number||'',
- bank_account_name:f.bank_account_name||''
+ bank_account_name:f.bank_account_name||'',
+ strict_camera_timein:false
  }
  let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select('*').single()
- if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error))) {
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error) || isMissingStrictCameraTimeInColumnError(error))) {
  const fallbackEmployeeInsertPayload = stripUnsupportedEmployeeOptionalColumns(employeeInsertPayload, error)
  ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select('*').single())
- if (!error) console.warn('Employee added with optional payroll/holiday columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
+ if (!error) console.warn('Employee added with optional payroll/holiday/camera columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
  }
 
  if (error) { showToast('Failed: '+error.message,'red'); return }
@@ -25145,26 +25222,27 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
 // Camera Screen 
  if (cameraMode) {
+ const strictTimeIn = cameraMode === 'timein' && requiresStrictCameraTimeIn(employee)
  return (
  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#000', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'20px', zIndex:9999 }}>
  <h2 style={{ color:'white', marginBottom:'8px', fontSize:'18px' }}>{cameraMode==='timein'?' Selfie for Time In':' Selfie for Time Out'}</h2>
- <p style={{ color:'#aaa', marginBottom:'16px', fontSize:'13px' }}>Take a clear selfie to confirm your attendance</p>
+ <p style={{ color:'#aaa', marginBottom:'16px', fontSize:'13px' }}>{strictTimeIn?'Take a clear live selfie. It will upload and save Time In automatically.':'Take a clear selfie to confirm your attendance'}</p>
  {!capturedPhoto? (
  <>
  <video ref={videoRef} autoPlay playsInline style={{ width:'100%', maxWidth:'360px', borderRadius:'14px', border:'3px solid #ca1b1b' }} />
  <canvas ref={canvasRef} style={{ display:'none' }} />
- <button style={{...btnRed, maxWidth:'360px', marginTop:'16px' }} onClick={capturePhoto}> TAKE SELFIE</button>
+ <button style={{...btnRed, maxWidth:'360px', marginTop:'16px' }} onClick={capturePhoto} disabled={loading}>{strictTimeIn?' CAPTURE & TIME IN':' TAKE SELFIE'}</button>
  </>
  ): (
  <>
  <img src={capturedPhoto} alt="Selfie" style={{ width:'100%', maxWidth:'360px', borderRadius:'14px', border:'3px solid #2d8a4e' }} />
  <div style={{ display:'flex', gap:'10px', marginTop:'16px', width:'100%', maxWidth:'360px' }}>
- <button style={{...btnGray, flex:1, marginTop:0 }} onClick={retakePhoto}> RETAKE</button>
- <button style={{...btnGreen, flex:1, marginTop:0 }} onClick={cameraMode==='timein'?confirmTimeIn:confirmTimeOut} disabled={loading}>{loading?' SAVING...':' CONFIRM'}</button>
+ <button style={{...btnGray, flex:1, marginTop:0 }} onClick={retakePhoto} disabled={loading}> RETAKE</button>
+ <button style={{...btnGreen, flex:1, marginTop:0 }} onClick={cameraMode==='timein'?()=>confirmTimeIn():confirmTimeOut} disabled={loading}>{loading?(strictTimeIn?' UPLOADING & SAVING...':' SAVING...'):(strictTimeIn?' RETRY TIME IN':' CONFIRM')}</button>
  </div>
  </>
  )}
- <button style={{...btnGray, maxWidth:'360px', marginTop:'12px' }} onClick={()=>{ setCameraMode(null); setCapturedPhoto(null); stopCamera() }}>CANCEL</button>
+ <button style={{...btnGray, maxWidth:'360px', marginTop:'12px' }} disabled={loading} onClick={()=>{ setCameraMode(null); setCapturedPhoto(null); stopCamera() }}>{loading?'PLEASE WAIT...':'CANCEL'}</button>
  </div>
  )
  }
@@ -26591,7 +26669,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:true, specialHolidayEligible:true, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:true, specialHolidayEligible:true, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -26674,6 +26752,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <input type="date" value={editFields.hireDate||''} onChange={e=>setEditFields(p=>({...p,hireDate:e.target.value}))} style={inputStyle} />
  <label style={lblS}>Grace Period (minutes):</label>
  <input type="number" value={editFields.gracePeriod||10} onChange={e=>setEditFields(p=>({...p,gracePeriod:e.target.value}))} style={inputStyle} />
+ <div style={{ background:'#eef8ff', border:'1px solid #9cccf0', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+ <label style={{...lblS, marginBottom:'6px', color:'#075985'}}><input type="checkbox" checked={editFields.strictCameraTimeIn===true} onChange={e=>setEditFields(p=>({...p,strictCameraTimeIn:e.target.checked}))} style={{ marginRight:'8px' }} />Strict Camera Time In for this employee</label>
+ <p style={{ margin:0, color:'#456', fontSize:'11px', lineHeight:1.5 }}>When enabled, Time In opens the live camera, uploads the selfie automatically after capture, and saves attendance only after the upload succeeds. Other employees keep their current Time In process.</p>
+ </div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 8px' }}> Leave & Benefits</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
  <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>SIL / Unpaid Leave Rules</p>
