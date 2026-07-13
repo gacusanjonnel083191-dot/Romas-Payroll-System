@@ -22452,13 +22452,55 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
  async function updatePosProductSafe(productId, payload = {}) {
-  const first = await supabase.from('pos_products').update(payload).eq('id', productId)
-  if (!first.error) return { error:null, optionalColumnsSaved:true }
+  const verifyUpdateResult = (result, attemptedPayload, optionalColumnsSaved, skippedOptionalColumns = []) => {
+   if (result.error) return { ...result, optionalColumnsSaved }
+   const rows = Array.isArray(result.data) ? result.data : []
+   if (!rows.length) {
+    return {
+     error:new Error('Supabase did not update the POS product row. The change may have been blocked by Row Level Security or the product ID no longer exists.'),
+     data:[],
+     optionalColumnsSaved
+    }
+   }
+
+   const updatedProduct = rows[0]
+   const verificationKeys = ['stock', 'product_name', 'selling_price', 'min_stock', 'sku', 'barcode']
+   for (const key of verificationKeys) {
+    if (!(key in attemptedPayload)) continue
+    const expected = attemptedPayload[key]
+    const actual = updatedProduct[key]
+    const matches = typeof expected === 'number'
+     ? Math.abs(safeNum(actual, Number.NaN) - expected) < 0.0001
+     : String(actual ?? '') === String(expected ?? '')
+    if (!matches) {
+     return {
+      error:new Error(`POS product update verification failed for ${key}. Expected ${expected}, but Supabase returned ${actual}.`),
+      data:rows,
+      updatedProduct,
+      optionalColumnsSaved
+     }
+    }
+   }
+
+   return { error:null, data:rows, updatedProduct, optionalColumnsSaved, skippedOptionalColumns }
+  }
+
+  const first = await supabase
+   .from('pos_products')
+   .update(payload)
+   .eq('id', productId)
+   .select('*')
+  if (!first.error) return verifyUpdateResult(first, payload, true)
   if (!isPosProductsOptionalColumnError(first.error)) return first
+
   const corePayload = stripPosProductsOptionalColumns(payload)
-  const second = await supabase.from('pos_products').update(corePayload).eq('id', productId)
-  if (second.error) return second
-  return { error:null, optionalColumnsSaved:false, skippedOptionalColumns:Object.keys(payload).filter(key => !(key in corePayload)) }
+  const skippedOptionalColumns = Object.keys(payload).filter(key => !(key in corePayload))
+  const second = await supabase
+   .from('pos_products')
+   .update(corePayload)
+   .eq('id', productId)
+   .select('*')
+  return verifyUpdateResult(second, corePayload, false, skippedOptionalColumns)
  }
 
  function getOutletCategoryPluStart(category) {
@@ -22931,7 +22973,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const referenceNo = stockInTransferNo.trim() || ('STOCKIN-' + Date.now())
 
   try {
-   const { error } = await supabase.from('pos_inventory_movements').insert([{
+   const oldStock = safeNum(product.stock, 0)
+   const newStock = oldStock + qty
+
+   // Update and verify the sellable balance first. A movement record must never
+   // be written when the product balance itself was blocked or not updated.
+   const stockUpdate = await updatePosProductSafe(product.id, { stock:newStock })
+   if (stockUpdate.error) throw stockUpdate.error
+
+   const movementResult = await supabase.from('pos_inventory_movements').insert([{
     outlet_id: 'OUTLET-MALUED',
     product_id: product.id,
     sku: product.sku || '',
@@ -22943,17 +22993,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     remarks: [stockInNote || 'Stock in to outlet', stockInTransferredBy ? 'Transferred by: ' + stockInTransferredBy : '', stockInReceivedBy ? 'Received by: ' + stockInReceivedBy : ''].filter(Boolean).join(' | ')
    }])
 
-   if (error) throw error
-
-   // Logging the movement alone doesn't restock anything the POS can
-   // actually sell — this is what makes the delivery real.
-   const newStock = safeNum(product.stock, 0) + qty
-   const { error: stockError } = await supabase
-    .from('pos_products')
-    .update({ stock: newStock })
-    .eq('id', product.id)
-
-   if (stockError) throw stockError
+   if (movementResult.error) {
+    // Best-effort rollback so Current Stock and Movement Today cannot disagree.
+    const rollback = await updatePosProductSafe(product.id, { stock:oldStock })
+    if (rollback.error) console.error('Stock-in rollback failed:', rollback.error)
+    throw movementResult.error
+   }
 
    if (logAudit) {
     await logAudit(
@@ -23249,6 +23294,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const updateResult = await updatePosProductSafe(product.id, updatePayload)
    if (updateResult.error) throw updateResult.error
 
+   if (stockChanged && Math.abs(safeNum(updateResult.updatedProduct?.stock, Number.NaN) - newStock) > 0.0001) {
+    throw new Error(`Stock update was not saved. Expected ${newStock}, but the database returned ${updateResult.updatedProduct?.stock ?? 'no value'}.`)
+   }
+
    const movementRows = []
    if (stockInQty > 0) {
     movementRows.push({
@@ -23282,7 +23331,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     const { error: movementError } = await supabase
      .from('pos_inventory_movements')
      .insert(movementRows)
-    if (movementError) throw movementError
+    if (movementError) {
+     // Best-effort rollback keeps Current Stock aligned with the movement ledger.
+     if (stockChanged) {
+      const rollback = await updatePosProductSafe(product.id, { stock:currentStock })
+      if (rollback.error) console.error('Unified inventory rollback failed:', rollback.error)
+     }
+     throw movementError
+    }
    }
 
    if (logAudit) {
