@@ -23999,15 +23999,41 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  })
 
  // Baseline/test-stock resets are administrative corrections, not real daily
- // inventory movement. Exclude both future reset markers and the legacy reset
- // rows created by the earlier reset button so Movement Today remains accurate.
+ // inventory movement. Exclude both properly tagged reset rows and any legacy
+ // mass-reset batch that removed exactly 50 test units from many products in
+ // the same minute. This prevents old 50-to-zero setup rows from appearing as
+ // -50 or -49 after actual counts begin.
+ const getPosMovementMinuteKey = move => {
+  const raw = String(move?.created_at || '')
+  return raw.length >= 16 ? raw.slice(0, 16) : raw
+ }
+ const legacyResetMinuteCounts = {}
+ posMovements.forEach(move => {
+  const movementType = String(move?.movement_type || '').trim().toLowerCase()
+  const qty = safeNum(move?.qty, 0)
+  if (movementType !== 'stock_out' || qty !== -50) return
+  const minuteKey = getPosMovementMinuteKey(move)
+  if (!minuteKey) return
+  legacyResetMinuteCounts[minuteKey] = (legacyResetMinuteCounts[minuteKey] || 0) + 1
+ })
+ const legacyResetMinuteKeys = new Set(
+  Object.entries(legacyResetMinuteCounts)
+   .filter(([, count]) => count >= 10)
+   .map(([minuteKey]) => minuteKey)
+ )
  const isPosBaselineResetMovement = move => {
   const reference = String(move?.reference_no || '').trim().toUpperCase()
   const movementType = String(move?.movement_type || '').trim().toLowerCase()
   const remarks = String(move?.remarks || '').trim().toLowerCase()
+  const qty = safeNum(move?.qty, 0)
+  const isLegacyMassResetRow = movementType === 'stock_out' &&
+   qty === -50 &&
+   legacyResetMinuteKeys.has(getPosMovementMinuteKey(move))
   return reference.startsWith('POS-STOCK-RESET-') ||
    movementType === 'stock_baseline_reset' ||
-   remarks.includes('pre-operation sags pos stock reset to zero')
+   remarks.includes('pre-operation sags pos stock reset to zero') ||
+   remarks.includes('actual physical count') ||
+   isLegacyMassResetRow
  }
  const operationalPosMovements = posMovements.filter(move => !isPosBaselineResetMovement(move))
 
