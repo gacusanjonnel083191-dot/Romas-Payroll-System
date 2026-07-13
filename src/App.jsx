@@ -1002,17 +1002,2384 @@ const PAYROLL_COST_TYPES = [
 
 
 const DOCUMENT_BATCH1A_FORMS = [
-  { key:'INV-WITHDRAWAL', title:'Company Inventory Withdrawal Slip', refPrefix:'INV-WD' },
- { key:'DISC-NTE', title:'Notice to Explain', category:'NTE / Disciplinary', refPrefix:'RD-NTE', purpose:'Formal notice requiring an employee to explain an alleged violation or incident.' },
- { key:'DISC-IR', title:'Incident Report Form', category:'NTE / Disciplinary', refPrefix:'RD-IR', purpose:'Record incident facts, people involved, date, location, and initial findings.' },
- { key:'DISC-EXPLAIN', title:'Employee Explanation Form', category:'NTE / Disciplinary', refPrefix:'RD-EXPLAIN', purpose:'Employee written explanation connected to an incident, NTE, shortage, or violation.' },
- { key:'PAY-CA-AGREEMENT', title:'Cash Advance Agreement', category:'Payroll & Salary', refPrefix:'RD-CA', purpose:'Document cash advance amount, repayment terms, deductions, and acknowledgment.' },
- { key:'PAY-DEDUCTION-AUTH', title:'Salary Deduction Authorization Form', category:'Payroll & Salary', refPrefix:'RD-DED', purpose:'Authorize payroll deductions for cash advance, damage, shortage, lost item, or other approved charge.' },
- { key:'FIN-CHARGE-SLIP', title:'Charge Slip', category:'Finance & Cash Control', refPrefix:'RD-CS', purpose:'Document an employee charge for loss, damage, shortage, wastage, company-paid expense, or another approved accountability.' },
- { key:'HR-CLEARANCE', title:'Employee Clearance Form', category:'HR & Employee', refPrefix:'RD-CLEAR', purpose:'Clear accountabilities before final pay or separation release.' },
- { key:'HR-PPE-ISSUE', title:'Uniform / PPE Issuance Slip', category:'HR & Employee', refPrefix:'RD-PPE', purpose:'Track issued uniforms, PPE, tools, and employee accountability.' },
- { key:'PAY-RELEASE', title:'Payroll Release Acknowledgment Slip', category:'Payroll & Salary', refPrefix:'RD-PAYREL', purpose:'Employee acknowledgment of salary, payroll release, or final pay received.' }
+ {
+  "key": "HR-EMP-CONTRACT",
+  "title": "Employment Contract",
+  "category": "HR & Employee",
+  "refPrefix": "RD-CONTRACT",
+  "purpose": "Generate, print, upload, and track employee contracts and regularization records.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [],
+  "reminder": "Employment contracts are managed in the dedicated Contracts module.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "Authorized Representative / Date",
+   "Prepared By",
+   "Approved By"
+  ],
+  "externalTab": "contracts"
+ },
+ {
+  "key": "INV-WD",
+  "title": "Company Inventory Withdrawal Slip",
+  "category": "Inventory & Purchasing",
+  "refPrefix": "INV-WD",
+  "purpose": "Records withdrawal of raw materials, packaging, finished goods, supplies, tools, equipment, crates, crate covers, and other company property.",
+  "employeeMode": "optional",
+  "employeeLabel": "Received / Responsible Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Withdrawal Purpose",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Production Use",
+     "Outlet Transfer",
+     "Staff Meal",
+     "Sample",
+     "Damage Replacement",
+     "Marketing / Promo",
+     "Company Use",
+     "Finished Goods Release",
+     "Other"
+    ]
+   },
+   {
+    "key": "sourceLocation",
+    "label": "Source / Storage Location",
+    "type": "text",
+    "placeholder": "Example: Main Inventory / Commissary"
+   },
+   {
+    "key": "destination",
+    "label": "Destination / Department",
+    "type": "text",
+    "placeholder": "Example: Production / Outlet / Marketing"
+   },
+   {
+    "key": "items",
+    "label": "Items Withdrawn",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "List item name, category, quantity, and unit.",
+    "span": "full"
+   },
+   {
+    "key": "quantityUnit",
+    "label": "Total Quantity / Unit",
+    "type": "text",
+    "placeholder": "Example: 25 kg / 4 boxes / 2 crates"
+   },
+   {
+    "key": "referenceNumber",
+    "label": "Reference / Request No.",
+    "type": "text",
+    "placeholder": "Optional request, job order, or transfer reference"
+   },
+   {
+    "key": "details",
+    "label": "Reason / Authorization Details",
+    "type": "textarea",
+    "placeholder": "State why the items are being withdrawn and any special instructions.",
+    "span": "full"
+   }
+  ],
+  "reminder": "This slip establishes custody and authorization for company property withdrawn from inventory. Quantities should be checked by the releasing and receiving persons.",
+  "signatureLabels": [
+   "Received By / Date",
+   "Released By / Date",
+   "Prepared By",
+   "Approved By"
+  ],
+  "aliases": [
+   "INV-WITHDRAWAL"
+  ]
+ },
+ {
+  "key": "HR-INFO-SHEET",
+  "title": "Employee Information Sheet",
+  "category": "HR & Employee",
+  "refPrefix": "RD-EIS",
+  "purpose": "Collect employee profile, emergency contact, government IDs, and payroll details.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "address",
+    "label": "Complete Address",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "House/lot, street, barangay, city/municipality, province",
+    "span": "full"
+   },
+   {
+    "key": "contactNumber",
+    "label": "Mobile Number",
+    "type": "text",
+    "required": true,
+    "placeholder": "09XXXXXXXXX"
+   },
+   {
+    "key": "birthDate",
+    "label": "Birth Date",
+    "type": "date"
+   },
+   {
+    "key": "civilStatus",
+    "label": "Civil Status",
+    "type": "select",
+    "options": [
+     "Single",
+     "Married",
+     "Widowed",
+     "Separated",
+     "Prefer not to state"
+    ]
+   },
+   {
+    "key": "emergencyContact",
+    "label": "Emergency Contact Person",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "emergencyRelationship",
+    "label": "Relationship",
+    "type": "text"
+   },
+   {
+    "key": "emergencyContactNumber",
+    "label": "Emergency Contact Number",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "sssNumber",
+    "label": "SSS Number",
+    "type": "text"
+   },
+   {
+    "key": "philHealthNumber",
+    "label": "PhilHealth Number",
+    "type": "text"
+   },
+   {
+    "key": "pagIbigNumber",
+    "label": "Pag-IBIG Number",
+    "type": "text"
+   },
+   {
+    "key": "tinNumber",
+    "label": "TIN",
+    "type": "text"
+   },
+   {
+    "key": "bankOrEwallet",
+    "label": "Payroll Bank / E-wallet Details",
+    "type": "textarea",
+    "placeholder": "Account name, bank/e-wallet, and account number when applicable.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Additional Employee Information",
+    "type": "textarea",
+    "placeholder": "Skills, prior experience, allergies relevant to work, or other company-required information.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee confirms that the information provided is accurate and agrees to report material changes to HR or management.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "HR Representative / Date",
+   "Encoded By",
+   "Verified By"
+  ]
+ },
+ {
+  "key": "HR-DATA-PRIVACY",
+  "title": "Data Privacy Consent Form",
+  "category": "HR & Employee",
+  "refPrefix": "RD-DPC",
+  "purpose": "Document employee acknowledgment and consent for the collection, use, storage, and authorized disclosure of employment records.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Purpose of Processing",
+    "type": "text",
+    "defaultValue": "Employment administration, attendance, payroll, benefits, safety, compliance, and legitimate company operations.",
+    "span": "full"
+   },
+   {
+    "key": "dataCategories",
+    "label": "Personal Data Covered",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Identity, contact, attendance, payroll, government IDs, performance, disciplinary, medical certificate, photo, and other employment records.",
+    "span": "full"
+   },
+   {
+    "key": "authorizedRecipients",
+    "label": "Authorized Recipients / Processors",
+    "type": "textarea",
+    "placeholder": "Authorized company officers, payroll/benefit processors, regulators, and service providers when necessary.",
+    "span": "full"
+   },
+   {
+    "key": "retentionPeriod",
+    "label": "Retention / Storage Statement",
+    "type": "text",
+    "defaultValue": "Records will be retained only for legitimate operational, contractual, and compliance purposes, subject to company retention controls.",
+    "span": "full"
+   },
+   {
+    "key": "consentDecision",
+    "label": "Employee Decision",
+    "type": "select",
+    "required": true,
+    "options": [
+     "I acknowledge and consent",
+     "I acknowledge but request clarification",
+     "I do not consent to optional processing"
+    ]
+   },
+   {
+    "key": "details",
+    "label": "Employee Questions / Limitations",
+    "type": "textarea",
+    "placeholder": "Record any clarification, limitation, or optional processing preference.",
+    "span": "full"
+   }
+  ],
+  "reminder": "This form records the employee’s acknowledgment. It does not remove rights or obligations that apply under company policy or applicable requirements.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "HR / Data Custodian / Date",
+   "Witnessed By",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "HR-HANDBOOK-ACK",
+  "title": "Employee Handbook Acknowledgment",
+  "category": "HR & Employee",
+  "refPrefix": "RD-HBA",
+  "purpose": "Confirm that the employee received, reviewed, and understood the company handbook, rules, and policies.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "handbookVersion",
+    "label": "Handbook / Policy Version",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Version 2026.1"
+   },
+   {
+    "key": "dateReceived",
+    "label": "Date Received",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "orientationDate",
+    "label": "Orientation Date",
+    "type": "date"
+   },
+   {
+    "key": "subject",
+    "label": "Policies Covered",
+    "type": "text",
+    "defaultValue": "Attendance, payroll, food safety, hygiene, conduct, confidentiality, company property, cash control, and disciplinary procedures.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Employee Acknowledgment",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State that the handbook was received, explained, and understood, and that questions were allowed.",
+    "span": "full"
+   },
+   {
+    "key": "questionsRaised",
+    "label": "Questions / Clarifications Raised",
+    "type": "textarea",
+    "placeholder": "List questions and management responses, if any.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The acknowledgment confirms receipt and orientation. It does not replace the complete handbook or any later written policy update.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "Orientation Facilitator / Date",
+   "HR Representative",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "HR-NDA",
+  "title": "NDA / Confidentiality Agreement",
+  "category": "HR & Employee",
+  "refPrefix": "RD-NDA",
+  "purpose": "Protect recipes, costing, supplier information, reseller terms, customer information, systems, and other confidential company information.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "effectiveDate",
+    "label": "Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "duration",
+    "label": "Confidentiality Duration",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: During employment and 2 years after separation"
+   },
+   {
+    "key": "confidentialityScope",
+    "label": "Confidential Information Covered",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Recipes, production methods, costing, prices, supplier terms, reseller records, employee/customer data, passwords, reports, and internal systems.",
+    "span": "full"
+   },
+   {
+    "key": "permittedUse",
+    "label": "Permitted Use",
+    "type": "text",
+    "defaultValue": "Only for authorized company work and only to the extent necessary to perform assigned duties.",
+    "span": "full"
+   },
+   {
+    "key": "returnOfMaterials",
+    "label": "Return / Deletion Obligation",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Return company files, devices, documents, copies, credentials, and stored information upon request or separation.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Special Confidentiality Terms",
+    "type": "textarea",
+    "placeholder": "Add role-specific restrictions, approved disclosures, or handling instructions.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Confidential information must not be copied, disclosed, sold, posted, or used outside authorized company work. Management should review role-specific restrictions before issuance.",
+  "signatureLabels": [
+   "Employee / Receiving Party / Date",
+   "Company Representative / Date",
+   "Witnessed By",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "HR-PPE-ISSUE",
+  "title": "Uniform / PPE Issuance Slip",
+  "category": "HR & Employee",
+  "refPrefix": "RD-PPE",
+  "purpose": "Track issued uniforms, PPE, tools, and employee accountability.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "items",
+    "label": "Items Issued",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Example: 2 company shirts, 1 apron, 1 cap, 1 pair safety shoes",
+    "span": "full"
+   },
+   {
+    "key": "condition",
+    "label": "Condition Upon Issue",
+    "type": "select",
+    "required": true,
+    "options": [
+     "New",
+     "Good / Serviceable",
+     "Used / Serviceable",
+     "For Replacement"
+    ]
+   },
+   {
+    "key": "expectedReturnDate",
+    "label": "Expected Return Date",
+    "type": "date"
+   },
+   {
+    "key": "replacementValue",
+    "label": "Estimated Replacement Value",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "details",
+    "label": "Accountability Terms",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Employee agrees to use, maintain, and return the items as required and to report loss or damage immediately.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Issued items remain subject to company accountability controls. Any charge or deduction must be separately documented and approved.",
+  "signatureLabels": [
+   "Employee Recipient / Date",
+   "Issued By / Date",
+   "Inventory / HR Verified",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "HR-EVAL-PROBATION",
+  "title": "Probationary Evaluation Form",
+  "category": "HR & Employee",
+  "refPrefix": "RD-PEVAL",
+  "purpose": "Evaluate employee performance before a regularization decision.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "evaluationPeriod",
+    "label": "Evaluation Period",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Jan 15, 2026 to Jun 15, 2026"
+   },
+   {
+    "key": "reviewDate",
+    "label": "Review Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "attendanceRating",
+    "label": "Attendance / Punctuality",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "qualityRating",
+    "label": "Quality of Work",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "productivityRating",
+    "label": "Productivity / Speed",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "teamworkRating",
+    "label": "Teamwork / Conduct",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "foodSafetyRating",
+    "label": "Food Safety / Hygiene",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "systemComplianceRating",
+    "label": "System / SOP Compliance",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "strengths",
+    "label": "Key Strengths",
+    "type": "textarea",
+    "placeholder": "Specific positive observations and measurable results.",
+    "span": "full"
+   },
+   {
+    "key": "improvementAreas",
+    "label": "Improvement Areas / Action Plan",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Specific gaps, expected standard, support, and review date.",
+    "span": "full"
+   },
+   {
+    "key": "subject",
+    "label": "Recommendation",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Regularize",
+     "Continue Probation Within Allowed Period",
+     "Extend Review / Training",
+     "Do Not Recommend Regularization"
+    ]
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Recommended Effective Date",
+    "type": "date"
+   },
+   {
+    "key": "details",
+    "label": "Evaluator Summary",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Overall assessment and basis for recommendation.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Ratings should be supported by specific observations, attendance records, output, quality, conduct, and documented coaching.",
+  "signatureLabels": [
+   "Employee Acknowledgment / Date",
+   "Immediate Supervisor / Date",
+   "HR Review",
+   "Owner / Manager Approval"
+  ]
+ },
+ {
+  "key": "HR-REGULARIZATION",
+  "title": "Regularization Recommendation Form",
+  "category": "HR & Employee",
+  "refPrefix": "RD-REGREC",
+  "purpose": "Prepare an approval or non-regularization recommendation before the review date.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "probationStartDate",
+    "label": "Probation Start Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "reviewDate",
+    "label": "Review / Decision Due Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "performanceSummary",
+    "label": "Performance Summary",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Summarize output, quality, attendance, conduct, and SOP compliance.",
+    "span": "full"
+   },
+   {
+    "key": "attendanceSummary",
+    "label": "Attendance / Tardiness Summary",
+    "type": "textarea",
+    "placeholder": "Present days, absences, late/undertime patterns, and approved leaves.",
+    "span": "full"
+   },
+   {
+    "key": "disciplinarySummary",
+    "label": "Coaching / Disciplinary Record",
+    "type": "textarea",
+    "placeholder": "List documented coaching, NTEs, warnings, or note none.",
+    "span": "full"
+   },
+   {
+    "key": "subject",
+    "label": "Recommendation",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Recommend Regularization",
+     "Recommend Continued Training / Review",
+     "Do Not Recommend Regularization"
+    ]
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Recommended Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Business Justification",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain the basis and any conditions or development plan.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The recommendation should be completed before the decision deadline and supported by documented performance evidence.",
+  "signatureLabels": [
+   "Immediate Supervisor / Date",
+   "HR Review / Date",
+   "Management Review",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "HR-REGULAR-CONFIRM",
+  "title": "Regular Employment Confirmation Letter",
+  "category": "HR & Employee",
+  "refPrefix": "RD-REGCONF",
+  "purpose": "Confirm regular employment status, position, department, and effective date.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "effectiveDate",
+    "label": "Regular Status Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "positionTitle",
+    "label": "Confirmed Position / Role",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "assignedDepartment",
+    "label": "Department / Assignment",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "amount",
+    "label": "Compensation Rate",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "payBasis",
+    "label": "Pay Basis",
+    "type": "select",
+    "options": [
+     "Daily",
+     "Semi-Monthly",
+     "Monthly",
+     "Hourly",
+     "Other"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Confirmation Subject",
+    "type": "text",
+    "defaultValue": "Confirmation of Regular Employment",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Confirmation Terms",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the confirmed status, continuing duties, applicable policies, benefits, and performance expectations.",
+    "span": "full"
+   }
+  ],
+  "reminder": "This confirmation should match the approved employee record, position, compensation basis, and effective date.",
+  "signatureLabels": [
+   "Employee Conforme / Date",
+   "HR Representative / Date",
+   "Management Representative",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "HR-CLEARANCE",
+  "title": "Employee Clearance Form",
+  "category": "HR & Employee",
+  "refPrefix": "RD-CLEAR",
+  "purpose": "Clear employee accountabilities before final pay, transfer, or separation release.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "effectiveDate",
+    "label": "Last Working / Clearance Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "clearanceReason",
+    "label": "Reason",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Resignation",
+     "End of Contract",
+     "Termination",
+     "Transfer",
+     "Extended Leave",
+     "Other"
+    ]
+   },
+   {
+    "key": "items",
+    "label": "Outstanding Accountabilities",
+    "type": "textarea",
+    "placeholder": "Uniform/PPE, cash advance, tools, keys, documents, inventory, crates, devices, or other property.",
+    "span": "full"
+   },
+   {
+    "key": "hrClearance",
+    "label": "HR / Documents",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Pending",
+     "Cleared",
+     "With Accountability",
+     "Not Applicable"
+    ]
+   },
+   {
+    "key": "payrollClearance",
+    "label": "Payroll / Cash Advance",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Pending",
+     "Cleared",
+     "With Balance",
+     "Not Applicable"
+    ]
+   },
+   {
+    "key": "inventoryClearance",
+    "label": "Inventory / Company Property",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Pending",
+     "Cleared",
+     "With Accountability",
+     "Not Applicable"
+    ]
+   },
+   {
+    "key": "operationsClearance",
+    "label": "Operations / Production / Outlet",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Pending",
+     "Cleared",
+     "With Accountability",
+     "Not Applicable"
+    ]
+   },
+   {
+    "key": "amount",
+    "label": "Total Outstanding Balance",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "details",
+    "label": "Unresolved Items / Settlement Plan",
+    "type": "textarea",
+    "placeholder": "List balances, missing property, pending documents, or agreed settlement terms.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Final pay or release should proceed only after authorized reviewers complete the required clearance checks and unresolved accountabilities are documented.",
+  "signatureLabels": [
+   "Employee / Date",
+   "HR / Admin Clearance",
+   "Department Clearance",
+   "Owner / Final Approval"
+  ]
+ },
+ {
+  "key": "PAY-APPROVAL",
+  "title": "Payroll Summary Approval Sheet",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-PAYAPP",
+  "purpose": "Approve payroll totals, exceptions, and funding before release.",
+  "employeeMode": "none",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "payrollPeriod",
+    "label": "Payroll Period / Cutoff",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: July 11–25, 2026"
+   },
+   {
+    "key": "employeeCount",
+    "label": "Number of Employees",
+    "type": "number",
+    "required": true,
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "amount",
+    "label": "Gross Payroll",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "totalDeductions",
+    "label": "Total Deductions",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "netPayroll",
+    "label": "Net Payroll for Release",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "fundingMethod",
+    "label": "Funding / Release Method",
+    "type": "select",
+    "options": [
+     "Cash",
+     "Bank Transfer",
+     "Mixed Cash and Bank",
+     "Other"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Approval Scope",
+    "type": "text",
+    "defaultValue": "Payroll computation, attendance basis, adjustments, deductions, and release funding.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Exceptions / Adjustments Requiring Review",
+    "type": "textarea",
+    "placeholder": "List unusual adjustments, disputed items, deferred deductions, or employees held from release.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Approvers should review payroll totals, attendance basis, approved adjustments, statutory deductions, cash advances, and exceptions before release.",
+  "signatureLabels": [
+   "Payroll Prepared By",
+   "HR / Finance Reviewed By",
+   "Management Approved By",
+   "Owner Release Approval"
+  ]
+ },
+ {
+  "key": "PAY-RELEASE",
+  "title": "Payroll Release Acknowledgment Slip",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-PAYREL",
+  "purpose": "Confirm that an employee received salary, payroll release, final pay, or another approved payroll amount.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Payroll Period / Release Reason",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: July 11–25, 2026 / Final Pay"
+   },
+   {
+    "key": "amount",
+    "label": "Amount Received",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "releaseMethod",
+    "label": "Release Method",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Cash",
+     "Bank Transfer",
+     "GCash / E-wallet",
+     "Cheque",
+     "Other"
+    ]
+   },
+   {
+    "key": "referenceNumber",
+    "label": "Transaction / Release Reference",
+    "type": "text",
+    "placeholder": "Optional bank, payroll, or voucher reference"
+   },
+   {
+    "key": "details",
+    "label": "Payment Breakdown / Notes",
+    "type": "textarea",
+    "placeholder": "Basic pay, OT, allowances, deductions, or final-pay components.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee acknowledges receipt of the stated amount and should report any discrepancy promptly through the payroll dispute process.",
+  "signatureLabels": [
+   "Employee Recipient / Date",
+   "Released By / Date",
+   "Payroll Verified",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "PAY-CA-AGREEMENT",
+  "title": "Cash Advance Agreement",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-CA",
+  "purpose": "Document cash advance amount, release, repayment terms, payroll deductions, and employee acknowledgment.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "amount",
+    "label": "Cash Advance Amount",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "purpose",
+    "label": "Purpose of Cash Advance",
+    "type": "text",
+    "required": true,
+    "placeholder": "State the approved purpose"
+   },
+   {
+    "key": "releaseDate",
+    "label": "Release Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "firstDeductionDate",
+    "label": "First Deduction Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "deductionPerCutoff",
+    "label": "Deduction Per Cutoff",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "installmentCount",
+    "label": "Number of Installments",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "details",
+    "label": "Repayment Terms",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the cutoff schedule, final installment handling, deferment rule, and approval conditions.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee acknowledges the cash advance and authorizes deductions only according to the written and approved repayment terms.",
+  "signatureLabels": [
+   "Employee Borrower / Date",
+   "Cash Released By / Date",
+   "Payroll / HR Witness",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "PAY-CA-REQUEST",
+  "title": "Cash Advance Request Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-CAREQ",
+  "purpose": "Document an employee request for a cash advance and management action.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "amount",
+    "label": "Amount Requested",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "subject",
+    "label": "Purpose / Reason",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain why the cash advance is requested.",
+    "span": "full"
+   },
+   {
+    "key": "requestedReleaseDate",
+    "label": "Requested Release Date",
+    "type": "date"
+   },
+   {
+    "key": "deductionPerCutoff",
+    "label": "Proposed Deduction Per Cutoff",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "installmentCount",
+    "label": "Proposed Installments",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "existingBalance",
+    "label": "Existing Cash Advance Balance",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "details",
+    "label": "Supporting Details / Emergency Information",
+    "type": "textarea",
+    "placeholder": "Include relevant facts or supporting documents.",
+    "span": "full"
+   },
+   {
+    "key": "requestDecision",
+    "label": "Management Decision",
+    "type": "select",
+    "options": [
+     "For Review",
+     "Approved",
+     "Approved with Modified Terms",
+     "Declined"
+    ]
+   }
+  ],
+  "reminder": "Submission does not guarantee approval. Approved amounts and repayment terms must be documented before release.",
+  "signatureLabels": [
+   "Employee Requestor / Date",
+   "Immediate Supervisor / Date",
+   "Payroll / HR Review",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "PAY-DEDUCTION-AUTH",
+  "title": "Salary Deduction Authorization Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-DED",
+  "purpose": "Authorize payroll deductions for an approved cash advance, shortage, damage, lost item, or other documented charge.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Reason for Deduction",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Cash Advance",
+     "Approved Charge Slip",
+     "Damage / Loss",
+     "Cash Shortage",
+     "Company Property",
+     "Payroll Correction",
+     "Other"
+    ]
+   },
+   {
+    "key": "amount",
+    "label": "Total Authorized Deduction",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "deductionPerCutoff",
+    "label": "Deduction Per Cutoff",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "startDate",
+    "label": "Deduction Start Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "installmentCount",
+    "label": "Number of Installments",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "relatedDocument",
+    "label": "Related Document / Reference",
+    "type": "text",
+    "placeholder": "Charge slip, incident report, CA agreement, or other reference"
+   },
+   {
+    "key": "details",
+    "label": "Authorization and Computation",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain the basis, schedule, final installment handling, and any approved limit.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee confirms that the basis and schedule were explained. Deductions should follow the signed and approved arrangement.",
+  "signatureLabels": [
+   "Employee Authorization / Date",
+   "Payroll Representative / Date",
+   "Witnessed By",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "PAY-ADJUSTMENT",
+  "title": "Payroll Adjustment Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-PAYADJ",
+  "purpose": "Record payroll additions, deductions, corrections, and their approved basis.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "adjustmentType",
+    "label": "Adjustment Type",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Addition / Earning",
+     "Deduction",
+     "Correction / Reversal",
+     "Deferred Item"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Adjustment Category / Reason",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: OT correction, allowance, shortage, missed deduction"
+   },
+   {
+    "key": "amount",
+    "label": "Adjustment Amount",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "payrollPeriod",
+    "label": "Affected Payroll Period",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "relatedDocument",
+    "label": "Supporting Reference",
+    "type": "text",
+    "placeholder": "DTR dispute, approval, charge slip, invoice, or memo"
+   },
+   {
+    "key": "details",
+    "label": "Computation / Basis",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Show the original amount, corrected amount, formula, and reason.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Every payroll adjustment should have a clear basis, supporting record, reviewer, and approval before payroll release.",
+  "signatureLabels": [
+   "Employee Acknowledgment / Date",
+   "Payroll Prepared By",
+   "HR / Finance Reviewed",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "PAY-OT",
+  "title": "OT Request Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-OT",
+  "purpose": "Document requested overtime, business reason, actual period, and approval.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Overtime Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "scheduledStart",
+    "label": "Scheduled Start",
+    "type": "time"
+   },
+   {
+    "key": "scheduledEnd",
+    "label": "Scheduled End",
+    "type": "time"
+   },
+   {
+    "key": "otStart",
+    "label": "Requested OT Start",
+    "type": "time",
+    "required": true
+   },
+   {
+    "key": "otEnd",
+    "label": "Requested OT End",
+    "type": "time",
+    "required": true
+   },
+   {
+    "key": "requestedMinutes",
+    "label": "Estimated OT Minutes",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "subject",
+    "label": "Business Reason for Overtime",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Tasks / Expected Output",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Describe the work to be completed and why it cannot be completed during regular hours.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Only authorized overtime supported by actual attendance and approved work requirements should be included in payroll.",
+  "signatureLabels": [
+   "Employee Requestor / Date",
+   "Immediate Supervisor / Date",
+   "HR / Payroll Review",
+   "Approving Manager"
+  ]
+ },
+ {
+  "key": "PAY-UT",
+  "title": "UT / Undertime Request Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-UT",
+  "purpose": "Document an employee request to leave before the scheduled end of shift and the payroll impact.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Undertime Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "scheduledEnd",
+    "label": "Scheduled Time Out",
+    "type": "time",
+    "required": true
+   },
+   {
+    "key": "requestedTimeOut",
+    "label": "Requested Actual Time Out",
+    "type": "time",
+    "required": true
+   },
+   {
+    "key": "undertimeMinutes",
+    "label": "Estimated Undertime Minutes",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "subject",
+    "label": "Reason for Undertime",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the reason and urgency.",
+    "span": "full"
+   },
+   {
+    "key": "handover",
+    "label": "Work Handover / Coverage",
+    "type": "textarea",
+    "placeholder": "List pending work and who will cover it.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Supporting Information",
+    "type": "textarea",
+    "placeholder": "Medical, family, transport, or other relevant information.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Approval of undertime does not automatically remove the applicable payroll deduction unless a written exception applies.",
+  "signatureLabels": [
+   "Employee Requestor / Date",
+   "Immediate Supervisor / Date",
+   "HR / Payroll Review",
+   "Approving Manager"
+  ]
+ },
+ {
+  "key": "PAY-LEAVE",
+  "title": "Leave Request Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-LEAVE",
+  "purpose": "Document planned, emergency, paid, or unpaid leave and management action.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "leaveType",
+    "label": "Leave Type",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Service Incentive Leave (SIL)",
+     "Unpaid Leave",
+     "Emergency Sick Leave",
+     "Emergency Personal Leave",
+     "Other"
+    ]
+   },
+   {
+    "key": "leaveStartDate",
+    "label": "Leave Start Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "leaveEndDate",
+    "label": "Leave End Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "totalDays",
+    "label": "Total Leave Days",
+    "type": "number",
+    "required": true,
+    "min": 0.5,
+    "step": "0.5"
+   },
+   {
+    "key": "subject",
+    "label": "Reason for Leave",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the reason while avoiding unnecessary sensitive details.",
+    "span": "full"
+   },
+   {
+    "key": "contactDuringLeave",
+    "label": "Contact During Leave",
+    "type": "text",
+    "placeholder": "Optional contact number"
+   },
+   {
+    "key": "handover",
+    "label": "Work Handover / Replacement",
+    "type": "textarea",
+    "placeholder": "Pending work, assigned replacement, and instructions.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Supporting Document / Medical Certificate",
+    "type": "textarea",
+    "placeholder": "List attached documents or filing exception.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Leave approval and pay treatment depend on available balance, filing rules, supporting documents, attendance records, and management approval.",
+  "signatureLabels": [
+   "Employee Requestor / Date",
+   "Immediate Supervisor / Date",
+   "HR Review",
+   "Approving Manager"
+  ]
+ },
+ {
+  "key": "PAY-DTR-DISPUTE",
+  "title": "DTR Correction / Dispute Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-DTR",
+  "purpose": "Document an attendance-record correction or dispute before payroll release.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Attendance Date in Dispute",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "disputeType",
+    "label": "Dispute Type",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Missing Time In",
+     "Missing Time Out",
+     "Incorrect Time",
+     "Late Tag",
+     "Absent Tag",
+     "Break Record",
+     "OT / UT Record",
+     "Duplicate Log",
+     "Other"
+    ]
+   },
+   {
+    "key": "recordedEntry",
+    "label": "Current Recorded Entry",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Time In 8:45 AM / Absent"
+   },
+   {
+    "key": "requestedCorrection",
+    "label": "Requested Correct Entry",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Time In 7:58 AM"
+   },
+   {
+    "key": "subject",
+    "label": "Reason for Correction",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Evidence / Witness / Supporting Information",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Photo, supervisor confirmation, schedule, system issue, or other support.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Corrections should be verified against available system logs, schedules, photos, approvals, and supervisor confirmation before payroll is finalized.",
+  "signatureLabels": [
+   "Employee Claimant / Date",
+   "Supervisor Verification",
+   "HR / Payroll Review",
+   "Final Approval"
+  ]
+ },
+ {
+  "key": "DISC-IR",
+  "title": "Incident Report Form",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-IR",
+  "purpose": "Record incident facts, people involved, location, witnesses, evidence, and immediate action.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "incidentTime",
+    "label": "Incident Time",
+    "type": "time"
+   },
+   {
+    "key": "location",
+    "label": "Location / Department",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "subject",
+    "label": "Incident Type / Subject",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "personsInvolved",
+    "label": "Other Persons Involved",
+    "type": "textarea",
+    "placeholder": "Names, roles, and involvement.",
+    "span": "full"
+   },
+   {
+    "key": "witnesses",
+    "label": "Witnesses",
+    "type": "textarea",
+    "placeholder": "Names and contact/role details.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Factual Incident Account",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State what was observed in chronological order. Separate facts from assumptions.",
+    "span": "full"
+   },
+   {
+    "key": "immediateAction",
+    "label": "Immediate Action Taken",
+    "type": "textarea",
+    "placeholder": "Safety action, product hold, cash count, equipment isolation, or supervisor response.",
+    "span": "full"
+   },
+   {
+    "key": "evidence",
+    "label": "Evidence / Attachments",
+    "type": "textarea",
+    "placeholder": "Photos, CCTV, system logs, inventory count, receipts, or witness statements.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Incident reports should be factual, timely, and supported by available evidence. This report is not by itself a final disciplinary decision.",
+  "signatureLabels": [
+   "Report Prepared By / Date",
+   "Employee Involved / Date",
+   "Supervisor Review",
+   "Management Review"
+  ]
+ },
+ {
+  "key": "DISC-EXPLAIN",
+  "title": "Employee Explanation Form",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-EXPLAIN",
+  "purpose": "Record an employee’s written explanation connected to an incident, NTE, shortage, or alleged violation.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident / Alleged Violation Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "relatedDocument",
+    "label": "Related NTE / Incident Report No.",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "subject",
+    "label": "Issue Requiring Explanation",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Employee Written Explanation",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain what happened, the employee’s position, relevant facts, and circumstances.",
+    "span": "full"
+   },
+   {
+    "key": "supportingEvidence",
+    "label": "Supporting Evidence / Witnesses",
+    "type": "textarea",
+    "placeholder": "List attached documents or persons who can confirm relevant facts.",
+    "span": "full"
+   },
+   {
+    "key": "correctiveCommitment",
+    "label": "Corrective Action / Commitment",
+    "type": "textarea",
+    "placeholder": "State voluntary corrective actions or support requested.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee should be allowed to provide a complete explanation and supporting information before management makes a decision.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "Received By / Date",
+   "Witness / Representative",
+   "Management Review"
+  ]
+ },
+ {
+  "key": "DISC-NTE",
+  "title": "Notice to Explain",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-NTE",
+  "purpose": "Provide formal written notice requiring an employee to explain an alleged violation or incident.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident / Alleged Violation Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "subject",
+    "label": "Alleged Violation / Issue",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the specific alleged act, omission, or policy concern.",
+    "span": "full"
+   },
+   {
+    "key": "policyReference",
+    "label": "Policy / SOP / Rule Reference",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Statement of Facts / Particulars",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State dates, times, places, actions, records, and available evidence without pre-judging the outcome.",
+    "span": "full"
+   },
+   {
+    "key": "responseDeadline",
+    "label": "Written Explanation Deadline",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Within 48 hours from receipt"
+   },
+   {
+    "key": "evidence",
+    "label": "Supporting Evidence / Reference",
+    "type": "textarea",
+    "placeholder": "Incident report, attendance logs, photos, inventory records, witness statements, or other references.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee is given an opportunity to submit a written explanation. Management should review the explanation and available evidence before deciding.",
+  "signatureLabels": [
+   "Employee Receipt / Date & Time",
+   "Issued By / Date",
+   "Witnessed By",
+   "Management Approval"
+  ]
+ },
+ {
+  "key": "DISC-WARNING",
+  "title": "Warning Letter",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-WARN",
+  "purpose": "Document a written warning, corrective expectation, and follow-up deadline.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident / Violation Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "warningLevel",
+    "label": "Warning Level",
+    "type": "select",
+    "required": true,
+    "options": [
+     "First Written Warning",
+     "Second Written Warning",
+     "Final Written Warning"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Violation / Performance Issue",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "priorNoticeReference",
+    "label": "Prior NTE / Decision / Coaching Reference",
+    "type": "text"
+   },
+   {
+    "key": "details",
+    "label": "Findings and Corrective Expectations",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the reviewed facts, expected standard, required correction, and consequence of repetition.",
+    "span": "full"
+   },
+   {
+    "key": "complianceDeadline",
+    "label": "Correction / Review Deadline",
+    "type": "date"
+   },
+   {
+    "key": "supportPlan",
+    "label": "Support / Coaching to be Provided",
+    "type": "textarea",
+    "placeholder": "Training, supervision, schedule, or process support.",
+    "span": "full"
+   }
+  ],
+  "reminder": "A warning should identify the reviewed issue, expected corrective action, follow-up date, and applicable next step without using vague allegations.",
+  "signatureLabels": [
+   "Employee Receipt / Date",
+   "Immediate Supervisor / Date",
+   "HR Review",
+   "Management Approval"
+  ]
+ },
+ {
+  "key": "DISC-DECISION",
+  "title": "Notice of Decision",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-DEC",
+  "purpose": "Document management’s decision after reviewing the notice, explanation, and available evidence.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "nteReference",
+    "label": "NTE / Case Reference",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "explanationReceivedDate",
+    "label": "Explanation Received Date",
+    "type": "date"
+   },
+   {
+    "key": "subject",
+    "label": "Decision Summary",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "action",
+    "label": "Management Action",
+    "type": "select",
+    "required": true,
+    "options": [
+     "No Violation / Case Closed",
+     "Coaching / Counseling",
+     "Written Warning",
+     "Final Warning",
+     "Suspension",
+     "Termination",
+     "Restitution / Accountability Arrangement",
+     "Other"
+    ]
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Decision Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Findings and Basis",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Summarize the issue, employee explanation, evidence considered, findings, and reason for the decision.",
+    "span": "full"
+   },
+   {
+    "key": "conditions",
+    "label": "Conditions / Follow-up Actions",
+    "type": "textarea",
+    "placeholder": "Training, monitoring, restitution, return-to-work conditions, or review date.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The decision should reflect the facts and evidence reviewed, the employee’s explanation, and the approved management action.",
+  "signatureLabels": [
+   "Employee Receipt / Date",
+   "Decision Issued By",
+   "HR / Witness",
+   "Owner / Management Approval"
+  ]
+ },
+ {
+  "key": "DISC-DAMAGE",
+  "title": "Damage / Loss Accountability Form",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-DAMAGE",
+  "purpose": "Record damaged, lost, or unreturned company property and the accountability review.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Damage / Loss Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "items",
+    "label": "Property / Item Affected",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Item name, asset code, quantity, ownership, and description.",
+    "span": "full"
+   },
+   {
+    "key": "assetCode",
+    "label": "Asset / Inventory Code",
+    "type": "text"
+   },
+   {
+    "key": "condition",
+    "label": "Condition / Loss Status",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Damaged - Repairable",
+     "Damaged - Beyond Repair",
+     "Lost / Missing",
+     "Unreturned",
+     "Consumable Wastage",
+     "Other"
+    ]
+   },
+   {
+    "key": "amount",
+    "label": "Estimated Loss / Repair Cost",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "subject",
+    "label": "Reported Cause / Circumstance",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Factual Account and Review",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Describe custody, last known condition, actions taken, evidence, and findings.",
+    "span": "full"
+   },
+   {
+    "key": "recoveryAction",
+    "label": "Recovery / Corrective Action",
+    "type": "textarea",
+    "placeholder": "Repair, replacement, return deadline, charge-slip review, training, or no employee charge.",
+    "span": "full"
+   }
+  ],
+  "reminder": "This form records the accountability review. Any employee charge or payroll deduction should be documented separately and approved.",
+  "signatureLabels": [
+   "Employee / Custodian / Date",
+   "Inventory / Supervisor Review",
+   "HR / Finance Review",
+   "Management Decision"
+  ]
+ },
+ {
+  "key": "DISC-CASH-SHORT",
+  "title": "Cash Shortage Explanation Form",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-CSHORT",
+  "purpose": "Document a cash shortage, cashier explanation, supporting reconciliation, and review.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Business / Cash Count Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "shiftOrOutlet",
+    "label": "Shift / Outlet / Cash Point",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "expectedCash",
+    "label": "Expected Cash",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "actualCash",
+    "label": "Actual Cash Counted",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "amount",
+    "label": "Shortage / Variance",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "transactionReference",
+    "label": "POS / Remittance / Deposit Reference",
+    "type": "text"
+   },
+   {
+    "key": "subject",
+    "label": "Initial Variance Description",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Employee Explanation",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain transactions, handovers, refunds, change funds, system issues, or other relevant facts.",
+    "span": "full"
+   },
+   {
+    "key": "evidence",
+    "label": "Reconciliation Evidence",
+    "type": "textarea",
+    "placeholder": "Cash count sheet, POS report, receipts, CCTV, witnesses, or deposit record.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Cash variances should be recounted and reconciled against POS, remittance, refund, deposit, and handover records before a final decision.",
+  "signatureLabels": [
+   "Cashier / Custodian / Date",
+   "Cash Count Witness",
+   "Supervisor / Finance Review",
+   "Management Decision"
+  ]
+ },
+ {
+  "key": "FIN-CHARGE-SLIP",
+  "title": "Charge Slip",
+  "category": "Finance & Cash Control",
+  "refPrefix": "RD-CS",
+  "purpose": "Document an approved employee accountability for loss, damage, shortage, wastage, company-paid expense, or another charge, including payment terms.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Charge / Incident Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "subject",
+    "label": "Charge Type / Reason",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Loss / Missing Property",
+     "Damage / Repair",
+     "Cash Shortage",
+     "Inventory Shortage",
+     "Wastage / Spoilage",
+     "Company-Paid Expense",
+     "Unreturned Item",
+     "Other"
+    ]
+   },
+   {
+    "key": "items",
+    "label": "Charged Item / Supporting Reference",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Item, quantity, incident report, invoice, receipt, or other reference.",
+    "span": "full"
+   },
+   {
+    "key": "amount",
+    "label": "Total Charge",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "paymentMethod",
+    "label": "Payment Arrangement",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Full Cash Payment",
+     "Payroll Deduction",
+     "Installment Payroll Deduction",
+     "Offset Against Receivable",
+     "Other Approved Arrangement"
+    ]
+   },
+   {
+    "key": "deductionPerCutoff",
+    "label": "Payment / Deduction Per Cutoff",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "dueDate",
+    "label": "First Payment / Due Date",
+    "type": "date"
+   },
+   {
+    "key": "installmentCount",
+    "label": "Number of Installments",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "details",
+    "label": "Charge Computation and Terms",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the facts, computation, supporting reference, due date, and approved payment terms.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The charge should be supported by a documented review. Any payroll deduction must follow the separately approved written arrangement.",
+  "signatureLabels": [
+   "Charged Employee / Date",
+   "Finance / HR Representative",
+   "Witnessed By",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "SOP-ATTENDANCE",
+  "title": "Attendance Policy",
+  "category": "SOPs & Training",
+  "refPrefix": "RD-ATTPOL",
+  "purpose": "Issue or acknowledge the company attendance, timekeeping, break, leave, OT, and undertime policy.",
+  "employeeMode": "optional",
+  "employeeLabel": "Acknowledging Employee",
+  "fields": [
+   {
+    "key": "policyVersion",
+    "label": "Policy Version",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Attendance Policy 2026.1"
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "acknowledgmentType",
+    "label": "Document Use",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Policy Issuance",
+     "Employee Acknowledgment",
+     "Policy Reorientation",
+     "Policy Update"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Policy Scope",
+    "type": "text",
+    "defaultValue": "Schedules, time in/out, breaks, absence, leave filing, overtime, undertime, corrections, and attendance accountability.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Attendance Policy Text",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Employees must follow assigned schedules; personally record time in and time out; observe approved break limits; file leave, OT, and undertime requests through approved channels; and promptly report attendance errors. Falsification, buddy punching, and unauthorized time entries are prohibited. Payroll treatment follows approved company rules and documented exceptions.",
+    "span": "full"
+   },
+   {
+    "key": "questionsRaised",
+    "label": "Questions / Clarifications",
+    "type": "textarea",
+    "placeholder": "Record employee questions and the response provided.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Keep the signed acknowledgment with the current policy version. Policy updates should be issued and acknowledged separately.",
+  "signatureLabels": [
+   "Employee Acknowledgment / Date",
+   "Orientation Facilitator",
+   "HR / Supervisor Review",
+   "Management Approval"
+  ]
+ },
+ {
+  "key": "SOP-CASH-ADVANCE",
+  "title": "Cash Advance Policy",
+  "category": "SOPs & Training",
+  "refPrefix": "RD-CAPOL",
+  "purpose": "Issue or acknowledge the company cash advance request, approval, release, repayment, and payroll-deduction policy.",
+  "employeeMode": "optional",
+  "employeeLabel": "Acknowledging Employee",
+  "fields": [
+   {
+    "key": "policyVersion",
+    "label": "Policy Version",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Cash Advance Policy 2026.1"
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "acknowledgmentType",
+    "label": "Document Use",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Policy Issuance",
+     "Employee Acknowledgment",
+     "Policy Reorientation",
+     "Policy Update"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Policy Scope",
+    "type": "text",
+    "defaultValue": "Cash advance request, approval, release, repayment schedule, payroll deduction, deferment, and dispute handling.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Cash Advance Policy Text",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Cash advances require a written request and approval. Approved terms must state the amount, release date, deduction per cutoff, and expected completion. New requests may be limited while an earlier balance remains unpaid. Deferments, changes, or reversals require written approval. Employees should review payroll deductions and raise discrepancies before release.",
+    "span": "full"
+   },
+   {
+    "key": "questionsRaised",
+    "label": "Questions / Clarifications",
+    "type": "textarea",
+    "placeholder": "Record employee questions and the response provided.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The signed acknowledgment should identify the policy version. Each approved cash advance still requires a separate request and agreement.",
+  "signatureLabels": [
+   "Employee Acknowledgment / Date",
+   "Policy Explained By",
+   "Payroll / HR Review",
+   "Management Approval"
+  ]
+ }
 ]
+
+const DOCUMENT_FORM_CORE_FIELD_KEYS = ['documentNo','formKey','employeeId','documentDate','incidentDate','effectiveDate','amount','deductionPerCutoff','subject','details','items','remarks','preparedBy','approvedBy']
+const DOCUMENT_FORM_DATA_PREFIX = '__RD_FORM_DATA_V1__:'
+
+function findBatch1DocumentForm(formKey) {
+ const normalized = String(formKey || '').trim().toUpperCase()
+ if (!normalized) return null
+ return DOCUMENT_BATCH1A_FORMS.find(form =>
+  String(form.key || '').toUpperCase() === normalized ||
+  (form.aliases || []).some(alias => String(alias || '').toUpperCase() === normalized)
+ ) || null
+}
+
+function createDocumentFormDraft(formKey, todayDate = '', preparedBy = '', previous = {}) {
+ const form = findBatch1DocumentForm(formKey) || DOCUMENT_BATCH1A_FORMS.find(row => !row.externalTab) || DOCUMENT_BATCH1A_FORMS[0]
+ const draft = {
+  documentNo:'',
+  formKey:form?.key || formKey || 'DISC-NTE',
+  employeeId:'',
+  documentDate:todayDate || '',
+  incidentDate:todayDate || '',
+  effectiveDate:todayDate || '',
+  amount:'',
+  deductionPerCutoff:'',
+  subject:'',
+  details:'',
+  items:'',
+  remarks:'',
+  preparedBy:preparedBy || previous?.preparedBy || '',
+  approvedBy:previous?.approvedBy || '',
+  customFields:{}
+ }
+
+ ;(form?.fields || []).forEach(field => {
+  const defaultValue = field.defaultValue ?? ''
+  if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(field.key)) {
+   if (defaultValue !== '') draft[field.key] = defaultValue
+  } else {
+   draft.customFields[field.key] = defaultValue
+  }
+ })
+
+ return draft
+}
+
+function encodeCompanyDocumentFormData(formKey, draft = {}) {
+ const values = { ...draft, formKey }
+ delete values.employeeId
+ return DOCUMENT_FORM_DATA_PREFIX + JSON.stringify({ version:1, values })
+}
+
+function decodeCompanyDocumentFormData(rawValue) {
+ const raw = String(rawValue || '')
+ if (!raw.startsWith(DOCUMENT_FORM_DATA_PREFIX)) return null
+ try {
+  const parsed = JSON.parse(raw.slice(DOCUMENT_FORM_DATA_PREFIX.length))
+  return parsed && typeof parsed === 'object' ? parsed : null
+ } catch (error) {
+  console.warn('Invalid structured company document data:', error)
+  return null
+ }
+}
 
 const DOCUMENT_CENTER_CATEGORIES = [
  'HR & Employee',
@@ -1028,7 +3395,7 @@ const DOCUMENT_CENTER_CATEGORIES = [
 ]
 
 const DOCUMENT_CENTER_CATALOG = [
-  { code:'INV-WD', name:'Company Inventory Withdrawal Slip', category:'Inventory', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Records withdrawal of raw materials, packaging, supplies, finished goods like donuts, tools, equipment, crates, crate covers, and other company property.' },
+  { code:'INV-WD', name:'Company Inventory Withdrawal Slip', category:'Inventory & Purchasing', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Records withdrawal of raw materials, packaging, supplies, finished goods like donuts, tools, equipment, crates, crate covers, and other company property.' },
  { code:'HR-EMP-CONTRACT', name:'Employment Contract', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Generate, print, upload, and track employee contracts and regularization records.' },
  { code:'HR-JOB-OFFER', name:'Job Offer / Hiring Approval Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Approve hiring details before adding a new employee to payroll.' },
  { code:'HR-INFO-SHEET', name:'Employee Information Sheet', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Collect employee profile, emergency contact, government IDs, and payroll details.' },
@@ -2102,6 +4469,7 @@ export default function App() {
  const [documentRecordStatusFilter, setDocumentRecordStatusFilter] = useState('all')
  const [documentRecordTypeFilter, setDocumentRecordTypeFilter] = useState('all')
  const [documentFormDraft, setDocumentFormDraft] = useState({
+  documentNo:'',
   formKey:'DISC-NTE',
   employeeId:'',
   documentDate:today,
@@ -2114,7 +4482,8 @@ export default function App() {
   items:'',
   remarks:'',
   preparedBy:'',
-  approvedBy:''
+  approvedBy:'',
+  customFields:{}
  })
  const [companyDocumentRecords, setCompanyDocumentRecords] = useState([])
  const [companyDocumentRecordsLoading, setCompanyDocumentRecordsLoading] = useState(false)
@@ -22205,7 +24574,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const currentRecipePreviewCost = computeRecipeVaultCost(recipeVaultForm, recipeCostRows)
 
  const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
- const isChargeSlipDocumentForm = documentFormDraft.formKey === 'FIN-CHARGE-SLIP'
+ const selectedBatch1DocumentForm = findBatch1DocumentForm(documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS.find(form => !form.externalTab) || DOCUMENT_BATCH1A_FORMS[0]
+ const activeBatch1FillableForms = DOCUMENT_BATCH1A_FORMS.filter(form => !form.externalTab)
+ const isChargeSlipDocumentForm = selectedBatch1DocumentForm?.key === 'FIN-CHARGE-SLIP'
  const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
     const payablesDeadlineKey = (ownerDeadlineSummary.warningRows || [])
       .map(r => String(r.source || '') + ':' + String(r.id || '') + ':' + String(r.due_date_effective || r.due_date || ''))
@@ -22242,32 +24613,89 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  })()
 
 
- const updateDocumentFormDraft = (field, value) => {
-  setDocumentFormDraft(prev => ({ ...prev, [field]:value }))
+
+ const getDocumentFormFieldValue = (fieldKey, draft = documentFormDraft) => {
+  if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(fieldKey)) return draft?.[fieldKey] ?? ''
+  return draft?.customFields?.[fieldKey] ?? ''
  }
 
- const openDocumentBatch1AForm = (formKey) => {
-  const form = DOCUMENT_BATCH1A_FORMS.find(row => row.key === formKey)
+ const updateDocumentFormDraft = (field, value) => {
+  setDocumentFormDraft(prev => {
+   if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(field)) return { ...prev, [field]:value }
+   return { ...prev, customFields:{ ...(prev.customFields || {}), [field]:value } }
+  })
+ }
+
+ const selectDocumentFormType = (formKey, options = {}) => {
+  const form = findBatch1DocumentForm(formKey)
   if (!form) {
-   showToast('This document is listed but its fillable form is not active yet.', 'red')
+   showToast('This document form could not be found.', 'red')
+   return
+  }
+  if (form.externalTab) {
+   showToast(form.title + ' is managed in the dedicated module.')
+   handleTabClick(form.externalTab)
    return
   }
 
-  setDocumentFormDraft(prev => ({
-   ...prev,
-   formKey,
-   documentDate:prev.documentDate || today,
-   incidentDate:formKey === 'FIN-CHARGE-SLIP' ? (prev.incidentDate || today) : prev.incidentDate,
-   preparedBy:prev.preparedBy || currentAdminLabel || 'Admin'
-  }))
+  setDocumentCenterView('forms')
+  setDocumentFormDraft(prev => createDocumentFormDraft(form.key, today, currentAdminLabel || 'Admin', prev))
+  if (!employees.length && form.employeeMode !== 'none') loadEmployees()
 
-  if (!employees.length) loadEmployees()
-  showToast(form.title + ' form opened.')
-  setTimeout(() => {
-   document.getElementById('document-batch1a-form-builder')?.scrollIntoView({ behavior:'smooth', block:'start' })
-  }, 100)
+  if (options.showToast !== false) showToast(form.title + ' form opened.')
+  if (options.scroll !== false) {
+   setTimeout(() => {
+    document.getElementById('document-batch1a-form-builder')?.scrollIntoView({ behavior:'smooth', block:'start' })
+   }, 100)
+  }
  }
 
+ const openDocumentBatch1AForm = (formKey) => {
+  selectDocumentFormType(formKey, { showToast:true, scroll:true })
+ }
+
+ const clearCurrentDocumentForm = () => {
+  const form = getSelectedDocumentBatch1AForm()
+  setDocumentFormDraft(prev => createDocumentFormDraft(form.key, today, currentAdminLabel || 'Admin', prev))
+  showToast(form.title + ' fields cleared.')
+ }
+
+ const renderDocumentFormField = (field) => {
+  const value = getDocumentFormFieldValue(field.key)
+  const gridColumn = isMobile ? '1 / -1' : field.span === 'full' ? '1 / -1' : field.span === 2 ? 'span 2' : 'span 1'
+  const commonStyle = { ...inputStyle, marginBottom:0 }
+  const inputType = ['date','time','number'].includes(field.type) ? field.type : 'text'
+
+  return (
+   <div key={field.key} style={{ gridColumn }}>
+    <label style={lblS}>{field.label}{field.required ? ' *' : ''}</label>
+    {field.type === 'textarea' ? (
+     <textarea
+      value={value}
+      onChange={e=>updateDocumentFormDraft(field.key, e.target.value)}
+      placeholder={field.placeholder || ''}
+      style={{...commonStyle, minHeight:'84px', resize:'vertical'}}
+     />
+    ) : field.type === 'select' ? (
+     <select value={value} onChange={e=>updateDocumentFormDraft(field.key, e.target.value)} style={commonStyle}>
+      <option value="">Select {String(field.label || '').toLowerCase()}</option>
+      {(field.options || []).map(option => <option key={String(option)} value={option}>{option}</option>)}
+     </select>
+    ) : (
+     <input
+      type={inputType}
+      value={value}
+      onChange={e=>updateDocumentFormDraft(field.key, e.target.value)}
+      placeholder={field.placeholder || ''}
+      min={field.min}
+      step={field.step}
+      style={commonStyle}
+     />
+    )}
+    {field.help && <p style={{ margin:'5px 2px 0', color:'#888', fontSize:'10px', lineHeight:1.4 }}>{field.help}</p>}
+   </div>
+  )
+ }
 
  async function loadCompanyDocumentRecords() {
   setCompanyDocumentRecordsLoading(true)
@@ -22276,7 +24704,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     .from('company_document_records')
     .select('*')
     .order('created_at', { ascending:false })
-    .limit(200)
+    .limit(500)
 
    if (error) throw error
    setCompanyDocumentRecords(data || [])
@@ -22309,50 +24737,112 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return s.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
  }
 
+ const getSelectedDocumentBatch1AForm = () => {
+  return findBatch1DocumentForm(documentFormDraft.formKey) || activeBatch1FillableForms[0]
+ }
+
+ const getDocumentFormEmployee = () => {
+  return (employees || []).find(e => String(e.id) === String(documentFormDraft.employeeId)) || null
+ }
+
+ const getDocumentReferenceNumber = (form = getSelectedDocumentBatch1AForm(), forcedDocumentNo = '') => {
+  if (forcedDocumentNo) return forcedDocumentNo
+  if (documentFormDraft.documentNo) return documentFormDraft.documentNo
+  const cleanDate = String(documentFormDraft.documentDate || today).replace(/-/g, '')
+  return String(form?.refPrefix || 'RD-DOC') + '-' + cleanDate + '-' + String(Date.now()).slice(-5)
+ }
+
+ const getFormFieldValueFromValues = (values = {}, fieldKey = '') => {
+  if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(fieldKey)) return values?.[fieldKey] ?? ''
+  return values?.customFields?.[fieldKey] ?? ''
+ }
+
+ const formatDocumentFieldValue = (field = {}, value, blankRequired = false) => {
+  const isBlank = value === null || value === undefined || String(value).trim() === ''
+  if (isBlank) return blankRequired && field.required ? '____________________________' : ''
+  if (field.type === 'date') return formatDateForDisplay(value)
+  if (field.format === 'currency') return php(safeNum(value, 0))
+  return String(value)
+ }
+
+ const getDocumentRecordSummary = (form, values = {}) => {
+  const preferredSubjectKeys = ['subject','payrollPeriod','policyVersion','adjustmentType','leaveType','disputeType','warningLevel','evaluationPeriod','clearanceReason','purpose']
+  const preferredItemKeys = ['items','relatedDocument','referenceNumber','transactionReference','handbookVersion']
+  const getFirst = keys => {
+   for (const key of keys) {
+    const value = getFormFieldValueFromValues(values, key)
+    if (String(value || '').trim()) return String(value).trim()
+   }
+   return ''
+  }
+  return {
+   subject:getFirst(preferredSubjectKeys) || form?.title || 'Company Document',
+   items:getFirst(preferredItemKeys),
+   details:String(values.details || '').trim()
+  }
+ }
+
+ const validateCurrentDocumentForm = (form) => {
+  const missing = []
+  if (!documentFormDraft.documentDate) missing.push('Document Date')
+  if (form.employeeMode === 'required' && !documentFormDraft.employeeId) missing.push(form.employeeLabel || 'Employee')
+
+  ;(form.fields || []).forEach(field => {
+   if (!field.required) return
+   const value = getDocumentFormFieldValue(field.key)
+   const isBlank = value === null || value === undefined || String(value).trim() === ''
+   if (isBlank) {
+    missing.push(field.label)
+    return
+   }
+   if (field.type === 'number') {
+    const minimum = field.min !== undefined ? safeNum(field.min, 0) : 0
+    if (!Number.isFinite(Number(value)) || Number(value) < minimum) missing.push(field.label)
+   }
+  })
+
+  if (missing.length) {
+   showToast('Complete required field(s): ' + missing.join(', '), 'red')
+   return false
+  }
+  return true
+ }
+
  async function saveCurrentDocumentRecord(status = 'draft', options = {}) {
   const form = getSelectedDocumentBatch1AForm()
+  if (!form || form.externalTab) {
+   showToast('Select a fillable Batch 1 form.', 'red')
+   return null
+  }
+  if (!validateCurrentDocumentForm(form)) return null
+
   const emp = getDocumentFormEmployee()
   const docNo = getDocumentReferenceNumber(form)
-
-  if (form.key === 'FIN-CHARGE-SLIP') {
-   if (!documentFormDraft.employeeId) {
-    showToast('Select the employee to be charged.', 'red')
-    return null
-   }
-   if (safeNum(documentFormDraft.amount, 0) <= 0) {
-    showToast('Enter a valid total charge amount.', 'red')
-    return null
-   }
-   if (!String(documentFormDraft.subject || '').trim()) {
-    showToast('Enter the charge type or reason.', 'red')
-    return null
-   }
-  }
-
-  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Save blank document record?')) return null
+  const summary = getDocumentRecordSummary(form, documentFormDraft)
+  const structuredRemarks = encodeCompanyDocumentFormData(form.key, { ...documentFormDraft, documentNo:docNo })
 
   const payload = {
-   document_no: docNo,
-   form_key: form.key,
-   document_type: form.title,
-   employee_id: emp?.id || documentFormDraft.employeeId || null,
-   employee_name: emp?.full_name || null,
-   employee_code: emp?.employee_code || null,
-   position: emp?.position || null,
-   department: emp?.department || null,
-   document_date: documentFormDraft.documentDate || today,
-   incident_date: documentFormDraft.incidentDate || null,
-   effective_date: documentFormDraft.effectiveDate || null,
-   subject: documentFormDraft.subject || null,
-   details: documentFormDraft.details || null,
-   amount: documentFormDraft.amount ? safeNum(documentFormDraft.amount, 0) : null,
-   deduction_per_cutoff: documentFormDraft.deductionPerCutoff ? safeNum(documentFormDraft.deductionPerCutoff, 0) : null,
-   items: documentFormDraft.items || null,
-   remarks: documentFormDraft.remarks || null,
-   prepared_by: documentFormDraft.preparedBy || currentAdminLabel || 'Admin',
-   approved_by: documentFormDraft.approvedBy || null,
+   document_no:docNo,
+   form_key:form.key,
+   document_type:form.title,
+   employee_id:emp?.id || documentFormDraft.employeeId || null,
+   employee_name:emp?.full_name || null,
+   employee_code:emp?.employee_code || null,
+   position:emp?.position || null,
+   department:emp?.department || null,
+   document_date:documentFormDraft.documentDate || today,
+   incident_date:documentFormDraft.incidentDate || null,
+   effective_date:documentFormDraft.effectiveDate || null,
+   subject:summary.subject || null,
+   details:summary.details || null,
+   amount:String(documentFormDraft.amount || '').trim() ? safeNum(documentFormDraft.amount, 0) : null,
+   deduction_per_cutoff:String(documentFormDraft.deductionPerCutoff || '').trim() ? safeNum(documentFormDraft.deductionPerCutoff, 0) : null,
+   items:summary.items || null,
+   remarks:structuredRemarks,
+   prepared_by:documentFormDraft.preparedBy || currentAdminLabel || 'Admin',
+   approved_by:documentFormDraft.approvedBy || null,
    status,
-   created_by: currentAdminLabel || adminRole || 'Admin'
+   created_by:currentAdminLabel || adminRole || 'Admin'
   }
 
   try {
@@ -22364,11 +24854,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
    if (error) throw error
 
-   showToast((options.printAfter ? 'Document saved. Preparing print...' : 'Document saved to Document Records.'))
+   setDocumentFormDraft(prev => ({ ...prev, documentNo:docNo }))
+   showToast(options.printAfter ? 'Document saved. Preparing print...' : 'Document saved to Document Records.')
    await loadCompanyDocumentRecords()
 
    if (options.printAfter) {
-    setTimeout(() => printBatch1ADocumentForm(), 150)
+    setTimeout(() => printBatch1ADocumentForm(docNo), 150)
    }
 
    return data
@@ -22418,265 +24909,195 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
  }
 
-function printCompanyDocumentRecord(record) {
-  if (!record) {
-   showToast('No document record selected.', 'red')
-   return
+ const getSavedDocumentValues = (record = {}) => {
+  const structured = decodeCompanyDocumentFormData(record.remarks)
+  const structuredValues = structured?.values || {}
+  return {
+   documentNo:record.document_no || structuredValues.documentNo || '',
+   formKey:record.form_key || structuredValues.formKey || '',
+   documentDate:record.document_date || structuredValues.documentDate || '',
+   incidentDate:record.incident_date || structuredValues.incidentDate || '',
+   effectiveDate:record.effective_date || structuredValues.effectiveDate || '',
+   amount:record.amount ?? structuredValues.amount ?? '',
+   deductionPerCutoff:record.deduction_per_cutoff ?? structuredValues.deductionPerCutoff ?? '',
+   subject:structuredValues.subject ?? record.subject ?? '',
+   details:structuredValues.details ?? record.details ?? '',
+   items:structuredValues.items ?? record.items ?? '',
+   remarks:structured ? (structuredValues.remarks || '') : (record.remarks || ''),
+   preparedBy:record.prepared_by || structuredValues.preparedBy || '',
+   approvedBy:record.approved_by || structuredValues.approvedBy || '',
+   customFields:structuredValues.customFields || {}
   }
-
-  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({
-   '&':'&amp;',
-   '<':'&lt;',
-   '>':'&gt;',
-   '"':'&quot;',
-   "'":'&#39;'
-  }[ch]))
-
-  const docNo = record.document_no || record.document_number || 'RD-DOCUMENT'
-  const title = record.document_type || record.form_title || record.form_key || 'Company Document'
-  const status = getCompanyDocumentRecordStatusLabel(record.status)
-  const employee = record.employee_name || '____________________________'
-  const employeeCode = record.employee_code || ''
-  const documentDate = record.document_date || record.created_at || today
-
-  const isChargeSlipRecord = String(record.form_key || '').toUpperCase() === 'FIN-CHARGE-SLIP'
-  const rows = (isChargeSlipRecord ? [
-   ['Charge Slip No.', docNo],
-   ['Document Type', title],
-   ['Status', status],
-   ['Employee Charged', employee],
-   ['Employee Code', employeeCode],
-   ['Position / Department', [record.position, record.department].filter(Boolean).join(' / ')],
-   ['Charge Date', formatDateForDisplay(record.incident_date || documentDate)],
-   ['Charge Type / Reason', record.subject || ''],
-   ['Charged Item / Reference', record.items || ''],
-   ['Total Charge', safeNum(record.amount, 0) > 0 ? php(record.amount) : ''],
-   ['Payment / Deduction Per Cutoff', safeNum(record.deduction_per_cutoff, 0) > 0 ? php(record.deduction_per_cutoff) : 'Full payment / To be agreed'],
-   ['Charge Details / Payment Terms', record.details || ''],
-   ['Remarks', record.remarks || ''],
-   ['Prepared By', record.prepared_by || currentAdminLabel || 'Admin'],
-   ['Approved By', record.approved_by || '']
-  ] : [
-   ['Document No.', docNo],
-   ['Document Type', title],
-   ['Status', status],
-   ['Employee', employee],
-   ['Employee Code', employeeCode],
-   ['Document Date', formatDateForDisplay(documentDate)],
-   ['Incident Date', record.incident_date ? formatDateForDisplay(record.incident_date) : ''],
-   ['Effective Date', record.effective_date ? formatDateForDisplay(record.effective_date) : ''],
-   ['Subject', record.subject || ''],
-   ['Details', record.details || ''],
-   ['Items / Accountabilities', record.items || ''],
-   ['Amount', safeNum(record.amount, 0) > 0 ? php(record.amount) : ''],
-   ['Deduction Per Cutoff', safeNum(record.deduction_per_cutoff, 0) > 0 ? php(record.deduction_per_cutoff) : ''],
-   ['Remarks', record.remarks || ''],
-   ['Prepared By', record.prepared_by || currentAdminLabel || 'Admin'],
-   ['Approved By', record.approved_by || '']
-  ]).filter(([label, value]) => String(value || '').trim() !== '')
-
-  const rowHtml = rows.map(([label, value]) =>
-   '<tr><td>' + esc(label) + '</td><td>' + esc(value).replace(/\\n/g, '<br/>') + '</td></tr>'
-  ).join('')
-
-  const pw = window.open('', '_blank')
-  if (!pw) {
-   showToast('Popup blocked. Please allow popups to print document.', 'red')
-   return
-  }
-
-  const chargeNoticeHtml = isChargeSlipRecord
-   ? '<div class="notice">The charged employee acknowledges that the stated charge was explained and received for review. Any payroll deduction must follow the approved written arrangement and applicable company policy.</div>'
-   : ''
-  const signatureHtml = isChargeSlipRecord
-   ? '<div class="signatures"><div class="sig"><div class="line">' + esc(employee) + '</div><div>Charged Employee / Date</div></div><div class="sig"><div class="line">' + esc(record.approved_by || 'Authorized Representative') + '</div><div>Authorized Representative / Date</div></div></div>'
-   : '<div class="signatures"><div class="sig"><div class="line">' + esc(record.prepared_by || currentAdminLabel || 'Prepared By') + '</div><div>Prepared By</div></div><div class="sig"><div class="line">' + esc(record.approved_by || 'Approved By') + '</div><div>Approved By</div></div></div>'
-
-  const html = [
-   '<!DOCTYPE html><html><head><title>' + esc(docNo) + '</title>',
-   '<style>',
-   '@page { size:A4; margin:16mm; }',
-   'body { font-family:Arial, sans-serif; color:#1a1a2e; margin:0; }',
-   '.header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #ca1b1b; padding-bottom:10px; margin-bottom:18px; }',
-   'h1 { margin:0; color:#ca1b1b; font-size:20px; }',
-   'h2 { margin:0; color:#1a1a2e; font-size:17px; text-transform:uppercase; text-align:right; }',
-   '.sub { margin:3px 0 0; color:#666; font-size:11px; }',
-   '.badge { display:inline-block; padding:4px 9px; border-radius:999px; background:#f7f9fc; border:1px solid #ddd; font-size:10px; font-weight:bold; margin-top:6px; }',
-   'table { width:100%; border-collapse:collapse; margin-top:10px; }',
-   'td { border:1px solid #ddd; padding:8px 10px; font-size:12px; vertical-align:top; line-height:1.45; }',
-   'td:first-child { width:28%; background:#f8f7f5; font-weight:bold; color:#333; }',
-   '.notice { margin-top:14px; border:1px solid #f5c518; background:#fff8dc; border-radius:8px; padding:10px; font-size:11px; line-height:1.5; color:#444; }',
-   '.signatures { display:grid; grid-template-columns:1fr 1fr; gap:40px; margin-top:55px; }',
-   '.sig { text-align:center; font-size:11px; color:#333; }',
-   '.line { border-top:1px solid #333; padding-top:6px; font-weight:bold; }',
-   '.footer { margin-top:30px; padding-top:10px; border-top:1px solid #eee; font-size:10px; color:#777; text-align:center; }',
-   '.no-print { margin-top:18px; text-align:center; }',
-   'button { background:#ca1b1b; color:white; border:none; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; }',
-   '@media print { .no-print { display:none; } }',
-   '</style></head><body>',
-   '<div class="header"><div>',
-   '<h1>Roma\'s Donuts</h1>',
-   '<p class="sub">Management System</p>',
-   '<p class="sub">Company Documents & Forms Center</p>',
-   '</div><div>',
-   '<h2>' + esc(title) + '</h2>',
-   '<p class="sub" style="text-align:right;">' + esc(docNo) + '</p>',
-   '<p style="text-align:right;"><span class="badge">' + esc(status) + '</span></p>',
-   '</div></div>',
-   '<table>' + rowHtml + '</table>',
-   chargeNoticeHtml,
-   signatureHtml,
-   '<div class="footer">Printed from Roma\'s Donuts Management System • ' + new Date().toLocaleString() + '</div>',
-   '<div class="no-print"><button onclick="window.print()">PRINT DOCUMENT</button></div>',
-   '</body></html>'
-  ].join('')
-
-  pw.document.write(html)
-  pw.document.close()
-  pw.focus()
-  setTimeout(() => pw.print(), 300)
  }
 
-
- const getSelectedDocumentBatch1AForm = () => {
-  return DOCUMENT_BATCH1A_FORMS.find(f => f.key === documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS[0]
- }
-
- const getDocumentFormEmployee = () => {
-  return (employees || []).find(e => String(e.id) === String(documentFormDraft.employeeId)) || null
- }
-
- const getDocumentReferenceNumber = (form = getSelectedDocumentBatch1AForm()) => {
-  const cleanDate = String(documentFormDraft.documentDate || today).replace(/-/g, '')
-  return form.refPrefix + '-' + cleanDate + '-' + String(Date.now()).slice(-5)
- }
-
- const buildPrintableDocumentRows = (form, emp) => {
+ const buildPrintableDocumentRows = (form, emp, values = documentFormDraft, options = {}) => {
+  const docNo = options.documentNo || values.documentNo || getDocumentReferenceNumber(form)
   const rows = [
-   ['Document No.', getDocumentReferenceNumber(form)],
+   ['Document No.', docNo],
    ['Document Type', form.title],
-   ['Date Prepared', formatDateForDisplay(documentFormDraft.documentDate || today)],
-   ['Employee Name', emp?.full_name || '____________________________'],
-   ['Employee Code', emp?.employee_code || '________________'],
-   ['Position / Department', (emp?.position || '________________') + ' / ' + (emp?.department || '________________')]
+   ['Date Prepared', formatDateForDisplay(values.documentDate || today)]
   ]
 
-  if (['DISC-NTE','DISC-IR','DISC-EXPLAIN'].includes(form.key)) {
-   rows.push(['Incident Date', formatDateForDisplay(documentFormDraft.incidentDate || documentFormDraft.documentDate || today)])
-   rows.push(['Subject / Violation', documentFormDraft.subject || '____________________________'])
-   rows.push(['Details / Explanation', documentFormDraft.details || ''])
+  if (options.status) rows.push(['Status', options.status])
+
+  if (form.employeeMode !== 'none') {
+   rows.push([form.employeeLabel || 'Employee', emp?.full_name || options.employeeName || '____________________________'])
+   rows.push(['Employee Code', emp?.employee_code || options.employeeCode || '________________'])
+   rows.push(['Position / Department', ((emp?.position || options.position || '________________') + ' / ' + (emp?.department || options.department || '________________'))])
   }
 
-  if (form.key === 'PAY-CA-AGREEMENT') {
-   rows.push(['Cash Advance Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
-   rows.push(['Repayment Terms', documentFormDraft.details || 'Deduction shall be made every payroll cut-off until fully paid, unless modified by written approval.'])
-  }
+  ;(form.fields || []).forEach(field => {
+   const value = getFormFieldValueFromValues(values, field.key)
+   const formatted = formatDocumentFieldValue(field, value, options.blankRequired !== false)
+   if (formatted || field.required || options.includeBlankOptional) rows.push([field.label, formatted])
+  })
 
-  if (form.key === 'PAY-DEDUCTION-AUTH') {
-   rows.push(['Deduction Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
-   rows.push(['Reason for Deduction', documentFormDraft.subject || '____________________________'])
-   rows.push(['Details', documentFormDraft.details || ''])
-  }
-
-  if (form.key === 'FIN-CHARGE-SLIP') {
-   rows.push(['Charge Date', formatDateForDisplay(documentFormDraft.incidentDate || documentFormDraft.documentDate || today)])
-   rows.push(['Charge Type / Reason', documentFormDraft.subject || 'Loss / Damage / Shortage / Wastage / Company-Paid Expense / Other'])
-   rows.push(['Charged Item / Reference', documentFormDraft.items || 'Item, material, invoice, incident report, or other supporting reference'])
-   rows.push(['Total Charge', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Payment / Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : 'Full payment / To be agreed'])
-   rows.push(['Charge Details / Payment Terms', documentFormDraft.details || 'State the facts, computation, supporting reference, due date, and agreed payment or payroll-deduction terms.'])
-   rows.push(['Remarks', documentFormDraft.remarks || ''])
-  }
-
-  if (form.key === 'HR-CLEARANCE') {
-   rows.push(['Effective / Last Working Date', formatDateForDisplay(documentFormDraft.effectiveDate || documentFormDraft.documentDate || today)])
-   rows.push(['Accountabilities to Clear', documentFormDraft.items || 'Uniform/PPE, cash advance, tools, documents, inventory, crates, keys, and other company property.'])
-   rows.push(['Remarks', documentFormDraft.remarks || ''])
-  }
-
-  if (form.key === 'HR-PPE-ISSUE') {
-   rows.push(['Items Issued', documentFormDraft.items || '____________________________'])
-   rows.push(['Accountability Terms', documentFormDraft.details || 'Employee acknowledges receipt and agrees to return company property or accept approved accountability deduction for lost/damaged items.'])
-  }
-
-
-  if (form.key === 'INV-WITHDRAWAL') {
-   rows.push(['Withdrawal Purpose', documentFormDraft.subject || 'Production Use / Outlet Transfer / Staff Meal / Sample / Damage Replacement / Marketing / Promo / Company Use / Finished Goods Release / Other'])
-   rows.push(['Department / Area', emp?.department || 'Production / Inventory / Outlet / Company Use'])
-   rows.push(['Items Withdrawn', documentFormDraft.items || 'Item name, category, quantity, and unit'])
-   rows.push(['Quantity / Unit', documentFormDraft.amount || '________________'])
-   rows.push(['Released By', documentFormDraft.preparedBy || currentAdminLabel || '____________________________'])
-   rows.push(['Approved By', documentFormDraft.approvedBy || '____________________________'])
-   rows.push(['Remarks / Reason', documentFormDraft.details || documentFormDraft.remarks || 'This slip records company inventory, finished goods, supplies, tools, equipment, crates, crate covers, or other company property withdrawn from company custody.'])
-  }
-
-  if (form.key === 'PAY-RELEASE') {
-   rows.push(['Payroll / Release Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Payroll Period / Reason', documentFormDraft.subject || '____________________________'])
-   rows.push(['Remarks', documentFormDraft.remarks || 'Employee acknowledges receipt of the stated amount.'])
-  }
-
-  rows.push(['Prepared By', documentFormDraft.preparedBy || currentAdminLabel || 'Admin'])
-  rows.push(['Approved By', documentFormDraft.approvedBy || '____________________________'])
+  if (String(values.remarks || '').trim()) rows.push(['Remarks', values.remarks])
+  rows.push(['Prepared By', values.preparedBy || currentAdminLabel || 'Admin'])
+  rows.push(['Approved By', values.approvedBy || '____________________________'])
   return rows
  }
 
- const printBatch1ADocumentForm = () => {
-  const form = getSelectedDocumentBatch1AForm()
-  const emp = getDocumentFormEmployee()
-  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Print blank form?')) return
-
+ const openDocumentPrintWindow = ({ form, rows, documentNo, status = '', autoPrint = false }) => {
   const escDoc = value => {
    const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }
    return String(value ?? '').replace(/[&<>"']/g, ch => map[ch] || ch)
   }
 
-  const rows = buildPrintableDocumentRows(form, emp)
-  const rowHtml = rows.map(row => {
-   const label = row[0]
-   const value = row[1]
-   return '<tr><td class="label">' + escDoc(label) + '</td><td>' + escDoc(value).replace(/\n/g, '<br/>') + '</td></tr>'
-  }).join('')
+  const rowHtml = rows
+   .filter(([,value]) => String(value ?? '').trim() !== '')
+   .map(([label,value]) => '<tr><td class="label">' + escDoc(label) + '</td><td>' + escDoc(value).replace(/\n/g, '<br/>') + '</td></tr>')
+   .join('')
 
-  let reminder = 'This form documents the details stated above for company records and proper review.'
-  if (form.key === 'DISC-NTE') reminder = 'Employee is given the opportunity to submit a written explanation. Management shall review the explanation and available evidence before making a decision.'
-  if (form.key === 'PAY-CA-AGREEMENT') reminder = "Employee authorizes Roma's Donuts to deduct the agreed repayment amount from payroll until the cash advance is fully paid."
-  if (form.key === 'PAY-DEDUCTION-AUTH') reminder = 'Employee confirms that the deduction details were explained and authorizes payroll deduction according to the approved terms.'
-  if (form.key === 'FIN-CHARGE-SLIP') reminder = 'The charged employee acknowledges that the stated charge was explained and received for review. Any payroll deduction must follow the approved written arrangement and applicable company policy.'
-  if (form.key === 'HR-CLEARANCE') reminder = 'Final pay or release may be processed only after all required clearances and accountabilities are reviewed.'
-  if (form.key === 'HR-PPE-ISSUE') reminder = 'Employee acknowledges receipt of the listed items and responsibility for proper use, care, and return when required.'
-  if (form.key === 'PAY-RELEASE') reminder = 'Employee acknowledges receipt of the stated payroll or release amount.'
+  const signatureLabels = form.signatureLabels || ['Employee Signature / Date','Authorized Representative / Date','Prepared By','Approved By']
+  const signatureHtml = signatureLabels.map(label => '<div class="sig"><div class="line"></div><div>' + escDoc(label) + '</div></div>').join('')
+  const reminder = form.reminder || 'This form documents the details stated above for company records and proper review.'
 
   const html =
-   '<!DOCTYPE html><html><head><title>' + escDoc(form.title) + '</title>' +
+   '<!DOCTYPE html><html><head><title>' + escDoc(documentNo || form.title) + '</title>' +
    '<style>' +
-   '*{box-sizing:border-box}body{font-family:Arial,sans-serif;background:#e5e5e5;margin:0;padding:18px;color:#111;font-size:12px}' +
-   '.page{width:210mm;min-height:297mm;background:white;margin:0 auto;padding:18mm;box-shadow:0 2px 10px rgba(0,0,0,.18)}' +
-   '.brand{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px}.brand h1{margin:0;color:#ca1b1b;font-size:24px;letter-spacing:.5px}.brand p{margin:3px 0;color:#555;font-size:11px}' +
-   'h2{text-align:center;margin:14px 0 8px;font-size:16px;text-decoration:underline;letter-spacing:.5px}.purpose{text-align:center;color:#555;font-size:11px;margin:0 0 14px;line-height:1.45}' +
-   'table{width:100%;border-collapse:collapse;margin:10px 0 14px}td{border:1px solid #ddd;padding:7px 8px;vertical-align:top;line-height:1.4}td.label{width:31%;background:#fff8dc;font-weight:bold;color:#333}' +
-   '.notice{border:1px solid #f5c518;background:#fff8dc;border-radius:8px;padding:10px;margin:14px 0;font-size:11px;line-height:1.5;color:#444;text-align:justify}' +
-   '.sig-wrap{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:35px}.sig{border-top:1px solid #000;text-align:center;padding-top:6px;font-size:10px;min-height:30px}' +
-   '.footer{text-align:center;color:#888;font-size:9px;margin-top:18px;border-top:1px solid #eee;padding-top:8px}.no-print{text-align:center;margin:0 0 18px}button{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 22px;font-weight:bold;cursor:pointer}' +
+   '*{box-sizing:border-box}body{font-family:Arial,sans-serif;background:#e5e5e5;margin:0;padding:12px;color:#111;font-size:11px}' +
+   '.page{width:210mm;min-height:297mm;background:white;margin:0 auto;padding:13mm 15mm;box-shadow:0 2px 10px rgba(0,0,0,.18)}' +
+   '.brand{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #ca1b1b;padding-bottom:8px;margin-bottom:10px}.brand h1{margin:0;color:#ca1b1b;font-size:22px}.brand p{margin:2px 0;color:#555;font-size:9.5px}' +
+   '.doc-head{text-align:right}.doc-head h2{margin:0;font-size:15px;color:#1a1a2e;text-transform:uppercase;max-width:105mm}.doc-no{font-size:9.5px;color:#666;margin-top:4px}.status{display:inline-block;margin-top:4px;border:1px solid #ddd;background:#f7f9fc;border-radius:999px;padding:3px 8px;font-size:9px;font-weight:bold}' +
+   '.purpose{text-align:center;color:#555;font-size:10px;margin:0 0 9px;line-height:1.35}' +
+   'table{width:100%;border-collapse:collapse;margin:7px 0 10px}td{border:1px solid #d8d8d8;padding:5.5px 7px;vertical-align:top;line-height:1.32;font-size:10.5px}td.label{width:31%;background:#fff8dc;font-weight:bold;color:#333}' +
+   '.notice{border:1px solid #f5c518;background:#fff8dc;border-radius:7px;padding:8px;margin:10px 0;font-size:9.5px;line-height:1.4;color:#444;text-align:justify}' +
+   '.signatures{display:grid;grid-template-columns:1fr 1fr;gap:25px 34px;margin-top:28px}.sig{text-align:center;font-size:9.5px;color:#333}.line{border-top:1px solid #222;min-height:1px;margin-bottom:5px}' +
+   '.footer{text-align:center;color:#888;font-size:8.5px;margin-top:14px;border-top:1px solid #eee;padding-top:6px}.no-print{text-align:center;margin:0 0 10px}button{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:9px 20px;font-weight:bold;cursor:pointer}' +
    '@media print{@page{size:A4;margin:0}body{background:white;padding:0}.page{box-shadow:none;margin:0}.no-print{display:none}}' +
    '</style></head><body>' +
    '<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>' +
-   '<div class="page"><div class="brand"><h1>Roma\'s Donuts</h1><p>Payroll, HR, Production &amp; Business Documents System</p><p>Every bite is a little piece of heaven.</p></div>' +
-   '<h2>' + escDoc(form.title).toUpperCase() + '</h2><p class="purpose">' + escDoc(form.purpose) + '</p><table>' + rowHtml + '</table>' +
+   '<div class="page"><div class="brand"><div><h1>Roma\'s Donuts</h1><p>Management System</p><p>Every bite is a little piece of heaven.</p></div>' +
+   '<div class="doc-head"><h2>' + escDoc(form.title) + '</h2><div class="doc-no">' + escDoc(documentNo || '') + '</div>' + (status ? '<span class="status">' + escDoc(status) + '</span>' : '') + '</div></div>' +
+   '<p class="purpose">' + escDoc(form.purpose || '') + '</p><table>' + rowHtml + '</table>' +
    '<div class="notice">' + escDoc(reminder) + '</div>' +
-   '<div class="sig-wrap"><div class="sig">' + (form.key === 'FIN-CHARGE-SLIP' ? 'Charged Employee Signature / Date' : 'Employee Signature / Date') + '</div><div class="sig">Authorized Representative / Date</div></div>' +
-   '<div class="sig-wrap" style="margin-top:28px"><div class="sig">Prepared By</div><div class="sig">Approved By</div></div>' +
-   '<div class="footer">Generated from Roma\'s Donuts Company Documents &amp; Forms Center</div></div></body></html>'
+   '<div class="signatures">' + signatureHtml + '</div>' +
+   '<div class="footer">Generated from Roma\'s Donuts Company Documents &amp; Forms Center • ' + escDoc(new Date().toLocaleString('en-PH')) + '</div></div></body></html>'
 
-  const pw = window.open('', '_blank', 'width=900,height=700')
-  if (!pw) { showToast('Popup blocked. Please allow popups to print documents.', 'red'); return }
+  const pw = window.open('', '_blank', 'width=950,height=760')
+  if (!pw) {
+   showToast('Popup blocked. Please allow popups to print documents.', 'red')
+   return
+  }
   pw.document.write(html)
   pw.document.close()
   pw.focus()
+  if (autoPrint) setTimeout(() => pw.print(), 300)
  }
 
+ const printBatch1ADocumentForm = (forcedDocumentNo = '') => {
+  const form = getSelectedDocumentBatch1AForm()
+  if (!form || form.externalTab) {
+   showToast('Select a fillable form.', 'red')
+   return
+  }
+  if (form.employeeMode === 'required' && !documentFormDraft.employeeId && !window.confirm('No employee selected. Print a blank form?')) return
+
+  const emp = getDocumentFormEmployee()
+  const docNo = getDocumentReferenceNumber(form, forcedDocumentNo)
+  if (!documentFormDraft.documentNo) setDocumentFormDraft(prev => ({ ...prev, documentNo:docNo }))
+  const rows = buildPrintableDocumentRows(form, emp, { ...documentFormDraft, documentNo:docNo }, { documentNo:docNo, blankRequired:true, includeBlankOptional:false })
+  openDocumentPrintWindow({ form, rows, documentNo:docNo })
+ }
+
+ function printCompanyDocumentRecord(record) {
+  if (!record) {
+   showToast('No document record selected.', 'red')
+   return
+  }
+
+  const form = findBatch1DocumentForm(record.form_key) || {
+   key:record.form_key || 'GENERIC',
+   title:record.document_type || 'Company Document',
+   purpose:'Saved company document record.',
+   employeeMode:'optional',
+   fields:[
+    { key:'incidentDate', label:'Incident Date', type:'date' },
+    { key:'effectiveDate', label:'Effective Date', type:'date' },
+    { key:'subject', label:'Subject', type:'text' },
+    { key:'details', label:'Details', type:'textarea' },
+    { key:'items', label:'Items / Accountabilities', type:'textarea' },
+    { key:'amount', label:'Amount', type:'number', format:'currency' },
+    { key:'deductionPerCutoff', label:'Deduction Per Cutoff', type:'number', format:'currency' }
+   ],
+   signatureLabels:['Employee / Recipient','Authorized Representative','Prepared By','Approved By']
+  }
+
+  const values = getSavedDocumentValues(record)
+  const employeeInfo = {
+   full_name:record.employee_name || '',
+   employee_code:record.employee_code || '',
+   position:record.position || '',
+   department:record.department || ''
+  }
+  const status = getCompanyDocumentRecordStatusLabel(record.status)
+  const docNo = record.document_no || values.documentNo || 'RD-DOCUMENT'
+  const rows = buildPrintableDocumentRows(form, employeeInfo, values, {
+   documentNo:docNo,
+   status,
+   employeeName:record.employee_name,
+   employeeCode:record.employee_code,
+   position:record.position,
+   department:record.department,
+   blankRequired:false,
+   includeBlankOptional:false
+  })
+  openDocumentPrintWindow({ form, rows, documentNo:docNo, status, autoPrint:true })
+ }
+
+ const viewCompanyDocumentRecord = (record) => {
+  if (!record) return
+  const form = findBatch1DocumentForm(record.form_key) || {
+   key:record.form_key || 'GENERIC',
+   title:record.document_type || 'Company Document',
+   employeeMode:'optional',
+   fields:[
+    { key:'incidentDate', label:'Incident Date', type:'date' },
+    { key:'effectiveDate', label:'Effective Date', type:'date' },
+    { key:'subject', label:'Subject', type:'text' },
+    { key:'details', label:'Details', type:'textarea' },
+    { key:'items', label:'Items / Accountabilities', type:'textarea' },
+    { key:'amount', label:'Amount', type:'number', format:'currency' },
+    { key:'deductionPerCutoff', label:'Deduction Per Cutoff', type:'number', format:'currency' }
+   ]
+  }
+  const values = getSavedDocumentValues(record)
+  const employeeInfo = {
+   full_name:record.employee_name || '',
+   employee_code:record.employee_code || '',
+   position:record.position || '',
+   department:record.department || ''
+  }
+  const rows = buildPrintableDocumentRows(form, employeeInfo, values, {
+   documentNo:record.document_no || values.documentNo,
+   status:getCompanyDocumentRecordStatusLabel(record.status),
+   blankRequired:false,
+   includeBlankOptional:false
+  }).filter(([,value]) => String(value || '').trim())
+
+  window.alert(rows.map(([label,value]) => label + ': ' + value).join('\n\n'))
+ }
 
  const handleTabClick = (key) => {
       if(key==='payablesMain') {
@@ -25685,9 +28106,9 @@ function printCompanyDocumentRecord(record) {
  <div>
  <h2 style={h2s}> Company Documents & Forms Center</h2>
  <p style={{ color:'#888', fontSize:'13px', margin:'0 0 6px' }}>Central catalog for agreements, slips, NTE, contracts, production forms, food safety records, delivery documents, finance slips, compliance trackers, SOPs, and management checklists.</p>
- <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Batch 0 is the library foundation. Forms marked Existing Module already have partial or full app support. Forms marked Template Listed are ready to build in the next batches.</p>
+ <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Batch 1 is fully active. All essential HR, payroll, NTE, accountability, finance, policy, and acknowledgment documents can now be opened, completed, saved, printed, and archived.</p>
  </div>
- <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Documents Center Batch 0 is active. Choose the next batch to build real forms.')}>BATCH 0 ACTIVE</button>
+ <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Full Batch 1 is active: 30 fillable forms plus the Employment Contracts module.')}>FULL BATCH 1 ACTIVE</button>
  </div>
 
  {/* Documents Center Sub-Navigation */}
@@ -25707,80 +28128,70 @@ function printCompanyDocumentRecord(record) {
  <div id="document-batch1a-form-builder" style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px', scrollMarginTop:'18px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Batch 1A Printable Forms Builder</h3>
- <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Create, save, print, serve, close, and reprint supported HR, payroll, NTE, accountability, finance, and acknowledgment forms.</p>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Full Batch 1 Documents Builder</h3>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>All 31 Batch 1 documents are active: 30 fillable, savable, and printable forms plus the dedicated Employment Contracts module.</p>
  </div>
- <Badge label="Save + Print Active" color="green" />
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Form Type</label>
- <select value={documentFormDraft.formKey} onChange={e=>updateDocumentFormDraft('formKey', e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- {DOCUMENT_BATCH1A_FORMS.map(form => <option key={form.key} value={form.key}>{form.title}</option>)}
- </select>
- </div>
- <div>
- <label style={lblS}>{isChargeSlipDocumentForm ? 'Employee to Charge' : 'Employee'}</label>
- <EmployeeSelect value={documentFormDraft.employeeId} onChange={value=>updateDocumentFormDraft('employeeId', value)} employees={employees} />
- </div>
- <div>
- <label style={lblS}>Document Date</label>
- <input type="date" value={documentFormDraft.documentDate} onChange={e=>updateDocumentFormDraft('documentDate', e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+ <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+  <Badge label="31 / 31 ACTIVE" color="green" />
+  <Badge label={activeBatch1FillableForms.length + ' FILLABLE FORMS'} color="blue" />
  </div>
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>{isChargeSlipDocumentForm ? 'Charge Date' : 'Incident / Effective Date'}</label>
- <input type="date" value={documentFormDraft.incidentDate} onChange={e=>{ updateDocumentFormDraft('incidentDate', e.target.value); updateDocumentFormDraft('effectiveDate', e.target.value) }} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>{isChargeSlipDocumentForm ? 'Total Charge' : 'Amount'}</label>
- <input value={documentFormDraft.amount} onChange={e=>updateDocumentFormDraft('amount', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'Example: 1250.00' : 'Example: 2000'} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>{isChargeSlipDocumentForm ? 'Payment / Deduction Per Cutoff' : 'Deduction Per Cutoff'}</label>
- <input value={documentFormDraft.deductionPerCutoff} onChange={e=>updateDocumentFormDraft('deductionPerCutoff', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'Leave blank for full payment, or enter installment amount' : 'Example: 500'} style={{...inputStyle, marginBottom:0 }} />
- </div>
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'12px', padding:'11px 12px', marginBottom:'12px' }}>
+  <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'13px', fontWeight:'900' }}>{selectedBatch1DocumentForm.title}</p>
+  <p style={{ margin:'0 0 3px', color:'#555', fontSize:'11px', fontWeight:'800' }}>{selectedBatch1DocumentForm.category}</p>
+  <p style={{ margin:0, color:'#666', fontSize:'11px', lineHeight:1.45 }}>{selectedBatch1DocumentForm.purpose}</p>
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>{isChargeSlipDocumentForm ? 'Charge Type / Reason' : 'Subject / Reason / Payroll Period'}</label>
- <input value={documentFormDraft.subject} onChange={e=>updateDocumentFormDraft('subject', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'Example: Damaged equipment / Cash shortage / Wastage' : 'Example: Cash advance repayment / Late attendance / Payroll period'} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>{isChargeSlipDocumentForm ? 'Charged Item / Reference' : 'Items / Accountabilities'}</label>
- <input value={documentFormDraft.items} onChange={e=>updateDocumentFormDraft('items', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'Example: Broken mixer bowl / Incident Report RD-IR-...' : 'Example: 2 uniforms, apron, cap, ID, cash advance balance'} style={{...inputStyle, marginBottom:0 }} />
- </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.35fr 1fr 1fr', gap:'10px', marginBottom:'12px' }}>
+  <div>
+   <label style={lblS}>Form Type</label>
+   <select value={documentFormDraft.formKey} onChange={e=>selectDocumentFormType(e.target.value, { showToast:false, scroll:false })} style={{...inputStyle, marginBottom:0 }}>
+    {DOCUMENT_BATCH1A_FORMS.map(form => <option key={form.key} value={form.key}>{form.title}{form.externalTab ? ' — Open Dedicated Module' : ''}</option>)}
+   </select>
+  </div>
+  {selectedBatch1DocumentForm.employeeMode !== 'none' ? (
+   <div>
+    <label style={lblS}>{selectedBatch1DocumentForm.employeeLabel || 'Employee'}{selectedBatch1DocumentForm.employeeMode === 'required' ? ' *' : ' (Optional)'}</label>
+    <EmployeeSelect value={documentFormDraft.employeeId} onChange={value=>updateDocumentFormDraft('employeeId', value)} employees={employees} />
+   </div>
+  ) : (
+   <div style={{ background:'#f7f9fc', border:'1px solid #d9e2ec', borderRadius:'10px', padding:'10px 12px' }}>
+    <p style={{ margin:'0 0 3px', color:'#555', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Document Scope</p>
+    <p style={{ margin:0, color:'#1a1a2e', fontSize:'12px', fontWeight:'800' }}>Company / Payroll-Level Record</p>
+   </div>
+  )}
+  <div>
+   <label style={lblS}>Document Date *</label>
+   <input type="date" value={documentFormDraft.documentDate} onChange={e=>updateDocumentFormDraft('documentDate', e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+  </div>
  </div>
 
- <label style={lblS}>{isChargeSlipDocumentForm ? 'Charge Details / Payment Terms' : 'Details / Explanation / Terms'}</label>
- <textarea value={documentFormDraft.details} onChange={e=>updateDocumentFormDraft('details', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'State what happened, how the amount was computed, supporting reference, due date, and agreed payment terms.' : 'Write the important details here. This will appear in the printed form.'} style={{...inputStyle, minHeight:'90px', resize:'vertical' }} />
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,minmax(0,1fr))', gap:'10px', marginBottom:'12px' }}>
+  {(selectedBatch1DocumentForm.fields || []).map(renderDocumentFormField)}
+ </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Remarks</label>
- <input value={documentFormDraft.remarks} onChange={e=>updateDocumentFormDraft('remarks', e.target.value)} placeholder="Optional remarks" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Prepared By</label>
- <input value={documentFormDraft.preparedBy} onChange={e=>updateDocumentFormDraft('preparedBy', e.target.value)} placeholder={currentAdminLabel || 'Admin'} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Approved By</label>
- <input value={documentFormDraft.approvedBy} onChange={e=>updateDocumentFormDraft('approvedBy', e.target.value)} placeholder="Owner / Manager / HR / Payroll" style={{...inputStyle, marginBottom:0 }} />
- </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1fr', gap:'10px', marginBottom:'12px' }}>
+  <div>
+   <label style={lblS}>Remarks</label>
+   <textarea value={documentFormDraft.remarks} onChange={e=>updateDocumentFormDraft('remarks', e.target.value)} placeholder="Optional remarks not already covered above" style={{...inputStyle, minHeight:'74px', resize:'vertical', marginBottom:0}} />
+  </div>
+  <div>
+   <label style={lblS}>Prepared By</label>
+   <input value={documentFormDraft.preparedBy} onChange={e=>updateDocumentFormDraft('preparedBy', e.target.value)} placeholder={currentAdminLabel || 'Admin'} style={{...inputStyle, marginBottom:0 }} />
+  </div>
+  <div>
+   <label style={lblS}>Approved By</label>
+   <input value={documentFormDraft.approvedBy} onChange={e=>updateDocumentFormDraft('approvedBy', e.target.value)} placeholder="Owner / Manager / HR / Payroll" style={{...inputStyle, marginBottom:0 }} />
+  </div>
  </div>
 
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>SAVE AS DRAFT</button>
+  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>SAVE AS DRAFT</button>
   <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
-  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={printBatch1ADocumentForm}>PRINT ONLY</button>
- <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>setDocumentFormDraft(prev=>({ ...prev, subject:'', details:'', amount:'', deductionPerCutoff:'', items:'', remarks:'' }))}>CLEAR FIELDS</button>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Selected: <strong>{getSelectedDocumentBatch1AForm().title}</strong></p>
- {isChargeSlipDocumentForm && <p style={{ width:'100%', color:'#7a5b00', background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', fontSize:'11px', margin:'4px 0 0' }}>Use this slip for approved employee accountabilities such as loss, damage, shortage, wastage, or company-paid expenses. Enter the total charge and the agreed payment or payroll-deduction terms.</p>}
+  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>printBatch1ADocumentForm()}>PRINT ONLY</button>
+  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={clearCurrentDocumentForm}>CLEAR FORM</button>
+  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Required fields are marked with <strong>*</strong>. Saved records remain in the Document Records & NTE Archive tab.</p>
  </div>
  </div>
  </>
@@ -25897,15 +28308,7 @@ function printCompanyDocumentRecord(record) {
         <td style={{ padding:'10px' }}><Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} /></td>
         <td style={{ padding:'10px' }}>
          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-          <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>alert(
-           'Document No.: ' + (record.document_no || '') +
-           '\nType: ' + (record.document_type || '') +
-           '\nEmployee: ' + (record.employee_name || '') +
-           '\nSubject: ' + (record.subject || '') +
-           '\nItems: ' + (record.items || '') +
-           '\nDetails: ' + (record.details || '') +
-           '\nRemarks: ' + (record.remarks || '')
-          )}>VIEW</button>
+          <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>viewCompanyDocumentRecord(record)}>VIEW</button>
           <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
           {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
           {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
@@ -25925,13 +28328,15 @@ function printCompanyDocumentRecord(record) {
 
  {documentCenterView==='forms' && (()=>{
  const q = documentCenterSearch.trim().toLowerCase()
+ const getDocumentCatalogEffectiveStatus = doc => findBatch1DocumentForm(doc.code) ? 'Existing Module' : doc.status
  const filteredDocs = DOCUMENT_CENTER_CATALOG.filter(doc => {
-  const matchesSearch = !q || [doc.code, doc.name, doc.category, doc.batch, doc.priority, doc.status, doc.purpose].some(v => String(v || '').toLowerCase().includes(q))
+  const effectiveStatus = getDocumentCatalogEffectiveStatus(doc)
+  const matchesSearch = !q || [doc.code, doc.name, doc.category, doc.batch, doc.priority, effectiveStatus, doc.purpose].some(v => String(v || '').toLowerCase().includes(q))
   const matchesCategory = documentCenterCategory === 'all' || doc.category === documentCenterCategory
   const matchesBatch = documentCenterBatch === 'all' || doc.batch === documentCenterBatch
   return matchesSearch && matchesCategory && matchesBatch
  })
- const existingCount = DOCUMENT_CENTER_CATALOG.filter(d => d.status === 'Existing Module').length
+ const existingCount = DOCUMENT_CENTER_CATALOG.filter(d => getDocumentCatalogEffectiveStatus(d) === 'Existing Module').length
  const highPriorityCount = DOCUMENT_CENTER_CATALOG.filter(d => d.priority === 'High').length
  const batch1Count = DOCUMENT_CENTER_CATALOG.filter(d => d.batch === 'Batch 1').length
  const categoriesWithCount = DOCUMENT_CENTER_CATEGORIES.map(cat => ({ category:cat, count:DOCUMENT_CENTER_CATALOG.filter(d => d.category === cat).length }))
@@ -25994,9 +28399,11 @@ function printCompanyDocumentRecord(record) {
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'10px' }}>
  {filteredDocs.map(doc => {
- const statusColor = doc.status === 'Existing Module' ? 'green' : doc.priority === 'High' ? 'red' : 'gray'
- const canOpenContracts = doc.code === 'HR-EMP-CONTRACT'
- const canOpenBatch1AForm = DOCUMENT_BATCH1A_FORMS.some(form => form.key === doc.code)
+ const activeForm = findBatch1DocumentForm(doc.code)
+ const effectiveStatus = activeForm ? 'Existing Module' : doc.status
+ const statusColor = effectiveStatus === 'Existing Module' ? 'green' : doc.priority === 'High' ? 'red' : 'gray'
+ const canOpenContracts = activeForm?.externalTab === 'contracts'
+ const canOpenBatch1AForm = !!activeForm && !activeForm.externalTab
  return (
  <div key={doc.code} style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.04)' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px', flexWrap:'wrap', marginBottom:'8px' }}>
@@ -26008,7 +28415,7 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:'flex-end' }}>
  <Badge label={doc.batch} color="blue" />
  <Badge label={doc.priority} color={doc.priority === 'High'?'red':'gray'} />
- <Badge label={doc.status} color={statusColor} />
+ <Badge label={effectiveStatus} color={statusColor} />
  </div>
  </div>
  <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px' }}>{doc.purpose}</p>
@@ -26016,7 +28423,7 @@ function printCompanyDocumentRecord(record) {
  {canOpenContracts ? (
  <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>handleTabClick('contracts')}>OPEN CONTRACTS</button>
  ) : canOpenBatch1AForm ? (
- <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>openDocumentBatch1AForm(doc.code)}>{doc.code === 'FIN-CHARGE-SLIP' ? 'OPEN CHARGE SLIP' : 'OPEN FORM'}</button>
+ <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>openDocumentBatch1AForm(doc.code)}>OPEN FORM</button>
  ) : (
  <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px', opacity:0.8 }} onClick={()=>showToast(doc.name + ' is listed. We will activate this form in ' + doc.batch + '.')}>BUILD NEXT</button>
  )}
