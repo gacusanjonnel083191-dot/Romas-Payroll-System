@@ -22133,8 +22133,13 @@ async function computePayroll() {
  
 function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }) {
  const POS_INVENTORY_EDIT_ROLES = ['owner','manager','admin','pos_admin','hr']
- const canEditOutletInventory = POS_INVENTORY_EDIT_ROLES.includes(String(adminRole || '').trim().toLowerCase())
+ const POS_CREDENTIAL_MANAGER_ROLES = ['owner','manager','admin','pos_admin']
+ const normalizedPosAdminRole = String(adminRole || '').trim().toLowerCase()
+ const canEditOutletInventory = POS_INVENTORY_EDIT_ROLES.includes(normalizedPosAdminRole)
+ const canManagePosCredentials = POS_CREDENTIAL_MANAGER_ROLES.includes(normalizedPosAdminRole)
+ const canManagePosOwnerAccounts = isOwnerRole === true || normalizedPosAdminRole === 'owner'
  const posInventoryEditRoleLabel = 'Owner, Manager, Admin, SAGS POS Admin, or HR Admin'
+ const POS_OUTLET_ID = 'OUTLET-MALUED'
  const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
  const readSagsDraft = (key, fallback = '') => {
   try {
@@ -22213,6 +22218,239 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   ...readSagsDraftObject('newOutletItem', {})
  }))
  const [posError, setPosError] = useState('')
+ const [posEmployees, setPosEmployees] = useState([])
+ const [posEmployeesLoading, setPosEmployeesLoading] = useState(false)
+ const [posEmployeesError, setPosEmployeesError] = useState('')
+ const [posEmployeeSavingId, setPosEmployeeSavingId] = useState('')
+ const [posEmployeeDrafts, setPosEmployeeDrafts] = useState({})
+ const [showAddPosEmployee, setShowAddPosEmployee] = useState(false)
+ const [newPosEmployee, setNewPosEmployee] = useState({ full_name:'', role:'cashier', pin:'', confirm_pin:'' })
+
+ function normalizePosPin(value) {
+  return String(value || '').trim()
+ }
+
+ function isValidPosPin(value) {
+  return /^\d{4,8}$/.test(normalizePosPin(value))
+ }
+
+ function setPosEmployeeDraftValue(employeeId, field, value) {
+  setPosEmployeeDrafts(prev => ({
+   ...prev,
+   [employeeId]: {
+    ...(prev[employeeId] || {}),
+    [field]: value
+   }
+  }))
+ }
+
+ async function loadPosEmployees(options = {}) {
+  const silent = options?.silent === true
+  const resetPinDrafts = options?.resetPinDrafts === true
+  if (!silent) setPosEmployeesLoading(true)
+  setPosEmployeesError('')
+  try {
+   const { data, error } = await supabase
+    .from('pos_employees')
+    .select('id,outlet_id,full_name,role,is_active')
+    .eq('outlet_id', POS_OUTLET_ID)
+    .order('full_name', { ascending:true })
+   if (error) throw error
+   const rows = data || []
+   setPosEmployees(rows)
+   setPosEmployeeDrafts(prev => {
+    const next = {}
+    rows.forEach(employee => {
+     const existing = prev[employee.id] || {}
+     next[employee.id] = {
+      full_name: existing.full_name ?? employee.full_name ?? '',
+      role: existing.role ?? employee.role ?? 'cashier',
+      is_active: existing.is_active ?? (employee.is_active !== false),
+      new_pin: resetPinDrafts ? '' : (existing.new_pin || ''),
+      confirm_pin: resetPinDrafts ? '' : (existing.confirm_pin || '')
+     }
+    })
+    return next
+   })
+  } catch (err) {
+   console.error('POS employee load failed:', err)
+   setPosEmployeesError(err?.message || String(err))
+  } finally {
+   if (!silent) setPosEmployeesLoading(false)
+  }
+ }
+
+ async function findDuplicatePosPin(pin, excludeEmployeeId = '') {
+  let query = supabase
+   .from('pos_employees')
+   .select('id,full_name,role,is_active')
+   .eq('outlet_id', POS_OUTLET_ID)
+   .eq('pin', normalizePosPin(pin))
+   .limit(1)
+  if (excludeEmployeeId) query = query.neq('id', excludeEmployeeId)
+  const { data, error } = await query
+  if (error) throw error
+  return (data || [])[0] || null
+ }
+
+ async function createPosEmployeeAccount() {
+  if (!canManagePosCredentials) {
+   alert('Only the Owner, Manager, Admin, or SAGS POS Admin can create POS cashier accounts.')
+   return
+  }
+  const fullName = String(newPosEmployee.full_name || '').trim()
+  const pin = normalizePosPin(newPosEmployee.pin)
+  const confirmPin = normalizePosPin(newPosEmployee.confirm_pin)
+  const requestedRole = String(newPosEmployee.role || 'cashier').trim().toLowerCase()
+  const role = requestedRole === 'owner' ? 'owner' : 'cashier'
+  if (!fullName) {
+   alert('Please enter the cashier name.')
+   return
+  }
+  if (!isValidPosPin(pin)) {
+   alert('The POS PIN must contain 4 to 8 numbers.')
+   return
+  }
+  if (pin !== confirmPin) {
+   alert('The PIN confirmation does not match.')
+   return
+  }
+  if (role === 'owner' && !canManagePosOwnerAccounts) {
+   alert('Only the Owner can create another POS Owner account.')
+   return
+  }
+
+  setPosEmployeeSavingId('new')
+  try {
+   const duplicate = await findDuplicatePosPin(pin)
+   if (duplicate) {
+    alert(`That PIN is already assigned to ${duplicate.full_name || 'another POS user'}. Please use a different PIN.`)
+    return
+   }
+   const { data, error } = await supabase
+    .from('pos_employees')
+    .insert([{
+     outlet_id: POS_OUTLET_ID,
+     full_name: fullName,
+     role,
+     pin,
+     is_active:true
+    }])
+    .select('id,outlet_id,full_name,role,is_active')
+    .single()
+   if (error) throw error
+   if (logAudit) {
+    await logAudit(
+     'POS CASHIER ACCOUNT CREATED',
+     currentAdminLabel || 'Admin',
+     data?.full_name || fullName,
+     `Outlet: ${POS_OUTLET_ID} | Role: ${role} | Active: Yes`
+    )
+   }
+   setNewPosEmployee({ full_name:'', role:'cashier', pin:'', confirm_pin:'' })
+   setShowAddPosEmployee(false)
+   await loadPosEmployees({ silent:true, resetPinDrafts:true })
+   alert(`POS login account created for ${fullName}. Refresh the POS tablet before testing the new PIN.`)
+  } catch (err) {
+   console.error('POS employee creation failed:', err)
+   alert('POS account creation failed: ' + (err?.message || String(err)))
+  } finally {
+   setPosEmployeeSavingId('')
+  }
+ }
+
+ async function savePosEmployeeAccount(employee) {
+  if (!canManagePosCredentials) {
+   alert('Only the Owner, Manager, Admin, or SAGS POS Admin can manage POS cashier accounts.')
+   return
+  }
+  const employeeId = String(employee?.id || '')
+  if (!employeeId) return
+  const draft = posEmployeeDrafts[employeeId] || {}
+  const existingRole = String(employee.role || 'cashier').trim().toLowerCase()
+  if (existingRole === 'owner' && !canManagePosOwnerAccounts) {
+   alert('Only the Owner can modify a POS Owner account.')
+   return
+  }
+
+  const fullName = String(draft.full_name ?? employee.full_name ?? '').trim()
+  const requestedRole = String(draft.role ?? employee.role ?? 'cashier').trim().toLowerCase()
+  const role = requestedRole === 'owner' ? 'owner' : 'cashier'
+  const isActive = draft.is_active !== false
+  const newPin = normalizePosPin(draft.new_pin)
+  const confirmPin = normalizePosPin(draft.confirm_pin)
+
+  if (!fullName) {
+   alert('The cashier name cannot be blank.')
+   return
+  }
+  if (role === 'owner' && !canManagePosOwnerAccounts) {
+   alert('Only the Owner can assign the POS Owner role.')
+   return
+  }
+  if (newPin || confirmPin) {
+   if (!isValidPosPin(newPin)) {
+    alert('The new POS PIN must contain 4 to 8 numbers.')
+    return
+   }
+   if (newPin !== confirmPin) {
+    alert('The new PIN confirmation does not match.')
+    return
+   }
+  }
+
+  const isRemovingActiveOwner = existingRole === 'owner' && employee.is_active !== false && (role !== 'owner' || !isActive)
+  if (isRemovingActiveOwner) {
+   const otherActiveOwners = posEmployees.filter(row =>
+    String(row.id) !== employeeId &&
+    String(row.role || '').trim().toLowerCase() === 'owner' &&
+    row.is_active !== false
+   )
+   if (otherActiveOwners.length === 0) {
+    alert('This is the last active POS Owner account. Create or activate another POS Owner before changing this account.')
+    return
+   }
+  }
+
+  setPosEmployeeSavingId(employeeId)
+  try {
+   if (newPin) {
+    const duplicate = await findDuplicatePosPin(newPin, employeeId)
+    if (duplicate) {
+     alert(`That PIN is already assigned to ${duplicate.full_name || 'another POS user'}. Please use a different PIN.`)
+     return
+    }
+   }
+
+   const payload = { full_name:fullName, role, is_active:isActive }
+   if (newPin) payload.pin = newPin
+   const { data, error } = await supabase
+    .from('pos_employees')
+    .update(payload)
+    .eq('id', employeeId)
+    .eq('outlet_id', POS_OUTLET_ID)
+    .select('id,outlet_id,full_name,role,is_active')
+    .single()
+   if (error) throw error
+
+   if (logAudit) {
+    await logAudit(
+     newPin ? 'POS CASHIER PIN RESET' : 'POS CASHIER ACCOUNT UPDATED',
+     currentAdminLabel || 'Admin',
+     data?.full_name || fullName,
+     `Outlet: ${POS_OUTLET_ID} | Role: ${role} | Active: ${isActive ? 'Yes' : 'No'}${newPin ? ' | PIN reset completed' : ''}`
+    )
+   }
+
+   await loadPosEmployees({ silent:true, resetPinDrafts:true })
+   alert(`${fullName}'s POS account was updated.${newPin ? ' Refresh the POS tablet before testing the new PIN.' : ''}`)
+  } catch (err) {
+   console.error('POS employee update failed:', err)
+   alert('POS account update failed: ' + (err?.message || String(err)))
+  } finally {
+   setPosEmployeeSavingId('')
+  }
+ }
 
  function getInventoryDraftKey(product = {}) {
   return String(product.id || product.product_name || product.name || '')
@@ -23976,6 +24214,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  ])
 
  useEffect(() => { loadPosMonitor({ silent:true, auto:true, forceProducts:true }) }, [posDate])
+ useEffect(() => { loadPosEmployees() }, [])
 
  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
@@ -24192,11 +24431,155 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
      <input type="date" value={posDate} onChange={e=>setPosDate(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0}} />
-     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true, manual:true, forceProducts:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
+     <button
+      style={{...btnGreen, width:'auto', marginTop:0}}
+      onClick={async () => {
+       await Promise.all([
+        loadPosMonitor({ silent:true, manual:true, forceProducts:true }),
+        loadPosEmployees({ silent:true })
+       ])
+      }}
+      disabled={posLoading || posEmployeesLoading}
+     >
+      {(posLoading || posEmployeesLoading) ? 'Loading...' : 'Refresh'}
+     </button>
     </div>
    </div>
 
    {posError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'12px', padding:'12px', marginBottom:'14px', fontSize:'12px' }}>POS Monitor error: {posError}</div>}
+
+   <div style={{ background:'#ffffff', border:'1px solid #f1d35a', borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+     <div>
+      <h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'17px', fontWeight:'900' }}>Cashier Login Accounts</h3>
+      <p style={{ margin:0, color:'#4b5563', fontSize:'11.5px', fontWeight:'700' }}>Create cashiers, reset POS PINs, assign roles, and activate or deactivate outlet access. Existing PINs are never displayed.</p>
+     </div>
+     <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', alignItems:'center' }}>
+      <span style={{ background:'#fff9db', border:'1px solid #f1d35a', color:'#7c2d12', borderRadius:'999px', padding:'7px 10px', fontSize:'11px', fontWeight:'950' }}>
+       {posEmployees.filter(employee => employee.is_active !== false).length} active / {posEmployees.length} total
+      </span>
+      <button onClick={()=>loadPosEmployees()} disabled={posEmployeesLoading} style={{...btnGray, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>
+       {posEmployeesLoading ? 'Loading...' : 'Refresh Accounts'}
+      </button>
+      {canManagePosCredentials && (
+       <button onClick={()=>setShowAddPosEmployee(value=>!value)} style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>
+        {showAddPosEmployee ? 'Close' : '+ Add Cashier'}
+       </button>
+      )}
+     </div>
+    </div>
+
+    {posEmployeesError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'10px', padding:'10px', marginBottom:'10px', fontSize:'12px' }}>Cashier account error: {posEmployeesError}</div>}
+
+    {!canManagePosCredentials && (
+     <div style={{ background:'#fffbeb', border:'1px solid #fde68a', color:'#92400e', borderRadius:'10px', padding:'10px', marginBottom:'10px', fontSize:'12px', fontWeight:'750' }}>
+      Viewing only — Owner, Manager, Admin, or SAGS POS Admin access is required to change cashier credentials.
+     </div>
+    )}
+
+    {showAddPosEmployee && canManagePosCredentials && (
+     <div style={{ background:'#fffbe8', border:'1px solid #f4d35e', borderRadius:'12px', padding:'10px', marginBottom:'10px' }}>
+      <h4 style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'14px', fontWeight:'900' }}>Create POS Login Account</h4>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.5fr 0.8fr 0.8fr 0.8fr auto', gap:'8px', alignItems:'end' }}>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Cashier Name</label>
+        <input value={newPosEmployee.full_name} onChange={e=>setNewPosEmployee(prev=>({...prev, full_name:e.target.value}))} placeholder="Full name" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Role</label>
+        <select value={newPosEmployee.role} onChange={e=>setNewPosEmployee(prev=>({...prev, role:e.target.value}))} style={{...inputStyle, marginBottom:0}}>
+         <option value="cashier">Cashier</option>
+         {canManagePosOwnerAccounts && <option value="owner">POS Owner</option>}
+        </select>
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>New PIN</label>
+        <input type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={newPosEmployee.pin} onChange={e=>setNewPosEmployee(prev=>({...prev, pin:e.target.value}))} placeholder="4–8 digits" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Confirm PIN</label>
+        <input type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={newPosEmployee.confirm_pin} onChange={e=>setNewPosEmployee(prev=>({...prev, confirm_pin:e.target.value}))} placeholder="Repeat PIN" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <button onClick={createPosEmployeeAccount} disabled={posEmployeeSavingId === 'new'} style={{...btnGreen, width:'auto', marginTop:0, padding:'11px 14px', opacity:posEmployeeSavingId === 'new' ? 0.65 : 1}}>
+        {posEmployeeSavingId === 'new' ? 'Saving...' : 'Create Account'}
+       </button>
+      </div>
+     </div>
+    )}
+
+    {posEmployeesLoading && posEmployees.length === 0 ? (
+     <p style={{ color:'#6b7280', fontSize:'12px', margin:'6px 0' }}>Loading POS cashier accounts...</p>
+    ) : posEmployees.length === 0 ? (
+     <p style={{ color:'#888', fontSize:'12px', margin:'6px 0' }}>No POS cashier account was found for {POS_OUTLET_ID}.</p>
+    ) : (
+     <div style={{ overflowX:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'11.5px', minWidth:'900px' }}>
+       <thead>
+        <tr style={{ background:'#fff9db', color:'#7c2d12' }}>
+         <th style={{ textAlign:'left', padding:'8px' }}>Cashier Name</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>Role</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>Access</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>New PIN</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>Confirm PIN</th>
+         <th style={{ textAlign:'center', padding:'8px' }}>Action</th>
+        </tr>
+       </thead>
+       <tbody>
+        {posEmployees.map(employee => {
+         const draft = posEmployeeDrafts[employee.id] || {
+          full_name:employee.full_name || '',
+          role:employee.role || 'cashier',
+          is_active:employee.is_active !== false,
+          new_pin:'',
+          confirm_pin:''
+         }
+         const employeeRole = String(employee.role || 'cashier').trim().toLowerCase()
+         const rowOwnerProtected = employeeRole === 'owner' && !canManagePosOwnerAccounts
+         const rowEditable = canManagePosCredentials && !rowOwnerProtected
+         const saving = String(posEmployeeSavingId) === String(employee.id)
+         const draftRole = String(draft.role || 'cashier').trim().toLowerCase()
+         return (
+          <tr key={employee.id} style={{ background:employee.is_active === false ? '#f8fafc' : '#ffffff', opacity:employee.is_active === false ? 0.78 : 1 }}>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <input disabled={!rowEditable || saving} value={draft.full_name || ''} onChange={e=>setPosEmployeeDraftValue(employee.id, 'full_name', e.target.value)} style={{...inputStyle, marginBottom:0, padding:'7px 9px', fontWeight:'850'}} />
+            {rowOwnerProtected && <span style={{ display:'block', marginTop:'3px', color:'#92400e', fontSize:'9.5px', fontWeight:'850' }}>Owner-protected account</span>}
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <select disabled={!rowEditable || saving} value={draftRole} onChange={e=>setPosEmployeeDraftValue(employee.id, 'role', e.target.value)} style={{...inputStyle, marginBottom:0, padding:'7px 9px', fontWeight:'850'}}>
+             {!['cashier','owner'].includes(draftRole) && <option value={draftRole}>{draftRole || 'Other'}</option>}
+             <option value="cashier">Cashier</option>
+             {canManagePosOwnerAccounts && <option value="owner">POS Owner</option>}
+            </select>
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <select disabled={!rowEditable || saving} value={draft.is_active === false ? 'inactive' : 'active'} onChange={e=>setPosEmployeeDraftValue(employee.id, 'is_active', e.target.value === 'active')} style={{...inputStyle, marginBottom:0, padding:'7px 9px', fontWeight:'850', color:draft.is_active === false ? '#b91c1c' : '#166534'}}>
+             <option value="active">Active</option>
+             <option value="inactive">Inactive</option>
+            </select>
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <input disabled={!rowEditable || saving} type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={draft.new_pin || ''} onChange={e=>setPosEmployeeDraftValue(employee.id, 'new_pin', e.target.value)} placeholder="Leave blank to keep" style={{...inputStyle, marginBottom:0, padding:'7px 9px'}} />
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <input disabled={!rowEditable || saving} type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={draft.confirm_pin || ''} onChange={e=>setPosEmployeeDraftValue(employee.id, 'confirm_pin', e.target.value)} placeholder="Confirm new PIN" style={{...inputStyle, marginBottom:0, padding:'7px 9px'}} />
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'center' }}>
+            <button disabled={!rowEditable || saving} onClick={()=>savePosEmployeeAccount(employee)} style={{...btnGreen, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10.5px', opacity:(!rowEditable || saving) ? 0.55 : 1}}>
+             {saving ? 'Saving...' : ((draft.new_pin || draft.confirm_pin) ? 'Reset PIN & Save' : 'Save Changes')}
+            </button>
+           </td>
+          </tr>
+         )
+        })}
+       </tbody>
+      </table>
+     </div>
+    )}
+
+    <div style={{ marginTop:'9px', background:'#f0f9ff', border:'1px solid #bae6fd', color:'#075985', borderRadius:'10px', padding:'9px 10px', fontSize:'11px', fontWeight:'750' }}>
+     After creating or resetting a PIN, refresh or reopen the Roma's POS tablet while it is online. The tablet keeps a local employee cache for offline operation.
+    </div>
+   </div>
 
    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'8px', marginBottom:'10px' }}>
     {card('Total POS Sales', php(totalSales), posDate, '#ca1b1b')}
