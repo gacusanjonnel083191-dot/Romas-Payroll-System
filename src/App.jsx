@@ -22206,6 +22206,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [showDisabledOutletItems, setShowDisabledOutletItems] = useState(false)
  const [inventoryDrafts, setInventoryDrafts] = useState(() => readSagsDraftObject('inventoryDrafts', {}))
  const [inventorySavingId, setInventorySavingId] = useState('')
+ const [posResettingStock, setPosResettingStock] = useState(false)
  const [showAddOutletItem, setShowAddOutletItem] = useState(() => readSagsDraft('showAddOutletItem', false) === true)
  const [newOutletItem, setNewOutletItem] = useState(() => ({
   ...getDefaultNewOutletItem(),
@@ -22919,6 +22920,118 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   } catch (err) {
    console.error('Price update failed:', err)
    alert('Price update failed: ' + (err?.message || String(err)))
+  }
+ }
+
+
+ async function resetAllOutletStockToZero() {
+  if (!isOwnerRole) {
+   alert('Only the Owner can reset all SAGS POS stock to zero.')
+   return
+  }
+
+  if (posResettingStock) return
+
+  const resetTargets = (posProducts || []).filter(product =>
+   product?.id &&
+   !isOutletProductDeleted(product) &&
+   safeNum(product.stock, 0) !== 0
+  )
+
+  if (!resetTargets.length) {
+   alert('All SAGS POS product stocks are already zero.')
+   return
+  }
+
+  const totalUnits = resetTargets.reduce((sum, product) => sum + Math.max(0, safeNum(product.stock, 0)), 0)
+  const proceed = confirm(
+   `RESET ALL SAGS POS STOCK TO ZERO?\n\n` +
+   `Products affected: ${resetTargets.length}\n` +
+   `Current units to remove: ${totalUnits.toLocaleString('en-PH')}\n\n` +
+   `This will NOT delete products, prices, barcodes, sales, or transaction history. ` +
+   `It only clears the current POS stock so you can encode the actual physical count.\n\n` +
+   `This action cannot be undone automatically.`
+  )
+  if (!proceed) return
+
+  const confirmationText = prompt('For final confirmation, type exactly: RESET POS STOCK')
+  if (String(confirmationText || '').trim().toUpperCase() !== 'RESET POS STOCK') {
+   alert('Reset cancelled. The confirmation text did not match.')
+   return
+  }
+
+  setPosResettingStock(true)
+  const resetReference = `POS-STOCK-RESET-${Date.now()}`
+  const successfulRows = []
+  const failedRows = []
+
+  try {
+   for (const product of resetTargets) {
+    const oldStock = safeNum(product.stock, 0)
+    const result = await updatePosProductSafe(product.id, { stock:0 })
+    if (result.error) {
+     failedRows.push({ product, error:result.error })
+     continue
+    }
+    successfulRows.push({ product, oldStock })
+   }
+
+   if (successfulRows.length > 0) {
+    const movementRows = successfulRows
+     .filter(row => row.oldStock > 0)
+     .map((row, index) => ({
+      outlet_id:'OUTLET-MALUED',
+      product_id:row.product.id,
+      sku:row.product.sku || '',
+      barcode:row.product.barcode || '',
+      product_name:row.product.product_name || row.product.name || 'POS Item',
+      movement_type:'stock_out',
+      qty:-Math.abs(row.oldStock),
+      reference_no:`${resetReference}-${String(index + 1).padStart(3, '0')}`,
+      remarks:'Pre-operation SAGS POS stock reset to zero before encoding the actual physical count.'
+     }))
+
+    for (let i = 0; i < movementRows.length; i += 100) {
+     const batch = movementRows.slice(i, i + 100)
+     const { error: movementError } = await supabase
+      .from('pos_inventory_movements')
+      .insert(batch)
+     if (movementError) {
+      console.warn('POS stock reset movement log was not fully saved:', movementError)
+      break
+     }
+    }
+   }
+
+   if (logAudit && successfulRows.length > 0) {
+    const removedUnits = successfulRows.reduce((sum, row) => sum + Math.max(0, row.oldStock), 0)
+    await logAudit(
+     'ALL SAGS POS STOCK RESET',
+     currentAdminLabel || 'Owner',
+     'SAGS POS',
+     `${successfulRows.length} product(s) reset to 0; ${removedUnits.toLocaleString('en-PH')} test unit(s) cleared before physical counting. Reference: ${resetReference}`
+    )
+   }
+
+   setInventoryDrafts({})
+   await loadPosMonitor({ silent:false, forceProducts:true })
+
+   if (failedRows.length > 0) {
+    const failedNames = failedRows.slice(0, 5).map(row => row.product.product_name || row.product.name || row.product.id).join(', ')
+    alert(
+     `Stock reset completed for ${successfulRows.length} product(s), but ${failedRows.length} product(s) failed.\n\n` +
+     `Failed: ${failedNames}${failedRows.length > 5 ? '...' : ''}\n\n` +
+     `Please refresh and retry the failed rows.`
+    )
+   } else {
+    alert(`Done. All ${successfulRows.length} SAGS POS product stock balances are now zero. You can now enter the actual physical counts.`)
+   }
+  } catch (err) {
+   console.error('Reset all SAGS POS stock failed:', err)
+   alert('Reset failed: ' + (err?.message || String(err)))
+   await loadPosMonitor({ silent:false, forceProducts:true })
+  } finally {
+   setPosResettingStock(false)
   }
  }
 
@@ -24080,6 +24193,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         style={{...btnGray, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px', fontWeight:'900'}}
        >
         Clear Search
+       </button>
+      )}
+      {isOwnerRole && (
+       <button
+        onClick={resetAllOutletStockToZero}
+        disabled={posResettingStock}
+        title="Owner-only pre-operation reset. Clears current SAGS POS stock without deleting products or sales history."
+        style={{...btnRed, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px', opacity:posResettingStock ? 0.65 : 1, cursor:posResettingStock ? 'not-allowed' : 'pointer'}}
+       >
+        {posResettingStock ? 'Resetting Stock...' : 'Reset All Stock to 0'}
        </button>
       )}
       {canEditOutletInventory && (
