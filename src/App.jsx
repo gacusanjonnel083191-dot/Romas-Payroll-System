@@ -2097,6 +2097,10 @@ export default function App() {
  const [documentCenterSearch, setDocumentCenterSearch] = useState('')
  const [documentCenterCategory, setDocumentCenterCategory] = useState('all')
  const [documentCenterBatch, setDocumentCenterBatch] = useState('all')
+ const [documentCenterView, setDocumentCenterView] = useState('forms')
+ const [documentRecordSearch, setDocumentRecordSearch] = useState('')
+ const [documentRecordStatusFilter, setDocumentRecordStatusFilter] = useState('all')
+ const [documentRecordTypeFilter, setDocumentRecordTypeFilter] = useState('all')
  const [documentFormDraft, setDocumentFormDraft] = useState({
   formKey:'DISC-NTE',
   employeeId:'',
@@ -25686,6 +25690,20 @@ function printCompanyDocumentRecord(record) {
  <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Documents Center Batch 0 is active. Choose the next batch to build real forms.')}>BATCH 0 ACTIVE</button>
  </div>
 
+ {/* Documents Center Sub-Navigation */}
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'16px', background:'white', padding:'10px', borderRadius:'14px', border:'1px solid #eee', boxShadow:'0 1px 6px rgba(0,0,0,0.05)' }}>
+  <button
+   onClick={()=>setDocumentCenterView('forms')}
+   style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='forms'?'#ca1b1b':'#f4f4f4', color:documentCenterView==='forms'?'white':'#555', boxShadow:documentCenterView==='forms'?'0 2px 8px rgba(202,27,27,0.25)':'none' }}
+  >FORMS & TEMPLATES</button>
+  <button
+   onClick={()=>{ setDocumentCenterView('records'); loadCompanyDocumentRecords() }}
+   style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='records'?'#1a1a2e':'#f4f4f4', color:documentCenterView==='records'?'white':'#555', boxShadow:documentCenterView==='records'?'0 2px 8px rgba(26,26,46,0.22)':'none', display:'inline-flex', alignItems:'center', gap:'8px' }}
+  >DOCUMENT RECORDS & NTE ARCHIVE <span style={{ background:documentCenterView==='records'?'#FDD412':'#ddd', color:'#1a1a2e', borderRadius:'999px', minWidth:'24px', height:'20px', padding:'0 7px', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:'10px' }}>{companyDocumentRecords.length}</span></button>
+ </div>
+
+ {documentCenterView==='forms' && (
+ <>
  <div id="document-batch1a-form-builder" style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px', scrollMarginTop:'18px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
@@ -25765,49 +25783,119 @@ function printCompanyDocumentRecord(record) {
  {isChargeSlipDocumentForm && <p style={{ width:'100%', color:'#7a5b00', background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', fontSize:'11px', margin:'4px 0 0' }}>Use this slip for approved employee accountabilities such as loss, damage, shortage, wastage, or company-paid expenses. Enter the total charge and the agreed payment or payroll-deduction terms.</p>}
  </div>
  </div>
+ </>
+ )}
 
-
+ {documentCenterView==='records' && (() => {
+  const recordQuery = documentRecordSearch.trim().toLowerCase()
+  const documentRecordTypes = Array.from(new Set(companyDocumentRecords.map(record => String(record.document_type || '').trim()).filter(Boolean))).sort((a,b)=>a.localeCompare(b))
+  const filteredDocumentRecords = companyDocumentRecords.filter(record => {
+   const status = String(record.status || 'draft').toLowerCase()
+   const matchesSearch = !recordQuery || [record.document_no, record.document_type, record.employee_name, record.employee_code, record.document_date, record.subject, record.items, record.details, record.remarks]
+    .some(value => String(value || '').toLowerCase().includes(recordQuery))
+   const matchesStatus = documentRecordStatusFilter === 'all' || status === documentRecordStatusFilter || (documentRecordStatusFilter === 'served' && status === 'issued') || (documentRecordStatusFilter === 'closed' && status === 'completed')
+   const matchesType = documentRecordTypeFilter === 'all' || String(record.document_type || '') === documentRecordTypeFilter
+   return matchesSearch && matchesStatus && matchesType
+  })
+  const recordStatusCount = statusKey => companyDocumentRecords.filter(record => {
+   const status = String(record.status || 'draft').toLowerCase()
+   if (statusKey === 'all') return true
+   if (statusKey === 'served') return status === 'served' || status === 'issued'
+   if (statusKey === 'closed') return status === 'closed' || status === 'completed'
+   return status === statusKey
+  }).length
+  return (
  <div style={{ background:'white', border:'1px solid #e5e5e5', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
    <div>
-    <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'15px' }}>Document Records</h3>
-    <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Saved NTE, incident reports, charge slips, inventory withdrawal slips, agreements, clearance forms, and other company documents.</p>
+    <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'16px' }}>Document Records & NTE Archive</h3>
+    <p style={{ color:'#666', fontSize:'12px', margin:0 }}>All saved NTEs, charge slips, incident reports, accountability forms, agreements, and company documents are stored here instead of being scattered across the main screen.</p>
    </div>
-   <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={loadCompanyDocumentRecords}>REFRESH RECORDS</button>
+   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+    <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setDocumentRecordSearch(''); setDocumentRecordStatusFilter('all'); setDocumentRecordTypeFilter('all') }}>CLEAR FILTERS</button>
+    <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={loadCompanyDocumentRecords}>REFRESH RECORDS</button>
+   </div>
   </div>
 
-  {companyDocumentRecordsLoading && <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Loading document records...</p>}
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)', gap:'8px', marginBottom:'12px' }}>
+   {[
+    ['all','All Records','#1a1a2e'],
+    ['draft','Draft','#f5a623'],
+    ['served','Served / Issued','#4a90d9'],
+    ['closed','Closed','#2d8a4e'],
+    ['voided','Voided','#ca1b1b']
+   ].map(([key,label,color]) => (
+    <button key={key} onClick={()=>setDocumentRecordStatusFilter(key)} style={{ background:documentRecordStatusFilter===key?color:'white', color:documentRecordStatusFilter===key?'white':'#444', border:`1px solid ${documentRecordStatusFilter===key?color:'#e5e5e5'}`, borderRadius:'12px', padding:'10px', cursor:'pointer', textAlign:'left' }}>
+     <p style={{ margin:'0 0 3px', fontSize:'10px', fontWeight:'900', textTransform:'uppercase', opacity:0.82 }}>{label}</p>
+     <p style={{ margin:0, fontSize:'20px', fontWeight:'900' }}>{recordStatusCount(key)}</p>
+    </button>
+   ))}
+  </div>
+
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr', gap:'10px', padding:'12px', background:'#f7f9fc', border:'1px solid #e6ebf1', borderRadius:'12px', marginBottom:'12px' }}>
+   <div>
+    <label style={lblS}>Search records</label>
+    <input value={documentRecordSearch} onChange={e=>setDocumentRecordSearch(e.target.value)} placeholder="Search document no., employee, NTE, charge slip, subject, item..." style={{...inputStyle, marginBottom:0 }} />
+   </div>
+   <div>
+    <label style={lblS}>Document type</label>
+    <select value={documentRecordTypeFilter} onChange={e=>setDocumentRecordTypeFilter(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+     <option value="all">All document types</option>
+     {documentRecordTypes.map(type => <option key={type} value={type}>{type}</option>)}
+    </select>
+   </div>
+   <div>
+    <label style={lblS}>Status</label>
+    <select value={documentRecordStatusFilter} onChange={e=>setDocumentRecordStatusFilter(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+     <option value="all">All statuses</option>
+     <option value="draft">Draft</option>
+     <option value="served">Served / Issued</option>
+     <option value="closed">Closed / Completed</option>
+     <option value="voided">Voided</option>
+    </select>
+   </div>
+  </div>
+
+  {companyDocumentRecordsLoading && <div style={{ background:'#f7f9fc', border:'1px solid #e6ebf1', borderRadius:'12px', padding:'16px', color:'#666', fontSize:'12px' }}>Loading document records...</div>}
 
   {!companyDocumentRecordsLoading && companyDocumentRecords.length === 0 && (
-   <div style={{ background:'#fafafa', border:'1px dashed #ccc', borderRadius:'12px', padding:'14px', color:'#888', fontSize:'12px' }}>
-    No saved document records yet. Create a form above, then click SAVE AS DRAFT or SAVE & PRINT.
+   <div style={{ background:'#fafafa', border:'1px dashed #ccc', borderRadius:'12px', padding:'20px', textAlign:'center', color:'#888', fontSize:'12px' }}>
+    <p style={{ margin:'0 0 5px', color:'#333', fontWeight:'900' }}>No saved document records yet.</p>
+    <p style={{ margin:'0 0 10px' }}>Create a form in Forms & Templates, then click SAVE AS DRAFT or SAVE & PRINT.</p>
+    <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>setDocumentCenterView('forms')}>OPEN FORMS & TEMPLATES</button>
    </div>
   )}
 
-  {!companyDocumentRecordsLoading && companyDocumentRecords.length > 0 && (
+  {!companyDocumentRecordsLoading && companyDocumentRecords.length > 0 && filteredDocumentRecords.length === 0 && (
+   <div style={{ background:'#fafafa', border:'1px dashed #ccc', borderRadius:'12px', padding:'18px', textAlign:'center', color:'#888', fontSize:'12px' }}>
+    No records match the current search and filters.
+   </div>
+  )}
+
+  {!companyDocumentRecordsLoading && filteredDocumentRecords.length > 0 && (
    <div style={{ overflowX:'auto', border:'1px solid #eee', borderRadius:'12px' }}>
-    <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'980px', fontSize:'12px' }}>
+    <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1050px', fontSize:'12px' }}>
      <thead>
       <tr style={{ background:'#f7f9fc', color:'#555' }}>
-       <th style={{ padding:'9px', textAlign:'left' }}>Document No.</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Type</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Employee</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Date</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Subject / Items</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Status</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Actions</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Document No.</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Type</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Employee</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Date</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Subject / Items</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Status</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Actions</th>
       </tr>
      </thead>
      <tbody>
-      {companyDocumentRecords.map(record => (
-       <tr key={record.id} style={{ borderTop:'1px solid #eee' }}>
-        <td style={{ padding:'9px', fontWeight:'bold', color:'#333' }}>{record.document_no}</td>
-        <td style={{ padding:'9px' }}>{record.document_type}</td>
-        <td style={{ padding:'9px' }}>{record.employee_name || '—'}<br/><span style={{ color:'#888', fontSize:'10px' }}>{record.employee_code || ''}</span></td>
-        <td style={{ padding:'9px' }}>{formatDateForDisplay(record.document_date)}</td>
-        <td style={{ padding:'9px' }}>{record.subject || record.items || '—'}</td>
-        <td style={{ padding:'9px' }}><Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} /></td>
-        <td style={{ padding:'9px' }}>
+      {filteredDocumentRecords.map(record => (
+       <tr key={record.id} style={{ borderTop:'1px solid #eee', background:String(record.status || '').toLowerCase()==='voided'?'#fff8f8':'white' }}>
+        <td style={{ padding:'10px', fontWeight:'bold', color:'#333' }}>{record.document_no}</td>
+        <td style={{ padding:'10px' }}>{record.document_type}</td>
+        <td style={{ padding:'10px' }}>{record.employee_name || '—'}<br/><span style={{ color:'#888', fontSize:'10px' }}>{record.employee_code || ''}</span></td>
+        <td style={{ padding:'10px' }}>{formatDateForDisplay(record.document_date)}</td>
+        <td style={{ padding:'10px', maxWidth:'360px' }}>{record.subject || record.items || '—'}</td>
+        <td style={{ padding:'10px' }}><Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} /></td>
+        <td style={{ padding:'10px' }}>
          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
           <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>alert(
            'Document No.: ' + (record.document_no || '') +
@@ -25818,7 +25906,7 @@ function printCompanyDocumentRecord(record) {
            '\nDetails: ' + (record.details || '') +
            '\nRemarks: ' + (record.remarks || '')
           )}>VIEW</button>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
+          <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
           {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
           {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
           {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
@@ -25831,8 +25919,11 @@ function printCompanyDocumentRecord(record) {
    </div>
   )}
  </div>
+  )
+ })()}
 
- {(()=>{
+
+ {documentCenterView==='forms' && (()=>{
  const q = documentCenterSearch.trim().toLowerCase()
  const filteredDocs = DOCUMENT_CENTER_CATALOG.filter(doc => {
   const matchesSearch = !q || [doc.code, doc.name, doc.category, doc.batch, doc.priority, doc.status, doc.purpose].some(v => String(v || '').toLowerCase().includes(q))
