@@ -22642,6 +22642,128 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   printWindow.focus()
  }
 
+
+ function printAllOutletInventoryItems(productsToPrint = []) {
+  const rows = (productsToPrint || [])
+   .filter(row => row && !row.disabled && !isOutletProductDeleted(row))
+
+  if (!rows.length) {
+   alert('No active SAGS POS items are available to print.')
+   return
+  }
+
+  const escapeHtml = value => String(value ?? '')
+   .replace(/&/g, '&amp;')
+   .replace(/</g, '&lt;')
+   .replace(/>/g, '&gt;')
+   .replace(/"/g, '&quot;')
+   .replace(/'/g, '&#039;')
+
+  // Short coupon bond / Letter landscape. Up to 100 items use one sheet;
+  // more than 100 items are divided evenly between exactly two sheets.
+  const pageCount = rows.length <= 100 ? 1 : 2
+  const itemsPerPage = Math.ceil(rows.length / pageCount)
+  const pageGroups = Array.from({ length:pageCount }, (_, pageIndex) =>
+   rows.slice(pageIndex * itemsPerPage, (pageIndex + 1) * itemsPerPage)
+  )
+  const printedAt = new Date().toLocaleString('en-PH', { dateStyle:'medium', timeStyle:'short' })
+
+  const pagesHtml = pageGroups.map((pageRows, pageIndex) => {
+   const columnCount = 4
+   const rowsPerColumn = Math.max(1, Math.ceil(pageRows.length / columnCount))
+   const rowHeightMm = Math.max(4.2, Math.min(7.05, 177 / rowsPerColumn))
+   const nameFontPt = rowsPerColumn > 34 ? 5.4 : rowsPerColumn > 28 ? 6.0 : 6.8
+   const metaFontPt = rowsPerColumn > 34 ? 4.3 : rowsPerColumn > 28 ? 4.7 : 5.2
+   const columnsHtml = Array.from({ length:columnCount }, (_, columnIndex) => {
+    const columnRows = pageRows.slice(columnIndex * rowsPerColumn, (columnIndex + 1) * rowsPerColumn)
+    const itemsHtml = columnRows.map((row, localIndex) => {
+     const itemNumber = pageIndex * itemsPerPage + columnIndex * rowsPerColumn + localIndex + 1
+     const name = row.product_name || row.name || 'Unnamed Product'
+     const category = row.category || 'Uncategorized'
+     const code = row.barcode || row.sku || '-'
+     const sku = row.sku && row.sku !== code ? row.sku : ''
+     const price = safeNum(row.sellingPrice ?? row.selling_price ?? row.price, 0)
+     const stock = safeNum(row.remainingStock ?? row.stock, 0)
+     return `<div class="inventory-item" style="--item-height:${rowHeightMm.toFixed(2)}mm;--name-font:${nameFontPt}pt;--meta-font:${metaFontPt}pt">
+      <div class="item-name"><span class="item-number">${itemNumber}.</span> ${escapeHtml(name)}</div>
+      <div class="item-meta">
+       <span>${escapeHtml(category)}</span>
+       <span>${escapeHtml(code)}${sku ? ` / ${escapeHtml(sku)}` : ''}</span>
+      </div>
+      <div class="item-counts">
+       <span>Price: ₱${price.toLocaleString('en-PH', { minimumFractionDigits:0, maximumFractionDigits:2 })}</span>
+       <span>System: <strong>${stock}</strong></span>
+       <span>Actual: <b class="actual-line"></b></span>
+      </div>
+     </div>`
+    }).join('')
+    return `<div class="inventory-column">${itemsHtml}</div>`
+   }).join('')
+
+   return `<section class="print-page">
+    <header class="page-header">
+     <div>
+      <div class="company">ROMA'S DONUTS</div>
+      <div class="title">SAGS POS — COMPLETE ITEM & PHYSICAL COUNT SHEET</div>
+     </div>
+     <div class="header-meta">
+      <div>${rows.length} active items</div>
+      <div>Printed: ${escapeHtml(printedAt)}</div>
+      <div>Page ${pageIndex + 1} of ${pageCount}</div>
+     </div>
+    </header>
+    <div class="instructions">Write the verified physical quantity under <strong>Actual</strong>. This compact format is designed to fit the complete SAGS POS item master in no more than two short coupon-bond sheets.</div>
+    <div class="inventory-columns">${columnsHtml}</div>
+    <footer class="page-footer">
+     <span>Counted by: ______________________________</span>
+     <span>Verified by: ______________________________</span>
+     <span>Date/Time: ______________________________</span>
+    </footer>
+   </section>`
+  }).join('')
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Roma's Donuts SAGS POS Complete Item List</title><style>
+   @page{size:Letter landscape;margin:5mm}
+   *{box-sizing:border-box}
+   html,body{margin:0;padding:0;background:#fff;color:#111827;font-family:Arial,Helvetica,sans-serif}
+   .print-toolbar{position:sticky;top:0;z-index:10;padding:9px;text-align:center;background:#fff7d6;border-bottom:1px solid #f4d35e}
+   .print-toolbar button{padding:9px 18px;border:0;border-radius:9px;background:#ca1b1b;color:#fff;font-weight:900;cursor:pointer}
+   .print-page{height:203mm;overflow:hidden;page-break-after:always;padding:0;display:flex;flex-direction:column}
+   .print-page:last-child{page-break-after:auto}
+   .page-header{height:11mm;display:flex;align-items:center;justify-content:space-between;border-bottom:1.2px solid #ca1b1b;padding:0 1mm}
+   .company{font-size:10pt;font-weight:900;color:#ca1b1b;letter-spacing:.2px}
+   .title{font-size:7.8pt;font-weight:900;color:#1a1a2e;margin-top:.7mm}
+   .header-meta{text-align:right;font-size:6.2pt;line-height:1.35;font-weight:700;color:#374151}
+   .instructions{height:5mm;padding:1.1mm 1mm .8mm;font-size:5.8pt;line-height:1.25;color:#374151;border-bottom:1px solid #e5e7eb}
+   .inventory-columns{height:181mm;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1.7mm;padding:1mm 0}
+   .inventory-column{border:1px solid #d8c35a;border-radius:1.5mm;overflow:hidden;align-self:start}
+   .inventory-item{height:var(--item-height);min-height:var(--item-height);padding:.35mm .8mm;border-bottom:.25mm solid #eee3ad;overflow:hidden;background:#fff}
+   .inventory-item:nth-child(even){background:#fffdf4}
+   .inventory-item:last-child{border-bottom:0}
+   .item-name{font-size:var(--name-font);font-weight:900;line-height:.96;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827}
+   .item-number{color:#ca1b1b;display:inline-block;min-width:5mm}
+   .item-meta{display:flex;justify-content:space-between;gap:1mm;font-size:var(--meta-font);font-weight:700;color:#6b7280;line-height:.96;margin-top:.18mm;white-space:nowrap;overflow:hidden}
+   .item-meta span{overflow:hidden;text-overflow:ellipsis}
+   .item-counts{display:flex;justify-content:space-between;gap:.7mm;align-items:flex-end;font-size:var(--meta-font);font-weight:800;color:#1f2937;line-height:.96;margin-top:.22mm;white-space:nowrap}
+   .actual-line{display:inline-block;width:10mm;border-bottom:.3mm solid #111827;height:2.2mm;vertical-align:bottom}
+   .page-footer{height:6mm;border-top:1px solid #d1d5db;display:flex;align-items:center;justify-content:space-between;gap:3mm;padding:0 1mm;font-size:5.8pt;font-weight:700;color:#374151}
+   @media print{.print-toolbar{display:none}.print-page{break-after:page}.print-page:last-child{break-after:auto}}
+  </style></head><body>
+   <div class="print-toolbar"><button onclick="window.print()">Print Complete Item List</button></div>
+   ${pagesHtml}
+  </body></html>`
+
+  const printWindow = window.open('', '_blank')
+  if (!printWindow) {
+   downloadTextAsFile(html, 'romas-sags-pos-complete-item-list.html', 'text/html;charset=utf-8')
+   alert('The browser blocked the print window, so an HTML print file was downloaded instead.')
+   return
+  }
+  printWindow.document.write(html)
+  printWindow.document.close()
+  printWindow.focus()
+ }
+
  async function generateBarcodeForProduct(product, options = {}) {
   if (!canEditOutletInventory) {
    alert(`Only ${posInventoryEditRoleLabel} can generate POS barcodes.`)
@@ -22962,46 +23084,56 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   setPosResettingStock(true)
   const resetReference = `POS-STOCK-RESET-${Date.now()}`
-  const successfulRows = []
-  const failedRows = []
 
   try {
-   for (const product of resetTargets) {
-    const oldStock = safeNum(product.stock, 0)
-    const result = await updatePosProductSafe(product.id, { stock:0 })
-    if (result.error) {
-     failedRows.push({ product, error:result.error })
-     continue
-    }
-    successfulRows.push({ product, oldStock })
+   // Use verified batch updates. Supabase can sometimes return no error even when
+   // Row Level Security prevents rows from being changed, so we must request the
+   // updated rows and then read them back before reporting success.
+   const targetIds = resetTargets.map(product => product.id)
+   const updatedIdSet = new Set()
+
+   for (let i = 0; i < targetIds.length; i += 100) {
+    const batchIds = targetIds.slice(i, i + 100)
+    const { data:updatedRows, error:updateError } = await supabase
+     .from('pos_products')
+     .update({ stock:0 })
+     .in('id', batchIds)
+     .select('id, stock')
+
+    if (updateError) throw updateError
+    ;(updatedRows || []).forEach(row => {
+     if (safeNum(row.stock, 0) === 0) updatedIdSet.add(String(row.id))
+    })
    }
 
-   if (successfulRows.length > 0) {
-    const movementRows = successfulRows
-     .filter(row => row.oldStock > 0)
-     .map((row, index) => ({
-      outlet_id:'OUTLET-MALUED',
-      product_id:row.product.id,
-      sku:row.product.sku || '',
-      barcode:row.product.barcode || '',
-      product_name:row.product.product_name || row.product.name || 'POS Item',
-      movement_type:'stock_out',
-      qty:-Math.abs(row.oldStock),
-      reference_no:`${resetReference}-${String(index + 1).padStart(3, '0')}`,
-      remarks:'Pre-operation SAGS POS stock reset to zero before encoding the actual physical count.'
-     }))
+   const verifiedRows = []
+   for (let i = 0; i < targetIds.length; i += 100) {
+    const batchIds = targetIds.slice(i, i + 100)
+    const { data:rows, error:verifyError } = await supabase
+     .from('pos_products')
+     .select('id, stock')
+     .in('id', batchIds)
 
-    for (let i = 0; i < movementRows.length; i += 100) {
-     const batch = movementRows.slice(i, i + 100)
-     const { error: movementError } = await supabase
-      .from('pos_inventory_movements')
-      .insert(batch)
-     if (movementError) {
-      console.warn('POS stock reset movement log was not fully saved:', movementError)
-      break
-     }
-    }
+    if (verifyError) throw verifyError
+    verifiedRows.push(...(rows || []))
    }
+
+   const verifiedZeroIds = new Set(
+    verifiedRows
+     .filter(row => safeNum(row.stock, 0) === 0)
+     .map(row => String(row.id))
+   )
+
+   const successfulRows = resetTargets
+    .filter(product => verifiedZeroIds.has(String(product.id)))
+    .map(product => ({ product, oldStock:safeNum(product.stock, 0) }))
+
+   const failedRows = resetTargets.filter(product => !verifiedZeroIds.has(String(product.id)))
+
+   // Do not create stock_out movement rows for this reset. The previous 50-unit
+   // balances were temporary test/opening values, so clearing them is a baseline
+   // correction rather than an operational stock-out. The owner audit log below
+   // is the correct permanent record of the reset.
 
    if (logAudit && successfulRows.length > 0) {
     const removedUnits = successfulRows.reduce((sum, row) => sum + Math.max(0, row.oldStock), 0)
@@ -23009,7 +23141,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      'ALL SAGS POS STOCK RESET',
      currentAdminLabel || 'Owner',
      'SAGS POS',
-     `${successfulRows.length} product(s) reset to 0; ${removedUnits.toLocaleString('en-PH')} test unit(s) cleared before physical counting. Reference: ${resetReference}`
+     `${successfulRows.length} product(s) verified at 0; ${removedUnits.toLocaleString('en-PH')} test unit(s) cleared before physical counting. Reference: ${resetReference}`
     )
    }
 
@@ -23017,18 +23149,22 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    await loadPosMonitor({ silent:false, forceProducts:true })
 
    if (failedRows.length > 0) {
-    const failedNames = failedRows.slice(0, 5).map(row => row.product.product_name || row.product.name || row.product.id).join(', ')
+    const failedNames = failedRows.slice(0, 5).map(product => product.product_name || product.name || product.id).join(', ')
     alert(
-     `Stock reset completed for ${successfulRows.length} product(s), but ${failedRows.length} product(s) failed.\n\n` +
-     `Failed: ${failedNames}${failedRows.length > 5 ? '...' : ''}\n\n` +
-     `Please refresh and retry the failed rows.`
+     `The app could not verify the reset for ${failedRows.length} product(s).\n\n` +
+     `Still not zero: ${failedNames}${failedRows.length > 5 ? '...' : ''}\n\n` +
+     `This usually means Supabase Row Level Security blocked the browser update. ` +
+     `Run the supplied SQL in Supabase SQL Editor to complete the one-time reset.`
     )
    } else {
-    alert(`Done. All ${successfulRows.length} SAGS POS product stock balances are now zero. You can now enter the actual physical counts.`)
+    alert(`Done. All ${successfulRows.length} SAGS POS product stock balances were verified at zero. This baseline reset is excluded from Movement Today. You can now enter the actual physical counts.`)
    }
   } catch (err) {
    console.error('Reset all SAGS POS stock failed:', err)
-   alert('Reset failed: ' + (err?.message || String(err)))
+   alert(
+    'Reset failed: ' + (err?.message || String(err)) +
+    '\n\nRun the supplied one-time SQL in Supabase SQL Editor to reset the stored POS balances directly.'
+   )
    await loadPosMonitor({ silent:false, forceProducts:true })
   } finally {
    setPosResettingStock(false)
@@ -23823,8 +23959,21 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   soldMap[key] = (soldMap[key] || 0) + safeNum(item.qty, 0)
  })
 
+ // Baseline/test-stock resets are administrative corrections, not real daily
+ // inventory movement. Exclude both future reset markers and the legacy reset
+ // rows created by the earlier reset button so Movement Today remains accurate.
+ const isPosBaselineResetMovement = move => {
+  const reference = String(move?.reference_no || '').trim().toUpperCase()
+  const movementType = String(move?.movement_type || '').trim().toLowerCase()
+  const remarks = String(move?.remarks || '').trim().toLowerCase()
+  return reference.startsWith('POS-STOCK-RESET-') ||
+   movementType === 'stock_baseline_reset' ||
+   remarks.includes('pre-operation sags pos stock reset to zero')
+ }
+ const operationalPosMovements = posMovements.filter(move => !isPosBaselineResetMovement(move))
+
  const movementMap = {}
- posMovements.forEach(move => {
+ operationalPosMovements.forEach(move => {
   const key = move.product_id || move.product_name
   movementMap[key] = (movementMap[key] || 0) + safeNum(move.qty, 0)
  })
@@ -23874,7 +24023,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }).filter(p => p.status !== 'OK').sort((a,b) => a.remainingStock - b.remainingStock)
 
  const movementSummaryMap = {}
- posMovements.forEach(move => {
+ operationalPosMovements.forEach(move => {
   const type = move.movement_type || 'movement'
   if (!movementSummaryMap[type]) movementSummaryMap[type] = { type, qty: 0, count: 0 }
   movementSummaryMap[type].qty += safeNum(move.qty, 0)
@@ -24195,6 +24344,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         Clear Search
        </button>
       )}
+      <button
+       onClick={()=>printAllOutletInventoryItems(outletBalances.filter(row=>!row.disabled))}
+       title={`Print all ${outletBalances.filter(row=>!row.disabled).length} active SAGS POS items in a compact physical-count sheet designed for two short coupon-bond pages or less.`}
+       style={{...btnBlack, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px'}}
+      >
+       Print All Items
+      </button>
       {isOwnerRole && (
        <button
         onClick={resetAllOutletStockToZero}
@@ -24519,11 +24675,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Inventory Movements</h3>
-    {posMovements.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS inventory movement found for this date.</p> : (
+    {operationalPosMovements.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No operational POS inventory movement found for this date.</p> : (
      <div style={{ overflowX:'auto' }}>
       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'680px' }}>
        <thead><tr style={{ background:'#f8f8f8' }}><th style={{ textAlign:'left', padding:'8px' }}>Product</th><th style={{ textAlign:'left', padding:'8px' }}>Movement</th><th style={{ textAlign:'right', padding:'8px' }}>Qty</th><th style={{ textAlign:'left', padding:'8px' }}>Reference</th></tr></thead>
-       <tbody>{posMovements.slice(0,100).map(m=>(
+       <tbody>{operationalPosMovements.slice(0,100).map(m=>(
         <tr key={m.id}>
          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}><strong>{m.product_name}</strong><br/><span style={{ color:'#999', fontSize:'10px' }}>{m.sku || ''}</span></td>
          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>{m.movement_type}</td>
