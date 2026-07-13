@@ -1008,6 +1008,7 @@ const DOCUMENT_BATCH1A_FORMS = [
  { key:'DISC-EXPLAIN', title:'Employee Explanation Form', category:'NTE / Disciplinary', refPrefix:'RD-EXPLAIN', purpose:'Employee written explanation connected to an incident, NTE, shortage, or violation.' },
  { key:'PAY-CA-AGREEMENT', title:'Cash Advance Agreement', category:'Payroll & Salary', refPrefix:'RD-CA', purpose:'Document cash advance amount, repayment terms, deductions, and acknowledgment.' },
  { key:'PAY-DEDUCTION-AUTH', title:'Salary Deduction Authorization Form', category:'Payroll & Salary', refPrefix:'RD-DED', purpose:'Authorize payroll deductions for cash advance, damage, shortage, lost item, or other approved charge.' },
+ { key:'FIN-CHARGE-SLIP', title:'Charge Slip', category:'Finance & Cash Control', refPrefix:'RD-CS', purpose:'Document an employee charge for loss, damage, shortage, wastage, company-paid expense, or another approved accountability.' },
  { key:'HR-CLEARANCE', title:'Employee Clearance Form', category:'HR & Employee', refPrefix:'RD-CLEAR', purpose:'Clear accountabilities before final pay or separation release.' },
  { key:'HR-PPE-ISSUE', title:'Uniform / PPE Issuance Slip', category:'HR & Employee', refPrefix:'RD-PPE', purpose:'Track issued uniforms, PPE, tools, and employee accountability.' },
  { key:'PAY-RELEASE', title:'Payroll Release Acknowledgment Slip', category:'Payroll & Salary', refPrefix:'RD-PAYREL', purpose:'Employee acknowledgment of salary, payroll release, or final pay received.' }
@@ -1112,6 +1113,7 @@ const DOCUMENT_CENTER_CATALOG = [
  { code:'RES-CART', name:'Rolling Cart Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document rolling cart deposit, ownership, renewal, and operating rules.' },
  { code:'OUT-COUNT', name:'Outlet Inventory Count Sheet', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record beginning, delivered, wastage, ending, and estimated sold items.' },
  { code:'OUT-REMIT', name:'Outlet Weekly Remittance Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Compute outlet sales, remittance, shortage, and posting status.' },
+ { code:'FIN-CHARGE-SLIP', name:'Charge Slip', category:'Finance & Cash Control', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document employee accountability for loss, damage, shortage, wastage, company-paid expense, or another approved charge, including payment or payroll-deduction terms.' },
  { code:'FIN-CASH-COUNT', name:'Daily Cash Count Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Count cash on hand and compare against expected cash.' },
  { code:'FIN-CASHIER-TURNOVER', name:'Cashier Turnover Slip', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Document cashier handover of cash, sales, and variances.' },
  { code:'FIN-GCASH-RECON', name:'GCash Reconciliation Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Match GCash/online payments to sales records.' },
@@ -22199,6 +22201,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const currentRecipePreviewCost = computeRecipeVaultCost(recipeVaultForm, recipeCostRows)
 
  const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
+ const isChargeSlipDocumentForm = documentFormDraft.formKey === 'FIN-CHARGE-SLIP'
  const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
     const payablesDeadlineKey = (ownerDeadlineSummary.warningRows || [])
       .map(r => String(r.source || '') + ':' + String(r.id || '') + ':' + String(r.due_date_effective || r.due_date || ''))
@@ -22284,6 +22287,21 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const form = getSelectedDocumentBatch1AForm()
   const emp = getDocumentFormEmployee()
   const docNo = getDocumentReferenceNumber(form)
+
+  if (form.key === 'FIN-CHARGE-SLIP') {
+   if (!documentFormDraft.employeeId) {
+    showToast('Select the employee to be charged.', 'red')
+    return null
+   }
+   if (safeNum(documentFormDraft.amount, 0) <= 0) {
+    showToast('Enter a valid total charge amount.', 'red')
+    return null
+   }
+   if (!String(documentFormDraft.subject || '').trim()) {
+    showToast('Enter the charge type or reason.', 'red')
+    return null
+   }
+  }
 
   if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Save blank document record?')) return null
 
@@ -22395,7 +22413,24 @@ function printCompanyDocumentRecord(record) {
   const employeeCode = record.employee_code || ''
   const documentDate = record.document_date || record.created_at || today
 
-  const rows = [
+  const isChargeSlipRecord = String(record.form_key || '').toUpperCase() === 'FIN-CHARGE-SLIP'
+  const rows = (isChargeSlipRecord ? [
+   ['Charge Slip No.', docNo],
+   ['Document Type', title],
+   ['Status', status],
+   ['Employee Charged', employee],
+   ['Employee Code', employeeCode],
+   ['Position / Department', [record.position, record.department].filter(Boolean).join(' / ')],
+   ['Charge Date', formatDateForDisplay(record.incident_date || documentDate)],
+   ['Charge Type / Reason', record.subject || ''],
+   ['Charged Item / Reference', record.items || ''],
+   ['Total Charge', safeNum(record.amount, 0) > 0 ? php(record.amount) : ''],
+   ['Payment / Deduction Per Cutoff', safeNum(record.deduction_per_cutoff, 0) > 0 ? php(record.deduction_per_cutoff) : 'Full payment / To be agreed'],
+   ['Charge Details / Payment Terms', record.details || ''],
+   ['Remarks', record.remarks || ''],
+   ['Prepared By', record.prepared_by || currentAdminLabel || 'Admin'],
+   ['Approved By', record.approved_by || '']
+  ] : [
    ['Document No.', docNo],
    ['Document Type', title],
    ['Status', status],
@@ -22412,7 +22447,7 @@ function printCompanyDocumentRecord(record) {
    ['Remarks', record.remarks || ''],
    ['Prepared By', record.prepared_by || currentAdminLabel || 'Admin'],
    ['Approved By', record.approved_by || '']
-  ].filter(([label, value]) => String(value || '').trim() !== '')
+  ]).filter(([label, value]) => String(value || '').trim() !== '')
 
   const rowHtml = rows.map(([label, value]) =>
    '<tr><td>' + esc(label) + '</td><td>' + esc(value).replace(/\\n/g, '<br/>') + '</td></tr>'
@@ -22423,6 +22458,13 @@ function printCompanyDocumentRecord(record) {
    showToast('Popup blocked. Please allow popups to print document.', 'red')
    return
   }
+
+  const chargeNoticeHtml = isChargeSlipRecord
+   ? '<div class="notice">The charged employee acknowledges that the stated charge was explained and received for review. Any payroll deduction must follow the approved written arrangement and applicable company policy.</div>'
+   : ''
+  const signatureHtml = isChargeSlipRecord
+   ? '<div class="signatures"><div class="sig"><div class="line">' + esc(employee) + '</div><div>Charged Employee / Date</div></div><div class="sig"><div class="line">' + esc(record.approved_by || 'Authorized Representative') + '</div><div>Authorized Representative / Date</div></div></div>'
+   : '<div class="signatures"><div class="sig"><div class="line">' + esc(record.prepared_by || currentAdminLabel || 'Prepared By') + '</div><div>Prepared By</div></div><div class="sig"><div class="line">' + esc(record.approved_by || 'Approved By') + '</div><div>Approved By</div></div></div>'
 
   const html = [
    '<!DOCTYPE html><html><head><title>' + esc(docNo) + '</title>',
@@ -22437,6 +22479,7 @@ function printCompanyDocumentRecord(record) {
    'table { width:100%; border-collapse:collapse; margin-top:10px; }',
    'td { border:1px solid #ddd; padding:8px 10px; font-size:12px; vertical-align:top; line-height:1.45; }',
    'td:first-child { width:28%; background:#f8f7f5; font-weight:bold; color:#333; }',
+   '.notice { margin-top:14px; border:1px solid #f5c518; background:#fff8dc; border-radius:8px; padding:10px; font-size:11px; line-height:1.5; color:#444; }',
    '.signatures { display:grid; grid-template-columns:1fr 1fr; gap:40px; margin-top:55px; }',
    '.sig { text-align:center; font-size:11px; color:#333; }',
    '.line { border-top:1px solid #333; padding-top:6px; font-weight:bold; }',
@@ -22455,10 +22498,8 @@ function printCompanyDocumentRecord(record) {
    '<p style="text-align:right;"><span class="badge">' + esc(status) + '</span></p>',
    '</div></div>',
    '<table>' + rowHtml + '</table>',
-   '<div class="signatures">',
-   '<div class="sig"><div class="line">' + esc(record.prepared_by || currentAdminLabel || 'Prepared By') + '</div><div>Prepared By</div></div>',
-   '<div class="sig"><div class="line">' + esc(record.approved_by || 'Approved By') + '</div><div>Approved By</div></div>',
-   '</div>',
+   chargeNoticeHtml,
+   signatureHtml,
    '<div class="footer">Printed from Roma\'s Donuts Management System • ' + new Date().toLocaleString() + '</div>',
    '<div class="no-print"><button onclick="window.print()">PRINT DOCUMENT</button></div>',
    '</body></html>'
@@ -22511,6 +22552,16 @@ function printCompanyDocumentRecord(record) {
    rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
    rows.push(['Reason for Deduction', documentFormDraft.subject || '____________________________'])
    rows.push(['Details', documentFormDraft.details || ''])
+  }
+
+  if (form.key === 'FIN-CHARGE-SLIP') {
+   rows.push(['Charge Date', formatDateForDisplay(documentFormDraft.incidentDate || documentFormDraft.documentDate || today)])
+   rows.push(['Charge Type / Reason', documentFormDraft.subject || 'Loss / Damage / Shortage / Wastage / Company-Paid Expense / Other'])
+   rows.push(['Charged Item / Reference', documentFormDraft.items || 'Item, material, invoice, incident report, or other supporting reference'])
+   rows.push(['Total Charge', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
+   rows.push(['Payment / Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : 'Full payment / To be agreed'])
+   rows.push(['Charge Details / Payment Terms', documentFormDraft.details || 'State the facts, computation, supporting reference, due date, and agreed payment or payroll-deduction terms.'])
+   rows.push(['Remarks', documentFormDraft.remarks || ''])
   }
 
   if (form.key === 'HR-CLEARANCE') {
@@ -22567,6 +22618,7 @@ function printCompanyDocumentRecord(record) {
   if (form.key === 'DISC-NTE') reminder = 'Employee is given the opportunity to submit a written explanation. Management shall review the explanation and available evidence before making a decision.'
   if (form.key === 'PAY-CA-AGREEMENT') reminder = "Employee authorizes Roma's Donuts to deduct the agreed repayment amount from payroll until the cash advance is fully paid."
   if (form.key === 'PAY-DEDUCTION-AUTH') reminder = 'Employee confirms that the deduction details were explained and authorizes payroll deduction according to the approved terms.'
+  if (form.key === 'FIN-CHARGE-SLIP') reminder = 'The charged employee acknowledges that the stated charge was explained and received for review. Any payroll deduction must follow the approved written arrangement and applicable company policy.'
   if (form.key === 'HR-CLEARANCE') reminder = 'Final pay or release may be processed only after all required clearances and accountabilities are reviewed.'
   if (form.key === 'HR-PPE-ISSUE') reminder = 'Employee acknowledges receipt of the listed items and responsibility for proper use, care, and return when required.'
   if (form.key === 'PAY-RELEASE') reminder = 'Employee acknowledges receipt of the stated payroll or release amount.'
@@ -22588,7 +22640,7 @@ function printCompanyDocumentRecord(record) {
    '<div class="page"><div class="brand"><h1>Roma\'s Donuts</h1><p>Payroll, HR, Production &amp; Business Documents System</p><p>Every bite is a little piece of heaven.</p></div>' +
    '<h2>' + escDoc(form.title).toUpperCase() + '</h2><p class="purpose">' + escDoc(form.purpose) + '</p><table>' + rowHtml + '</table>' +
    '<div class="notice">' + escDoc(reminder) + '</div>' +
-   '<div class="sig-wrap"><div class="sig">Employee Signature / Date</div><div class="sig">Authorized Representative / Date</div></div>' +
+   '<div class="sig-wrap"><div class="sig">' + (form.key === 'FIN-CHARGE-SLIP' ? 'Charged Employee Signature / Date' : 'Employee Signature / Date') + '</div><div class="sig">Authorized Representative / Date</div></div>' +
    '<div class="sig-wrap" style="margin-top:28px"><div class="sig">Prepared By</div><div class="sig">Approved By</div></div>' +
    '<div class="footer">Generated from Roma\'s Donuts Company Documents &amp; Forms Center</div></div></body></html>'
 
@@ -25628,7 +25680,7 @@ function printCompanyDocumentRecord(record) {
  </select>
  </div>
  <div>
- <label style={lblS}>Employee</label>
+ <label style={lblS}>{isChargeSlipDocumentForm ? 'Employee to Charge' : 'Employee'}</label>
  <EmployeeSelect value={documentFormDraft.employeeId} onChange={value=>updateDocumentFormDraft('employeeId', value)} employees={employees} />
  </div>
  <div>
@@ -25639,32 +25691,32 @@ function printCompanyDocumentRecord(record) {
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
  <div>
- <label style={lblS}>Incident / Effective Date</label>
+ <label style={lblS}>{isChargeSlipDocumentForm ? 'Charge Date' : 'Incident / Effective Date'}</label>
  <input type="date" value={documentFormDraft.incidentDate} onChange={e=>{ updateDocumentFormDraft('incidentDate', e.target.value); updateDocumentFormDraft('effectiveDate', e.target.value) }} style={{...inputStyle, marginBottom:0 }} />
  </div>
  <div>
- <label style={lblS}>Amount</label>
- <input value={documentFormDraft.amount} onChange={e=>updateDocumentFormDraft('amount', e.target.value)} placeholder="Example: 2000" style={{...inputStyle, marginBottom:0 }} />
+ <label style={lblS}>{isChargeSlipDocumentForm ? 'Total Charge' : 'Amount'}</label>
+ <input value={documentFormDraft.amount} onChange={e=>updateDocumentFormDraft('amount', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'Example: 1250.00' : 'Example: 2000'} style={{...inputStyle, marginBottom:0 }} />
  </div>
  <div>
- <label style={lblS}>Deduction Per Cutoff</label>
- <input value={documentFormDraft.deductionPerCutoff} onChange={e=>updateDocumentFormDraft('deductionPerCutoff', e.target.value)} placeholder="Example: 500" style={{...inputStyle, marginBottom:0 }} />
+ <label style={lblS}>{isChargeSlipDocumentForm ? 'Payment / Deduction Per Cutoff' : 'Deduction Per Cutoff'}</label>
+ <input value={documentFormDraft.deductionPerCutoff} onChange={e=>updateDocumentFormDraft('deductionPerCutoff', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'Leave blank for full payment, or enter installment amount' : 'Example: 500'} style={{...inputStyle, marginBottom:0 }} />
  </div>
  </div>
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
  <div>
- <label style={lblS}>Subject / Reason / Payroll Period</label>
- <input value={documentFormDraft.subject} onChange={e=>updateDocumentFormDraft('subject', e.target.value)} placeholder="Example: Cash advance repayment / Late attendance / Payroll period" style={{...inputStyle, marginBottom:0 }} />
+ <label style={lblS}>{isChargeSlipDocumentForm ? 'Charge Type / Reason' : 'Subject / Reason / Payroll Period'}</label>
+ <input value={documentFormDraft.subject} onChange={e=>updateDocumentFormDraft('subject', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'Example: Damaged equipment / Cash shortage / Wastage' : 'Example: Cash advance repayment / Late attendance / Payroll period'} style={{...inputStyle, marginBottom:0 }} />
  </div>
  <div>
- <label style={lblS}>Items / Accountabilities</label>
- <input value={documentFormDraft.items} onChange={e=>updateDocumentFormDraft('items', e.target.value)} placeholder="Example: 2 uniforms, apron, cap, ID, cash advance balance" style={{...inputStyle, marginBottom:0 }} />
+ <label style={lblS}>{isChargeSlipDocumentForm ? 'Charged Item / Reference' : 'Items / Accountabilities'}</label>
+ <input value={documentFormDraft.items} onChange={e=>updateDocumentFormDraft('items', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'Example: Broken mixer bowl / Incident Report RD-IR-...' : 'Example: 2 uniforms, apron, cap, ID, cash advance balance'} style={{...inputStyle, marginBottom:0 }} />
  </div>
  </div>
 
- <label style={lblS}>Details / Explanation / Terms</label>
- <textarea value={documentFormDraft.details} onChange={e=>updateDocumentFormDraft('details', e.target.value)} placeholder="Write the important details here. This will appear in the printed form." style={{...inputStyle, minHeight:'90px', resize:'vertical' }} />
+ <label style={lblS}>{isChargeSlipDocumentForm ? 'Charge Details / Payment Terms' : 'Details / Explanation / Terms'}</label>
+ <textarea value={documentFormDraft.details} onChange={e=>updateDocumentFormDraft('details', e.target.value)} placeholder={isChargeSlipDocumentForm ? 'State what happened, how the amount was computed, supporting reference, due date, and agreed payment terms.' : 'Write the important details here. This will appear in the printed form.'} style={{...inputStyle, minHeight:'90px', resize:'vertical' }} />
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
  <div>
@@ -25687,6 +25739,7 @@ function printCompanyDocumentRecord(record) {
   <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={printBatch1ADocumentForm}>PRINT ONLY</button>
  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>setDocumentFormDraft(prev=>({ ...prev, subject:'', details:'', amount:'', deductionPerCutoff:'', items:'', remarks:'' }))}>CLEAR FIELDS</button>
  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Selected: <strong>{getSelectedDocumentBatch1AForm().title}</strong></p>
+ {isChargeSlipDocumentForm && <p style={{ width:'100%', color:'#7a5b00', background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', fontSize:'11px', margin:'4px 0 0' }}>Use this slip for approved employee accountabilities such as loss, damage, shortage, wastage, or company-paid expenses. Enter the total charge and the agreed payment or payroll-deduction terms.</p>}
  </div>
  </div>
 
@@ -25695,7 +25748,7 @@ function printCompanyDocumentRecord(record) {
   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
    <div>
     <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'15px' }}>Document Records</h3>
-    <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Saved NTE, incident reports, inventory withdrawal slips, agreements, clearance forms, and other company documents.</p>
+    <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Saved NTE, incident reports, charge slips, inventory withdrawal slips, agreements, clearance forms, and other company documents.</p>
    </div>
    <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={loadCompanyDocumentRecords}>REFRESH RECORDS</button>
   </div>
