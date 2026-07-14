@@ -5276,6 +5276,7 @@ export default function App() {
  const [payrollResults, setPayrollResults] = useState([])
  const [payrollSummary, setPayrollSummary] = useState(null)
  const [payrollComputing, setPayrollComputing] = useState(false)
+ const [payslipSmsSending, setPayslipSmsSending] = useState(false)
  const [payrollHistory, setPayrollHistory] = useState([])
  const [historyLoading, setHistoryLoading] = useState(false)
  const [selectedHistoryPeriod, setSelectedHistoryPeriod] = useState(null)
@@ -21415,6 +21416,48 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  showToast(' Payroll exported to CSV!')
  }
 
+ async function sendPayslipSmsNotifications(start = payrollStart, end = payrollEnd, options = {}) {
+ if (!requireOwnerOrPayrollAction('send payslip SMS notifications')) return null
+ if (!start ||!end) { if (!options.silent) showToast('Please select payroll start and end dates.', 'red'); return null }
+ if (!navigator.onLine) { if (!options.silent) showToast('Internet connection is required to send SMS notifications.', 'red'); return null }
+ if (payslipSmsSending) return null
+
+ setPayslipSmsSending(true)
+ try {
+  const { data, error } = await supabase.functions.invoke('send-payslip-sms', {
+   body:{
+    payroll_start:start,
+    payroll_end:end,
+    retry_failed:true
+   }
+  })
+  if (error) throw error
+  if (!data?.ok) throw new Error(data?.error || 'SMS service returned an unexpected response.')
+
+  const sent = safeNum(data.sent, 0)
+  const skippedDuplicate = safeNum(data.skipped_duplicate, 0)
+  const skippedMissing = safeNum(data.skipped_missing_number, 0)
+  const failed = safeNum(data.failed, 0)
+  const summary = `SMS: ${sent} sent${skippedDuplicate?`, ${skippedDuplicate} already notified`:''}${skippedMissing?`, ${skippedMissing} missing/invalid number`:''}${failed?`, ${failed} failed`:''}.`
+
+  await logAudit(
+   'PAYSLIP SMS NOTIFICATIONS',
+   currentAdminLabel,
+   'Payroll',
+   `Period: ${start} to ${end} | Sent: ${sent} | Already sent: ${skippedDuplicate} | Missing/invalid: ${skippedMissing} | Failed: ${failed}`
+  )
+
+  if (!options.silent) showToast(summary, failed > 0? 'red':'green')
+  return { ...data, summary }
+ } catch(err) {
+  console.error('Payslip SMS notification failed:', err)
+  if (!options.silent) showToast(`SMS sending failed: ${err?.message || err}`, 'red')
+  return { ok:false, error:err?.message || String(err) }
+ } finally {
+  setPayslipSmsSending(false)
+ }
+ }
+
  async function sendPayslipsForEmployeeReview(start = payrollStart, end = payrollEnd) {
  if (!requireOwnerOrPayrollAction('send payslips for review')) return
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
@@ -21474,9 +21517,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   review_sent_by:currentAdminLabel
  }, { onConflict:'payroll_start,payroll_end' }) } catch(e) {}
 
- await logAudit('PAYSLIPS SENT FOR EMPLOYEE REVIEW', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Records: ${records.length}`)
+ const smsResult = await sendPayslipSmsNotifications(start, end, { silent:true })
+ await logAudit('PAYSLIPS SENT FOR EMPLOYEE REVIEW', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Records: ${records.length}${smsResult?.ok?` | SMS sent: ${safeNum(smsResult.sent,0)} | SMS failed: ${safeNum(smsResult.failed,0)} | Missing/invalid: ${safeNum(smsResult.skipped_missing_number,0)}`:' | SMS unavailable or failed'}`)
  await loadSavedPayrollForPeriod(start, end, { silent:true })
- showToast(`Payslips sent to ${records.length} employee${records.length===1?'':'s'} for review.`, 'green')
+ showToast(`Payslips sent to ${records.length} employee${records.length===1?'':'s'} for review.${smsResult?.ok?` ${smsResult.summary}`:' SMS notification was not completed; use SEND/RETRY SMS.'}`, smsResult?.ok && safeNum(smsResult.failed,0)===0? 'green':'red')
  }
 
  async function undoDraftPayroll(start = payrollStart, end = payrollEnd) {
@@ -22289,6 +22333,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [inventoryDrafts, setInventoryDrafts] = useState(() => readSagsDraftObject('inventoryDrafts', {}))
  const [inventorySavingId, setInventorySavingId] = useState('')
  const [posResettingStock, setPosResettingStock] = useState(false)
+ const [posRunningNightlyDonutReset, setPosRunningNightlyDonutReset] = useState(false)
  const [showAddOutletItem, setShowAddOutletItem] = useState(() => readSagsDraft('showAddOutletItem', false) === true)
  const [newOutletItem, setNewOutletItem] = useState(() => ({
   ...getDefaultNewOutletItem(),
@@ -23511,6 +23556,71 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    await loadPosMonitor({ silent:false, forceProducts:true })
   } finally {
    setPosResettingStock(false)
+  }
+ }
+
+
+ async function runNightlyDonutResetNow() {
+  if (!isOwnerRole) {
+   alert('Only the Owner can run the SAGS POS donut reset manually.')
+   return
+  }
+
+  if (posRunningNightlyDonutReset) return
+
+  const donutTargets = (posProducts || []).filter(product =>
+   product?.id &&
+   !isOutletProductDeleted(product) &&
+   String(product.category || '').trim().toLowerCase() === 'donuts' &&
+   safeNum(product.stock, 0) !== 0
+  )
+
+  if (!donutTargets.length) {
+   alert('All active donut stocks are already zero.')
+   return
+  }
+
+  const unitsToClear = donutTargets.reduce((sum, product) => sum + Math.max(0, safeNum(product.stock, 0)), 0)
+  const proceed = confirm(
+   `RESET DONUT STOCK TO ZERO NOW?\n\n` +
+   `Donut products affected: ${donutTargets.length}\n` +
+   `Units to clear: ${unitsToClear.toLocaleString('en-PH')}\n\n` +
+   `Only the Donuts category will be affected. Drinks, snacks, prices, barcodes, and sales history will not change.`
+  )
+  if (!proceed) return
+
+  setPosRunningNightlyDonutReset(true)
+  try {
+   const { data, error } = await supabase.rpc('reset_sags_pos_donut_stock_nightly', {
+    p_outlet_id:'OUTLET-MALUED',
+    p_run_source:'manual'
+   })
+   if (error) throw error
+
+   const result = data && typeof data === 'object' ? data : {}
+   const productsReset = safeNum(result.products_reset, donutTargets.length)
+   const unitsRemoved = safeNum(result.units_removed, unitsToClear)
+
+   if (logAudit) {
+    await logAudit(
+     'SAGS POS DONUT STOCK RESET',
+     currentAdminLabel || 'Owner',
+     'SAGS POS',
+     `${productsReset} donut product(s) reset to zero; ${unitsRemoved.toLocaleString('en-PH')} unit(s) cleared. Source: Manual owner test.`
+    )
+   }
+
+   setInventoryDrafts({})
+   await loadPosMonitor({ silent:false, forceProducts:true })
+   alert(`Done. ${productsReset} donut product(s) were reset to zero. ${unitsRemoved.toLocaleString('en-PH')} unit(s) were cleared.`)
+  } catch (err) {
+   console.error('Nightly donut reset failed:', err)
+   alert(
+    'Donut reset failed: ' + (err?.message || String(err)) +
+    '\n\nRun the supplied Supabase nightly-reset SQL first, then try again.'
+   )
+  } finally {
+   setPosRunningNightlyDonutReset(false)
   }
  }
 
@@ -24896,6 +25006,24 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       )}
      </div>
     </div>
+
+    <div style={{ background:'#eefbf3', border:'1px solid #86d6a5', borderLeft:'5px solid #2d8a4e', borderRadius:'12px', padding:'9px 11px', marginBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+     <div>
+      <h4 style={{ margin:'0 0 2px', color:'#176b36', fontSize:'13px', fontWeight:'950' }}>Automatic Nightly Donut Reset</h4>
+      <p style={{ margin:0, color:'#285c3d', fontSize:'11px', fontWeight:'800' }}>At 10:00 PM Philippine time, every active Donuts-category stock balance is reset to 0 on the server. Other categories are not affected.</p>
+     </div>
+     {isOwnerRole && (
+      <button
+       onClick={runNightlyDonutResetNow}
+       disabled={posRunningNightlyDonutReset}
+       title="Owner-only manual test of the same database function used by the 10:00 PM schedule. This immediately zeros active donut stock."
+       style={{...btnGreen, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'8px 11px', fontSize:'11px', opacity:posRunningNightlyDonutReset ? 0.65 : 1, cursor:posRunningNightlyDonutReset ? 'not-allowed' : 'pointer'}}
+      >
+       {posRunningNightlyDonutReset ? 'Resetting Donuts...' : 'Reset Donuts Now'}
+      </button>
+     )}
+    </div>
+
 
     {!canEditOutletInventory && (
      <p style={{ margin:'0 0 12px', color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
@@ -27491,6 +27619,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <button style={{...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?' LOADING...':' COMPUTE DRAFT PAYROLL'}</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollComputing?0.5:1 }} onClick={()=>loadSavedPayrollForPeriod(payrollStart, payrollEnd)} disabled={payrollComputing}> LOAD SAVED PAYROLL</button>
  <button style={{ background:'#0ea5e9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>sendPayslipsForEmployeeReview(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> SEND PAYSLIPS TO EMPLOYEES FOR REVIEW</button>
+ <button style={{ background:'#16a34a', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:payslipSmsSending?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || payslipSmsSending)?0.5:1 }} onClick={()=>sendPayslipSmsNotifications(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || payslipSmsSending}>{payslipSmsSending?' SENDING SMS...':' SEND / RETRY SMS NOTIFICATION'}</button>
  <button style={{ background:'#ef4444', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>undoDraftPayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> UNDO DRAFT PAYROLL</button>
  {payrollResults.some(p=>p.payrollApproved) && (
  <button style={{ background:'#b45309', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }} onClick={()=>reopenReleasedPayroll(payrollStart, payrollEnd)}> REOPEN RELEASED PAYROLL</button>
