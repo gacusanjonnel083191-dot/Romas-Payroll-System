@@ -11767,7 +11767,7 @@ function buildDeliveryInvoicePrintCSS() {
    // Keep the exact reseller-invoice printable width and physical paper size.
    // The right column is widened so serial numbers, positions, amounts, and
    // signature labels remain fully visible in Microsoft Word.
-   const widths = [3380, 2273]
+   const widths = [3300, 2220]
    const full = widths[0] + widths[1]
 
    // Minimal Roma's Donuts branding: red title/outer border, a restrained
@@ -11808,7 +11808,7 @@ function buildDeliveryInvoicePrintCSS() {
          shade:options.shade || '',
          color:options.amountColor || options.color || ''
        })
-     ], options.height || 295))
+     ], options.height || 275))
    }
 
    rows.push(wordRow([
@@ -11817,12 +11817,12 @@ function buildDeliveryInvoicePrintCSS() {
        span:2,
        align:'center',
        bold:true,
-       size:21,
-       line:252,
+       size:20,
+       line:240,
        shade:BRAND_RED,
        color:WHITE
      })
-   ], 420))
+   ], 390))
 
    rows.push(wordRow([
      wordCell(`PAY PERIOD: ${formatDateForDisplay(start)} - ${formatDateForDisplay(end)}`, {
@@ -11831,13 +11831,13 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell(`SERIAL: ${serialNo || '-'}`, {
        width:widths[1], align:'right', bold:true, size:13, shade:VERY_LIGHT_GRAY
      })
-   ], 340))
+   ], 310))
 
    rows.push(wordRow([
      wordCell(data.employeeName || 'Employee', {
-       width:full, span:2, align:'center', bold:true, size:21, shade:PALE_GOLD, color:BLACK
+       width:full, span:2, align:'center', bold:true, size:20, shade:PALE_GOLD, color:BLACK
      })
-   ], 380))
+   ], 320))
 
    rows.push(wordRow([
      wordCell(`EMPLOYEE CODE: ${data.employeeCode || '-'}`, {
@@ -11846,13 +11846,13 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell(`POSITION: ${data.position || '-'}`, {
        width:widths[1], align:'right', bold:false, size:13
      })
-   ], 340))
+   ], 310))
 
    rows.push(wordRow([
      wordCell('ATTENDANCE / PAYROLL BASIS', {
        width:full, span:2, align:'center', bold:true, size:17, shade:LIGHT_GRAY, color:BRAND_RED
      })
-   ], 300))
+   ], 280))
 
    rows.push(wordRow([
      wordCell(`WORKED: ${data.workedDays}  |  ABSENT: ${data.absentDays}`, {
@@ -11867,7 +11867,7 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell('EARNINGS', {
        width:full, span:2, align:'center', bold:true, size:17, shade:LIGHT_GRAY, color:BRAND_RED
      })
-   ], 300))
+   ], 280))
 
    addAmountRow(`Basic / Regular Pay (${data.workedDays} paid day(s))`, basicPay)
    addAmountRow(`Overtime Pay (${data.overtimeMinutes} min)`, data.overtimePay)
@@ -11876,14 +11876,14 @@ function buildDeliveryInvoicePrintCSS() {
    addAmountRow('Birthday Pay', data.birthdayPay)
    addAmountRow('Other Earnings / Adjustments', otherEarningsForPrint)
    addAmountRow('TOTAL EARNINGS / GROSS PAY', data.totalEarnings, {
-     shade:LIGHT_GRAY, boldLabel:true, size:18, height:330, color:BLACK
+     shade:LIGHT_GRAY, boldLabel:true, size:17, height:310, color:BLACK
    })
 
    rows.push(wordRow([
      wordCell('DEDUCTIONS', {
        width:full, span:2, align:'center', bold:true, size:17, shade:LIGHT_GRAY, color:BRAND_RED
      })
-   ], 300))
+   ], 280))
 
    addAmountRow(`Late Deduction (${data.lateMinutes} min)`, data.lateDeduction)
    addAmountRow(`Undertime Deduction (${data.undertimeMinutes} min)`, data.undertimeDeduction)
@@ -11895,17 +11895,17 @@ function buildDeliveryInvoicePrintCSS() {
    addAmountRow('PhilHealth', data.philhealthDeduction)
    addAmountRow('Other Deductions / Adjustments', data.adjustmentDeductions)
    addAmountRow('TOTAL DEDUCTIONS', data.totalDeductions, {
-     shade:LIGHT_GRAY, boldLabel:true, size:18, height:330, color:BLACK
+     shade:LIGHT_GRAY, boldLabel:true, size:17, height:310, color:BLACK
    })
 
    rows.push(wordRow([
      wordCell('NET PAY / TAKE HOME PAY', {
-       width:widths[0], align:'left', bold:true, size:20, shade:BLACK, color:WHITE
+       width:widths[0], align:'left', bold:true, size:19, shade:BLACK, color:WHITE
      }),
      wordCell(php(data.netPay), {
-       width:widths[1], align:'right', bold:true, size:23, shade:BLACK, color:BRAND_GOLD
+       width:widths[1], align:'right', bold:true, size:22, shade:BLACK, color:BRAND_GOLD
      })
-   ], 450))
+   ], 420))
 
    if (data.nonCADeductionOverflow > 0) {
      rows.push(wordRow([
@@ -11922,7 +11922,7 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell('________________________', {
        width:widths[1], align:'center', bold:false, size:15
      })
-   ], 380))
+   ], 340))
 
    rows.push(wordRow([
      wordCell('EMPLOYEE / DATE', {
@@ -11931,9 +11931,9 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell('AUTHORIZED / DATE', {
        width:widths[1], align:'center', bold:false, size:12
      })
-   ], 240))
+   ], 220))
 
-   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="6" w:space="0" w:color="${LINE_GRAY}"/><w:insideV w:val="single" w:sz="6" w:space="0" w:color="${LINE_GRAY}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="24" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="24" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid><w:gridCol w:w="${widths[0]}"/><w:gridCol w:w="${widths[1]}"/></w:tblGrid>${rows.join('')}</w:tbl>`
+   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="6" w:space="0" w:color="${LINE_GRAY}"/><w:insideV w:val="single" w:sz="6" w:space="0" w:color="${LINE_GRAY}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="40" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="40" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid><w:gridCol w:w="${widths[0]}"/><w:gridCol w:w="${widths[1]}"/></w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
  function buildPayslipsDocxDocument(records, payrollStart, payrollEnd) {
