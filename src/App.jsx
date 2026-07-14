@@ -11511,7 +11511,9 @@ function buildDeliveryInvoicePrintCSS() {
    const span = opts.span ? `<w:gridSpan w:val="${opts.span}"/>` : ''
    const shade = opts.shade ? `<w:shd w:fill="${opts.shade}"/>` : ''
    const vAlign = '<w:vAlign w:val="center"/>'
-   const cellMargins = '<w:tcMar><w:top w:w="0" w:type="dxa"/><w:left w:w="14" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="14" w:type="dxa"/></w:tcMar>'
+   const padLeft = safeNum(opts.padLeft, 14)
+   const padRight = safeNum(opts.padRight, 14)
+   const cellMargins = `<w:tcMar><w:top w:w="0" w:type="dxa"/><w:left w:w="${padLeft}" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="${padRight}" w:type="dxa"/></w:tcMar>`
    return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${span}${shade}${vAlign}${cellMargins}</w:tcPr>${wordParagraph(text, opts)}</w:tc>`
  }
 
@@ -11767,7 +11769,7 @@ function buildDeliveryInvoicePrintCSS() {
    // Keep the exact reseller-invoice printable width and physical paper size.
    // The right column is widened so serial numbers, positions, amounts, and
    // signature labels remain fully visible in Microsoft Word.
-   const widths = [3300, 2220]
+   const widths = [3180, 2340]
    const full = widths[0] + widths[1]
 
    // Minimal Roma's Donuts branding: red title/outer border, a restrained
@@ -11806,7 +11808,8 @@ function buildDeliveryInvoicePrintCSS() {
          bold:true,
          size:options.amountSize || options.size || 16,
          shade:options.shade || '',
-         color:options.amountColor || options.color || ''
+         color:options.amountColor || options.color || '',
+         padRight:150
        })
      ], options.height || 275))
    }
@@ -11829,7 +11832,7 @@ function buildDeliveryInvoicePrintCSS() {
        width:widths[0], align:'left', bold:true, size:15, shade:VERY_LIGHT_GRAY
      }),
      wordCell(`SERIAL: ${serialNo || '-'}`, {
-       width:widths[1], align:'right', bold:true, size:13, shade:VERY_LIGHT_GRAY
+       width:widths[1], align:'right', bold:true, size:13, shade:VERY_LIGHT_GRAY, padRight:150
      })
    ], 310))
 
@@ -11844,7 +11847,7 @@ function buildDeliveryInvoicePrintCSS() {
        width:widths[0], align:'left', bold:false, size:15
      }),
      wordCell(`POSITION: ${data.position || '-'}`, {
-       width:widths[1], align:'right', bold:false, size:13
+       width:widths[1], align:'right', bold:false, size:13, padRight:150
      })
    ], 310))
 
@@ -11859,7 +11862,7 @@ function buildDeliveryInvoicePrintCSS() {
        width:widths[0], align:'left', bold:false, size:15, shade:VERY_LIGHT_GRAY
      }),
      wordCell(`OT: ${data.overtimeMinutes} MIN  |  ND: ${data.nightDiffMinutes} MIN`, {
-       width:widths[1], align:'right', bold:false, size:13, shade:VERY_LIGHT_GRAY
+       width:widths[1], align:'right', bold:false, size:13, shade:VERY_LIGHT_GRAY, padRight:150
      })
    ], 350))
 
@@ -11903,7 +11906,7 @@ function buildDeliveryInvoicePrintCSS() {
        width:widths[0], align:'left', bold:true, size:19, shade:BLACK, color:WHITE
      }),
      wordCell(php(data.netPay), {
-       width:widths[1], align:'right', bold:true, size:22, shade:BLACK, color:BRAND_GOLD
+       width:widths[1], align:'right', bold:true, size:22, shade:BLACK, color:BRAND_GOLD, padRight:150
      })
    ], 420))
 
