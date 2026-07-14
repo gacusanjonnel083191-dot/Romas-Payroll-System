@@ -16,6 +16,12 @@ const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
 
+// Shared physical paper used by reseller delivery invoices and regular employee payslips.
+// 105mm x 165mm = the exact custom reseller-invoice paper size.
+const RESELLER_INVOICE_PAPER_WIDTH_MM = 105
+const RESELLER_INVOICE_PAPER_HEIGHT_MM = 165
+const RESELLER_INVOICE_PAPER_CSS_SIZE = '10.5cm 16.5cm'
+
 // Payroll policy: all active employees are holiday-pay candidates, but attendance rules still apply.
 // Regular holiday rule: employee receives holiday pay only when NOT marked absent
 // on the day before the holiday, on the holiday, or on the day after the holiday.
@@ -378,157 +384,188 @@ function downloadEmployeePayslip(pay = {}) {
  const end = printablePay.payrollEnd || pay.payroll_end || ''
  const safeName = String(`${printablePay.employeeName}-${start}-to-${end}`).replace(/[^a-z0-9\-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'payslip'
 
- const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' })
+ // Match the reseller delivery invoice paper exactly: 105mm x 165mm.
+ const doc = new jsPDF({
+  orientation:'portrait',
+  unit:'mm',
+  format:[RESELLER_INVOICE_PAPER_WIDTH_MM, RESELLER_INVOICE_PAPER_HEIGHT_MM]
+ })
  const pageWidth = doc.internal.pageSize.getWidth()
  const pageHeight = doc.internal.pageSize.getHeight()
- const marginX = 14
- let y = 14
+ const marginX = 4
+ const usableWidth = pageWidth - marginX * 2
+ const columnGap = 2
+ const columnWidth = (usableWidth - columnGap) / 2
+ const leftX = marginX
+ const rightX = marginX + columnWidth + columnGap
+ let y = 4
 
- const addText = (text, x, yy, options = {}) => {
-  doc.text(String(text ?? ''), x, yy, options)
+ const compactMoney = value => php(value)
+ const fitText = (text, width, maxLines = 2) => {
+  const lines = doc.splitTextToSize(String(text ?? ''), width)
+  return lines.slice(0, maxLines)
  }
- const addSectionTitle = title => {
-  if (y > pageHeight - 24) { doc.addPage(); y = 14 }
-  doc.setFillColor(202, 27, 27)
-  doc.rect(marginX, y, pageWidth - marginX * 2, 8, 'F')
+ const drawSection = ({ title, rows, x, startY, totalLabel, totalAmount, headerColor }) => {
+  let rowY = startY
+  doc.setFillColor(...headerColor)
+  doc.rect(x, rowY, columnWidth, 5, 'F')
   doc.setFont('helvetica', 'bold')
-  doc.setFontSize(10)
+  doc.setFontSize(6.8)
   doc.setTextColor(255, 255, 255)
-  addText(title, marginX + 2, y + 5.4)
-  doc.setTextColor(0, 0, 0)
-  y += 10
- }
- const addRow = (label, amount, note = '') => {
-  if (y > pageHeight - 18) { doc.addPage(); y = 14 }
-  doc.setDrawColor(230, 230, 230)
-  doc.line(marginX, y + 3, pageWidth - marginX, y + 3)
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(9)
-  doc.setTextColor(30, 30, 30)
-  addText(label, marginX, y)
+  doc.text(title, x + 1.5, rowY + 3.4)
+  rowY += 5
+
+  const visibleRows = rows.length ? rows : [{ label:'None', amount:0, muted:true }]
+  visibleRows.forEach((row, index) => {
+   const rowHeight = 4.6
+   if (index % 2 === 0) {
+    doc.setFillColor(248, 248, 248)
+    doc.rect(x, rowY, columnWidth, rowHeight, 'F')
+   }
+   doc.setDrawColor(225, 225, 225)
+   doc.line(x, rowY + rowHeight, x + columnWidth, rowY + rowHeight)
+
+   doc.setFont('helvetica', row.muted ? 'normal' : 'normal')
+   doc.setFontSize(5.8)
+   doc.setTextColor(row.muted ? 125 : 35, row.muted ? 125 : 35, row.muted ? 125 : 35)
+   const labelLines = fitText(row.label, columnWidth - 18, 2)
+   doc.text(labelLines, x + 1.2, rowY + 2.0)
+
+   doc.setFont('helvetica', 'bold')
+   doc.setFontSize(6.2)
+   doc.setTextColor(20, 20, 20)
+   doc.text(compactMoney(row.amount), x + columnWidth - 1.2, rowY + 2.9, { align:'right' })
+   rowY += rowHeight
+  })
+
+  doc.setFillColor(244, 244, 244)
+  doc.rect(x, rowY, columnWidth, 5.2, 'F')
   doc.setFont('helvetica', 'bold')
-  addText(php(amount), pageWidth - marginX, y, { align:'right' })
-  y += 5
-  if (note) {
-   doc.setFont('helvetica', 'normal')
-   doc.setFontSize(7)
-   doc.setTextColor(110, 110, 110)
-   const wrapped = doc.splitTextToSize(String(note), pageWidth - marginX * 2 - 10)
-   addText(wrapped, marginX + 2, y)
-   y += Math.max(4, wrapped.length * 3.5)
-   doc.setTextColor(0, 0, 0)
-  }
- }
- const addBasis = (label, value) => {
-  if (y > pageHeight - 12) { doc.addPage(); y = 14 }
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(8)
-  doc.setTextColor(95, 95, 95)
-  addText(label, marginX, y)
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(9)
-  doc.setTextColor(0, 0, 0)
-  addText(String(value), pageWidth - marginX, y, { align:'right' })
-  y += 5
+  doc.setFontSize(6.1)
+  doc.setTextColor(25, 25, 25)
+  doc.text(totalLabel, x + 1.2, rowY + 3.4)
+  doc.setFontSize(6.8)
+  doc.text(compactMoney(totalAmount), x + columnWidth - 1.2, rowY + 3.4, { align:'right' })
+  return rowY + 5.2
  }
 
- doc.setFont('helvetica', 'bold')
- doc.setFontSize(18)
- doc.setTextColor(202, 27, 27)
- addText("Roma's Donuts", pageWidth / 2, y, { align:'center' })
- y += 6
- doc.setFontSize(11)
- doc.setTextColor(0, 0, 0)
- addText('EMPLOYEE PAYSLIP', pageWidth / 2, y, { align:'center' })
- y += 5
- doc.setFont('helvetica', 'normal')
- doc.setFontSize(8)
- doc.setTextColor(90, 90, 90)
- addText(`Period: ${formatDateForDisplay(start)} to ${formatDateForDisplay(end)}`, pageWidth / 2, y, { align:'center' })
- y += 4
- addText(`Serial: ${printablePay.payslipSerial || '-'}`, pageWidth / 2, y, { align:'center' })
- y += 8
+ const earningsRows = [
+  { label:`Basic Pay (${printablePay.workedDays} day${printablePay.workedDays === 1 ? '' : 's'})`, amount:printablePay.workedBasicPay || printablePay.basicPay, always:true },
+  { label:'Birthday Pay', amount:printablePay.birthdayPay },
+  { label:`Overtime (${printablePay.overtimeMinutes} min)`, amount:printablePay.overtimePay },
+  { label:`Night Differential (${printablePay.nightDiffMinutes} min)`, amount:printablePay.nightDiffPay },
+  { label:'Holiday Pay', amount:printablePay.holidayPay },
+  { label:`Paid SIL (${printablePay.paidLeaveDays} day${printablePay.paidLeaveDays === 1 ? '' : 's'})`, amount:printablePay.paidLeavePay },
+  { label:'Other Earnings', amount:printablePay.adjustmentEarnings }
+ ].filter(row => row.always || safeNum(row.amount, 0) !== 0)
 
- doc.setDrawColor(202, 27, 27)
- doc.setLineWidth(0.4)
- doc.line(marginX, y, pageWidth - marginX, y)
- y += 7
+ const deductionRows = [
+  { label:`Late (${printablePay.lateMinutes} min)`, amount:printablePay.lateDeduction },
+  { label:`Undertime (${printablePay.undertimeMinutes} min)`, amount:printablePay.undertimeDeduction },
+  { label:'Excess Break', amount:printablePay.excessBreakDeduction },
+  { label:'Cash Advance', amount:printablePay.cashAdvanceDeduction },
+  { label:'Deferred CA', amount:printablePay.deferredCADeduction },
+  { label:'SSS', amount:printablePay.sssDeduction },
+  { label:'Pag-IBIG', amount:printablePay.pagibigDeduction },
+  { label:'PhilHealth', amount:printablePay.philhealthDeduction },
+  { label:'Other Deductions', amount:printablePay.adjustmentDeductions }
+ ].filter(row => safeNum(row.amount, 0) !== 0)
 
+ // Compact branded header.
+ doc.setFillColor(202, 27, 27)
+ doc.rect(marginX, y, usableWidth, 11, 'F')
+ doc.setTextColor(255, 255, 255)
  doc.setFont('helvetica', 'bold')
  doc.setFontSize(12)
- doc.setTextColor(202, 27, 27)
- addText(printablePay.employeeName || 'Employee', marginX, y)
- y += 5
- doc.setFont('helvetica', 'normal')
- doc.setFontSize(9)
- doc.setTextColor(50, 50, 50)
- addText(`Code: ${printablePay.employeeCode || '-'}   Position: ${printablePay.position || '-'}`, marginX, y)
- y += 8
+ doc.text("Roma's Donuts", pageWidth / 2, y + 4.8, { align:'center' })
+ doc.setFontSize(7)
+ doc.text('EMPLOYEE PAYSLIP', pageWidth / 2, y + 8.4, { align:'center' })
+ y += 12.5
 
- addSectionTitle('ATTENDANCE / PAYROLL BASIS')
- addBasis('Worked Days', `${printablePay.workedDays} day(s)`)
- addBasis('Absent Days', `${printablePay.absentDays} day(s)`)
- addBasis('Paid SIL Leave', `${printablePay.paidLeaveDays} day(s)`)
- addBasis('OT Minutes', `${printablePay.overtimeMinutes} min`)
- addBasis('Night Differential Minutes', `${printablePay.nightDiffMinutes} min`)
- y += 3
-
- addSectionTitle('EARNINGS')
- addRow('Basic / Regular Pay', printablePay.workedBasicPay || printablePay.basicPay, `${printablePay.workedDays} paid workday(s)`)
- addRow('Birthday Pay', printablePay.birthdayPay)
- addRow('Overtime Pay', printablePay.overtimePay, `${printablePay.overtimeMinutes} approved OT minute(s)`)
- addRow('Night Differential Pay', printablePay.nightDiffPay, `${printablePay.nightDiffMinutes} night differential minute(s)`)
- addRow('Holiday Pay', printablePay.holidayPay)
- addRow('Paid SIL Leave', printablePay.paidLeavePay, `${printablePay.paidLeaveDays} paid leave day(s)`)
- addRow('Other Earnings / Adjustments', printablePay.adjustmentEarnings)
- doc.setFillColor(232, 245, 233)
- doc.rect(marginX, y - 2, pageWidth - marginX * 2, 8, 'F')
+ doc.setTextColor(30, 30, 30)
  doc.setFont('helvetica', 'bold')
- doc.setFontSize(10)
- doc.setTextColor(45, 138, 78)
- addText('TOTAL EARNINGS / GROSS PAY', marginX + 2, y + 3)
- addText(php(printablePay.totalEarnings), pageWidth - marginX - 2, y + 3, { align:'right' })
+ doc.setFontSize(8.5)
+ doc.text(String(printablePay.employeeName || 'Employee'), marginX + 1.5, y + 3.2)
+ doc.setFont('helvetica', 'normal')
+ doc.setFontSize(6.2)
+ doc.setTextColor(80, 80, 80)
+ const identityLine = [
+  printablePay.employeeCode ? `Code: ${printablePay.employeeCode}` : '',
+  printablePay.position ? printablePay.position : ''
+ ].filter(Boolean).join(' | ')
+ doc.text(identityLine || 'Employee record', marginX + 1.5, y + 6.2)
+ doc.text(`Period: ${formatDateForDisplay(start)} - ${formatDateForDisplay(end)}`, marginX + 1.5, y + 9.0)
+ doc.text(`Serial: ${printablePay.payslipSerial || '-'}`, pageWidth - marginX - 1.5, y + 9.0, { align:'right' })
+ y += 10.5
+
+ // Attendance basis strip.
+ doc.setFillColor(255, 248, 220)
+ doc.setDrawColor(202, 27, 27)
+ doc.roundedRect(marginX, y, usableWidth, 12.5, 1.2, 1.2, 'FD')
+ doc.setFont('helvetica', 'bold')
+ doc.setFontSize(6.2)
+ doc.setTextColor(70, 70, 70)
+ doc.text(`Worked: ${printablePay.workedDays} day(s)`, marginX + 2, y + 4)
+ doc.text(`Absent: ${printablePay.absentDays} day(s)`, marginX + 35, y + 4)
+ doc.text(`Paid SIL: ${printablePay.paidLeaveDays} day(s)`, marginX + 66, y + 4)
+ doc.text(`OT: ${printablePay.overtimeMinutes} min`, marginX + 2, y + 8.8)
+ doc.text(`Night Diff: ${printablePay.nightDiffMinutes} min`, marginX + 35, y + 8.8)
+ doc.text(`Generated: ${new Date().toLocaleDateString('en-PH')}`, marginX + 66, y + 8.8)
+ y += 14.5
+
+ const sectionStartY = y
+ const earningsEndY = drawSection({
+  title:'EARNINGS',
+  rows:earningsRows,
+  x:leftX,
+  startY:sectionStartY,
+  totalLabel:'TOTAL EARNINGS',
+  totalAmount:printablePay.totalEarnings,
+  headerColor:[45, 138, 78]
+ })
+ const deductionsEndY = drawSection({
+  title:'DEDUCTIONS',
+  rows:deductionRows,
+  x:rightX,
+  startY:sectionStartY,
+  totalLabel:'TOTAL DEDUCTIONS',
+  totalAmount:printablePay.totalDeductions,
+  headerColor:[202, 27, 27]
+ })
+
+ y = Math.max(earningsEndY, deductionsEndY) + 3
+ doc.setFillColor(26, 26, 46)
+ doc.rect(marginX, y, usableWidth, 9, 'F')
+ doc.setTextColor(255, 255, 255)
+ doc.setFont('helvetica', 'bold')
+ doc.setFontSize(8.3)
+ doc.text('NET PAY / TAKE HOME PAY', marginX + 2, y + 5.8)
+ doc.setFontSize(10.5)
+ doc.text(compactMoney(printablePay.netPay), pageWidth - marginX - 2, y + 5.9, { align:'right' })
  y += 11
 
- addSectionTitle('DEDUCTIONS')
- addRow('Late Deduction', printablePay.lateDeduction, `${printablePay.lateMinutes} late minute(s)`)
- addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} approved undertime minute(s)`)
- addRow('Excess Break Deduction', printablePay.excessBreakDeduction)
- addRow('Cash Advance Deduction', printablePay.cashAdvanceDeduction)
- addRow('Deferred CA Deduction', printablePay.deferredCADeduction, 'Not deducted this cutoff; remains in CA balance.')
- addRow('SSS', printablePay.sssDeduction)
- addRow('Pag-IBIG', printablePay.pagibigDeduction)
- addRow('PhilHealth', printablePay.philhealthDeduction)
- addRow('Other Deductions / Adjustments', printablePay.adjustmentDeductions)
- doc.setFillColor(255, 240, 240)
- doc.rect(marginX, y - 2, pageWidth - marginX * 2, 8, 'F')
- doc.setFont('helvetica', 'bold')
- doc.setFontSize(10)
- doc.setTextColor(202, 27, 27)
- addText('TOTAL DEDUCTIONS', marginX + 2, y + 3)
- addText(php(printablePay.totalDeductions), pageWidth - marginX - 2, y + 3, { align:'right' })
- y += 13
-
- doc.setFillColor(26, 26, 46)
- doc.rect(marginX, y, pageWidth - marginX * 2, 12, 'F')
- doc.setFont('helvetica', 'bold')
- doc.setFontSize(12)
- doc.setTextColor(255, 255, 255)
- addText('NET PAY / TAKE HOME PAY', marginX + 3, y + 8)
- addText(php(printablePay.netPay), pageWidth - marginX - 3, y + 8, { align:'right' })
- y += 18
-
- if (printablePay.nonCADeductionOverflow > 0) {
-  doc.setTextColor(202, 27, 27)
-  doc.setFontSize(8)
+ if (printablePay.nonCADeductionOverflow > 0 && y < pageHeight - 23) {
+  doc.setFillColor(255, 245, 245)
+  doc.setDrawColor(202, 27, 27)
+  doc.rect(marginX, y, usableWidth, 7, 'FD')
   doc.setFont('helvetica', 'bold')
-  addText(`Warning: Non-CA deductions exceeded earnings by ${php(printablePay.nonCADeductionOverflow)}.`, marginX, y)
+  doc.setFontSize(5.8)
+  doc.setTextColor(202, 27, 27)
+  doc.text(`Warning: deductions exceed earnings by ${compactMoney(printablePay.nonCADeductionOverflow)}.`, marginX + 1.5, y + 4.3)
  }
 
- doc.setTextColor(120, 120, 120)
+ // Signature area anchored to the bottom of the same physical sheet.
+ const signatureY = pageHeight - 13
+ doc.setDrawColor(60, 60, 60)
+ doc.line(marginX + 2, signatureY, marginX + 42, signatureY)
+ doc.line(pageWidth - marginX - 42, signatureY, pageWidth - marginX - 2, signatureY)
  doc.setFont('helvetica', 'normal')
- doc.setFontSize(7)
- addText(`Generated: ${new Date().toLocaleString('en-PH')}`, marginX, pageHeight - 10)
+ doc.setFontSize(5.8)
+ doc.setTextColor(80, 80, 80)
+ doc.text('Employee Signature', marginX + 22, signatureY + 3.2, { align:'center' })
+ doc.text('Authorized Signature', pageWidth - marginX - 22, signatureY + 3.2, { align:'center' })
+ doc.setFontSize(5.2)
+ doc.text('105mm x 165mm - same paper as reseller invoice', pageWidth / 2, pageHeight - 2.2, { align:'center' })
 
  doc.save(`${safeName}.pdf`)
 }
@@ -4150,62 +4187,104 @@ function EmployeePortalPayslipBreakdown({ pay }) {
 
 // Print helpers (outside App so they have no stale closure issues) 
 function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
- const serialNo = pay?.payslipSerial || pay?.payslip_serial || genSerial(payrollStart, idx)
+ const normalizedPay = normalizePayslipForPrint({
+  ...pay,
+  payroll_start:payrollStart || pay?.payroll_start,
+  payroll_end:payrollEnd || pay?.payroll_end
+ })
+ const serialNo = normalizedPay.payslipSerial || genSerial(payrollStart, idx)
+
+ const earningsRows = [
+  { label:`Basic Pay (${normalizedPay.workedDays} day${normalizedPay.workedDays === 1 ? '' : 's'})`, amount:normalizedPay.workedBasicPay || normalizedPay.basicPay, always:true },
+  { label:'Birthday Pay', amount:normalizedPay.birthdayPay },
+  { label:`Overtime (${normalizedPay.overtimeMinutes} min)`, amount:normalizedPay.overtimePay },
+  { label:`Night Differential (${normalizedPay.nightDiffMinutes} min)`, amount:normalizedPay.nightDiffPay },
+  { label:'Holiday Pay', amount:normalizedPay.holidayPay },
+  { label:`Paid SIL (${normalizedPay.paidLeaveDays} day${normalizedPay.paidLeaveDays === 1 ? '' : 's'})`, amount:normalizedPay.paidLeavePay },
+  { label:'Other Earnings', amount:normalizedPay.adjustmentEarnings }
+ ].filter(row => row.always || safeNum(row.amount, 0) !== 0)
+
+ const deductionRows = [
+  { label:`Late (${normalizedPay.lateMinutes} min)`, amount:normalizedPay.lateDeduction },
+  { label:`Undertime (${normalizedPay.undertimeMinutes} min)`, amount:normalizedPay.undertimeDeduction },
+  { label:'Excess Break', amount:normalizedPay.excessBreakDeduction },
+  { label:'Cash Advance', amount:normalizedPay.cashAdvanceDeduction },
+  { label:'Deferred CA', amount:normalizedPay.deferredCADeduction },
+  { label:'SSS', amount:normalizedPay.sssDeduction },
+  { label:'Pag-IBIG', amount:normalizedPay.pagibigDeduction },
+  { label:'PhilHealth', amount:normalizedPay.philhealthDeduction },
+  { label:'Other Deductions', amount:normalizedPay.adjustmentDeductions }
+ ].filter(row => safeNum(row.amount, 0) !== 0)
+
+ const buildRows = rows => {
+  const visibleRows = rows.length ? rows : [{ label:'None', amount:0, muted:true }]
+  return visibleRows.map(row => `
+   <div class="payslip-money-row${row.muted ? ' muted' : ''}">
+    <span>${row.label}</span>
+    <strong>${php(row.amount)}</strong>
+   </div>`).join('')
+ }
+
  return `
  <div class="payslip-wrap">
- <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
- <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:8px;">
- <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
- <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
- <div style="font-size:13px;font-weight:bold;margin-top:4px;">EMPLOYEE PAYSLIP</div>
- <div style="font-size:10px;margin-top:2px;">Serial No: ${serialNo}</div>
- <div style="font-size:10px;color:#666;">Period: ${payrollStart} to ${payrollEnd}</div>
- </div>
- <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:10px;">
- <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${pay.employeeName}</div>
- <div style="font-size:12px;font-weight:bold;color:#555;">${pay.position||''}</div>
- <div style="font-size:10px;color:#888;">Code: ${pay.employeeCode} | Worked: ${pay.workedDays} day(s) | Absent: ${pay.absentDays} day(s)</div>
- </div>
- <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
- <tr style="background:#ca1b1b;color:white;">
- <th style="padding:5px 8px;text-align:left;font-size:10px;">Description</th>
- <th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th>
- </tr>
- <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
- <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${pay.workedDays||0} paid workday(s))</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(pay.workedBasicPay?? pay.basicPay)}</td></tr>
- ${(pay.birthdayPay||0)>0?`<tr style="background:#fff8dc;"><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;"> Birthday Pay (200%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.birthdayPay)}</td></tr>`:''}
- ${pay.overtimePay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay (${pay.overtimeMinutes} min 1.25x)</td><td style="padding:3px 8px;text-align:right;">${php(pay.overtimePay)}</td></tr>`:''}
- ${pay.nightDiffPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential (10%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.nightDiffPay)}</td></tr>`:''}
- ${pay.holidayPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;">${php(pay.holidayPay)}</td></tr>`:''}
- ${(pay.paidLeaveDays||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Paid SIL Leave (${pay.paidLeaveDays} day(s))</td><td style="padding:3px 8px;text-align:right;">${php(pay.paidLeavePay||0)}</td></tr>`:''}
- ${pay.adjustmentEarnings>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Bonus / Other Earnings</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentEarnings)}</td></tr>`:''}
- <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Earnings</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalEarnings)}</td></tr>
- <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
- ${pay.lateDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Late (${pay.lateMinutes} min)</td><td style="padding:3px 8px;text-align:right;">${php(pay.lateDeduction)}</td></tr>`:''}
- ${pay.undertimeDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime (${pay.undertimeMinutes} min)</td><td style="padding:3px 8px;text-align:right;">${php(pay.undertimeDeduction)}</td></tr>`:''}
- ${(pay.excessBreakDeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Excess Break</td><td style="padding:3px 8px;text-align:right;">${php(pay.excessBreakDeduction)}</td></tr>`:''}
- ${pay.cashAdvanceDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;">${php(pay.cashAdvanceDeduction)}</td></tr>`:''}
- ${(pay.deferredCADeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;color:#f5a623;">CA not deducted this cutoff; remains in CA balance</td><td style="padding:3px 8px;text-align:right;color:#f5a623;">${php(pay.deferredCADeduction)}</td></tr>`:''}
- ${pay.sssDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS</td><td style="padding:3px 8px;text-align:right;">${php(pay.sssDeduction)}</td></tr>`:''}
- ${pay.pagibigDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG</td><td style="padding:3px 8px;text-align:right;">${php(pay.pagibigDeduction)}</td></tr>`:''}
- ${pay.philhealthDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth</td><td style="padding:3px 8px;text-align:right;">${php(pay.philhealthDeduction)}</td></tr>`:''}
- ${pay.adjustmentDeductions>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Deductions</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentDeductions)}</td></tr>`:''}
- <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Deductions</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalDeductions)}</td></tr>
- ${(pay.nonCADeductionOverflow||0)>0?`<tr><td colspan="2" style="padding:5px 8px;background:#fff5f5;color:#ca1b1b;font-weight:bold;font-size:10px;">WARNING: Deductions exceed earnings by ${php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until corrected.</td></tr>`:''}
- </table>
- <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
- <span style="font-weight:bold;font-size:13px;">NET PAY</span>
- <span style="font-weight:bold;font-size:17px;">${php(pay.netPay)}</span>
- </div>
- <div style="margin-top:25px;display:flex;justify-content:space-between;">
- <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Employee Signature</div></div>
- <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
- </div>
- <div style="text-align:center;font-size:9px;color:#999;margin-top:8px;">${serialNo}</div>
- </div>
+  <div class="payslip-page">
+   <div class="payslip-brand">
+    <div class="payslip-company">Roma's Donuts</div>
+    <div class="payslip-title">EMPLOYEE PAYSLIP</div>
+   </div>
+
+   <div class="payslip-identity">
+    <div>
+     <strong>${normalizedPay.employeeName || 'Employee'}</strong>
+     <span>${[
+      normalizedPay.employeeCode ? `Code: ${normalizedPay.employeeCode}` : '',
+      normalizedPay.position || ''
+     ].filter(Boolean).join(' | ') || 'Employee record'}</span>
+    </div>
+    <div class="payslip-period">
+     <span>${formatDateForDisplay(payrollStart)} - ${formatDateForDisplay(payrollEnd)}</span>
+     <small>${serialNo}</small>
+    </div>
+   </div>
+
+   <div class="payslip-basis">
+    <span><b>Worked</b>${normalizedPay.workedDays} day(s)</span>
+    <span><b>Absent</b>${normalizedPay.absentDays} day(s)</span>
+    <span><b>Paid SIL</b>${normalizedPay.paidLeaveDays} day(s)</span>
+    <span><b>OT</b>${normalizedPay.overtimeMinutes} min</span>
+    <span><b>Night Diff</b>${normalizedPay.nightDiffMinutes} min</span>
+    <span><b>Generated</b>${new Date().toLocaleDateString('en-PH')}</span>
+   </div>
+
+   <div class="payslip-columns">
+    <section class="payslip-section earnings">
+     <h3>EARNINGS</h3>
+     ${buildRows(earningsRows)}
+     <div class="payslip-total"><span>TOTAL EARNINGS</span><strong>${php(normalizedPay.totalEarnings)}</strong></div>
+    </section>
+
+    <section class="payslip-section deductions">
+     <h3>DEDUCTIONS</h3>
+     ${buildRows(deductionRows)}
+     <div class="payslip-total"><span>TOTAL DEDUCTIONS</span><strong>${php(normalizedPay.totalDeductions)}</strong></div>
+    </section>
+   </div>
+
+   <div class="payslip-net">
+    <span>NET PAY / TAKE HOME PAY</span>
+    <strong>${php(normalizedPay.netPay)}</strong>
+   </div>
+
+   ${normalizedPay.nonCADeductionOverflow > 0 ? `<div class="payslip-warning">Warning: deductions exceed earnings by ${php(normalizedPay.nonCADeductionOverflow)}.</div>` : ''}
+
+   <div class="payslip-signatures">
+    <span>Employee Signature</span>
+    <span>Authorized Signature</span>
+   </div>
+   <div class="payslip-paper-note">105mm x 165mm - same paper as reseller invoice</div>
+  </div>
  </div>`
 }
-
 
 
 // ------------------------------------------------------------
@@ -4244,12 +4323,45 @@ function getIndexBundleSignature(html = '') {
 const printCSS = `
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
- body{background:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:16px 0;}
-.payslip-wrap{background:white;width:145mm;margin:10px auto;box-shadow:0 2px 8px rgba(0,0,0,0.2);}
+ html,body{min-height:100%;font-family:Arial,sans-serif;}
+ body{background:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:10px 0;}
+ .payslip-wrap{background:white;width:${RESELLER_INVOICE_PAPER_WIDTH_MM}mm;height:${RESELLER_INVOICE_PAPER_HEIGHT_MM}mm;margin:8px auto;box-shadow:0 2px 8px rgba(0,0,0,0.2);overflow:hidden;}
+ .payslip-page{width:100%;height:100%;padding:1.2mm;display:flex;flex-direction:column;color:#111;background:#fff;overflow:hidden;}
+ .payslip-brand{background:#ca1b1b;color:#fff;text-align:center;padding:2.1mm 1mm 1.6mm;flex:0 0 auto;}
+ .payslip-company{font-size:15px;line-height:1;font-weight:800;}
+ .payslip-title{font-size:8px;line-height:1;margin-top:1.2mm;font-weight:800;letter-spacing:.7px;}
+ .payslip-identity{display:flex;justify-content:space-between;gap:2mm;padding:1.7mm 1.5mm 1.4mm;border-bottom:1px solid #ddd;flex:0 0 auto;}
+ .payslip-identity>div:first-child{min-width:0;}
+ .payslip-identity strong{display:block;color:#ca1b1b;font-size:10px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+ .payslip-identity span,.payslip-identity small{display:block;color:#666;font-size:6.8px;line-height:1.25;margin-top:.6mm;}
+ .payslip-period{text-align:right;white-space:nowrap;}
+ .payslip-basis{display:grid;grid-template-columns:repeat(3,1fr);gap:.8mm;padding:1.2mm;background:#fff8dc;border-bottom:1px solid #ead9a0;flex:0 0 auto;}
+ .payslip-basis span{font-size:6.4px;line-height:1.15;color:#333;}
+ .payslip-basis b{display:block;font-size:5.6px;text-transform:uppercase;color:#777;letter-spacing:.2px;}
+ .payslip-columns{display:grid;grid-template-columns:1fr 1fr;gap:1.2mm;align-items:start;padding-top:1.2mm;flex:0 0 auto;}
+ .payslip-section{border:1px solid #ddd;overflow:hidden;}
+ .payslip-section h3{margin:0;padding:1.2mm;color:#fff;font-size:7px;line-height:1;text-align:left;}
+ .payslip-section.earnings h3{background:#2d8a4e;}
+ .payslip-section.deductions h3{background:#ca1b1b;}
+ .payslip-money-row{min-height:4.6mm;padding:.75mm 1mm;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:1mm;border-bottom:1px solid #eee;font-size:6.2px;line-height:1.08;}
+ .payslip-money-row:nth-of-type(even){background:#fafafa;}
+ .payslip-money-row span{min-width:0;overflow-wrap:anywhere;}
+ .payslip-money-row strong{font-size:6.5px;white-space:nowrap;}
+ .payslip-money-row.muted{color:#999;}
+ .payslip-total{padding:1.1mm 1mm;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:1mm;background:#f0f0f0;font-size:6.4px;font-weight:800;}
+ .payslip-total strong{font-size:7px;white-space:nowrap;}
+ .payslip-net{margin-top:1.4mm;background:#1a1a2e;color:#fff;min-height:9mm;padding:1.4mm 1.8mm;display:flex;align-items:center;justify-content:space-between;gap:2mm;flex:0 0 auto;}
+ .payslip-net span{font-size:7.2px;font-weight:800;}
+ .payslip-net strong{font-size:12px;white-space:nowrap;}
+ .payslip-warning{margin-top:1mm;padding:1mm;border:1px solid #ca1b1b;background:#fff5f5;color:#ca1b1b;font-size:5.8px;font-weight:800;flex:0 0 auto;}
+ .payslip-signatures{margin-top:auto;padding:0 3mm 1mm;display:grid;grid-template-columns:1fr 1fr;gap:8mm;text-align:center;font-size:6px;color:#555;flex:0 0 auto;}
+ .payslip-signatures span{border-top:1px solid #444;padding-top:1mm;}
+ .payslip-paper-note{text-align:center;color:#999;font-size:5px;line-height:1;padding-bottom:.2mm;flex:0 0 auto;}
  @media print{
- @page{size:145mm 210mm;margin:0;}
- body{background:white;display:block;padding:0;}
-.payslip-wrap{box-shadow:none;margin:0;page-break-after:always;}
+  @page{size:${RESELLER_INVOICE_PAPER_CSS_SIZE};margin:0;}
+  html,body{width:${RESELLER_INVOICE_PAPER_WIDTH_MM}mm!important;background:white!important;display:block!important;padding:0!important;}
+  .payslip-wrap{width:${RESELLER_INVOICE_PAPER_WIDTH_MM}mm!important;height:${RESELLER_INVOICE_PAPER_HEIGHT_MM}mm!important;box-shadow:none!important;margin:0!important;page-break-after:always!important;break-after:page!important;}
+  .payslip-wrap:last-child{page-break-after:auto!important;break-after:auto!important;}
  }
  </style>`
 
@@ -21285,71 +21397,9 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  function printHistoryPayslips(records, start, end) {
  if (!records.length) { showToast('No records to print.', 'red'); return }
- const pw = window.open('', '_blank', 'width=900,height=700')
- const html = records.map((pay, idx) => `
- <div class="payslip-wrap">
- <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
- <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:8px;">
- <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
- <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
- <div style="font-size:13px;font-weight:bold;margin-top:4px;">EMPLOYEE PAYSLIP</div>
- <div style="font-size:10px;margin-top:2px;">Serial: ${pay.payslip_serial||' '}</div>
- <div style="font-size:10px;color:#666;">Period: ${start} to ${end}</div>
- </div>
- <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:10px;">
- <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${pay.employee_name}</div>
- <div style="font-size:12px;font-weight:bold;color:#555;">${pay.position||''}</div>
- <div style="font-size:10px;color:#888;">Code: ${pay.employee_code}</div>
- </div>
- <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
- <tr style="background:#ca1b1b;color:white;">
- <th style="padding:5px 8px;text-align:left;font-size:10px;">Description</th>
- <th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th>
- </tr>
- <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
- <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${pay.worked_days||0} day(s) worked)</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${'PHP '+Number(pay.basic_pay||0).toFixed(2)}</td></tr>
- ${Number(pay.overtime_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.overtime_pay).toFixed(2)}</td></tr>`:''}
- ${Number(pay.night_diff_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.night_diff_pay).toFixed(2)}</td></tr>`:''}
- ${Number(pay.holiday_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.holiday_pay).toFixed(2)}</td></tr>`:''}
- ${Number(pay.other_earnings||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Earnings / Bonus</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.other_earnings).toFixed(2)}</td></tr>`:''}
- <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:5px 8px;font-size:10px;">TOTAL EARNINGS</td><td style="padding:5px 8px;text-align:right;color:#2d8a4e;">${'PHP '+Number(pay.total_earnings||0).toFixed(2)}</td></tr>
- <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
- ${Number(pay.late_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Late Deduction</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.late_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.undertime_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime Deduction</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.undertime_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.cash_advance_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.cash_advance_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.sss_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.sss_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.pagibig_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.pagibig_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.philhealth_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.philhealth_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.other_deductions||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Deductions</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.other_deductions).toFixed(2)}</td></tr>`:''}
- <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:5px 8px;font-size:10px;">TOTAL DEDUCTIONS</td><td style="padding:5px 8px;text-align:right;color:#ca1b1b;">${'PHP '+Number(pay.total_deductions||0).toFixed(2)}</td></tr>
- </table>
- <table style="width:100%;border-collapse:collapse;margin-bottom:8px;background:#f9f9f9;border:1px solid #eee;border-radius:4px;">
- <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Days Worked</td><td style="padding:4px 8px;text-align:right;font-size:10px;font-weight:bold;">${pay.worked_days||0}</td></tr>
- <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Absences</td><td style="padding:4px 8px;text-align:right;font-size:10px;font-weight:bold;color:#ca1b1b;">${pay.absent_days||0}</td></tr>
- <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Period</td><td style="padding:4px 8px;text-align:right;font-size:10px;">${start} to ${end}</td></tr>
- </table>
- <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
- <span style="font-weight:bold;font-size:13px;">NET PAY</span>
- <span style="font-weight:bold;font-size:17px;">${'PHP '+Number(pay.net_pay||0).toFixed(2)}</span>
- </div>
- <div style="margin-top:20px;display:flex;justify-content:space-between;">
- <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Employee Signature</div></div>
- <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
- </div>
- <div style="text-align:center;font-size:9px;color:#999;margin-top:8px;">${pay.payslip_serial||''}</div>
- </div>
- </div>`).join('')
- pw.document.write(`<!DOCTYPE html><html><head><title>Payslips ${start} to ${end}</title>
- <style>
- *{margin:0;padding:0;box-sizing:border-box;}
- body{background:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:16px 0;}
-.payslip-wrap{background:white;width:145mm;margin:10px auto;box-shadow:0 2px 8px rgba(0,0,0,0.2);}
- @media print{
- @page{size:145mm 210mm;margin:0;}
- body{background:white;display:block;padding:0;}
-.payslip-wrap{box-shadow:none;margin:0;page-break-after:always;}
- }
- </style></head><body>${html}</body></html>`)
+ const pw = window.open('', '_blank', 'width=700,height=850')
+ const html = records.map((record, idx) => buildPayslipHTML(record, start, end, idx)).join('')
+ pw.document.write(`<!DOCTYPE html><html><head><title>Payslips ${start} to ${end}</title>${printCSS}</head><body>${html}</body></html>`)
  pw.document.close()
  setTimeout(() => { pw.focus(); pw.print() }, 800)
  }
@@ -24986,16 +25036,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       >
        Print All Items
       </button>
-      {isOwnerRole && (
-       <button
-        onClick={resetAllOutletStockToZero}
-        disabled={posResettingStock}
-        title="Owner-only pre-operation reset. Clears current SAGS POS stock without deleting products or sales history."
-        style={{...btnRed, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px', opacity:posResettingStock ? 0.65 : 1, cursor:posResettingStock ? 'not-allowed' : 'pointer'}}
-       >
-        {posResettingStock ? 'Resetting Stock...' : 'Reset All Stock to 0'}
-       </button>
-      )}
+      {/* The former owner-only "Reset All Stock to 0" control was intentionally removed.
+          Nightly automation must only reset the Donuts category. Non-donut balances
+          must be adjusted through normal Stock In / Stock Out transactions. */}
       {canEditOutletInventory && (
        <button
         onClick={()=>setShowAddOutletItem(v=>!v)}
