@@ -11764,105 +11764,168 @@ function buildDeliveryInvoicePrintCSS() {
    const end = payrollEnd || data.payrollEnd || ''
    const basicPay = safeNum(data.workedBasicPay || data.basicPay, 0)
 
-   // Exactly the same usable table width as the reseller delivery invoice.
+   // Use the exact same printable width as the reseller delivery invoice.
+   // The page remains 105mm x 165mm with 72-twip margins on all sides.
    const widths = [3820, 1833]
    const full = widths[0] + widths[1]
+
+   // Restrained print palette: primarily black, white and neutral gray.
+   // Roma red is used only as a small brand accent in the title text.
+   const BLACK = '1F1F1F'
+   const DARK_GRAY = '404040'
+   const MID_GRAY = '6B6B6B'
+   const LINE_GRAY = 'A6A6A6'
+   const LIGHT_GRAY = 'E7E6E6'
+   const VERY_LIGHT_GRAY = 'F5F5F5'
+   const WHITE = 'FFFFFF'
    const BRAND_RED = 'CA1B1B'
-   const BRAND_GOLD = 'FDD412'
-   const BRAND_NAVY = '1A1A2E'
-   const GREEN = '2D8A4E'
-   const PALE_GOLD = 'FCEEC0'
-   const PALE_GREEN = 'E8F5E9'
-   const PALE_RED = 'FBDCDC'
-   const LIGHT_GRAY = 'F3F4F6'
 
    const rows = []
    const addAmountRow = (label, amount, options = {}) => {
-     const numericAmount = safeNum(amount, 0)
-     if (!options.always && numericAmount <= 0) return
      rows.push(wordRow([
-       wordCell(label, { width:widths[0], align:'left', bold:false, size:18, shade:options.shade || '' }),
-       wordCell(php(numericAmount), { width:widths[1], align:'right', bold:true, size:18, shade:options.shade || '' })
-     ], options.height || 285))
+       wordCell(label, {
+         width:widths[0],
+         align:'left',
+         bold:options.boldLabel === true,
+         size:options.size || 17,
+         shade:options.shade || ''
+       }),
+       wordCell(php(safeNum(amount, 0)), {
+         width:widths[1],
+         align:'right',
+         bold:true,
+         size:options.amountSize || options.size || 17,
+         shade:options.shade || ''
+       })
+     ], options.height || 280))
    }
 
    rows.push(wordRow([
-     wordCell("ROMA'S DONUTS - EMPLOYEE PAYSLIP", { width:full, span:2, align:'center', bold:true, size:20, line:240, shade:BRAND_RED, color:'FFFFFF' })
-   ], 360))
+     wordCell("ROMA'S DONUTS  |  EMPLOYEE PAYSLIP", {
+       width:full,
+       span:2,
+       align:'center',
+       bold:true,
+       size:21,
+       line:252,
+       shade:BLACK,
+       color:WHITE
+     })
+   ], 420))
+
    rows.push(wordRow([
-     wordCell(`Period: ${formatDateForDisplay(start)} to ${formatDateForDisplay(end)}`, { width:widths[0], align:'left', bold:true, size:18, shade:PALE_GOLD }),
-     wordCell(`Serial: ${serialNo || '-'}`, { width:widths[1], align:'right', bold:true, size:16, shade:PALE_GOLD })
-   ], 320))
+     wordCell(`PAY PERIOD: ${formatDateForDisplay(start)} - ${formatDateForDisplay(end)}`, {
+       width:widths[0], align:'left', bold:true, size:16, shade:VERY_LIGHT_GRAY
+     }),
+     wordCell(`SERIAL: ${serialNo || '-'}`, {
+       width:widths[1], align:'right', bold:true, size:15, shade:VERY_LIGHT_GRAY
+     })
+   ], 340))
+
    rows.push(wordRow([
-     wordCell(data.employeeName || 'Employee', { width:full, span:2, align:'center', bold:true, size:20, shade:BRAND_GOLD, color:BRAND_NAVY })
+     wordCell(data.employeeName || 'Employee', {
+       width:full, span:2, align:'center', bold:true, size:21, shade:LIGHT_GRAY, color:BLACK
+     })
+   ], 380))
+
+   rows.push(wordRow([
+     wordCell(`EMPLOYEE CODE: ${data.employeeCode || '-'}`, {
+       width:widths[0], align:'left', bold:false, size:16
+     }),
+     wordCell(`POSITION: ${data.position || '-'}`, {
+       width:widths[1], align:'right', bold:false, size:15
+     })
+   ], 340))
+
+   rows.push(wordRow([
+     wordCell('ATTENDANCE / PAYROLL BASIS', {
+       width:full, span:2, align:'center', bold:true, size:17, shade:DARK_GRAY, color:WHITE
+     })
+   ], 300))
+
+   rows.push(wordRow([
+     wordCell(`WORKED: ${data.workedDays}  |  ABSENT: ${data.absentDays}  |  PAID SIL: ${data.paidLeaveDays}`, {
+       width:widths[0], align:'left', bold:false, size:15, shade:VERY_LIGHT_GRAY
+     }),
+     wordCell(`OT: ${data.overtimeMinutes} MIN  |  ND: ${data.nightDiffMinutes} MIN`, {
+       width:widths[1], align:'right', bold:false, size:14, shade:VERY_LIGHT_GRAY
+     })
    ], 350))
-   rows.push(wordRow([
-     wordCell(`Employee Code: ${data.employeeCode || '-'}`, { width:widths[0], align:'left', bold:false, size:18 }),
-     wordCell(`Pos: ${data.position || '-'}`, { width:widths[1], align:'right', bold:false, size:14 })
-   ], 320))
 
    rows.push(wordRow([
-     wordCell('ATTENDANCE / PAYROLL BASIS', { width:full, span:2, align:'center', bold:true, size:18, shade:BRAND_NAVY, color:'FFFFFF' })
+     wordCell('EARNINGS', {
+       width:full, span:2, align:'center', bold:true, size:17, shade:LIGHT_GRAY, color:BLACK
+     })
    ], 300))
-   rows.push(wordRow([
-     wordCell(`Worked: ${data.workedDays} | Absent: ${data.absentDays} | Paid SIL: ${data.paidLeaveDays}`, { width:widths[0], align:'left', bold:false, size:14, shade:LIGHT_GRAY }),
-     wordCell(`OT: ${data.overtimeMinutes} | ND: ${data.nightDiffMinutes}`, { width:widths[1], align:'right', bold:false, size:14, shade:LIGHT_GRAY })
-   ], 310))
 
-   rows.push(wordRow([
-     wordCell('EARNINGS', { width:full, span:2, align:'center', bold:true, size:18, shade:GREEN, color:'FFFFFF' })
-   ], 300))
-   addAmountRow(`Basic / Regular Pay (${data.workedDays} paid day(s))`, basicPay, { always:true })
-   addAmountRow('Birthday Pay', data.birthdayPay)
+   // Keep every line visible, including zero amounts. A fixed row count makes
+   // the payslip occupy the same physical sheet consistently for every employee.
+   addAmountRow(`Basic / Regular Pay (${data.workedDays} paid day(s))`, basicPay)
    addAmountRow(`Overtime Pay (${data.overtimeMinutes} min)`, data.overtimePay)
    addAmountRow(`Night Differential Pay (${data.nightDiffMinutes} min)`, data.nightDiffPay)
    addAmountRow('Holiday Pay', data.holidayPay)
    addAmountRow(`Paid SIL Leave (${data.paidLeaveDays} day(s))`, data.paidLeavePay)
+   addAmountRow('Birthday Pay', data.birthdayPay)
    addAmountRow('Other Earnings / Adjustments', data.adjustmentEarnings)
-   addAmountRow('TOTAL EARNINGS / GROSS PAY', data.totalEarnings, { always:true, shade:PALE_GREEN, height:315 })
+   addAmountRow('TOTAL EARNINGS / GROSS PAY', data.totalEarnings, {
+     shade:LIGHT_GRAY, boldLabel:true, size:18, height:330
+   })
 
    rows.push(wordRow([
-     wordCell('DEDUCTIONS', { width:full, span:2, align:'center', bold:true, size:18, shade:BRAND_RED, color:'FFFFFF' })
+     wordCell('DEDUCTIONS', {
+       width:full, span:2, align:'center', bold:true, size:17, shade:LIGHT_GRAY, color:BLACK
+     })
    ], 300))
-   const deductionRowCountBefore = rows.length
+
    addAmountRow(`Late Deduction (${data.lateMinutes} min)`, data.lateDeduction)
    addAmountRow(`Undertime Deduction (${data.undertimeMinutes} min)`, data.undertimeDeduction)
    addAmountRow('Excess Break Deduction', data.excessBreakDeduction)
    addAmountRow('Cash Advance Deduction', data.cashAdvanceDeduction)
-   addAmountRow('Deferred CA - remains in balance', data.deferredCADeduction, { shade:PALE_GOLD })
+   addAmountRow('Deferred Cash Advance', data.deferredCADeduction)
    addAmountRow('SSS', data.sssDeduction)
    addAmountRow('Pag-IBIG', data.pagibigDeduction)
    addAmountRow('PhilHealth', data.philhealthDeduction)
    addAmountRow('Other Deductions / Adjustments', data.adjustmentDeductions)
-   if (rows.length === deductionRowCountBefore) {
-     rows.push(wordRow([
-       wordCell('No deductions', { width:widths[0], align:'left', bold:false, size:18 }),
-       wordCell(php(0), { width:widths[1], align:'right', bold:true, size:18 })
-     ], 285))
-   }
-   addAmountRow('TOTAL DEDUCTIONS', data.totalDeductions, { always:true, shade:PALE_RED, height:315 })
+   addAmountRow('TOTAL DEDUCTIONS', data.totalDeductions, {
+     shade:LIGHT_GRAY, boldLabel:true, size:18, height:330
+   })
 
    rows.push(wordRow([
-     wordCell('NET PAY / TAKE HOME PAY', { width:widths[0], align:'left', bold:true, size:20, shade:BRAND_NAVY, color:'FFFFFF' }),
-     wordCell(php(data.netPay), { width:widths[1], align:'right', bold:true, size:22, shade:BRAND_NAVY, color:'FFFFFF' })
-   ], 410))
+     wordCell('NET PAY / TAKE HOME PAY', {
+       width:widths[0], align:'left', bold:true, size:20, shade:BLACK, color:WHITE
+     }),
+     wordCell(php(data.netPay), {
+       width:widths[1], align:'right', bold:true, size:23, shade:BLACK, color:WHITE
+     })
+   ], 450))
 
    if (data.nonCADeductionOverflow > 0) {
      rows.push(wordRow([
-       wordCell(`WARNING: Non-CA deductions exceeded earnings by ${php(data.nonCADeductionOverflow)}.`, { width:full, span:2, align:'center', bold:true, size:16, shade:PALE_RED, color:BRAND_RED })
-     ], 320))
+       wordCell(`NOTICE: Non-CA deductions exceeded earnings by ${php(data.nonCADeductionOverflow)}.`, {
+         width:full, span:2, align:'center', bold:true, size:14, shade:VERY_LIGHT_GRAY, color:BRAND_RED
+       })
+     ], 260))
    }
 
    rows.push(wordRow([
-     wordCell('____________________', { width:widths[0], align:'center', bold:false, size:16 }),
-     wordCell('________________', { width:widths[1], align:'center', bold:false, size:16 })
-   ], 360))
-   rows.push(wordRow([
-     wordCell('Employee / Date', { width:widths[0], align:'center', bold:false, size:14 }),
-     wordCell('Authorized / Date', { width:widths[1], align:'center', bold:false, size:14 })
-   ], 250))
+     wordCell('____________________________', {
+       width:widths[0], align:'center', bold:false, size:16
+     }),
+     wordCell('____________________', {
+       width:widths[1], align:'center', bold:false, size:16
+     })
+   ], 380))
 
-   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="8" w:space="0" w:color="D1D5DB"/><w:insideV w:val="single" w:sz="8" w:space="0" w:color="D1D5DB"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="20" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="20" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid><w:gridCol w:w="${widths[0]}"/><w:gridCol w:w="${widths[1]}"/></w:tblGrid>${rows.join('')}</w:tbl>`
+   rows.push(wordRow([
+     wordCell('EMPLOYEE SIGNATURE / DATE', {
+       width:widths[0], align:'center', bold:false, size:13
+     }),
+     wordCell('AUTHORIZED SIGNATURE / DATE', {
+       width:widths[1], align:'center', bold:false, size:13
+     })
+   ], 240))
+
+   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="12" w:space="0" w:color="${DARK_GRAY}"/><w:left w:val="single" w:sz="12" w:space="0" w:color="${DARK_GRAY}"/><w:bottom w:val="single" w:sz="12" w:space="0" w:color="${DARK_GRAY}"/><w:right w:val="single" w:sz="12" w:space="0" w:color="${DARK_GRAY}"/><w:insideH w:val="single" w:sz="6" w:space="0" w:color="${LINE_GRAY}"/><w:insideV w:val="single" w:sz="6" w:space="0" w:color="${LINE_GRAY}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="28" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="28" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid><w:gridCol w:w="${widths[0]}"/><w:gridCol w:w="${widths[1]}"/></w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
  function buildPayslipsDocxDocument(records, payrollStart, payrollEnd) {
