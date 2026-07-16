@@ -11,6 +11,7 @@ const STORE_LAT = 15.4755
 const STORE_LNG = 120.5963
 const STORE_RADIUS_METERS = 200
 const ALLOWED_BREAK_MINUTES = 60
+const REQUIRED_PAID_WORK_MINUTES = 8 * 60
 const RESELLER_CREDIT_GRACE_DAYS = 7
 const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
@@ -218,14 +219,78 @@ function calculateNightDifferentialMinutes(timeIn, timeOut, breakRows = []) {
 
 
 
+function getRecordedBreakMinutes(log = {}, breakRows = []) {
+ const savedBreakMinutes = Math.max(0, safeNum(log?.total_break_minutes, 0))
+ if (savedBreakMinutes > 0) return Math.round(savedBreakMinutes)
+ return Math.max(0, Math.round((breakRows || []).reduce((sum, row) => {
+  const savedRowMinutes = Math.max(0, safeNum(row?.break_minutes, 0))
+  if (savedRowMinutes > 0) return sum + savedRowMinutes
+  if (row?.break_out && row?.break_in) return sum + diffMinutesAcrossMidnight(row.break_out, row.break_in)
+  return sum
+ }, 0)))
+}
+
+function getCombinedAttendanceSpanMinutes(logs = []) {
+ const intervals = []
+ ;(logs || []).forEach(log => {
+  if (!log?.time_in || !log?.time_out || log?.status === 'Absent') return
+  const start = minutesFromTime(log.time_in)
+  let end = minutesFromTime(log.time_out)
+  if (end < start) end += 24 * 60
+  if (end > start) intervals.push([start, end])
+ })
+ intervals.sort((a, b) => a[0] - b[0])
+ if (!intervals.length) return 0
+
+ let total = 0
+ let [currentStart, currentEnd] = intervals[0]
+ for (let i = 1; i < intervals.length; i++) {
+  const [nextStart, nextEnd] = intervals[i]
+  if (nextStart <= currentEnd) currentEnd = Math.max(currentEnd, nextEnd)
+  else {
+   total += currentEnd - currentStart
+   currentStart = nextStart
+   currentEnd = nextEnd
+  }
+ }
+ return Math.max(0, Math.round(total + (currentEnd - currentStart)))
+}
+
+function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}) {
+ const completedLogs = (dayLogs || []).filter(log => log?.time_in && log?.time_out && log?.status !== 'Absent')
+ if (!completedLogs.length) {
+  return { rawSpanMinutes:0, recordedBreakMinutes:0, deductedBreakMinutes:0, paidWorkedMinutes:0, undertimeMinutes:0 }
+ }
+
+ const rawSpanMinutes = getCombinedAttendanceSpanMinutes(completedLogs)
+ let recordedBreakMinutes = 0
+ const countedFallbackBreaks = new Set()
+ completedLogs.forEach(log => {
+  const rows = breakRowsByLogId?.[String(log.id || '')] || []
+  if (rows.length > 0) {
+   recordedBreakMinutes += getRecordedBreakMinutes(log, rows)
+   return
+  }
+  const fallbackBreak = getRecordedBreakMinutes(log, [])
+  const fallbackKey = `${log.time_in || ''}|${log.time_out || ''}|${fallbackBreak}`
+  if (!countedFallbackBreaks.has(fallbackKey)) {
+   countedFallbackBreaks.add(fallbackKey)
+   recordedBreakMinutes += fallbackBreak
+  }
+ })
+
+ // Company rule: every completed workday automatically carries at least one
+ // unpaid 60-minute break, even when no break was filed or recorded.
+ const deductedBreakMinutes = rawSpanMinutes > 0 ? Math.max(ALLOWED_BREAK_MINUTES, recordedBreakMinutes) : 0
+ const paidWorkedMinutes = Math.max(0, Math.round(rawSpanMinutes - deductedBreakMinutes))
+ const undertimeMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - paidWorkedMinutes)
+ return { rawSpanMinutes, recordedBreakMinutes, deductedBreakMinutes, paidWorkedMinutes, undertimeMinutes }
+}
+
 function getDTRDutyMinutes(log = {}) {
  if (!log || !log.time_in || !log.time_out || log.status === 'Absent') return 0
- if (Array.isArray(log._logs) && log._logs.length > 1) {
-  return log._logs.reduce((sum, row) => sum + getDTRDutyMinutes(row), 0)
- }
- const rawMinutes = diffMinutesAcrossMidnight(log.time_in, log.time_out)
- const breakMinutes = safeNum(log.total_break_minutes, 0)
- return Math.max(0, Math.round(rawMinutes - breakMinutes))
+ const dayLogs = Array.isArray(log._logs) && log._logs.length > 0 ? log._logs : [log]
+ return getAttendanceDayWorkMetrics(dayLogs).paidWorkedMinutes
 }
 
 function formatDutyHours(minutes = 0) {
@@ -492,7 +557,7 @@ function downloadEmployeePayslip(pay = {}) {
 
  addSectionTitle('DEDUCTIONS')
  addRow('Late Deduction', printablePay.lateDeduction, `${printablePay.lateMinutes} late minute(s)`)
- addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} approved undertime minute(s)`)
+ addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} automatic undertime minute(s)`)
  addRow('Excess Break Deduction', printablePay.excessBreakDeduction)
  addRow('Cash Advance Deduction', printablePay.cashAdvanceDeduction)
  addRow('Deferred CA Deduction', printablePay.deferredCADeduction, 'Not deducted this cutoff; remains in CA balance.')
@@ -4121,7 +4186,7 @@ function EmployeePortalPayslipBreakdown({ pay }) {
    <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
     <h4 style={{ margin:'0 0 8px', color:'#ca1b1b', fontSize:'13px' }}>Deductions</h4>
     <SectionRow label="Late Deduction" amount={value('late_deduction')} note={`${value('late_minutes')} late minute(s)`} />
-    <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} approved undertime minute(s)`} />
+    <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} automatic undertime minute(s)`} />
     <SectionRow label="Cash Advance Deduction" amount={value('cash_advance_deduction')} />
     <SectionRow label="Requested CA Deduction" amount={value('requested_cash_advance_deduction')} note="Original CA amount requested for this cutoff before payroll safety cap." />
     <SectionRow label="Deferred CA Deduction" amount={value('deferred_cash_advance_deduction')} note="Not deducted this cutoff; remains in CA balance." highlight="#f5a623" />
@@ -9402,29 +9467,69 @@ Cancel = create batch record only for existing stock.`)
  }
 
  function normalizeInvoiceSearchValue(value) {
- return String(value || '').toLowerCase().trim()
+ return String(value || '')
+ .toLowerCase()
+ .normalize('NFKD')
+ .replace(/[\u0300-\u036f]/g, '')
+ .replace(/[.,]/g, ' ')
+ .replace(/\s+/g, ' ')
+ .trim()
+ }
+
+ function getInvoiceDateSearchAliases(value) {
+ const dateKey = String(value || '').slice(0, 10)
+ const parsed = parseLocalDate(dateKey)
+ if (!parsed) return dateKey
+
+ const year = parsed.getFullYear()
+ const month = parsed.getMonth() + 1
+ const day = parsed.getDate()
+ const month2 = pad2(month)
+ const day2 = pad2(day)
+ const longMonth = parsed.toLocaleDateString('en-US', { month:'long' })
+ const shortMonth = parsed.toLocaleDateString('en-US', { month:'short' })
+ const weekday = parsed.toLocaleDateString('en-US', { weekday:'long' })
+
+ return [
+ dateKey,
+ `${month2}/${day2}/${year}`,
+ `${month}/${day}/${year}`,
+ `${year}/${month2}/${day2}`,
+ `${month2}-${day2}-${year}`,
+ `${month}-${day}-${year}`,
+ `${longMonth} ${day}, ${year}`,
+ `${longMonth} ${day} ${year}`,
+ `${shortMonth} ${day}, ${year}`,
+ `${shortMonth} ${day} ${year}`,
+ `${day} ${longMonth} ${year}`,
+ `${day} ${shortMonth} ${year}`,
+ `${longMonth} ${day}`,
+ `${shortMonth} ${day}`,
+ `${day} ${longMonth}`,
+ `${day} ${shortMonth}`,
+ `${weekday} ${longMonth} ${day} ${year}`,
+ `${year}${month2}${day2}`
+ ]
+ .filter(Boolean)
+ .join(' ')
  }
 
  function getInvoiceSearchHaystack(inv) {
  const reseller = resellers.find(r => String(r.id) === String(inv?.reseller_id)) || {}
  const deliveryDate = getInvoiceDeliveryDate(inv)
- const dateLabel = deliveryDate
-? (() => {
- const parsed = parseLocalDate(deliveryDate)
- return parsed? parsed.toLocaleDateString('en-PH', { month:'long', day:'numeric', year:'numeric' }): deliveryDate
- })()
-: ''
+ const dueDate = String(inv?.due_date || '').slice(0, 10)
 
- return [
+ return normalizeInvoiceSearchValue([
  inv?.invoice_number,
  inv?.reseller_name,
  inv?.customer_name,
  inv?.customer_address,
  inv?.customer_contact,
  inv?.customer_type,
- inv?.delivery_date,
- dateLabel,
- inv?.due_date,
+ deliveryDate,
+ getInvoiceDateSearchAliases(deliveryDate),
+ dueDate,
+ getInvoiceDateSearchAliases(dueDate),
  inv?.status,
  inv?.address,
  inv?.delivery_address,
@@ -9441,8 +9546,7 @@ Cancel = create batch record only for existing stock.`)
 ...(inv?.delivery_invoice_items || []).map(item => item?.variant_name)
  ]
 .filter(Boolean)
-.join(' ')
-.toLowerCase()
+.join(' '))
  }
 
  function invoiceMatchesSearch(inv, searchTerm = invoiceSearchTerm) {
@@ -9512,17 +9616,13 @@ Cancel = create batch record only for existing stock.`)
  }
 
  function getInvoiceDayOptions() {
- const minDate = parseLocalDate(getDateOffsetString(-31))
+ // Include every delivery date loaded from Supabase. Historical invoices must
+ // never disappear from the dropdown just because they are older than 31 days.
  const dates = new Set([today, getDateOffsetString(1)])
 
  deliveryInvoices.forEach(inv => {
  const dateKey = getInvoiceDeliveryDate(inv)
- if (!dateKey) return
- const parsed = parseLocalDate(dateKey)
- if (!parsed) return
- // Keep the dropdown focused on the latest one-month operating window,
- // but still include future invoice dates for production planning.
- if (!minDate || parsed >= minDate) dates.add(dateKey)
+ if (dateKey && parseLocalDate(dateKey)) dates.add(dateKey)
  })
 
  return Array.from(dates).sort((a, b) => b.localeCompare(a))
@@ -9915,24 +10015,67 @@ Cancel = create batch record only for existing stock.`)
  }
  } catch(e) { console.warn('autoMarkTodayDelivered:', e) }
  }
+ async function fetchAllDeliveryInvoiceRows(selectClause) {
+ const pageSize = 1000
+ const maxPages = 100
+ const rowsById = new Map()
+ let from = 0
+ let totalCount = null
+
+ for (let page = 0; page < maxPages; page++) {
+ const { data, error, count } = await supabase
+ .from('delivery_invoices')
+ .select(selectClause, { count:'exact' })
+ .order('delivery_date', { ascending:false })
+ .order('created_at', { ascending:false })
+ .order('id', { ascending:false })
+ .range(from, from + pageSize - 1)
+
+ if (error) return { data:[], error }
+
+ const rows = data || []
+ rows.forEach((row, index) => {
+ const key = row?.id? String(row.id): `row-${from + index}`
+ rowsById.set(key, row)
+ })
+
+ if (totalCount === null && Number.isFinite(count)) totalCount = count
+ if (rows.length === 0) break
+
+ from += rows.length
+ if (totalCount !== null && from >= totalCount) break
+
+ if (page === maxPages - 1) {
+ console.warn(`Delivery invoice loading reached the safety limit of ${maxPages * pageSize} rows.`)
+ }
+ }
+
+ return { data:Array.from(rowsById.values()), error:null }
+ }
+
  async function loadDeliveryInvoices() {
  setInvoicesLoading(true)
  try {
  await autoMarkTodayDelivered()
- const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(500)
+
+ // Load every saved invoice in pages. The previous .limit(500) silently hid
+ // older records once the database exceeded 500 invoices.
+ const withItems = await fetchAllDeliveryInvoiceRows('*, delivery_invoice_items(*)')
  if (!withItems.error) {
  const normalized = await normalizePaidInvoiceRows(withItems.data || [])
  const withReturns = await attachReturnsToDeliveryInvoices(normalized)
  setDeliveryInvoices(withReturns.sort(sortDeliveryInvoicesNewestFirst))
  return
  }
+
  console.warn('delivery_invoices with items failed, trying basic invoice list:', withItems.error)
- const basic = await supabase.from('delivery_invoices').select('*').order('delivery_date', { ascending:false }).limit(500)
+ const basic = await fetchAllDeliveryInvoiceRows('*')
  if (basic.error) {
  console.warn('delivery_invoices basic query failed:', basic.error)
  setDeliveryInvoices([])
  return
  }
+
  const normalizedBasic = await normalizePaidInvoiceRows(basic.data || [])
  const basicWithReturns = await attachReturnsToDeliveryInvoices(normalizedBasic)
  setDeliveryInvoices(basicWithReturns.sort(sortDeliveryInvoicesNewestFirst))
@@ -15084,16 +15227,28 @@ function buildDeliveryInvoicePrintCSS() {
  let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
  const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
  const excessBreakMins = Math.max(0, totalBreakMins-ALLOWED_BREAK_MINUTES)
-
- // Correctly compare time-out vs scheduled shift end even when the shift crosses midnight.
- if (shiftEndForCalc) {
- const diff = diffFromShiftEndMinutes(shiftStartForCalc, shiftEndForCalc, timeOut, timeIn)
- rawUndertimeMinutes = diff < 0? Math.abs(diff): 0
+ const attendanceMetrics = getAttendanceDayWorkMetrics([{
+  ...todayLog,
+  time_in:timeIn,
+  time_out:timeOut,
+  total_break_minutes:totalBreakMins,
+  status:'Completed'
+ }])
+ rawUndertimeMinutes = attendanceMetrics.undertimeMinutes
  undertimeMinutes = undertimeDeductionApplicable ? rawUndertimeMinutes : 0
- overtimeMinutes = diff > 0? diff: 0
- if (undertimeMinutes>0) status='Undertime - Pending Filing'
- if (overtimeMinutes>0) status='Overtime - Pending Filing'
+
+ // Overtime may begin only after the employee has completed the required
+ // eight paid work hours. This prevents the same day from carrying both an
+ // actual-hours shortage and automatic overtime merely because Time Out was
+ // later than the scheduled shift end.
+ if (shiftEndForCalc) {
+  const diff = diffFromShiftEndMinutes(shiftStartForCalc, shiftEndForCalc, timeOut, timeIn)
+  const shiftEndOvertimeMinutes = diff > 0 ? diff : 0
+  const paidMinutesAboveRequirement = Math.max(0, attendanceMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES)
+  overtimeMinutes = Math.min(shiftEndOvertimeMinutes, paidMinutesAboveRequirement)
  }
+ if (undertimeMinutes>0) status='Undertime - Automatically Deductible'
+ else if (overtimeMinutes>0) status='Overtime - Pending Filing'
 
  // Auto-compute Night Shift Differential (10PM - 6AM), including next-day time-out 
  const inM = minutesFromTime(timeIn)
@@ -15146,7 +15301,7 @@ function buildDeliveryInvoicePrintCSS() {
      attendance_date:activeAttendanceDate,
      request_type:'undertime',
      minutes:undertimeMinutes,
-     employee_reason:'System auto-filed: employee timed out before scheduled shift end. For admin review.',
+     employee_reason:'System auto-filed for documentation: actual paid work was below 8 hours after the automatic 60-minute break. Payroll deduction applies from attendance even without approval.',
      status:'pending'
     })
     if (autoUTError) throw autoUTError
@@ -15165,13 +15320,13 @@ function buildDeliveryInvoicePrintCSS() {
  if (nsdMinutes > 0) msg += `\n\n Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) will be computed in payroll at 10% premium.`
  if (overtimeMinutes>0) msg += `\n\n ${overtimeMinutes} min overtime please file an OT request.`
  if (undertimeMinutes>0) {
-  if (autoUTRequestCreated) msg += `\n\n ${undertimeMinutes} min undertime was automatically filed for admin review.`
-  else if (autoUTRequestSkipped) msg += `\n\n ${undertimeMinutes} min undertime already has a pending or approved UT request.`
-  else msg += `\n\n ${undertimeMinutes} min undertime was detected, but auto-filing failed. Please file a UT request manually${autoUTRequestError?': '+autoUTRequestError:''}.`
+  if (autoUTRequestCreated) msg += `\n\n ${undertimeMinutes} min automatic undertime was recorded. The UT request is for documentation; payroll deduction is based on actual attendance.`
+  else if (autoUTRequestSkipped) msg += `\n\n ${undertimeMinutes} min automatic undertime was recorded. An existing UT request was found, but payroll deduction remains based on actual attendance.`
+  else msg += `\n\n ${undertimeMinutes} min automatic undertime was recorded. Request filing failed, but the payroll deduction will still apply from attendance${autoUTRequestError?': '+autoUTRequestError:''}.`
  }
  if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No UT request or deduction was created.`
- if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break will be deducted.`
- alert(msg)
+ if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break is already included in the actual worked-time shortage.`
+  alert(msg)
  }
  async function submitTimeAdjRequest() {
  if (!otRequestReason ||!otRequestMinutes ||!otRequestDate) { alert('Please enter date, minutes and reason.'); return }
@@ -19987,7 +20142,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (requestType==='overtime') {
   await supabase.from('attendance_logs').update({ overtime_minutes:req.minutes, overtime_approved:true, status:'Overtime' }).eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
  } else {
-  await supabase.from('attendance_logs').update({ undertime_minutes:req.minutes, status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
+  // UT approval documents the employee's request only. Actual attendance,
+  // not the approved request minutes, controls the payroll deduction.
+  await supabase.from('attendance_logs').update({ status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
  }
  await logAudit(`${requestType.toUpperCase()} APPROVED`,currentAdminLabel,req.employee_name,`${req.minutes} min on ${targetDate}`)
  await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${requestType==='overtime'?'Overtime':'Undertime'} Approved`, `Your ${requestType} request of ${req.minutes} minutes on ${targetDate} has been approved.`)
@@ -20002,7 +20159,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (req.request_type==='overtime') {
  await supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
  } else {
- await supabase.from('attendance_logs').update({ undertime_minutes:0, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+ // Rejecting the filing does not erase the actual worked-time shortage.
+ await supabase.from('attendance_logs').update({ status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
  }
  await logAudit(`${req.request_type.toUpperCase()} REJECTED`,currentAdminLabel,req.employee_name,`Reason: ${reason}`)
  await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Rejected`, `Your ${req.request_type} request on ${req.attendance_date} was rejected. Reason: ${reason}`)
@@ -20037,7 +20195,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (req.request_type === 'overtime') {
  await supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
  } else {
- await supabase.from('attendance_logs').update({ undertime_minutes:0, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+ // Voiding the filing does not erase the actual worked-time shortage.
+ await supabase.from('attendance_logs').update({ status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
  }
 
  await logAudit(`${req.request_type.toUpperCase()} VOIDED / UNDONE`, currentAdminLabel, req.employee_name, `${req.minutes} min on ${req.attendance_date} | Reason: ${reason}`)
@@ -21887,29 +22046,45 @@ async function computePayroll() {
   // Monthly/semi-monthly fixed: salary is paid per cutoff first, then attendance
   // creates allowed deductions/premiums depending on employee rule switches.
   let totalWorkedMinutes=0
+  let automaticUndertimeMinutes=0
+  let automaticOvertimeCapacityMinutes=0
   let nightDiffMinutes=0
   const workDetailByDate={}
-  for (const log of workedLogs) {
-   const inM=minutesFromTime(log.time_in)
-   const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
-   const rawMins=Math.max(0,outM-inM)
-   const logBreakRows=breakRowsByLogId[String(log.id||'')]||[]
-   const recordedBreak=safeNum(log.total_break_minutes, 0)
-   const effectiveBreak=recordedBreak>0?recordedBreak:(rawMins>=9*60?ALLOWED_BREAK_MINUTES:0)
-   const actualMins=Math.max(0,rawMins-effectiveBreak)
-   const computedNightDiffMinutes=nightDifferentialPayEligible ? calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows) : 0
+  const workedLogsByDate={}
+  ;(workedLogs || []).forEach(log => {
+   const dateKey=String(log.attendance_date||'').slice(0,10)
+   if (!dateKey) return
+   if (!workedLogsByDate[dateKey]) workedLogsByDate[dateKey]=[]
+   workedLogsByDate[dateKey].push(log)
+  })
+
+  for (const [logDateKey, dayLogs] of Object.entries(workedLogsByDate)) {
+   const dayMetrics=getAttendanceDayWorkMetrics(dayLogs, breakRowsByLogId)
+   let computedNightDiffMinutes=0
+   for (const log of dayLogs) {
+    const logBreakRows=breakRowsByLogId[String(log.id||'')]||[]
+    computedNightDiffMinutes += nightDifferentialPayEligible ? calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows) : 0
+   }
    nightDiffMinutes+=computedNightDiffMinutes
-   totalWorkedMinutes+=actualMins
-   const logDateKey=String(log.attendance_date||'').slice(0,10)
-   if (logDateKey) {
-    workDetailByDate[logDateKey]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes }
-    // Overnight shift support: if a shift starts before midnight and ends on the next day,
-    // mark the next calendar date as worked too so holiday premium is not missed.
-    if (minutesFromTime(log.time_out) < minutesFromTime(log.time_in)) {
-     const nextDateKey=addDaysToDateString(logDateKey, 1)
-     if (nextDateKey && nextDateKey >= payrollStart && nextDateKey <= payrollEnd && !workDetailByDate[nextDateKey]) {
-      workDetailByDate[nextDateKey]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes, overnightCarryover:true }
-     }
+   totalWorkedMinutes+=dayMetrics.paidWorkedMinutes
+   automaticUndertimeMinutes+=dayMetrics.undertimeMinutes
+   automaticOvertimeCapacityMinutes+=Math.max(0, dayMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES)
+   workDetailByDate[logDateKey]={
+    rawMins:dayMetrics.rawSpanMinutes,
+    actualMins:dayMetrics.paidWorkedMinutes,
+    deductedBreakMins:dayMetrics.deductedBreakMinutes,
+    undertimeMins:dayMetrics.undertimeMinutes,
+    paidRegularMins:REQUIRED_PAID_WORK_MINUTES,
+    regularPay:dailyRate,
+    nightDiffMinutes:computedNightDiffMinutes
+   }
+
+   // Overnight shift support: if a shift starts before midnight and ends on the next day,
+   // mark the next calendar date as worked too so holiday premium is not missed.
+   if (dayLogs.some(log => minutesFromTime(log.time_out) < minutesFromTime(log.time_in))) {
+    const nextDateKey=addDaysToDateString(logDateKey, 1)
+    if (nextDateKey && nextDateKey >= payrollStart && nextDateKey <= payrollEnd && !workDetailByDate[nextDateKey]) {
+     workDetailByDate[nextDateKey]={ ...workDetailByDate[logDateKey], overnightCarryover:true }
     }
    }
   }
@@ -21943,11 +22118,15 @@ async function computePayroll() {
   }
 
   const overtimeMinutesRaw=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='overtime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
-  const overtimeMinutes=overtimePayEligible ? overtimeMinutesRaw : 0
+  // Approved OT cannot exceed the employee's actual paid minutes above the
+  // required eight hours. This prevents late/short days from being paid as OT.
+  const overtimeMinutes=overtimePayEligible ? Math.min(overtimeMinutesRaw, automaticOvertimeCapacityMinutes) : 0
   const overtimePay=overtimePayEligible ? overtimeMinutes*minuteRate*1.25 : 0
-  const undertimeMinutesRaw=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='undertime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
-  const undertimeMinutesApproved=undertimeDeductionApplicable ? undertimeMinutesRaw : 0
-  const undertimeDeduction=undertimeDeductionApplicable ? undertimeMinutesApproved*minuteRate : 0
+  // Undertime is attendance-driven. Filing, approval, rejection, or absence
+  // of a UT request never changes the salary deduction. Late minutes remain
+  // informational and are not deducted separately, preventing double charging.
+  const undertimeMinutesAutomatic=undertimeDeductionApplicable ? automaticUndertimeMinutes : 0
+  const undertimeDeduction=undertimeDeductionApplicable ? undertimeMinutesAutomatic*minuteRate : 0
 
   // Night differential premium: break time inside 10PM-6AM is excluded.
   // Employees marked night_differential_pay_eligible = false still keep worked hours,
@@ -22007,7 +22186,7 @@ async function computePayroll() {
   const totalDeductions=moneyRound(nonCADeductionOverflow>0?nonCADeductions:nonCADeductions+caDeduction)
   const netPay=moneyRound(Math.max(0,totalEarnings-totalDeductions))
   const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
-  const undertimeMinutesInfo=undertimeMinutesApproved
+  const undertimeMinutesInfo=undertimeMinutesAutomatic
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
   results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
@@ -27833,13 +28012,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {pay.nightDiffPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Night Differential</span><span>{php(pay.nightDiffPay)}</span></div>}
  {pay.holidayPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Holiday Pay</span><span>{php(pay.holidayPay)}</span></div>}
  {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Earnings <button style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #bfe5ca', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'addition')}>FIND SOURCE</button></span><span>{php(pay.adjustmentEarnings)}</span></div>}
- {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late recorded: {pay.lateMinutes}min (no automatic deduction)</span><span> </span></div>}
- {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Approved Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
+ {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late recorded: {pay.lateMinutes}min (no separate deduction; actual work shortage is already covered by undertime)</span><span> </span></div>}
+ {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Automatic Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Earnings</span><span style={{ color:'#2d8a4e' }}>{php(pay.totalEarnings)}</span></div>
  <div style={{ color:'#ca1b1b', fontWeight:'bold', margin:'8px 0 4px' }}>DEDUCTIONS</div>
  {pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
  {(pay.deferredCADeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>CA not deducted this cutoff; remains in CA balance</span><span>{php(pay.deferredCADeduction)}</span></div>}
- {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Approved Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
+ {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Automatic Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
  {pay.sssDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>SSS</span><span>{php(pay.sssDeduction)}</span></div>}
  {pay.pagibigDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Pag-IBIG</span><span>{php(pay.pagibigDeduction)}</span></div>}
  {pay.philhealthDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>PhilHealth</span><span>{php(pay.philhealthDeduction)}</span></div>}
@@ -33081,7 +33260,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </select>
  </div>
  <div style={{ color:'#777', fontSize:'11px', lineHeight:1.5 }}>
- Showing invoices by selected delivery day. Dates are sorted newest first. Dropdown includes the latest 1-month operating window plus future invoice dates.
+ Showing invoices by selected delivery day. Dates are sorted newest first. Dropdown includes every saved delivery date loaded from Supabase.
  </div>
  </div>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
@@ -33104,7 +33283,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  type="text"
  value={invoiceSearchTerm}
  onChange={e=>setInvoiceSearchTerm(e.target.value)}
- placeholder="Search by reseller name, invoice number, date, area, or address..."
+ placeholder="Search reseller, invoice no., or date (example: 2026-06-08, June 8, 2026, 06/08/2026)..."
  style={{...inputStyle, marginBottom:0, flex:'1 1 260px', fontSize:'13px', border:'2px solid #f0f0f0' }}
  />
  {invoiceSearchTerm && (
@@ -33120,7 +33299,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>
  {invoiceSearchTerm
 ? `Showing ${getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter).length} result(s) from all loaded invoices. Status tab still applies.`
-: 'Type to search live by reseller, invoice number, delivery date, area, or address.'}
+: 'Type any saved delivery date using YYYY-MM-DD, month name, or numeric date format. You can also search reseller, invoice number, area, or address.'}
  </p>
  </div>
 
