@@ -13,6 +13,8 @@ const STORE_RADIUS_METERS = 200
 const ALLOWED_BREAK_MINUTES = 60
 const REQUIRED_PAID_WORK_MINUTES = 8 * 60
 const PAYROLL_ATTENDANCE_RECON_CATEGORY = 'Prior Payroll Attendance Correction'
+const PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN = 'ATTENDANCE-SOURCE-DAYS['
+const PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE = ']END-ATTENDANCE-SOURCE-DAYS'
 const RESELLER_CREDIT_GRACE_DAYS = 7
 const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
@@ -863,6 +865,60 @@ function getPreviousDTRCutoffKey(key) {
 
 function getPayrollAttendanceReconMarker(startDate = '', endDate = '', employeeId = '') {
  return `HIST-ATTENDANCE-RECON|${String(startDate || '').slice(0,10)}|${String(endDate || '').slice(0,10)}|EMP:${String(employeeId || '')}`
+}
+
+function getDTRCutoffKeyFromPeriod(startDate = '', endDate = '') {
+ const start = String(startDate || '').slice(0, 10)
+ const end = String(endDate || '').slice(0, 10)
+ if (!start || !end) return ''
+ if (start.slice(8, 10) === '11' && end.slice(8, 10) === '25' && start.slice(0, 7) === end.slice(0, 7)) return `${start.slice(0, 7)}|11-25`
+ if (start.slice(8, 10) === '26' && end.slice(8, 10) === '10') return `${start.slice(0, 7)}|26-10`
+ const match = getDTRCutoffOptions(60, end).find(period => period.start === start && period.end === end)
+ return match?.key || ''
+}
+
+function serializeAttendanceReconDayDetails(dayDetails = []) {
+ return (dayDetails || []).filter(day => safeNum(day?.undertimeMinutes, 0) > 0 || safeNum(day?.lateMinutes, 0) > 0).map(day => [
+  day.date || '', day.timeIn || '', day.timeOut || '', safeNum(day.deductedBreakMinutes, 0), safeNum(day.paidWorkedMinutes, 0),
+  safeNum(day.lateMinutes, 0), safeNum(day.undertimeMinutes, 0), moneyRound(day.deductionAmount || 0), day.deductionType || 'Automatic undertime deduction'
+ ].map(value => encodeURIComponent(String(value ?? ''))).join('~')).join(';')
+}
+
+function parseAttendanceReconDayDetails(serialized = '') {
+ if (!serialized) return []
+ return String(serialized).split(';').map(chunk => {
+  const values = chunk.split('~').map(value => {
+   try { return decodeURIComponent(value) } catch(e) { return value }
+  })
+  if (!values[0]) return null
+  return {
+   date:values[0], timeIn:values[1] || '', timeOut:values[2] || '', deductedBreakMinutes:safeNum(values[3], 0),
+   paidWorkedMinutes:safeNum(values[4], 0), lateMinutes:safeNum(values[5], 0), undertimeMinutes:safeNum(values[6], 0),
+   deductionAmount:moneyRound(values[7]), deductionType:values[8] || 'Automatic undertime deduction'
+  }
+ }).filter(Boolean)
+}
+
+function parsePayrollAttendanceReconMetadata(notes = '') {
+ const text = String(notes || '')
+ const markerMatch = text.match(/HIST-ATTENDANCE-RECON\|(\d{4}-\d{2}-\d{2})\|(\d{4}-\d{2}-\d{2})\|EMP:([^|\s]+)/)
+ const sourceStart = markerMatch?.[1] || ''
+ const sourceEnd = markerMatch?.[2] || ''
+ const employeeId = markerMatch?.[3] || ''
+ const sourceStartIndex = text.indexOf(PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN)
+ const sourceEndIndex = sourceStartIndex >= 0 ? text.indexOf(PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE, sourceStartIndex) : -1
+ const serializedDays = sourceStartIndex >= 0 && sourceEndIndex > sourceStartIndex
+  ? text.slice(sourceStartIndex + PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN.length, sourceEndIndex)
+  : ''
+ const appliedMatch = text.match(/CORRECTION-APPLIED:(\d{4}-\d{2}-\d{2})/)
+ return {
+  isHistoricalAttendanceRecon:!!markerMatch,
+  sourceStart,
+  sourceEnd,
+  employeeId,
+  correctionAppliedDate:appliedMatch?.[1] || '',
+  days:parseAttendanceReconDayDetails(serializedDays)
+ }
 }
 
 function getDTRCutoffOptions(count = 36, todayDate = getTodayDate()) {
@@ -4526,6 +4582,8 @@ export default function App() {
  const [attendanceReconLoading, setAttendanceReconLoading] = useState(false)
  const [attendanceReconCreating, setAttendanceReconCreating] = useState(false)
  const [attendanceReconLastRunAt, setAttendanceReconLastRunAt] = useState(null)
+ const [attendanceReconTrace, setAttendanceReconTrace] = useState(null)
+ const [attendanceReconTraceLoading, setAttendanceReconTraceLoading] = useState(false)
  const [payrollAdjustmentHistory, setPayrollAdjustmentHistory] = useState([])
  const [payrollAdjustmentLoading, setPayrollAdjustmentLoading] = useState(false)
  const [payrollAdjustmentSearch, setPayrollAdjustmentSearch] = useState('')
@@ -5373,6 +5431,8 @@ export default function App() {
  const [dtrCutoffKey, setDtrCutoffKey] = useState(getCurrentDTRCutoffKey(today))
  const [dtrRecords, setDtrRecords] = useState([])
  const [dtrStats, setDtrStats] = useState(null)
+ const [dtrHighlightDates, setDtrHighlightDates] = useState([])
+ const [dtrHighlightContext, setDtrHighlightContext] = useState(null)
  const [announcements, setAnnouncements] = useState([])
  const [newAnnouncementTitle, setNewAnnouncementTitle] = useState('')
  const [newAnnouncementContent, setNewAnnouncementContent] = useState('')
@@ -20898,7 +20958,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (!(payrollRows || []).length) {
    setAttendanceReconRows([])
    setAttendanceReconSelected({})
-   showToast(`No saved payroll records found for ${sourceStart} to ${sourceEnd}.`, 'red')
+   if (!options.silent) showToast(`No saved payroll records found for ${sourceStart} to ${sourceEnd}.`, 'red')
    return []
   }
 
@@ -20974,13 +21034,18 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     const completedLogs = (dayLogs || []).filter(log => log?.time_in && log?.time_out && String(log?.status || '').toLowerCase() !== 'absent')
     if (!completedLogs.length) return
     const metrics = getAttendanceDayWorkMetrics(completedLogs, breakRowsByLogId)
+    const mergedDay = mergeDTRDayLogs(completedLogs)
+    const recordedLateMinutes = completedLogs.reduce((sum, log) => sum + safeNum(log?.late_minutes, 0), 0)
     completedWorkdays += 1
     correctUndertimeMinutes += metrics.undertimeMinutes
     dayDetails.push({
      date:dateKey,
+     timeIn:mergedDay?.time_in || '',
+     timeOut:mergedDay?.time_out || '',
      paidWorkedMinutes:metrics.paidWorkedMinutes,
      undertimeMinutes:metrics.undertimeMinutes,
-     deductedBreakMinutes:metrics.deductedBreakMinutes
+     deductedBreakMinutes:metrics.deductedBreakMinutes,
+     lateMinutes:recordedLateMinutes
     })
    })
 
@@ -20992,6 +21057,13 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    const priorAttendanceDeduction = moneyRound(priorLateDeduction + priorUndertimeDeduction)
    const rateInfo = employee ? getEmployeeHourlyRateInfo(employee) : { hourlyRate:0, formulaNote:'Employee record is unavailable', isConfigured:false }
    const undertimeDeductionApplicable = employee ? employeeRuleEnabled(employee.undertime_deduction_applicable, true) : true
+   const detailedDayDetails = dayDetails.map(day => ({
+    ...day,
+    deductionAmount:undertimeDeductionApplicable ? moneyRound(safeNum(day.undertimeMinutes, 0) * safeNum(rateInfo.hourlyRate, 0) / 60) : 0,
+    deductionType:safeNum(day.undertimeMinutes, 0) > 0
+     ? (safeNum(day.lateMinutes, 0) > 0 ? 'Automatic undertime deduction (includes shortage caused by late arrival)' : 'Automatic undertime deduction')
+     : (safeNum(day.lateMinutes, 0) > 0 ? 'Late recorded — no deduction because 8 paid hours were completed' : 'No attendance deduction')
+   }))
    const correctDeduction = undertimeDeductionApplicable ? moneyRound(correctUndertimeMinutes * safeNum(rateInfo.hourlyRate, 0) / 60) : 0
    const marker = getPayrollAttendanceReconMarker(sourceStart, sourceEnd, employeeId)
    const priorReconRows = (existingReconRows || []).filter(adj => String(adj.notes || '').includes(marker))
@@ -21035,7 +21107,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     sourcePayrollReleased,
     completedWorkdays,
     incompleteLogs,
-    dayDetails,
+    dayDetails:detailedDayDetails,
+    attendanceDeductionDates:detailedDayDetails.filter(day => safeNum(day.undertimeMinutes, 0) > 0),
     lateMinutesRecorded,
     savedUndertimeMinutes,
     correctUndertimeMinutes,
@@ -21045,6 +21118,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     priorUndertimeDeduction,
     priorAttendanceDeduction,
     existingReconAmount,
+    existingReconRows:priorReconRows,
     correctDeduction,
     missingAdjustment,
     overDeductedAmount,
@@ -21066,16 +21140,122 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   setAttendanceReconLastRunAt(new Date().toISOString())
   const readyCount = auditRows.filter(row => row.canCreate).length
   const readyAmount = moneyRound(auditRows.filter(row => row.canCreate).reduce((sum, row) => sum + row.missingAdjustment, 0))
-  showToast(`Audit complete: ${readyCount} employee(s) need ${php(readyAmount)} in attendance corrections.`)
+  if (!options.silent) showToast(`Audit complete: ${readyCount} employee(s) need ${php(readyAmount)} in attendance corrections.`)
   return auditRows
  } catch(err) {
   console.error('Historical attendance reconciliation failed:', err)
   setAttendanceReconRows([])
   setAttendanceReconSelected({})
-  showToast('Historical attendance audit failed: ' + (err?.message || err), 'red')
+  if (!options.silent) showToast('Historical attendance audit failed: ' + (err?.message || err), 'red')
   return []
  } finally {
   setAttendanceReconLoading(false)
+ }
+ }
+
+ function openAttendanceReconciliationTrace(row, extra = {}) {
+ if (!row) return
+ setAttendanceReconTrace({
+  ...row,
+  ...extra,
+  dayDetails:(extra.dayDetails?.length ? extra.dayDetails : row.dayDetails) || [],
+  correctionAppliedDate:extra.correctionAppliedDate || '',
+  correctionCreatedAt:extra.correctionCreatedAt || '',
+  correctionAmount:safeNum(extra.correctionAmount, 0),
+  adjustmentId:extra.adjustmentId || ''
+ })
+ setTimeout(() => {
+  try { document.getElementById('attendance-reconciliation-source-trace')?.scrollIntoView({ behavior:'smooth', block:'start' }) } catch(e) {}
+ }, 80)
+ }
+
+ async function openPayrollAdjustmentAttendanceSource(adj) {
+ const meta = parsePayrollAttendanceReconMetadata(adj?.notes || '')
+ if (!meta.isHistoricalAttendanceRecon && String(adj?.category || '') !== PAYROLL_ATTENDANCE_RECON_CATEGORY) {
+  showToast('This adjustment is not linked to the historical attendance reconciliation tool.', 'red')
+  return
+ }
+ if (!meta.sourceStart || !meta.sourceEnd || !meta.employeeId) {
+  showToast('The source payroll marker is missing from this older correction record.', 'red')
+  return
+ }
+ setAttendanceReconTraceLoading(true)
+ try {
+  let sourceRow = (attendanceReconRows || []).find(row => String(row.employeeId) === String(meta.employeeId) && row.sourceStart === meta.sourceStart && row.sourceEnd === meta.sourceEnd)
+  if (!sourceRow) {
+   const rows = await runHistoricalAttendanceReconciliation({ start:meta.sourceStart, end:meta.sourceEnd, silent:true })
+   sourceRow = (rows || []).find(row => String(row.employeeId) === String(meta.employeeId))
+  }
+  if (!sourceRow) throw new Error('The employee attendance source could not be reconstructed from the historical payroll.')
+  openAttendanceReconciliationTrace(sourceRow, {
+   dayDetails:meta.days.length ? meta.days : sourceRow.dayDetails,
+   correctionAppliedDate:String(adj.adjustment_date || meta.correctionAppliedDate || '').slice(0,10),
+   correctionCreatedAt:adj.created_at || '',
+   correctionAmount:safeNum(adj.amount, 0),
+   adjustmentId:adj.id || ''
+  })
+ } catch(err) {
+  console.error('Open historical attendance source failed:', err)
+  showToast('Failed to open the correction source: ' + (err?.message || err), 'red')
+ } finally {
+  setAttendanceReconTraceLoading(false)
+ }
+ }
+
+ async function openAttendanceReconciliationSourceDTR(trace = attendanceReconTrace, focusDate = '') {
+ const employeeId = String(trace?.employeeId || trace?.employee_id || '')
+ const sourceStart = String(trace?.sourceStart || '').slice(0,10)
+ const sourceEnd = String(trace?.sourceEnd || '').slice(0,10)
+ if (!employeeId || !sourceStart || !sourceEnd) { showToast('Employee or source payroll period is missing.', 'red'); return }
+ const emp = employees.find(item => String(item.id) === employeeId) || trace?.employee
+ if (!emp) { showToast('Employee record not found.', 'red'); return }
+ const cutoffKey = getDTRCutoffKeyFromPeriod(sourceStart, sourceEnd)
+ if (!cutoffKey) { showToast('The source dates do not match a configured payroll cutoff.', 'red'); return }
+ try {
+  const { data:logs, error } = await supabase.from('attendance_logs').select('*')
+   .eq('employee_id', employeeId)
+   .gte('attendance_date', sourceStart)
+   .lte('attendance_date', sourceEnd)
+   .order('attendance_date')
+  if (error) throw error
+  const grouped = groupDTRLogsByDate(logs || [])
+  const allDays = buildDateRangeRows(sourceStart, sourceEnd, ({ dateStr, day, dayName }) => ({ dateStr, day, dayName, log:mergeDTRDayLogs(grouped[dateStr] || []) }))
+  const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
+  const sourceDates = Array.from(new Set((trace?.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0).map(day => day.date).filter(Boolean)))
+  setDtrEmployeeId(employeeId)
+  setDtrCutoffKey(cutoffKey)
+  setDtrRecords(allDays)
+  setDtrStats({
+   emp,
+   period:{ key:cutoffKey, start:sourceStart, end:sourceEnd, label:`${formatDateForDisplay(sourceStart)} – ${formatDateForDisplay(sourceEnd)}` },
+   totalWorked:new Set(mergedLogs.filter(log => log.time_in && log.time_out).map(log => String(log.attendance_date || '').slice(0,10))).size,
+   totalAbsent:new Set(mergedLogs.filter(log => log.status === 'Absent').map(log => String(log.attendance_date || '').slice(0,10))).size,
+   totalLate:mergedLogs.reduce((sum, log) => sum + safeNum(log.late_minutes, 0), 0),
+   totalOT:mergedLogs.filter(log => log.overtime_approved === true).reduce((sum, log) => sum + safeNum(log.overtime_minutes, 0), 0),
+   totalBreak:mergedLogs.reduce((sum, log) => sum + safeNum(log.total_break_minutes, 0), 0),
+   totalDutyMinutes:mergedLogs.reduce((sum, log) => sum + getDTRDutyMinutes(log), 0),
+   duplicateDays:Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
+  })
+  setDtrHighlightDates(sourceDates)
+  setDtrHighlightContext({
+   employeeName:trace?.employeeName || emp.full_name || '',
+   sourceStart,
+   sourceEnd,
+   focusDate:String(focusDate || '').slice(0,10),
+   correctionAppliedDate:String(trace?.correctionAppliedDate || '').slice(0,10),
+   correctionAmount:safeNum(trace?.correctionAmount || trace?.missingAdjustment, 0)
+  })
+  setActiveTab('dtr')
+  setSidebarOpen(false)
+  setTimeout(() => {
+   try {
+    const target = focusDate ? document.getElementById(`dtr-row-${focusDate}`) : document.getElementById('dtr-source-view')
+    target?.scrollIntoView({ behavior:'smooth', block:'center' })
+   } catch(e) {}
+  }, 150)
+ } catch(err) {
+  console.error('Open source DTR failed:', err)
+  showToast('Failed to load source DTR: ' + (err?.message || err), 'red')
  }
  }
 
@@ -21121,6 +21301,9 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    const alreadyCreated = moneyRound((existingRows || []).filter(adj => String(adj.notes || '').includes(row.marker)).reduce((sum, adj) => sum + safeNum(adj.amount, 0), 0))
    const remaining = moneyRound(Math.max(0, row.correctDeduction - row.priorAttendanceDeduction - alreadyCreated))
    if (remaining <= 0.01) return
+   const sourceDayDetails = (row.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0)
+   const serializedSourceDays = serializeAttendanceReconDayDetails(sourceDayDetails)
+   const readableSourceDays = sourceDayDetails.map(day => `${day.date}: ${safeNum(day.lateMinutes,0)} late min, ${safeNum(day.undertimeMinutes,0)} automatic UT min, ${php(day.deductionAmount)}, ${day.timeIn || '--'}-${day.timeOut || '--'}, break ${safeNum(day.deductedBreakMinutes,0)} min`).join('; ')
    payloads.push({
     employee_id:row.employeeId,
     employee_code:row.employeeCode || '',
@@ -21129,7 +21312,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     adjustment_type:'deduction',
     category:PAYROLL_ATTENDANCE_RECON_CATEGORY,
     amount:remaining,
-    notes:`${row.marker} | Historical attendance reconciliation for ${attendanceReconStart} to ${attendanceReconEnd}. Correct automatic undertime: ${row.correctUndertimeMinutes} minute(s) / ${php(row.correctDeduction)}. Previously deducted in saved payroll: ${php(row.priorAttendanceDeduction)}. Previously generated correction: ${php(alreadyCreated)}. New remaining correction: ${php(remaining)}. Late minutes are not deducted separately to prevent duplicate charging.`
+    notes:`${row.marker} | SOURCE-PERIOD:${attendanceReconStart} TO ${attendanceReconEnd} | CORRECTION-APPLIED:${targetDate} | ${PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN}${serializedSourceDays}${PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE} | Source attendance dates and specific deductions: ${readableSourceDays || 'No date-level shortage details available'}. Correct automatic undertime: ${row.correctUndertimeMinutes} minute(s) / ${php(row.correctDeduction)}. Previously deducted in saved payroll: Late ${php(row.priorLateDeduction)} + UT ${php(row.priorUndertimeDeduction)} = ${php(row.priorAttendanceDeduction)}. Previously generated correction: ${php(alreadyCreated)}. New remaining correction applied on ${targetDate}: ${php(remaining)}. Late minutes are recorded for traceability but are not separately charged when already included in the automatic undertime shortage.`
    })
   })
 
@@ -21161,11 +21344,11 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  function downloadAttendanceReconciliationCsv() {
  if (!(attendanceReconRows || []).length) { showToast('Run the historical attendance audit first.', 'red'); return }
  const csvCell = value => `"${String(value ?? '').replace(/"/g, '""')}"`
- const headers = ['Employee Code','Employee Name','Historical Start','Historical End','Completed Workdays','Late Minutes Recorded','Saved UT Minutes','Correct Automatic UT Minutes','Hourly Rate','Correct Attendance Deduction','Previously Deducted','Existing Reconciliation','Adjustment Needed','Incomplete Logs','Status']
+ const headers = ['Employee Code','Employee Name','Historical Start','Historical End','Completed Workdays','Source Dates and Specific Deductions','Late Minutes Recorded','Saved UT Minutes','Correct Automatic UT Minutes','Hourly Rate','Correct Attendance Deduction','Previously Deducted','Existing Reconciliation','Adjustment Needed','Incomplete Logs','Status']
  const lines = [headers.map(csvCell).join(',')]
  ;(attendanceReconRows || []).forEach(row => {
   lines.push([
-   row.employeeCode,row.employeeName,row.sourceStart,row.sourceEnd,row.completedWorkdays,row.lateMinutesRecorded,row.savedUndertimeMinutes,row.correctUndertimeMinutes,
+   row.employeeCode,row.employeeName,row.sourceStart,row.sourceEnd,row.completedWorkdays,(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).map(day=>`${day.date}: Late ${day.lateMinutes}m; Auto UT ${day.undertimeMinutes}m; ${php(day.deductionAmount)}`).join(' | '),row.lateMinutesRecorded,row.savedUndertimeMinutes,row.correctUndertimeMinutes,
    safeNum(row.hourlyRate,0).toFixed(2),safeNum(row.correctDeduction,0).toFixed(2),safeNum(row.priorAttendanceDeduction,0).toFixed(2),safeNum(row.existingReconAmount,0).toFixed(2),safeNum(row.missingAdjustment,0).toFixed(2),
    row.incompleteLogs?.length || 0,row.statusLabel
   ].map(csvCell).join(','))
@@ -28179,11 +28362,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  <div style={{ overflowX:'auto', background:'white', border:'1px solid #ead9c4', borderRadius:'12px' }}>
- <table style={{ width:'100%', minWidth:'1160px', borderCollapse:'collapse', fontSize:'12px' }}>
+ <table style={{ width:'100%', minWidth:'1450px', borderCollapse:'collapse', fontSize:'12px' }}>
  <thead><tr style={{ background:'#1a1a2e', color:'white' }}>
  <th style={{ padding:'9px', textAlign:'center' }}>Use</th>
  <th style={{ padding:'9px', textAlign:'left' }}>Employee</th>
  <th style={{ padding:'9px', textAlign:'right' }}>Attendance Trace</th>
+ <th style={{ padding:'9px', textAlign:'left' }}>Source Dates / Specific Deduction</th>
  <th style={{ padding:'9px', textAlign:'right' }}>Correct UT</th>
  <th style={{ padding:'9px', textAlign:'right' }}>Correct Deduction</th>
  <th style={{ padding:'9px', textAlign:'right' }}>Saved Payroll Deducted</th>
@@ -28197,11 +28381,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <td style={{ padding:'9px', textAlign:'center', borderBottom:'1px solid #eee' }}><input type="checkbox" checked={!!attendanceReconSelected[row.employeeId]} disabled={!row.canCreate || attendanceReconCreating} onChange={e=>setAttendanceReconSelected(prev=>({...prev,[row.employeeId]:e.target.checked}))} /></td>
  <td style={{ padding:'9px', borderBottom:'1px solid #eee' }}><strong style={{ color:'#ca1b1b' }}>{row.employeeName}</strong><div style={{ color:'#888', fontSize:'11px' }}>{row.employeeCode || 'No code'} | {row.sourcePayrollReleased?'Released payroll':'Draft/unreleased payroll'}</div><div style={{ color:'#888', fontSize:'10px' }}>Rate: {php(row.hourlyRate)}/hour</div></td>
  <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><div>{row.completedWorkdays} completed day(s)</div><div style={{ color:'#f57c00' }}>{row.lateMinutesRecorded} late min recorded</div>{row.incompleteLogs?.length>0 && <div style={{ color:'#ca1b1b', fontWeight:'bold' }}>{row.incompleteLogs.length} missing Time Out</div>}</td>
+ <td style={{ padding:'9px', borderBottom:'1px solid #eee', minWidth:'240px' }}>
+ {(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).slice(0,3).map(day=><button key={day.date} onClick={()=>{ openAttendanceReconciliationTrace(row); setTimeout(()=>openAttendanceReconciliationSourceDTR(row, day.date), 0) }} style={{ display:'block', width:'100%', textAlign:'left', border:'none', background:'transparent', padding:'2px 0', color:safeNum(day.undertimeMinutes,0)>0?'#ca1b1b':'#f57c00', cursor:'pointer', fontSize:'11px', fontWeight:'700' }}>{formatDateForDisplay(day.date)} — Late {day.lateMinutes}m | Auto UT {day.undertimeMinutes}m | {php(day.deductionAmount)}</button>)}
+ {(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).length>3 && <div style={{ color:'#888', fontSize:'10px' }}>+{(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).length-3} more date(s)</div>}
+ <button style={{...btnGray, width:'auto', padding:'5px 8px', marginTop:'5px', fontSize:'10px' }} onClick={()=>openAttendanceReconciliationTrace(row)}>VIEW FULL TRACE</button>
+ </td>
  <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee', fontWeight:'800' }}>{row.correctUndertimeMinutes} min</td>
- <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>{php(row.correctDeduction)}</td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><button onClick={()=>openAttendanceReconciliationTrace(row)} style={{ border:'none', background:'transparent', color:'#ca1b1b', fontWeight:'900', cursor:'pointer', padding:0 }}>{php(row.correctDeduction)}</button></td>
  <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><strong>{php(row.priorAttendanceDeduction)}</strong><div style={{ color:'#888', fontSize:'10px' }}>Late {php(row.priorLateDeduction)} + UT {php(row.priorUndertimeDeduction)}</div></td>
- <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>{php(row.existingReconAmount)}</td>
- <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee', color:row.canCreate?'#ca1b1b':'#555', fontWeight:'900' }}>{php(row.missingAdjustment)}</td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><button disabled={safeNum(row.existingReconAmount,0)<=0} onClick={()=>openAttendanceReconciliationTrace(row,{ correctionAmount:row.existingReconAmount, correctionAppliedDate:row.existingReconRows?.[0]?.adjustment_date || '', correctionCreatedAt:row.existingReconRows?.[0]?.created_at || '', adjustmentId:row.existingReconRows?.[0]?.id || '' })} style={{ border:'none', background:'transparent', color:safeNum(row.existingReconAmount,0)>0?'#4a90d9':'#777', cursor:safeNum(row.existingReconAmount,0)>0?'pointer':'default', padding:0, fontWeight:'800' }}>{php(row.existingReconAmount)}</button>{row.existingReconRows?.[0]?.adjustment_date && <div style={{ color:'#4a90d9', fontSize:'10px', marginTop:'2px' }}>Applied {formatDateForDisplay(row.existingReconRows[0].adjustment_date)}</div>}</td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee', color:row.canCreate?'#ca1b1b':'#555', fontWeight:'900' }}><button onClick={()=>openAttendanceReconciliationTrace(row,{ correctionAmount:row.missingAdjustment, correctionAppliedDate:attendanceReconAdjustmentDate })} style={{ border:'none', background:'transparent', color:row.canCreate?'#ca1b1b':'#555', cursor:'pointer', padding:0, fontWeight:'900' }}>{php(row.missingAdjustment)}</button>{row.canCreate && <div style={{ color:'#777', fontSize:'10px', marginTop:'2px' }}>Will apply {formatDateForDisplay(attendanceReconAdjustmentDate)}</div>}</td>
  <td style={{ padding:'9px', borderBottom:'1px solid #eee', color:row.statusColor, fontWeight:'700' }}>{row.statusLabel}</td>
  </tr>
  ))}
@@ -28216,6 +28405,40 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </>
  )}
  </div>
+
+ {attendanceReconTrace && (
+ <div id="attendance-reconciliation-source-trace" style={{ margin:'18px 0', padding:'16px', background:'#f8fbff', border:'2px solid #4a90d9', borderRadius:'14px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'flex-start' }}>
+ <div>
+ <h3 style={{ margin:'0 0 4px', color:'#1a1a2e' }}>Attendance Deduction Source Trace</h3>
+ <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontWeight:'800' }}>{attendanceReconTrace.employeeName} ({attendanceReconTrace.employeeCode || 'No code'})</p>
+ <p style={{ margin:'0 0 3px', color:'#555', fontSize:'12px' }}>Source payroll: <strong>{formatDateForDisplay(attendanceReconTrace.sourceStart)} – {formatDateForDisplay(attendanceReconTrace.sourceEnd)}</strong></p>
+ {attendanceReconTrace.correctionAppliedDate && <p style={{ margin:'0 0 3px', color:'#555', fontSize:'12px' }}>Correction applied to payroll on: <strong>{formatDateForDisplay(attendanceReconTrace.correctionAppliedDate)}</strong></p>}
+ {attendanceReconTrace.correctionCreatedAt && <p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Correction record created: {new Date(attendanceReconTrace.correctionCreatedAt).toLocaleString('en-PH')}</p>}
+ {safeNum(attendanceReconTrace.correctionAmount,0)>0 && <p style={{ margin:'4px 0 0', color:'#ca1b1b', fontWeight:'900' }}>Correction amount: {php(attendanceReconTrace.correctionAmount)}</p>}
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>openAttendanceReconciliationSourceDTR(attendanceReconTrace)}>OPEN FULL SOURCE DTR</button>
+ <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setAttendanceReconTrace(null)}>CLOSE TRACE</button>
+ </div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'8px', margin:'12px 0' }}>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Correct Automatic UT</div><strong>{attendanceReconTrace.correctUndertimeMinutes || 0} min</strong></div>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Correct Deduction</div><strong>{php(attendanceReconTrace.correctDeduction)}</strong></div>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Old Payroll Deducted</div><strong>{php(attendanceReconTrace.priorAttendanceDeduction)}</strong><div style={{ color:'#888', fontSize:'10px' }}>Late {php(attendanceReconTrace.priorLateDeduction)} + UT {php(attendanceReconTrace.priorUndertimeDeduction)}</div></div>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Still Missing / Corrected</div><strong style={{ color:'#ca1b1b' }}>{php(attendanceReconTrace.correctionAmount || attendanceReconTrace.missingAdjustment)}</strong></div>
+ </div>
+ <div style={{ overflowX:'auto', background:'white', border:'1px solid #dce5f5', borderRadius:'10px' }}>
+ <table style={{ width:'100%', minWidth:'920px', borderCollapse:'collapse', fontSize:'11px' }}>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}><th style={{ padding:'8px', textAlign:'left' }}>Attendance Date</th><th style={{ padding:'8px' }}>Time In</th><th style={{ padding:'8px' }}>Time Out</th><th style={{ padding:'8px' }}>Break Deducted</th><th style={{ padding:'8px' }}>Paid Work</th><th style={{ padding:'8px' }}>Late Record</th><th style={{ padding:'8px' }}>Specific Deduction</th><th style={{ padding:'8px', textAlign:'right' }}>Amount</th><th style={{ padding:'8px' }}>Source</th></tr></thead>
+ <tbody>
+ {(attendanceReconTrace.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).map(day=><tr key={day.date} style={{ background:safeNum(day.undertimeMinutes,0)>0?'#fffafa':'#fffaf0', borderBottom:'1px solid #eee' }}><td style={{ padding:'8px', fontWeight:'800' }}>{formatDateForDisplay(day.date)}</td><td style={{ padding:'8px', textAlign:'center' }}>{day.timeIn || '--'}</td><td style={{ padding:'8px', textAlign:'center' }}>{day.timeOut || '--'}</td><td style={{ padding:'8px', textAlign:'center' }}>{day.deductedBreakMinutes || 0} min</td><td style={{ padding:'8px', textAlign:'center' }}>{formatDutyHours(day.paidWorkedMinutes || 0)}</td><td style={{ padding:'8px', textAlign:'center', color:safeNum(day.lateMinutes,0)>0?'#f57c00':'#777' }}>{day.lateMinutes || 0} min</td><td style={{ padding:'8px', color:safeNum(day.undertimeMinutes,0)>0?'#ca1b1b':'#555', fontWeight:'700' }}>{day.deductionType || 'Automatic undertime deduction'}{safeNum(day.undertimeMinutes,0)>0 && <div>{day.undertimeMinutes} minute(s)</div>}</td><td style={{ padding:'8px', textAlign:'right', color:'#ca1b1b', fontWeight:'900' }}>{php(day.deductionAmount)}</td><td style={{ padding:'8px', textAlign:'center' }}><button style={{...btnGray, width:'auto', padding:'5px 8px', marginTop:0, fontSize:'10px' }} onClick={()=>openAttendanceReconciliationSourceDTR(attendanceReconTrace, day.date)}>OPEN THIS DATE</button></td></tr>)}
+ {(attendanceReconTrace.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).length===0 && <tr><td colSpan={9} style={{ padding:'14px', color:'#888', textAlign:'center' }}>No date-level late or undertime source was found.</td></tr>}
+ </tbody>
+ </table>
+ </div>
+ </div>
+ )}
 
  <div style={{ marginBottom:'10px', paddingTop:'4px' }}>
  <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'16px' }}>Manual Payroll Adjustment</h3>
@@ -28269,6 +28492,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {!payrollAdjustmentLoading && filteredPayrollAdjustmentHistory.length===0 && <p style={{ color:'#888', fontSize:'13px', margin:'10px 0 0' }}>No adjustment records found for the selected search and date range.</p>}
  {!payrollAdjustmentLoading && filteredPayrollAdjustmentHistory.slice(0, 100).map(adj => {
   const isAddition = String(adj.adjustment_type || '').toLowerCase() === 'addition'
+  const reconMeta = parsePayrollAttendanceReconMetadata(adj.notes || '')
+  const isAttendanceRecon = reconMeta.isHistoricalAttendanceRecon || String(adj.category || '') === PAYROLL_ATTENDANCE_RECON_CATEGORY
   return (
   <div key={adj.id} style={{ background:'white', border:`1px solid ${isAddition?'#d5efd9':'#ffd6d6'}`, borderRadius:'12px', padding:'12px', marginTop:'8px' }}>
   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap' }}>
@@ -28279,11 +28504,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   </div>
   <p style={cps}>Code: {adj.employee_code || 'No code'} | Date applied: <strong>{adj.adjustment_date}</strong> | Created: {adj.created_at? new Date(adj.created_at).toLocaleString(): 'No timestamp'}</p>
   <p style={cps}>Category: <strong>{adj.category || 'Uncategorized'}</strong></p>
-  {adj.notes && <p style={cps}>Notes: <em>"{adj.notes}"</em></p>}
+  {isAttendanceRecon && <div style={{ background:'#f8fbff', border:'1px solid #dce5f5', borderRadius:'8px', padding:'8px', marginTop:'6px' }}><p style={{...cps, margin:'0 0 3px' }}>Source payroll: <strong>{reconMeta.sourceStart || 'Unknown'} to {reconMeta.sourceEnd || 'Unknown'}</strong></p><p style={{...cps, margin:'0 0 3px' }}>Correction applied on: <strong>{adj.adjustment_date || reconMeta.correctionAppliedDate || 'Unknown'}</strong></p>{reconMeta.days.length>0 && <p style={{...cps, margin:0 }}>Source dates: <strong>{reconMeta.days.map(day=>`${day.date} (${day.undertimeMinutes}m UT / ${php(day.deductionAmount)})`).join(', ')}</strong></p>}</div>}
+  {adj.notes && <p style={{...cps, maxHeight:'54px', overflow:'hidden' }}>Notes: <em>"{adj.notes}"</em></p>}
   </div>
   <div style={{ textAlign:'right', minWidth:'120px' }}>
-  <p style={{ margin:0, color:isAddition?'#2d8a4e':'#ca1b1b', fontWeight:'900', fontSize:'15px' }}>{php(adj.amount)}</p>
+  {isAttendanceRecon?<button disabled={attendanceReconTraceLoading} onClick={()=>openPayrollAdjustmentAttendanceSource(adj)} style={{ margin:0, padding:0, border:'none', background:'transparent', color:'#ca1b1b', fontWeight:'900', fontSize:'15px', cursor:'pointer', textDecoration:'underline' }}>{php(adj.amount)}</button>:<p style={{ margin:0, color:isAddition?'#2d8a4e':'#ca1b1b', fontWeight:'900', fontSize:'15px' }}>{php(adj.amount)}</p>}
   <p style={{ margin:'3px 0 0', color:'#888', fontSize:'11px' }}>Adjustment ID: {String(adj.id || '').slice(0,8)}</p>
+  {isAttendanceRecon && <button disabled={attendanceReconTraceLoading} style={{...btnBlack, width:'auto', padding:'7px 10px', marginTop:'8px', fontSize:'11px' }} onClick={()=>openPayrollAdjustmentAttendanceSource(adj)}>{attendanceReconTraceLoading?'LOADING SOURCE...':'VIEW SOURCE / DATES'}</button>}
   <button style={{...btnRed, width:'auto', padding:'7px 10px', marginTop:'8px', fontSize:'11px' }} onClick={()=>undoPayrollAdjustment(adj)}>UNDO / DELETE</button>
   </div>
   </div>
@@ -29078,7 +29305,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {/* DTR PRINT */}
  {activeTab==='dtr' && (
- <div>
+ <div id="dtr-source-view">
  <h2 style={h2s}> DTR Daily Time Record</h2>
  <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>View and print the official Daily Time Record by payroll cutoff, not by calendar month.</p>
 
@@ -29086,11 +29313,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end' }}>
  <div style={{ flex:1, minWidth:'220px' }}>
  <label style={lblS}>Select Employee:</label>
- <EmployeeSelect value={dtrEmployeeId} onChange={v=>{ setDtrEmployeeId(v); setDtrRecords([]); setDtrStats(null) }} employees={employees} />
+ <EmployeeSelect value={dtrEmployeeId} onChange={v=>{ setDtrEmployeeId(v); setDtrRecords([]); setDtrStats(null); setDtrHighlightDates([]); setDtrHighlightContext(null) }} employees={employees} />
  </div>
  <div style={{ flex:1, minWidth:'280px' }}>
  <label style={lblS}>Cutoff Period:</label>
- <select value={dtrCutoffKey} onChange={e=>{ setDtrCutoffKey(e.target.value); setDtrRecords([]); setDtrStats(null) }} style={{...inputStyle, marginBottom:0 }}>
+ <select value={dtrCutoffKey} onChange={e=>{ setDtrCutoffKey(e.target.value); setDtrRecords([]); setDtrStats(null); setDtrHighlightDates([]); setDtrHighlightContext(null) }} style={{...inputStyle, marginBottom:0 }}>
  {getDTRCutoffOptions(36, today).map(period=>(
  <option key={period.key} value={period.key}>{period.label}</option>
  ))}
@@ -29100,6 +29327,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'10px 12px', marginTop:'12px', fontSize:'12px', color:'#555', lineHeight:1.5 }}>
  <strong style={{ color:'#ca1b1b' }}>DTR rule:</strong> This view follows your payroll cutoffs: <strong>26th–10th next month</strong> and <strong>11th–25th same month</strong>. Overnight shifts are counted by the attendance/shift start date.
  </div>
+ {dtrHighlightContext && <div style={{ background:'#f8fbff', border:'2px solid #4a90d9', borderRadius:'10px', padding:'10px 12px', marginTop:'10px', fontSize:'12px', color:'#333', lineHeight:1.5 }}><strong style={{ color:'#1a1a2e' }}>Historical correction source:</strong> Highlighted rows are the dates used for {dtrHighlightContext.employeeName}'s attendance correction from <strong>{formatDateForDisplay(dtrHighlightContext.sourceStart)} to {formatDateForDisplay(dtrHighlightContext.sourceEnd)}</strong>.{dtrHighlightContext.correctionAppliedDate && <> Correction applied on <strong>{formatDateForDisplay(dtrHighlightContext.correctionAppliedDate)}</strong>.</>}<button style={{...btnGray, width:'auto', padding:'4px 8px', margin:'0 0 0 8px', fontSize:'10px' }} onClick={()=>{ setDtrHighlightDates([]); setDtrHighlightContext(null) }}>CLEAR HIGHLIGHT</button></div>}
  <div style={{ display:'flex', gap:'10px', marginTop:'12px', flexWrap:'wrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
  if(!dtrEmployeeId){ showToast('Please select an employee.','red'); return }
@@ -29198,11 +29426,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <tbody>
  {dtrRecords.map(({ dateStr, day, dayName, log }, i)=>{
  const isWeekend = new Date(dateStr).getDay()===0||new Date(dateStr).getDay()===6
- const rowBg = isWeekend?'#f5f5f5':log?.status==='Absent'?'#fff5f5':i%2===0?'white':'#fafafa'
+ const isSourceDate = dtrHighlightDates.includes(dateStr)
+ const isFocusedSourceDate = dtrHighlightContext?.focusDate === dateStr
+ const rowBg = isFocusedSourceDate?'#fff0b3':isSourceDate?'#fff8dc':isWeekend?'#f5f5f5':log?.status==='Absent'?'#fff5f5':i%2===0?'white':'#fafafa'
  return (
- <tr key={dateStr} style={{ background:rowBg, borderBottom:'1px solid #eee' }}>
+ <tr id={`dtr-row-${dateStr}`} key={dateStr} style={{ background:rowBg, borderBottom:'1px solid #eee', outline:isFocusedSourceDate?'3px solid #ca1b1b':isSourceDate?'2px solid #FDD412':'none', outlineOffset:'-2px' }}>
  <td style={{ padding:'7px 10px', fontWeight:'bold', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{dayName}</td>
- <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{formatDateForDisplay(dateStr)}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{formatDateForDisplay(dateStr)}{dtrHighlightDates.includes(dateStr) && <div style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'9px' }}>CORRECTION SOURCE</div>}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_in?'#2d8a4e':'#ccc', fontSize:'12px', fontWeight:log?.time_in?'bold':'normal' }}>{log?.time_in||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_out?'#333':'#ccc', fontSize:'12px' }}>{log?.time_out||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:'#888' }}>{log?.total_break_minutes||0}</td>
