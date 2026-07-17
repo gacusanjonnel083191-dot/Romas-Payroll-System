@@ -25,3 +25,7 @@ dist-ssr
 
 .vercel
 .env*
+
+# Local App backups
+app-backups/
+src/App.backup*
