@@ -5019,6 +5019,8 @@ export default function App() {
  const [otRequestFrom, setOtRequestFrom] = useState('')
  const [otRequestTo, setOtRequestTo] = useState('')
  const [timeAdjPreview, setTimeAdjPreview] = useState({ loading:false, canSubmit:false, minutes:0, message:'Select an attendance date to validate the time record.', code:'idle' })
+ const [submittingTimeAdjRequest, setSubmittingTimeAdjRequest] = useState(false)
+ const timeAdjSubmitLockRef = useRef(false)
  const [adminMode, setAdminMode] = useState(false)
  const [adminRole, setAdminRole] = useState(null) // 'owner'|'manager'|'hr'|'payroll'|'supervisor'|'asst_supervisor'
  const [adminEmployee, setAdminEmployee] = useState(null) // employee record of the logged-in admin
@@ -16064,79 +16066,98 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  async function submitTimeAdjRequest() {
+ if (timeAdjSubmitLockRef.current) return
  if (!otRequestReason || !otRequestDate) { alert('Please select a date and enter a reason.'); return }
- // Revalidate immediately before saving. OT times are taken only from the fresh
- // attendance-supported window, never from editable browser values.
- const preview = await refreshTimeAdjustmentPreview(otRequestDate, otRequestType, otRequestFrom, otRequestTo)
- if (!preview?.canSubmit || safeNum(preview?.minutes, 0) <= 0) {
-  alert(preview?.message || 'This request is not supported by the attendance record.')
-  return
- }
+ timeAdjSubmitLockRef.current = true
+ setSubmittingTimeAdjRequest(true)
+ try {
+  // Revalidate immediately before saving. OT times are taken only from the fresh
+  // attendance-supported window, never from editable browser values.
+  const preview = await refreshTimeAdjustmentPreview(otRequestDate, otRequestType, otRequestFrom, otRequestTo)
+  if (!preview?.canSubmit || safeNum(preview?.minutes, 0) <= 0) {
+   alert(preview?.message || 'This request is not supported by the attendance record.')
+   return
+  }
 
- const exactMinutes = Math.max(0, Math.round(safeNum(preview.minutes, 0)))
- const lockedOTFrom = normalizeTimeInputValue(preview?.rangeValidation?.filedFrom || preview?.validation?.overtimeWindow?.verifiedFrom)
- const lockedOTTo = normalizeTimeInputValue(preview?.rangeValidation?.filedTo || preview?.validation?.overtimeWindow?.verifiedTo)
- if (otRequestType === 'overtime' && (!lockedOTFrom || !lockedOTTo)) {
-  alert('Overtime filing is blocked because the verified attendance-supported OT window could not be determined.')
-  return
- }
- const canonicalAttendanceDate = String(preview?.validation?.resolvedAttendanceDate || otRequestDate).slice(0, 10)
- const { data:existingRequests, error:existingError } = await supabase
- .from('time_adjustment_requests')
- .select('id,status')
- .eq('employee_id', employee.id)
- .eq('attendance_date', canonicalAttendanceDate)
- .eq('request_type', otRequestType)
- .in('status', ['pending', 'approved'])
- .limit(1)
- if (existingError) { alert('Failed checking existing request: '+existingError.message); return }
- if (existingRequests?.length) {
-  alert(`You already have a ${otRequestType==='overtime'?'overtime':'undertime'} request for this date. Please wait for admin review instead of filing another one.`)
-  return
- }
+  const exactMinutes = Math.max(0, Math.round(safeNum(preview.minutes, 0)))
+  const lockedOTFrom = normalizeTimeInputValue(preview?.rangeValidation?.filedFrom || preview?.validation?.overtimeWindow?.verifiedFrom)
+  const lockedOTTo = normalizeTimeInputValue(preview?.rangeValidation?.filedTo || preview?.validation?.overtimeWindow?.verifiedTo)
+  if (otRequestType === 'overtime' && (!lockedOTFrom || !lockedOTTo)) {
+   alert('Overtime filing is blocked because the verified attendance-supported OT window could not be determined.')
+   return
+  }
 
- let employeeReason = otRequestReason
- if (otRequestType === 'overtime') {
-  const window = preview?.rangeValidation?.window || preview?.validation?.overtimeWindow || {}
-  employeeReason = buildTimeAdjustmentEmployeeReason(otRequestReason, {
-   filedFrom:lockedOTFrom,
-   filedTo:lockedOTTo,
-   filedMinutes:exactMinutes,
-   verifiedFrom:window.verifiedFrom || '',
-   verifiedTo:window.verifiedTo || '',
-   verifiedMinutes:safeNum(window.minutes, exactMinutes),
-   actualTimeIn:window.actualTimeIn || '',
-   actualTimeOut:window.actualTimeOut || '',
-   shiftStart:window.shiftStart || '',
-   shiftEnd:window.shiftEnd || '',
-   attendanceDate:canonicalAttendanceDate,
-   employeeSelectedDate:otRequestDate
+  const canonicalAttendanceDate = String(preview?.validation?.resolvedAttendanceDate || otRequestDate).slice(0, 10)
+  // Overnight requests historically used either the Time Out calendar date or
+  // the actual shift-start attendance date. Check both so old and new records
+  // cannot create duplicate active requests for the same shift.
+  const duplicateDates = Array.from(new Set([
+   String(otRequestDate || '').slice(0, 10),
+   canonicalAttendanceDate
+  ].filter(Boolean)))
+  const { data:existingRequests, error:existingError } = await supabase
+   .from('time_adjustment_requests')
+   .select('id,status,attendance_date')
+   .eq('employee_id', employee.id)
+   .in('attendance_date', duplicateDates)
+   .eq('request_type', otRequestType)
+   .in('status', ['pending', 'approved'])
+   .limit(10)
+  if (existingError) { alert('Failed checking existing request: '+existingError.message); return }
+  if (existingRequests?.length) {
+   const existingDateText = Array.from(new Set(existingRequests.map(row => String(row.attendance_date || '').slice(0,10)).filter(Boolean))).join(', ')
+   alert(`You already have an active ${otRequestType==='overtime'?'overtime':'undertime'} request for this attendance shift${existingDateText ? ` (${existingDateText})` : ''}. Please wait for admin review instead of filing another one.`)
+   return
+  }
+
+  let employeeReason = otRequestReason
+  if (otRequestType === 'overtime') {
+   const window = preview?.rangeValidation?.window || preview?.validation?.overtimeWindow || {}
+   employeeReason = buildTimeAdjustmentEmployeeReason(otRequestReason, {
+    filedFrom:lockedOTFrom,
+    filedTo:lockedOTTo,
+    filedMinutes:exactMinutes,
+    verifiedFrom:window.verifiedFrom || '',
+    verifiedTo:window.verifiedTo || '',
+    verifiedMinutes:safeNum(window.minutes, exactMinutes),
+    actualTimeIn:window.actualTimeIn || '',
+    actualTimeOut:window.actualTimeOut || '',
+    shiftStart:window.shiftStart || '',
+    shiftEnd:window.shiftEnd || '',
+    attendanceDate:canonicalAttendanceDate,
+    employeeSelectedDate:otRequestDate
+   })
+  }
+
+  const { error } = await supabase.from('time_adjustment_requests').insert({
+   employee_id:employee.id,
+   employee_code:employee.employee_code,
+   employee_name:employee.full_name,
+   attendance_date:canonicalAttendanceDate,
+   request_type:otRequestType,
+   minutes:exactMinutes,
+   employee_reason:employeeReason,
+   status:'pending'
   })
+  if (error) { alert('Failed: '+error.message); return }
+  alert(otRequestType === 'overtime'
+   ? `Overtime request filed for the system-locked range ${formatClockTimeForDisplay(lockedOTFrom)} to ${formatClockTimeForDisplay(lockedOTTo)} (${exactMinutes} minutes) under attendance date ${canonicalAttendanceDate}.${canonicalAttendanceDate !== otRequestDate ? ` Your selected date ${otRequestDate} was correctly matched to the previous-day overnight shift.` : ''} OT To is capped at the actual Time Out. The request is waiting for admin approval.`
+   : `Undertime request filed for exactly ${exactMinutes} minute(s), based on the attendance record. Waiting for admin approval.`
+  )
+  setOtRequestReason('')
+  setOtRequestReasonPreset('')
+  setOtRequestMinutes('')
+  setOtRequestDate('')
+  setOtRequestFrom('')
+  setOtRequestTo('')
+  setTimeAdjPreview({ loading:false, canSubmit:false, minutes:0, message:'Select an attendance date to validate the time record.', code:'idle' })
+  setShowOTRequest(false)
+ } catch(error) {
+  alert('Failed to file the request: ' + (error?.message || error))
+ } finally {
+  timeAdjSubmitLockRef.current = false
+  setSubmittingTimeAdjRequest(false)
  }
-
- const { error } = await supabase.from('time_adjustment_requests').insert({
-  employee_id:employee.id,
-  employee_code:employee.employee_code,
-  employee_name:employee.full_name,
-  attendance_date:canonicalAttendanceDate,
-  request_type:otRequestType,
-  minutes:exactMinutes,
-  employee_reason:employeeReason,
-  status:'pending'
- })
- if (error) { alert('Failed: '+error.message); return }
- alert(otRequestType === 'overtime'
-  ? `Overtime request filed for the system-locked range ${formatClockTimeForDisplay(lockedOTFrom)} to ${formatClockTimeForDisplay(lockedOTTo)} (${exactMinutes} minutes) under attendance date ${canonicalAttendanceDate}.${canonicalAttendanceDate !== otRequestDate ? ` Your selected date ${otRequestDate} was correctly matched to the previous-day overnight shift.` : ''} OT To is capped at the actual Time Out. The request is waiting for admin approval.`
-  : `Undertime request filed for exactly ${exactMinutes} minute(s), based on the attendance record. Waiting for admin approval.`
- )
- setOtRequestReason('')
- setOtRequestReasonPreset('')
- setOtRequestMinutes('')
- setOtRequestDate('')
- setOtRequestFrom('')
- setOtRequestTo('')
- setTimeAdjPreview({ loading:false, canSubmit:false, minutes:0, message:'Select an attendance date to validate the time record.', code:'idle' })
- setShowOTRequest(false)
  }
  async function submitLeaveRequest() {
  if (!leaveStartDate ||!leaveEndDate ||!leaveReason) {
@@ -20880,7 +20901,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
   const rangeValidation = requestType === 'overtime' && parsedReason.hasOvertimeRange
    ? validateFiledOvertimeRange(validation, parsedReason.overtimeRange?.filedFrom, parsedReason.overtimeRange?.filedTo)
    : null
-  const canApprove = actualMinutes > 0
+  // A valid attendance record may be administratively approved at 0 minutes.
+  // This closes an unsupported request without putting any OT/UT into payroll.
+  const canApprove = true
   const minutesDiffer = requestedMinutes !== actualMinutes
   const filingMismatch = requestType === 'overtime' && (
    !parsedReason.hasOvertimeRange ||
@@ -20906,9 +20929,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
    legacy:requestType === 'overtime' && !parsedReason.hasOvertimeRange,
    willAutoSync:minutesDiffer || filingMismatch,
    canApprove,
-   message:canApprove
+   message:actualMinutes > 0
     ? `${calculationMessage} ${syncMessage}${validation.resolvedFromPreviousDay ? ` ${validation.resolutionMessage}` : ''}`
-    : `${calculationMessage} There are no actual ${requestType === 'overtime' ? 'overtime minutes above eight paid hours' : 'undertime minutes below eight paid hours'} to approve.`
+    : `${calculationMessage} There are no actual ${requestType === 'overtime' ? 'overtime minutes above eight paid hours' : 'undertime minutes below eight paid hours'}. Approval will close this request at 0 minutes, and payroll will count nothing.`
   }
  } catch(error) {
   return { loading:false, requestType, parsedReason, canApprove:false, error:error?.message || String(error), message:'Attendance verification failed: ' + (error?.message || error) }
@@ -21086,21 +21109,14 @@ This only fills the missing legacy From/To audit data. It does not approve the r
   ? Math.max(0, Math.round(safeNum(validation.actualOvertimeMinutes, 0)))
   : Math.max(0, Math.round(safeNum(validation.actualUndertimeMinutes, 0)))
  const actualWindow = validation.overtimeWindow || {}
- if (exactMinutes <= 0) {
-  const reason = requestType === 'overtime'
-   ? 'Actual Time In and Time Out, less the mandatory break, do not exceed eight paid hours.'
-   : 'Actual Time In and Time Out, less the mandatory break, already contain at least eight paid hours.'
-  showToast(`Nothing was approved: ${reason}`, 'red')
-  await logAudit('OT/UT APPROVAL ZERO ACTUAL MINUTES', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | Saved request ${requestedMinutes} min`)
-  return
- }
+ const zeroMinuteApproval = exactMinutes <= 0
 
  const parsedReason = parseTimeAdjustmentEmployeeReason(req.employee_reason || '')
  const savedRangeText = requestType === 'overtime' && parsedReason.hasOvertimeRange
   ? `${parsedReason.overtimeRange?.filedFrom || ''}-${parsedReason.overtimeRange?.filedTo || ''}`
   : requestType === 'overtime' ? 'legacy/no saved range' : 'not applicable'
  const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; raw span ${validation.metrics.rawSpanMinutes} min; break deducted ${validation.metrics.deductedBreakMinutes} min; paid work ${validation.metrics.paidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min.`
- const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}APPROVED FROM ACTUAL ATTENDANCE: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}` : ''}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
+ const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}${zeroMinuteApproval ? 'REVIEWED AND CLOSED AT ZERO FROM ACTUAL ATTENDANCE' : 'APPROVED FROM ACTUAL ATTENDANCE'}: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}` : ''}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
 
  const { error } = await supabase.from('time_adjustment_requests').update({
   attendance_date:targetDate,
@@ -21137,20 +21153,22 @@ This only fills the missing legacy From/To audit data. It does not approve the r
    showToast('Approval was rolled back because attendance synchronization failed: ' + clearOTError.message, 'red')
    return
   }
-  const { error:attendanceOTError } = await supabase.from('attendance_logs').update({
-   overtime_minutes:exactMinutes,
-   overtime_approved:true,
-   status:'Overtime - Approved'
-  }).eq('id', primaryAttendanceLog.id)
-  if (attendanceOTError) {
-   let rollbackOTQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false })
-   rollbackOTQuery = sourceAttendanceLogIds.length > 0
-    ? rollbackOTQuery.in('id', sourceAttendanceLogIds)
-    : rollbackOTQuery.eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
-   await rollbackOTQuery
-   await rollbackApprovalAfterSyncFailure(attendanceOTError.message)
-   showToast('Approval was rolled back because attendance synchronization failed: ' + attendanceOTError.message, 'red')
-   return
+  if (exactMinutes > 0) {
+   const { error:attendanceOTError } = await supabase.from('attendance_logs').update({
+    overtime_minutes:exactMinutes,
+    overtime_approved:true,
+    status:'Overtime - Approved'
+   }).eq('id', primaryAttendanceLog.id)
+   if (attendanceOTError) {
+    let rollbackOTQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false })
+    rollbackOTQuery = sourceAttendanceLogIds.length > 0
+     ? rollbackOTQuery.in('id', sourceAttendanceLogIds)
+     : rollbackOTQuery.eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
+    await rollbackOTQuery
+    await rollbackApprovalAfterSyncFailure(attendanceOTError.message)
+    showToast('Approval was rolled back because attendance synchronization failed: ' + attendanceOTError.message, 'red')
+    return
+   }
   }
  } else {
   let clearUTQuery = supabase.from('attendance_logs').update({ undertime_minutes:0 })
@@ -21163,14 +21181,49 @@ This only fills the missing legacy From/To audit data. It does not approve the r
    showToast('Approval was rolled back because attendance synchronization failed: ' + clearUTError.message, 'red')
    return
   }
-  const { error:attendanceUTError } = await supabase.from('attendance_logs').update({
-   undertime_minutes:exactMinutes,
-   status:'Undertime - Approved'
-  }).eq('id', primaryAttendanceLog.id)
-  if (attendanceUTError) {
-   await rollbackApprovalAfterSyncFailure(attendanceUTError.message)
-   showToast('Approval was rolled back because attendance synchronization failed: ' + attendanceUTError.message, 'red')
-   return
+  if (exactMinutes > 0) {
+   const { error:attendanceUTError } = await supabase.from('attendance_logs').update({
+    undertime_minutes:exactMinutes,
+    status:'Undertime - Approved'
+   }).eq('id', primaryAttendanceLog.id)
+   if (attendanceUTError) {
+    await rollbackApprovalAfterSyncFailure(attendanceUTError.message)
+    showToast('Approval was rolled back because attendance synchronization failed: ' + attendanceUTError.message, 'red')
+    return
+   }
+  }
+ }
+
+ // Keep only one active approval per employee, request type, and attendance shift.
+ // Existing legacy duplicates may be stored under the Time Out date, while newer
+ // requests use the shift-start attendance date, so clean both date variants.
+ const duplicateCleanupDates = Array.from(new Set([requestedAttendanceDate, targetDate].filter(Boolean)))
+ let autoVoidedDuplicateIds = []
+ const { data:pendingDuplicateRows, error:pendingDuplicateError } = await supabase
+  .from('time_adjustment_requests')
+  .select('id')
+  .eq('employee_id', req.employee_id)
+  .in('attendance_date', duplicateCleanupDates)
+  .eq('request_type', requestType)
+  .eq('status', 'pending')
+  .neq('id', req.id)
+  .limit(100)
+ if (pendingDuplicateError) {
+  console.warn('Duplicate OT/UT cleanup lookup failed:', pendingDuplicateError)
+ } else {
+  autoVoidedDuplicateIds = (pendingDuplicateRows || []).map(row => row?.id).filter(Boolean)
+  if (autoVoidedDuplicateIds.length > 0) {
+   const duplicateVoidNote = `AUTO-VOIDED AS DUPLICATE: ${req.employee_name} already has the reviewed ${requestType.toUpperCase()} request ${req.id} for attendance shift ${targetDate}.`
+   const { error:voidDuplicateError } = await supabase.from('time_adjustment_requests').update({
+    status:'voided',
+    reviewed_by:currentAdminLabel,
+    reviewed_at:new Date().toISOString(),
+    admin_reason:duplicateVoidNote
+   }).in('id', autoVoidedDuplicateIds)
+   if (voidDuplicateError) {
+    console.warn('Duplicate OT/UT auto-void failed:', voidDuplicateError)
+    autoVoidedDuplicateIds = []
+   }
   }
  }
 
@@ -21185,19 +21238,32 @@ This only fills the missing legacy From/To audit data. It does not approve the r
   req.employee_name,
   'overtime',
   ` ${requestType==='overtime'?'Overtime':'Undertime'} Approved`,
-  `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), calculated from your actual Time In and Time Out less the mandatory break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
+  zeroMinuteApproval
+   ? `Your ${requestType} request for ${targetDate} was reviewed and closed at 0 minute(s), based on your actual Time In and Time Out less the mandatory break. Nothing will be added to or deducted from payroll from this request.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
+   : `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), calculated from your actual Time In and Time Out less the mandatory break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
  )
- setTimeAdjRequests(prev=>prev.map(r=>r.id===req.id? {
-  ...r,
-  attendance_date:targetDate,
-  minutes:exactMinutes,
-  status:'approved',
-  reviewed_by:currentAdminLabel,
-  reviewed_at:new Date().toISOString(),
-  admin_reason:minuteSyncNote
- }: r))
+ const approvalTimestamp = new Date().toISOString()
+ setTimeAdjRequests(prev=>prev.map(r=>{
+  if (r.id===req.id) return {
+   ...r,
+   attendance_date:targetDate,
+   minutes:exactMinutes,
+   status:'approved',
+   reviewed_by:currentAdminLabel,
+   reviewed_at:approvalTimestamp,
+   admin_reason:minuteSyncNote
+  }
+  if (autoVoidedDuplicateIds.includes(r.id)) return {
+   ...r,
+   status:'voided',
+   reviewed_by:currentAdminLabel,
+   reviewed_at:approvalTimestamp,
+   admin_reason:`AUTO-VOIDED AS DUPLICATE of the reviewed ${requestType.toUpperCase()} request for ${targetDate}.`
+  }
+  return r
+ }))
  await refreshTimeAdjAdminValidation({ ...req, attendance_date:targetDate, minutes:exactMinutes, status:'approved' })
- showToast(`${requestType === 'overtime' ? 'Overtime' : 'Undertime'} approved for ${exactMinutes} actual attendance minute(s).${requestedMinutes !== exactMinutes ? ` Saved request corrected from ${requestedMinutes} minute(s).` : ''}`)
+ showToast(`${requestType === 'overtime' ? 'Overtime' : 'Undertime'} ${zeroMinuteApproval ? 'reviewed and closed at 0' : `approved for ${exactMinutes}`} actual attendance minute(s).${requestedMinutes !== exactMinutes ? ` Saved request corrected from ${requestedMinutes} minute(s).` : ''}${autoVoidedDuplicateIds.length > 0 ? ` ${autoVoidedDuplicateIds.length} duplicate pending request(s) were automatically voided.` : ''}`)
  }
  async function rejectTimeAdj(req) {
  const reason = adjAdminReason[req.id]
@@ -29881,6 +29947,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    ? (adminValidation?.willAutoSync ? 'AUTO-SYNC READY' : 'ACTUAL MATCH')
    : attendanceValid ? 'NO PAYABLE MINUTES' : 'DTR REVIEW'
  const validationBadgeColor = adminValidation?.loading ? 'orange' : attendanceValid && actualMinutes > 0 ? 'green' : 'red'
+ const approveButtonLabel = attendanceValid && actualMinutes <= 0 ? 'APPROVE 0 MIN & CLOSE' : 'APPROVE ACTUAL MINUTES'
  return (
  <div key={req.id} style={{...cardS, border:`2px solid ${isOvertimeRequest?'#2d8a4e':'#f5a623'}`, background:isOvertimeRequest?'#f0fff0':'#fffbf0' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -29919,7 +29986,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <label style={lblS}>Admin Response / Reason {req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
  <textarea placeholder={req.status==='approved'? 'Enter reason for undoing this approved OT/UT...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
- {req.status==='pending' && <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Calculating actual minutes...'; await approveTimeAdj(req); btn.disabled=false; btn.textContent='APPROVE ACTUAL MINUTES' }}>APPROVE ACTUAL MINUTES</button>}
+ {req.status==='pending' && <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Calculating actual minutes...'; await approveTimeAdj(req); btn.disabled=false; btn.textContent=approveButtonLabel }}>{approveButtonLabel}</button>}
  {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent=' REJECT' }}> REJECT</button>}
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? ' UNDO APPROVED OT/UT':' VOID / CANCEL' }}>{req.status==='approved'? ' UNDO APPROVED OT/UT':' VOID / CANCEL'}</button>
  </div>
@@ -39862,21 +39929,21 @@ onClick={async ()=>{
  />
  )}
  <button
-  disabled={timeAdjPreview.loading || !timeAdjPreview.canSubmit}
+  disabled={timeAdjPreview.loading || !timeAdjPreview.canSubmit || submittingTimeAdjRequest}
   style={{
-   background:timeAdjPreview.canSubmit?'#8b5cf6':'#bbb',
+   background:timeAdjPreview.canSubmit && !submittingTimeAdjRequest?'#8b5cf6':'#bbb',
    color:'white',
    padding:'12px',
    border:'none',
    borderRadius:'10px',
    width:'100%',
-   cursor:timeAdjPreview.canSubmit?'pointer':'not-allowed',
+   cursor:timeAdjPreview.canSubmit && !submittingTimeAdjRequest?'pointer':'not-allowed',
    fontWeight:'bold',
    fontSize:'14px'
   }}
   onClick={submitTimeAdjRequest}
  >
-  {timeAdjPreview.loading?'VALIDATING ATTENDANCE...':'SUBMIT SYSTEM-LOCKED OT / UT REQUEST'}
+  {submittingTimeAdjRequest?'SUBMITTING REQUEST...':timeAdjPreview.loading?'VALIDATING ATTENDANCE...':'SUBMIT SYSTEM-LOCKED OT / UT REQUEST'}
  </button>
  </div>
  )}
