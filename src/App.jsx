@@ -5021,6 +5021,7 @@ export default function App() {
  const [timeAdjPreview, setTimeAdjPreview] = useState({ loading:false, canSubmit:false, minutes:0, message:'Select an attendance date to validate the time record.', code:'idle' })
  const [submittingTimeAdjRequest, setSubmittingTimeAdjRequest] = useState(false)
  const timeAdjSubmitLockRef = useRef(false)
+ const timeAdjApprovalLockRef = useRef(false)
  const [adminMode, setAdminMode] = useState(false)
  const [adminRole, setAdminRole] = useState(null) // 'owner'|'manager'|'hr'|'payroll'|'supervisor'|'asst_supervisor'
  const [adminEmployee, setAdminEmployee] = useState(null) // employee record of the logged-in admin
@@ -20894,6 +20895,36 @@ This recovery button creates one approved expense record using GROSS payroll ear
    }
   }
 
+  const requestedAttendanceDate = String(req?.attendance_date || '').slice(0, 10)
+  const resolvedAttendanceDate = String(validation.resolvedAttendanceDate || requestedAttendanceDate).slice(0, 10)
+  const approvalGuardDates = Array.from(new Set([requestedAttendanceDate, resolvedAttendanceDate].filter(Boolean)))
+  const { data:existingApprovedRows, error:existingApprovedError } = await supabase
+   .from('time_adjustment_requests')
+   .select('id,minutes,attendance_date,reviewed_at,reviewed_by')
+   .eq('employee_id', req.employee_id)
+   .in('attendance_date', approvalGuardDates)
+   .eq('request_type', requestType)
+   .eq('status', 'approved')
+   .neq('id', req.id)
+   .limit(1)
+  if (existingApprovedError) throw existingApprovedError
+  if (existingApprovedRows?.length) {
+   const approved = existingApprovedRows[0]
+   return {
+    loading:false,
+    requestType,
+    parsedReason,
+    validation,
+    requestedMinutes,
+    actualMinutes:0,
+    resolvedAttendanceDate,
+    alreadyApproved:true,
+    approvedRecord:approved,
+    canApprove:false,
+    message:`Approval blocked: this employee already has an approved ${requestType} record for the same attendance shift (${resolvedAttendanceDate}). Approved minutes: ${Math.max(0, Math.round(safeNum(approved.minutes, 0)))}. Undo or void the existing approval before approving another request for this date.`
+   }
+  }
+
   const actualMinutes = requestType === 'overtime'
    ? Math.max(0, Math.round(safeNum(validation.actualOvertimeMinutes, 0)))
    : Math.max(0, Math.round(safeNum(validation.actualUndertimeMinutes, 0)))
@@ -21048,9 +21079,37 @@ This only fills the missing legacy From/To audit data. It does not approve the r
  }
 
  async function approveTimeAdj(req) {
+ if (timeAdjApprovalLockRef.current) {
+  showToast('Another OT/UT approval is already being processed. Please wait for it to finish before approving another request.', 'orange')
+  return
+ }
+ timeAdjApprovalLockRef.current = true
+ try {
  const reviewNote = adjAdminReason[req.id]||''
  const requestedAttendanceDate = String(req.attendance_date || '').slice(0,10)
  const requestType = String(req.request_type || '').toLowerCase()
+
+ // Re-read the request before doing any approval work. This protects against a
+ // stale admin screen where the same request was already approved, rejected, or
+ // voided in another tab or by another admin session.
+ const { data:freshRequestRows, error:freshRequestError } = await supabase
+  .from('time_adjustment_requests')
+  .select('id,status,attendance_date,request_type,employee_id,minutes')
+  .eq('id', req.id)
+  .limit(1)
+ if (freshRequestError) {
+  showToast('Approval blocked: failed to verify the current request status — ' + freshRequestError.message, 'red')
+  return
+ }
+ const freshRequest = freshRequestRows?.[0]
+ if (!freshRequest) {
+  showToast('Approval blocked: this OT/UT request no longer exists. Refresh the list.', 'red')
+  return
+ }
+ if (String(freshRequest.status || '').toLowerCase() !== 'pending') {
+  showToast(`Approval blocked: this request is already ${String(freshRequest.status || 'processed').toLowerCase()}. Refresh the OT/UT list.`, 'red')
+  return
+ }
 
  let validation
  try {
@@ -21090,7 +21149,7 @@ This only fills the missing legacy From/To audit data. It does not approve the r
  const duplicateDates = Array.from(new Set([requestedAttendanceDate, targetDate].filter(Boolean)))
  const { data:duplicateApproved, error:duplicateError } = await supabase
  .from('time_adjustment_requests')
- .select('id,minutes,reviewed_at,attendance_date')
+ .select('id,minutes,reviewed_at,reviewed_by,attendance_date')
  .eq('employee_id', req.employee_id)
  .in('attendance_date', duplicateDates)
  .eq('request_type', requestType)
@@ -21099,8 +21158,11 @@ This only fills the missing legacy From/To audit data. It does not approve the r
  .limit(1)
  if (duplicateError) { showToast('Failed to check duplicate OT/UT: '+duplicateError.message, 'red'); return }
  if (duplicateApproved && duplicateApproved.length > 0) {
-  showToast(`Approval blocked: this employee already has an approved ${requestType} request for this attendance shift (${targetDate}). Reject or correct the duplicate first.`, 'red')
-  await logAudit('DUPLICATE OT/UT APPROVAL BLOCKED', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate}`)
+  const existingApproval = duplicateApproved[0]
+  const approvedByText = existingApproval.reviewed_by ? ` by ${existingApproval.reviewed_by}` : ''
+  const approvedAtText = existingApproval.reviewed_at ? ` on ${new Date(existingApproval.reviewed_at).toLocaleString('en-PH')}` : ''
+  showToast(`Approval blocked: this employee already has an approved ${requestType} request for the same attendance shift (${targetDate})${approvedByText}${approvedAtText}. Undo or void the existing approval before approving another request for this date.`, 'red')
+  await logAudit('DUPLICATE OT/UT APPROVAL BLOCKED', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | Existing approved request ${existingApproval.id} | ${existingApproval.minutes || 0} min`)
   return
  }
 
@@ -21127,6 +21189,48 @@ This only fills the missing legacy From/To audit data. It does not approve the r
   admin_reason:minuteSyncNote
  }).eq('id', req.id)
  if (error) { showToast('Failed: '+error.message,'red'); return }
+
+ // Final concurrency guard: if another browser or admin approved a duplicate at
+ // nearly the same time, only the earliest approved request is allowed to remain.
+ const { data:approvedSameShiftRows, error:approvedSameShiftError } = await supabase
+  .from('time_adjustment_requests')
+  .select('id,created_at,reviewed_at,minutes')
+  .eq('employee_id', req.employee_id)
+  .in('attendance_date', duplicateDates)
+  .eq('request_type', requestType)
+  .eq('status', 'approved')
+  .order('created_at', { ascending:true })
+  .limit(20)
+ if (approvedSameShiftError) {
+  await supabase.from('time_adjustment_requests').update({
+   status:'pending',
+   minutes:requestedMinutes,
+   admin_reason:`APPROVAL ROLLED BACK: duplicate approval verification failed — ${approvedSameShiftError.message}`
+  }).eq('id', req.id)
+  showToast('Approval was rolled back because the duplicate-approval guard could not be verified. Please try again.', 'red')
+  return
+ }
+ if ((approvedSameShiftRows || []).length > 1) {
+  const orderedApproved = [...approvedSameShiftRows].sort((a, b) => {
+   const aStamp = String(a.created_at || a.reviewed_at || '')
+   const bStamp = String(b.created_at || b.reviewed_at || '')
+   return aStamp.localeCompare(bStamp) || String(a.id || '').localeCompare(String(b.id || ''))
+  })
+  const approvedWinner = orderedApproved[0]
+  if (approvedWinner?.id !== req.id) {
+   const duplicateRollbackNote = `APPROVAL BLOCKED AND ROLLED BACK: approved request ${approvedWinner?.id || 'existing'} already covers ${requestType.toUpperCase()} for attendance shift ${targetDate}.`
+   await supabase.from('time_adjustment_requests').update({
+    status:'pending',
+    minutes:requestedMinutes,
+    reviewed_by:currentAdminLabel,
+    reviewed_at:new Date().toISOString(),
+    admin_reason:duplicateRollbackNote
+   }).eq('id', req.id)
+   showToast(`Approval blocked: another approved ${requestType} request already covers ${targetDate}. This duplicate remains pending for rejection or voiding.`, 'red')
+   await logAudit('CONCURRENT DUPLICATE OT/UT APPROVAL ROLLED BACK', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | Existing approved request ${approvedWinner?.id || ''}`)
+   return
+  }
+ }
 
  const rollbackApprovalAfterSyncFailure = async syncMessage => {
   const rollbackNote = `${minuteSyncNote ? minuteSyncNote + ' | ' : ''}SYSTEM ROLLBACK: attendance synchronization failed — ${syncMessage}`
@@ -21264,6 +21368,9 @@ This only fills the missing legacy From/To audit data. It does not approve the r
  }))
  await refreshTimeAdjAdminValidation({ ...req, attendance_date:targetDate, minutes:exactMinutes, status:'approved' })
  showToast(`${requestType === 'overtime' ? 'Overtime' : 'Undertime'} ${zeroMinuteApproval ? 'reviewed and closed at 0' : `approved for ${exactMinutes}`} actual attendance minute(s).${requestedMinutes !== exactMinutes ? ` Saved request corrected from ${requestedMinutes} minute(s).` : ''}${autoVoidedDuplicateIds.length > 0 ? ` ${autoVoidedDuplicateIds.length} duplicate pending request(s) were automatically voided.` : ''}`)
+ } finally {
+  timeAdjApprovalLockRef.current = false
+ }
  }
  async function rejectTimeAdj(req) {
  const reason = adjAdminReason[req.id]
@@ -29941,13 +30048,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const resolvedFromPreviousDay = !!adminValidation?.validation?.resolvedFromPreviousDay
  const actualTimeIn = verifiedWindow.actualTimeIn || adminValidation?.validation?.logs?.[0]?.time_in || otMeta.actualTimeIn || ''
  const actualTimeOut = verifiedWindow.actualTimeOut || adminValidation?.validation?.logs?.[0]?.time_out || otMeta.actualTimeOut || ''
+ const approvalAlreadyExists = !!adminValidation?.alreadyApproved
  const validationBadgeLabel = adminValidation?.loading
   ? 'CALCULATING'
-  : attendanceValid && actualMinutes > 0
-   ? (adminValidation?.willAutoSync ? 'AUTO-SYNC READY' : 'ACTUAL MATCH')
-   : attendanceValid ? 'NO PAYABLE MINUTES' : 'DTR REVIEW'
- const validationBadgeColor = adminValidation?.loading ? 'orange' : attendanceValid && actualMinutes > 0 ? 'green' : 'red'
- const approveButtonLabel = attendanceValid && actualMinutes <= 0 ? 'APPROVE 0 MIN & CLOSE' : 'APPROVE ACTUAL MINUTES'
+  : approvalAlreadyExists
+   ? 'ALREADY APPROVED'
+   : attendanceValid && actualMinutes > 0
+    ? (adminValidation?.willAutoSync ? 'AUTO-SYNC READY' : 'ACTUAL MATCH')
+    : attendanceValid ? 'NO PAYABLE MINUTES' : 'DTR REVIEW'
+ const validationBadgeColor = adminValidation?.loading ? 'orange' : approvalAlreadyExists ? 'red' : attendanceValid && actualMinutes > 0 ? 'green' : 'red'
+ const approveButtonLabel = approvalAlreadyExists ? 'APPROVAL BLOCKED' : attendanceValid && actualMinutes <= 0 ? 'APPROVE 0 MIN & CLOSE' : 'APPROVE ACTUAL MINUTES'
  return (
  <div key={req.id} style={{...cardS, border:`2px solid ${isOvertimeRequest?'#2d8a4e':'#f5a623'}`, background:isOvertimeRequest?'#f0fff0':'#fffbf0' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -29986,7 +30096,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <label style={lblS}>Admin Response / Reason {req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
  <textarea placeholder={req.status==='approved'? 'Enter reason for undoing this approved OT/UT...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
- {req.status==='pending' && <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Calculating actual minutes...'; await approveTimeAdj(req); btn.disabled=false; btn.textContent=approveButtonLabel }}>{approveButtonLabel}</button>}
+ {req.status==='pending' && <button disabled={adminValidation?.loading || approvalAlreadyExists || adminValidation?.canApprove===false} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalAlreadyExists || adminValidation?.canApprove===false)?0.55:1, cursor:(adminValidation?.loading || approvalAlreadyExists || adminValidation?.canApprove===false)?'not-allowed':'pointer' }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Calculating actual minutes...'; await approveTimeAdj(req); btn.disabled=!!(adminValidation?.loading || approvalAlreadyExists || adminValidation?.canApprove===false); btn.textContent=approveButtonLabel }}>{approveButtonLabel}</button>}
  {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent=' REJECT' }}> REJECT</button>}
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? ' UNDO APPROVED OT/UT':' VOID / CANCEL' }}>{req.status==='approved'? ' UNDO APPROVED OT/UT':' VOID / CANCEL'}</button>
  </div>
