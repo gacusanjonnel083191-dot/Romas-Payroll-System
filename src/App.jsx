@@ -11,10 +11,55 @@ const STORE_LAT = 15.4755
 const STORE_LNG = 120.5963
 const STORE_RADIUS_METERS = 200
 const ALLOWED_BREAK_MINUTES = 60
+const REQUIRED_PAID_WORK_MINUTES = 8 * 60
+const MIN_VALID_ATTENDANCE_SECONDS = 5 * 60
+const PAYROLL_ATTENDANCE_RECON_CATEGORY = 'Prior Payroll Attendance Correction'
+const PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN = 'ATTENDANCE-SOURCE-DAYS['
+const PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE = ']END-ATTENDANCE-SOURCE-DAYS'
+const TIME_ADJ_OT_RANGE_OPEN = 'OT-TIME-RANGE['
+const TIME_ADJ_OT_RANGE_CLOSE = ']END-OT-TIME-RANGE'
 const RESELLER_CREDIT_GRACE_DAYS = 7
 const ORDER_CUTOFF_TIME = '12:00'
 const ORDER_CUTOFF_LABEL = '12:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
+const POS_SHIFT_DAILY_SALES_MARKER_PREFIX = 'SAGS-POS-SHIFT-CLOSING|'
+
+function getPosShiftDailySalesMarker(outletId = '', businessDate = '') {
+ return `${POS_SHIFT_DAILY_SALES_MARKER_PREFIX}${String(outletId || '').trim()}|${String(businessDate || '').slice(0, 10)}`
+}
+
+function parsePosShiftDailySalesMetadata(notes = '') {
+ const text = String(notes || '')
+ const markerIndex = text.indexOf(POS_SHIFT_DAILY_SALES_MARKER_PREFIX)
+ if (markerIndex < 0) return { isPosShiftClosing:false, outletId:'', businessDate:'', marker:'' }
+ // The marker itself uses pipes, so read it with a direct expression instead of
+ // relying on the display text that may follow it.
+ const match = text.match(/SAGS-POS-SHIFT-CLOSING\|([^|\s;]+)\|(\d{4}-\d{2}-\d{2})/)
+ if (!match) return { isPosShiftClosing:false, outletId:'', businessDate:'', marker:'' }
+ return {
+  isPosShiftClosing:true,
+  outletId:match[1] || '',
+  businessDate:match[2] || '',
+  marker:match[0]
+ }
+}
+
+function isPosShiftDailySalesRecord(row = {}) {
+ return parsePosShiftDailySalesMetadata(row?.notes || '').isPosShiftClosing
+}
+
+// Payroll policy: all active employees are holiday-pay candidates, but attendance rules still apply.
+// Regular holiday rule: employee receives holiday pay only when NOT marked absent
+// on the day before the holiday, on the holiday, or on the day after the holiday.
+// If the employee worked the regular holiday, basic pay already covers the worked day,
+// so the added daily-rate holiday pay produces 200% total pay for that holiday.
+// Special holiday rule: no work, no premium; worked special holiday receives the 30% premium,
+// also subject to the same absence guard.
+const HOLIDAY_PAY_ALL_EMPLOYEES_ELIGIBLE = true
+const REGULAR_HOLIDAY_WORKED_PREMIUM_RATE = 1
+const REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE = 1
+const SPECIAL_HOLIDAY_WORKED_PREMIUM_RATE = 0.30
+const HOLIDAY_ABSENCE_GUARD_DAY_OFFSETS = [-1, 0, 1]
 
 // Design System 
 // Roma's Donuts Brand: Red #ca1b1b | Gold #FDD412 | Navy #1a1a2e
@@ -73,6 +118,59 @@ function getTodayDate() {
 }
 function nowTime() { return new Date().toLocaleTimeString('en-GB', { hour12: false }) }
 function minutesFromTime(t) { const [h, m] = String(t||'00:00').split(':').map(Number); return (Number(h)||0) * 60 + (Number(m)||0) }
+
+function normalizeTimeInputValue(value = '') {
+ const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})/)
+ if (!match) return ''
+ const hour = Number(match[1])
+ const minute = Number(match[2])
+ if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return ''
+ return `${String(hour).padStart(2,'0')}:${String(minute).padStart(2,'0')}`
+}
+
+function clockMinuteToTimeValue(value = 0) {
+ const total = ((Math.round(safeNum(value, 0)) % (24 * 60)) + (24 * 60)) % (24 * 60)
+ return `${String(Math.floor(total / 60)).padStart(2,'0')}:${String(total % 60).padStart(2,'0')}`
+}
+
+function formatClockTimeForDisplay(value = '') {
+ const normalized = normalizeTimeInputValue(value)
+ if (!normalized) return value || '-'
+ const [hour, minute] = normalized.split(':').map(Number)
+ const suffix = hour >= 12 ? 'PM' : 'AM'
+ const displayHour = hour % 12 || 12
+ return `${displayHour}:${String(minute).padStart(2,'0')} ${suffix}`
+}
+
+function getClockMinuteNearestTimeline(value = '', referenceMinute = 0) {
+ const normalized = normalizeTimeInputValue(value)
+ if (!normalized) return null
+ const base = minutesFromTime(normalized)
+ const candidates = [base - 24 * 60, base, base + 24 * 60, base + 48 * 60]
+ return candidates.reduce((best, candidate) => Math.abs(candidate - referenceMinute) < Math.abs(best - referenceMinute) ? candidate : best, candidates[0])
+}
+
+function buildTimeAdjustmentEmployeeReason(reason = '', overtimeRange = null) {
+ const cleanReason = parseTimeAdjustmentEmployeeReason(reason).cleanReason || String(reason || '').trim()
+ if (!overtimeRange) return cleanReason
+ const serialized = encodeURIComponent(JSON.stringify({ version:1, ...overtimeRange }))
+ return `${cleanReason}${cleanReason ? '\n' : ''}${TIME_ADJ_OT_RANGE_OPEN}${serialized}${TIME_ADJ_OT_RANGE_CLOSE}`
+}
+
+function parseTimeAdjustmentEmployeeReason(value = '') {
+ const text = String(value || '')
+ const start = text.indexOf(TIME_ADJ_OT_RANGE_OPEN)
+ const end = start >= 0 ? text.indexOf(TIME_ADJ_OT_RANGE_CLOSE, start + TIME_ADJ_OT_RANGE_OPEN.length) : -1
+ let overtimeRange = null
+ if (start >= 0 && end > start) {
+  const raw = text.slice(start + TIME_ADJ_OT_RANGE_OPEN.length, end)
+  try { overtimeRange = JSON.parse(decodeURIComponent(raw)) } catch(error) { overtimeRange = null }
+ }
+ const cleanReason = start >= 0 && end > start
+  ? `${text.slice(0, start)}${text.slice(end + TIME_ADJ_OT_RANGE_CLOSE.length)}`.trim()
+  : text.trim()
+ return { cleanReason, overtimeRange, hasOvertimeRange:!!overtimeRange }
+}
 
 function getPHDateTimeParts(asOf = new Date()) {
  const parts = new Intl.DateTimeFormat('en-GB', {
@@ -205,14 +303,79 @@ function calculateNightDifferentialMinutes(timeIn, timeOut, breakRows = []) {
 
 
 
+function getRecordedBreakMinutes(log = {}, breakRows = []) {
+ const savedBreakMinutes = Math.max(0, safeNum(log?.total_break_minutes, 0))
+ if (savedBreakMinutes > 0) return Math.round(savedBreakMinutes)
+ return Math.max(0, Math.round((breakRows || []).reduce((sum, row) => {
+  const savedRowMinutes = Math.max(0, safeNum(row?.break_minutes, 0))
+  if (savedRowMinutes > 0) return sum + savedRowMinutes
+  if (row?.break_out && row?.break_in) return sum + diffMinutesAcrossMidnight(row.break_out, row.break_in)
+  return sum
+ }, 0)))
+}
+
+function getCombinedAttendanceSpanMinutes(logs = []) {
+ const intervals = []
+ ;(logs || []).forEach(log => {
+  if (!log?.time_in || !log?.time_out || log?.status === 'Absent') return
+  const start = minutesFromTime(log.time_in)
+  let end = minutesFromTime(log.time_out)
+  if (end < start) end += 24 * 60
+  if (end > start) intervals.push([start, end])
+ })
+ intervals.sort((a, b) => a[0] - b[0])
+ if (!intervals.length) return 0
+
+ let total = 0
+ let [currentStart, currentEnd] = intervals[0]
+ for (let i = 1; i < intervals.length; i++) {
+  const [nextStart, nextEnd] = intervals[i]
+  if (nextStart <= currentEnd) currentEnd = Math.max(currentEnd, nextEnd)
+  else {
+   total += currentEnd - currentStart
+   currentStart = nextStart
+   currentEnd = nextEnd
+  }
+ }
+ return Math.max(0, Math.round(total + (currentEnd - currentStart)))
+}
+
+function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}) {
+ const completedLogs = (dayLogs || []).filter(log => log?.time_in && log?.time_out && log?.status !== 'Absent')
+ if (!completedLogs.length) {
+  return { rawSpanMinutes:0, recordedBreakMinutes:0, deductedBreakMinutes:0, overbreakMinutes:0, paidWorkedMinutes:0, undertimeMinutes:0 }
+ }
+
+ const rawSpanMinutes = getCombinedAttendanceSpanMinutes(completedLogs)
+ let recordedBreakMinutes = 0
+ const countedFallbackBreaks = new Set()
+ completedLogs.forEach(log => {
+  const rows = breakRowsByLogId?.[String(log.id || '')] || []
+  if (rows.length > 0) {
+   recordedBreakMinutes += getRecordedBreakMinutes(log, rows)
+   return
+  }
+  const fallbackBreak = getRecordedBreakMinutes(log, [])
+  const fallbackKey = `${log.time_in || ''}|${log.time_out || ''}|${fallbackBreak}`
+  if (!countedFallbackBreaks.has(fallbackKey)) {
+   countedFallbackBreaks.add(fallbackKey)
+   recordedBreakMinutes += fallbackBreak
+  }
+ })
+
+ // Company rule: every completed workday automatically carries at least one
+ // unpaid 60-minute break, even when no break was filed or recorded.
+ const deductedBreakMinutes = rawSpanMinutes > 0 ? Math.max(ALLOWED_BREAK_MINUTES, recordedBreakMinutes) : 0
+ const overbreakMinutes = Math.max(0, Math.round(recordedBreakMinutes - ALLOWED_BREAK_MINUTES))
+ const paidWorkedMinutes = Math.max(0, Math.round(rawSpanMinutes - deductedBreakMinutes))
+ const undertimeMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - paidWorkedMinutes)
+ return { rawSpanMinutes, recordedBreakMinutes, deductedBreakMinutes, overbreakMinutes, paidWorkedMinutes, undertimeMinutes }
+}
+
 function getDTRDutyMinutes(log = {}) {
  if (!log || !log.time_in || !log.time_out || log.status === 'Absent') return 0
- if (Array.isArray(log._logs) && log._logs.length > 1) {
-  return log._logs.reduce((sum, row) => sum + getDTRDutyMinutes(row), 0)
- }
- const rawMinutes = diffMinutesAcrossMidnight(log.time_in, log.time_out)
- const breakMinutes = safeNum(log.total_break_minutes, 0)
- return Math.max(0, Math.round(rawMinutes - breakMinutes))
+ const dayLogs = Array.isArray(log._logs) && log._logs.length > 0 ? log._logs : [log]
+ return getAttendanceDayWorkMetrics(dayLogs).paidWorkedMinutes
 }
 
 function formatDutyHours(minutes = 0) {
@@ -222,11 +385,549 @@ function formatDutyHours(minutes = 0) {
  return `${hours}h ${mins}m`
 }
 
+function secondsFromTime(t) {
+ const [h, m, s] = String(t || '00:00:00').split(':').map(Number)
+ return (Number(h) || 0) * 3600 + (Number(m) || 0) * 60 + (Number(s) || 0)
+}
+
+function diffSecondsAcrossMidnight(startTime, endTime) {
+ const start = secondsFromTime(startTime)
+ let end = secondsFromTime(endTime)
+ if (end < start) end += 24 * 60 * 60
+ return Math.max(0, end - start)
+}
+
+function getCombinedAttendanceSpanSeconds(logs = []) {
+ const intervals = []
+ ;(logs || []).forEach(log => {
+  if (!log?.time_in || !log?.time_out || isAbsentAttendanceLog(log)) return
+  const start = secondsFromTime(log.time_in)
+  let end = secondsFromTime(log.time_out)
+  if (end < start) end += 24 * 60 * 60
+  if (end > start) intervals.push([start, end])
+ })
+ intervals.sort((a, b) => a[0] - b[0])
+ if (!intervals.length) return 0
+
+ let total = 0
+ let [currentStart, currentEnd] = intervals[0]
+ for (let i = 1; i < intervals.length; i++) {
+  const [nextStart, nextEnd] = intervals[i]
+  if (nextStart <= currentEnd) currentEnd = Math.max(currentEnd, nextEnd)
+  else {
+   total += currentEnd - currentStart
+   currentStart = nextStart
+   currentEnd = nextEnd
+  }
+ }
+ return Math.max(0, Math.round(total + (currentEnd - currentStart)))
+}
+
+function getAttendanceDayIntegrity(dayLogs = []) {
+ const logs = (dayLogs || []).filter(Boolean)
+ const nonAbsentLogs = logs.filter(log => !isAbsentAttendanceLog(log))
+ const completedLogs = nonAbsentLogs.filter(log => log?.time_in && log?.time_out)
+ const missingTimeInLogs = nonAbsentLogs.filter(log => !log?.time_in && log?.time_out)
+ const missingTimeOutLogs = nonAbsentLogs.filter(log => log?.time_in && !log?.time_out)
+ const rawSpanSeconds = getCombinedAttendanceSpanSeconds(completedLogs)
+ const isAbsentOnly = logs.length > 0 && nonAbsentLogs.length === 0
+ const isIncomplete = missingTimeInLogs.length > 0 || missingTimeOutLogs.length > 0
+ const isInvalidShortPunch = completedLogs.length > 0 && rawSpanSeconds < MIN_VALID_ATTENDANCE_SECONDS
+ const isValidCompleted = completedLogs.length > 0 && !isIncomplete && !isInvalidShortPunch
+
+ let code = 'empty'
+ let message = 'No attendance record was found.'
+ if (isAbsentOnly) {
+  code = 'absent'
+  message = 'Employee is marked absent.'
+ } else if (missingTimeInLogs.length > 0) {
+  code = 'missing_time_in'
+  message = 'Attendance has a Time Out without a matching Time In.'
+ } else if (missingTimeOutLogs.length > 0) {
+  code = 'missing_time_out'
+  message = 'Attendance has a Time In without a matching Time Out.'
+ } else if (isInvalidShortPunch) {
+  code = 'invalid_short_punch'
+  message = `Attendance duration is below ${Math.round(MIN_VALID_ATTENDANCE_SECONDS / 60)} minutes and requires correction.`
+ } else if (isValidCompleted) {
+  code = 'valid'
+  message = 'Attendance is complete and valid.'
+ }
+
+ return {
+  code,
+  message,
+  logs,
+  completedLogs,
+  missingTimeInLogs,
+  missingTimeOutLogs,
+  rawSpanSeconds,
+  isAbsentOnly,
+  isIncomplete,
+  isInvalidShortPunch,
+  isValidCompleted
+ }
+}
+
+function getAttendanceDayActualOvertimeMinutes(dayLogs = [], breakRowsByLogId = {}) {
+ const integrity = getAttendanceDayIntegrity(dayLogs)
+ if (!integrity.isValidCompleted) return 0
+
+ // Approval basis: actual Time In to actual Time Out, less the mandatory
+ // unpaid break (and any recorded excess break already included by the day
+ // metrics). Schedules and employee-filed minutes do not increase or reduce OT.
+ const metrics = getAttendanceDayWorkMetrics(integrity.completedLogs, breakRowsByLogId)
+ return Math.max(0, Math.round(metrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
+}
+
+function getAttendanceDayActualOvertimeWindow(dayLogs = [], breakRowsByLogId = {}) {
+ const integrity = getAttendanceDayIntegrity(dayLogs)
+ if (!integrity.isValidCompleted) {
+  return { valid:false, minutes:0, verifiedFrom:'', verifiedTo:'', startMinute:null, endMinute:null, actualTimeIn:'', actualTimeOut:'', shiftStart:'', shiftEnd:'', shiftEndDerived:false, message:integrity.message }
+ }
+
+ const metrics = getAttendanceDayWorkMetrics(integrity.completedLogs, breakRowsByLogId)
+ const minutes = Math.max(0, Math.round(metrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
+ const attendanceRows = integrity.completedLogs
+  .filter(log => log?.time_in && log?.time_out)
+  .map(log => {
+   const timeInMinute = minutesFromTime(log.time_in)
+   let timeOutMinute = minutesFromTime(log.time_out)
+   if (timeOutMinute < timeInMinute) timeOutMinute += 24 * 60
+   return { log, timeInMinute, timeOutMinute }
+  })
+  .sort((a, b) => (b.timeOutMinute - a.timeOutMinute) || (b.timeInMinute - a.timeInMinute))
+ const selected = attendanceRows[0] || null
+
+ if (!selected || minutes <= 0) {
+  return {
+   valid:false,
+   minutes:0,
+   verifiedFrom:'',
+   verifiedTo:'',
+   startMinute:null,
+   endMinute:null,
+   actualTimeIn:normalizeTimeInputValue(selected?.log?.time_in || ''),
+   actualTimeOut:normalizeTimeInputValue(selected?.log?.time_out || ''),
+   shiftStart:normalizeTimeInputValue(selected?.log?.shift_start || ''),
+   shiftEnd:normalizeTimeInputValue(selected?.log?.shift_end || ''),
+   shiftEndDerived:false,
+   rawSpanMinutes:metrics.rawSpanMinutes,
+   deductedBreakMinutes:metrics.deductedBreakMinutes,
+   paidWorkedMinutes:metrics.paidWorkedMinutes,
+   message:'No payable overtime exists after actual attendance and the mandatory break are reduced to eight paid regular hours.'
+  }
+ }
+
+ // OT is the final portion of the actual attendance span after eight paid
+ // regular hours have been completed. It always ends at the actual Time Out.
+ const endMinute = selected.timeOutMinute
+ const startMinute = Math.max(selected.timeInMinute, endMinute - minutes)
+ const verifiedMinutes = Math.max(0, Math.round(endMinute - startMinute))
+ return {
+  valid:verifiedMinutes > 0,
+  minutes:verifiedMinutes,
+  verifiedFrom:clockMinuteToTimeValue(startMinute),
+  verifiedTo:clockMinuteToTimeValue(endMinute),
+  startMinute,
+  endMinute,
+  actualTimeIn:normalizeTimeInputValue(selected.log.time_in),
+  actualTimeOut:normalizeTimeInputValue(selected.log.time_out),
+  shiftStart:normalizeTimeInputValue(selected.log.shift_start || ''),
+  shiftEnd:normalizeTimeInputValue(selected.log.shift_end || ''),
+  shiftEndDerived:false,
+  crossesMidnight:endMinute >= 24 * 60,
+  rawSpanMinutes:metrics.rawSpanMinutes,
+  deductedBreakMinutes:metrics.deductedBreakMinutes,
+  paidWorkedMinutes:metrics.paidWorkedMinutes,
+  message:`Actual attendance supports ${verifiedMinutes} overtime minute(s): ${metrics.rawSpanMinutes} raw minute(s) less ${metrics.deductedBreakMinutes} break minute(s), less ${REQUIRED_PAID_WORK_MINUTES} regular minute(s).`
+ }
+}
+
+function validateFiledOvertimeRange(validation = {}, filedFrom = '', filedTo = '') {
+ const window = validation?.overtimeWindow || getAttendanceDayActualOvertimeWindow(validation?.integrity?.completedLogs || [], validation?.breakRowsByLogId || {})
+ const normalizedFrom = normalizeTimeInputValue(filedFrom)
+ const normalizedTo = normalizeTimeInputValue(filedTo)
+ if (!window?.valid || safeNum(window?.minutes, 0) <= 0) {
+  return { canSubmit:false, filedMinutes:0, message:window?.message || 'No payable overtime exists for this attendance date.', window }
+ }
+ if (!normalizedFrom || !normalizedTo) {
+  return {
+   canSubmit:false,
+   filedMinutes:0,
+   message:`Enter the exact OT From and OT To. Verified payable OT is ${formatClockTimeForDisplay(window.verifiedFrom)} to ${formatClockTimeForDisplay(window.verifiedTo)} (${window.minutes} minutes), ending at the actual Time Out.`,
+   window
+  }
+ }
+
+ const filedStartMinute = getClockMinuteNearestTimeline(normalizedFrom, window.startMinute)
+ let filedEndMinute = getClockMinuteNearestTimeline(normalizedTo, window.endMinute)
+ if (filedStartMinute === null || filedEndMinute === null) {
+  return { canSubmit:false, filedMinutes:0, message:'Enter valid OT From and OT To times.', window }
+ }
+ while (filedEndMinute <= filedStartMinute) filedEndMinute += 24 * 60
+ const filedMinutes = Math.max(0, Math.round(filedEndMinute - filedStartMinute))
+ const startMatches = filedStartMinute === window.startMinute
+ const endMatches = filedEndMinute === window.endMinute
+ const durationMatches = filedMinutes === window.minutes
+ let message = ''
+ if (filedEndMinute > window.endMinute) {
+  message = `Blocked: OT To exceeds the actual Time Out. Required OT To is ${formatClockTimeForDisplay(window.verifiedTo)}.`
+ } else if (filedEndMinute < window.endMinute) {
+  message = `Blocked: OT To must tally with the actual Time Out of ${formatClockTimeForDisplay(window.verifiedTo)}.`
+ } else if (filedStartMinute < window.startMinute) {
+  message = `Blocked: OT From starts before payable overtime. Required OT From is ${formatClockTimeForDisplay(window.verifiedFrom)}.`
+ } else if (filedStartMinute > window.startMinute) {
+  message = `Blocked: OT From must match the verified payable start of ${formatClockTimeForDisplay(window.verifiedFrom)}.`
+ } else if (!durationMatches) {
+  message = `Blocked: filed OT is ${filedMinutes} minutes, but the attendance supports exactly ${window.minutes} minutes.`
+ } else {
+  message = `Verified: ${formatClockTimeForDisplay(normalizedFrom)} to ${formatClockTimeForDisplay(normalizedTo)} exactly matches the attendance-supported OT window (${filedMinutes} minutes).`
+ }
+ return {
+  canSubmit:startMatches && endMatches && durationMatches,
+  filedMinutes,
+  filedFrom:normalizedFrom,
+  filedTo:normalizedTo,
+  filedStartMinute,
+  filedEndMinute,
+  message,
+  window
+ }
+}
+
+function getDTRDayLogs(log = {}) {
+ if (!log) return []
+ return Array.isArray(log._logs) && log._logs.length > 0 ? log._logs : [log]
+}
+
+function getDTRDayMetrics(log = {}) {
+ const dayLogs = getDTRDayLogs(log)
+ const breakRowsByLogId = {}
+ dayLogs.forEach(row => {
+  const rows = Array.isArray(row?._breakRows) ? row._breakRows : []
+  if (row?.id && rows.length > 0) breakRowsByLogId[String(row.id)] = rows
+ })
+ return getAttendanceDayWorkMetrics(dayLogs, breakRowsByLogId)
+}
+
+function getDTRBreakMinutes(log = {}) {
+ if (!log) return 0
+ return getDTRDayMetrics(log).deductedBreakMinutes
+}
+
+function getDTRRecordedBreakMinutes(log = {}) {
+ if (!log) return 0
+ return getDTRDayMetrics(log).recordedBreakMinutes
+}
+
+function getDTROverbreakMinutes(log = {}) {
+ if (!log) return 0
+ return getDTRDayMetrics(log).overbreakMinutes
+}
+
+function getDTRBreakRows(log = {}) {
+ if (!log) return []
+ return getDTRDayLogs(log)
+  .flatMap(row => (Array.isArray(row?._breakRows) ? row._breakRows : []))
+  .filter(Boolean)
+  .sort((a, b) => String(a?.created_at || a?.break_out || '').localeCompare(String(b?.created_at || b?.break_out || '')))
+}
+
+async function enrichAttendanceLogsWithBreakRows(logs = []) {
+ const sourceLogs = (logs || []).filter(Boolean)
+ const logIds = sourceLogs.map(log => log?.id).filter(Boolean)
+ if (!logIds.length) return sourceLogs.map(log => ({ ...log, _breakRows:[] }))
+ try {
+  const { data, error } = await supabase.from('break_logs').select('*').in('attendance_log_id', logIds).order('created_at')
+  if (error) throw error
+  const rowsByLogId = {}
+  ;(data || []).forEach(row => {
+   const key = String(row?.attendance_log_id || '')
+   if (!rowsByLogId[key]) rowsByLogId[key] = []
+   rowsByLogId[key].push(row)
+  })
+  return sourceLogs.map(log => ({ ...log, _breakRows:rowsByLogId[String(log?.id || '')] || [] }))
+ } catch (error) {
+  console.warn('Break detail load failed; using attendance break totals:', error)
+  return sourceLogs.map(log => ({ ...log, _breakRows:[] }))
+ }
+}
+
+function getDTRUndertimeMinutes(log = {}) {
+ if (!log) return 0
+ const integrity = getAttendanceDayIntegrity(getDTRDayLogs(log))
+ if (!integrity.isValidCompleted) return 0
+ return getDTRDayMetrics(log).undertimeMinutes
+}
+
+function getDTRActualOvertimeMinutes(log = {}) {
+ if (!log) return 0
+ return getAttendanceDayActualOvertimeMinutes(getDTRDayLogs(log))
+}
+
+function getDTRApprovedOvertimeMinutes(log = {}) {
+ if (!log) return 0
+ const approvedMinutes = getDTRDayLogs(log)
+  .filter(row => row?.overtime_approved === true)
+  .reduce((sum, row) => sum + Math.max(0, safeNum(row?.overtime_minutes, 0)), 0)
+ return Math.max(0, Math.min(approvedMinutes, getDTRActualOvertimeMinutes(log)))
+}
+
+function getDTRStatusInfo(log = {}) {
+ if (!log) return { label:'', color:'gray', code:'empty' }
+ if (safeNum(log?.duplicateCount, 0) > 1) return { label:'DUP', color:'orange', code:'duplicate' }
+ if (String(log?.status || '').trim().toLowerCase() === 'absent') return { label:'ABS', color:'red', code:'absent' }
+
+ const integrity = getAttendanceDayIntegrity(getDTRDayLogs(log))
+ if (integrity.isIncomplete) return { label:'INCOMPLETE', color:'red', code:integrity.code }
+ if (integrity.isInvalidShortPunch) return { label:'INVALID', color:'red', code:integrity.code }
+ const approvedOT = getDTRApprovedOvertimeMinutes(log)
+ const undertime = getDTRUndertimeMinutes(log)
+ const overbreak = getDTROverbreakMinutes(log)
+ if (undertime > 0 && overbreak > 0) return { label:'UT + OB', color:'orange', code:'undertime_overbreak' }
+ if (approvedOT > 0 && overbreak > 0) return { label:'OT + OB', color:'orange', code:'overtime_overbreak' }
+ if (undertime > 0) return { label:'UT', color:'orange', code:'undertime' }
+ if (overbreak > 0) return { label:'OVERBREAK', color:'orange', code:'overbreak' }
+ if (approvedOT > 0) return { label:'OT', color:'blue', code:'overtime' }
+ if (safeNum(log?.late_minutes, 0) > 0) return { label:'LATE', color:'orange', code:'late' }
+ if (integrity.isValidCompleted) return { label:'PRESENT', color:'green', code:'present' }
+ return { label:'REVIEW', color:'red', code:'review' }
+}
+
+async function fetchAttendanceDayValidation(employeeId = '', attendanceDate = '', identity = {}) {
+ const requestedAttendanceDate = String(attendanceDate || '').slice(0, 10)
+ const employeeCode = String(identity?.employeeCode || identity?.employee_code || '').trim()
+ const employeeName = String(identity?.employeeName || identity?.employee_name || '').trim()
+ if ((!employeeId && !employeeCode && !employeeName) || !requestedAttendanceDate) {
+  return {
+   logs:[],
+   breakRowsByLogId:{},
+   integrity:getAttendanceDayIntegrity([]),
+   metrics:getAttendanceDayWorkMetrics([]),
+   actualOvertimeMinutes:0,
+   actualUndertimeMinutes:0,
+   overtimeWindow:{ valid:false, minutes:0, verifiedFrom:'', verifiedTo:'', message:'Select an attendance date.' },
+   requestedAttendanceDate,
+   resolvedAttendanceDate:requestedAttendanceDate,
+   resolvedFromPreviousDay:false,
+   identityMatchedBy:''
+  }
+ }
+
+ const previousAttendanceDate = addDaysToDateString(requestedAttendanceDate, -1)
+ const loadCandidateLogs = async (column, value) => {
+  if (!value) return { rows:[], error:null }
+  const { data, error } = await supabase
+   .from('attendance_logs')
+   .select('*')
+   .eq(column, value)
+   .gte('attendance_date', previousAttendanceDate)
+   .lte('attendance_date', requestedAttendanceDate)
+   .order('attendance_date', { ascending:true })
+   .order('created_at', { ascending:true })
+  return { rows:data || [], error }
+ }
+
+ let candidateLogs = []
+ let identityMatchedBy = ''
+ let result = await loadCandidateLogs('employee_id', employeeId)
+ if (result.error) throw result.error
+ if (result.rows.length > 0) {
+  candidateLogs = result.rows
+  identityMatchedBy = 'employee_id'
+ }
+ if (candidateLogs.length === 0 && employeeCode) {
+  result = await loadCandidateLogs('employee_code', employeeCode)
+  if (result.error) throw result.error
+  if (result.rows.length > 0) {
+   candidateLogs = result.rows
+   identityMatchedBy = 'employee_code'
+  }
+ }
+ if (candidateLogs.length === 0 && employeeName) {
+  result = await loadCandidateLogs('employee_name', employeeName)
+  if (result.error) throw result.error
+  if (result.rows.length > 0) {
+   candidateLogs = result.rows
+   identityMatchedBy = 'employee_name'
+  }
+ }
+
+ const exactDateLogs = candidateLogs.filter(log => String(log?.attendance_date || '').slice(0, 10) === requestedAttendanceDate)
+ const previousDayOvernightLogs = candidateLogs.filter(log =>
+  String(log?.attendance_date || '').slice(0, 10) === previousAttendanceDate &&
+  isTimedOutOnDate(log, requestedAttendanceDate)
+ )
+ const exactIntegrity = getAttendanceDayIntegrity(exactDateLogs)
+ const overnightIntegrity = getAttendanceDayIntegrity(previousDayOvernightLogs)
+
+ let logs = exactDateLogs
+ let resolvedAttendanceDate = requestedAttendanceDate
+ let resolvedFromPreviousDay = false
+ // Night shifts are saved under the shift-start date. When the employee files
+ // using the calendar date on which Time Out happened, resolve the request to
+ // the previous day's completed overnight attendance instead of reporting that
+ // no attendance exists.
+ if (!exactIntegrity.isValidCompleted && overnightIntegrity.isValidCompleted) {
+  logs = previousDayOvernightLogs
+  resolvedAttendanceDate = previousAttendanceDate
+  resolvedFromPreviousDay = true
+ } else if (exactDateLogs.length === 0 && previousDayOvernightLogs.length > 0) {
+  logs = previousDayOvernightLogs
+  resolvedAttendanceDate = previousAttendanceDate
+  resolvedFromPreviousDay = true
+ }
+
+ // Historical attendance rows may predate shift fields. Hydrate missing
+ // shift_start/shift_end from the daily schedule before validating overtime.
+ if ((logs || []).some(log => !log?.shift_start || !log?.shift_end)) {
+  const scheduleEmployeeId = String((logs || []).find(log => log?.employee_id)?.employee_id || employeeId || '')
+  if (scheduleEmployeeId && resolvedAttendanceDate) {
+   const { data:savedSchedule, error:scheduleError } = await supabase
+    .from('daily_schedules')
+    .select('shift_start,shift_end')
+    .eq('employee_id', scheduleEmployeeId)
+    .eq('schedule_date', resolvedAttendanceDate)
+    .maybeSingle()
+   if (scheduleError) console.warn('Attendance OT schedule lookup:', scheduleError)
+   if (savedSchedule) {
+    logs = (logs || []).map(log => ({
+     ...log,
+     shift_start:log?.shift_start || savedSchedule.shift_start || null,
+     shift_end:log?.shift_end || savedSchedule.shift_end || null
+    }))
+   }
+  }
+ }
+
+ const logIds = (logs || []).map(log => log?.id).filter(Boolean)
+ const breakRowsByLogId = {}
+ if (logIds.length > 0) {
+  const { data:breakRows, error:breakRowsError } = await supabase
+   .from('break_logs')
+   .select('*')
+   .in('attendance_log_id', logIds)
+  if (breakRowsError) throw breakRowsError
+  ;(breakRows || []).forEach(row => {
+   const key = String(row?.attendance_log_id || '')
+   if (!breakRowsByLogId[key]) breakRowsByLogId[key] = []
+   breakRowsByLogId[key].push(row)
+  })
+ }
+
+ const integrity = getAttendanceDayIntegrity(logs || [])
+ const metrics = integrity.isValidCompleted
+  ? getAttendanceDayWorkMetrics(integrity.completedLogs, breakRowsByLogId)
+  : getAttendanceDayWorkMetrics([])
+ const actualOvertimeMinutes = integrity.isValidCompleted
+  ? getAttendanceDayActualOvertimeMinutes(integrity.completedLogs, breakRowsByLogId)
+  : 0
+ const actualUndertimeMinutes = integrity.isValidCompleted
+  ? metrics.undertimeMinutes
+  : 0
+ const overtimeWindow = integrity.isValidCompleted
+  ? getAttendanceDayActualOvertimeWindow(integrity.completedLogs, breakRowsByLogId)
+  : { valid:false, minutes:0, verifiedFrom:'', verifiedTo:'', message:integrity.message }
+
+ return {
+  logs:logs || [],
+  candidateLogs,
+  breakRowsByLogId,
+  integrity,
+  metrics,
+  actualOvertimeMinutes,
+  actualUndertimeMinutes,
+  overtimeWindow,
+  requestedAttendanceDate,
+  resolvedAttendanceDate,
+  resolvedFromPreviousDay,
+  identityMatchedBy,
+  resolutionMessage:resolvedFromPreviousDay
+   ? `Matched to the overnight shift that started on ${formatDateForDisplay(resolvedAttendanceDate)} and timed out on ${formatDateForDisplay(requestedAttendanceDate)}.`
+   : logs.length > 0
+    ? `Matched to attendance dated ${formatDateForDisplay(resolvedAttendanceDate)}.`
+    : 'No matching attendance record was found for the selected date or its previous-day overnight shift.'
+ }
+}
+
 function isHolidayPayEligible(emp = {}, holidayType = '') {
+ // Default company rule: active employees are holiday-pay candidates.
+ // Explicit employee-level false values are still respected for owner/manager
+ // exceptions such as staff with no holiday-pay arrangement.
  const type = String(holidayType || '').trim().toLowerCase()
  if (type === 'regular') return emp?.regular_holiday_pay_eligible !== false
  if (type === 'special') return emp?.special_holiday_pay_eligible !== false
  return true
+}
+
+function normalizePayrollBasis(value) {
+ const raw = String(value || 'daily').trim().toLowerCase().replace(/[\s-]+/g, '_')
+ if (raw === 'monthly' || raw === 'fixed_monthly') return 'monthly'
+ if (raw === 'semi_monthly' || raw === 'semimonthly' || raw === 'fixed_semi_monthly') return 'semi_monthly'
+ return 'daily'
+}
+
+function employeeRuleEnabled(value, fallback = true) {
+ if (value === false) return false
+ if (value === true) return true
+ if (String(value).toLowerCase() === 'false') return false
+ if (String(value).toLowerCase() === 'true') return true
+ return fallback
+}
+
+function requiresStrictCameraTimeIn(emp = {}) {
+ return employeeRuleEnabled(emp?.strict_camera_timein, false)
+}
+
+function isMissingStrictCameraTimeInColumnError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('strict_camera_timein') && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column'))
+}
+
+
+function getEmployeeHourlyRateInfo(emp = {}) {
+ const payrollBasis = normalizePayrollBasis(emp.payroll_basis || emp.pay_type)
+ const monthlySalary = safeNum(emp.monthly_salary, 0)
+ const semiMonthlySalary = safeNum(emp.semi_monthly_salary, 0)
+ const annualWorkingDays = positiveNum(emp.annual_working_days, 313)
+ const rawDailyRate = safeNum(emp.daily_rate, 0)
+ const savedHourlyRate = safeNum(emp.hourly_rate, 0)
+ const fixedMonthlyEquivalent = payrollBasis === 'monthly'
+  ? monthlySalary
+  : payrollBasis === 'semi_monthly'
+   ? (semiMonthlySalary > 0 ? semiMonthlySalary * 2 : monthlySalary)
+   : 0
+ const derivedFixedDailyRate = fixedMonthlyEquivalent > 0 ? fixedMonthlyEquivalent * 12 / annualWorkingDays : 0
+ const dailyEquivalent = payrollBasis === 'daily'
+  ? (rawDailyRate > 0 ? rawDailyRate : (savedHourlyRate > 0 ? savedHourlyRate * 8 : 0))
+  : (derivedFixedDailyRate > 0 ? derivedFixedDailyRate : (rawDailyRate > 0 ? rawDailyRate : (savedHourlyRate > 0 ? savedHourlyRate * 8 : 0)))
+ const hourlyRate = dailyEquivalent > 0 ? dailyEquivalent / 8 : savedHourlyRate
+ const basisLabel = payrollBasis === 'monthly'
+  ? 'Fixed Monthly'
+  : payrollBasis === 'semi_monthly'
+   ? 'Fixed Semi-Monthly'
+   : (String(emp.pay_type || '').toLowerCase() === 'hourly' ? 'Hourly / Daily Fallback' : 'Daily Rate')
+ const formulaNote = payrollBasis === 'monthly'
+  ? `Monthly salary × 12 ÷ ${annualWorkingDays} working days ÷ 8 hours`
+  : payrollBasis === 'semi_monthly'
+   ? `${semiMonthlySalary > 0 ? 'Semi-monthly salary × 2' : 'Monthly salary'} × 12 ÷ ${annualWorkingDays} working days ÷ 8 hours`
+   : rawDailyRate > 0
+    ? 'Daily rate ÷ 8 hours'
+    : savedHourlyRate > 0
+     ? 'Saved hourly rate fallback'
+     : 'Missing daily/monthly/hourly rate'
+ return {
+  payrollBasis,
+  basisLabel,
+  monthlySalary,
+  semiMonthlySalary,
+  annualWorkingDays,
+  dailyEquivalent: moneyRound(dailyEquivalent),
+  hourlyRate: moneyRound(hourlyRate),
+  formulaNote,
+  isConfigured: hourlyRate > 0
+ }
 }
 
 function isMissingEmployeeHolidayEligibilityColumnError(error) {
@@ -241,6 +942,7 @@ function stripUnsupportedEmployeeOptionalColumns(payload = {}, error = null) {
   delete clean.regular_holiday_pay_eligible
   delete clean.special_holiday_pay_eligible
  }
+ if (!error || isMissingStrictCameraTimeInColumnError(error)) delete clean.strict_camera_timein
  return clean
 }
 
@@ -406,7 +1108,7 @@ function downloadEmployeePayslip(pay = {}) {
 
  addSectionTitle('DEDUCTIONS')
  addRow('Late Deduction', printablePay.lateDeduction, `${printablePay.lateMinutes} late minute(s)`)
- addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} approved undertime minute(s)`)
+ addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} approved attendance-verified undertime minute(s)`)
  addRow('Excess Break Deduction', printablePay.excessBreakDeduction)
  addRow('Cash Advance Deduction', printablePay.cashAdvanceDeduction)
  addRow('Deferred CA Deduction', printablePay.deferredCADeduction, 'Not deducted this cutoff; remains in CA balance.')
@@ -552,6 +1254,87 @@ function addDaysToDateString(dateStr, days = 0) {
  return formatDateLocal(date)
 }
 
+function isAbsentAttendanceLog(log = {}) {
+ return String(log?.status || '').trim().toLowerCase() === 'absent'
+}
+
+function isPaidLeaveCoveringDate(leaves = [], dateStr = '') {
+ if (!dateStr) return false
+ return (leaves || []).some(leave => {
+  if (!isPaidLeaveRecord(leave)) return false
+  const start = String(leave?.leave_start || '').slice(0, 10)
+  const end = String(leave?.leave_end || '').slice(0, 10)
+  return start && end && start <= dateStr && end >= dateStr
+ })
+}
+
+function dateStringDiffDays(a = '', b = '') {
+ const da = parseLocalDate(String(a || '').slice(0, 10))
+ const db = parseLocalDate(String(b || '').slice(0, 10))
+ if (!da || !db) return null
+ return Math.round((db.getTime() - da.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+function medicalCertificateCoversAbsenceRange(cert = {}, absenceStart = '', absenceEnd = '') {
+ const certStart = String(cert?.absence_start || cert?.leave_start || '').slice(0, 10)
+ const certEnd = String(cert?.absence_end || cert?.leave_end || certStart || '').slice(0, 10)
+ const status = String(cert?.status || 'uploaded').trim().toLowerCase()
+ if (!certStart || !certEnd || !absenceStart || !absenceEnd) return false
+ if (['rejected', 'void', 'voided', 'cancelled', 'deleted'].includes(status)) return false
+ return certStart <= absenceStart && certEnd >= absenceEnd
+}
+
+function getMedicalCertificateAbsenceLock(attendanceLogs = [], medicalCertificates = [], referenceDate = '') {
+ const refDate = String(referenceDate || getTodayDate()).slice(0, 10)
+ const byDate = new Map()
+ ;(attendanceLogs || []).forEach(log => {
+  const dateStr = String(log?.attendance_date || '').slice(0, 10)
+  if (!dateStr || dateStr >= refDate) return
+  const existing = byDate.get(dateStr)
+  if (!existing || (isAbsentAttendanceLog(log) && !isAbsentAttendanceLog(existing))) byDate.set(dateStr, log)
+ })
+ const dates = Array.from(byDate.keys()).sort().reverse()
+ for (const endDate of dates) {
+  const endLog = byDate.get(endDate)
+  if (!isAbsentAttendanceLog(endLog)) continue
+  const startDate = addDaysToDateString(endDate, -1)
+  const startLog = byDate.get(startDate)
+  if (!isAbsentAttendanceLog(startLog)) continue
+  const covered = (medicalCertificates || []).some(cert => medicalCertificateCoversAbsenceRange(cert, startDate, endDate))
+  if (!covered) {
+   return {
+    locked: true,
+    absenceStart: startDate,
+    absenceEnd: endDate,
+    absentDays: 2,
+    message: `Time In locked. Medical certificate required for 2 consecutive absences (${formatDateForDisplay(startDate)} - ${formatDateForDisplay(endDate)}).`
+   }
+  }
+ }
+ return { locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
+}
+
+function getHolidayAbsenceGuardDates(holidayDate = '') {
+ const dateStr = String(holidayDate || '').slice(0, 10)
+ if (!dateStr) return []
+ return HOLIDAY_ABSENCE_GUARD_DAY_OFFSETS
+  .map(offset => addDaysToDateString(dateStr, offset))
+  .filter(Boolean)
+}
+
+function getHolidayAbsenceGuardFailure(holidayDate = '', attendanceByDate = {}, paidLeaves = []) {
+ const guardDates = getHolidayAbsenceGuardDates(holidayDate)
+ const absentDates = guardDates.filter(dateStr => {
+  const log = attendanceByDate?.[dateStr]
+  return isAbsentAttendanceLog(log) && !isPaidLeaveCoveringDate(paidLeaves, dateStr)
+ })
+ return {
+  eligible: absentDates.length === 0,
+  absentDates,
+  guardDates
+ }
+}
+
 function buildDateRangeRows(startDate, endDate, mapper = null) {
  const totalDays = daysInclusive(startDate, endDate)
  return Array.from({ length: totalDays }, (_, i) => {
@@ -626,6 +1409,64 @@ function getPreviousDTRCutoffKey(key) {
  const [yearMonth, type] = String(key || '').split('|')
  if (type === '11-25') return `${shiftYearMonth(yearMonth, -1)}|26-10`
  return `${yearMonth}|11-25`
+}
+
+function getPayrollAttendanceReconMarker(startDate = '', endDate = '', employeeId = '') {
+ return `HIST-ATTENDANCE-RECON|${String(startDate || '').slice(0,10)}|${String(endDate || '').slice(0,10)}|EMP:${String(employeeId || '')}`
+}
+
+function getDTRCutoffKeyFromPeriod(startDate = '', endDate = '') {
+ const start = String(startDate || '').slice(0, 10)
+ const end = String(endDate || '').slice(0, 10)
+ if (!start || !end) return ''
+ if (start.slice(8, 10) === '11' && end.slice(8, 10) === '25' && start.slice(0, 7) === end.slice(0, 7)) return `${start.slice(0, 7)}|11-25`
+ if (start.slice(8, 10) === '26' && end.slice(8, 10) === '10') return `${start.slice(0, 7)}|26-10`
+ const match = getDTRCutoffOptions(60, end).find(period => period.start === start && period.end === end)
+ return match?.key || ''
+}
+
+function serializeAttendanceReconDayDetails(dayDetails = []) {
+ return (dayDetails || []).filter(day => safeNum(day?.undertimeMinutes, 0) > 0 || safeNum(day?.lateMinutes, 0) > 0).map(day => [
+  day.date || '', day.timeIn || '', day.timeOut || '', safeNum(day.deductedBreakMinutes, 0), safeNum(day.paidWorkedMinutes, 0),
+  safeNum(day.lateMinutes, 0), safeNum(day.undertimeMinutes, 0), moneyRound(day.deductionAmount || 0), day.deductionType || 'Automatic undertime deduction'
+ ].map(value => encodeURIComponent(String(value ?? ''))).join('~')).join(';')
+}
+
+function parseAttendanceReconDayDetails(serialized = '') {
+ if (!serialized) return []
+ return String(serialized).split(';').map(chunk => {
+  const values = chunk.split('~').map(value => {
+   try { return decodeURIComponent(value) } catch(e) { return value }
+  })
+  if (!values[0]) return null
+  return {
+   date:values[0], timeIn:values[1] || '', timeOut:values[2] || '', deductedBreakMinutes:safeNum(values[3], 0),
+   paidWorkedMinutes:safeNum(values[4], 0), lateMinutes:safeNum(values[5], 0), undertimeMinutes:safeNum(values[6], 0),
+   deductionAmount:moneyRound(values[7]), deductionType:values[8] || 'Automatic undertime deduction'
+  }
+ }).filter(Boolean)
+}
+
+function parsePayrollAttendanceReconMetadata(notes = '') {
+ const text = String(notes || '')
+ const markerMatch = text.match(/HIST-ATTENDANCE-RECON\|(\d{4}-\d{2}-\d{2})\|(\d{4}-\d{2}-\d{2})\|EMP:([^|\s]+)/)
+ const sourceStart = markerMatch?.[1] || ''
+ const sourceEnd = markerMatch?.[2] || ''
+ const employeeId = markerMatch?.[3] || ''
+ const sourceStartIndex = text.indexOf(PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN)
+ const sourceEndIndex = sourceStartIndex >= 0 ? text.indexOf(PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE, sourceStartIndex) : -1
+ const serializedDays = sourceStartIndex >= 0 && sourceEndIndex > sourceStartIndex
+  ? text.slice(sourceStartIndex + PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN.length, sourceEndIndex)
+  : ''
+ const appliedMatch = text.match(/CORRECTION-APPLIED:(\d{4}-\d{2}-\d{2})/)
+ return {
+  isHistoricalAttendanceRecon:!!markerMatch,
+  sourceStart,
+  sourceEnd,
+  employeeId,
+  correctionAppliedDate:appliedMatch?.[1] || '',
+  days:parseAttendanceReconDayDetails(serializedDays)
+ }
 }
 
 function getDTRCutoffOptions(count = 36, todayDate = getTodayDate()) {
@@ -817,6 +1658,20 @@ function getEmployeeLeaveInfo(emp) {
  }
 }
 
+const LEAVE_FILING_TYPE_OPTIONS = [
+ { value:'planned', label:'Planned Leave', note:'Must be filed at least 3 days before the leave date.' },
+ { value:'emergency_sick', label:'Emergency Sick Leave', note:'For sudden illness or medical emergency. 3-day advance filing is bypassed and subject to admin approval.' },
+ { value:'emergency_personal', label:'Emergency Personal Leave', note:'For urgent family or personal emergency. 3-day advance filing is bypassed and subject to admin approval.' }
+]
+
+function getLeaveFilingTypeInfo(value) {
+ return LEAVE_FILING_TYPE_OPTIONS.find(option => option.value === value) || LEAVE_FILING_TYPE_OPTIONS[0]
+}
+
+function isEmergencyLeaveFiling(value) {
+ return value === 'emergency_sick' || value === 'emergency_personal'
+}
+
 
 const PAYROLL_COST_TYPES = [
  { value:'auto', label:'Auto classify from department / position', shortLabel:'Auto', bucket:'auto' },
@@ -831,16 +1686,2384 @@ const PAYROLL_COST_TYPES = [
 
 
 const DOCUMENT_BATCH1A_FORMS = [
-  { key:'INV-WITHDRAWAL', title:'Company Inventory Withdrawal Slip', refPrefix:'INV-WD' },
- { key:'DISC-NTE', title:'Notice to Explain', category:'NTE / Disciplinary', refPrefix:'RD-NTE', purpose:'Formal notice requiring an employee to explain an alleged violation or incident.' },
- { key:'DISC-IR', title:'Incident Report Form', category:'NTE / Disciplinary', refPrefix:'RD-IR', purpose:'Record incident facts, people involved, date, location, and initial findings.' },
- { key:'DISC-EXPLAIN', title:'Employee Explanation Form', category:'NTE / Disciplinary', refPrefix:'RD-EXPLAIN', purpose:'Employee written explanation connected to an incident, NTE, shortage, or violation.' },
- { key:'PAY-CA-AGREEMENT', title:'Cash Advance Agreement', category:'Payroll & Salary', refPrefix:'RD-CA', purpose:'Document cash advance amount, repayment terms, deductions, and acknowledgment.' },
- { key:'PAY-DEDUCTION-AUTH', title:'Salary Deduction Authorization Form', category:'Payroll & Salary', refPrefix:'RD-DED', purpose:'Authorize payroll deductions for cash advance, damage, shortage, lost item, or other approved charge.' },
- { key:'HR-CLEARANCE', title:'Employee Clearance Form', category:'HR & Employee', refPrefix:'RD-CLEAR', purpose:'Clear accountabilities before final pay or separation release.' },
- { key:'HR-PPE-ISSUE', title:'Uniform / PPE Issuance Slip', category:'HR & Employee', refPrefix:'RD-PPE', purpose:'Track issued uniforms, PPE, tools, and employee accountability.' },
- { key:'PAY-RELEASE', title:'Payroll Release Acknowledgment Slip', category:'Payroll & Salary', refPrefix:'RD-PAYREL', purpose:'Employee acknowledgment of salary, payroll release, or final pay received.' }
+ {
+  "key": "HR-EMP-CONTRACT",
+  "title": "Employment Contract",
+  "category": "HR & Employee",
+  "refPrefix": "RD-CONTRACT",
+  "purpose": "Generate, print, upload, and track employee contracts and regularization records.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [],
+  "reminder": "Employment contracts are managed in the dedicated Contracts module.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "Authorized Representative / Date",
+   "Prepared By",
+   "Approved By"
+  ],
+  "externalTab": "contracts"
+ },
+ {
+  "key": "INV-WD",
+  "title": "Company Inventory Withdrawal Slip",
+  "category": "Inventory & Purchasing",
+  "refPrefix": "INV-WD",
+  "purpose": "Records withdrawal of raw materials, packaging, finished goods, supplies, tools, equipment, crates, crate covers, and other company property.",
+  "employeeMode": "optional",
+  "employeeLabel": "Received / Responsible Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Withdrawal Purpose",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Production Use",
+     "Outlet Transfer",
+     "Staff Meal",
+     "Sample",
+     "Damage Replacement",
+     "Marketing / Promo",
+     "Company Use",
+     "Finished Goods Release",
+     "Other"
+    ]
+   },
+   {
+    "key": "sourceLocation",
+    "label": "Source / Storage Location",
+    "type": "text",
+    "placeholder": "Example: Main Inventory / Commissary"
+   },
+   {
+    "key": "destination",
+    "label": "Destination / Department",
+    "type": "text",
+    "placeholder": "Example: Production / Outlet / Marketing"
+   },
+   {
+    "key": "items",
+    "label": "Items Withdrawn",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "List item name, category, quantity, and unit.",
+    "span": "full"
+   },
+   {
+    "key": "quantityUnit",
+    "label": "Total Quantity / Unit",
+    "type": "text",
+    "placeholder": "Example: 25 kg / 4 boxes / 2 crates"
+   },
+   {
+    "key": "referenceNumber",
+    "label": "Reference / Request No.",
+    "type": "text",
+    "placeholder": "Optional request, job order, or transfer reference"
+   },
+   {
+    "key": "details",
+    "label": "Reason / Authorization Details",
+    "type": "textarea",
+    "placeholder": "State why the items are being withdrawn and any special instructions.",
+    "span": "full"
+   }
+  ],
+  "reminder": "This slip establishes custody and authorization for company property withdrawn from inventory. Quantities should be checked by the releasing and receiving persons.",
+  "signatureLabels": [
+   "Received By / Date",
+   "Released By / Date",
+   "Prepared By",
+   "Approved By"
+  ],
+  "aliases": [
+   "INV-WITHDRAWAL"
+  ]
+ },
+ {
+  "key": "HR-INFO-SHEET",
+  "title": "Employee Information Sheet",
+  "category": "HR & Employee",
+  "refPrefix": "RD-EIS",
+  "purpose": "Collect employee profile, emergency contact, government IDs, and payroll details.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "address",
+    "label": "Complete Address",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "House/lot, street, barangay, city/municipality, province",
+    "span": "full"
+   },
+   {
+    "key": "contactNumber",
+    "label": "Mobile Number",
+    "type": "text",
+    "required": true,
+    "placeholder": "09XXXXXXXXX"
+   },
+   {
+    "key": "birthDate",
+    "label": "Birth Date",
+    "type": "date"
+   },
+   {
+    "key": "civilStatus",
+    "label": "Civil Status",
+    "type": "select",
+    "options": [
+     "Single",
+     "Married",
+     "Widowed",
+     "Separated",
+     "Prefer not to state"
+    ]
+   },
+   {
+    "key": "emergencyContact",
+    "label": "Emergency Contact Person",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "emergencyRelationship",
+    "label": "Relationship",
+    "type": "text"
+   },
+   {
+    "key": "emergencyContactNumber",
+    "label": "Emergency Contact Number",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "sssNumber",
+    "label": "SSS Number",
+    "type": "text"
+   },
+   {
+    "key": "philHealthNumber",
+    "label": "PhilHealth Number",
+    "type": "text"
+   },
+   {
+    "key": "pagIbigNumber",
+    "label": "Pag-IBIG Number",
+    "type": "text"
+   },
+   {
+    "key": "tinNumber",
+    "label": "TIN",
+    "type": "text"
+   },
+   {
+    "key": "bankOrEwallet",
+    "label": "Payroll Bank / E-wallet Details",
+    "type": "textarea",
+    "placeholder": "Account name, bank/e-wallet, and account number when applicable.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Additional Employee Information",
+    "type": "textarea",
+    "placeholder": "Skills, prior experience, allergies relevant to work, or other company-required information.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee confirms that the information provided is accurate and agrees to report material changes to HR or management.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "HR Representative / Date",
+   "Encoded By",
+   "Verified By"
+  ]
+ },
+ {
+  "key": "HR-DATA-PRIVACY",
+  "title": "Data Privacy Consent Form",
+  "category": "HR & Employee",
+  "refPrefix": "RD-DPC",
+  "purpose": "Document employee acknowledgment and consent for the collection, use, storage, and authorized disclosure of employment records.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Purpose of Processing",
+    "type": "text",
+    "defaultValue": "Employment administration, attendance, payroll, benefits, safety, compliance, and legitimate company operations.",
+    "span": "full"
+   },
+   {
+    "key": "dataCategories",
+    "label": "Personal Data Covered",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Identity, contact, attendance, payroll, government IDs, performance, disciplinary, medical certificate, photo, and other employment records.",
+    "span": "full"
+   },
+   {
+    "key": "authorizedRecipients",
+    "label": "Authorized Recipients / Processors",
+    "type": "textarea",
+    "placeholder": "Authorized company officers, payroll/benefit processors, regulators, and service providers when necessary.",
+    "span": "full"
+   },
+   {
+    "key": "retentionPeriod",
+    "label": "Retention / Storage Statement",
+    "type": "text",
+    "defaultValue": "Records will be retained only for legitimate operational, contractual, and compliance purposes, subject to company retention controls.",
+    "span": "full"
+   },
+   {
+    "key": "consentDecision",
+    "label": "Employee Decision",
+    "type": "select",
+    "required": true,
+    "options": [
+     "I acknowledge and consent",
+     "I acknowledge but request clarification",
+     "I do not consent to optional processing"
+    ]
+   },
+   {
+    "key": "details",
+    "label": "Employee Questions / Limitations",
+    "type": "textarea",
+    "placeholder": "Record any clarification, limitation, or optional processing preference.",
+    "span": "full"
+   }
+  ],
+  "reminder": "This form records the employee’s acknowledgment. It does not remove rights or obligations that apply under company policy or applicable requirements.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "HR / Data Custodian / Date",
+   "Witnessed By",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "HR-HANDBOOK-ACK",
+  "title": "Employee Handbook Acknowledgment",
+  "category": "HR & Employee",
+  "refPrefix": "RD-HBA",
+  "purpose": "Confirm that the employee received, reviewed, and understood the company handbook, rules, and policies.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "handbookVersion",
+    "label": "Handbook / Policy Version",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Version 2026.1"
+   },
+   {
+    "key": "dateReceived",
+    "label": "Date Received",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "orientationDate",
+    "label": "Orientation Date",
+    "type": "date"
+   },
+   {
+    "key": "subject",
+    "label": "Policies Covered",
+    "type": "text",
+    "defaultValue": "Attendance, payroll, food safety, hygiene, conduct, confidentiality, company property, cash control, and disciplinary procedures.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Employee Acknowledgment",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State that the handbook was received, explained, and understood, and that questions were allowed.",
+    "span": "full"
+   },
+   {
+    "key": "questionsRaised",
+    "label": "Questions / Clarifications Raised",
+    "type": "textarea",
+    "placeholder": "List questions and management responses, if any.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The acknowledgment confirms receipt and orientation. It does not replace the complete handbook or any later written policy update.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "Orientation Facilitator / Date",
+   "HR Representative",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "HR-NDA",
+  "title": "NDA / Confidentiality Agreement",
+  "category": "HR & Employee",
+  "refPrefix": "RD-NDA",
+  "purpose": "Protect recipes, costing, supplier information, reseller terms, customer information, systems, and other confidential company information.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "effectiveDate",
+    "label": "Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "duration",
+    "label": "Confidentiality Duration",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: During employment and 2 years after separation"
+   },
+   {
+    "key": "confidentialityScope",
+    "label": "Confidential Information Covered",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Recipes, production methods, costing, prices, supplier terms, reseller records, employee/customer data, passwords, reports, and internal systems.",
+    "span": "full"
+   },
+   {
+    "key": "permittedUse",
+    "label": "Permitted Use",
+    "type": "text",
+    "defaultValue": "Only for authorized company work and only to the extent necessary to perform assigned duties.",
+    "span": "full"
+   },
+   {
+    "key": "returnOfMaterials",
+    "label": "Return / Deletion Obligation",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Return company files, devices, documents, copies, credentials, and stored information upon request or separation.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Special Confidentiality Terms",
+    "type": "textarea",
+    "placeholder": "Add role-specific restrictions, approved disclosures, or handling instructions.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Confidential information must not be copied, disclosed, sold, posted, or used outside authorized company work. Management should review role-specific restrictions before issuance.",
+  "signatureLabels": [
+   "Employee / Receiving Party / Date",
+   "Company Representative / Date",
+   "Witnessed By",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "HR-PPE-ISSUE",
+  "title": "Uniform / PPE Issuance Slip",
+  "category": "HR & Employee",
+  "refPrefix": "RD-PPE",
+  "purpose": "Track issued uniforms, PPE, tools, and employee accountability.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "items",
+    "label": "Items Issued",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Example: 2 company shirts, 1 apron, 1 cap, 1 pair safety shoes",
+    "span": "full"
+   },
+   {
+    "key": "condition",
+    "label": "Condition Upon Issue",
+    "type": "select",
+    "required": true,
+    "options": [
+     "New",
+     "Good / Serviceable",
+     "Used / Serviceable",
+     "For Replacement"
+    ]
+   },
+   {
+    "key": "expectedReturnDate",
+    "label": "Expected Return Date",
+    "type": "date"
+   },
+   {
+    "key": "replacementValue",
+    "label": "Estimated Replacement Value",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "details",
+    "label": "Accountability Terms",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Employee agrees to use, maintain, and return the items as required and to report loss or damage immediately.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Issued items remain subject to company accountability controls. Any charge or deduction must be separately documented and approved.",
+  "signatureLabels": [
+   "Employee Recipient / Date",
+   "Issued By / Date",
+   "Inventory / HR Verified",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "HR-EVAL-PROBATION",
+  "title": "Probationary Evaluation Form",
+  "category": "HR & Employee",
+  "refPrefix": "RD-PEVAL",
+  "purpose": "Evaluate employee performance before a regularization decision.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "evaluationPeriod",
+    "label": "Evaluation Period",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Jan 15, 2026 to Jun 15, 2026"
+   },
+   {
+    "key": "reviewDate",
+    "label": "Review Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "attendanceRating",
+    "label": "Attendance / Punctuality",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "qualityRating",
+    "label": "Quality of Work",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "productivityRating",
+    "label": "Productivity / Speed",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "teamworkRating",
+    "label": "Teamwork / Conduct",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "foodSafetyRating",
+    "label": "Food Safety / Hygiene",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "systemComplianceRating",
+    "label": "System / SOP Compliance",
+    "type": "select",
+    "required": true,
+    "options": [
+     "1 - Needs Immediate Improvement",
+     "2 - Below Standard",
+     "3 - Meets Standard",
+     "4 - Above Standard",
+     "5 - Excellent"
+    ]
+   },
+   {
+    "key": "strengths",
+    "label": "Key Strengths",
+    "type": "textarea",
+    "placeholder": "Specific positive observations and measurable results.",
+    "span": "full"
+   },
+   {
+    "key": "improvementAreas",
+    "label": "Improvement Areas / Action Plan",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Specific gaps, expected standard, support, and review date.",
+    "span": "full"
+   },
+   {
+    "key": "subject",
+    "label": "Recommendation",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Regularize",
+     "Continue Probation Within Allowed Period",
+     "Extend Review / Training",
+     "Do Not Recommend Regularization"
+    ]
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Recommended Effective Date",
+    "type": "date"
+   },
+   {
+    "key": "details",
+    "label": "Evaluator Summary",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Overall assessment and basis for recommendation.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Ratings should be supported by specific observations, attendance records, output, quality, conduct, and documented coaching.",
+  "signatureLabels": [
+   "Employee Acknowledgment / Date",
+   "Immediate Supervisor / Date",
+   "HR Review",
+   "Owner / Manager Approval"
+  ]
+ },
+ {
+  "key": "HR-REGULARIZATION",
+  "title": "Regularization Recommendation Form",
+  "category": "HR & Employee",
+  "refPrefix": "RD-REGREC",
+  "purpose": "Prepare an approval or non-regularization recommendation before the review date.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "probationStartDate",
+    "label": "Probation Start Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "reviewDate",
+    "label": "Review / Decision Due Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "performanceSummary",
+    "label": "Performance Summary",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Summarize output, quality, attendance, conduct, and SOP compliance.",
+    "span": "full"
+   },
+   {
+    "key": "attendanceSummary",
+    "label": "Attendance / Tardiness Summary",
+    "type": "textarea",
+    "placeholder": "Present days, absences, late/undertime patterns, and approved leaves.",
+    "span": "full"
+   },
+   {
+    "key": "disciplinarySummary",
+    "label": "Coaching / Disciplinary Record",
+    "type": "textarea",
+    "placeholder": "List documented coaching, NTEs, warnings, or note none.",
+    "span": "full"
+   },
+   {
+    "key": "subject",
+    "label": "Recommendation",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Recommend Regularization",
+     "Recommend Continued Training / Review",
+     "Do Not Recommend Regularization"
+    ]
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Recommended Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Business Justification",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain the basis and any conditions or development plan.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The recommendation should be completed before the decision deadline and supported by documented performance evidence.",
+  "signatureLabels": [
+   "Immediate Supervisor / Date",
+   "HR Review / Date",
+   "Management Review",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "HR-REGULAR-CONFIRM",
+  "title": "Regular Employment Confirmation Letter",
+  "category": "HR & Employee",
+  "refPrefix": "RD-REGCONF",
+  "purpose": "Confirm regular employment status, position, department, and effective date.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "effectiveDate",
+    "label": "Regular Status Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "positionTitle",
+    "label": "Confirmed Position / Role",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "assignedDepartment",
+    "label": "Department / Assignment",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "amount",
+    "label": "Compensation Rate",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "payBasis",
+    "label": "Pay Basis",
+    "type": "select",
+    "options": [
+     "Daily",
+     "Semi-Monthly",
+     "Monthly",
+     "Hourly",
+     "Other"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Confirmation Subject",
+    "type": "text",
+    "defaultValue": "Confirmation of Regular Employment",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Confirmation Terms",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the confirmed status, continuing duties, applicable policies, benefits, and performance expectations.",
+    "span": "full"
+   }
+  ],
+  "reminder": "This confirmation should match the approved employee record, position, compensation basis, and effective date.",
+  "signatureLabels": [
+   "Employee Conforme / Date",
+   "HR Representative / Date",
+   "Management Representative",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "HR-CLEARANCE",
+  "title": "Employee Clearance Form",
+  "category": "HR & Employee",
+  "refPrefix": "RD-CLEAR",
+  "purpose": "Clear employee accountabilities before final pay, transfer, or separation release.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "effectiveDate",
+    "label": "Last Working / Clearance Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "clearanceReason",
+    "label": "Reason",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Resignation",
+     "End of Contract",
+     "Termination",
+     "Transfer",
+     "Extended Leave",
+     "Other"
+    ]
+   },
+   {
+    "key": "items",
+    "label": "Outstanding Accountabilities",
+    "type": "textarea",
+    "placeholder": "Uniform/PPE, cash advance, tools, keys, documents, inventory, crates, devices, or other property.",
+    "span": "full"
+   },
+   {
+    "key": "hrClearance",
+    "label": "HR / Documents",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Pending",
+     "Cleared",
+     "With Accountability",
+     "Not Applicable"
+    ]
+   },
+   {
+    "key": "payrollClearance",
+    "label": "Payroll / Cash Advance",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Pending",
+     "Cleared",
+     "With Balance",
+     "Not Applicable"
+    ]
+   },
+   {
+    "key": "inventoryClearance",
+    "label": "Inventory / Company Property",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Pending",
+     "Cleared",
+     "With Accountability",
+     "Not Applicable"
+    ]
+   },
+   {
+    "key": "operationsClearance",
+    "label": "Operations / Production / Outlet",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Pending",
+     "Cleared",
+     "With Accountability",
+     "Not Applicable"
+    ]
+   },
+   {
+    "key": "amount",
+    "label": "Total Outstanding Balance",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "details",
+    "label": "Unresolved Items / Settlement Plan",
+    "type": "textarea",
+    "placeholder": "List balances, missing property, pending documents, or agreed settlement terms.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Final pay or release should proceed only after authorized reviewers complete the required clearance checks and unresolved accountabilities are documented.",
+  "signatureLabels": [
+   "Employee / Date",
+   "HR / Admin Clearance",
+   "Department Clearance",
+   "Owner / Final Approval"
+  ]
+ },
+ {
+  "key": "PAY-APPROVAL",
+  "title": "Payroll Summary Approval Sheet",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-PAYAPP",
+  "purpose": "Approve payroll totals, exceptions, and funding before release.",
+  "employeeMode": "none",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "payrollPeriod",
+    "label": "Payroll Period / Cutoff",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: July 11–25, 2026"
+   },
+   {
+    "key": "employeeCount",
+    "label": "Number of Employees",
+    "type": "number",
+    "required": true,
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "amount",
+    "label": "Gross Payroll",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "totalDeductions",
+    "label": "Total Deductions",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "netPayroll",
+    "label": "Net Payroll for Release",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "fundingMethod",
+    "label": "Funding / Release Method",
+    "type": "select",
+    "options": [
+     "Cash",
+     "Bank Transfer",
+     "Mixed Cash and Bank",
+     "Other"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Approval Scope",
+    "type": "text",
+    "defaultValue": "Payroll computation, attendance basis, adjustments, deductions, and release funding.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Exceptions / Adjustments Requiring Review",
+    "type": "textarea",
+    "placeholder": "List unusual adjustments, disputed items, deferred deductions, or employees held from release.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Approvers should review payroll totals, attendance basis, approved adjustments, statutory deductions, cash advances, and exceptions before release.",
+  "signatureLabels": [
+   "Payroll Prepared By",
+   "HR / Finance Reviewed By",
+   "Management Approved By",
+   "Owner Release Approval"
+  ]
+ },
+ {
+  "key": "PAY-RELEASE",
+  "title": "Payroll Release Acknowledgment Slip",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-PAYREL",
+  "purpose": "Confirm that an employee received salary, payroll release, final pay, or another approved payroll amount.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Payroll Period / Release Reason",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: July 11–25, 2026 / Final Pay"
+   },
+   {
+    "key": "amount",
+    "label": "Amount Received",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "releaseMethod",
+    "label": "Release Method",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Cash",
+     "Bank Transfer",
+     "GCash / E-wallet",
+     "Cheque",
+     "Other"
+    ]
+   },
+   {
+    "key": "referenceNumber",
+    "label": "Transaction / Release Reference",
+    "type": "text",
+    "placeholder": "Optional bank, payroll, or voucher reference"
+   },
+   {
+    "key": "details",
+    "label": "Payment Breakdown / Notes",
+    "type": "textarea",
+    "placeholder": "Basic pay, OT, allowances, deductions, or final-pay components.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee acknowledges receipt of the stated amount and should report any discrepancy promptly through the payroll dispute process.",
+  "signatureLabels": [
+   "Employee Recipient / Date",
+   "Released By / Date",
+   "Payroll Verified",
+   "Approved By"
+  ]
+ },
+ {
+  "key": "PAY-CA-AGREEMENT",
+  "title": "Cash Advance Agreement",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-CA",
+  "purpose": "Document cash advance amount, release, repayment terms, payroll deductions, and employee acknowledgment.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "amount",
+    "label": "Cash Advance Amount",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "purpose",
+    "label": "Purpose of Cash Advance",
+    "type": "text",
+    "required": true,
+    "placeholder": "State the approved purpose"
+   },
+   {
+    "key": "releaseDate",
+    "label": "Release Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "firstDeductionDate",
+    "label": "First Deduction Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "deductionPerCutoff",
+    "label": "Deduction Per Cutoff",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "installmentCount",
+    "label": "Number of Installments",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "details",
+    "label": "Repayment Terms",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the cutoff schedule, final installment handling, deferment rule, and approval conditions.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee acknowledges the cash advance and authorizes deductions only according to the written and approved repayment terms.",
+  "signatureLabels": [
+   "Employee Borrower / Date",
+   "Cash Released By / Date",
+   "Payroll / HR Witness",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "PAY-CA-REQUEST",
+  "title": "Cash Advance Request Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-CAREQ",
+  "purpose": "Document an employee request for a cash advance and management action.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "amount",
+    "label": "Amount Requested",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "subject",
+    "label": "Purpose / Reason",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain why the cash advance is requested.",
+    "span": "full"
+   },
+   {
+    "key": "requestedReleaseDate",
+    "label": "Requested Release Date",
+    "type": "date"
+   },
+   {
+    "key": "deductionPerCutoff",
+    "label": "Proposed Deduction Per Cutoff",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "installmentCount",
+    "label": "Proposed Installments",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "existingBalance",
+    "label": "Existing Cash Advance Balance",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "details",
+    "label": "Supporting Details / Emergency Information",
+    "type": "textarea",
+    "placeholder": "Include relevant facts or supporting documents.",
+    "span": "full"
+   },
+   {
+    "key": "requestDecision",
+    "label": "Management Decision",
+    "type": "select",
+    "options": [
+     "For Review",
+     "Approved",
+     "Approved with Modified Terms",
+     "Declined"
+    ]
+   }
+  ],
+  "reminder": "Submission does not guarantee approval. Approved amounts and repayment terms must be documented before release.",
+  "signatureLabels": [
+   "Employee Requestor / Date",
+   "Immediate Supervisor / Date",
+   "Payroll / HR Review",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "PAY-DEDUCTION-AUTH",
+  "title": "Salary Deduction Authorization Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-DED",
+  "purpose": "Authorize payroll deductions for an approved cash advance, shortage, damage, lost item, or other documented charge.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Reason for Deduction",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Cash Advance",
+     "Approved Charge Slip",
+     "Damage / Loss",
+     "Cash Shortage",
+     "Company Property",
+     "Payroll Correction",
+     "Other"
+    ]
+   },
+   {
+    "key": "amount",
+    "label": "Total Authorized Deduction",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "deductionPerCutoff",
+    "label": "Deduction Per Cutoff",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "startDate",
+    "label": "Deduction Start Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "installmentCount",
+    "label": "Number of Installments",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "relatedDocument",
+    "label": "Related Document / Reference",
+    "type": "text",
+    "placeholder": "Charge slip, incident report, CA agreement, or other reference"
+   },
+   {
+    "key": "details",
+    "label": "Authorization and Computation",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain the basis, schedule, final installment handling, and any approved limit.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee confirms that the basis and schedule were explained. Deductions should follow the signed and approved arrangement.",
+  "signatureLabels": [
+   "Employee Authorization / Date",
+   "Payroll Representative / Date",
+   "Witnessed By",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "PAY-ADJUSTMENT",
+  "title": "Payroll Adjustment Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-PAYADJ",
+  "purpose": "Record payroll additions, deductions, corrections, and their approved basis.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "adjustmentType",
+    "label": "Adjustment Type",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Addition / Earning",
+     "Deduction",
+     "Correction / Reversal",
+     "Deferred Item"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Adjustment Category / Reason",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: OT correction, allowance, shortage, missed deduction"
+   },
+   {
+    "key": "amount",
+    "label": "Adjustment Amount",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "payrollPeriod",
+    "label": "Affected Payroll Period",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "relatedDocument",
+    "label": "Supporting Reference",
+    "type": "text",
+    "placeholder": "DTR dispute, approval, charge slip, invoice, or memo"
+   },
+   {
+    "key": "details",
+    "label": "Computation / Basis",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Show the original amount, corrected amount, formula, and reason.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Every payroll adjustment should have a clear basis, supporting record, reviewer, and approval before payroll release.",
+  "signatureLabels": [
+   "Employee Acknowledgment / Date",
+   "Payroll Prepared By",
+   "HR / Finance Reviewed",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "PAY-OT",
+  "title": "OT Request Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-OT",
+  "purpose": "Document requested overtime, business reason, actual period, and approval.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Overtime Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "scheduledStart",
+    "label": "Scheduled Start",
+    "type": "time"
+   },
+   {
+    "key": "scheduledEnd",
+    "label": "Scheduled End",
+    "type": "time"
+   },
+   {
+    "key": "otStart",
+    "label": "Requested OT Start",
+    "type": "time",
+    "required": true
+   },
+   {
+    "key": "otEnd",
+    "label": "Requested OT End",
+    "type": "time",
+    "required": true
+   },
+   {
+    "key": "requestedMinutes",
+    "label": "Estimated OT Minutes",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "subject",
+    "label": "Business Reason for Overtime",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Tasks / Expected Output",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Describe the work to be completed and why it cannot be completed during regular hours.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Only authorized overtime supported by actual attendance and approved work requirements should be included in payroll.",
+  "signatureLabels": [
+   "Employee Requestor / Date",
+   "Immediate Supervisor / Date",
+   "HR / Payroll Review",
+   "Approving Manager"
+  ]
+ },
+ {
+  "key": "PAY-UT",
+  "title": "UT / Undertime Request Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-UT",
+  "purpose": "Document an employee request to leave before the scheduled end of shift and the payroll impact.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Undertime Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "scheduledEnd",
+    "label": "Scheduled Time Out",
+    "type": "time",
+    "required": true
+   },
+   {
+    "key": "requestedTimeOut",
+    "label": "Requested Actual Time Out",
+    "type": "time",
+    "required": true
+   },
+   {
+    "key": "undertimeMinutes",
+    "label": "Estimated Undertime Minutes",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "subject",
+    "label": "Reason for Undertime",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the reason and urgency.",
+    "span": "full"
+   },
+   {
+    "key": "handover",
+    "label": "Work Handover / Coverage",
+    "type": "textarea",
+    "placeholder": "List pending work and who will cover it.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Supporting Information",
+    "type": "textarea",
+    "placeholder": "Medical, family, transport, or other relevant information.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Approval of undertime does not automatically remove the applicable payroll deduction unless a written exception applies.",
+  "signatureLabels": [
+   "Employee Requestor / Date",
+   "Immediate Supervisor / Date",
+   "HR / Payroll Review",
+   "Approving Manager"
+  ]
+ },
+ {
+  "key": "PAY-LEAVE",
+  "title": "Leave Request Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-LEAVE",
+  "purpose": "Document planned, emergency, paid, or unpaid leave and management action.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "leaveType",
+    "label": "Leave Type",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Service Incentive Leave (SIL)",
+     "Unpaid Leave",
+     "Emergency Sick Leave",
+     "Emergency Personal Leave",
+     "Other"
+    ]
+   },
+   {
+    "key": "leaveStartDate",
+    "label": "Leave Start Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "leaveEndDate",
+    "label": "Leave End Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "totalDays",
+    "label": "Total Leave Days",
+    "type": "number",
+    "required": true,
+    "min": 0.5,
+    "step": "0.5"
+   },
+   {
+    "key": "subject",
+    "label": "Reason for Leave",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the reason while avoiding unnecessary sensitive details.",
+    "span": "full"
+   },
+   {
+    "key": "contactDuringLeave",
+    "label": "Contact During Leave",
+    "type": "text",
+    "placeholder": "Optional contact number"
+   },
+   {
+    "key": "handover",
+    "label": "Work Handover / Replacement",
+    "type": "textarea",
+    "placeholder": "Pending work, assigned replacement, and instructions.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Supporting Document / Medical Certificate",
+    "type": "textarea",
+    "placeholder": "List attached documents or filing exception.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Leave approval and pay treatment depend on available balance, filing rules, supporting documents, attendance records, and management approval.",
+  "signatureLabels": [
+   "Employee Requestor / Date",
+   "Immediate Supervisor / Date",
+   "HR Review",
+   "Approving Manager"
+  ]
+ },
+ {
+  "key": "PAY-DTR-DISPUTE",
+  "title": "DTR Correction / Dispute Form",
+  "category": "Payroll & Salary",
+  "refPrefix": "RD-DTR",
+  "purpose": "Document an attendance-record correction or dispute before payroll release.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Attendance Date in Dispute",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "disputeType",
+    "label": "Dispute Type",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Missing Time In",
+     "Missing Time Out",
+     "Incorrect Time",
+     "Late Tag",
+     "Absent Tag",
+     "Break Record",
+     "OT / UT Record",
+     "Duplicate Log",
+     "Other"
+    ]
+   },
+   {
+    "key": "recordedEntry",
+    "label": "Current Recorded Entry",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Time In 8:45 AM / Absent"
+   },
+   {
+    "key": "requestedCorrection",
+    "label": "Requested Correct Entry",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Time In 7:58 AM"
+   },
+   {
+    "key": "subject",
+    "label": "Reason for Correction",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Evidence / Witness / Supporting Information",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Photo, supervisor confirmation, schedule, system issue, or other support.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Corrections should be verified against available system logs, schedules, photos, approvals, and supervisor confirmation before payroll is finalized.",
+  "signatureLabels": [
+   "Employee Claimant / Date",
+   "Supervisor Verification",
+   "HR / Payroll Review",
+   "Final Approval"
+  ]
+ },
+ {
+  "key": "DISC-IR",
+  "title": "Incident Report Form",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-IR",
+  "purpose": "Record incident facts, people involved, location, witnesses, evidence, and immediate action.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "incidentTime",
+    "label": "Incident Time",
+    "type": "time"
+   },
+   {
+    "key": "location",
+    "label": "Location / Department",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "subject",
+    "label": "Incident Type / Subject",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "personsInvolved",
+    "label": "Other Persons Involved",
+    "type": "textarea",
+    "placeholder": "Names, roles, and involvement.",
+    "span": "full"
+   },
+   {
+    "key": "witnesses",
+    "label": "Witnesses",
+    "type": "textarea",
+    "placeholder": "Names and contact/role details.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Factual Incident Account",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State what was observed in chronological order. Separate facts from assumptions.",
+    "span": "full"
+   },
+   {
+    "key": "immediateAction",
+    "label": "Immediate Action Taken",
+    "type": "textarea",
+    "placeholder": "Safety action, product hold, cash count, equipment isolation, or supervisor response.",
+    "span": "full"
+   },
+   {
+    "key": "evidence",
+    "label": "Evidence / Attachments",
+    "type": "textarea",
+    "placeholder": "Photos, CCTV, system logs, inventory count, receipts, or witness statements.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Incident reports should be factual, timely, and supported by available evidence. This report is not by itself a final disciplinary decision.",
+  "signatureLabels": [
+   "Report Prepared By / Date",
+   "Employee Involved / Date",
+   "Supervisor Review",
+   "Management Review"
+  ]
+ },
+ {
+  "key": "DISC-EXPLAIN",
+  "title": "Employee Explanation Form",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-EXPLAIN",
+  "purpose": "Record an employee’s written explanation connected to an incident, NTE, shortage, or alleged violation.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident / Alleged Violation Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "relatedDocument",
+    "label": "Related NTE / Incident Report No.",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "subject",
+    "label": "Issue Requiring Explanation",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Employee Written Explanation",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain what happened, the employee’s position, relevant facts, and circumstances.",
+    "span": "full"
+   },
+   {
+    "key": "supportingEvidence",
+    "label": "Supporting Evidence / Witnesses",
+    "type": "textarea",
+    "placeholder": "List attached documents or persons who can confirm relevant facts.",
+    "span": "full"
+   },
+   {
+    "key": "correctiveCommitment",
+    "label": "Corrective Action / Commitment",
+    "type": "textarea",
+    "placeholder": "State voluntary corrective actions or support requested.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee should be allowed to provide a complete explanation and supporting information before management makes a decision.",
+  "signatureLabels": [
+   "Employee Signature / Date",
+   "Received By / Date",
+   "Witness / Representative",
+   "Management Review"
+  ]
+ },
+ {
+  "key": "DISC-NTE",
+  "title": "Notice to Explain",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-NTE",
+  "purpose": "Provide formal written notice requiring an employee to explain an alleged violation or incident.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident / Alleged Violation Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "subject",
+    "label": "Alleged Violation / Issue",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the specific alleged act, omission, or policy concern.",
+    "span": "full"
+   },
+   {
+    "key": "policyReference",
+    "label": "Policy / SOP / Rule Reference",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Statement of Facts / Particulars",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State dates, times, places, actions, records, and available evidence without pre-judging the outcome.",
+    "span": "full"
+   },
+   {
+    "key": "responseDeadline",
+    "label": "Written Explanation Deadline",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Within 48 hours from receipt"
+   },
+   {
+    "key": "evidence",
+    "label": "Supporting Evidence / Reference",
+    "type": "textarea",
+    "placeholder": "Incident report, attendance logs, photos, inventory records, witness statements, or other references.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The employee is given an opportunity to submit a written explanation. Management should review the explanation and available evidence before deciding.",
+  "signatureLabels": [
+   "Employee Receipt / Date & Time",
+   "Issued By / Date",
+   "Witnessed By",
+   "Management Approval"
+  ]
+ },
+ {
+  "key": "DISC-WARNING",
+  "title": "Warning Letter",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-WARN",
+  "purpose": "Document a written warning, corrective expectation, and follow-up deadline.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident / Violation Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "warningLevel",
+    "label": "Warning Level",
+    "type": "select",
+    "required": true,
+    "options": [
+     "First Written Warning",
+     "Second Written Warning",
+     "Final Written Warning"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Violation / Performance Issue",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "priorNoticeReference",
+    "label": "Prior NTE / Decision / Coaching Reference",
+    "type": "text"
+   },
+   {
+    "key": "details",
+    "label": "Findings and Corrective Expectations",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the reviewed facts, expected standard, required correction, and consequence of repetition.",
+    "span": "full"
+   },
+   {
+    "key": "complianceDeadline",
+    "label": "Correction / Review Deadline",
+    "type": "date"
+   },
+   {
+    "key": "supportPlan",
+    "label": "Support / Coaching to be Provided",
+    "type": "textarea",
+    "placeholder": "Training, supervision, schedule, or process support.",
+    "span": "full"
+   }
+  ],
+  "reminder": "A warning should identify the reviewed issue, expected corrective action, follow-up date, and applicable next step without using vague allegations.",
+  "signatureLabels": [
+   "Employee Receipt / Date",
+   "Immediate Supervisor / Date",
+   "HR Review",
+   "Management Approval"
+  ]
+ },
+ {
+  "key": "DISC-DECISION",
+  "title": "Notice of Decision",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-DEC",
+  "purpose": "Document management’s decision after reviewing the notice, explanation, and available evidence.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Incident Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "nteReference",
+    "label": "NTE / Case Reference",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "explanationReceivedDate",
+    "label": "Explanation Received Date",
+    "type": "date"
+   },
+   {
+    "key": "subject",
+    "label": "Decision Summary",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "action",
+    "label": "Management Action",
+    "type": "select",
+    "required": true,
+    "options": [
+     "No Violation / Case Closed",
+     "Coaching / Counseling",
+     "Written Warning",
+     "Final Warning",
+     "Suspension",
+     "Termination",
+     "Restitution / Accountability Arrangement",
+     "Other"
+    ]
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Decision Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Findings and Basis",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Summarize the issue, employee explanation, evidence considered, findings, and reason for the decision.",
+    "span": "full"
+   },
+   {
+    "key": "conditions",
+    "label": "Conditions / Follow-up Actions",
+    "type": "textarea",
+    "placeholder": "Training, monitoring, restitution, return-to-work conditions, or review date.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The decision should reflect the facts and evidence reviewed, the employee’s explanation, and the approved management action.",
+  "signatureLabels": [
+   "Employee Receipt / Date",
+   "Decision Issued By",
+   "HR / Witness",
+   "Owner / Management Approval"
+  ]
+ },
+ {
+  "key": "DISC-DAMAGE",
+  "title": "Damage / Loss Accountability Form",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-DAMAGE",
+  "purpose": "Record damaged, lost, or unreturned company property and the accountability review.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Damage / Loss Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "items",
+    "label": "Property / Item Affected",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Item name, asset code, quantity, ownership, and description.",
+    "span": "full"
+   },
+   {
+    "key": "assetCode",
+    "label": "Asset / Inventory Code",
+    "type": "text"
+   },
+   {
+    "key": "condition",
+    "label": "Condition / Loss Status",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Damaged - Repairable",
+     "Damaged - Beyond Repair",
+     "Lost / Missing",
+     "Unreturned",
+     "Consumable Wastage",
+     "Other"
+    ]
+   },
+   {
+    "key": "amount",
+    "label": "Estimated Loss / Repair Cost",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "subject",
+    "label": "Reported Cause / Circumstance",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Factual Account and Review",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Describe custody, last known condition, actions taken, evidence, and findings.",
+    "span": "full"
+   },
+   {
+    "key": "recoveryAction",
+    "label": "Recovery / Corrective Action",
+    "type": "textarea",
+    "placeholder": "Repair, replacement, return deadline, charge-slip review, training, or no employee charge.",
+    "span": "full"
+   }
+  ],
+  "reminder": "This form records the accountability review. Any employee charge or payroll deduction should be documented separately and approved.",
+  "signatureLabels": [
+   "Employee / Custodian / Date",
+   "Inventory / Supervisor Review",
+   "HR / Finance Review",
+   "Management Decision"
+  ]
+ },
+ {
+  "key": "DISC-CASH-SHORT",
+  "title": "Cash Shortage Explanation Form",
+  "category": "NTE / Disciplinary",
+  "refPrefix": "RD-CSHORT",
+  "purpose": "Document a cash shortage, cashier explanation, supporting reconciliation, and review.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Business / Cash Count Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "shiftOrOutlet",
+    "label": "Shift / Outlet / Cash Point",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "expectedCash",
+    "label": "Expected Cash",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "actualCash",
+    "label": "Actual Cash Counted",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "amount",
+    "label": "Shortage / Variance",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "transactionReference",
+    "label": "POS / Remittance / Deposit Reference",
+    "type": "text"
+   },
+   {
+    "key": "subject",
+    "label": "Initial Variance Description",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "details",
+    "label": "Employee Explanation",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Explain transactions, handovers, refunds, change funds, system issues, or other relevant facts.",
+    "span": "full"
+   },
+   {
+    "key": "evidence",
+    "label": "Reconciliation Evidence",
+    "type": "textarea",
+    "placeholder": "Cash count sheet, POS report, receipts, CCTV, witnesses, or deposit record.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Cash variances should be recounted and reconciled against POS, remittance, refund, deposit, and handover records before a final decision.",
+  "signatureLabels": [
+   "Cashier / Custodian / Date",
+   "Cash Count Witness",
+   "Supervisor / Finance Review",
+   "Management Decision"
+  ]
+ },
+ {
+  "key": "FIN-CHARGE-SLIP",
+  "title": "Charge Slip",
+  "category": "Finance & Cash Control",
+  "refPrefix": "RD-CS",
+  "purpose": "Document an approved employee accountability for loss, damage, shortage, wastage, company-paid expense, or another charge, including payment terms.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "incidentDate",
+    "label": "Charge / Incident Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "subject",
+    "label": "Charge Type / Reason",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Loss / Missing Property",
+     "Damage / Repair",
+     "Cash Shortage",
+     "Inventory Shortage",
+     "Wastage / Spoilage",
+     "Company-Paid Expense",
+     "Unreturned Item",
+     "Other"
+    ]
+   },
+   {
+    "key": "items",
+    "label": "Charged Item / Supporting Reference",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Item, quantity, incident report, invoice, receipt, or other reference.",
+    "span": "full"
+   },
+   {
+    "key": "amount",
+    "label": "Total Charge",
+    "type": "number",
+    "required": true,
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0.01,
+    "step": "0.01"
+   },
+   {
+    "key": "paymentMethod",
+    "label": "Payment Arrangement",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Full Cash Payment",
+     "Payroll Deduction",
+     "Installment Payroll Deduction",
+     "Offset Against Receivable",
+     "Other Approved Arrangement"
+    ]
+   },
+   {
+    "key": "deductionPerCutoff",
+    "label": "Payment / Deduction Per Cutoff",
+    "type": "number",
+    "placeholder": "0.00",
+    "format": "currency",
+    "min": 0,
+    "step": "0.01"
+   },
+   {
+    "key": "dueDate",
+    "label": "First Payment / Due Date",
+    "type": "date"
+   },
+   {
+    "key": "installmentCount",
+    "label": "Number of Installments",
+    "type": "number",
+    "min": 1,
+    "step": "1"
+   },
+   {
+    "key": "details",
+    "label": "Charge Computation and Terms",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the facts, computation, supporting reference, due date, and approved payment terms.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The charge should be supported by a documented review. Any payroll deduction must follow the separately approved written arrangement.",
+  "signatureLabels": [
+   "Charged Employee / Date",
+   "Finance / HR Representative",
+   "Witnessed By",
+   "Owner Approval"
+  ]
+ },
+ {
+  "key": "SOP-ATTENDANCE",
+  "title": "Attendance Policy",
+  "category": "SOPs & Training",
+  "refPrefix": "RD-ATTPOL",
+  "purpose": "Issue or acknowledge the company attendance, timekeeping, break, leave, OT, and undertime policy.",
+  "employeeMode": "optional",
+  "employeeLabel": "Acknowledging Employee",
+  "fields": [
+   {
+    "key": "policyVersion",
+    "label": "Policy Version",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Attendance Policy 2026.1"
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "acknowledgmentType",
+    "label": "Document Use",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Policy Issuance",
+     "Employee Acknowledgment",
+     "Policy Reorientation",
+     "Policy Update"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Policy Scope",
+    "type": "text",
+    "defaultValue": "Schedules, time in/out, breaks, absence, leave filing, overtime, undertime, corrections, and attendance accountability.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Attendance Policy Text",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Employees must follow assigned schedules; personally record time in and time out; observe approved break limits; file leave, OT, and undertime requests through approved channels; and promptly report attendance errors. Falsification, buddy punching, and unauthorized time entries are prohibited. Payroll treatment follows approved company rules and documented exceptions.",
+    "span": "full"
+   },
+   {
+    "key": "questionsRaised",
+    "label": "Questions / Clarifications",
+    "type": "textarea",
+    "placeholder": "Record employee questions and the response provided.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Keep the signed acknowledgment with the current policy version. Policy updates should be issued and acknowledged separately.",
+  "signatureLabels": [
+   "Employee Acknowledgment / Date",
+   "Orientation Facilitator",
+   "HR / Supervisor Review",
+   "Management Approval"
+  ]
+ },
+ {
+  "key": "SOP-CASH-ADVANCE",
+  "title": "Cash Advance Policy",
+  "category": "SOPs & Training",
+  "refPrefix": "RD-CAPOL",
+  "purpose": "Issue or acknowledge the company cash advance request, approval, release, repayment, and payroll-deduction policy.",
+  "employeeMode": "optional",
+  "employeeLabel": "Acknowledging Employee",
+  "fields": [
+   {
+    "key": "policyVersion",
+    "label": "Policy Version",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Cash Advance Policy 2026.1"
+   },
+   {
+    "key": "effectiveDate",
+    "label": "Effective Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "acknowledgmentType",
+    "label": "Document Use",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Policy Issuance",
+     "Employee Acknowledgment",
+     "Policy Reorientation",
+     "Policy Update"
+    ]
+   },
+   {
+    "key": "subject",
+    "label": "Policy Scope",
+    "type": "text",
+    "defaultValue": "Cash advance request, approval, release, repayment schedule, payroll deduction, deferment, and dispute handling.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Cash Advance Policy Text",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Cash advances require a written request and approval. Approved terms must state the amount, release date, deduction per cutoff, and expected completion. New requests may be limited while an earlier balance remains unpaid. Deferments, changes, or reversals require written approval. Employees should review payroll deductions and raise discrepancies before release.",
+    "span": "full"
+   },
+   {
+    "key": "questionsRaised",
+    "label": "Questions / Clarifications",
+    "type": "textarea",
+    "placeholder": "Record employee questions and the response provided.",
+    "span": "full"
+   }
+  ],
+  "reminder": "The signed acknowledgment should identify the policy version. Each approved cash advance still requires a separate request and agreement.",
+  "signatureLabels": [
+   "Employee Acknowledgment / Date",
+   "Policy Explained By",
+   "Payroll / HR Review",
+   "Management Approval"
+  ]
+ }
 ]
+
+const DOCUMENT_FORM_CORE_FIELD_KEYS = ['documentNo','formKey','employeeId','documentDate','incidentDate','effectiveDate','amount','deductionPerCutoff','subject','details','items','remarks','preparedBy','approvedBy']
+const DOCUMENT_FORM_DATA_PREFIX = '__RD_FORM_DATA_V1__:'
+
+function findBatch1DocumentForm(formKey) {
+ const normalized = String(formKey || '').trim().toUpperCase()
+ if (!normalized) return null
+ return DOCUMENT_BATCH1A_FORMS.find(form =>
+  String(form.key || '').toUpperCase() === normalized ||
+  (form.aliases || []).some(alias => String(alias || '').toUpperCase() === normalized)
+ ) || null
+}
+
+function createDocumentFormDraft(formKey, todayDate = '', preparedBy = '', previous = {}) {
+ const form = findBatch1DocumentForm(formKey) || DOCUMENT_BATCH1A_FORMS.find(row => !row.externalTab) || DOCUMENT_BATCH1A_FORMS[0]
+ const draft = {
+  documentNo:'',
+  formKey:form?.key || formKey || 'DISC-NTE',
+  employeeId:'',
+  documentDate:todayDate || '',
+  incidentDate:todayDate || '',
+  effectiveDate:todayDate || '',
+  amount:'',
+  deductionPerCutoff:'',
+  subject:'',
+  details:'',
+  items:'',
+  remarks:'',
+  preparedBy:preparedBy || previous?.preparedBy || '',
+  approvedBy:previous?.approvedBy || '',
+  customFields:{}
+ }
+
+ ;(form?.fields || []).forEach(field => {
+  const defaultValue = field.defaultValue ?? ''
+  if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(field.key)) {
+   if (defaultValue !== '') draft[field.key] = defaultValue
+  } else {
+   draft.customFields[field.key] = defaultValue
+  }
+ })
+
+ return draft
+}
+
+function encodeCompanyDocumentFormData(formKey, draft = {}) {
+ const values = { ...draft, formKey }
+ delete values.employeeId
+ return DOCUMENT_FORM_DATA_PREFIX + JSON.stringify({ version:1, values })
+}
+
+function decodeCompanyDocumentFormData(rawValue) {
+ const raw = String(rawValue || '')
+ if (!raw.startsWith(DOCUMENT_FORM_DATA_PREFIX)) return null
+ try {
+  const parsed = JSON.parse(raw.slice(DOCUMENT_FORM_DATA_PREFIX.length))
+  return parsed && typeof parsed === 'object' ? parsed : null
+ } catch (error) {
+  console.warn('Invalid structured company document data:', error)
+  return null
+ }
+}
 
 const DOCUMENT_CENTER_CATEGORIES = [
  'HR & Employee',
@@ -856,7 +4079,7 @@ const DOCUMENT_CENTER_CATEGORIES = [
 ]
 
 const DOCUMENT_CENTER_CATALOG = [
-  { code:'INV-WD', name:'Company Inventory Withdrawal Slip', category:'Inventory', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Records withdrawal of raw materials, packaging, supplies, finished goods like donuts, tools, equipment, crates, crate covers, and other company property.' },
+  { code:'INV-WD', name:'Company Inventory Withdrawal Slip', category:'Inventory & Purchasing', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Records withdrawal of raw materials, packaging, supplies, finished goods like donuts, tools, equipment, crates, crate covers, and other company property.' },
  { code:'HR-EMP-CONTRACT', name:'Employment Contract', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Generate, print, upload, and track employee contracts and regularization records.' },
  { code:'HR-JOB-OFFER', name:'Job Offer / Hiring Approval Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Approve hiring details before adding a new employee to payroll.' },
  { code:'HR-INFO-SHEET', name:'Employee Information Sheet', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Collect employee profile, emergency contact, government IDs, and payroll details.' },
@@ -941,6 +4164,7 @@ const DOCUMENT_CENTER_CATALOG = [
  { code:'RES-CART', name:'Rolling Cart Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document rolling cart deposit, ownership, renewal, and operating rules.' },
  { code:'OUT-COUNT', name:'Outlet Inventory Count Sheet', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record beginning, delivered, wastage, ending, and estimated sold items.' },
  { code:'OUT-REMIT', name:'Outlet Weekly Remittance Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Compute outlet sales, remittance, shortage, and posting status.' },
+ { code:'FIN-CHARGE-SLIP', name:'Charge Slip', category:'Finance & Cash Control', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document employee accountability for loss, damage, shortage, wastage, company-paid expense, or another approved charge, including payment or payroll-deduction terms.' },
  { code:'FIN-CASH-COUNT', name:'Daily Cash Count Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Count cash on hand and compare against expected cash.' },
  { code:'FIN-CASHIER-TURNOVER', name:'Cashier Turnover Slip', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Template Listed', purpose:'Document cashier handover of cash, sales, and variances.' },
  { code:'FIN-GCASH-RECON', name:'GCash Reconciliation Sheet', category:'Finance & Cash Control', batch:'Batch 4', priority:'High', status:'Existing Module', purpose:'Match GCash/online payments to sales records.' },
@@ -1098,11 +4322,69 @@ function getCAProcessedBy(req = {}, ledger = null) {
  return req.approved_by || req.processed_by || ledger?.approved_by || ledger?.created_by || ledger?.recorded_by || 'Admin'
 }
 
+function getCashAdvanceRawBalance(ca = {}) {
+ const raw = Number(ca?.balance)
+ return Number.isFinite(raw) ? moneyRound(Math.max(0, raw)) : 0
+}
+
+function getCashAdvancePaidAmount(ca = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
+ const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
+ const balance = getCashAdvanceEffectiveBalance(ca)
+ if (amount > 0) return moneyRound(Math.min(amount, Math.max(0, amount - balance)))
+ return paid
+}
+
+function getCashAdvanceEffectiveBalance(ca = {}) {
+ const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
+ const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
+ const rawBalance = getCashAdvanceRawBalance(ca)
+ const status = String(ca?.status || '').trim().toLowerCase()
+
+ if (amount > 0) {
+  if (paid > 0) return moneyRound(Math.max(0, amount - paid))
+  if (rawBalance > 0.009) {
+   const perPayroll = safeNum(ca?.per_payroll_deduction, 0)
+   const totalInstallments = safeNum(ca?.installments_total, 0)
+   const remainingInstallments = safeNum(ca?.installments_remaining, 0)
+   const looksLikeNewInstallmentBalanceBug = totalInstallments > 1 && remainingInstallments >= totalInstallments && perPayroll > 0.009 && rawBalance < amount && rawBalance <= perPayroll + 0.01
+   return looksLikeNewInstallmentBalanceBug ? amount : rawBalance
+  }
+  if (status === 'paid' || status === 'settled') return 0
+  return amount
+ }
+
+ return rawBalance
+}
+
+function getCashAdvanceStatusForBalance(balance = 0, currentStatus = '') {
+ const status = String(currentStatus || '').trim()
+ const statusKey = status.toLowerCase()
+ if (['cancelled','canceled','void','voided'].includes(statusKey)) return status || 'Void'
+ return isMoneySettled(balance) ? 'Paid' : 'Unpaid'
+}
+
+function getCashAdvanceRemainingInstallments(ca = {}, req = {}) {
+ const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
+ const recordedRemaining = Math.max(0, safeNum(ca?.installments_remaining ?? req?.installments_remaining, 0))
+ const balance = getCashAdvanceEffectiveBalance(ca)
+ if (isMoneySettled(balance)) return 0
+
+ const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
+ if (perPayroll > 0.009) {
+  const computed = Math.max(1, Math.ceil((balance - 0.009) / perPayroll))
+  return total > 0 ? Math.min(total, computed) : computed
+ }
+
+ if (recordedRemaining > 0) return recordedRemaining
+ return total > 0 ? total : 1
+}
+
 function getCAInstallmentInfo(ca = {}, req = {}) {
- const total = Math.max(0, safeNum(ca.installments_total ?? req.request_installments_total ?? req.installments_total, 0))
- const remaining = Math.max(0, safeNum(ca.installments_remaining ?? req.installments_remaining, 0))
+ const total = Math.max(0, safeNum(ca?.installments_total ?? req?.request_installments_total ?? req?.installments_total, 0))
+ const remaining = getCashAdvanceRemainingInstallments(ca, req)
  const completed = total > 0 ? Math.max(0, total - remaining) : 0
- const perPayroll = safeNum(ca.per_payroll_deduction ?? req.request_per_payroll_deduction ?? req.per_payroll_deduction, 0)
+ const perPayroll = safeNum(ca?.per_payroll_deduction ?? req?.request_per_payroll_deduction ?? req?.per_payroll_deduction, 0)
  return { total, remaining, completed, perPayroll }
 }
 
@@ -1513,7 +4795,7 @@ function EmployeePortalPayslipBreakdown({ pay }) {
    <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
     <h4 style={{ margin:'0 0 8px', color:'#ca1b1b', fontSize:'13px' }}>Deductions</h4>
     <SectionRow label="Late Deduction" amount={value('late_deduction')} note={`${value('late_minutes')} late minute(s)`} />
-    <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} approved undertime minute(s)`} />
+    <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} approved attendance-verified undertime minute(s)`} />
     <SectionRow label="Cash Advance Deduction" amount={value('cash_advance_deduction')} />
     <SectionRow label="Requested CA Deduction" amount={value('requested_cash_advance_deduction')} note="Original CA amount requested for this cutoff before payroll safety cap." />
     <SectionRow label="Deferred CA Deduction" amount={value('deferred_cash_advance_deduction')} note="Not deducted this cutoff; remains in CA balance." highlight="#f5a623" />
@@ -1598,6 +4880,41 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  </div>`
 }
 
+
+
+// ------------------------------------------------------------
+// APP UPDATE CHECKER
+// Compares the currently loaded Vercel bundle with the latest index.html bundle.
+// If Vercel has deployed a newer build, users see a clear refresh banner instead
+// of unknowingly using an old cached reseller/PWA screen.
+// ------------------------------------------------------------
+const APP_UPDATE_CHECK_INTERVAL_MS = 60 * 1000
+
+function getLoadedBundleSignature() {
+ if (typeof document === 'undefined') return ''
+ const assetPaths = Array.from(document.querySelectorAll('script[src], link[rel="modulepreload"][href], link[rel="stylesheet"][href]'))
+  .map(node => node.getAttribute('src') || node.getAttribute('href') || '')
+  .filter(src => /\/assets\//.test(src))
+  .map(src => {
+   try { return new URL(src, window.location.origin).pathname }
+   catch { return src }
+  })
+  .sort()
+ return assetPaths.join('|')
+}
+
+function getIndexBundleSignature(html = '') {
+ const matches = []
+ const re = /<(?:script|link)[^>]+(?:src|href)=["']([^"']*\/assets\/[^"']+)["'][^>]*>/gi
+ let match
+ while ((match = re.exec(String(html || '')))) {
+  const src = match[1]
+  try { matches.push(new URL(src, window.location.origin).pathname) }
+  catch { matches.push(src) }
+ }
+ return matches.sort().join('|')
+}
+
 const printCSS = `
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
@@ -1641,6 +4958,8 @@ export default function App() {
  const canvasRef = useRef(null)
  const profilePhotoInputRef = useRef(null)
  const resellerOrderSubmitLockRef = useRef(false)
+ const resellerOrderRecentSubmitKeysRef = useRef(new Set())
+ const approvingResellerOrderIdsRef = useRef(new Set())
 
  const [employeeCode, setEmployeeCode] = useState('')
  const [pin, setPin] = useState('')
@@ -1675,9 +4994,11 @@ export default function App() {
  const [showMyAttendance, setShowMyAttendance] = useState(false)
  const [requestCashAmount, setRequestCashAmount] = useState('')
  const [requestCashReason, setRequestCashReason] = useState('')
+ const [submittingCashAdvanceRequest, setSubmittingCashAdvanceRequest] = useState(false)
  const [leaveStartDate, setLeaveStartDate] = useState('')
  const [leaveEndDate, setLeaveEndDate] = useState('')
  const [leaveType, setLeaveType] = useState('')
+ const [leaveFilingType, setLeaveFilingType] = useState('planned')
  const [leaveReason, setLeaveReason] = useState('')
  const [disputeReasons, setDisputeReasons] = useState({})
  const [showDisputeBox, setShowDisputeBox] = useState({})
@@ -1688,11 +5009,16 @@ export default function App() {
  const [disputeReasonPresets, setDisputeReasonPresets] = useState({})
  const [profilePhotoUrl, setProfilePhotoUrl] = useState(null)
  const [uploadingPhoto, setUploadingPhoto] = useState(false)
+ const [medicalCertLock, setMedicalCertLock] = useState({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' })
+ const [medicalCertUploading, setMedicalCertUploading] = useState(false)
  const [showOTRequest, setShowOTRequest] = useState(false)
  const [otRequestType, setOtRequestType] = useState('overtime')
  const [otRequestReason, setOtRequestReason] = useState('')
  const [otRequestMinutes, setOtRequestMinutes] = useState('')
  const [otRequestDate, setOtRequestDate] = useState('')
+ const [otRequestFrom, setOtRequestFrom] = useState('')
+ const [otRequestTo, setOtRequestTo] = useState('')
+ const [timeAdjPreview, setTimeAdjPreview] = useState({ loading:false, canSubmit:false, minutes:0, message:'Select an attendance date to validate the time record.', code:'idle' })
  const [adminMode, setAdminMode] = useState(false)
  const [adminRole, setAdminRole] = useState(null) // 'owner'|'manager'|'hr'|'payroll'|'supervisor'|'asst_supervisor'
  const [adminEmployee, setAdminEmployee] = useState(null) // employee record of the logged-in admin
@@ -1720,6 +5046,9 @@ export default function App() {
  const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
  const [saveSuccess, setSaveSuccess] = useState(null)
  const [toast, setToast] = useState(null)
+ const appUpdateCurrentSignatureRef = useRef('')
+ const [appUpdateInfo, setAppUpdateInfo] = useState({ available:false, latestSignature:'', currentSignature:'', checkedAt:null })
+ const [appUpdateChecking, setAppUpdateChecking] = useState(false)
  // Audit trail
  const [auditLogs, setAuditLogs] = useState([])
  const [auditSearch, setAuditSearch] = useState('')
@@ -1745,6 +5074,7 @@ export default function App() {
  // Break limits
  const [breakTimerSeconds, setBreakTimerSeconds] = useState(0)
  const [breakTimerInterval, setBreakTimerInterval] = useState(null)
+ const breakWarningStageRef = useRef(0)
  const [editFields, setEditFields] = useState({})
  const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, regularHolidayEligible:true, specialHolidayEligible:true, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
  const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
@@ -1778,6 +5108,7 @@ export default function App() {
  const [timeAdjRequests, setTimeAdjRequests] = useState([])
  const [timeAdjView, setTimeAdjView] = useState('active')
  const [adjAdminReason, setAdjAdminReason] = useState({})
+ const [timeAdjValidationById, setTimeAdjValidationById] = useState({})
  const [cashAdvanceRequests, setCashAdvanceRequests] = useState([])
  const [installmentCounts, setInstallmentCounts] = useState({})
  const [showResolvedCA, setShowResolvedCA] = useState(false)
@@ -1795,6 +5126,17 @@ export default function App() {
  const [adjustmentCategory, setAdjustmentCategory] = useState('')
  const [adjustmentAmount, setAdjustmentAmount] = useState('')
  const [adjustmentNotes, setAdjustmentNotes] = useState('')
+ const defaultAttendanceReconPeriod = getDTRCutoffPeriodFromKey(getPreviousDTRCutoffKey(getCurrentDTRCutoffKey(today)))
+ const [attendanceReconStart, setAttendanceReconStart] = useState(defaultAttendanceReconPeriod?.start || '')
+ const [attendanceReconEnd, setAttendanceReconEnd] = useState(defaultAttendanceReconPeriod?.end || '')
+ const [attendanceReconAdjustmentDate, setAttendanceReconAdjustmentDate] = useState(today)
+ const [attendanceReconRows, setAttendanceReconRows] = useState([])
+ const [attendanceReconSelected, setAttendanceReconSelected] = useState({})
+ const [attendanceReconLoading, setAttendanceReconLoading] = useState(false)
+ const [attendanceReconCreating, setAttendanceReconCreating] = useState(false)
+ const [attendanceReconLastRunAt, setAttendanceReconLastRunAt] = useState(null)
+ const [attendanceReconTrace, setAttendanceReconTrace] = useState(null)
+ const [attendanceReconTraceLoading, setAttendanceReconTraceLoading] = useState(false)
  const [payrollAdjustmentHistory, setPayrollAdjustmentHistory] = useState([])
  const [payrollAdjustmentLoading, setPayrollAdjustmentLoading] = useState(false)
  const [payrollAdjustmentSearch, setPayrollAdjustmentSearch] = useState('')
@@ -1822,7 +5164,12 @@ export default function App() {
  const [documentCenterSearch, setDocumentCenterSearch] = useState('')
  const [documentCenterCategory, setDocumentCenterCategory] = useState('all')
  const [documentCenterBatch, setDocumentCenterBatch] = useState('all')
+ const [documentCenterView, setDocumentCenterView] = useState('forms')
+ const [documentRecordSearch, setDocumentRecordSearch] = useState('')
+ const [documentRecordStatusFilter, setDocumentRecordStatusFilter] = useState('all')
+ const [documentRecordTypeFilter, setDocumentRecordTypeFilter] = useState('all')
  const [documentFormDraft, setDocumentFormDraft] = useState({
+  documentNo:'',
   formKey:'DISC-NTE',
   employeeId:'',
   documentDate:today,
@@ -1835,7 +5182,8 @@ export default function App() {
   items:'',
   remarks:'',
   preparedBy:'',
-  approvedBy:''
+  approvedBy:'',
+  customFields:{}
  })
  const [companyDocumentRecords, setCompanyDocumentRecords] = useState([])
  const [companyDocumentRecordsLoading, setCompanyDocumentRecordsLoading] = useState(false)
@@ -1972,6 +5320,7 @@ export default function App() {
  const [resellerOrderDeliveryDate, setResellerOrderDeliveryDate] = useState('')
  const [resellerOrderNotes, setResellerOrderNotes] = useState('')
  const [submittingOrder, setSubmittingOrder] = useState(false)
+ const [lastSubmittedOrderNotice, setLastSubmittedOrderNotice] = useState('')
  const [editingResellerOrderId, setEditingResellerOrderId] = useState(null)
  const [updatingResellerOrder, setUpdatingResellerOrder] = useState(false)
  const [resellerOrders, setResellerOrders] = useState([])
@@ -2011,9 +5360,11 @@ export default function App() {
  const [donutVariants, setDonutVariants] = useState([])
  const [variantsLoading, setVariantsLoading] = useState(false)
  const [baseDoughIngredients, setBaseDoughIngredients] = useState([])
+ const [powderBaseIngredients, setPowderBaseIngredients] = useState([])
  const [variantRecipes, setVariantRecipes] = useState({})
  const [selectedRecipeVariantId, setSelectedRecipeVariantId] = useState(null)
  const [editingBaseDough, setEditingBaseDough] = useState([])
+ const [editingPowderBase, setEditingPowderBase] = useState([])
  const [editingVariantRecipe, setEditingVariantRecipe] = useState([])
  const [savingRecipe, setSavingRecipe] = useState(false)
  const [productionLogs, setProductionLogs] = useState([])
@@ -2266,12 +5617,17 @@ export default function App() {
  const [showAddItem, setShowAddItem] = useState(false)
  const [newItemName, setNewItemName] = useState('')
  const [newItemCategory, setNewItemCategory] = useState('Raw Ingredients')
- const [newItemUnit, setNewItemUnit] = useState('kg')
+ const [newItemUnit, setNewItemUnit] = useState('g')
  const [newItemMinStock, setNewItemMinStock] = useState('')
  const [newItemCostPerUnit, setNewItemCostPerUnit] = useState('')
  const [newItemBuyingPrice, setNewItemBuyingPrice] = useState('')
  const [newItemCurrentStock, setNewItemCurrentStock] = useState('')
  const [newItemSellingPrice, setNewItemSellingPrice] = useState('')
+ const [newItemPurchaseUnit, setNewItemPurchaseUnit] = useState('sack')
+ const [newItemPurchaseUnitSize, setNewItemPurchaseUnitSize] = useState('')
+ const [newItemPurchaseUnitCost, setNewItemPurchaseUnitCost] = useState('')
+ const [newItemStockPurchaseQty, setNewItemStockPurchaseQty] = useState('')
+ const [newItemMinPurchaseQty, setNewItemMinPurchaseQty] = useState('')
  const [newItemExpiryDate, setNewItemExpiryDate] = useState('')
  const [newItemSupplierId, setNewItemSupplierId] = useState('')
  const [inventoryTransactions, setInventoryTransactions] = useState([])
@@ -2399,6 +5755,162 @@ export default function App() {
   const label = getInventoryCategoryLabel({ category })
   return label === 'Snacks, Drinks and Others'
  }
+ const RAW_MATERIAL_PURCHASE_UNITS = ['sack','kg','pack','bag','box','pail','bottle','gallon','container','can','jar','tub','tray','carton','roll','pc','pair','set']
+ const INVENTORY_STOCK_DISPLAY_UNITS = ['g','kg','mL','L','pcs','bottles','packs','bags','boxes','sacks','pails','gallons','containers','cans','jars','tubs','trays','cartons','rolls','pairs','sets']
+ const isRawMaterialCategoryName = (category) => getInventoryCategoryLabel({ category }) === 'Raw Ingredients'
+ const isRawMaterialItem = (item = {}) => isRawMaterialCategoryName(item.category)
+ const normalizeInventoryBaseUnit = (unit = '') => {
+  const u = String(unit || '').trim().toLowerCase()
+  if (['kg','kgs','kilogram','kilograms'].includes(u)) return 'kg'
+  if (['g','gram','grams'].includes(u)) return 'g'
+  if (['l','liter','liters','litre','litres'].includes(u)) return 'L'
+  if (['ml','milliliter','milliliters','millilitre','millilitres'].includes(u)) return 'mL'
+  if (['pc','pcs','piece','pieces'].includes(u)) return 'pcs'
+  return unit || 'unit'
+ }
+ const getInventoryUnitKey = (unit = '') => {
+  const u = String(unit || '').trim().toLowerCase()
+  if (['kilogram','kilograms','kgs'].includes(u)) return 'kg'
+  if (['gram','grams'].includes(u)) return 'g'
+  if (['liter','liters','litre','litres'].includes(u)) return 'l'
+  if (['milliliter','milliliters','millilitre','millilitres'].includes(u)) return 'ml'
+  if (['pc','pcs','piece','pieces'].includes(u)) return 'pc'
+  if (u.endsWith('ies')) return `${u.slice(0,-3)}y`
+  if (u.endsWith('ses')) return u.slice(0,-2)
+  if (u.endsWith('s') && !u.endsWith('ss')) return u.slice(0,-1)
+  return u
+ }
+ const formatInventoryStockUnit = (unit = '', quantity = 0) => {
+  const raw = String(unit || 'unit').trim()
+  const key = getInventoryUnitKey(raw)
+  if (key === 'g') return 'g'
+  if (key === 'kg') return 'kg'
+  if (key === 'ml') return 'mL'
+  if (key === 'l') return 'L'
+  if (key === 'pc') return Math.abs(safeNum(quantity,0)) === 1 ? 'pc' : 'pcs'
+  if (Math.abs(safeNum(quantity,0)) === 1) return key || raw
+  if (key.endsWith('y')) return `${key.slice(0,-1)}ies`
+  if (key.endsWith('s')) return key
+  return `${key || raw}s`
+ }
+ const getInventoryStockDisplayUnitOptions = (item = {}, fields = {}) => {
+  const category = fields.category ?? item.category
+  const currentUnit = String(fields.stock_display_unit ?? item.stock_display_unit ?? fields.unit ?? item.unit ?? 'pcs').trim()
+  if (isRawMaterialCategoryName(category)) {
+   const baseUnit = normalizeInventoryBaseUnit(fields.base_unit ?? item.base_unit ?? item.unit ?? 'g')
+   const purchaseUnit = String(fields.purchase_unit ?? item.purchase_unit ?? '').trim()
+   const metricOptions = baseUnit === 'g' ? ['g','kg'] : baseUnit === 'mL' ? ['mL','L'] : [baseUnit]
+   return Array.from(new Map(
+    [currentUnit, ...metricOptions, purchaseUnit, ...INVENTORY_STOCK_DISPLAY_UNITS]
+     .filter(Boolean)
+     .map(unit => [getInventoryUnitKey(unit), unit])
+   ).values())
+  }
+  return Array.from(new Map([currentUnit, ...INVENTORY_STOCK_DISPLAY_UNITS].filter(Boolean).map(unit => [getInventoryUnitKey(unit), unit])).values())
+ }
+ const getInventoryStockDisplayFactor = (item = {}, displayUnit = '', fields = {}) => {
+  const category = fields.category ?? item.category
+  if (!isRawMaterialCategoryName(category)) return 1
+  const baseUnit = normalizeInventoryBaseUnit(fields.base_unit ?? item.base_unit ?? item.unit ?? 'g')
+  const displayKey = getInventoryUnitKey(displayUnit || baseUnit)
+  const baseKey = getInventoryUnitKey(baseUnit)
+  if (displayKey === baseKey) return 1
+  if (baseKey === 'g' && displayKey === 'kg') return 1000
+  if (baseKey === 'ml' && displayKey === 'l') return 1000
+  const purchaseUnit = fields.purchase_unit ?? item.purchase_unit
+  const purchaseSize = safeNum(fields.purchase_unit_size ?? item.purchase_unit_size, 0)
+  if (purchaseUnit && getInventoryUnitKey(purchaseUnit) === displayKey && purchaseSize > 0) return purchaseSize
+  return 0
+ }
+ const getDefaultInventoryStockDisplayUnit = (item = {}, fields = {}) => {
+  const explicit = fields.stock_display_unit ?? item.stock_display_unit
+  if (explicit) return explicit
+  const category = fields.category ?? item.category
+  if (!isRawMaterialCategoryName(category)) return fields.unit ?? item.unit ?? 'pcs'
+  const baseUnit = normalizeInventoryBaseUnit(fields.base_unit ?? item.base_unit ?? item.unit ?? 'g')
+  const stockQty = safeNum(fields.current_stock ?? item.current_stock, 0)
+  if (baseUnit === 'g') return Math.abs(stockQty) >= 1000 ? 'kg' : 'g'
+  if (baseUnit === 'mL') return Math.abs(stockQty) >= 1000 ? 'L' : 'mL'
+  return baseUnit
+ }
+ const convertInventoryBaseToDisplay = (item = {}, baseQuantity = 0, displayUnit = '', fields = {}) => {
+  const factor = getInventoryStockDisplayFactor(item, displayUnit, fields)
+  if (!(factor > 0)) return safeNum(baseQuantity, 0)
+  return Math.round(((safeNum(baseQuantity,0) / factor) + Number.EPSILON) * 1000000) / 1000000
+ }
+ const convertInventoryDisplayToBase = (item = {}, displayQuantity = 0, displayUnit = '', fields = {}) => {
+  const factor = getInventoryStockDisplayFactor(item, displayUnit, fields)
+  if (!(factor > 0)) return safeNum(displayQuantity, 0)
+  return Math.round(((safeNum(displayQuantity,0) * factor) + Number.EPSILON) * 1000000) / 1000000
+ }
+ const getRawMaterialBaseUnit = (item = {}) => normalizeInventoryBaseUnit(item.base_unit || item.unit || 'g')
+ const getFriendlyRawStockInfo = (item = {}, qtyOverride = null) => {
+  const qty = safeNum(qtyOverride ?? item.current_stock, 0)
+  const baseUnit = getRawMaterialBaseUnit(item)
+  const purchaseUnit = String(item.purchase_unit || '').trim()
+  const purchaseSize = safeNum(item.purchase_unit_size, 0)
+  const purchaseCost = safeNum(item.purchase_unit_cost, 0)
+  let primary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${baseUnit}`
+  let secondary = ''
+  const preferredDisplayUnit = getDefaultInventoryStockDisplayUnit(item, { current_stock:qty })
+  const preferredFactor = getInventoryStockDisplayFactor(item, preferredDisplayUnit)
+  if (preferredFactor > 0) {
+   const displayQty = convertInventoryBaseToDisplay(item, qty, preferredDisplayUnit)
+   primary = `${displayQty.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${formatInventoryStockUnit(preferredDisplayUnit, displayQty)}`
+   secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${baseUnit}`
+  } else if (baseUnit === 'g') {
+   primary = qty >= 1000 ? `${(qty / 1000).toLocaleString('en-PH', { maximumFractionDigits:2 })} kg` : `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} g`
+   secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} g`
+  } else if (baseUnit === 'mL') {
+   primary = qty >= 1000 ? `${(qty / 1000).toLocaleString('en-PH', { maximumFractionDigits:2 })} L` : `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} mL`
+   secondary = `${qty.toLocaleString('en-PH', { maximumFractionDigits:2 })} mL`
+  }
+  if (purchaseUnit && purchaseSize > 0 && getInventoryUnitKey(preferredDisplayUnit) !== getInventoryUnitKey(purchaseUnit)) {
+   const eq = qty / purchaseSize
+   const eqText = `${eq.toLocaleString('en-PH', { maximumFractionDigits:2 })} ${formatInventoryStockUnit(purchaseUnit, eq)}`
+   secondary = secondary ? `${secondary} | ${eqText}` : eqText
+  }
+  const costPerBase = safeNum(item.cost_per_unit, 0)
+  const costPerKg = baseUnit === 'g' ? costPerBase * 1000 : 0
+  const costPerL = baseUnit === 'mL' ? costPerBase * 1000 : 0
+  const purchaseCostText = purchaseUnit && purchaseCost > 0 ? `${php(purchaseCost)}/${purchaseUnit}` : ''
+  return { qty, baseUnit, purchaseUnit, purchaseSize, purchaseCost, primary, secondary, costPerBase, costPerKg, costPerL, purchaseCostText }
+ }
+ const computeRawMaterialAddSetup = () => {
+  const purchaseSize = safeNum(newItemPurchaseUnitSize, 0)
+  const purchaseCost = safeNum(newItemPurchaseUnitCost, 0)
+  const stockPurchaseQty = safeNum(newItemStockPurchaseQty, 0)
+  const minPurchaseQty = safeNum(newItemMinPurchaseQty, 0)
+  const currentStock = purchaseSize > 0 && stockPurchaseQty > 0 ? moneyRound(purchaseSize * stockPurchaseQty) : safeNum(newItemCurrentStock, 0)
+  const minStock = purchaseSize > 0 && minPurchaseQty > 0 ? moneyRound(purchaseSize * minPurchaseQty) : safeNum(newItemMinStock, 0)
+  const costPerUnit = purchaseSize > 0 && purchaseCost > 0 ? Math.round(((purchaseCost / purchaseSize) + Number.EPSILON) * 1000000) / 1000000 : safeNum(newItemCostPerUnit, 0)
+  return { purchaseSize, purchaseCost, stockPurchaseQty, minPurchaseQty, currentStock, minStock, costPerUnit }
+ }
+ const stripOptionalPurchaseColumns = (payload = {}) => {
+  const clean = { ...payload }
+  ;['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost','stock_display_unit'].forEach(k => delete clean[k])
+  return clean
+ }
+ const isMissingPurchaseColumnError = (error) => {
+  const msg = String(error?.message || error || '').toLowerCase()
+  return ['base_unit','purchase_unit','purchase_unit_size','purchase_unit_cost','stock_display_unit'].some(col => msg.includes(col))
+ }
+ async function insertInventoryItemSafe(payload) {
+  const first = await supabase.from('inventory_items').insert(payload)
+  if (first.error && isMissingPurchaseColumnError(first.error)) {
+   showToast('Professional purchase-unit columns are not installed yet. Item was saved using base inventory fields only.', 'orange')
+   return await supabase.from('inventory_items').insert(stripOptionalPurchaseColumns(payload))
+  }
+  return first
+ }
+ async function updateInventoryItemSafe(itemId, payload) {
+  const first = await supabase.from('inventory_items').update(payload).eq('id', itemId)
+  if (first.error && isMissingPurchaseColumnError(first.error)) {
+   showToast('Professional purchase-unit columns are not installed yet. Basic inventory fields were updated only.', 'orange')
+   return await supabase.from('inventory_items').update(stripOptionalPurchaseColumns(payload)).eq('id', itemId)
+  }
+  return first
+ }
  // Suppliers
  const [suppliers, setSuppliers] = useState([])
  const [suppliersLoading, setSuppliersLoading] = useState(false)
@@ -2454,6 +5966,7 @@ export default function App() {
  const [payrollResults, setPayrollResults] = useState([])
  const [payrollSummary, setPayrollSummary] = useState(null)
  const [payrollComputing, setPayrollComputing] = useState(false)
+ const [payslipSmsSending, setPayslipSmsSending] = useState(false)
  const [payrollHistory, setPayrollHistory] = useState([])
  const [historyLoading, setHistoryLoading] = useState(false)
  const [selectedHistoryPeriod, setSelectedHistoryPeriod] = useState(null)
@@ -2471,6 +5984,9 @@ export default function App() {
  const [dtrCutoffKey, setDtrCutoffKey] = useState(getCurrentDTRCutoffKey(today))
  const [dtrRecords, setDtrRecords] = useState([])
  const [dtrStats, setDtrStats] = useState(null)
+ const [dtrHighlightDates, setDtrHighlightDates] = useState([])
+ const [dtrHighlightContext, setDtrHighlightContext] = useState(null)
+ const [dtrBreakTrace, setDtrBreakTrace] = useState(null)
  const [announcements, setAnnouncements] = useState([])
  const [newAnnouncementTitle, setNewAnnouncementTitle] = useState('')
  const [newAnnouncementContent, setNewAnnouncementContent] = useState('')
@@ -2492,7 +6008,7 @@ export default function App() {
  const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
 
  // Security & Owner Control Lockdown v1 helpers 
- const ADMIN_ROLE_VALUES = ['owner','manager','hr','payroll','supervisor','asst_supervisor']
+ const ADMIN_ROLE_VALUES = ['owner','manager','admin','pos_admin','hr','payroll','supervisor','asst_supervisor']
  const normalizedAdminRole = String(adminRole || '').trim().toLowerCase()
  const isOwnerRole = normalizedAdminRole === 'owner'
  const isPayrollRole = normalizedAdminRole === 'payroll'
@@ -2569,9 +6085,13 @@ export default function App() {
  }, [])
 
  useEffect(() => {
+ // Keep SAGS POS completely steady while the owner is working in it.
+ // The old 30-second global tick re-rendered the whole admin app and could
+ // feel like the POS was refreshing, causing the screen to jump while typing.
+ if (activeTab === 'posMonitor') return undefined
  const timer = window.setInterval(() => setOrderCutoffTick(Date.now()), 30 * 1000)
  return () => window.clearInterval(timer)
- }, [])
+ }, [activeTab])
 
  useEffect(() => {
  const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
@@ -2623,7 +6143,7 @@ export default function App() {
 
  loadTodayLog(activeEmployee); loadTodaySchedule(activeEmployee)
  loadMyPayslips(activeEmployee); loadMyCashAdvances(activeEmployee)
- loadMyAttendanceHistory(activeEmployee); loadMyLeaveBalance(activeEmployee)
+ loadMyAttendanceHistory(activeEmployee); loadMyLeaveBalance(activeEmployee); loadMedicalCertificateLock(activeEmployee)
  checkAnnouncements(activeEmployee); loadMyCharges(activeEmployee); loadMySops(activeEmployee)
  }
 
@@ -2658,10 +6178,8 @@ export default function App() {
  if (todayBreaks.length > 0) {
  const openBreak = todayBreaks.find(b =>!b.break_in)
  if (openBreak) {
- // Calculate seconds already elapsed
- const breakStartMins = minutesFromTime(openBreak.break_out)
- const nowMins = minutesFromTime(nowTime())
- const elapsed = Math.max(0, (nowMins - breakStartMins) * 60)
+ // Calculate exact elapsed seconds, including breaks that cross midnight.
+ const elapsed = diffSecondsAcrossMidnight(openBreak.break_out, nowTime())
  setBreakTimerSeconds(elapsed)
  // Start ticking
  const interval = setInterval(() => {
@@ -2677,6 +6195,22 @@ export default function App() {
  setBreakTimerSeconds(0)
  }
  }, [todayBreaks])
+
+ // One-time live warnings while the employee is on break.
+ useEffect(() => {
+  const openBreak = todayBreaks.find(row => !row?.break_in)
+  if (!openBreak) {
+   breakWarningStageRef.current = 0
+   return
+  }
+  if (breakTimerSeconds >= ALLOWED_BREAK_MINUTES * 60 && breakWarningStageRef.current < 2) {
+   breakWarningStageRef.current = 2
+   showToast('Break limit exceeded. Please BREAK IN now. Excess minutes will be recorded as overbreak.', 'red')
+  } else if (breakTimerSeconds >= 55 * 60 && breakWarningStageRef.current < 1) {
+   breakWarningStageRef.current = 1
+   showToast('Break warning: 5 minutes remaining before overbreak.')
+  }
+ }, [breakTimerSeconds, todayBreaks])
 
  // Offline Queue 
  async function syncOfflineQueue() {
@@ -2717,31 +6251,148 @@ export default function App() {
  setTimeout(() => setToast(null), 3000)
  }
 
+ async function checkForAppUpdate(manual = false) {
+  if (typeof window === 'undefined' || typeof fetch === 'undefined') return
+  if (manual) setAppUpdateChecking(true)
+  try {
+   const currentSignature = appUpdateCurrentSignatureRef.current || getLoadedBundleSignature()
+   if (!appUpdateCurrentSignatureRef.current) appUpdateCurrentSignatureRef.current = currentSignature
+   const url = `${window.location.origin}${window.location.pathname}?app_version_check=${Date.now()}`
+   const res = await fetch(url, { cache:'no-store', headers:{ 'Cache-Control':'no-cache' } })
+   if (!res.ok) throw new Error(`Version check failed: ${res.status}`)
+   const html = await res.text()
+   const latestSignature = getIndexBundleSignature(html)
+   if (latestSignature && currentSignature && latestSignature !== currentSignature) {
+    setAppUpdateInfo({ available:true, latestSignature, currentSignature, checkedAt:new Date().toISOString() })
+    return true
+   }
+   if (manual) showToast('App is already updated.', 'green')
+   return false
+  } catch (err) {
+   if (manual) showToast('Could not check app update. Please try again.', 'red')
+   console.warn('App update check failed:', err)
+   return false
+  } finally {
+   if (manual) setAppUpdateChecking(false)
+  }
+ }
+
+ async function reloadToLatestApp() {
+  try {
+   if ('serviceWorker' in navigator) {
+    const registrations = await navigator.serviceWorker.getRegistrations()
+    await Promise.all(registrations.map(reg => reg.update().catch(()=>null)))
+   }
+  } catch (err) {
+   console.warn('Service worker update request failed:', err)
+  }
+  try {
+   if ('caches' in window) {
+    const keys = await caches.keys()
+    await Promise.all(keys.filter(key => /roma|workbox|vite|precache|runtime/i.test(key)).map(key => caches.delete(key).catch(()=>false)))
+   }
+  } catch (err) {
+   console.warn('Cache cleanup failed:', err)
+  }
+  const url = new URL(window.location.href)
+  url.searchParams.set('app_updated', Date.now().toString())
+  window.location.replace(url.toString())
+ }
+
+ function renderAppUpdateBanner() {
+  if (!appUpdateInfo.available) return null
+  return (
+   <div style={{ position:'fixed', left:'50%', bottom:isMobile?'12px':'18px', transform:'translateX(-50%)', zIndex:99997, width:isMobile?'calc(100% - 24px)':'min(620px, calc(100% - 40px))', background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'16px', boxShadow:'0 12px 40px rgba(0,0,0,0.22)', padding:isMobile?'12px':'14px 16px', display:'flex', alignItems:isMobile?'stretch':'center', justifyContent:'space-between', gap:'12px', flexDirection:isMobile?'column':'row' }}>
+    <div style={{ minWidth:0 }}>
+     <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontWeight:'900', fontSize:'14px' }}>New update available</p>
+     <p style={{ margin:0, color:'#555', fontSize:'12px', lineHeight:1.45, fontWeight:'700' }}>Tap refresh to load the latest Roma’s Donuts system version before submitting orders or printing invoices.</p>
+    </div>
+    <div style={{ display:'flex', gap:'8px', flexShrink:0 }}>
+     <button style={{...btnGray, width:'auto', padding:'9px 12px', marginTop:0, fontSize:'12px' }} disabled={appUpdateChecking} onClick={()=>checkForAppUpdate(true)}>{appUpdateChecking?'Checking...':'Check'}</button>
+     <button style={{...btnRed, width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={reloadToLatestApp}>Refresh Now</button>
+    </div>
+   </div>
+  )
+ }
+
+ useEffect(() => {
+  if (typeof window === 'undefined') return
+  appUpdateCurrentSignatureRef.current = getLoadedBundleSignature()
+  const timer = window.setTimeout(() => checkForAppUpdate(false), 8000)
+  const interval = window.setInterval(() => checkForAppUpdate(false), APP_UPDATE_CHECK_INTERVAL_MS)
+  const onVisible = () => { if (!document.hidden) checkForAppUpdate(false) }
+  window.addEventListener('focus', onVisible)
+  document.addEventListener('visibilitychange', onVisible)
+  return () => {
+   window.clearTimeout(timer)
+   window.clearInterval(interval)
+   window.removeEventListener('focus', onVisible)
+   document.removeEventListener('visibilitychange', onVisible)
+  }
+ }, [])
+
  // Camera 
  async function startCamera() {
+ const strictTimeIn = cameraMode === 'timein' && requiresStrictCameraTimeIn(employee)
  try {
- const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user' }, audio:false })
- setCameraStream(stream)
- if (videoRef.current) videoRef.current.srcObject = stream
- } catch { alert('Camera access denied.'); setCameraMode(null) }
+  if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser does not support live camera access.')
+  let stream
+  if (strictTimeIn) {
+   try {
+    stream = await navigator.mediaDevices.getUserMedia({
+     video:{ facingMode:{ ideal:'user' }, width:{ ideal:1280 }, height:{ ideal:720 } },
+     audio:false
+    })
+   } catch(firstError) {
+    if (['NotAllowedError','SecurityError'].includes(firstError?.name)) throw firstError
+    stream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false })
+   }
+  } else {
+   stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user' }, audio:false })
+  }
+  setCameraStream(stream)
+  if (videoRef.current) {
+   videoRef.current.srcObject = stream
+   if (strictTimeIn) await videoRef.current.play().catch(()=>{})
+  }
+ } catch(error) {
+  console.error('Camera start failed:', error)
+  if (strictTimeIn) {
+   const denied = ['NotAllowedError','SecurityError'].includes(error?.name)
+   alert(denied
+    ? 'Camera permission is blocked. Please allow Camera permission for this website, then tap Time In again.'
+    : `Unable to open the camera. ${error?.message || 'Please check the device camera and browser permissions.'}`)
+  } else {
+   alert('Camera access denied.')
+  }
+  setCameraMode(null)
+ }
  }
  function stopCamera() {
  if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); setCameraStream(null) }
  }
  function capturePhoto() {
  const cv = canvasRef.current, vd = videoRef.current
- if (!cv ||!vd) return
+ const strictTimeIn = cameraMode === 'timein' && requiresStrictCameraTimeIn(employee)
+ if (!cv ||!vd || (strictTimeIn && (!vd.videoWidth || !vd.videoHeight))) {
+  if (strictTimeIn) alert('Camera is still loading. Please wait a moment and try again.')
+  return
+ }
  cv.width = vd.videoWidth; cv.height = vd.videoHeight
  cv.getContext('2d').drawImage(vd, 0, 0)
- setCapturedPhoto(cv.toDataURL('image/jpeg', 0.7)); stopCamera()
+ const photoData = cv.toDataURL('image/jpeg', strictTimeIn? 0.78: 0.7)
+ setCapturedPhoto(photoData); stopCamera()
+ if (strictTimeIn) void confirmTimeIn(photoData)
  }
- function retakePhoto() { setCapturedPhoto(null); startCamera() }
+ function retakePhoto() { if (loading) return; setCapturedPhoto(null); startCamera() }
  async function uploadSelfie(dataUrl, fileName) {
  const b64=dataUrl.split(',')[1], bs=atob(b64), ab=new ArrayBuffer(bs.length), ia=new Uint8Array(ab)
  for (let i=0;i<bs.length;i++) ia[i]=bs.charCodeAt(i)
  const blob = new Blob([ab], { type:'image/jpeg' })
- await supabase.storage.from('selfies').upload(fileName, blob, { upsert:true })
+ const { error:uploadError } = await supabase.storage.from('selfies').upload(fileName, blob, { upsert:true, contentType:'image/jpeg' })
+ if (uploadError) throw uploadError
  const { data } = supabase.storage.from('selfies').getPublicUrl(fileName)
+ if (!data?.publicUrl) throw new Error('Supabase did not return a selfie photo URL.')
  return data.publicUrl
  }
  async function uploadProfilePhoto(file, empId) {
@@ -3064,6 +6715,7 @@ export default function App() {
  setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
  setTodaySchedule(null); setMyPayslips([]); setCameraMode(null)
  setCapturedPhoto(null); stopCamera(); setPendingAnnouncement(null); setShowAnnouncementPopup(false)
+ setMedicalCertLock({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }); setMedicalCertUploading(false)
  setShowMySops(false); setMySopDocuments([]); setMySopAckRecords([]); setViewingMySop(null)
  }
  function closeAllPanels() {
@@ -3242,9 +6894,12 @@ export default function App() {
       'td:first-child{width:32%;font-weight:bold;background:#f7f7f7;}',
       '.storage-box{border:1px solid #111;padding:10px;margin-top:0;}',
       '.note{font-size:9pt;color:#555;margin-top:8px;}',
-      '.signature-table{margin-top:42px;}',
-      '.signature-table td{border:none;text-align:center;padding-top:34px;font-size:9pt;}',
-      '.sig-line{border-top:1px solid #111;padding-top:5px;}',
+      '.signature-table{width:100%;border-collapse:collapse;margin-top:42px;table-layout:fixed;}',
+      '.signature-table td{border:none;vertical-align:top;font-size:9pt;padding:0 10px;}',
+      '.signature-table .sig-gap{width:10%;padding:0;}',
+      '.sig-title{font-weight:bold;text-align:left;text-transform:uppercase;margin-bottom:32px;font-size:9pt;}',
+      '.sig-line{border-top:1px solid #111;text-align:center;padding-top:5px;}',
+      '.sig-date{margin-top:16px;text-align:center;}',
       '.watermark{font-size:8pt;color:#777;margin-top:22px;text-align:center;}',
       '</style>',
       '</head>',
@@ -3277,9 +6932,9 @@ export default function App() {
       '<p class="note">This Word file is generated from the official contract record stored in the Roma\'s Donuts Payroll &amp; Attendance System.</p>',
       '<table class="signature-table">',
       '<tr>',
-      '<td><div class="sig-line">Employee Signature over Printed Name</div></td>',
-      '<td><div class="sig-line">HR / Authorized Signatory</div></td>',
-      '<td><div class="sig-line">Date</div></td>',
+      '<td><div class="sig-title">EMPLOYEE:</div><div class="sig-line">Employee Signature over Printed Name</div><div class="sig-date">Date: ________________________</div></td>',
+      '<td class="sig-gap">&nbsp;</td>',
+      '<td><div class="sig-title">COMPANY REPRESENTATIVE:</div><div class="sig-line">Authorized Company Representative</div><div class="sig-date">Date: ________________________</div></td>',
       '</tr>',
       '</table>',
       '<div class="watermark">Generated on ' + escapeHtml(generatedDate) + '.</div>',
@@ -3495,10 +7150,13 @@ export default function App() {
  '.info{margin:10px 0 16px;padding:10px 12px;border-left:4px solid #ca1b1b;background:#fff8dc;}',
  '.info p{margin:4px 0;text-align:left;}',
  '.note{border:1px solid #f5c518;background:#fff8dc;padding:9px 11px;margin:14px 0;font-size:10pt;}',
- '.signature-area{margin-top:42px;}',
- '.sig-row{display:block;margin-top:28px;}',
- '.sig-line{border-top:1px solid #111;width:44%;display:inline-block;text-align:center;padding-top:5px;font-size:9pt;margin-right:8%;vertical-align:top;}',
- '.sig-line:nth-child(2){margin-right:0;}',
+ '.signature-area{margin-top:42px;page-break-inside:avoid;}',
+ '.signature-table{width:100%;border-collapse:collapse;margin-top:30px;table-layout:fixed;}',
+ '.signature-table td{border:none;vertical-align:top;font-size:9pt;padding:0 10px;}',
+ '.signature-table .sig-gap{width:10%;padding:0;}',
+ '.sig-title{font-weight:bold;text-align:left;text-transform:uppercase;margin-bottom:32px;font-size:9pt;}',
+ '.sig-line{border-top:1px solid #111;text-align:center;padding-top:5px;}',
+ '.sig-date{margin-top:16px;text-align:center;}',
  '.footer{text-align:center;color:#777;font-size:8pt;margin-top:24px;border-top:1px solid #ddd;padding-top:8px;}',
  '</style>',
  '</head>',
@@ -3531,10 +7189,14 @@ export default function App() {
  '<h3>6. Discipline, Separation, and Acknowledgment</h3>',
  '<p>Violation of company policy, misconduct, negligence, dishonesty, abandonment, repeated attendance issues, unsafe practices, insubordination, theft, fraud, or failure to meet reasonable work standards may result in disciplinary action, up to termination, subject to due process and applicable labor laws.</p>',
  '<div class="note"><strong>Legal/HR Review Note:</strong> This is a system-generated company template. For official signing and enforcement, management should ensure the contract matches current Philippine labor requirements and company policy.</div>',
- '<p>By signing below, the Employee confirms that the terms have been explained, read, understood, and accepted.</p>',
+ '<p>By signing below, the Employee and the Company Representative confirm that the terms have been explained, read, understood, and accepted.</p>',
+ '<p>IN WITNESS WHEREOF, the parties have hereunto signed this Employment Contract on the date stated below.</p>',
  '<div class="signature-area">',
- '<div class="sig-row"><div class="sig-line">Employee Signature over Printed Name / Date</div><div class="sig-line">Authorized Company Representative / Date</div></div>',
- '<div class="sig-row"><div class="sig-line">Witness / HR Representative / Date</div><div class="sig-line">Government ID Presented / ID Number</div></div>',
+ '<table class="signature-table"><tr>',
+ '<td><div class="sig-title">EMPLOYEE:</div><div class="sig-line">Employee Signature over Printed Name</div><div class="sig-date">Date: ________________________</div></td>',
+ '<td class="sig-gap">&nbsp;</td>',
+ '<td><div class="sig-title">COMPANY REPRESENTATIVE:</div><div class="sig-line">Authorized Company Representative</div><div class="sig-date">Date: ________________________</div></td>',
+ '</tr></table>',
  '</div>',
  '<div class="footer">Roma\'s Donuts | ' + esc(title) + ' | Generated ' + esc(generatedDate) + '</div>',
  '</div></body></html>'
@@ -4232,31 +7894,45 @@ Cancel = create batch record only for existing stock.`)
  if (!newItemCategory) { showToast(' Please select a category.','red'); return }
 
  const isNewSnackDrink = isSnackDrinkCategoryName(newItemCategory)
+ const isNewRawMaterial = isRawMaterialCategoryName(newItemCategory)
  const enteredBuyingPrice = safeNum(newItemBuyingPrice, 0)
+ const rawSetup = computeRawMaterialAddSetup()
 
  // For Snacks/Drinks: existing/old price is SELLING PRICE.
  // Buying price is a separate field. Only compute selling price when buying price is entered.
- const itemBuyingPrice = isNewSnackDrink ? enteredBuyingPrice : 0
- const itemCostPerUnit = isNewSnackDrink
-  ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
-  : safeNum(newItemCostPerUnit, 0)
+ const itemCostPerUnit = isNewRawMaterial
+  ? rawSetup.costPerUnit
+  : (isNewSnackDrink
+   ? (enteredBuyingPrice > 0 ? enteredBuyingPrice : safeNum(newItemCostPerUnit, 0))
+   : safeNum(newItemCostPerUnit, 0))
  const itemSellingPrice = isNewSnackDrink
   ? (enteredBuyingPrice > 0 ? snackDrinkAutoSellingPrice(enteredBuyingPrice) : safeNum(newItemSellingPrice, 0))
   : safeNum(newItemSellingPrice, 0)
- setAddItemLoading(true)
- try {
- const { error } = await supabase.from('inventory_items').insert({
+ const itemUnit = isNewRawMaterial ? 'g' : (newItemUnit.trim() || 'kg')
+ const itemCurrentStock = isNewRawMaterial ? rawSetup.currentStock : Number(newItemCurrentStock || 0)
+ const itemMinStock = isNewRawMaterial ? rawSetup.minStock : Number(newItemMinStock || 0)
+ const itemPayload = {
  name: newItemName.trim(),
  category: newItemCategory,
- unit: newItemUnit.trim()||'kg',
- current_stock: Number(newItemCurrentStock||0),
- min_stock: Number(newItemMinStock||0),
- cost_per_unit: Number(newItemCostPerUnit||0),
- selling_price: Number(newItemSellingPrice||0),
+ unit: itemUnit,
+ current_stock: itemCurrentStock,
+ min_stock: itemMinStock,
+ cost_per_unit: Number(itemCostPerUnit || 0),
+ selling_price: Number(itemSellingPrice || 0),
  expiry_date: newItemExpiryDate || null,
  supplier_id: newItemSupplierId||null,
- is_active: true
- })
+ is_active: true,
+ ...(isNewRawMaterial ? {
+  base_unit:'g',
+  stock_display_unit:Math.abs(rawSetup.currentStock) >= 1000 ? 'kg' : 'g',
+  purchase_unit:String(newItemPurchaseUnit || '').trim() || null,
+  purchase_unit_size:rawSetup.purchaseSize || null,
+  purchase_unit_cost:rawSetup.purchaseCost || null
+ } : {})
+ }
+ setAddItemLoading(true)
+ try {
+ const { error } = await insertInventoryItemSafe(itemPayload)
  if (error) { showToast(' Failed: '+error.message,'red'); return }
  const addedName = newItemName.trim()
  const addedCategory = newItemCategory
@@ -4272,8 +7948,13 @@ Cancel = create batch record only for existing stock.`)
  setNewItemSellingPrice('')
  setNewItemExpiryDate('')
  setNewItemSupplierId('')
+ setNewItemPurchaseUnit('sack')
+ setNewItemPurchaseUnitSize('')
+ setNewItemPurchaseUnitCost('')
+ setNewItemStockPurchaseQty('')
+ setNewItemMinPurchaseQty('')
  setNewItemCategory('Raw Ingredients')
- setNewItemUnit('kg')
+ setNewItemUnit('g')
  // 3. Close form item is already in the list below
  setShowAddItem(false)
  // 4. Show success make sure category filter shows the new item
@@ -4297,6 +7978,7 @@ Cancel = create batch record only for existing stock.`)
   const f = editItemFields
   const updatedCategory = f.category ?? item.category
   const isEditingSnackDrink = isSnackDrinkCategoryName(updatedCategory)
+  const isEditingRawMaterial = isRawMaterialCategoryName(updatedCategory)
 
   const supplierPrice = isEditingSnackDrink
    ? safeNum(f.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item), 0)
@@ -4307,9 +7989,25 @@ Cancel = create batch record only for existing stock.`)
    return
   }
 
+  const rawPurchaseSize = safeNum(f.purchase_unit_size ?? item.purchase_unit_size, 0)
+  const rawPurchaseCost = safeNum(f.purchase_unit_cost ?? item.purchase_unit_cost, 0)
+  const selectedStockDisplayUnit = f.stock_display_unit ?? getDefaultInventoryStockDisplayUnit(item, f)
+  const stockDisplayFactor = getInventoryStockDisplayFactor(item, selectedStockDisplayUnit, f)
+
+  if (isEditingRawMaterial && !(stockDisplayFactor > 0)) {
+   showToast(`Cannot convert stock to ${selectedStockDisplayUnit}. Set the matching purchase unit and its size in grams first.`, 'red')
+   return
+  }
+
+  const finalCurrentStock = f.stock_display_quantity !== undefined
+   ? convertInventoryDisplayToBase(item, f.stock_display_quantity, selectedStockDisplayUnit, f)
+   : Number(f.current_stock ?? item.current_stock ?? 0)
+
   const finalCostPerUnit = isEditingSnackDrink
    ? supplierPrice
-   : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0)
+   : (isEditingRawMaterial && rawPurchaseSize > 0 && rawPurchaseCost > 0
+    ? Math.round(((rawPurchaseCost / rawPurchaseSize) + Number.EPSILON) * 1000000) / 1000000
+    : safeNum(f.cost_per_unit ?? item.cost_per_unit, 0))
 
   const finalSellingPrice = isEditingSnackDrink
    ? snackDrinkAutoSellingPrice(supplierPrice)
@@ -4318,13 +8016,20 @@ Cancel = create batch record only for existing stock.`)
   const payload = {
    name: f.name || item.name,
    category: f.category || item.category,
-   unit: f.unit || item.unit,
-   current_stock: Number(f.current_stock ?? item.current_stock ?? 0),
+   unit: isEditingRawMaterial ? 'g' : (selectedStockDisplayUnit || f.unit || item.unit),
+   stock_display_unit:selectedStockDisplayUnit || null,
+   current_stock: finalCurrentStock,
    min_stock: Number(f.min_stock ?? item.min_stock),
    cost_per_unit: finalCostPerUnit,
    selling_price: finalSellingPrice,
    expiry_date: f.expiry_date !== undefined ? (f.expiry_date || null) : (item.expiry_date || null),
-   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null)
+   supplier_id: f.supplier_id !== undefined ? (f.supplier_id || null) : (item.supplier_id || null),
+   ...(isEditingRawMaterial ? {
+    base_unit:'g',
+    purchase_unit:String(f.purchase_unit ?? item.purchase_unit ?? '').trim() || null,
+    purchase_unit_size:rawPurchaseSize || null,
+    purchase_unit_cost:rawPurchaseCost || null
+   } : {})
   }
 
   if (isEditingSnackDrink) {
@@ -4332,7 +8037,7 @@ Cancel = create batch record only for existing stock.`)
    payload.markup_percent = 30
   }
 
-  const { error } = await supabase.from('inventory_items').update(payload).eq('id', item.id)
+  const { error } = await updateInventoryItemSafe(item.id, payload)
 
   if (error) { showToast(' Failed: ' + error.message, 'red'); return }
 
@@ -4444,7 +8149,7 @@ Cancel = create batch record only for existing stock.`)
  ${byCategory.map(g=>`
  <div class="cat-title"> ${g.cat}</div>
  <table>
- <tr><th>Item Name</th><th>Unit</th><th>Current Stock</th><th>Min Stock</th><th>Cost/Unit</th><th>Total Value</th><th>Status</th></tr>
+ <tr><th>Item Name</th><th>Base</th><th>Current Stock</th><th>Min Stock</th><th>Cost/Unit</th><th>Total Value</th><th>Status</th></tr>
  ${g.items.map(i=>{
  const isLow = Number(i.current_stock||0)<=Number(i.min_stock||0)&&Number(i.min_stock||0)>0
  return `<tr>
@@ -4650,7 +8355,7 @@ Cancel = create batch record only for existing stock.`)
  ${Object.values(groupedBySupplier).map(group=>`
  <div class="supplier-title">${group.supplierName} - ${group.items.length} item(s)</div>
  <table>
- <thead><tr><th>Item</th><th>Category</th><th class="center">Unit</th><th class="right">On Hand</th><th class="right">Min</th><th class="right">Suggested Order</th><th class="right">Cost/Unit</th></tr></thead>
+ <thead><tr><th>Item</th><th>Category</th><th class="center">Unit</th><th class="right">Stock</th><th class="right">Min</th><th class="right">Suggested Order</th><th class="right">Cost/Unit</th></tr></thead>
  <tbody>
  ${group.items.map(i=>`
  <tr>
@@ -5594,6 +9299,43 @@ Cancel = create batch record only for existing stock.`)
  if (error) { showToast(' Failed: '+error.message,'red'); return }
  showToast(' Variant updated!'); setEditingVariantId(null); loadDonutVariants()
  }
+
+ function isPowderBaseTableMissingError(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('powder_base_recipe') && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('does not exist') || msg.includes('relation') || msg.includes('pgrst205'))
+ }
+ function getPowderBaseLocalBackupRows() {
+ if (typeof window === 'undefined') return []
+ try {
+ const rows = JSON.parse(window.localStorage.getItem('romas_powder_base_recipe_backup') || '[]')
+ return Array.isArray(rows)? rows.map((r, i) => ({
+  ...r,
+  id: r.id || `local-powder-${i}`,
+  quantity_per_batch: productionRecipeQuantityGrams(r),
+  unit: 'g',
+  is_local_powder_backup: true
+ })) : []
+ } catch (err) {
+ console.warn('Could not read local powder base backup:', err)
+ return []
+ }
+ }
+ function savePowderBaseLocalBackupRows(rows = []) {
+ if (typeof window === 'undefined') return
+ try {
+ const cleaned = (rows || []).map((r, i) => ({
+  id: r.id || `local-powder-${Date.now()}-${i}`,
+  inventory_item_id: r.inventory_item_id || '',
+  item_name: String(r.item_name || '').trim(),
+  quantity_per_batch: productionRecipeQuantityGrams(r),
+  unit: 'g',
+  notes: r.notes || ''
+ }))
+ window.localStorage.setItem('romas_powder_base_recipe_backup', JSON.stringify(cleaned))
+ } catch (err) {
+ console.warn('Could not save local powder base backup:', err)
+ }
+ }
  async function loadRecipes() {
  try {
  const { data: base, error: baseErr } = await supabase.from('base_dough_recipe').select('*').order('created_at')
@@ -5604,6 +9346,26 @@ Cancel = create batch record only for existing stock.`)
  console.warn('Base dough recipe could not be loaded:', err)
  setBaseDoughIngredients([])
  setCostingLoadErrors(p => [...p.filter(x=>!x.includes('base_dough_recipe')), `base_dough_recipe: ${err.message || err}`])
+ }
+ try {
+ const { data: powder, error: powderErr } = await supabase.from('powder_base_recipe').select('*').order('created_at')
+ if (powderErr) throw powderErr
+ setPowderBaseIngredients(powder || [])
+ setCostingLoadErrors(p => p.filter(x=>!x.includes('powder_base_recipe')))
+ if ((powder || []).length > 0) savePowderBaseLocalBackupRows(powder || [])
+ } catch (err) {
+ console.warn('Powder base recipe could not be loaded:', err)
+ if (isPowderBaseTableMissingError(err) || isOptionalSupabaseObjectMissing(err)) {
+  const localRows = getPowderBaseLocalBackupRows()
+  setPowderBaseIngredients(localRows)
+  setCostingLoadErrors(p => [
+   ...p.filter(x=>!x.includes('powder_base_recipe')),
+   'powder_base_recipe table is missing in Supabase. Powder Base is using this browser backup temporarily; create the table in Supabase so costing is shared across all devices.'
+  ])
+ } else {
+  setPowderBaseIngredients([])
+  setCostingLoadErrors(p => [...p.filter(x=>!x.includes('powder_base_recipe')), `powder_base_recipe: ${err.message || err}`])
+ }
  }
  try {
  const { data: variant, error: variantErr } = await supabase.from('variant_recipes').select('*').order('variant_id')
@@ -5631,14 +9393,50 @@ Cancel = create batch record only for existing stock.`)
  const { error } = await supabase.from('base_dough_recipe').insert(validRows.map(r => ({
  inventory_item_id: r.inventory_item_id || null,
  item_name: r.item_name.trim(),
- quantity_per_batch: Number(r.quantity_per_batch),
- unit: r.unit || 'g',
+ quantity_per_batch: productionRecipeQuantityGrams(r),
+ unit: 'g',
  notes: r.notes || null
  })))
  if (error) throw error
  }
  showToast(' Base dough recipe saved!'); loadRecipes()
  } catch(err) { showToast(' Failed: '+err.message,'red') }
+ setSavingRecipe(false)
+ }
+ async function savePowderBase() {
+ setSavingRecipe(true)
+ const validRows = editingPowderBase.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
+ const payloadRows = validRows.map(r => ({
+ inventory_item_id: r.inventory_item_id || null,
+ item_name: r.item_name.trim(),
+ quantity_per_batch: productionRecipeQuantityGrams(r),
+ unit: 'g',
+ notes: r.notes || null
+ }))
+ try {
+ // Delete existing and re-insert. Powder base is a shared production recipe like base dough.
+ const { error: deleteError } = await supabase.from('powder_base_recipe').delete().neq('id', '00000000-0000-0000-0000-000000000000')
+ if (deleteError) throw deleteError
+ if (payloadRows.length > 0) {
+ const { error } = await supabase.from('powder_base_recipe').insert(payloadRows)
+ if (error) throw error
+ }
+ savePowderBaseLocalBackupRows(payloadRows)
+ showToast(' Powder base recipe saved!'); setSelectedRecipeVariantId(null); loadRecipes()
+ } catch(err) {
+  if (isPowderBaseTableMissingError(err) || isOptionalSupabaseObjectMissing(err)) {
+   savePowderBaseLocalBackupRows(payloadRows)
+   setPowderBaseIngredients(payloadRows.map((r, i) => ({...r, id:`local-powder-${i}`, is_local_powder_backup:true })))
+   setCostingLoadErrors(p => [
+    ...p.filter(x=>!x.includes('powder_base_recipe')),
+    'powder_base_recipe table is missing in Supabase. Powder Base was saved only as a browser backup. Create the Supabase table so this recipe is permanent and visible to other devices.'
+   ])
+   showToast(' Powder base saved as browser backup. Create the Supabase powder_base_recipe table for permanent shared saving.', 'orange')
+   setSelectedRecipeVariantId(null)
+  } else {
+   showToast(' Failed: '+err.message,'red')
+  }
+ }
  setSavingRecipe(false)
  }
  async function saveVariantRecipe(variantId) {
@@ -5651,8 +9449,8 @@ Cancel = create batch record only for existing stock.`)
  variant_id: variantId,
  inventory_item_id: r.inventory_item_id || null,
  item_name: r.item_name.trim(),
- quantity_per_batch: Number(r.quantity_per_batch),
- unit: r.unit || 'g',
+ quantity_per_batch: productionRecipeQuantityGrams(r),
+ unit: 'g',
  ingredient_type: r.ingredient_type || 'topping',
  notes: r.notes || null
  })))
@@ -5662,22 +9460,118 @@ Cancel = create batch record only for existing stock.`)
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setSavingRecipe(false)
  }
+ function normalizeProductionRecipeUnit(unit) {
+ const u = String(unit || 'g').trim().toLowerCase()
+ if (['kg','kgs','kilogram','kilograms'].includes(u)) return 'kg'
+ if (['g','gram','grams'].includes(u)) return 'g'
+ if (['l','liter','liters','litre','litres'].includes(u)) return 'l'
+ if (['ml','milliliter','milliliters','millilitre','millilitres'].includes(u)) return 'ml'
+ return u || 'g'
+ }
+ function productionRecipeQuantityGrams(row = {}) {
+ const qty = safeNum(row.quantity_per_batch, 0)
+ const unit = normalizeProductionRecipeUnit(row.unit)
+ if (unit === 'kg') return qty * 1000
+ if (unit === 'l') return qty * 1000
+ if (unit === 'ml') return qty
+ return qty
+ }
+ function productionRecipeCostPerGram(item = null) {
+ // Costing recipes are entered in grams. For raw materials, always prefer
+ // professional purchase-unit setup (ex: 1 bottle = 250g at ₱250) so the
+ // recipe uses true cost per gram instead of accidentally treating the full
+ // bottle/pack price as ₱/g.
+ const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+ const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+ if (purchaseSize > 0 && purchaseCost > 0) return purchaseCost / purchaseSize
+ const cost = safeNum(item?.cost_per_unit, 0)
+ const unit = normalizeProductionRecipeUnit(item?.base_unit || item?.unit)
+ if (unit === 'kg') return cost / 1000
+ if (unit === 'l') return cost / 1000
+ return cost
+ }
+ function isProductionRecipeCostSetupSuspicious(item = null) {
+ if (!item) return false
+ const unit = normalizeProductionRecipeUnit(item?.base_unit || item?.unit)
+ const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+ const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+ const cost = safeNum(item?.cost_per_unit, 0)
+ // If a raw ingredient is stored as grams but the ₱/g value is extremely high
+ // and no purchase-unit conversion exists, it is usually a package/bottle price
+ // accidentally saved as cost per gram. Do not let it silently inflate recipe cost.
+ return isRawMaterialItem(item) && ['g','ml'].includes(unit) && purchaseSize <= 0 && purchaseCost <= 0 && cost > 50
+ }
+ function productionRecipeCostWarning(item = null) {
+ if (!isProductionRecipeCostSetupSuspicious(item)) return ''
+ return 'Cost setup needs review: this item looks like a package/bottle price saved as cost per gram. Edit the inventory item and set purchase unit size + purchase unit cost.'
+ }
+ function productionRecipeStockQtyFromGrams(qtyGrams, item = null) {
+ const qty = safeNum(qtyGrams, 0)
+ const unit = normalizeProductionRecipeUnit(item?.unit)
+ if (unit === 'kg') return qty / 1000
+ if (unit === 'l') return qty / 1000
+ return qty
+ }
+ function productionRecipeInventoryOptionLabel(item = {}) {
+ if (isProductionRecipeCostSetupSuspicious(item)) return 'NEEDS COST SETUP - add purchase size + cost'
+ const costPerGram = productionRecipeCostPerGram(item)
+ const originalUnit = item?.unit || 'unit'
+ const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+ const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+ const originalCost = purchaseSize > 0 && purchaseCost > 0
+  ? `${php(purchaseCost)}/${item?.purchase_unit || 'purchase unit'} (${purchaseSize.toLocaleString('en-PH')}g)`
+  : `${php(item?.cost_per_unit || 0)}/${originalUnit}`
+ const gramCost = `${php(costPerGram)}/g`
+ return normalizeProductionRecipeUnit(originalUnit) === 'g' && !(purchaseSize > 0 && purchaseCost > 0) ? gramCost : `${gramCost} from ${originalCost}`
+ }
+ // Well-known sentinel IDs letting a per-variant ingredient row reference the
+ // computed Base Dough / Powder Base recipes themselves, instead of a raw
+ // inventory item. Valid-format UUIDs so the existing uuid-typed
+ // inventory_item_id column accepts them with zero schema changes, but
+ // deliberately non-random so they can never collide with a real item.
+ const BASE_DOUGH_RECIPE_LINK_ID = '00000000-0000-0000-0000-000000000001'
+ const POWDER_BASE_RECIPE_LINK_ID = '00000000-0000-0000-0000-000000000002'
+
+ function computeBaseDoughTotals() {
+ const totalGrams = (baseDoughIngredients || []).reduce((sum, r) => sum + productionRecipeQuantityGrams(r), 0)
+ const totalCost = (baseDoughIngredients || []).reduce((sum, r) => sum + productionRecipeIngredientCost(r), 0)
+ const costPerGram = totalGrams > 0 ? totalCost / totalGrams : 0
+ return { totalCost, totalGrams, costPerGram }
+ }
+ function computePowderBaseTotals() {
+ const totalGrams = (powderBaseIngredients || []).reduce((sum, r) => sum + productionRecipeQuantityGrams(r), 0)
+ const totalCost = (powderBaseIngredients || []).reduce((sum, r) => sum + productionRecipeIngredientCost(r), 0)
+ const costPerGram = totalGrams > 0 ? totalCost / totalGrams : 0
+ return { totalCost, totalGrams, costPerGram }
+ }
+ function productionRecipeIngredientCost(row = {}) {
+ // A row linking to the computed Base Dough or Powder Base recipe uses
+ // that recipe's own real cost-per-gram, not an inventory lookup — this is
+ // what lets a variant explicitly reference "200g of base dough" as an
+ // ingredient without needing a matching inventory_items row.
+ if (String(row.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID) {
+ return moneyRound(productionRecipeQuantityGrams(row) * computeBaseDoughTotals().costPerGram)
+ }
+ if (String(row.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID) {
+ return moneyRound(productionRecipeQuantityGrams(row) * computePowderBaseTotals().costPerGram)
+ }
+ const invItem = inventoryItems.find(i => String(i.id) === String(row.inventory_item_id))
+ if (!invItem) return 0
+ if (isProductionRecipeCostSetupSuspicious(invItem)) return 0
+ return moneyRound(productionRecipeQuantityGrams(row) * productionRecipeCostPerGram(invItem))
+ }
  function computeVariantCost(variantId, piecesPerBatch) {
  const safePiecesPerBatch = positiveNum(piecesPerBatch)
- // Base dough cost per piece (from inventory item cost_per_unit)
- const baseCostPerPiece = baseDoughIngredients.reduce((sum, ing) => {
- const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
- const costPerUnit = safeNum(invItem?.cost_per_unit)
- return sum + (safeNum(ing.quantity_per_batch) / safePiecesPerBatch) * costPerUnit
- }, 0)
- // Variant topping/filling cost per piece
  const variantIngs = variantRecipes[variantId] || []
- const variantCostPerPiece = variantIngs.reduce((sum, ing) => {
- const invItem = inventoryItems.find(i => i.id === ing.inventory_item_id)
- const costPerUnit = safeNum(invItem?.cost_per_unit)
- return sum + (safeNum(ing.quantity_per_batch) / safePiecesPerBatch) * costPerUnit
+ // Base Dough and Powder Base are no longer automatically included for
+ // every variant. They only count when explicitly added as an ingredient
+ // here (via the "Base Dough Recipe" / "Powder Base Recipe" dropdown
+ // options), exactly like any other raw material. This sums variantIngs
+ // exactly once, so double-counting is impossible by construction — there
+ // is no separate automatic total to accidentally add on top.
+ const ingredientCost = variantIngs.reduce((sum, ing) => {
+ return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
  }, 0)
- const ingredientCost = baseCostPerPiece + variantCostPerPiece
  const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
  const laborPerPiece = safeNum(costSettings.daily_labor_cost) / totalDailyPieces
  const monthlyDepreciation =
@@ -5781,35 +9675,34 @@ Cancel = create batch record only for existing stock.`)
  log_id: logData.id, variant_id: e.variant_id,
  variant_name: d.variant?.name || '', pieces_produced: d.pieces, ingredient_cost: d.ingCost
  })
- // Deduct stock for base dough
+ // Deduct stock for shared recipes: base dough + powder base
  const batchEquiv = d.pieces / d.piecesPerBatch
- for (const ing of baseDoughIngredients) {
+ for (const ing of [...baseDoughIngredients, ...powderBaseIngredients]) {
  if (!ing.inventory_item_id) continue
- const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
- if (deductQty <= 0) continue
- const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
+ const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
+ if (deductQtyGrams <= 0) continue
+ const { data: inv } = await supabase.from('inventory_items').select('current_stock,name,min_stock,unit').eq('id', ing.inventory_item_id).single()
  if (inv) {
+ const deductQty = productionRecipeStockQtyFromGrams(deductQtyGrams, inv)
  const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
  await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
- // Low stock alert
- const { data:invFull } = await supabase.from('inventory_items').select('name,min_stock,unit').eq('id', ing.inventory_item_id).single()
- if (invFull && newStock <= Number(invFull.min_stock||0)) {
- await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${invFull.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${invFull.unit}`)
+ if (newStock <= Number(inv.min_stock||0)) {
+ await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit}`)
  }
  }
  }
  // Deduct variant-specific ingredients
  for (const ing of (variantRecipes[e.variant_id] || [])) {
  if (!ing.inventory_item_id) continue
- const deductQty = Number(ing.quantity_per_batch || 0) * batchEquiv
- if (deductQty <= 0) continue
- const { data: inv } = await supabase.from('inventory_items').select('current_stock').eq('id', ing.inventory_item_id).single()
+ const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
+ if (deductQtyGrams <= 0) continue
+ const { data: inv } = await supabase.from('inventory_items').select('current_stock,name,min_stock,unit').eq('id', ing.inventory_item_id).single()
  if (inv) {
+ const deductQty = productionRecipeStockQtyFromGrams(deductQtyGrams, inv)
  const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
  await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
- const { data:invFull } = await supabase.from('inventory_items').select('name,min_stock,unit').eq('id', ing.inventory_item_id).single()
- if (invFull && newStock <= Number(invFull.min_stock||0)) {
- await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${invFull.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${invFull.unit}`)
+ if (newStock <= Number(inv.min_stock||0)) {
+ await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit}`)
  }
  }
  }
@@ -6216,29 +10109,69 @@ Cancel = create batch record only for existing stock.`)
  }
 
  function normalizeInvoiceSearchValue(value) {
- return String(value || '').toLowerCase().trim()
+ return String(value || '')
+ .toLowerCase()
+ .normalize('NFKD')
+ .replace(/[\u0300-\u036f]/g, '')
+ .replace(/[.,]/g, ' ')
+ .replace(/\s+/g, ' ')
+ .trim()
+ }
+
+ function getInvoiceDateSearchAliases(value) {
+ const dateKey = String(value || '').slice(0, 10)
+ const parsed = parseLocalDate(dateKey)
+ if (!parsed) return dateKey
+
+ const year = parsed.getFullYear()
+ const month = parsed.getMonth() + 1
+ const day = parsed.getDate()
+ const month2 = pad2(month)
+ const day2 = pad2(day)
+ const longMonth = parsed.toLocaleDateString('en-US', { month:'long' })
+ const shortMonth = parsed.toLocaleDateString('en-US', { month:'short' })
+ const weekday = parsed.toLocaleDateString('en-US', { weekday:'long' })
+
+ return [
+ dateKey,
+ `${month2}/${day2}/${year}`,
+ `${month}/${day}/${year}`,
+ `${year}/${month2}/${day2}`,
+ `${month2}-${day2}-${year}`,
+ `${month}-${day}-${year}`,
+ `${longMonth} ${day}, ${year}`,
+ `${longMonth} ${day} ${year}`,
+ `${shortMonth} ${day}, ${year}`,
+ `${shortMonth} ${day} ${year}`,
+ `${day} ${longMonth} ${year}`,
+ `${day} ${shortMonth} ${year}`,
+ `${longMonth} ${day}`,
+ `${shortMonth} ${day}`,
+ `${day} ${longMonth}`,
+ `${day} ${shortMonth}`,
+ `${weekday} ${longMonth} ${day} ${year}`,
+ `${year}${month2}${day2}`
+ ]
+ .filter(Boolean)
+ .join(' ')
  }
 
  function getInvoiceSearchHaystack(inv) {
  const reseller = resellers.find(r => String(r.id) === String(inv?.reseller_id)) || {}
  const deliveryDate = getInvoiceDeliveryDate(inv)
- const dateLabel = deliveryDate
-? (() => {
- const parsed = parseLocalDate(deliveryDate)
- return parsed? parsed.toLocaleDateString('en-PH', { month:'long', day:'numeric', year:'numeric' }): deliveryDate
- })()
-: ''
+ const dueDate = String(inv?.due_date || '').slice(0, 10)
 
- return [
+ return normalizeInvoiceSearchValue([
  inv?.invoice_number,
  inv?.reseller_name,
  inv?.customer_name,
  inv?.customer_address,
  inv?.customer_contact,
  inv?.customer_type,
- inv?.delivery_date,
- dateLabel,
- inv?.due_date,
+ deliveryDate,
+ getInvoiceDateSearchAliases(deliveryDate),
+ dueDate,
+ getInvoiceDateSearchAliases(dueDate),
  inv?.status,
  inv?.address,
  inv?.delivery_address,
@@ -6255,8 +10188,7 @@ Cancel = create batch record only for existing stock.`)
 ...(inv?.delivery_invoice_items || []).map(item => item?.variant_name)
  ]
 .filter(Boolean)
-.join(' ')
-.toLowerCase()
+.join(' '))
  }
 
  function invoiceMatchesSearch(inv, searchTerm = invoiceSearchTerm) {
@@ -6326,17 +10258,13 @@ Cancel = create batch record only for existing stock.`)
  }
 
  function getInvoiceDayOptions() {
- const minDate = parseLocalDate(getDateOffsetString(-31))
+ // Include every delivery date loaded from Supabase. Historical invoices must
+ // never disappear from the dropdown just because they are older than 31 days.
  const dates = new Set([today, getDateOffsetString(1)])
 
  deliveryInvoices.forEach(inv => {
  const dateKey = getInvoiceDeliveryDate(inv)
- if (!dateKey) return
- const parsed = parseLocalDate(dateKey)
- if (!parsed) return
- // Keep the dropdown focused on the latest one-month operating window,
- // but still include future invoice dates for production planning.
- if (!minDate || parsed >= minDate) dates.add(dateKey)
+ if (dateKey && parseLocalDate(dateKey)) dates.add(dateKey)
  })
 
  return Array.from(dates).sort((a, b) => b.localeCompare(a))
@@ -6453,6 +10381,160 @@ Cancel = create batch record only for existing stock.`)
 
  return buildResellerCreditStatus(resellerId, data || [], today)
  }
+
+ function isOptionalSupabaseObjectMissing(error) {
+ const msg = String(error?.message || error || '').toLowerCase()
+ return msg.includes('does not exist') || msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')
+ }
+
+ function isResellerPortalReturnRecord(row) {
+ return String(row?.recorded_by || '').toLowerCase().includes('reseller portal')
+ }
+
+ function getInvoiceReturnRecordsForPrint(invoice) {
+ const allReturns = Array.isArray(invoice?.reseller_returns) ? invoice.reseller_returns : []
+ if (!allReturns.length) return []
+ const adminEncoded = allReturns.filter(row => !isResellerPortalReturnRecord(row))
+ // Admin/owner/driver/settlement entry is treated as final. Reseller portal entry is used only when no admin return exists yet.
+ return adminEncoded.length ? adminEncoded : allReturns
+ }
+
+ function getInvoiceReturnLookups(invoice) {
+ const byVariantId = {}
+ const byName = {}
+ getInvoiceReturnRecordsForPrint(invoice).forEach(ret => {
+ ;(ret.reseller_return_items || []).forEach(item => {
+ const qty = safeNum(item.returned_quantity ?? item.returned_qty ?? item.quantity ?? item.qty, 0)
+ if (!qty) return
+ const variantId = String(item.variant_id || '').trim()
+ const nameKey = normalizeDonutVariantName(item.variant_name || item.product_name || item.item_name || item.name || '')
+ if (variantId) byVariantId[variantId] = safeNum(byVariantId[variantId], 0) + qty
+ if (nameKey) byName[nameKey] = safeNum(byName[nameKey], 0) + qty
+ })
+ })
+ return { byVariantId, byName }
+ }
+
+ function getInvoiceItemDeliveredQty(item = {}) {
+ return Math.max(0, safeNum(item.delivered_quantity ?? item.actual_quantity ?? item.quantity, 0))
+ }
+
+ function getInvoiceItemPrice(item = {}) {
+ return moneyRound(item.reseller_price ?? item.unit_price ?? item.price ?? item.selling_price ?? 0)
+ }
+
+ function getDeliveryInvoiceCustomerType(invoice = {}) {
+ const explicitType = String(invoice?.customer_type || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+ if (explicitType === 'non_reseller' || explicitType === 'nonreseller') return 'non_reseller'
+ if (explicitType === 'reseller') return 'reseller'
+ if (invoice?.reseller_id) return 'reseller'
+ const notes = String(invoice?.notes || '').toLowerCase()
+ if (notes.includes('non-reseller invoice') || notes.includes('non reseller invoice')) return 'non_reseller'
+ return 'non_reseller'
+ }
+
+ function getDeliveryInvoiceDiscountPct(invoice = {}) {
+ const customerType = getDeliveryInvoiceCustomerType(invoice)
+ const storedDiscount = safeNum(invoice?.discount_pct, NaN)
+ if (Number.isFinite(storedDiscount)) return storedDiscount
+ return customerType === 'reseller' ? 20 : 0
+ }
+
+ function getDeliveryInvoiceEditUnitPrice(invoice = {}, retailPrice = 0) {
+ const discountPct = getDeliveryInvoiceDiscountPct(invoice)
+ return moneyRound(safeNum(retailPrice, 0) * (1 - discountPct / 100))
+ }
+
+ function getInvoiceItemGrossAmount(item = {}) {
+ const stored = safeNum(item.total_price ?? item.amount ?? item.line_total, NaN)
+ if (Number.isFinite(stored)) return moneyRound(stored)
+ return moneyRound(getInvoiceItemDeliveredQty(item) * getInvoiceItemPrice(item))
+ }
+
+ function getInvoiceItemUnsoldQuantity(invoice, item = {}) {
+ const direct = safeNum(item.unsold_quantity ?? item.returned_quantity ?? item.returns_qty ?? item.returned_qty, NaN)
+ if (Number.isFinite(direct) && direct > 0) return Math.min(getInvoiceItemDeliveredQty(item), direct)
+ const lookups = getInvoiceReturnLookups(invoice)
+ const variantId = String(item.variant_id || '').trim()
+ if (variantId && Object.prototype.hasOwnProperty.call(lookups.byVariantId, variantId)) {
+ return Math.min(getInvoiceItemDeliveredQty(item), safeNum(lookups.byVariantId[variantId], 0))
+ }
+ const nameKey = normalizeDonutVariantName(item.variant_name || item.product_name || item.name || '')
+ if (nameKey && Object.prototype.hasOwnProperty.call(lookups.byName, nameKey)) {
+ return Math.min(getInvoiceItemDeliveredQty(item), safeNum(lookups.byName[nameKey], 0))
+ }
+ return 0
+ }
+
+ function attachUnsoldQuantitiesToInvoice(invoice) {
+ const inv = invoice || {}
+ const items = Array.isArray(inv.delivery_invoice_items) ? inv.delivery_invoice_items : []
+ return {
+ ...inv,
+ delivery_invoice_items:items.map(item => ({
+ ...item,
+ unsold_quantity:getInvoiceItemUnsoldQuantity(inv, item)
+ }))
+ }
+ }
+
+ function mergeDeliveryInvoicesWithReturns(invoiceRows = [], returnRows = []) {
+ const returnsByInvoiceId = {}
+ ;(returnRows || []).forEach(row => {
+ const key = String(row.invoice_id || '')
+ if (!key) return
+ if (!returnsByInvoiceId[key]) returnsByInvoiceId[key] = []
+ returnsByInvoiceId[key].push(row)
+ })
+ return (invoiceRows || []).map(inv => attachUnsoldQuantitiesToInvoice({
+ ...inv,
+ reseller_returns:returnsByInvoiceId[String(inv.id || '')] || inv.reseller_returns || []
+ }))
+ }
+
+ async function attachReturnsToDeliveryInvoices(invoiceRows = []) {
+ const rows = Array.isArray(invoiceRows) ? invoiceRows : []
+ const ids = rows.map(inv => inv?.id).filter(Boolean)
+ if (!ids.length) return rows.map(attachUnsoldQuantitiesToInvoice)
+ try {
+ const { data, error } = await supabase
+ .from('reseller_returns')
+ .select('*, reseller_return_items(*)')
+ .in('invoice_id', ids)
+ if (error) {
+ if (!isOptionalSupabaseObjectMissing(error)) console.warn('attachReturnsToDeliveryInvoices:', error)
+ return rows.map(attachUnsoldQuantitiesToInvoice)
+ }
+ return mergeDeliveryInvoicesWithReturns(rows, data || [])
+ } catch(e) {
+ console.warn('attachReturnsToDeliveryInvoices:', e)
+ return rows.map(attachUnsoldQuantitiesToInvoice)
+ }
+ }
+
+ function getInvoiceViewItemRows(invoice) {
+ const items = Array.isArray(invoice?.delivery_invoice_items) ? invoice.delivery_invoice_items : []
+ return items.map(item => {
+ const deliveredQty = getInvoiceItemDeliveredQty(item)
+ const unsoldQty = Math.min(deliveredQty, getInvoiceItemUnsoldQuantity(invoice, item))
+ const soldQty = Math.max(0, deliveredQty - unsoldQty)
+ const price = getInvoiceItemPrice(item)
+ const grossAmount = moneyRound(deliveredQty * price)
+ const returnsCredit = moneyRound(unsoldQty * price)
+ const netAmount = moneyRound(soldQty * price)
+ return {
+ ...item,
+ deliveredQty,
+ unsoldQty,
+ soldQty,
+ price,
+ grossAmount,
+ returnsCredit,
+ netAmount
+ }
+ })
+ }
+
 
  function getDaysUntilLocal(targetDate, asOfDate = today) {
  const target = parseLocalDate(targetDate)
@@ -6575,23 +10657,70 @@ Cancel = create batch record only for existing stock.`)
  }
  } catch(e) { console.warn('autoMarkTodayDelivered:', e) }
  }
+ async function fetchAllDeliveryInvoiceRows(selectClause) {
+ const pageSize = 1000
+ const maxPages = 100
+ const rowsById = new Map()
+ let from = 0
+ let totalCount = null
+
+ for (let page = 0; page < maxPages; page++) {
+ const { data, error, count } = await supabase
+ .from('delivery_invoices')
+ .select(selectClause, { count:'exact' })
+ .order('delivery_date', { ascending:false })
+ .order('created_at', { ascending:false })
+ .order('id', { ascending:false })
+ .range(from, from + pageSize - 1)
+
+ if (error) return { data:[], error }
+
+ const rows = data || []
+ rows.forEach((row, index) => {
+ const key = row?.id? String(row.id): `row-${from + index}`
+ rowsById.set(key, row)
+ })
+
+ if (totalCount === null && Number.isFinite(count)) totalCount = count
+ if (rows.length === 0) break
+
+ from += rows.length
+ if (totalCount !== null && from >= totalCount) break
+
+ if (page === maxPages - 1) {
+ console.warn(`Delivery invoice loading reached the safety limit of ${maxPages * pageSize} rows.`)
+ }
+ }
+
+ return { data:Array.from(rowsById.values()), error:null }
+ }
+
  async function loadDeliveryInvoices() {
  setInvoicesLoading(true)
  try {
  await autoMarkTodayDelivered()
- const withItems = await supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').order('delivery_date', { ascending:false }).limit(500)
+
+ // Load every saved invoice in pages. The previous .limit(500) silently hid
+ // older records once the database exceeded 500 invoices.
+ const withItems = await fetchAllDeliveryInvoiceRows('*, delivery_invoice_items(*)')
  if (!withItems.error) {
- setDeliveryInvoices((await normalizePaidInvoiceRows(withItems.data || [])).sort(sortDeliveryInvoicesNewestFirst))
+ const normalized = await normalizePaidInvoiceRows(withItems.data || [])
+ const withReturns = await attachReturnsToDeliveryInvoices(normalized)
+ setDeliveryInvoices(withReturns.sort(sortDeliveryInvoicesNewestFirst))
  return
  }
+
  console.warn('delivery_invoices with items failed, trying basic invoice list:', withItems.error)
- const basic = await supabase.from('delivery_invoices').select('*').order('delivery_date', { ascending:false }).limit(500)
+ const basic = await fetchAllDeliveryInvoiceRows('*')
  if (basic.error) {
  console.warn('delivery_invoices basic query failed:', basic.error)
  setDeliveryInvoices([])
  return
  }
- setDeliveryInvoices((await normalizePaidInvoiceRows(basic.data || [])).sort(sortDeliveryInvoicesNewestFirst))
+
+ const normalizedBasic = await normalizePaidInvoiceRows(basic.data || [])
+ const basicWithReturns = await attachReturnsToDeliveryInvoices(normalizedBasic)
+ setDeliveryInvoices(basicWithReturns.sort(sortDeliveryInvoicesNewestFirst))
  } catch(e) {
  console.warn('loadDeliveryInvoices:', e)
  setDeliveryInvoices([])
@@ -7312,10 +11441,12 @@ Cancel = create batch record only for existing stock.`)
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
 
  if (customerType === 'reseller') {
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(invoiceResellerId, invoiceDate)
+ // Manual invoice creation must be checked against the actual selected reseller/branch only.
+ // Do not use the copy-template branch, parent account, or sibling branches for duplicate blocking.
+ const duplicateCheck = await checkSameDayInvoiceForExactBranch(invoiceResellerId, invoiceDate, { resellerName:reseller?.name || '' })
  if (duplicateCheck.blocked) {
  showToast(duplicateCheck.message, 'red')
- await logAudit('INVOICE CREATE BLOCKED - DUPLICATE SAME DAY', adminRole, reseller?.name || '', duplicateCheck.message)
+ await logAudit('INVOICE CREATE BLOCKED - EXACT BRANCH DUPLICATE', adminRole, reseller?.name || '', duplicateCheck.message)
  setSavingInvoice(false)
  return
  }
@@ -7436,17 +11567,19 @@ Cancel = create batch record only for existing stock.`)
  if (validItems.length === 0) { showToast(' Please add at least one item.','red'); return }
  setSavingEditInvoice(true)
  try {
- // Recalculate totals
+ // Recalculate totals using the selected invoice discount.
+ // Existing invoices keep their stored discount until the user changes it in Edit Invoice.
+ const discountPercent = getDeliveryInvoiceDiscountPct(editingInvoice)
  const lineItems = validItems.map(i => {
  const variant = donutVariants.find(v => v.id === i.variant_id)
- const retailPrice = variant?.selling_price || Number(i.retail_price) || 0
- const resellerPrice = Math.round(retailPrice * 0.80 * 100) / 100
- return {...i, retail_price:retailPrice, reseller_price:resellerPrice, total_price:resellerPrice * Number(i.quantity) }
+ const retailPrice = safeNum(variant?.selling_price ?? i.retail_price, 0)
+ const invoicePrice = getDeliveryInvoiceEditUnitPrice(editingInvoice, retailPrice)
+ return {...i, retail_price:retailPrice, reseller_price:invoicePrice, total_price:moneyRound(invoicePrice * Number(i.quantity || 0)) }
  })
- const subtotal = lineItems.reduce((s,i) => s + i.total_price, 0)
+ const subtotal = moneyRound(lineItems.reduce((s,i) => s + safeNum(i.total_price, 0), 0))
  // Update invoice header
  await supabase.from('delivery_invoices').update({
- subtotal, total_amount:subtotal,
+ subtotal, total_amount:subtotal, discount_pct:discountPercent,
  notes:editingInvoice.notes||null,
  prepared_by:editingInvoice.prepared_by||null,
  dispatched_by:editingInvoice.dispatched_by||null,
@@ -7623,7 +11756,7 @@ function getInvoiceProductionDispatchNote(invoice) {
 function buildDeliveryInvoicePrintCSS() {
   return [
     '<style>',
-    '@page { size: 4in 6in; margin: 0; }',
+    '@page { size: 10.5cm 16.5cm; margin: 0; }',
 
     '* {',
     '  box-sizing: border-box !important;',
@@ -7632,8 +11765,8 @@ function buildDeliveryInvoicePrintCSS() {
     '}',
 
     'html, body {',
-    '  width: 4in !important;',
-    '  height: 6in !important;',
+    '  width: 10.5cm !important;',
+    '  height: 16.5cm !important;',
     '  margin: 0 !important;',
     '  padding: 0 !important;',
     '  background: white !important;',
@@ -7644,10 +11777,10 @@ function buildDeliveryInvoicePrintCSS() {
     '.no-print { display: none !important; }',
 
     '.invoice-page {',
-    '  width: 4in !important;',
-    '  height: 6in !important;',
+    '  width: 10.5cm !important;',
+    '  height: 16.5cm !important;',
     '  margin: 0 auto !important;',
-    '  padding: 0.04in !important;',
+    '  padding: 0.12cm !important;',
     '  background: white !important;',
     '  overflow: hidden !important;',
     '}',
@@ -7728,8 +11861,8 @@ function buildDeliveryInvoicePrintCSS() {
     '}',
 
     '@media print {',
-    '  html, body { width: 4in !important; height: 6in !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }',
-    '  .invoice-page { width: 4in !important; height: 6in !important; margin: 0 !important; padding: 0.04in !important; box-shadow: none !important; page-break-after: always !important; }',
+    '  html, body { width: 10.5cm !important; height: 16.5cm !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }',
+    '  .invoice-page { width: 10.5cm !important; height: 16.5cm !important; margin: 0 !important; padding: 0.12cm !important; box-shadow: none !important; page-break-after: always !important; }',
     '  .invoice-page:last-of-type { page-break-after: auto !important; }',
     '}',
     '</style>'
@@ -7846,13 +11979,14 @@ function buildDeliveryInvoicePrintCSS() {
       const first = matched[0] || null;
       const price = first ? getPrice(first) : 0;
       const amount = matched.reduce((sum, item) => sum + getAmount(item), 0);
+      const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0);
 
       return `<tr class="product-row">
         <td class="product-name">${escapeHtml(row.label)}</td>
         <td class="number-cell">${qty ? qty.toLocaleString('en-PH') : ''}</td>
         <td class="money-cell">${price ? peso(price) : ''}</td>
         <td class="money-cell">${amount ? peso(amount) : ''}</td>
-        <td></td>
+        <td class="number-cell">${unsoldQty ? unsoldQty.toLocaleString('en-PH') : ''}</td>
       </tr>`;
     }).join('');
 
@@ -8093,18 +12227,20 @@ function buildDeliveryInvoicePrintCSS() {
    }
 
    const productRows = productTemplate.map(row => {
-     if (!row.label) return { product:'', delivered:'', price:'', amount:'', unsold:'' }
+     if (!row.label) return { product:'', delivered:'', price:'', amount:'', unsold:'', _spacer:true }
      const matched = findMatchingItems(row)
      const qty = matched.reduce((sum, item) => sum + getQty(item), 0)
      const first = matched[0] || null
      const price = first ? getPrice(first) : 0
      const amount = matched.reduce((sum, item) => sum + getAmount(item), 0)
+     const unsoldQty = matched.reduce((sum, item) => sum + getInvoiceItemUnsoldQuantity(invoice, item), 0)
      return {
        product: row.label,
        delivered: qty ? qty.toLocaleString('en-PH') : '',
        price: price ? peso(price) : '',
        amount: amount ? peso(amount) : '',
-       unsold: ''
+       unsold: unsoldQty ? unsoldQty.toLocaleString('en-PH') : '',
+       _ordered: qty > 0
      }
    })
 
@@ -8137,20 +12273,21 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  function wordRun(text, opts = {}) {
-   const size = opts.size || 15
+   // Word DOCX uses half-points: 20 = Arial 10pt.
+   const size = opts.size || 20
    // Use bold as the default for invoice readability on 4x6 thermal/photo paper.
    // Pass bold:false only for intentionally light text.
    const bold = opts.bold === false ? '' : '<w:b/><w:bCs/>'
    const italic = opts.italic ? '<w:i/><w:iCs/>' : ''
-   return `<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${bold}${italic}</w:rPr><w:t xml:space="preserve">${wordXmlText(text)}</w:t></w:r>`
+   const color = opts.color ? `<w:color w:val="${opts.color}"/>` : ''
+   return `<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="${size}"/><w:szCs w:val="${size}"/>${bold}${italic}${color}</w:rPr><w:t xml:space="preserve">${wordXmlText(text)}</w:t></w:r>`
  }
 
  function wordParagraph(text, opts = {}) {
    const align = opts.align || 'left'
-   // A line-height equal to the font size clips bold text in Word print preview.
-   // Give each line a small safety allowance while keeping the exact 4x6 table height.
-   const size = opts.size || 15
-   const line = opts.line || Math.max(205, Math.ceil(size * 13))
+   // Arial 10 needs enough exact line height so Word does not display it as 5pt or clip bold text.
+   const size = opts.size || 20
+   const line = opts.line || Math.max(240, Math.ceil(size * 12))
    return `<w:p><w:pPr><w:jc w:val="${align}"/><w:spacing w:before="0" w:after="0" w:line="${line}" w:lineRule="exact"/></w:pPr>${wordRun(text, opts)}</w:p>`
  }
 
@@ -8159,7 +12296,9 @@ function buildDeliveryInvoicePrintCSS() {
    const span = opts.span ? `<w:gridSpan w:val="${opts.span}"/>` : ''
    const shade = opts.shade ? `<w:shd w:fill="${opts.shade}"/>` : ''
    const vAlign = '<w:vAlign w:val="center"/>'
-   const cellMargins = '<w:tcMar><w:top w:w="4" w:type="dxa"/><w:left w:w="24" w:type="dxa"/><w:bottom w:w="4" w:type="dxa"/><w:right w:w="24" w:type="dxa"/></w:tcMar>'
+   const padLeft = safeNum(opts.padLeft, 14)
+   const padRight = safeNum(opts.padRight, 14)
+   const cellMargins = `<w:tcMar><w:top w:w="0" w:type="dxa"/><w:left w:w="${padLeft}" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="${padRight}" w:type="dxa"/></w:tcMar>`
    return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${span}${shade}${vAlign}${cellMargins}</w:tcPr>${wordParagraph(text, opts)}</w:tc>`
  }
 
@@ -8173,78 +12312,86 @@ function buildDeliveryInvoicePrintCSS() {
    // after each invoice. A trailing page-break paragraph can be forced onto its own sheet,
    // which creates the blank pages seen between invoices in Word print preview.
    const pageBreak = startNewPage ? '<w:pageBreakBefore/>' : ''
-   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="351" w:lineRule="exact"/></w:pPr></w:p>`
+   return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/></w:pPr></w:p>`
  }
 
  function buildDeliveryInvoiceDocxTable(invoice) {
    const data = getDeliveryInvoicePrintData(invoice)
-   // Keep the invoice body at exactly 100mm x 140mm and center it
-   // inside the 4x6 inch Word page. 100mm = 5669 twips, 140mm = about 7937 twips.
-   const widths = [1750, 1210, 903, 903, 903]
+   // Fixed physical paper size:20mm x 165mm, confirmed from the Word custom
+   // paper setup screenshot — this matches real paper stock, not a computed value. Table width is sized to fit
+   // within the page margins (147 twips ≈ 2.6mm each side), leaving a
+   // little clearance on all 4 sides as requested. Checked against the
+   // maximum possible invoice (all 17 donut variants at once) — even that
+   // fits comfortably within 165mm with room to spare, so this size is
+   // safe for every invoice this system can produce, not just typical ones.
+   // Keep the product table as five separate columns. The Amount column is slightly wider
+   // so totals and peso amounts do not clip, while the Unsold column stays separate for returns.
+   const widths = [1746, 1100, 850, 1150, 807]
    const full = widths.reduce((sum, w) => sum + w, 0)
-   const valueSpan3 = widths[1] + widths[2] + widths[3]
+   const valueSpan4 = widths[1] + widths[2] + widths[3] + widths[4]
+
+   // Brand palette — same red/gold used across the rest of the system.
+   const BRAND_RED = 'CA1B1B'
+   const BRAND_GOLD = 'FDD412'
+   const PALE_GOLD = 'FCEEC0'
+   const PALE_RED = 'FBDCDC'
 
    const rows = []
-   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:19, line:235 })], 420))
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:20, line:240, shade:BRAND_RED, color:'FFFFFF' })], 360))
    rows.push(wordRow([
-     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:16 }),
-     wordCell(data.date, { width:valueSpan3, span:3, align:'left', size:16, shade:'CFE2F3' }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350))
+     wordCell('Date:', { width:widths[0], align:'center', bold:true, size:20 }),
+     wordCell(data.date, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
+   ], 320))
    rows.push(wordRow([
-     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:16 }),
-     wordCell(data.customerName, { width:valueSpan3, span:3, align:'left', size:16, shade:'CFE2F3' }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350))
+     wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:20 }),
+     wordCell(data.customerName, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
+   ], 320))
    rows.push(wordRow([
-     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:16 }),
-     wordCell(data.customerAddress, { width:valueSpan3, span:3, align:'left', size:15, shade:'B6D7A8' }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350))
+     wordCell('Address:', { width:widths[0], align:'center', bold:true, size:20 }),
+     wordCell(data.customerAddress, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_RED })
+   ], 320))
    rows.push(wordRow([
-     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:14, line:175, shade:'FFF2CC' })
-   ], 360))
+     wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:20, line:240, shade:PALE_GOLD })
+   ], 290))
    rows.push(wordRow([
-     wordCell('Product', { width:widths[0], align:'center', bold:true, size:16 }),
-     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:16 }),
-     wordCell('Price', { width:widths[2], align:'center', bold:true, size:16 }),
-     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:16 }),
-     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:16 })
-   ], 350))
+     wordCell('Product', { width:widths[0], align:'center', bold:true, size:20 }),
+     wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:20 }),
+     wordCell('Price', { width:widths[2], align:'center', bold:true, size:20 }),
+     wordCell('Amount', { width:widths[3], align:'center', bold:true, size:20 }),
+     wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:20 })
+   ], 320))
 
    data.productRows.forEach(row => {
      rows.push(wordRow([
-       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:14 }),
-       wordCell(row.delivered, { width:widths[1], align:'center', size:15 }),
-       wordCell(row.price, { width:widths[2], align:'right', size:14 }),
-       wordCell(row.amount, { width:widths[3], align:'right', size:14 }),
-       wordCell(row.unsold, { width:widths[4], align:'center', size:15 })
-     ], 267))
+       wordCell(row.product, { width:widths[0], align:'center', bold:!!row.product, size:20 }),
+       wordCell(row.delivered, { width:widths[1], align:'center', size:20 }),
+       wordCell(row.price, { width:widths[2], align:'right', size:20 }),
+       wordCell(row.amount, { width:widths[3], align:'right', size:20 }),
+       wordCell(row.unsold, { width:widths[4], align:'center', size:20 })
+     ], 340))
    })
 
-   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:14 })), 80))
+   rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:20 })), 40))
    rows.push(wordRow([
-     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
-     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:15 }),
-     wordCell('', { width:widths[2], align:'center', size:15 }),
-     wordCell('', { width:widths[3], align:'center', size:15 }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 350))
+     wordCell(`${data.containerLabel} Used`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
+     wordCell(data.cratesUsed, { width:widths[1], align:'center', size:20 }),
+     wordCell('', { width:widths[2], align:'center', size:20 }),
+     wordCell('', { width:widths[3], align:'center', size:20 }),
+     wordCell('', { width:widths[4], align:'center', size:20 })
+   ], 320))
    rows.push(wordRow([
-     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:14 }),
-     wordCell('', { width:widths[1], align:'center', size:15 }),
-     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:17 }),
-     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:17, shade:'D9D9D9' }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 390))
+     wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
+     wordCell('', { width:widths[1], align:'center', size:20, shade:BRAND_GOLD }),
+     wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:20, shade:BRAND_GOLD }),
+     wordCell(data.total, { width:widths[3], align:'right', bold:true, size:20, shade:BRAND_GOLD }),
+     wordCell('', { width:widths[4], align:'center', size:20, shade:BRAND_GOLD })
+   ], 340))
    rows.push(wordRow([
-     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:14, shade:'B6D7A8' }),
-     wordCell(data.preparedBy, { width:widths[1] + widths[2], span:2, align:'left', size:14, shade:'B6D7A8' }),
-     wordCell('', { width:widths[3], align:'center', size:15 }),
-     wordCell('', { width:widths[4], align:'center', size:15 })
-   ], 400))
+     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
+     wordCell(data.preparedBy, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
+   ], 320))
 
-   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="14" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="000000"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
+   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
  }
 
  function buildDeliveryInvoicesDocxDocument(invoices) {
@@ -8255,8 +12402,15 @@ function buildDeliveryInvoicePrintCSS() {
      bodyParts.push(buildDeliveryInvoiceDocxTable(invoice))
    })
 
+   // Fixed physical paper size: 105mm x 165mm (5953 x 9354 twips) — real
+   // paper stock, confirmed exact from the Word custom paper setup screenshot. Margins of 147 twips (~2.6mm) on all 4
+   // sides, per request. Verified safe for every invoice this system can
+   // produce: even the maximum possible order (all 17 donut variants at
+   // once) uses a full-height 10.5cm x 16.5cm layout with no second-page spill
+   // and minimal blank space at the bottom.
+   const MARGIN = 147
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5760" w:h="8640"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5953" w:h="9354"/><w:pgMar w:top="${MARGIN}" w:right="${MARGIN}" w:bottom="${MARGIN}" w:left="${MARGIN}" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
  }
 
  function createCrc32Table() {
@@ -8364,7 +12518,7 @@ function buildDeliveryInvoicePrintCSS() {
    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
    const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`
-   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="16"/><w:szCs w:val="16"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
+   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:bCs/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
    const settings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`
 
    return createStoredZipBlob([
@@ -8389,11 +12543,276 @@ function buildDeliveryInvoicePrintCSS() {
    setTimeout(() => URL.revokeObjectURL(url), 1500)
  }
 
- function printAllDailyInvoices(date) {
-   const dayInvoices = deliveryInvoices.filter(i => i.delivery_date === date)
-   if (dayInvoices.length === 0) { showToast(' No invoices for this date.','red'); return }
-   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
-   showToast(` Downloaded ${dayInvoices.length} invoice(s) as 100x140mm centered 4x6 Word file.`)
+
+ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
+   const data = normalizePayslipForPrint(pay || {})
+   const serialNo = data.payslipSerial || genSerial(String(payrollStart || data.payrollStart || getTodayDate()), idx)
+   const start = payrollStart || data.payrollStart || ''
+   const end = payrollEnd || data.payrollEnd || ''
+   const basicPay = safeNum(data.workedBasicPay || data.basicPay, 0)
+
+   // Keep the exact reseller-invoice printable width and physical paper size.
+   // The right column is widened so serial numbers, positions, amounts, and
+   // signature labels remain fully visible in Microsoft Word.
+   const widths = [3180, 2340]
+   const full = widths[0] + widths[1]
+
+   // Minimal Roma's Donuts branding: red title/outer border, a restrained
+   // gold employee-name accent, and neutral black/gray document sections.
+   const BLACK = '1F1F1F'
+   const DARK_GRAY = '404040'
+   const LINE_GRAY = 'A6A6A6'
+   const LIGHT_GRAY = 'E7E6E6'
+   const VERY_LIGHT_GRAY = 'F5F5F5'
+   const WHITE = 'FFFFFF'
+   const BRAND_RED = 'CA1B1B'
+   const BRAND_GOLD = 'FDD412'
+   const PALE_GOLD = 'FFF4C4'
+
+   // SIL is intentionally not named on the printed payslip. When a paid-leave
+   // amount exists, it is still included under Other Earnings so the printed
+   // breakdown remains mathematically consistent with Total Earnings.
+   const otherEarningsForPrint =
+     safeNum(data.adjustmentEarnings, 0) +
+     safeNum(data.paidLeavePay, 0)
+
+   const rows = []
+   const addAmountRow = (label, amount, options = {}) => {
+     rows.push(wordRow([
+       wordCell(label, {
+         width:widths[0],
+         align:'left',
+         bold:options.boldLabel === true,
+         size:options.size || 16,
+         shade:options.shade || '',
+         color:options.color || ''
+       }),
+       wordCell(php(safeNum(amount, 0)), {
+         width:widths[1],
+         align:'right',
+         bold:true,
+         size:options.amountSize || options.size || 16,
+         shade:options.shade || '',
+         color:options.amountColor || options.color || '',
+         padRight:150
+       })
+     ], options.height || 275))
+   }
+
+   rows.push(wordRow([
+     wordCell("ROMA'S DONUTS  |  EMPLOYEE PAYSLIP", {
+       width:full,
+       span:2,
+       align:'center',
+       bold:true,
+       size:20,
+       line:240,
+       shade:BRAND_RED,
+       color:WHITE
+     })
+   ], 390))
+
+   rows.push(wordRow([
+     wordCell(`PAY PERIOD: ${formatDateForDisplay(start)} - ${formatDateForDisplay(end)}`, {
+       width:widths[0], align:'left', bold:true, size:15, shade:VERY_LIGHT_GRAY
+     }),
+     wordCell(`SERIAL: ${serialNo || '-'}`, {
+       width:widths[1], align:'right', bold:true, size:13, shade:VERY_LIGHT_GRAY, padRight:150
+     })
+   ], 310))
+
+   rows.push(wordRow([
+     wordCell(data.employeeName || 'Employee', {
+       width:full, span:2, align:'center', bold:true, size:20, shade:PALE_GOLD, color:BLACK
+     })
+   ], 320))
+
+   rows.push(wordRow([
+     wordCell(`EMPLOYEE CODE: ${data.employeeCode || '-'}`, {
+       width:widths[0], align:'left', bold:false, size:15
+     }),
+     wordCell(`POSITION: ${data.position || '-'}`, {
+       width:widths[1], align:'right', bold:false, size:13, padRight:150
+     })
+   ], 310))
+
+   rows.push(wordRow([
+     wordCell('ATTENDANCE / PAYROLL BASIS', {
+       width:full, span:2, align:'center', bold:true, size:17, shade:LIGHT_GRAY, color:BRAND_RED
+     })
+   ], 280))
+
+   rows.push(wordRow([
+     wordCell(`WORKED: ${data.workedDays}  |  ABSENT: ${data.absentDays}`, {
+       width:widths[0], align:'left', bold:false, size:15, shade:VERY_LIGHT_GRAY
+     }),
+     wordCell(`OT: ${data.overtimeMinutes} MIN  |  ND: ${data.nightDiffMinutes} MIN`, {
+       width:widths[1], align:'right', bold:false, size:13, shade:VERY_LIGHT_GRAY, padRight:150
+     })
+   ], 350))
+
+   rows.push(wordRow([
+     wordCell('EARNINGS', {
+       width:full, span:2, align:'center', bold:true, size:17, shade:LIGHT_GRAY, color:BRAND_RED
+     })
+   ], 280))
+
+   addAmountRow(`Basic / Regular Pay (${data.workedDays} paid day(s))`, basicPay)
+   addAmountRow(`Overtime Pay (${data.overtimeMinutes} min)`, data.overtimePay)
+   addAmountRow(`Night Differential Pay (${data.nightDiffMinutes} min)`, data.nightDiffPay)
+   addAmountRow('Holiday Pay', data.holidayPay)
+   addAmountRow('Birthday Pay', data.birthdayPay)
+   addAmountRow('Other Earnings / Adjustments', otherEarningsForPrint)
+   addAmountRow('TOTAL EARNINGS / GROSS PAY', data.totalEarnings, {
+     shade:LIGHT_GRAY, boldLabel:true, size:17, height:310, color:BLACK
+   })
+
+   rows.push(wordRow([
+     wordCell('DEDUCTIONS', {
+       width:full, span:2, align:'center', bold:true, size:17, shade:LIGHT_GRAY, color:BRAND_RED
+     })
+   ], 280))
+
+   addAmountRow(`Late Deduction (${data.lateMinutes} min)`, data.lateDeduction)
+   addAmountRow(`Undertime Deduction (${data.undertimeMinutes} min)`, data.undertimeDeduction)
+   addAmountRow('Excess Break Deduction', data.excessBreakDeduction)
+   addAmountRow('Cash Advance Deduction', data.cashAdvanceDeduction)
+   addAmountRow('Deferred Cash Advance', data.deferredCADeduction)
+   addAmountRow('SSS', data.sssDeduction)
+   addAmountRow('Pag-IBIG', data.pagibigDeduction)
+   addAmountRow('PhilHealth', data.philhealthDeduction)
+   addAmountRow('Other Deductions / Adjustments', data.adjustmentDeductions)
+   addAmountRow('TOTAL DEDUCTIONS', data.totalDeductions, {
+     shade:LIGHT_GRAY, boldLabel:true, size:17, height:310, color:BLACK
+   })
+
+   rows.push(wordRow([
+     wordCell('NET PAY / TAKE HOME PAY', {
+       width:widths[0], align:'left', bold:true, size:19, shade:BLACK, color:WHITE
+     }),
+     wordCell(php(data.netPay), {
+       width:widths[1], align:'right', bold:true, size:22, shade:BLACK, color:BRAND_GOLD, padRight:150
+     })
+   ], 420))
+
+   if (data.nonCADeductionOverflow > 0) {
+     rows.push(wordRow([
+       wordCell(`NOTICE: Non-CA deductions exceeded earnings by ${php(data.nonCADeductionOverflow)}.`, {
+         width:full, span:2, align:'center', bold:true, size:13, shade:VERY_LIGHT_GRAY, color:BRAND_RED
+       })
+     ], 260))
+   }
+
+   rows.push(wordRow([
+     wordCell('____________________________', {
+       width:widths[0], align:'center', bold:false, size:15
+     }),
+     wordCell('________________________', {
+       width:widths[1], align:'center', bold:false, size:15
+     })
+   ], 340))
+
+   rows.push(wordRow([
+     wordCell('EMPLOYEE / DATE', {
+       width:widths[0], align:'center', bold:false, size:12
+     }),
+     wordCell('AUTHORIZED / DATE', {
+       width:widths[1], align:'center', bold:false, size:12
+     })
+   ], 220))
+
+   return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="6" w:space="0" w:color="${LINE_GRAY}"/><w:insideV w:val="single" w:sz="6" w:space="0" w:color="${LINE_GRAY}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="40" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="40" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid><w:gridCol w:w="${widths[0]}"/><w:gridCol w:w="${widths[1]}"/></w:tblGrid>${rows.join('')}</w:tbl>`
+ }
+
+ function buildPayslipsDocxDocument(records, payrollStart, payrollEnd) {
+   const payslips = Array.isArray(records) ? records : []
+   const bodyParts = []
+   payslips.forEach((pay, idx) => {
+     // Reuse the reseller-invoice page-break strategy so Print All creates
+     // one payslip per sheet without blank pages between employees.
+     bodyParts.push(buildInvoiceDocxTopSpacer(idx > 0))
+     bodyParts.push(buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx))
+   })
+
+   // Exact reseller-invoice physical paper size: 105mm x 165mm.
+   const MARGIN = 147
+   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5953" w:h="9354"/><w:pgMar w:top="${MARGIN}" w:right="${MARGIN}" w:bottom="${MARGIN}" w:left="${MARGIN}" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+ }
+
+ function buildPayslipsDocxBlob(records, payrollStart, payrollEnd) {
+   const documentXml = buildPayslipsDocxDocument(records, payrollStart, payrollEnd)
+   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
+   const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
+   const docRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>`
+   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>`
+   const settings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:zoom w:percent="100"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`
+
+   return createStoredZipBlob([
+     { name:'[Content_Types].xml', data:contentTypes },
+     { name:'_rels/.rels', data:rootRels },
+     { name:'word/document.xml', data:documentXml },
+     { name:'word/_rels/document.xml.rels', data:docRels },
+     { name:'word/styles.xml', data:styles },
+     { name:'word/settings.xml', data:settings }
+   ], 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+ }
+
+ function downloadPayslipsDocxFile(filename, records, payrollStart, payrollEnd) {
+   const blob = buildPayslipsDocxBlob(records, payrollStart, payrollEnd)
+   const url = URL.createObjectURL(blob)
+   const link = document.createElement('a')
+   link.href = url
+   link.download = `${sanitizeWordFileName(filename)}.docx`
+   document.body.appendChild(link)
+   link.click()
+   document.body.removeChild(link)
+   setTimeout(() => URL.revokeObjectURL(url), 1500)
+ }
+
+ async function getFreshDeliveryInvoicesForPrintByDate(date) {
+   const { data, error } = await supabase
+     .from('delivery_invoices')
+     .select('*, delivery_invoice_items(*)')
+     .eq('delivery_date', date)
+     .order('created_at', { ascending:false })
+
+   if (error) throw error
+   const normalized = await normalizePaidInvoiceRows(data || [])
+   const withReturns = await attachReturnsToDeliveryInvoices(normalized)
+   return withReturns.sort(sortDeliveryInvoicesNewestFirst)
+ }
+
+ function validateDeliveryInvoiceForPrint(invoice) {
+   if (!invoice?.id || !invoice?.invoice_number) {
+     return 'This invoice is not a saved database invoice yet. Refresh the invoice list and print only from the saved Delivery Invoices list.'
+   }
+
+   const rows = invoice.delivery_invoice_items || []
+   if (!rows.length) {
+     return 'This invoice has no saved line items. Refresh the invoice list before printing.'
+   }
+
+   const itemTotal = moneyRound(rows.reduce((sum, item) => sum + safeNum(item.total_price, safeNum(item.quantity,0) * safeNum(item.reseller_price,0)), 0))
+   const headerTotal = moneyRound(invoice.total_amount ?? invoice.subtotal ?? 0)
+   if (Math.abs(itemTotal - headerTotal) > 0.01) {
+     return `Invoice total mismatch. Saved header is ${php(headerTotal)} but saved item rows total ${php(itemTotal)}. Please edit/recalculate the invoice before printing.`
+   }
+
+   return ''
+ }
+
+ async function printAllDailyInvoices(date) {
+   try {
+     const dayInvoices = await getFreshDeliveryInvoicesForPrintByDate(date)
+     if (dayInvoices.length === 0) { showToast(' No saved invoices for this date.','red'); return }
+     const invalid = dayInvoices.map(inv => ({ inv, error: validateDeliveryInvoiceForPrint(inv) })).find(row => row.error)
+     if (invalid) { showToast(` Print blocked for ${invalid.inv?.invoice_number || 'invoice'}: ${invalid.error}`, 'red'); return }
+     downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
+     showToast(` Downloaded ${dayInvoices.length} fresh invoice(s) from database as Word file.`)
+   } catch (err) {
+     showToast(' Failed to fetch fresh invoices for printing: ' + (err?.message || err), 'red')
+   }
  }
  async function recordPayment(invoice) {
  const amt = Number(paymentAmount[invoice.id] || 0)
@@ -8416,11 +12835,50 @@ function buildDeliveryInvoicePrintCSS() {
  loadDailySalesOnlinePayments()
  refreshFoundationAfterDataChange('reseller-payment-recorded')
  }
- function printDeliveryInvoice(invoice) {
+ async function getFreshDeliveryInvoiceForAction(invoice, options = {}) {
+ if (!invoice?.id) {
+   if (options.requireSaved) throw new Error('This invoice is not saved in the database yet.')
+   return attachUnsoldQuantitiesToInvoice(invoice)
+ }
+ try {
+ const { data, error } = await supabase
+ .from('delivery_invoices')
+ .select('*, delivery_invoice_items(*)')
+ .eq('id', invoice.id)
+ .single()
+ if (error) {
+ console.warn('getFreshDeliveryInvoiceForAction:', error)
+ if (options.requireSaved) throw error
+ return attachUnsoldQuantitiesToInvoice(invoice)
+ }
+ const [normalized] = await normalizePaidInvoiceRows([data || invoice])
+ const [withReturns] = await attachReturnsToDeliveryInvoices([normalized || invoice])
+ return withReturns || attachUnsoldQuantitiesToInvoice(invoice)
+ } catch(e) {
+ console.warn('getFreshDeliveryInvoiceForAction:', e)
+ if (options.requireSaved) throw e
+ return attachUnsoldQuantitiesToInvoice(invoice)
+ }
+ }
+
+ async function viewDeliveryInvoice(invoice) {
  if (!invoice) { showToast(' No invoice selected.','red'); return }
- const invoiceNumber = invoice.invoice_number || invoice.id || 'invoice'
- downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [invoice])
- showToast(' Downloaded 100x140mm centered 4x6 invoice Word file.')
+ const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice)
+ setViewingInvoice(freshInvoice)
+ }
+
+ async function printDeliveryInvoice(invoice) {
+ if (!invoice) { showToast(' No invoice selected.','red'); return }
+ try {
+   const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice, { requireSaved:true })
+   const validationError = validateDeliveryInvoiceForPrint(freshInvoice)
+   if (validationError) { showToast(` Print blocked: ${validationError}`, 'red'); return }
+   const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
+   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
+   showToast(' Downloaded fresh invoice Word file from database.')
+ } catch (err) {
+   showToast(' Print blocked: invoice could not be verified from database. Refresh invoices and try again. ' + (err?.message || err), 'red')
+ }
  }
  function buildInvoiceAdjustmentRows(invoice) {
  if (!invoice) return []
@@ -8452,7 +12910,7 @@ function buildDeliveryInvoicePrintCSS() {
  variant_id: v.id || '',
  variant_name: v.name || 'Variant',
  retail_price: retailPrice,
- reseller_price: Math.round(retailPrice * 0.80 * 100) / 100,
+ reseller_price: getDeliveryInvoiceEditUnitPrice(invoice, retailPrice),
  original_quantity: 0,
  actual_quantity: 0,
  adjustment_type: 'Additional / Overproduced',
@@ -8888,79 +13346,6 @@ function buildDeliveryInvoicePrintCSS() {
  loadDeliveryInvoices(); refreshFoundationAfterDataChange('driver-return-saved')
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setSavingDriverReturn(false)
- }
-
- // Print Production Release Form 
- function printProductionReleaseForm(report) {
- const pw = window.open('','_blank','width=700,height=600')
- const items = (report.production_report_items||[]).filter(i=>i.actual_qty>0)
- const totalPieces = items.reduce((s,i)=>s+Number(i.actual_qty||0),0)
- pw.document.write(`<!DOCTYPE html><html><head><title>Production Release Form</title>
- <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;font-size:10px;width:150mm;}
- @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
-.wrap{padding:6mm;}h1{font-size:13px;color:#ca1b1b;}
- table{width:100%;border-collapse:collapse;margin:8px 0;}th{background:#ca1b1b;color:white;padding:5px 6px;font-size:9px;text-align:left;}
- td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
-.sig{border-top:1px solid #000;margin-top:30px;padding-top:4px;font-size:8px;text-align:center;}
-.total{background:#fff9e6;font-weight:bold;}
- </style></head><body><div class="wrap">
- <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
- <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">PRODUCTION RELEASE FORM</div></div>
- <div style="text-align:right;font-size:8px;"><div>Production Date: <strong>${report.report_date}</strong></div><div>Delivery Date: <strong>${report.delivery_date}</strong></div></div>
- </div>
- <table>
- <tr><th>Variant</th><th style="text-align:right">Forecast</th><th style="text-align:right">Produced</th><th style="text-align:right">Variance</th></tr>
- ${items.map(i=>`<tr><td><strong>${i.variant_name}</strong></td><td style="text-align:right">${i.forecast_qty}</td><td style="text-align:right;font-weight:bold">${i.actual_qty}</td><td style="text-align:right;color:${i.variance!==0?'#ca1b1b':'#2d8a4e'}">${i.variance>0?'+':''}${i.variance}</td></tr>`).join('')}
- <tr class="total"><td>TOTAL</td><td style="text-align:right">${report.total_forecast}</td><td style="text-align:right">${report.total_produced}</td><td style="text-align:right;color:${report.variance!==0?'#ca1b1b':'#2d8a4e'}">${report.variance>0?'+':''}${report.variance}</td></tr>
- </table>
- ${report.variance_reason?`<div style="background:#fff3cd;padding:6px;border-radius:4px;font-size:8px;margin-bottom:8px;"><strong>Variance Reason:</strong> ${report.variance_reason}</div>`:''}
- <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:16px;">
- <div class="sig">Produced by<br/><br/>${report.submitted_by||'_______________'}</div>
- <div class="sig">Released by<br/><br/>_______________</div>
- <div class="sig">Received by (Driver)<br/><br/>_______________</div>
- </div>
- <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;cursor:pointer;"> PRINT</button></div>
- </div></body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
- }
-
- // Print Return Form 
- function printReturnForm(invoice, returns) {
- const pw = window.open('','_blank','width=700,height=600')
- const items = invoice.delivery_invoice_items||[]
- const returnMap = {}
-;(returns||[]).forEach(r=>{ returnMap[r.variant_name]=Number(r.returned_quantity||0) })
- pw.document.write(`<!DOCTYPE html><html><head><title>Return Form</title>
- <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;font-size:10px;width:150mm;}
- @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
-.wrap{padding:6mm;}h1{font-size:13px;color:#ca1b1b;}
- table{width:100%;border-collapse:collapse;margin:8px 0;}th{background:#1a1a2e;color:white;padding:5px 6px;font-size:9px;text-align:left;}
- td{padding:5px 6px;border-bottom:1px solid #eee;font-size:9px;}
-.sig{border-top:1px solid #000;margin-top:28px;padding-top:4px;font-size:8px;text-align:center;}
-.total{background:#fff9e6;font-weight:bold;}
- </style></head><body><div class="wrap">
- <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
- <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">UNSOLD RETURN FORM</div></div>
- <div style="text-align:right;font-size:8px;"><div>Date: <strong>${today}</strong></div><div>Invoice: <strong>${invoice.invoice_number}</strong></div></div>
- </div>
- <div style="font-size:9px;margin-bottom:8px;"><strong>Reseller:</strong> ${invoice.reseller_name} &nbsp;&nbsp; <strong>Area:</strong> ${invoice.reseller_area||'___'}</div>
- <table>
- <tr><th>Variant</th><th style="text-align:right">Delivered</th><th style="text-align:right">Returned</th><th style="text-align:right">Sold</th><th style="text-align:right">Amount</th></tr>
- ${items.map(i=>{
- const ret=returnMap[i.variant_name]||0
- const sold=Number(i.quantity||0)-ret
- const amt=sold*Number(i.reseller_price||0)
- return `<tr><td><strong>${i.variant_name}</strong></td><td style="text-align:right">${i.quantity}</td><td style="text-align:right;color:#ca1b1b;font-weight:bold">${ret||'___'}</td><td style="text-align:right;color:#2d8a4e">${sold}</td><td style="text-align:right">${amt>0?' '+amt.toFixed(2):'___'}</td></tr>`
- }).join('')}
- <tr class="total"><td>TOTAL</td><td style="text-align:right">${items.reduce((s,i)=>s+Number(i.quantity||0),0)}</td><td style="text-align:right;color:#ca1b1b">${Object.values(returnMap).reduce((s,v)=>s+v,0)||'___'}</td><td style="text-align:right">${items.reduce((s,i)=>s+Number(i.quantity||0),0)-Object.values(returnMap).reduce((s,v)=>s+v,0)}</td><td style="text-align:right"> ${(Number(invoice.total_amount||0)).toFixed(2)}</td></tr>
- </table>
- <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px;">
- <div class="sig">Driver / Assistant<br/><br/>_______________</div>
- <div class="sig">Reseller Signature<br/><br/>_______________</div>
- </div>
- <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#1a1a2e;color:white;border:none;border-radius:6px;cursor:pointer;"> PRINT</button></div>
- </div></body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },500)
  }
 
  // Print Cash Collection Summary 
@@ -10047,6 +14432,7 @@ function buildDeliveryInvoicePrintCSS() {
  setResellerNotices([])
  setEditingResellerOrderId(null)
  setUpdatingResellerOrder(false)
+ setLastSubmittedOrderNotice('')
  setResellerOrderNotes('')
  setResellerOrderItems([])
  }
@@ -10149,6 +14535,80 @@ function buildDeliveryInvoicePrintCSS() {
  return !['cancelled','canceled','void','deleted'].includes(s)
  }
 
+ async function checkSameDayInvoiceForExactBranch(resellerId, deliveryDate, options = {}) {
+ const targetResellerId = String(resellerId || '').trim()
+ const targetDate = String(deliveryDate || '').slice(0, 10)
+ const excludeInvoiceId = options.excludeInvoiceId ? String(options.excludeInvoiceId) : ''
+ const resellerName = options.resellerName || 'this branch'
+
+ if (!targetResellerId || !targetDate) return { blocked:false, message:'' }
+
+ // Critical rule: a manual invoice duplicate check is branch-exact only.
+ // JV1-MANGALDAN and JV2-MAPANDAN may share an owner/account or copy each other's quantity template,
+ // but they are different reseller branches and must not block each other.
+ const { data:existingInvoices, error } = await supabase
+ .from('delivery_invoices')
+ .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
+ .eq('delivery_date', targetDate)
+ .eq('reseller_id', targetResellerId)
+ .limit(50)
+ if (error) throw error
+
+ const duplicateInvoice = (existingInvoices || []).find(inv =>
+  String(inv.id) !== excludeInvoiceId &&
+  isActiveDuplicateInvoiceStatus(inv.status)
+ )
+
+ if (duplicateInvoice) {
+  return {
+   blocked:true,
+   type:'invoice',
+   record:duplicateInvoice,
+   message:`Duplicate blocked: ${resellerName || duplicateInvoice.reseller_name || 'this branch'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Same exact branch + same delivery date is not allowed.`
+  }
+ }
+
+ return { blocked:false, message:'' }
+ }
+
+ function normalizeOutletDuplicateKey(value) {
+ return String(value || '')
+ .trim()
+ .toLowerCase()
+ .replace(/[^a-z0-9]+/g, ' ')
+ .replace(/\s+/g, ' ')
+ .trim()
+ }
+
+ function getOutletDuplicateProfile(resellerId, fallbackName = '') {
+ const id = String(resellerId || '')
+ const knownRows = [
+ ...(Array.isArray(resellers)? resellers: []),
+ ...(Array.isArray(resellerPortalBranches)? resellerPortalBranches: [])
+ ]
+ const branch = knownRows.find(r => String(r?.id || '') === id)
+ const name = branch?.name || branch?.reseller_name || fallbackName || ''
+ const accountId = branch?.reseller_account_id || resellerPortalAccount?.id || ''
+ return {
+ id,
+ name,
+ normalizedName:normalizeOutletDuplicateKey(name),
+ accountId:String(accountId || '')
+ }
+ }
+
+ function isSameDuplicateOutletRecord(row, targetProfile, relatedIds = []) {
+ if (!row || !targetProfile) return false
+ const rowResellerId = String(row.reseller_id || '')
+ const sameId = targetProfile.id && rowResellerId === targetProfile.id
+ const rowNameKey = normalizeOutletDuplicateKey(row.reseller_name || row.name || '')
+ const sameName = targetProfile.normalizedName && rowNameKey && rowNameKey === targetProfile.normalizedName
+ // IMPORTANT: Do not treat sibling branches under the same reseller account as duplicates.
+ // Example: JV1-MANGALDAN and JV2-MAPANDAN can share one owner/account,
+ // but they are different outlets and must be allowed to receive separate invoices on the same date.
+ return Boolean(sameId || sameName)
+ }
+
  async function checkSameDayOutletOrderOrInvoice(resellerId, deliveryDate, options = {}) {
  const targetResellerId = String(resellerId || '')
  const targetDate = String(deliveryDate || '').slice(0, 10)
@@ -10157,43 +14617,56 @@ function buildDeliveryInvoicePrintCSS() {
 
  if (!targetResellerId || !targetDate) return { blocked:false, message:'' }
 
+ const targetProfile = getOutletDuplicateProfile(targetResellerId, options.resellerName || options.outletName || '')
+ const relatedIds = getResellerBranchIds(targetResellerId).map(id => String(id)).filter(Boolean)
+ const ignoreOrders = options.ignoreOrders === true
+
+ // Important: query the whole delivery date, not only the exact reseller_id.
+ // Some duplicate reseller records can share the same outlet name but have different IDs.
+ // Without the name/date check, the app can create two invoices for the same reseller and same date.
+ // When approving a pending order, do not block the approval just because the same pending
+ // order is active. Approval only needs to check for an existing active invoice.
+ if (!ignoreOrders) {
  const { data:existingOrders, error:orderErr } = await supabase
  .from('reseller_orders')
- .select('id,status,delivery_date,reseller_name,invoice_id')
- .eq('reseller_id', targetResellerId)
+ .select('id,status,delivery_date,reseller_id,reseller_name,invoice_id')
  .eq('delivery_date', targetDate)
- .limit(20)
+ .limit(300)
  if (orderErr) throw orderErr
 
  const duplicateOrder = (existingOrders || []).find(o =>
- String(o.id) !== excludeOrderId && isActiveDuplicateOrderStatus(o.status)
+ String(o.id) !== excludeOrderId &&
+ isActiveDuplicateOrderStatus(o.status) &&
+ isSameDuplicateOutletRecord(o, targetProfile, relatedIds)
  )
  if (duplicateOrder) {
  return {
  blocked:true,
  type:'order',
  record:duplicateOrder,
- message:`Duplicate blocked: ${duplicateOrder.reseller_name || 'this outlet'} already has an active order for ${targetDate}. Only one order/invoice per outlet per delivery date is allowed.`
+ message:`Duplicate blocked: ${duplicateOrder.reseller_name || targetProfile.name || 'this outlet'} already has an active order for ${targetDate}. Same reseller/outlet name + same delivery date is not allowed.`
+ }
  }
  }
 
  const { data:existingInvoices, error:invoiceErr } = await supabase
  .from('delivery_invoices')
- .select('id,invoice_number,status,delivery_date,reseller_name')
- .eq('reseller_id', targetResellerId)
+ .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
  .eq('delivery_date', targetDate)
- .limit(20)
+ .limit(300)
  if (invoiceErr) throw invoiceErr
 
  const duplicateInvoice = (existingInvoices || []).find(inv =>
- String(inv.id) !== excludeInvoiceId && isActiveDuplicateInvoiceStatus(inv.status)
+ String(inv.id) !== excludeInvoiceId &&
+ isActiveDuplicateInvoiceStatus(inv.status) &&
+ isSameDuplicateOutletRecord(inv, targetProfile, relatedIds)
  )
  if (duplicateInvoice) {
  return {
  blocked:true,
  type:'invoice',
  record:duplicateInvoice,
- message:`Duplicate blocked: ${duplicateInvoice.reseller_name || 'this outlet'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Only one order/invoice per outlet per delivery date is allowed.`
+ message:`Duplicate blocked: ${duplicateInvoice.reseller_name || targetProfile.name || 'this outlet'} already has invoice ${duplicateInvoice.invoice_number || ''} for ${targetDate}. Same reseller/outlet name + same delivery date is not allowed.`
  }
  }
 
@@ -10275,8 +14748,9 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- const validItems = resellerOrderItems.filter(i => Number(i.quantity) > 0)
+ const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
  if (validItems.length === 0) { showToast(' Enter at least one quantity.', 'red'); return }
+ if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before saving. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.', 'red'); return }
  const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
  if (cutoffStatus.locked) {
@@ -10347,17 +14821,67 @@ function buildDeliveryInvoicePrintCSS() {
  setUpdatingResellerOrder(false)
  }
 
+
+ function collapseDuplicateOrderItemsByProduct(items = []) {
+ const map = new Map()
+ const duplicates = []
+ ;(items || []).forEach((item, idx) => {
+  const qty = safeNum(item?.quantity, 0)
+  if (qty <= 0) return
+  const nameKey = normalizeOutletDuplicateKey(item?.variant_name || item?.product_name || item?.name || '')
+  const idKey = String(item?.variant_id || item?.product_id || '').trim()
+  // Use product name first because old duplicate variant records can have different IDs but the same visible product.
+  const key = nameKey || idKey || `row-${idx}`
+  const clean = {
+   ...item,
+   quantity:qty,
+   variant_name:item?.variant_name || item?.product_name || item?.name || 'Product',
+   retail_price:safeNum(item?.retail_price, 0),
+   reseller_price:safeNum(item?.reseller_price, 0)
+  }
+  if (!map.has(key)) {
+   map.set(key, clean)
+   return
+  }
+  const existing = map.get(key)
+  duplicates.push({ name:clean.variant_name, keptQty:safeNum(existing.quantity, 0), duplicateQty:qty })
+  // Same product should only appear once per order. Keep the largest entered quantity instead of summing,
+  // because summing accidental duplicate rows is what doubles the invoice.
+  if (qty > safeNum(existing.quantity, 0)) {
+   map.set(key, {
+    ...existing,
+    ...clean,
+    quantity:qty,
+    retail_price:safeNum(clean.retail_price, existing.retail_price),
+    reseller_price:safeNum(clean.reseller_price, existing.reseller_price)
+   })
+  }
+ })
+ return { items:[...map.values()], duplicates }
+ }
+
  async function submitResellerOrder() {
  if (resellerOrderSubmitLockRef.current || submittingOrder) {
- showToast(' Order already submitted. Please wait while the system records it.', 'red')
+ showToast(' Order is already being submitted. Please wait until it appears in Order Requests.', 'red')
  return
  }
  const orderBranch = resellerPortalBranches.find(b => String(b.id) === String(selectedResellerBranchId)) || currentReseller
  if (!orderBranch?.id) { showToast(' Select the branch/outlet for this order.','red'); return }
 
- const validItems = resellerOrderItems.filter(i=>Number(i.quantity)>0)
+ const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
  if (validItems.length===0) { showToast(' Enter at least one quantity.','red'); return }
+ if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before submitting. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.','red'); return }
+ const deliveryDateKey = String(resellerOrderDeliveryDate || '').slice(0, 10)
+ const submitKey = `${String(orderBranch.id)}|${deliveryDateKey}`
+ if (resellerOrderRecentSubmitKeysRef.current.has(submitKey)) {
+  const notice = `Order already received for ${orderBranch.name} on ${deliveryDateKey}. Check Order Requests or edit the existing pending order instead of submitting again.`
+  setLastSubmittedOrderNotice(notice)
+  showToast(' Duplicate submit blocked. ' + notice, 'red')
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
+ }
  const cutoffStatus = getOrderCutoffStatus(resellerOrderDeliveryDate)
  if (cutoffStatus.locked) {
  showToast(` Order cut-off reached for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Please choose a later delivery date.`, 'red')
@@ -10366,13 +14890,41 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  resellerOrderSubmitLockRef.current = true
+ resellerOrderRecentSubmitKeysRef.current.add(submitKey)
  setSubmittingOrder(true)
+ setLastSubmittedOrderNotice(`Submitting order for ${orderBranch.name} on ${deliveryDateKey}. Please wait — do not tap Submit again.`)
+ let confirmedOrderReceived = false
  try {
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, resellerOrderDeliveryDate)
+ const { data:existingPendingOrder, error:existingPendingErr } = await supabase
+ .from('reseller_orders')
+ .select('id,status,delivery_date,reseller_id,reseller_name,created_at,invoice_id')
+ .eq('reseller_id', orderBranch.id)
+ .eq('delivery_date', deliveryDateKey)
+ .eq('status', 'pending')
+ .is('invoice_id', null)
+ .order('created_at', { ascending:false })
+ .limit(1)
+ .maybeSingle()
+ if (existingPendingErr) throw existingPendingErr
+ if (existingPendingOrder) {
+  confirmedOrderReceived = true
+  const notice = `${orderBranch.name} already has a pending order for ${deliveryDateKey}. It is now shown in Order Requests. Use EDIT PENDING ORDER if quantities need correction.`
+  setLastSubmittedOrderNotice(notice)
+  showToast(' Duplicate order blocked. ' + notice, 'red')
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
+ }
+
+ const duplicateCheck = await checkSameDayOutletOrderOrInvoice(orderBranch.id, deliveryDateKey, { resellerName:orderBranch.name || '' })
  if (duplicateCheck.blocked) {
- showToast(duplicateCheck.message, 'red')
- await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
- return
+  confirmedOrderReceived = true
+  setLastSubmittedOrderNotice(duplicateCheck.message)
+  showToast(duplicateCheck.message, 'red')
+  await logAudit('RESELLER ORDER BLOCKED - DUPLICATE SAME DAY', 'Reseller Portal', orderBranch?.name || '', duplicateCheck.message)
+  setResellerPortalView('orders')
+  await loadResellerPortalData(orderBranch.id)
+  return
  }
 
  const creditStatus = await checkResellerCreditBlockFresh(orderBranch.id)
@@ -10385,18 +14937,33 @@ function buildDeliveryInvoicePrintCSS() {
  const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
  const { data:order, error } = await supabase.from('reseller_orders').insert({
  reseller_id:orderBranch.id, reseller_name:orderBranch.name,
- order_date:today, delivery_date:resellerOrderDeliveryDate,
+ order_date:today, delivery_date:deliveryDateKey,
  total_qty:totalQty, estimated_amount:total,
  status:'pending', notes:resellerOrderNotes||null
  }).select().single()
- if (error) throw error
- await supabase.from('reseller_order_items').insert(validItems.map(i=>({
+ if (error) {
+  if (String(error?.code || '') === '23505') {
+   confirmedOrderReceived = true
+   const notice = `${orderBranch.name} already has an order for ${deliveryDateKey}. The duplicate submit was blocked by the database.`
+   setLastSubmittedOrderNotice(notice)
+   showToast(notice, 'red')
+   setResellerPortalView('orders')
+   await loadResellerPortalData(orderBranch.id)
+   return
+  }
+  throw error
+ }
+ const { error:itemInsertErr } = await supabase.from('reseller_order_items').insert(validItems.map(i=>({
  order_id:order.id, variant_id:i.variant_id, variant_name:i.variant_name,
  quantity:Number(i.quantity), retail_price:i.retail_price, reseller_price:i.reseller_price
  })))
+ if (itemInsertErr) throw itemInsertErr
+ confirmedOrderReceived = true
  const accountLabel = resellerPortalAccount?.account_name? `${resellerPortalAccount.account_name} / ${orderBranch.name}`: orderBranch.name
- await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${resellerOrderDeliveryDate}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
- await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${resellerOrderDeliveryDate} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
+ await createNotification(null,'System','order',`${hasCreditWarning?' Credit Warning Order':' New Order'}: ${accountLabel}`,`${accountLabel} placed an order for ${deliveryDateKey}. ${validItems.length} variants, ${totalQty} pcs, estimated ${php(total)}.${hasCreditWarning? ' CREDIT WARNING: account has unsettled balance beyond the grace period. Review before approval.': ''}`)
+ await logAudit(hasCreditWarning?'RESELLER ORDER SUBMITTED - CREDIT WARNING':'RESELLER ORDER SUBMITTED', 'Reseller Portal', accountLabel, `${deliveryDateKey} ${totalQty} pcs ${php(total)}${hasCreditWarning? ' | '+creditStatus.message: ''}`)
+ const notice = `Order received for ${orderBranch.name} on ${deliveryDateKey}. It is now waiting for admin approval. Do not submit this same order again; use Edit Pending Order if changes are needed.`
+ setLastSubmittedOrderNotice(notice)
  showToast(` Order submitted for ${orderBranch.name}! Waiting for admin approval${hasCreditWarning?' with credit warning.':'.'}`)
  setEditingResellerOrderId(null)
  setResellerOrderNotes('')
@@ -10406,60 +14973,124 @@ function buildDeliveryInvoicePrintCSS() {
  } catch(err) {
  showToast(' Failed: '+(err?.message || err),'red')
  } finally {
+ if (!confirmedOrderReceived) resellerOrderRecentSubmitKeysRef.current.delete(submitKey)
  resellerOrderSubmitLockRef.current = false
  setSubmittingOrder(false)
  }
  }
-
  // Feature: Admin Order Management 
  async function loadPendingResellerOrders() {
  const { data } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').eq('status','pending').order('created_at',{ascending:false})
  setPendingResellerOrders(data||[])
  }
  async function approveResellerOrder(order, customItems) {
+ const orderId = String(order?.id || '')
+ if (!orderId) { showToast(' Order ID missing. Please refresh pending orders.', 'red'); return }
+ if (approvingResellerOrderIdsRef.current.has(orderId)) {
+  showToast(' This order is already being approved. Please wait.', 'red')
+  return
+ }
+ approvingResellerOrderIdsRef.current.add(orderId)
+ try {
  const cutoffStatus = getOrderCutoffStatus(order?.delivery_date)
  if (cutoffStatus.locked) {
  showToast(` Approval into invoice is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance delivery dates are still allowed.`, 'red')
  await logAudit('ORDER APPROVAL BLOCKED - ORDER CUT-OFF', adminRole, order?.reseller_name || '', cutoffStatus.message)
  return
  }
- const items = customItems || order.reseller_order_items || []
- const validItems = items.filter(i=>Number(i.quantity)>0)
- if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
- const duplicateCheck = await checkSameDayOutletOrderOrInvoice(order.reseller_id, order.delivery_date, { excludeOrderId:order.id })
- if (duplicateCheck.blocked) {
- showToast(duplicateCheck.message, 'red')
- await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY', adminRole, order?.reseller_name || '', duplicateCheck.message)
- return
+
+ // Always re-read the order before approval. This prevents approving stale/duplicated UI data.
+ const { data:freshOrder, error:freshOrderErr } = await supabase
+ .from('reseller_orders')
+ .select('*, reseller_order_items(*)')
+ .eq('id', orderId)
+ .maybeSingle()
+ if (freshOrderErr) throw freshOrderErr
+ if (!freshOrder) { showToast(' Order was not found. Please refresh pending orders.', 'red'); return }
+ if (String(freshOrder.status || '').toLowerCase() !== 'pending' || freshOrder.invoice_id) {
+  showToast(' This order was already approved/rejected or already has an invoice. Please refresh.', 'red')
+  await loadPendingResellerOrders()
+  return
  }
- const creditStatus = await checkResellerCreditBlockFresh(order.reseller_id)
+
+ const approvalOrder = { ...order, ...freshOrder }
+ const rawItems = customItems || freshOrder.reseller_order_items || []
+ const { items:validItems, duplicates:duplicateOrderRows } = collapseDuplicateOrderItemsByProduct(rawItems)
+ if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
+ if (duplicateOrderRows.length > 0) {
+  const duplicateNames = [...new Set(duplicateOrderRows.map(row => row.name).filter(Boolean))].slice(0, 8).join(', ')
+  showToast(` Duplicate product rows were detected and merged before approval${duplicateNames ? ': ' + duplicateNames : ''}. Quantities were not summed, so the invoice will not double.`, 'red')
+  await logAudit('ORDER APPROVAL DUPLICATE ROWS MERGED', adminRole, approvalOrder.reseller_name || '', `${approvalOrder.delivery_date}: ${duplicateNames || duplicateOrderRows.length + ' duplicate row(s)'}`)
+ }
+
+ // Approval safety: pending order approval must NOT be blocked by the same pending order itself.
+ // At this stage, only an already-existing active invoice for the same outlet/date should block approval.
+ const approvalTargetDate = String(approvalOrder?.delivery_date || '').slice(0, 10)
+ const approvalTargetNameKey = normalizeOutletDuplicateKey(approvalOrder?.reseller_name || '')
+ const approvalTargetResellerId = String(approvalOrder?.reseller_id || '')
+ const { data:approvalExistingInvoices, error:approvalInvoiceErr } = await supabase
+ .from('delivery_invoices')
+ .select('id,invoice_number,status,delivery_date,reseller_id,reseller_name')
+ .eq('delivery_date', approvalTargetDate)
+ .limit(500)
+ if (approvalInvoiceErr) throw approvalInvoiceErr
+ const duplicateApprovalInvoice = (approvalExistingInvoices || []).find(inv => {
+  if (!isActiveDuplicateInvoiceStatus(inv.status)) return false
+  const sameId = approvalTargetResellerId && String(inv.reseller_id || '') === approvalTargetResellerId
+  const sameName = approvalTargetNameKey && normalizeOutletDuplicateKey(inv.reseller_name || '') === approvalTargetNameKey
+  return sameId || sameName
+ })
+ if (duplicateApprovalInvoice) {
+  const duplicateMessage = `Duplicate blocked: ${duplicateApprovalInvoice.reseller_name || approvalOrder?.reseller_name || 'this outlet'} already has invoice ${duplicateApprovalInvoice.invoice_number || ''} for ${approvalTargetDate}. Same reseller/outlet name + same delivery date is not allowed.`
+  showToast(duplicateMessage, 'red')
+  await logAudit('ORDER APPROVAL BLOCKED - DUPLICATE SAME DAY INVOICE', adminRole, approvalOrder?.reseller_name || '', duplicateMessage)
+  return
+ }
+ const creditStatus = await checkResellerCreditBlockFresh(approvalOrder.reseller_id)
  const hasCreditWarning = creditStatus.blocked
  if (hasCreditWarning) {
- showToast(` Credit warning for ${order.reseller_name}. Approval is allowed, but review/collect before releasing delivery. ${creditStatus.message}`, 'red')
- await logAudit('ORDER APPROVAL CREDIT WARNING', adminRole, order.reseller_name, creditStatus.message)
+ showToast(` Credit warning for ${approvalOrder.reseller_name}. Approval is allowed, but review/collect before releasing delivery. ${creditStatus.message}`, 'red')
+ await logAudit('ORDER APPROVAL CREDIT WARNING', adminRole, approvalOrder.reseller_name, creditStatus.message)
  }
  // Create invoice automatically
- const reseller = resellers.find(r=>r.id===order.reseller_id)
- const invoiceNum = `INV-${order.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
- const dueDate = new Date(order.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
- const lineItems = validItems.map(i=>{ const rp=Math.round((i.retail_price||0)*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*Number(i.quantity)} })
+ const invoiceNum = `INV-${approvalOrder.delivery_date.replace(/-/g,'')}-${Math.floor(1000+Math.random()*9000)}`
+ const dueDate = new Date(approvalOrder.delivery_date); dueDate.setDate(dueDate.getDate()+RESELLER_CREDIT_GRACE_DAYS)
+ const lineItems = validItems.map(i=>{ const rp=Math.round((safeNum(i.retail_price,0))*0.80*100)/100; return {...i, reseller_price:rp, total_price:rp*safeNum(i.quantity,0)} })
  const subtotal = lineItems.reduce((s,i)=>s+i.total_price,0)
- const resellerRequestNote = String(order?.notes || '').trim()
- const invoiceOrderNotes = [`From order ${order.id.slice(0,8)}`, resellerRequestNote ? `Reseller note: ${resellerRequestNote}` : ''].filter(Boolean).join(' | ')
+ const resellerRequestNote = String(approvalOrder?.notes || '').trim()
+ const invoiceOrderNotes = [`From order ${orderId.slice(0,8)}`, duplicateOrderRows.length > 0 ? 'System note: duplicate order rows were merged before approval to prevent doubled quantities.' : '', resellerRequestNote ? `Reseller note: ${resellerRequestNote}` : ''].filter(Boolean).join(' | ')
  const { data:inv, error } = await supabase.from('delivery_invoices').insert({
- invoice_number:invoiceNum, reseller_id:order.reseller_id, reseller_name:order.reseller_name,
- delivery_date:order.delivery_date, due_date:dueDate.toISOString().slice(0,10),
+ invoice_number:invoiceNum, reseller_id:approvalOrder.reseller_id, reseller_name:approvalOrder.reseller_name,
+ delivery_date:approvalOrder.delivery_date, due_date:dueDate.toISOString().slice(0,10),
  subtotal, discount_pct:20, total_amount:subtotal, status:'unpaid',
  prepared_by:'Ronald Reyes / Jomar Cerezo', dispatched_by:'Ronald Reyes / Jomar Cerezo',
  notes:invoiceOrderNotes, created_by:adminRole
  }).select().single()
  if (error) { showToast(' Failed: '+error.message,'red'); return }
- await supabase.from('delivery_invoice_items').insert(lineItems.map(i=>({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:i.retail_price||0, reseller_price:i.reseller_price, quantity:Number(i.quantity), total_price:i.total_price })))
- await supabase.from('reseller_orders').update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString(), invoice_id:inv.id }).eq('id',order.id)
- await createNotification(null,'System','order',` Order Approved: ${order.reseller_name}`,`Your order for ${order.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
- await logAudit('ORDER APPROVED', adminRole, order.reseller_name, `${invoiceNum} ${php(subtotal)}`)
- showToast(` Order approved! Invoice ${invoiceNum} created.`)
+ await supabase.from('delivery_invoice_items').insert(lineItems.map(i=>({ invoice_id:inv.id, variant_id:i.variant_id, variant_name:i.variant_name, retail_price:safeNum(i.retail_price,0), reseller_price:i.reseller_price, quantity:safeNum(i.quantity,0), total_price:i.total_price })))
+ const { data:approvedOrder, error:approveErr } = await supabase
+ .from('reseller_orders')
+ .update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString(), invoice_id:inv.id })
+ .eq('id',orderId)
+ .eq('status','pending')
+ .is('invoice_id', null)
+ .select('id')
+ .maybeSingle()
+ if (approveErr) throw approveErr
+ if (!approvedOrder) {
+  showToast(' Invoice was created, but order status changed before approval finished. Please check for duplicate invoices immediately.', 'red')
+  await logAudit('ORDER APPROVAL WARNING - STATUS CHANGED AFTER INVOICE CREATE', adminRole, approvalOrder.reseller_name || '', invoiceNum)
+ } else {
+  await createNotification(null,'System','order',` Order Approved: ${approvalOrder.reseller_name}`,`Your order for ${approvalOrder.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
+  await logAudit('ORDER APPROVED', adminRole, approvalOrder.reseller_name, `${invoiceNum} ${php(subtotal)}`)
+  showToast(` Order approved! Invoice ${invoiceNum} created.`)
+ }
  loadPendingResellerOrders(); loadDeliveryInvoices()
+ } catch(err) {
+  showToast(' Approval failed: ' + (err?.message || err), 'red')
+ } finally {
+  approvingResellerOrderIdsRef.current.delete(orderId)
+ }
  }
  async function rejectResellerOrder(orderId, resellerName) {
  const reason = window.prompt('Reason for rejection:')
@@ -10953,6 +15584,105 @@ function buildDeliveryInvoicePrintCSS() {
  const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
  setMyAttendance(data || [])
  }
+
+ async function loadMedicalCertificateLock(emp) {
+ if (!emp?.id) return { locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
+ setMedicalCertLock(prev => ({...prev, checking:true }))
+ try {
+  const lookbackStart = addDaysToDateString(today, -14)
+  const { data:logs, error:logsError } = await supabase
+   .from('attendance_logs')
+   .select('id,attendance_date,status,time_in,time_out')
+   .eq('employee_id', emp.id)
+   .gte('attendance_date', lookbackStart)
+   .lte('attendance_date', today)
+   .order('attendance_date', { ascending:false })
+  if (logsError) throw logsError
+
+  let certificates = []
+  let certificateTableReady = true
+  try {
+   const { data:certRows, error:certError } = await supabase
+    .from('employee_medical_certificates')
+    .select('*')
+    .eq('employee_id', emp.id)
+    .order('created_at', { ascending:false })
+   if (certError) throw certError
+   certificates = certRows || []
+  } catch(certErr) {
+   console.warn('Medical certificate table not available yet:', certErr)
+   certificateTableReady = false
+   certificates = []
+  }
+
+  if (!certificateTableReady) {
+   const unlocked = { checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
+   setMedicalCertLock(unlocked)
+   return unlocked
+  }
+
+  const lockInfo = getMedicalCertificateAbsenceLock(logs || [], certificates, today)
+  setMedicalCertLock({...lockInfo, checking:false })
+  return lockInfo
+ } catch(err) {
+  console.error('Medical certificate lock check failed:', err)
+  const fallback = { checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
+  setMedicalCertLock(fallback)
+  return fallback
+ }
+ }
+
+ async function handleMedicalCertificateUpload(e) {
+ const file = e.target.files?.[0]
+ if (!file) return
+ if (!employee?.id) { e.target.value=''; return }
+ if (!medicalCertLock?.locked) { showToast('No medical certificate lock is active.', 'red'); e.target.value=''; return }
+ const validTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp']
+ if (file.type && !validTypes.includes(file.type)) {
+  showToast('Please upload PDF, JPG, PNG, or WEBP medical certificate only.', 'red')
+  e.target.value = ''
+  return
+ }
+ if (file.size > 10 * 1024 * 1024) {
+  showToast('Medical certificate file is too large. Maximum is 10MB.', 'red')
+  e.target.value = ''
+  return
+ }
+ setMedicalCertUploading(true)
+ try {
+  const ext = (file.name?.split('.').pop() || 'pdf').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'pdf'
+  const safeCode = String(employee.employee_code || employee.id).replace(/[^a-zA-Z0-9_-]/g, '_')
+  const fileName = `${safeCode}_${medicalCertLock.absenceStart}_to_${medicalCertLock.absenceEnd}_${Date.now()}.${ext}`
+  const { error:uploadError } = await supabase.storage
+   .from('medical-certificates')
+   .upload(fileName, file, { upsert:false, contentType:file.type || 'application/octet-stream' })
+  if (uploadError) throw uploadError
+  const { data:urlData } = supabase.storage.from('medical-certificates').getPublicUrl(fileName)
+  const fileUrl = urlData?.publicUrl || null
+  const { error:insertError } = await supabase.from('employee_medical_certificates').insert({
+   employee_id:employee.id,
+   employee_code:employee.employee_code,
+   employee_name:employee.full_name,
+   absence_start:medicalCertLock.absenceStart,
+   absence_end:medicalCertLock.absenceEnd,
+   absent_days:medicalCertLock.absentDays || 2,
+   file_name:fileName,
+   file_url:fileUrl,
+   status:'uploaded'
+  })
+  if (insertError) throw insertError
+  await logAudit('MEDICAL CERTIFICATE UPLOADED', employee.full_name || employee.employee_code || 'Employee', employee.full_name || '', `Uploaded medical certificate for ${medicalCertLock.absenceStart} to ${medicalCertLock.absenceEnd}`)
+  showToast(' Medical certificate uploaded. Time In is unlocked.')
+  setMedicalCertLock({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' })
+  await loadMedicalCertificateLock(employee)
+ } catch(err) {
+  console.error('Medical certificate upload failed:', err)
+  showToast('Medical certificate upload failed: ' + (err?.message || err), 'red')
+ } finally {
+  setMedicalCertUploading(false)
+  e.target.value = ''
+ }
+ }
  async function loadMyLeaveBalance(emp) {
  if (!emp?.id) return
 
@@ -11017,6 +15747,20 @@ function buildDeliveryInvoicePrintCSS() {
  }
  }
  async function initiateTimeIn() {
+ if (medicalCertLock?.locked) {
+  alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
+  return
+ }
+ if (requiresStrictCameraTimeIn(employee)) {
+  if (!navigator.onLine || !isOnline) {
+   alert('Internet connection is required for your Time In because the live selfie must upload before attendance is recorded.')
+   return
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+   alert('Live camera access is unavailable in this browser. Please use the company tablet or a supported browser and allow Camera permission.')
+   return
+  }
+ }
  setCapturedPhoto(null); setCameraMode('timein')
  }
  async function initiateTimeOut() {
@@ -11040,29 +15784,67 @@ function buildDeliveryInvoicePrintCSS() {
  async function initiateBreakIn() {
  const openBreak = todayBreaks.find(b=>!b.break_in)
  if (!openBreak) { alert('You are not currently on break.'); return }
- const duration = diffMinutesAcrossMidnight(openBreak.break_out, nowTime())
- const { error } = await supabase.from('break_logs').update({ break_in:nowTime(), break_minutes:duration }).eq('id', openBreak.id)
+ const breakInTime = nowTime()
+ const duration = diffMinutesAcrossMidnight(openBreak.break_out, breakInTime)
+ const { error } = await supabase.from('break_logs').update({ break_in:breakInTime, break_minutes:duration }).eq('id', openBreak.id)
  if (error) { showToast('Failed: '+error.message,'red'); return }
- loadTodayBreaks(todayLog.id); showToast(' Break ended!')
+
+ // Save the running break totals immediately, instead of waiting for Time Out.
+ const completedBreakMinutes = todayBreaks
+  .filter(row => row?.id !== openBreak.id && row?.break_in)
+  .reduce((sum, row) => sum + Math.max(0, safeNum(row?.break_minutes, 0)), 0)
+ const totalBreakMinutes = Math.max(0, Math.round(completedBreakMinutes + duration))
+ const overbreakMinutes = Math.max(0, totalBreakMinutes - ALLOWED_BREAK_MINUTES)
+ if (todayLog?.id) {
+  const { error:updateAttendanceError } = await supabase.from('attendance_logs').update({
+   total_break_minutes:totalBreakMinutes,
+   excess_break_minutes:overbreakMinutes
+  }).eq('id', todayLog.id)
+  if (updateAttendanceError) console.warn('Attendance break total update failed:', updateAttendanceError)
+  else setTodayLog(prev => prev ? { ...prev, total_break_minutes:totalBreakMinutes, excess_break_minutes:overbreakMinutes } : prev)
  }
- async function confirmTimeIn() {
- if (!capturedPhoto) { alert('Please take a selfie first.'); return }
+
+ if (overbreakMinutes > 0) {
+  const sourceDate = todayLog?.attendance_date || today
+  await createNotification(employee.id, employee.full_name, 'overbreak', 'Overbreak Recorded', `${employee.full_name} recorded ${totalBreakMinutes} break minute(s) on ${sourceDate}, including ${overbreakMinutes} minute(s) over the 60-minute limit. Break: ${openBreak.break_out} to ${breakInTime}.`)
+  await logAudit('OVERBREAK RECORDED', employee.full_name, employee.full_name, `${sourceDate} | Break ${openBreak.break_out} to ${breakInTime} | Total ${totalBreakMinutes} min | Overbreak ${overbreakMinutes} min`)
+  showToast(`Break ended. ${overbreakMinutes} minute(s) overbreak recorded.`, 'red')
+ } else {
+  showToast(`Break ended at ${duration} minute(s).`)
+ }
+ await loadTodayBreaks(todayLog.id)
+ }
+ async function confirmTimeIn(photoOverride = null) {
+ const selfiePhoto = photoOverride || capturedPhoto
+ if (!selfiePhoto) { alert('Please take a selfie first.'); return }
+ if (medicalCertLock?.locked) {
+  alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
+  setCameraMode(null); setCapturedPhoto(null)
+  return
+ }
+ const strictTimeIn = requiresStrictCameraTimeIn(employee)
  setLoading(true)
- // Offline handling
- if (!isOnline) {
- const gracePeriod = employee.grace_period_minutes?? 10
- let lateMinutes = 0, status = 'No Assigned Shift'
- if (todaySchedule?.shift_start) {
- const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
- const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
- status = lateMinutes > 0? 'Late': 'On Time'
- }
- const offlineLog = { employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:null }
- queueOfflineAction('timein', { employee_id:employee.id, attendance_date:today, data:offlineLog })
- setTodayLog({...offlineLog, id:'offline_'+Date.now() })
- setLoading(false); setCameraMode(null); setCapturedPhoto(null)
- showToast(' Offline Time In saved locally. Will sync when online.')
- return
+ // Keep the existing offline Time In behavior for normal employees. Only
+ // employees explicitly enabled for strict camera Time In must upload first.
+ if (!isOnline || !navigator.onLine) {
+  if (strictTimeIn) {
+   setLoading(false)
+   alert('Time In was not saved because the device is offline. Connect to the internet and try again so the selfie uploads first.')
+   return
+  }
+  const gracePeriod = employee.grace_period_minutes?? 10
+  let lateMinutes = 0, status = 'No Assigned Shift'
+  if (todaySchedule?.shift_start) {
+   const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
+   const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
+   status = lateMinutes > 0? 'Late': 'On Time'
+  }
+  const offlineLog = { employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:null }
+  queueOfflineAction('timein', { employee_id:employee.id, attendance_date:today, data:offlineLog })
+  setTodayLog({...offlineLog, id:'offline_'+Date.now() })
+  setLoading(false); setCameraMode(null); setCapturedPhoto(null)
+  showToast(' Offline Time In saved locally. Will sync when online.')
+  return
  }
  const { data:existing } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', today).maybeSingle()
  if (existing) { setLoading(false); setTodayLog(existing); alert('Already timed in today.'); setCameraMode(null); return }
@@ -11072,19 +15854,29 @@ function buildDeliveryInvoicePrintCSS() {
  const { data:openShift } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', yestStr2).is('time_out', null).maybeSingle()
  if (openShift) { setLoading(false); setTodayLog(openShift); alert('You still have an open shift from yesterday. Please Time Out first.'); setCameraMode(null); return }
  let selfieUrl = null
- try { selfieUrl = await uploadSelfie(capturedPhoto, `timein_${employee.id}_${today}.jpg`) } catch(e){}
+ try {
+  const strictSuffix = strictTimeIn? `_${Date.now()}`: ''
+  selfieUrl = await uploadSelfie(selfiePhoto, `timein_${employee.id}_${today}${strictSuffix}.jpg`)
+ } catch(e) {
+  console.error('Time In selfie upload failed:', e)
+  if (strictTimeIn) {
+   setLoading(false)
+   alert(`Time In was not saved because the selfie failed to upload. Please check the internet connection and try again.\n\n${e?.message || ''}`)
+   return
+  }
+ }
  const gracePeriod = employee.grace_period_minutes?? 10
  let lateMinutes = 0, status = 'No Assigned Shift'
  if (todaySchedule?.shift_start) {
- const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
- const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
- status = lateMinutes > 0? 'Late': 'On Time'
+  const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
+  const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
+  status = lateMinutes > 0? 'Late': 'On Time'
  }
  const { data, error } = await supabase.from('attendance_logs').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:selfieUrl }).select().single()
  setLoading(false)
  if (error) { alert('Time In failed: '+error.message); return }
  setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
- await logAudit('TIME IN', employee.full_name, employee.full_name, `Timed in at ${data.time_in}`)
+ await logAudit('TIME IN', employee.full_name, employee.full_name, `Timed in at ${data.time_in}${strictTimeIn?' | Strict camera upload':''}`)
  alert('Time In saved successfully!')
  }
  async function confirmTimeOut() {
@@ -11095,21 +15887,26 @@ function buildDeliveryInvoicePrintCSS() {
  const timeIn = todayLog.time_in || nowTime()
  const timeOut = nowTime()
  const activeAttendanceDate = todayLog.attendance_date || today
- const shiftStartForCalc = todayLog.shift_start || todaySchedule?.shift_start || null
- const shiftEndForCalc = todayLog.shift_end || todaySchedule?.shift_end || null
+ const undertimeDeductionApplicable = employeeRuleEnabled(employee.undertime_deduction_applicable, true)
 
- let undertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
+ let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
  const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
  const excessBreakMins = Math.max(0, totalBreakMins-ALLOWED_BREAK_MINUTES)
+ const attendanceMetrics = getAttendanceDayWorkMetrics([{
+  ...todayLog,
+  time_in:timeIn,
+  time_out:timeOut,
+  total_break_minutes:totalBreakMins,
+  status:'Completed'
+ }])
+ rawUndertimeMinutes = attendanceMetrics.undertimeMinutes
+ undertimeMinutes = undertimeDeductionApplicable ? rawUndertimeMinutes : 0
 
- // Correctly compare time-out vs scheduled shift end even when the shift crosses midnight.
- if (shiftEndForCalc) {
- const diff = diffFromShiftEndMinutes(shiftStartForCalc, shiftEndForCalc, timeOut, timeIn)
- undertimeMinutes = diff < 0? Math.abs(diff): 0
- overtimeMinutes = diff > 0? diff: 0
- if (undertimeMinutes>0) status='Undertime - Pending Filing'
- if (overtimeMinutes>0) status='Overtime - Pending Filing'
- }
+ // OT is based only on actual attendance after the mandatory break. The
+ // saved schedule and any employee-entered duration do not change the minutes.
+ overtimeMinutes = Math.max(0, attendanceMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES)
+ if (undertimeMinutes>0) status='Undertime - Pending Approval'
+ else if (overtimeMinutes>0) status='Overtime - Pending Filing'
 
  // Auto-compute Night Shift Differential (10PM - 6AM), including next-day time-out 
  const inM = minutesFromTime(timeIn)
@@ -11136,22 +15933,210 @@ function buildDeliveryInvoicePrintCSS() {
  }).eq('id', todayLog.id).select().single()
  setLoading(false)
  if (error) { alert('Time Out failed: '+error.message); return }
+
+ let autoUTRequestCreated = false
+ let autoUTRequestSkipped = false
+ let autoUTRequestError = ''
+ if (undertimeMinutes > 0) {
+  try {
+   const { data:existingUTRequests, error:existingUTError } = await supabase
+    .from('time_adjustment_requests')
+    .select('id,status')
+    .eq('employee_id', employee.id)
+    .eq('attendance_date', activeAttendanceDate)
+    .eq('request_type', 'undertime')
+    .in('status', ['pending', 'approved'])
+    .limit(1)
+
+   if (existingUTError) throw existingUTError
+   if (existingUTRequests?.length) {
+    autoUTRequestSkipped = true
+   } else {
+    const { error:autoUTError } = await supabase.from('time_adjustment_requests').insert({
+     employee_id:employee.id,
+     employee_code:employee.employee_code,
+     employee_name:employee.full_name,
+     attendance_date:activeAttendanceDate,
+     request_type:'undertime',
+     minutes:undertimeMinutes,
+     employee_reason:'System auto-filed for admin review: actual paid work was below 8 hours after the automatic 60-minute break. Payroll will count only the attendance-verified minutes after approval.',
+     status:'pending'
+    })
+    if (autoUTError) throw autoUTError
+    autoUTRequestCreated = true
+   }
+  } catch(autoUTErr) {
+   autoUTRequestError = autoUTErr?.message || String(autoUTErr)
+   console.error('Auto undertime request failed:', autoUTErr)
+  }
+ }
+
  setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
- await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}`)
+ await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}${autoUTRequestCreated?' | Auto UT request created':''}`)
  let msg = ' Time Out saved successfully!'
  if (activeAttendanceDate!== today) msg += `\n\n Night shift time-out saved under attendance date: ${activeAttendanceDate}.`
  if (nsdMinutes > 0) msg += `\n\n Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) will be computed in payroll at 10% premium.`
  if (overtimeMinutes>0) msg += `\n\n ${overtimeMinutes} min overtime please file an OT request.`
- if (undertimeMinutes>0) msg += `\n\n ${undertimeMinutes} min undertime please file a UT request.`
- if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break will be deducted.`
- alert(msg)
+ if (undertimeMinutes>0) {
+  if (autoUTRequestCreated) msg += `\n\n ${undertimeMinutes} min undertime was detected and filed for admin approval. Payroll will count only the actual attendance-verified minutes after approval.`
+  else if (autoUTRequestSkipped) msg += `\n\n ${undertimeMinutes} min undertime was detected. An existing pending or approved UT request already covers this attendance date.`
+  else msg += `\n\n ${undertimeMinutes} min undertime was detected, but the approval request could not be created${autoUTRequestError?': '+autoUTRequestError:''}. Ask the admin to review the attendance record before payroll.`
  }
+ if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No UT request or deduction was created.`
+ if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break is already included in the actual worked-time shortage.`
+  alert(msg)
+ }
+ async function refreshTimeAdjustmentPreview(dateValue = otRequestDate, typeValue = otRequestType, fromValue = otRequestFrom, toValue = otRequestTo) {
+ const targetDate = String(dateValue || '').slice(0, 10)
+ const requestType = String(typeValue || 'overtime').toLowerCase()
+ if (!employee?.id || !targetDate) {
+  const emptyPreview = { loading:false, canSubmit:false, minutes:0, message:'Select an attendance date to validate the time record.', code:'idle' }
+  setTimeAdjPreview(emptyPreview)
+  setOtRequestMinutes('')
+  setOtRequestFrom('')
+  setOtRequestTo('')
+  return emptyPreview
+ }
+
+ setTimeAdjPreview({ loading:true, canSubmit:false, minutes:0, message:'Checking the attendance record...', code:'loading' })
+ try {
+  const validation = await fetchAttendanceDayValidation(employee.id, targetDate, { employeeCode:employee.employee_code, employeeName:employee.full_name })
+  const { integrity } = validation
+  let minutes = requestType === 'overtime' ? validation.actualOvertimeMinutes : validation.actualUndertimeMinutes
+  let canSubmit = false
+  let message = ''
+  let rangeValidation = null
+
+  if (integrity.isAbsentOnly) {
+   message = 'Request blocked: this date is marked absent.'
+  } else if (integrity.isIncomplete) {
+   message = `Request blocked: ${integrity.message} Submit a DTR correction first.`
+  } else if (integrity.isInvalidShortPunch) {
+   message = `Request blocked: ${integrity.message} Submit a DTR correction first.`
+  } else if (!integrity.isValidCompleted) {
+   message = 'Request blocked: no complete Time In and Time Out were found for this date.'
+  } else if (requestType === 'undertime' && !employeeRuleEnabled(employee.undertime_deduction_applicable, true)) {
+   minutes = 0
+   message = 'No undertime request is required because this employee is exempt from undertime deduction.'
+  } else if (requestType === 'overtime' && minutes <= 0) {
+   message = 'No overtime can be filed. The attendance record has no payable minutes beyond both the scheduled shift end and eight paid work hours.'
+  } else if (requestType === 'undertime' && minutes <= 0) {
+   message = 'No undertime can be filed. The attendance record already contains at least eight paid work hours.'
+  } else if (requestType === 'overtime') {
+   // OT From and OT To are system-controlled. Employees cannot extend or shorten
+   // the range: From is the verified payable OT start and To is the actual Time Out.
+   const lockedFrom = normalizeTimeInputValue(validation?.overtimeWindow?.verifiedFrom)
+   const lockedTo = normalizeTimeInputValue(validation?.overtimeWindow?.verifiedTo)
+   setOtRequestFrom(lockedFrom)
+   setOtRequestTo(lockedTo)
+   rangeValidation = validateFiledOvertimeRange(validation, lockedFrom, lockedTo)
+   canSubmit = rangeValidation.canSubmit
+   minutes = rangeValidation.filedMinutes || validation.actualOvertimeMinutes
+   message = canSubmit
+    ? `System-locked OT range: ${formatClockTimeForDisplay(lockedFrom)} to ${formatClockTimeForDisplay(lockedTo)} (${minutes} minutes). OT To is capped at the actual Time Out and cannot be extended.`
+    : rangeValidation.message
+  } else {
+   setOtRequestFrom('')
+   setOtRequestTo('')
+   canSubmit = true
+   message = `${minutes} minute(s) of undertime are supported by the actual attendance record after the mandatory 60-minute break. Payroll will count only the verified minutes after admin approval.`
+  }
+
+  if (requestType === 'overtime' && !canSubmit) {
+   setOtRequestFrom('')
+   setOtRequestTo('')
+  }
+  if (validation.resolvedFromPreviousDay) {
+   message = `${message} ${validation.resolutionMessage}`.trim()
+  }
+  const preview = { loading:false, canSubmit, minutes, message, code:integrity.code, validation, rangeValidation }
+  setTimeAdjPreview(preview)
+  setOtRequestMinutes(canSubmit ? String(minutes) : '')
+  return preview
+ } catch(err) {
+  const preview = { loading:false, canSubmit:false, minutes:0, message:'Attendance validation failed: ' + (err?.message || err), code:'error' }
+  setTimeAdjPreview(preview)
+  setOtRequestMinutes('')
+  setOtRequestFrom('')
+  setOtRequestTo('')
+  return preview
+ }
+ }
+
  async function submitTimeAdjRequest() {
- if (!otRequestReason ||!otRequestMinutes ||!otRequestDate) { alert('Please enter date, minutes and reason.'); return }
- const { error } = await supabase.from('time_adjustment_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:otRequestDate, request_type:otRequestType, minutes:Number(otRequestMinutes), employee_reason:otRequestReason, status:'pending' })
+ if (!otRequestReason || !otRequestDate) { alert('Please select a date and enter a reason.'); return }
+ // Revalidate immediately before saving. OT times are taken only from the fresh
+ // attendance-supported window, never from editable browser values.
+ const preview = await refreshTimeAdjustmentPreview(otRequestDate, otRequestType, otRequestFrom, otRequestTo)
+ if (!preview?.canSubmit || safeNum(preview?.minutes, 0) <= 0) {
+  alert(preview?.message || 'This request is not supported by the attendance record.')
+  return
+ }
+
+ const exactMinutes = Math.max(0, Math.round(safeNum(preview.minutes, 0)))
+ const lockedOTFrom = normalizeTimeInputValue(preview?.rangeValidation?.filedFrom || preview?.validation?.overtimeWindow?.verifiedFrom)
+ const lockedOTTo = normalizeTimeInputValue(preview?.rangeValidation?.filedTo || preview?.validation?.overtimeWindow?.verifiedTo)
+ if (otRequestType === 'overtime' && (!lockedOTFrom || !lockedOTTo)) {
+  alert('Overtime filing is blocked because the verified attendance-supported OT window could not be determined.')
+  return
+ }
+ const canonicalAttendanceDate = String(preview?.validation?.resolvedAttendanceDate || otRequestDate).slice(0, 10)
+ const { data:existingRequests, error:existingError } = await supabase
+ .from('time_adjustment_requests')
+ .select('id,status')
+ .eq('employee_id', employee.id)
+ .eq('attendance_date', canonicalAttendanceDate)
+ .eq('request_type', otRequestType)
+ .in('status', ['pending', 'approved'])
+ .limit(1)
+ if (existingError) { alert('Failed checking existing request: '+existingError.message); return }
+ if (existingRequests?.length) {
+  alert(`You already have a ${otRequestType==='overtime'?'overtime':'undertime'} request for this date. Please wait for admin review instead of filing another one.`)
+  return
+ }
+
+ let employeeReason = otRequestReason
+ if (otRequestType === 'overtime') {
+  const window = preview?.rangeValidation?.window || preview?.validation?.overtimeWindow || {}
+  employeeReason = buildTimeAdjustmentEmployeeReason(otRequestReason, {
+   filedFrom:lockedOTFrom,
+   filedTo:lockedOTTo,
+   filedMinutes:exactMinutes,
+   verifiedFrom:window.verifiedFrom || '',
+   verifiedTo:window.verifiedTo || '',
+   verifiedMinutes:safeNum(window.minutes, exactMinutes),
+   actualTimeIn:window.actualTimeIn || '',
+   actualTimeOut:window.actualTimeOut || '',
+   shiftStart:window.shiftStart || '',
+   shiftEnd:window.shiftEnd || '',
+   attendanceDate:canonicalAttendanceDate,
+   employeeSelectedDate:otRequestDate
+  })
+ }
+
+ const { error } = await supabase.from('time_adjustment_requests').insert({
+  employee_id:employee.id,
+  employee_code:employee.employee_code,
+  employee_name:employee.full_name,
+  attendance_date:canonicalAttendanceDate,
+  request_type:otRequestType,
+  minutes:exactMinutes,
+  employee_reason:employeeReason,
+  status:'pending'
+ })
  if (error) { alert('Failed: '+error.message); return }
- alert(`${otRequestType==='overtime'?'Overtime':'Undertime'} request filed! Waiting for admin approval.`)
- setOtRequestReason(''); setOtRequestReasonPreset(''); setOtRequestMinutes(''); setShowOTRequest(false)
+ alert(otRequestType === 'overtime'
+  ? `Overtime request filed for the system-locked range ${formatClockTimeForDisplay(lockedOTFrom)} to ${formatClockTimeForDisplay(lockedOTTo)} (${exactMinutes} minutes) under attendance date ${canonicalAttendanceDate}.${canonicalAttendanceDate !== otRequestDate ? ` Your selected date ${otRequestDate} was correctly matched to the previous-day overnight shift.` : ''} OT To is capped at the actual Time Out. The request is waiting for admin approval.`
+  : `Undertime request filed for exactly ${exactMinutes} minute(s), based on the attendance record. Waiting for admin approval.`
+ )
+ setOtRequestReason('')
+ setOtRequestReasonPreset('')
+ setOtRequestMinutes('')
+ setOtRequestDate('')
+ setOtRequestFrom('')
+ setOtRequestTo('')
+ setTimeAdjPreview({ loading:false, canSubmit:false, minutes:0, message:'Select an attendance date to validate the time record.', code:'idle' })
+ setShowOTRequest(false)
  }
  async function submitLeaveRequest() {
  if (!leaveStartDate ||!leaveEndDate ||!leaveReason) {
@@ -11159,6 +16144,8 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
+ const filingInfo = getLeaveFilingTypeInfo(leaveFilingType)
+ const emergencyFiling = isEmergencyLeaveFiling(leaveFilingType)
  const todayMid = parseLocalDate(today)
  const startD = parseLocalDate(leaveStartDate)
 
@@ -11167,8 +16154,8 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- if ((startD.getTime() - todayMid.getTime()) / (1000 * 60 * 60 * 24) < 2) {
- alert('Must be filed at least 3 days in advance.')
+ if (!emergencyFiling && (startD.getTime() - todayMid.getTime()) / (1000 * 60 * 60 * 24) < 2) {
+ alert('Planned leave must be filed at least 3 days in advance. For sudden illness or emergency, choose Emergency Sick Leave or Emergency Personal Leave.')
  return
  }
 
@@ -11187,6 +16174,9 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
+ const cleanReason = String(leaveReason || '').trim()
+ const reasonWithFilingType = `[${filingInfo.label}] ${cleanReason}`
+
  const { error } = await supabase.from('leave_requests').insert({
  employee_id: activeEmployee.id,
  employee_code: activeEmployee.employee_code,
@@ -11195,7 +16185,7 @@ function buildDeliveryInvoicePrintCSS() {
  leave_end: leaveEndDate,
  duration_days: dur,
  leave_type: leaveInfo.type,
- reason: leaveReason,
+ reason: reasonWithFilingType,
  status: 'pending',
  is_paid: leaveInfo.isPaid
  })
@@ -11205,23 +16195,70 @@ function buildDeliveryInvoicePrintCSS() {
  return
  }
 
- alert(leaveInfo.isPaid? 'SIL request submitted! Waiting for admin approval.': 'Unpaid leave request submitted! Waiting for admin approval.')
+ alert(`${filingInfo.label} request submitted! ${leaveInfo.isPaid? 'If approved, it will be charged as paid SIL.': 'If approved, it will be treated as unpaid excused leave.'} Waiting for admin approval.`)
 
  setEmployee(activeEmployee)
  setLeaveStartDate('')
  setLeaveEndDate('')
  setLeaveType('')
+ setLeaveFilingType('planned')
  setLeaveReason('')
  setShowLeaveRequest(false)
  loadMyLeaveBalance(activeEmployee)
  }
  async function submitCashAdvanceRequest() {
- if (!requestCashAmount||!requestCashReason) { alert('Please enter amount and reason.'); return }
- const amount=Number(requestCashAmount); if (amount<=0) { alert('Amount must be greater than 0.'); return }
- const { error } = await supabase.from('cash_advance_requests').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, amount, reason:requestCashReason, status:'pending' })
- if (error) { alert('Failed: '+error.message); return }
- alert('Request submitted! Waiting for admin approval.')
- setRequestCashAmount(''); setRequestCashReason(''); setRequestCashReasonPreset(''); setShowCashAdvanceRequest(false); loadMyCashAdvances(employee)
+ if (submittingCashAdvanceRequest) return
+ const cleanReason = String(requestCashReason || '').trim()
+ if (!requestCashAmount || !cleanReason) { alert('Please enter amount and reason.'); return }
+ const amount = Number(requestCashAmount)
+ if (!amount || amount <= 0) { alert('Amount must be greater than 0.'); return }
+ setSubmittingCashAdvanceRequest(true)
+ try {
+  const { data:existingPending, error:existingError } = await supabase
+   .from('cash_advance_requests')
+   .select('id,amount,created_at,status')
+   .eq('employee_id', employee.id)
+   .eq('status', 'pending')
+   .limit(1)
+
+  if (existingError) {
+   alert('Failed checking existing cash advance request: ' + existingError.message)
+   return
+  }
+
+  if ((existingPending || []).length > 0) {
+   alert('You already have a pending cash advance request. Please wait for admin review before submitting another request.')
+   setShowCashAdvanceRequest(false)
+   loadMyCashAdvances(employee)
+   return
+  }
+
+  const { error } = await supabase.from('cash_advance_requests').insert({
+   employee_id:employee.id,
+   employee_code:employee.employee_code,
+   employee_name:employee.full_name,
+   amount,
+   reason:cleanReason,
+   status:'pending'
+  })
+
+  if (error) {
+   const msg = String(error.message || '').toLowerCase()
+   if (error.code === '23505' || msg.includes('duplicate') || msg.includes('unique')) {
+    alert('Cash advance request already submitted. Please wait for admin review instead of submitting again.')
+    setShowCashAdvanceRequest(false)
+    loadMyCashAdvances(employee)
+    return
+   }
+   alert('Failed: '+error.message)
+   return
+  }
+
+  alert('Request submitted! Waiting for admin approval.')
+  setRequestCashAmount(''); setRequestCashReason(''); setRequestCashReasonPreset(''); setShowCashAdvanceRequest(false); loadMyCashAdvances(employee)
+ } finally {
+  setSubmittingCashAdvanceRequest(false)
+ }
  }
  async function agreePayslip(payId) {
  const { error } = await supabase.from('payroll_records').update({ employee_acknowledgement:'agreed' }).eq('id', payId)
@@ -11281,7 +16318,8 @@ function buildDeliveryInvoicePrintCSS() {
  function canAccess(tab) {
  const role = normalizeAdminRole(adminRole)
  if (role === 'owner') return true
- if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise'].includes(tab)
+ if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
+ if (role === 'admin' || role === 'pos_admin') return ['posMonitor'].includes(tab)
  if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops'].includes(tab)
  if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
  if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops'].includes(tab)
@@ -12387,17 +17425,16 @@ function buildDeliveryInvoicePrintCSS() {
 
  // Payroll Approval Workflow 
  function isOutstandingCashAdvance(ca) {
- const balance = Math.max(0, safeNum(ca?.balance, 0))
  const status = String(ca?.status || '').trim().toLowerCase()
- if (status === 'cancelled' || status === 'void') return false
- return balance > 0.009
+ if (['cancelled','canceled','void','voided'].includes(status)) return false
+ return getCashAdvanceEffectiveBalance(ca) > 0.009
  }
 
  function getCashAdvancePayrollDeduction(ca) {
  if (!isOutstandingCashAdvance(ca)) return 0
- const balance = Math.max(0, safeNum(ca?.balance, 0))
+ const balance = getCashAdvanceEffectiveBalance(ca)
  const scheduled = safeNum(ca?.per_payroll_deduction, 0) > 0? safeNum(ca?.per_payroll_deduction, 0): balance
- return Math.min(balance, scheduled)
+ return moneyRound(Math.min(balance, scheduled))
  }
 
  function buildCADeductionTag(start, end) {
@@ -12474,19 +17511,21 @@ function buildDeliveryInvoicePrintCSS() {
  const openCAs = (cas || []).filter(isOutstandingCashAdvance)
  for (const ca of openCAs) {
  if (remaining <= 0) break
- const balance = Math.max(0, safeNum(ca.balance, 0))
- if (balance <= 0) continue
+ const balance = getCashAdvanceEffectiveBalance(ca)
+ if (balance <= 0.009) continue
 
- const deduction = Math.min(balance, remaining)
- const newPaid = moneyRound(safeNum(ca.amount_paid, 0) + deduction)
+ const deduction = moneyRound(Math.min(balance, remaining))
+ const currentPaid = getCashAdvancePaidAmount(ca)
+ const newPaid = moneyRound(currentPaid + deduction)
  const newBal = moneyRound(Math.max(0, balance - deduction))
- const newRem = Math.max(0, safeNum(ca.installments_remaining, 1) - 1)
+ const newRem = getCashAdvanceRemainingInstallments({ ...ca, amount_paid:newPaid, balance:newBal })
+ const newStatus = getCashAdvanceStatusForBalance(newBal, ca.status)
 
  const { error:updateError } = await supabase.from('cash_advances').update({
  amount_paid:newPaid,
  balance:newBal,
  installments_remaining:newRem,
- status:isMoneySettled(newBal)? 'Paid': 'Unpaid'
+ status:newStatus
  }).eq('id', ca.id)
 
  if (updateError) return { applied:false, amount:totalApplied, error:updateError.message }
@@ -12556,24 +17595,21 @@ function buildDeliveryInvoicePrintCSS() {
 
   for (const ca of caRows) {
    if (remaining <= 0.009) break
-   const paidNow = Math.max(0, safeNum(ca.amount_paid, 0))
-   if (paidNow <= 0) continue
+   const paidNow = getCashAdvancePaidAmount(ca)
+   if (paidNow <= 0.009) continue
 
    const reversal = moneyRound(Math.min(paidNow, remaining))
-   const totalAmount = safeNum(ca.amount, paidNow + safeNum(ca.balance, 0))
+   const totalAmount = safeNum(ca.amount, paidNow + getCashAdvanceEffectiveBalance(ca))
    const newPaid = moneyRound(Math.max(0, paidNow - reversal))
    const newBalance = moneyRound(Math.max(0, totalAmount - newPaid))
-   const totalInstallments = safeNum(ca.installments_total, 0)
-   const currentRemainingInstallments = safeNum(ca.installments_remaining, 0)
-   const restoredInstallments = totalInstallments > 0
-    ? Math.min(totalInstallments, currentRemainingInstallments + 1)
-    : currentRemainingInstallments + 1
+   const restoredInstallments = getCashAdvanceRemainingInstallments({ ...ca, amount_paid:newPaid, balance:newBalance })
+   const newStatus = getCashAdvanceStatusForBalance(newBalance, ca.status)
 
    const { error:updateError } = await supabase.from('cash_advances').update({
     amount_paid:newPaid,
     balance:newBalance,
     installments_remaining:restoredInstallments,
-    status:isMoneySettled(newBalance)? 'Paid': 'Unpaid'
+    status:newStatus
    }).eq('id', ca.id)
 
    if (updateError) return { reversed:false, amount:totalReversed, error:updateError.message }
@@ -12697,7 +17733,11 @@ function buildDeliveryInvoicePrintCSS() {
  async function approvePayroll(start, end) {
  if (!requireOwnerOrPayrollAction('release payroll')) return
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
+ const releaseKey = `release_payroll_${start}_${end}`
+ if (processingItems[releaseKey]) return
+ setProcessingItems(prev => ({ ...prev, [releaseKey]:true }))
 
+ try {
  const { data: records, error:recordsError } = await supabase
  .from('payroll_records')
  .select('id,employee_name,employee_code,employee_acknowledgement,payroll_approved,approved_at,cash_advance_deduction,total_earnings,total_deductions,non_ca_deduction_overflow')
@@ -12799,6 +17839,9 @@ function buildDeliveryInvoicePrintCSS() {
  loadSILCashouts({ skipAuto:true })
  loadDailyExpenses()
  refreshFoundationAfterDataChange('payroll-approved')
+ } finally {
+  setProcessingItems(prev => { const copy = { ...prev }; delete copy[releaseKey]; return copy })
+ }
  }
 
  function buildPayrollExpenseTag(start, end) {
@@ -15488,7 +20531,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  } else {
  setAdminEmployee(null)
  }
- const defaultTab = safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
+ const defaultTab = (safeRole==='admin'||safeRole==='pos_admin')?'posMonitor':safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
  setActiveTab(defaultTab)
  loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
  loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
@@ -15811,6 +20854,136 @@ This recovery button creates one approved expense record using GROSS payroll ear
  await supabase.from('holidays').delete().eq('id', id)
  setHolidays(prev=>prev.filter(h=>h.id!==id)); showToast(' Holiday deleted')
  }
+ async function getTimeAdjAdminValidation(req = {}) {
+ const requestType = String(req?.request_type || '').toLowerCase()
+ const parsedReason = parseTimeAdjustmentEmployeeReason(req?.employee_reason || '')
+ try {
+  const validation = await fetchAttendanceDayValidation(req.employee_id, String(req.attendance_date || '').slice(0,10), { employeeCode:req.employee_code, employeeName:req.employee_name })
+  const requestedMinutes = Math.max(0, Math.round(safeNum(req.minutes, 0)))
+  if (!validation.integrity.isValidCompleted) {
+   return {
+    loading:false,
+    requestType,
+    parsedReason,
+    validation,
+    requestedMinutes,
+    actualMinutes:0,
+    canApprove:false,
+    message:`Attendance cannot be calculated: ${validation.integrity.message} ${validation.resolutionMessage || ''}`.trim()
+   }
+  }
+
+  const actualMinutes = requestType === 'overtime'
+   ? Math.max(0, Math.round(safeNum(validation.actualOvertimeMinutes, 0)))
+   : Math.max(0, Math.round(safeNum(validation.actualUndertimeMinutes, 0)))
+  const window = validation.overtimeWindow || {}
+  const rangeValidation = requestType === 'overtime' && parsedReason.hasOvertimeRange
+   ? validateFiledOvertimeRange(validation, parsedReason.overtimeRange?.filedFrom, parsedReason.overtimeRange?.filedTo)
+   : null
+  const canApprove = actualMinutes > 0
+  const minutesDiffer = requestedMinutes !== actualMinutes
+  const filingMismatch = requestType === 'overtime' && (
+   !parsedReason.hasOvertimeRange ||
+   !rangeValidation?.canSubmit ||
+   Math.max(0, Math.round(safeNum(rangeValidation?.filedMinutes, requestedMinutes))) !== actualMinutes
+  )
+  const syncMessage = minutesDiffer || filingMismatch
+   ? `The saved request will not control payroll. Approval will automatically replace it with ${actualMinutes} actual ${requestType === 'overtime' ? 'OT' : 'UT'} minute(s).`
+   : `The saved request already matches the ${actualMinutes} actual attendance minute(s).`
+  const calculationMessage = `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${validation.metrics.deductedBreakMinutes} break minute(s) = ${validation.metrics.paidWorkedMinutes} paid minute(s).`
+
+  return {
+   loading:false,
+   requestType,
+   parsedReason,
+   validation,
+   window,
+   rangeValidation,
+   requestedMinutes,
+   actualMinutes,
+   resolvedAttendanceDate:validation.resolvedAttendanceDate,
+   resolvedFromPreviousDay:validation.resolvedFromPreviousDay,
+   legacy:requestType === 'overtime' && !parsedReason.hasOvertimeRange,
+   willAutoSync:minutesDiffer || filingMismatch,
+   canApprove,
+   message:canApprove
+    ? `${calculationMessage} ${syncMessage}${validation.resolvedFromPreviousDay ? ` ${validation.resolutionMessage}` : ''}`
+    : `${calculationMessage} There are no actual ${requestType === 'overtime' ? 'overtime minutes above eight paid hours' : 'undertime minutes below eight paid hours'} to approve.`
+  }
+ } catch(error) {
+  return { loading:false, requestType, parsedReason, canApprove:false, error:error?.message || String(error), message:'Attendance verification failed: ' + (error?.message || error) }
+ }
+ }
+
+ async function convertLegacyOTRequestToVerifiedRange(req = {}, adminValidation = null) {
+ const validationResult = adminValidation || await getTimeAdjAdminValidation(req)
+ const verifiedWindow = validationResult?.window || validationResult?.validation?.overtimeWindow || {}
+ const canonicalAttendanceDate = String(validationResult?.validation?.resolvedAttendanceDate || req?.attendance_date || '').slice(0, 10)
+ const requestedMinutes = Math.max(0, Math.round(safeNum(req?.minutes, 0)))
+ const verifiedMinutes = Math.max(0, Math.round(safeNum(verifiedWindow?.minutes, 0)))
+ if (!validationResult?.legacy || !validationResult?.validation?.integrity?.isValidCompleted || !verifiedWindow?.valid) {
+  showToast('Legacy conversion blocked: a complete attendance-supported OT window is required.', 'red')
+  return
+ }
+ if (requestedMinutes !== verifiedMinutes) {
+  showToast(`Legacy conversion blocked: saved request is ${requestedMinutes} minute(s), but attendance verifies ${verifiedMinutes} minute(s). Void it and ask the employee to refile.`, 'red')
+  return
+ }
+ if (!verifiedWindow.verifiedFrom || !verifiedWindow.verifiedTo) {
+  showToast('Legacy conversion blocked: verified OT From/To could not be determined.', 'red')
+  return
+ }
+ if (!window.confirm(`Convert this legacy OT request to the attendance-verified range?
+
+Employee: ${req.employee_name}
+Attendance date: ${canonicalAttendanceDate}
+Verified OT: ${formatClockTimeForDisplay(verifiedWindow.verifiedFrom)} to ${formatClockTimeForDisplay(verifiedWindow.verifiedTo)}
+Minutes: ${verifiedMinutes}
+
+This only fills the missing legacy From/To audit data. It does not approve the request.`)) return
+ const cleanReason = parseTimeAdjustmentEmployeeReason(req.employee_reason || '').cleanReason
+ const employeeReason = buildTimeAdjustmentEmployeeReason(cleanReason, {
+  filedFrom:verifiedWindow.verifiedFrom,
+  filedTo:verifiedWindow.verifiedTo,
+  filedMinutes:verifiedMinutes,
+  verifiedFrom:verifiedWindow.verifiedFrom,
+  verifiedTo:verifiedWindow.verifiedTo,
+  verifiedMinutes,
+  actualTimeIn:verifiedWindow.actualTimeIn || '',
+  actualTimeOut:verifiedWindow.actualTimeOut || '',
+  shiftStart:verifiedWindow.shiftStart || '',
+  shiftEnd:verifiedWindow.shiftEnd || '',
+  attendanceDate:canonicalAttendanceDate,
+  legacyConvertedBy:currentAdminLabel,
+  legacyConvertedAt:new Date().toISOString(),
+  originalRequestDate:String(req.attendance_date || '').slice(0, 10)
+ })
+ const { error } = await supabase.from('time_adjustment_requests').update({
+  attendance_date:canonicalAttendanceDate,
+  employee_reason:employeeReason,
+  admin_reason:`Legacy request converted to verified OT range by ${currentAdminLabel}. Original request date: ${String(req.attendance_date || '').slice(0,10)}.`,
+  reviewed_by:currentAdminLabel,
+  reviewed_at:new Date().toISOString()
+ }).eq('id', req.id)
+ if (error) {
+  showToast('Legacy conversion failed: ' + error.message, 'red')
+  return
+ }
+ await logAudit('LEGACY OT RANGE CONVERTED', currentAdminLabel, req.employee_name, `${canonicalAttendanceDate} | ${verifiedWindow.verifiedFrom}-${verifiedWindow.verifiedTo} | ${verifiedMinutes} min`)
+ const updatedReq = { ...req, attendance_date:canonicalAttendanceDate, employee_reason:employeeReason, admin_reason:`Legacy request converted to verified OT range by ${currentAdminLabel}.`, reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString() }
+ setTimeAdjRequests(prev => prev.map(row => row.id === req.id ? updatedReq : row))
+ await refreshTimeAdjAdminValidation(updatedReq)
+ showToast(`Legacy OT converted to ${formatClockTimeForDisplay(verifiedWindow.verifiedFrom)}–${formatClockTimeForDisplay(verifiedWindow.verifiedTo)} (${verifiedMinutes} minutes). Review, then approve normally.`)
+ }
+
+ async function refreshTimeAdjAdminValidation(req = {}) {
+ if (!req?.id) return null
+ setTimeAdjValidationById(prev => ({ ...prev, [req.id]:{ loading:true, canApprove:false, message:'Calculating actual attendance...' } }))
+ const result = await getTimeAdjAdminValidation(req)
+ setTimeAdjValidationById(prev => ({ ...prev, [req.id]:result }))
+ return result
+ }
+
  async function loadTimeAdjRequests(view = timeAdjView) {
  let query = supabase.from('time_adjustment_requests').select('*').order('created_at', { ascending:false })
  if (view === 'pending') query = query.eq('status', 'pending')
@@ -15819,7 +20992,16 @@ This recovery button creates one approved expense record using GROSS payroll ear
  else query = query.in('status', ['pending','approved'])
  const { data, error } = await query.limit(view === 'history'? 100: 200)
  if (error) { showToast('Failed to load OT/UT requests: '+error.message, 'red'); return }
- setTimeAdjRequests(data || [])
+ const rows = data || []
+ setTimeAdjRequests(rows)
+ const adjustmentRows = rows.filter(req => ['overtime','undertime'].includes(String(req?.request_type || '').toLowerCase()))
+ const loadingMap = {}
+ adjustmentRows.forEach(req => { loadingMap[req.id] = { loading:true, canApprove:false, message:'Calculating actual attendance...' } })
+ setTimeAdjValidationById(loadingMap)
+ if (adjustmentRows.length > 0) {
+  const results = await Promise.all(adjustmentRows.map(async req => [req.id, await getTimeAdjAdminValidation(req)]))
+  setTimeAdjValidationById(Object.fromEntries(results))
+ }
  }
 
  async function checkTimeAdjPayrollStatus(req) {
@@ -15844,8 +21026,23 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
  async function approveTimeAdj(req) {
  const reviewNote = adjAdminReason[req.id]||''
- const targetDate = String(req.attendance_date || '').slice(0,10)
+ const requestedAttendanceDate = String(req.attendance_date || '').slice(0,10)
  const requestType = String(req.request_type || '').toLowerCase()
+
+ let validation
+ try {
+  validation = await fetchAttendanceDayValidation(req.employee_id, requestedAttendanceDate, { employeeCode:req.employee_code, employeeName:req.employee_name })
+ } catch(validationError) {
+  showToast('Approval failed: attendance validation could not be completed — ' + (validationError?.message || validationError), 'red')
+  return
+ }
+
+ const targetDate = String(validation.resolvedAttendanceDate || requestedAttendanceDate).slice(0,10)
+ if (!validation.integrity.isValidCompleted) {
+  showToast(`Approval cannot continue: ${validation.integrity.message} ${validation.resolutionMessage || ''} Correct the DTR first.`, 'red')
+  await logAudit('OT/UT APPROVAL REQUIRES DTR CORRECTION', currentAdminLabel, req.employee_name, `${requestType} requested ${requestedAttendanceDate} | ${validation.integrity.message}`)
+  return
+ }
 
  const { data:coveredPayroll, error:coveredPayrollError } = await supabase
  .from('payroll_records')
@@ -15867,46 +21064,167 @@ This recovery button creates one approved expense record using GROSS payroll ear
   return
  }
 
+ const duplicateDates = Array.from(new Set([requestedAttendanceDate, targetDate].filter(Boolean)))
  const { data:duplicateApproved, error:duplicateError } = await supabase
  .from('time_adjustment_requests')
- .select('id,minutes,reviewed_at')
+ .select('id,minutes,reviewed_at,attendance_date')
  .eq('employee_id', req.employee_id)
- .eq('attendance_date', targetDate)
+ .in('attendance_date', duplicateDates)
  .eq('request_type', requestType)
  .eq('status', 'approved')
  .neq('id', req.id)
  .limit(1)
  if (duplicateError) { showToast('Failed to check duplicate OT/UT: '+duplicateError.message, 'red'); return }
  if (duplicateApproved && duplicateApproved.length > 0) {
-  showToast(`Approval blocked: this employee already has an approved ${requestType} request for ${targetDate}. Reject or correct the duplicate first.`, 'red')
+  showToast(`Approval blocked: this employee already has an approved ${requestType} request for this attendance shift (${targetDate}). Reject or correct the duplicate first.`, 'red')
   await logAudit('DUPLICATE OT/UT APPROVAL BLOCKED', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate}`)
   return
  }
 
- const { error } = await supabase.from('time_adjustment_requests').update({ status:'approved', reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reviewNote }).eq('id', req.id)
- if (error) { showToast('Failed: '+error.message,'red'); return }
- if (requestType==='overtime') {
-  await supabase.from('attendance_logs').update({ overtime_minutes:req.minutes, overtime_approved:true, status:'Overtime' }).eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
- } else {
-  await supabase.from('attendance_logs').update({ undertime_minutes:req.minutes, status:'Undertime' }).eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
+ const requestedMinutes = Math.max(0, Math.round(safeNum(req.minutes, 0)))
+ const exactMinutes = requestType === 'overtime'
+  ? Math.max(0, Math.round(safeNum(validation.actualOvertimeMinutes, 0)))
+  : Math.max(0, Math.round(safeNum(validation.actualUndertimeMinutes, 0)))
+ const actualWindow = validation.overtimeWindow || {}
+ if (exactMinutes <= 0) {
+  const reason = requestType === 'overtime'
+   ? 'Actual Time In and Time Out, less the mandatory break, do not exceed eight paid hours.'
+   : 'Actual Time In and Time Out, less the mandatory break, already contain at least eight paid hours.'
+  showToast(`Nothing was approved: ${reason}`, 'red')
+  await logAudit('OT/UT APPROVAL ZERO ACTUAL MINUTES', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | Saved request ${requestedMinutes} min`)
+  return
  }
- await logAudit(`${requestType.toUpperCase()} APPROVED`,currentAdminLabel,req.employee_name,`${req.minutes} min on ${targetDate}`)
- await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${requestType==='overtime'?'Overtime':'Undertime'} Approved`, `Your ${requestType} request of ${req.minutes} minutes on ${targetDate} has been approved.`)
- setTimeAdjRequests(prev=>prev.map(r=>r.id===req.id? {...r, status:'approved', reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reviewNote}: r))
- showToast(' OT/UT Approved successfully!')
+
+ const parsedReason = parseTimeAdjustmentEmployeeReason(req.employee_reason || '')
+ const savedRangeText = requestType === 'overtime' && parsedReason.hasOvertimeRange
+  ? `${parsedReason.overtimeRange?.filedFrom || ''}-${parsedReason.overtimeRange?.filedTo || ''}`
+  : requestType === 'overtime' ? 'legacy/no saved range' : 'not applicable'
+ const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; raw span ${validation.metrics.rawSpanMinutes} min; break deducted ${validation.metrics.deductedBreakMinutes} min; paid work ${validation.metrics.paidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min.`
+ const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}APPROVED FROM ACTUAL ATTENDANCE: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}` : ''}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
+
+ const { error } = await supabase.from('time_adjustment_requests').update({
+  attendance_date:targetDate,
+  status:'approved',
+  minutes:exactMinutes,
+  reviewed_by:currentAdminLabel,
+  reviewed_at:new Date().toISOString(),
+  admin_reason:minuteSyncNote
+ }).eq('id', req.id)
+ if (error) { showToast('Failed: '+error.message,'red'); return }
+
+ const rollbackApprovalAfterSyncFailure = async syncMessage => {
+  const rollbackNote = `${minuteSyncNote ? minuteSyncNote + ' | ' : ''}SYSTEM ROLLBACK: attendance synchronization failed — ${syncMessage}`
+  const { error:rollbackError } = await supabase.from('time_adjustment_requests').update({
+   status:'pending',
+   minutes:requestedMinutes,
+   reviewed_by:currentAdminLabel,
+   reviewed_at:new Date().toISOString(),
+   admin_reason:rollbackNote
+  }).eq('id', req.id)
+  if (rollbackError) console.error('OT/UT approval rollback failed:', rollbackError)
+ }
+
+ const primaryAttendanceLog = validation.integrity.completedLogs[0]
+ const sourceAttendanceLogIds = (validation.logs || []).map(row => row?.id).filter(Boolean)
+ if (requestType==='overtime') {
+  let clearOTQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false })
+  clearOTQuery = sourceAttendanceLogIds.length > 0
+   ? clearOTQuery.in('id', sourceAttendanceLogIds)
+   : clearOTQuery.eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
+  const { error:clearOTError } = await clearOTQuery
+  if (clearOTError) {
+   await rollbackApprovalAfterSyncFailure(clearOTError.message)
+   showToast('Approval was rolled back because attendance synchronization failed: ' + clearOTError.message, 'red')
+   return
+  }
+  const { error:attendanceOTError } = await supabase.from('attendance_logs').update({
+   overtime_minutes:exactMinutes,
+   overtime_approved:true,
+   status:'Overtime - Approved'
+  }).eq('id', primaryAttendanceLog.id)
+  if (attendanceOTError) {
+   let rollbackOTQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false })
+   rollbackOTQuery = sourceAttendanceLogIds.length > 0
+    ? rollbackOTQuery.in('id', sourceAttendanceLogIds)
+    : rollbackOTQuery.eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
+   await rollbackOTQuery
+   await rollbackApprovalAfterSyncFailure(attendanceOTError.message)
+   showToast('Approval was rolled back because attendance synchronization failed: ' + attendanceOTError.message, 'red')
+   return
+  }
+ } else {
+  let clearUTQuery = supabase.from('attendance_logs').update({ undertime_minutes:0 })
+  clearUTQuery = sourceAttendanceLogIds.length > 0
+   ? clearUTQuery.in('id', sourceAttendanceLogIds)
+   : clearUTQuery.eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
+  const { error:clearUTError } = await clearUTQuery
+  if (clearUTError) {
+   await rollbackApprovalAfterSyncFailure(clearUTError.message)
+   showToast('Approval was rolled back because attendance synchronization failed: ' + clearUTError.message, 'red')
+   return
+  }
+  const { error:attendanceUTError } = await supabase.from('attendance_logs').update({
+   undertime_minutes:exactMinutes,
+   status:'Undertime - Approved'
+  }).eq('id', primaryAttendanceLog.id)
+  if (attendanceUTError) {
+   await rollbackApprovalAfterSyncFailure(attendanceUTError.message)
+   showToast('Approval was rolled back because attendance synchronization failed: ' + attendanceUTError.message, 'red')
+   return
+  }
+ }
+
+ await logAudit(
+  `${requestType.toUpperCase()} APPROVED FROM ACTUAL ATTENDANCE`,
+  currentAdminLabel,
+  req.employee_name,
+  `${exactMinutes} minute(s) on ${targetDate} | Saved request ${requestedMinutes} min | Raw ${validation.metrics.rawSpanMinutes} - Break ${validation.metrics.deductedBreakMinutes} = Paid ${validation.metrics.paidWorkedMinutes}`
+ )
+ await createNotification(
+  req.employee_id,
+  req.employee_name,
+  'overtime',
+  ` ${requestType==='overtime'?'Overtime':'Undertime'} Approved`,
+  `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), calculated from your actual Time In and Time Out less the mandatory break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
+ )
+ setTimeAdjRequests(prev=>prev.map(r=>r.id===req.id? {
+  ...r,
+  attendance_date:targetDate,
+  minutes:exactMinutes,
+  status:'approved',
+  reviewed_by:currentAdminLabel,
+  reviewed_at:new Date().toISOString(),
+  admin_reason:minuteSyncNote
+ }: r))
+ await refreshTimeAdjAdminValidation({ ...req, attendance_date:targetDate, minutes:exactMinutes, status:'approved' })
+ showToast(`${requestType === 'overtime' ? 'Overtime' : 'Undertime'} approved for ${exactMinutes} actual attendance minute(s).${requestedMinutes !== exactMinutes ? ` Saved request corrected from ${requestedMinutes} minute(s).` : ''}`)
  }
  async function rejectTimeAdj(req) {
  const reason = adjAdminReason[req.id]
  if (!reason?.trim()) { showToast('Please enter a reason for rejection.','red'); return }
- const { error } = await supabase.from('time_adjustment_requests').update({ status:'rejected', reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reason }).eq('id', req.id)
+ let sourceDate = String(req.attendance_date || '').slice(0,10)
+ let sourceLogIds = []
+ try {
+  const validation = await fetchAttendanceDayValidation(req.employee_id, sourceDate, { employeeCode:req.employee_code, employeeName:req.employee_name })
+  sourceDate = String(validation.resolvedAttendanceDate || sourceDate).slice(0,10)
+  sourceLogIds = (validation.logs || []).map(row => row?.id).filter(Boolean)
+ } catch(error) {
+  console.warn('Reject OT/UT source attendance resolution failed:', error)
+ }
+ const { error } = await supabase.from('time_adjustment_requests').update({ status:'rejected', attendance_date:sourceDate, reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString(), admin_reason:reason }).eq('id', req.id)
  if (error) { showToast('Failed: '+error.message,'red'); return }
  if (req.request_type==='overtime') {
- await supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+  let attendanceQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' })
+  attendanceQuery = sourceLogIds.length > 0 ? attendanceQuery.in('id', sourceLogIds) : attendanceQuery.eq('employee_id', req.employee_id).eq('attendance_date', sourceDate)
+  await attendanceQuery
  } else {
- await supabase.from('attendance_logs').update({ undertime_minutes:0, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+  // Rejecting the filing does not erase the actual worked-time shortage.
+  let attendanceQuery = supabase.from('attendance_logs').update({ status:'Undertime' })
+  attendanceQuery = sourceLogIds.length > 0 ? attendanceQuery.in('id', sourceLogIds) : attendanceQuery.eq('employee_id', req.employee_id).eq('attendance_date', sourceDate)
+  await attendanceQuery
  }
- await logAudit(`${req.request_type.toUpperCase()} REJECTED`,currentAdminLabel,req.employee_name,`Reason: ${reason}`)
- await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Rejected`, `Your ${req.request_type} request on ${req.attendance_date} was rejected. Reason: ${reason}`)
+ await logAudit(`${req.request_type.toUpperCase()} REJECTED`,currentAdminLabel,req.employee_name,`${sourceDate} | Reason: ${reason}`)
+ await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Rejected`, `Your ${req.request_type} request on ${sourceDate} was rejected. Reason: ${reason}`)
  setTimeAdjRequests(prev=>prev.filter(r=>r.id!==req.id))
  showToast(' OT/UT Rejected.','red')
  }
@@ -15914,20 +21232,37 @@ This recovery button creates one approved expense record using GROSS payroll ear
  async function voidTimeAdj(req) {
  const reason = adjAdminReason[req.id]
  if (!reason?.trim()) { showToast('Please enter the reason for voiding/undoing this OT/UT record.', 'red'); return }
+ let sourceDate = String(req.attendance_date || '').slice(0,10)
+ let sourceLogIds = []
+ try {
+  const validation = await fetchAttendanceDayValidation(req.employee_id, sourceDate, { employeeCode:req.employee_code, employeeName:req.employee_name })
+  sourceDate = String(validation.resolvedAttendanceDate || sourceDate).slice(0,10)
+  sourceLogIds = (validation.logs || []).map(row => row?.id).filter(Boolean)
+ } catch(error) {
+  console.warn('Void OT/UT source attendance resolution failed:', error)
+ }
  const statusLabel = String(req.status || '').toUpperCase() || 'REQUEST'
  const actionLabel = req.status === 'approved'? 'undo this approved': 'void/cancel this'
- if (!window.confirm(`Confirm ${actionLabel} ${req.request_type}?\n\nEmployee: ${req.employee_name}\nDate: ${req.attendance_date}\nMinutes: ${req.minutes}\nCurrent Status: ${statusLabel}\n\nReason: ${reason}`)) return
+ if (!window.confirm(`Confirm ${actionLabel} ${req.request_type}?
 
- const payrollCheck = await checkTimeAdjPayrollStatus(req)
+Employee: ${req.employee_name}
+Attendance date: ${sourceDate}
+Minutes: ${req.minutes}
+Current Status: ${statusLabel}
+
+Reason: ${reason}`)) return
+
+ const payrollCheck = await checkTimeAdjPayrollStatus({ ...req, attendance_date:sourceDate })
  if (payrollCheck.error) { showToast('Could not verify payroll status: '+payrollCheck.error, 'red'); return }
  if (payrollCheck.released) {
- await logAudit(`${req.request_type.toUpperCase()} VOID BLOCKED`, currentAdminLabel, req.employee_name, `Payroll already released for ${req.attendance_date}. Reason attempted: ${reason}`)
+ await logAudit(`${req.request_type.toUpperCase()} VOID BLOCKED`, currentAdminLabel, req.employee_name, `Payroll already released for ${sourceDate}. Reason attempted: ${reason}`)
  showToast('Blocked: this OT/UT is already inside a released payroll. Use Payroll Adjustment to correct it in the next payroll instead of deleting history.', 'red')
  return
  }
 
  const voidReason = `VOIDED / UNDONE: ${reason}`
  const { error } = await supabase.from('time_adjustment_requests').update({
+ attendance_date:sourceDate,
  status:'voided',
  reviewed_by:currentAdminLabel,
  reviewed_at:new Date().toISOString(),
@@ -15936,16 +21271,22 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (error) { showToast('Failed: '+error.message, 'red'); return }
 
  if (req.request_type === 'overtime') {
- await supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+ let attendanceQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' })
+ attendanceQuery = sourceLogIds.length > 0 ? attendanceQuery.in('id', sourceLogIds) : attendanceQuery.eq('employee_id', req.employee_id).eq('attendance_date', sourceDate)
+ await attendanceQuery
  } else {
- await supabase.from('attendance_logs').update({ undertime_minutes:0, status:'Completed' }).eq('employee_id', req.employee_id).eq('attendance_date', req.attendance_date)
+ // Voiding the filing does not erase the actual worked-time shortage.
+ let attendanceQuery = supabase.from('attendance_logs').update({ status:'Undertime' })
+ attendanceQuery = sourceLogIds.length > 0 ? attendanceQuery.in('id', sourceLogIds) : attendanceQuery.eq('employee_id', req.employee_id).eq('attendance_date', sourceDate)
+ await attendanceQuery
  }
 
- await logAudit(`${req.request_type.toUpperCase()} VOIDED / UNDONE`, currentAdminLabel, req.employee_name, `${req.minutes} min on ${req.attendance_date} | Reason: ${reason}`)
- await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Voided`, `Your ${req.request_type} request of ${req.minutes} minutes on ${req.attendance_date} was voided/undone. Reason: ${reason}`)
+ await logAudit(`${req.request_type.toUpperCase()} VOIDED / UNDONE`, currentAdminLabel, req.employee_name, `${req.minutes} min on ${sourceDate} | Reason: ${reason}`)
+ await createNotification(req.employee_id, req.employee_name, 'overtime', ` ${req.request_type==='overtime'?'Overtime':'Undertime'} Voided`, `Your ${req.request_type} request of ${req.minutes} minutes on ${sourceDate} was voided/undone. Reason: ${reason}`)
  setTimeAdjRequests(prev=>prev.filter(r=>r.id!==req.id))
  showToast(payrollCheck.computed? ' OT/UT voided. Payroll was computed but not released; recompute payroll before release.': ' OT/UT voided successfully.')
  }
+
  async function saveEmployeeChanges() {
  setSaveEmployeeLoading(true)
 
@@ -15981,13 +21322,14 @@ This recovery button creates one approved expense record using GROSS payroll ear
  payroll_cost_type:editFields.payroll_cost_type||'auto',
  department:editFields.department||'',
  admin_role:editFields.admin_role||null,
- extra_roles:editFields.extra_roles||null
+ extra_roles:editFields.extra_roles||null,
+ strict_camera_timein:editFields.strictCameraTimeIn === true
  }
  let { error } = await supabase.from('employees').update(employeeUpdatePayload).eq('id', editingEmployeeId)
- if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error))) {
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error) || isMissingStrictCameraTimeInColumnError(error))) {
  const fallbackEmployeeUpdatePayload = stripUnsupportedEmployeeOptionalColumns(employeeUpdatePayload, error)
  ;({ error } = await supabase.from('employees').update(fallbackEmployeeUpdatePayload).eq('id', editingEmployeeId))
- if (!error) console.warn('Employee saved with optional payroll/holiday columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
+ if (!error) console.warn('Employee saved with optional payroll/holiday/camera columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
  }
 
  setSaveEmployeeLoading(false)
@@ -15997,7 +21339,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return
  }
 
- await logAudit('EMPLOYEE UPDATED','Admin',editFields.name,'Employee details updated')
+ await logAudit('EMPLOYEE UPDATED','Admin',editFields.name,`Employee details updated | Regular holiday pay: ${editFields.regularHolidayEligible !== false ? 'Eligible' : 'Not eligible'} | Special holiday pay: ${editFields.specialHolidayEligible !== false ? 'Eligible' : 'Not eligible'} | Strict camera Time In: ${editFields.strictCameraTimeIn === true ? 'Enabled' : 'Disabled'}`)
  setSaveSuccess(editingEmployeeId)
  await loadEmployees()
  setTimeout(() => { setSaveSuccess(null); setEditingEmployeeId('') }, 2500)
@@ -16019,8 +21361,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  has_sss:f.hasSss,
  has_pagibig:f.hasPagibig,
  has_philhealth:f.hasPhilhealth,
- regular_holiday_pay_eligible:f.regularHolidayEligible !== false,
- special_holiday_pay_eligible:f.specialHolidayEligible !== false,
+ regular_holiday_pay_eligible:true,
+ special_holiday_pay_eligible:true,
  hire_date:f.hire_date,
  sick_leave_balance:0,
  vacation_leave_balance:0,
@@ -16048,13 +21390,14 @@ This recovery button creates one approved expense record using GROSS payroll ear
  location_radius:f.location_radius?Number(f.location_radius):null,
  bank_name:f.bank_name||'',
  bank_account_number:f.bank_account_number||'',
- bank_account_name:f.bank_account_name||''
+ bank_account_name:f.bank_account_name||'',
+ strict_camera_timein:false
  }
  let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select('*').single()
- if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error))) {
+ if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error) || isMissingStrictCameraTimeInColumnError(error))) {
  const fallbackEmployeeInsertPayload = stripUnsupportedEmployeeOptionalColumns(employeeInsertPayload, error)
  ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select('*').single())
- if (!error) console.warn('Employee added with optional payroll/holiday columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
+ if (!error) console.warn('Employee added with optional payroll/holiday/camera columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
  }
 
  if (error) { showToast('Failed: '+error.message,'red'); return }
@@ -16080,6 +21423,31 @@ This recovery button creates one approved expense record using GROSS payroll ear
  await logAudit('EMPLOYEE DEACTIVATED','Admin',empName,'Employee deactivated')
  showToast(` ${empName} deactivated.`); loadEmployees()
  }
+
+ function buildEmployeeHourlyRateRows() {
+ return (employees || []).map(emp => {
+  const rateInfo = getEmployeeHourlyRateInfo(emp)
+  return {
+   'Employee Code': emp.employee_code || '',
+   'Employee Name': emp.full_name || '',
+   'Position': emp.position || '',
+   'Department': emp.department || '',
+   'Payroll Basis': rateInfo.basisLabel,
+   'Daily Equivalent': moneyRound(rateInfo.dailyEquivalent),
+   'Monthly Salary': moneyRound(rateInfo.monthlySalary),
+   'Semi-Monthly Salary': moneyRound(rateInfo.semiMonthlySalary),
+   'Hourly Rate': moneyRound(rateInfo.hourlyRate),
+   'Formula': rateInfo.formulaNote
+  }
+ })
+ }
+ function exportEmployeeHourlyRatesCSV() {
+ const rows = buildEmployeeHourlyRateRows()
+ if (rows.length === 0) { showToast('No active employees to export.', 'red'); return }
+ downloadTextFile(`romas-staff-hourly-rates-${today}.csv`, rowsToCSV(rows), 'text/csv')
+ showToast(' Staff hourly rates CSV exported.')
+ }
+
  async function loadCashAdvanceRequests() {
  const { data } = await supabase.from('cash_advance_requests').select('*').eq('status', 'pending').order('created_at', { ascending:false })
  setCashAdvanceRequests(data || [])
@@ -16272,6 +21640,163 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (employee?.id) loadMyCashAdvances(employee)
  }
 
+
+async function correctCashAdvanceAmount(ca, req = null) {
+  if (!ca?.id) {
+   showToast('Cash advance ledger not found. Refresh cash advance requests first.', 'red')
+   return
+  }
+
+  if (adminRole !== 'owner') {
+   showToast('Owner access is required to correct an approved cash advance amount.', 'red')
+   return
+  }
+
+  const oldAmount = Math.max(0, safeNum(ca.amount, 0))
+  const amountPaid = Math.max(0, safeNum(ca.amount_paid, 0))
+  const currentTotal = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || req?.request_installments_total || 1))
+  const currentRemaining = Math.max(0, safeNum(ca.installments_remaining, currentTotal))
+  const completed = Math.max(0, currentTotal - currentRemaining)
+
+  if (!oldAmount) {
+   showToast('Invalid cash advance amount.', 'red')
+   return
+  }
+
+  if (amountPaid > 0 || completed > 0) {
+   showToast('This cash advance already has payroll deduction history. Do not rewrite the approved amount. Use a CA correction/reversal entry instead so payroll history stays clean.', 'red')
+   return
+  }
+
+  const amountAnswer = window.prompt(
+   'Enter corrected approved cash advance amount:\n\n' +
+   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
+   'Current Approved Amount: ' + php(oldAmount) + '\n\n' +
+   'This is allowed only because no payroll deduction has been applied yet.',
+   String(oldAmount)
+  )
+
+  if (amountAnswer === null) return
+
+  const cleanedAmount = String(amountAnswer).replace(/[₱,\s]/g, '')
+  const newAmount = moneyRound(safeNum(cleanedAmount, 0))
+
+  if (!Number.isFinite(newAmount) || newAmount <= 0) {
+   showToast('Invalid corrected cash advance amount.', 'red')
+   return
+  }
+
+  if (Math.abs(newAmount - oldAmount) < 0.01) {
+   showToast('No amount change detected.', 'red')
+   return
+  }
+
+  const installmentsAnswer = window.prompt(
+   'Enter number of payroll deductions/installments for the corrected amount:\n\n' +
+   'Corrected Amount: ' + php(newAmount) + '\n' +
+   'Current Plan: ' + currentTotal + ' payroll(s)',
+   String(currentTotal)
+  )
+
+  if (installmentsAnswer === null) return
+
+  const newInstallments = Math.max(1, Math.round(safeNum(installmentsAnswer, 0)))
+
+  if (!Number.isFinite(newInstallments) || newInstallments < 1) {
+   showToast('Invalid number of payroll deductions.', 'red')
+   return
+  }
+
+  const correctionReason = window.prompt(
+   'Enter reason for correcting this approved cash advance amount.\n\nThis reason will be saved in notes and audit log.',
+   'Amount encoding correction before first payroll deduction'
+  )
+
+  if (correctionReason === null) return
+  if (!String(correctionReason).trim()) {
+   showToast('Correction reason is required.', 'red')
+   return
+  }
+
+  const newPerPayroll = moneyRound(newAmount / newInstallments)
+
+  if (!window.confirm(
+   'Correct approved cash advance amount?\n\n' +
+   'Employee: ' + (ca.employee_name || req?.employee_name || 'Employee') + '\n' +
+   'Old Amount: ' + php(oldAmount) + '\n' +
+   'New Amount: ' + php(newAmount) + '\n' +
+   'New Payroll Count: ' + newInstallments + '\n' +
+   'New Deduction / Payroll: ' + php(newPerPayroll) + '\n\n' +
+   'This will update the CA ledger amount, balance, installment plan, and linked CA request. Continue?'
+  )) return
+
+  const existingNotes = String(ca.notes || '').trim()
+  const newNotes = existingNotes +
+   (existingNotes ? ' | ' : '') +
+   'CA AMOUNT CORRECTED BY OWNER ' + new Date().toISOString().slice(0,10) +
+   ': ' + php(oldAmount) + ' to ' + php(newAmount) +
+   '; plan ' + currentTotal + ' to ' + newInstallments + ' payroll(s)' +
+   '; reason: ' + String(correctionReason).trim()
+
+  try {
+   const { error } = await supabase.from('cash_advances').update({
+    amount:newAmount,
+    amount_paid:0,
+    balance:newAmount,
+    per_payroll_deduction:newPerPayroll,
+    installments_total:newInstallments,
+    installments_remaining:newInstallments,
+    status:'Unpaid',
+    notes:newNotes
+   }).eq('id', ca.id)
+
+   if (error) throw error
+
+   if (req?.id) {
+    let { error:reqError } = await supabase.from('cash_advance_requests').update({
+     amount:newAmount,
+     request_installments_total:newInstallments,
+     request_per_payroll_deduction:newPerPayroll
+    }).eq('id', req.id)
+
+    if (reqError && isMissingCashAdvanceDetailColumnError(reqError)) {
+     ;({ error:reqError } = await supabase.from('cash_advance_requests').update({ amount:newAmount }).eq('id', req.id))
+    }
+
+    if (reqError) {
+     console.warn('Cash advance request amount sync skipped:', reqError)
+    }
+   }
+
+   await logAudit(
+    'CA AMOUNT CORRECTED',
+    currentAdminLabel || adminRole,
+    ca.employee_name || req?.employee_name || 'Employee',
+    'CA ID: ' + ca.id + ' | ' + php(oldAmount) + ' corrected to ' + php(newAmount) + ' | ' + newInstallments + ' payroll(s) at ' + php(newPerPayroll) + ' | Reason: ' + String(correctionReason).trim()
+   )
+
+   if (ca.employee_id || req?.employee_id) {
+    await createNotification(
+     ca.employee_id || req?.employee_id,
+     ca.employee_name || req?.employee_name || 'Employee',
+     'cash_advance',
+     ' Cash Advance Amount Corrected',
+     'Your approved cash advance amount was corrected from ' + php(oldAmount) + ' to ' + php(newAmount) + '. New deduction plan: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).'
+    )
+   }
+
+   await loadCashAdvanceRequests()
+   await loadResolvedCARequests()
+   await loadCashAdvanceCoverage(payrollStart, payrollEnd)
+   if (employee?.id) loadMyCashAdvances(employee)
+
+   showToast('Cash advance amount corrected to ' + php(newAmount) + '. New deduction: ' + php(newPerPayroll) + ' for ' + newInstallments + ' payroll(s).', 'green')
+  } catch (err) {
+   console.warn('correctCashAdvanceAmount:', err)
+   showToast('Failed to correct cash advance amount: ' + (err?.message || err), 'red')
+  }
+ }
+
 async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (!ca?.id) {
    showToast('Cash advance ledger not found. Refresh cash advance requests first.', 'red')
@@ -16420,6 +21945,435 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  setAdjustmentEmployeeId(''); setAdjustmentCategory(''); setAdjustmentAmount(''); setAdjustmentNotes('')
  if (adjustmentCategory.trim() === 'Unused SIL Conversion') loadSILCashouts()
  loadPayrollAdjustmentHistory({ silent:true })
+ }
+
+ async function runHistoricalAttendanceReconciliation(options = {}) {
+ const sourceStart = String(options.start || attendanceReconStart || '').slice(0,10)
+ const sourceEnd = String(options.end || attendanceReconEnd || '').slice(0,10)
+ if (!sourceStart || !sourceEnd) { showToast('Please select the historical payroll start and end dates.', 'red'); return [] }
+ const startDate = parseLocalDate(sourceStart)
+ const endDate = parseLocalDate(sourceEnd)
+ if (!startDate || !endDate || endDate < startDate) { showToast('Historical payroll end date must be on or after the start date.', 'red'); return [] }
+
+ setAttendanceReconLoading(true)
+ try {
+  const { data:payrollRows, error:payrollError } = await supabase
+   .from('payroll_records')
+   .select('*')
+   .eq('payroll_start', sourceStart)
+   .eq('payroll_end', sourceEnd)
+   .order('employee_name', { ascending:true })
+  if (payrollError) throw payrollError
+  if (!(payrollRows || []).length) {
+   setAttendanceReconRows([])
+   setAttendanceReconSelected({})
+   if (!options.silent) showToast(`No saved payroll records found for ${sourceStart} to ${sourceEnd}.`, 'red')
+   return []
+  }
+
+  const employeeIds = Array.from(new Set((payrollRows || []).map(row => String(row.employee_id || '')).filter(Boolean)))
+  let employeeRows = []
+  if (employeeIds.length) {
+   const { data, error } = await supabase.from('employees').select('*').in('id', employeeIds)
+   if (error) throw error
+   employeeRows = data || []
+  }
+
+  let attendanceRows = []
+  if (employeeIds.length) {
+   const { data, error } = await supabase
+    .from('attendance_logs')
+    .select('*')
+    .in('employee_id', employeeIds)
+    .gte('attendance_date', sourceStart)
+    .lte('attendance_date', sourceEnd)
+    .order('attendance_date', { ascending:true })
+   if (error) throw error
+   attendanceRows = data || []
+  }
+
+  const attendanceLogIds = (attendanceRows || []).map(row => row.id).filter(Boolean)
+  let breakRows = []
+  if (attendanceLogIds.length) {
+   const { data, error } = await supabase.from('break_logs').select('*').in('attendance_log_id', attendanceLogIds)
+   if (error) throw error
+   breakRows = data || []
+  }
+
+  const { data:existingReconRows, error:existingReconError } = await supabase
+   .from('payroll_adjustments')
+   .select('*')
+   .eq('category', PAYROLL_ATTENDANCE_RECON_CATEGORY)
+   .order('created_at', { ascending:false })
+   .limit(1000)
+  if (existingReconError) throw existingReconError
+
+  const employeeById = {}
+  ;(employeeRows || []).forEach(emp => { employeeById[String(emp.id || '')] = emp })
+  const payrollByEmployee = {}
+  ;(payrollRows || []).forEach(row => {
+   const key = String(row.employee_id || row.employee_code || row.employee_name || '')
+   if (!payrollByEmployee[key]) payrollByEmployee[key] = []
+   payrollByEmployee[key].push(row)
+  })
+  const attendanceByEmployee = {}
+  ;(attendanceRows || []).forEach(row => {
+   const key = String(row.employee_id || '')
+   if (!attendanceByEmployee[key]) attendanceByEmployee[key] = []
+   attendanceByEmployee[key].push(row)
+  })
+  const breakRowsByLogId = {}
+  ;(breakRows || []).forEach(row => {
+   const key = String(row.attendance_log_id || '')
+   if (!breakRowsByLogId[key]) breakRowsByLogId[key] = []
+   breakRowsByLogId[key].push(row)
+  })
+
+  const auditRows = Object.values(payrollByEmployee).map(records => {
+   const basePayroll = records[0] || {}
+   const employeeId = String(basePayroll.employee_id || '')
+   const employee = employeeById[employeeId] || null
+   const employeeAttendance = attendanceByEmployee[employeeId] || []
+   const logsByDate = groupDTRLogsByDate(employeeAttendance)
+   let correctUndertimeMinutes = 0
+   let completedWorkdays = 0
+   const dayDetails = []
+
+   Object.entries(logsByDate).sort(([a],[b]) => a.localeCompare(b)).forEach(([dateKey, dayLogs]) => {
+    const completedLogs = (dayLogs || []).filter(log => log?.time_in && log?.time_out && String(log?.status || '').toLowerCase() !== 'absent')
+    if (!completedLogs.length) return
+    const metrics = getAttendanceDayWorkMetrics(completedLogs, breakRowsByLogId)
+    const mergedDay = mergeDTRDayLogs(completedLogs)
+    const recordedLateMinutes = completedLogs.reduce((sum, log) => sum + safeNum(log?.late_minutes, 0), 0)
+    completedWorkdays += 1
+    correctUndertimeMinutes += metrics.undertimeMinutes
+    dayDetails.push({
+     date:dateKey,
+     timeIn:mergedDay?.time_in || '',
+     timeOut:mergedDay?.time_out || '',
+     paidWorkedMinutes:metrics.paidWorkedMinutes,
+     undertimeMinutes:metrics.undertimeMinutes,
+     deductedBreakMinutes:metrics.deductedBreakMinutes,
+     lateMinutes:recordedLateMinutes
+    })
+   })
+
+   const incompleteLogs = employeeAttendance.filter(log => log?.time_in && !log?.time_out && String(log?.status || '').toLowerCase() !== 'absent')
+   const lateMinutesRecorded = records.reduce((sum, row) => sum + safeNum(row.late_minutes, 0), 0)
+   const savedUndertimeMinutes = records.reduce((sum, row) => sum + safeNum(row.undertime_minutes, 0), 0)
+   const priorLateDeduction = moneyRound(records.reduce((sum, row) => sum + safeNum(row.late_deduction, 0), 0))
+   const priorUndertimeDeduction = moneyRound(records.reduce((sum, row) => sum + safeNum(row.undertime_deduction, 0), 0))
+   const priorAttendanceDeduction = moneyRound(priorLateDeduction + priorUndertimeDeduction)
+   const rateInfo = employee ? getEmployeeHourlyRateInfo(employee) : { hourlyRate:0, formulaNote:'Employee record is unavailable', isConfigured:false }
+   const undertimeDeductionApplicable = employee ? employeeRuleEnabled(employee.undertime_deduction_applicable, true) : true
+   const detailedDayDetails = dayDetails.map(day => ({
+    ...day,
+    deductionAmount:undertimeDeductionApplicable ? moneyRound(safeNum(day.undertimeMinutes, 0) * safeNum(rateInfo.hourlyRate, 0) / 60) : 0,
+    deductionType:safeNum(day.undertimeMinutes, 0) > 0
+     ? (safeNum(day.lateMinutes, 0) > 0 ? 'Automatic undertime deduction (includes shortage caused by late arrival)' : 'Automatic undertime deduction')
+     : (safeNum(day.lateMinutes, 0) > 0 ? 'Late recorded — no deduction because 8 paid hours were completed' : 'No attendance deduction')
+   }))
+   const correctDeduction = undertimeDeductionApplicable ? moneyRound(correctUndertimeMinutes * safeNum(rateInfo.hourlyRate, 0) / 60) : 0
+   const marker = getPayrollAttendanceReconMarker(sourceStart, sourceEnd, employeeId)
+   const priorReconRows = (existingReconRows || []).filter(adj => String(adj.notes || '').includes(marker))
+   const existingReconAmount = moneyRound(priorReconRows.reduce((sum, adj) => sum + safeNum(adj.amount, 0), 0))
+   const coveredAmount = moneyRound(priorAttendanceDeduction + existingReconAmount)
+   const missingAdjustment = moneyRound(Math.max(0, correctDeduction - coveredAmount))
+   const overDeductedAmount = moneyRound(Math.max(0, coveredAmount - correctDeduction))
+   const sourcePayrollReleased = records.some(isReleasedPayrollRecord)
+
+   let status = 'covered'
+   let statusLabel = 'Already covered / no adjustment'
+   let statusColor = '#2d8a4e'
+   let canCreate = false
+   if (!employeeId) {
+    status = 'blocked'; statusLabel = 'Blocked: payroll employee ID is missing'; statusColor = '#ca1b1b'
+   } else if (!employee) {
+    status = 'blocked'; statusLabel = 'Blocked: employee record not found'; statusColor = '#ca1b1b'
+   } else if (!undertimeDeductionApplicable) {
+    status = 'exempt'; statusLabel = 'Employee is exempt from undertime deduction'; statusColor = '#777'
+   } else if (incompleteLogs.length > 0) {
+    status = 'incomplete'; statusLabel = `Review required: ${incompleteLogs.length} attendance log(s) have no Time Out`; statusColor = '#ca1b1b'
+   } else if (!rateInfo.isConfigured || safeNum(rateInfo.hourlyRate, 0) <= 0) {
+    status = 'blocked'; statusLabel = 'Blocked: hourly rate cannot be determined'; statusColor = '#ca1b1b'
+   } else if (correctDeduction <= 0.01) {
+    status = 'none'; statusLabel = 'No actual work shortage found'; statusColor = '#2d8a4e'
+   } else if (overDeductedAmount > 0.01) {
+    status = 'over'; statusLabel = `Review: attendance deduction exceeds corrected amount by ${php(overDeductedAmount)}`; statusColor = '#f57c00'
+   } else if (missingAdjustment > 0.01) {
+    status = 'ready'; statusLabel = 'Ready to create next-payroll deduction'; statusColor = '#ca1b1b'; canCreate = true
+   } else if (existingReconAmount > 0.01) {
+    status = 'created'; statusLabel = 'Historical correction already created'; statusColor = '#4a90d9'
+   }
+
+   return {
+    employeeId,
+    employeeCode:basePayroll.employee_code || employee?.employee_code || '',
+    employeeName:basePayroll.employee_name || employee?.full_name || 'Unknown Employee',
+    employee,
+    sourceStart,
+    sourceEnd,
+    sourcePayrollReleased,
+    completedWorkdays,
+    incompleteLogs,
+    dayDetails:detailedDayDetails,
+    attendanceDeductionDates:detailedDayDetails.filter(day => safeNum(day.undertimeMinutes, 0) > 0),
+    lateMinutesRecorded,
+    savedUndertimeMinutes,
+    correctUndertimeMinutes,
+    hourlyRate:safeNum(rateInfo.hourlyRate, 0),
+    rateFormula:rateInfo.formulaNote || '',
+    priorLateDeduction,
+    priorUndertimeDeduction,
+    priorAttendanceDeduction,
+    existingReconAmount,
+    existingReconRows:priorReconRows,
+    correctDeduction,
+    missingAdjustment,
+    overDeductedAmount,
+    marker,
+    status,
+    statusLabel,
+    statusColor,
+    canCreate
+   }
+  }).sort((a,b) => {
+   if (a.canCreate !== b.canCreate) return a.canCreate ? -1 : 1
+   return String(a.employeeName || '').localeCompare(String(b.employeeName || ''))
+  })
+
+  const selected = {}
+  auditRows.forEach(row => { if (row.canCreate) selected[row.employeeId] = true })
+  setAttendanceReconRows(auditRows)
+  setAttendanceReconSelected(selected)
+  setAttendanceReconLastRunAt(new Date().toISOString())
+  const readyCount = auditRows.filter(row => row.canCreate).length
+  const readyAmount = moneyRound(auditRows.filter(row => row.canCreate).reduce((sum, row) => sum + row.missingAdjustment, 0))
+  if (!options.silent) showToast(`Audit complete: ${readyCount} employee(s) need ${php(readyAmount)} in attendance corrections.`)
+  return auditRows
+ } catch(err) {
+  console.error('Historical attendance reconciliation failed:', err)
+  setAttendanceReconRows([])
+  setAttendanceReconSelected({})
+  if (!options.silent) showToast('Historical attendance audit failed: ' + (err?.message || err), 'red')
+  return []
+ } finally {
+  setAttendanceReconLoading(false)
+ }
+ }
+
+ function openAttendanceReconciliationTrace(row, extra = {}) {
+ if (!row) return
+ setAttendanceReconTrace({
+  ...row,
+  ...extra,
+  dayDetails:(extra.dayDetails?.length ? extra.dayDetails : row.dayDetails) || [],
+  correctionAppliedDate:extra.correctionAppliedDate || '',
+  correctionCreatedAt:extra.correctionCreatedAt || '',
+  correctionAmount:safeNum(extra.correctionAmount, 0),
+  adjustmentId:extra.adjustmentId || ''
+ })
+ setTimeout(() => {
+  try { document.getElementById('attendance-reconciliation-source-trace')?.scrollIntoView({ behavior:'smooth', block:'start' }) } catch(e) {}
+ }, 80)
+ }
+
+ async function openPayrollAdjustmentAttendanceSource(adj) {
+ const meta = parsePayrollAttendanceReconMetadata(adj?.notes || '')
+ if (!meta.isHistoricalAttendanceRecon && String(adj?.category || '') !== PAYROLL_ATTENDANCE_RECON_CATEGORY) {
+  showToast('This adjustment is not linked to the historical attendance reconciliation tool.', 'red')
+  return
+ }
+ if (!meta.sourceStart || !meta.sourceEnd || !meta.employeeId) {
+  showToast('The source payroll marker is missing from this older correction record.', 'red')
+  return
+ }
+ setAttendanceReconTraceLoading(true)
+ try {
+  let sourceRow = (attendanceReconRows || []).find(row => String(row.employeeId) === String(meta.employeeId) && row.sourceStart === meta.sourceStart && row.sourceEnd === meta.sourceEnd)
+  if (!sourceRow) {
+   const rows = await runHistoricalAttendanceReconciliation({ start:meta.sourceStart, end:meta.sourceEnd, silent:true })
+   sourceRow = (rows || []).find(row => String(row.employeeId) === String(meta.employeeId))
+  }
+  if (!sourceRow) throw new Error('The employee attendance source could not be reconstructed from the historical payroll.')
+  openAttendanceReconciliationTrace(sourceRow, {
+   dayDetails:meta.days.length ? meta.days : sourceRow.dayDetails,
+   correctionAppliedDate:String(adj.adjustment_date || meta.correctionAppliedDate || '').slice(0,10),
+   correctionCreatedAt:adj.created_at || '',
+   correctionAmount:safeNum(adj.amount, 0),
+   adjustmentId:adj.id || ''
+  })
+ } catch(err) {
+  console.error('Open historical attendance source failed:', err)
+  showToast('Failed to open the correction source: ' + (err?.message || err), 'red')
+ } finally {
+  setAttendanceReconTraceLoading(false)
+ }
+ }
+
+ async function openAttendanceReconciliationSourceDTR(trace = attendanceReconTrace, focusDate = '') {
+ const employeeId = String(trace?.employeeId || trace?.employee_id || '')
+ const sourceStart = String(trace?.sourceStart || '').slice(0,10)
+ const sourceEnd = String(trace?.sourceEnd || '').slice(0,10)
+ if (!employeeId || !sourceStart || !sourceEnd) { showToast('Employee or source payroll period is missing.', 'red'); return }
+ const emp = employees.find(item => String(item.id) === employeeId) || trace?.employee
+ if (!emp) { showToast('Employee record not found.', 'red'); return }
+ const cutoffKey = getDTRCutoffKeyFromPeriod(sourceStart, sourceEnd)
+ if (!cutoffKey) { showToast('The source dates do not match a configured payroll cutoff.', 'red'); return }
+ try {
+  const { data:logs, error } = await supabase.from('attendance_logs').select('*')
+   .eq('employee_id', employeeId)
+   .gte('attendance_date', sourceStart)
+   .lte('attendance_date', sourceEnd)
+   .order('attendance_date')
+  if (error) throw error
+  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(logs || [])
+  const grouped = groupDTRLogsByDate(enrichedLogs)
+  const allDays = buildDateRangeRows(sourceStart, sourceEnd, ({ dateStr, day, dayName }) => ({ dateStr, day, dayName, log:mergeDTRDayLogs(grouped[dateStr] || []) }))
+  const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
+  const sourceDates = Array.from(new Set((trace?.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0).map(day => day.date).filter(Boolean)))
+  setDtrEmployeeId(employeeId)
+  setDtrCutoffKey(cutoffKey)
+  setDtrRecords(allDays)
+  setDtrStats({
+   emp,
+   period:{ key:cutoffKey, start:sourceStart, end:sourceEnd, label:`${formatDateForDisplay(sourceStart)} – ${formatDateForDisplay(sourceEnd)}` },
+   totalWorked:new Set(mergedLogs.filter(log => log.time_in && log.time_out).map(log => String(log.attendance_date || '').slice(0,10))).size,
+   totalAbsent:new Set(mergedLogs.filter(log => log.status === 'Absent').map(log => String(log.attendance_date || '').slice(0,10))).size,
+   totalLate:mergedLogs.reduce((sum, log) => sum + safeNum(log.late_minutes, 0), 0),
+   totalOT:mergedLogs.reduce((sum, log) => sum + getDTRApprovedOvertimeMinutes(log), 0),
+   totalUT:mergedLogs.reduce((sum, log) => sum + getDTRUndertimeMinutes(log), 0),
+   totalBreak:mergedLogs.reduce((sum, log) => sum + getDTRBreakMinutes(log), 0),
+   totalOverbreak:mergedLogs.reduce((sum, log) => sum + getDTROverbreakMinutes(log), 0),
+   totalDutyMinutes:mergedLogs.reduce((sum, log) => sum + getDTRDutyMinutes(log), 0),
+   duplicateDays:Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
+  })
+  setDtrHighlightDates(sourceDates)
+  setDtrHighlightContext({
+   employeeName:trace?.employeeName || emp.full_name || '',
+   sourceStart,
+   sourceEnd,
+   focusDate:String(focusDate || '').slice(0,10),
+   correctionAppliedDate:String(trace?.correctionAppliedDate || '').slice(0,10),
+   correctionAmount:safeNum(trace?.correctionAmount || trace?.missingAdjustment, 0)
+  })
+  setActiveTab('dtr')
+  setSidebarOpen(false)
+  setTimeout(() => {
+   try {
+    const target = focusDate ? document.getElementById(`dtr-row-${focusDate}`) : document.getElementById('dtr-source-view')
+    target?.scrollIntoView({ behavior:'smooth', block:'center' })
+   } catch(e) {}
+  }, 150)
+ } catch(err) {
+  console.error('Open source DTR failed:', err)
+  showToast('Failed to load source DTR: ' + (err?.message || err), 'red')
+ }
+ }
+
+ async function createHistoricalAttendanceReconciliationAdjustments() {
+ const selectedRows = (attendanceReconRows || []).filter(row => row.canCreate && attendanceReconSelected[row.employeeId])
+ if (!selectedRows.length) { showToast('Select at least one employee with a ready attendance correction.', 'red'); return }
+ const targetDate = String(attendanceReconAdjustmentDate || '').slice(0,10)
+ if (!targetDate || !parseLocalDate(targetDate)) { showToast('Please select the adjustment date for the upcoming payroll.', 'red'); return }
+ if (targetDate <= String(attendanceReconEnd || '').slice(0,10)) {
+  showToast('The adjustment date must be after the historical payroll end date so it will enter a later payroll.', 'red')
+  return
+ }
+
+ setAttendanceReconCreating(true)
+ try {
+  const { data:targetPayrollRows, error:targetPayrollError } = await supabase
+   .from('payroll_records')
+   .select('id, payroll_start, payroll_end, payroll_approved, approved_at, employee_name')
+   .lte('payroll_start', targetDate)
+   .gte('payroll_end', targetDate)
+  if (targetPayrollError) throw targetPayrollError
+  const releasedTarget = (targetPayrollRows || []).find(isReleasedPayrollRecord)
+  if (releasedTarget) {
+   showToast(`Blocked: ${targetDate} is already inside released payroll ${releasedTarget.payroll_start} to ${releasedTarget.payroll_end}. Choose a date in a future unreleased cutoff.`, 'red')
+   return
+  }
+  const draftTarget = (targetPayrollRows || []).find(row => row)
+
+  const selectedAmount = moneyRound(selectedRows.reduce((sum, row) => sum + row.missingAdjustment, 0))
+  const draftWarning = draftTarget ? `\n\nA draft payroll already covers ${targetDate}. After creating the adjustments, undo that draft and recompute it.` : ''
+  if (!window.confirm(`Create ${selectedRows.length} automatic payroll deduction adjustment(s)?\n\nHistorical period: ${attendanceReconStart} to ${attendanceReconEnd}\nAdjustment date: ${targetDate}\nTotal: ${php(selectedAmount)}\n\nThe released historical payroll will not be changed.${draftWarning}`)) return
+
+  const { data:existingRows, error:existingError } = await supabase
+   .from('payroll_adjustments')
+   .select('*')
+   .eq('category', PAYROLL_ATTENDANCE_RECON_CATEGORY)
+   .order('created_at', { ascending:false })
+   .limit(1000)
+  if (existingError) throw existingError
+
+  const payloads = []
+  selectedRows.forEach(row => {
+   const alreadyCreated = moneyRound((existingRows || []).filter(adj => String(adj.notes || '').includes(row.marker)).reduce((sum, adj) => sum + safeNum(adj.amount, 0), 0))
+   const remaining = moneyRound(Math.max(0, row.correctDeduction - row.priorAttendanceDeduction - alreadyCreated))
+   if (remaining <= 0.01) return
+   const sourceDayDetails = (row.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0)
+   const serializedSourceDays = serializeAttendanceReconDayDetails(sourceDayDetails)
+   const readableSourceDays = sourceDayDetails.map(day => `${day.date}: ${safeNum(day.lateMinutes,0)} late min, ${safeNum(day.undertimeMinutes,0)} automatic UT min, ${php(day.deductionAmount)}, ${day.timeIn || '--'}-${day.timeOut || '--'}, break ${safeNum(day.deductedBreakMinutes,0)} min`).join('; ')
+   payloads.push({
+    employee_id:row.employeeId,
+    employee_code:row.employeeCode || '',
+    employee_name:row.employeeName || '',
+    adjustment_date:targetDate,
+    adjustment_type:'deduction',
+    category:PAYROLL_ATTENDANCE_RECON_CATEGORY,
+    amount:remaining,
+    notes:`${row.marker} | SOURCE-PERIOD:${attendanceReconStart} TO ${attendanceReconEnd} | CORRECTION-APPLIED:${targetDate} | ${PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN}${serializedSourceDays}${PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE} | Source attendance dates and specific deductions: ${readableSourceDays || 'No date-level shortage details available'}. Correct automatic undertime: ${row.correctUndertimeMinutes} minute(s) / ${php(row.correctDeduction)}. Previously deducted in saved payroll: Late ${php(row.priorLateDeduction)} + UT ${php(row.priorUndertimeDeduction)} = ${php(row.priorAttendanceDeduction)}. Previously generated correction: ${php(alreadyCreated)}. New remaining correction applied on ${targetDate}: ${php(remaining)}. Late minutes are recorded for traceability but are not separately charged when already included in the automatic undertime shortage.`
+   })
+  })
+
+  if (!payloads.length) {
+   showToast('No remaining adjustment was created. The selected employees were already corrected.', 'red')
+   await runHistoricalAttendanceReconciliation()
+   return
+  }
+
+  const { data:createdRows, error:insertError } = await supabase.from('payroll_adjustments').insert(payloads).select()
+  if (insertError) throw insertError
+  const createdTotal = moneyRound((createdRows || payloads).reduce((sum, row) => sum + safeNum(row.amount, 0), 0))
+  await logAudit('HISTORICAL ATTENDANCE RECONCILIATION', currentAdminLabel || adminRole || 'Admin', 'Payroll', `${attendanceReconStart} to ${attendanceReconEnd} | ${payloads.length} deduction adjustment(s) | ${php(createdTotal)} | Applied date ${targetDate}`)
+  setPayrollAdjustmentFrom(targetDate)
+  setPayrollAdjustmentTo(targetDate)
+  await loadPayrollAdjustmentHistory({ from:targetDate, to:targetDate, silent:true })
+  await runHistoricalAttendanceReconciliation()
+  showToast(draftTarget
+   ? `${payloads.length} correction(s) totaling ${php(createdTotal)} created. Undo and recompute the draft payroll covering ${targetDate}.`
+   : `${payloads.length} correction(s) totaling ${php(createdTotal)} created for the upcoming payroll.`)
+ } catch(err) {
+  console.error('Create historical attendance adjustments failed:', err)
+  showToast('Failed to create historical attendance corrections: ' + (err?.message || err), 'red')
+ } finally {
+  setAttendanceReconCreating(false)
+ }
+ }
+
+ function downloadAttendanceReconciliationCsv() {
+ if (!(attendanceReconRows || []).length) { showToast('Run the historical attendance audit first.', 'red'); return }
+ const csvCell = value => `"${String(value ?? '').replace(/"/g, '""')}"`
+ const headers = ['Employee Code','Employee Name','Historical Start','Historical End','Completed Workdays','Source Dates and Specific Deductions','Late Minutes Recorded','Saved UT Minutes','Correct Automatic UT Minutes','Hourly Rate','Correct Attendance Deduction','Previously Deducted','Existing Reconciliation','Adjustment Needed','Incomplete Logs','Status']
+ const lines = [headers.map(csvCell).join(',')]
+ ;(attendanceReconRows || []).forEach(row => {
+  lines.push([
+   row.employeeCode,row.employeeName,row.sourceStart,row.sourceEnd,row.completedWorkdays,(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).map(day=>`${day.date}: Late ${day.lateMinutes}m; Auto UT ${day.undertimeMinutes}m; ${php(day.deductionAmount)}`).join(' | '),row.lateMinutesRecorded,row.savedUndertimeMinutes,row.correctUndertimeMinutes,
+   safeNum(row.hourlyRate,0).toFixed(2),safeNum(row.correctDeduction,0).toFixed(2),safeNum(row.priorAttendanceDeduction,0).toFixed(2),safeNum(row.existingReconAmount,0).toFixed(2),safeNum(row.missingAdjustment,0).toFixed(2),
+   row.incompleteLogs?.length || 0,row.statusLabel
+  ].map(csvCell).join(','))
+ })
+ const blob = new Blob(['\ufeff' + lines.join('\n')], { type:'text/csv;charset=utf-8' })
+ const url = URL.createObjectURL(blob)
+ const link = document.createElement('a')
+ link.href = url
+ link.download = `historical-attendance-reconciliation-${attendanceReconStart}-to-${attendanceReconEnd}.csv`
+ document.body.appendChild(link)
+ link.click()
+ document.body.removeChild(link)
+ URL.revokeObjectURL(url)
  }
 
  async function loadPayrollAdjustmentHistory(options = {}) {
@@ -16775,8 +22729,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  else if (finalPayReason==='authorized') separationPay=Number(activeEmp.daily_rate||0)*13*yearsOfService
  else if (finalPayReason==='retirement') separationPay=Number(activeEmp.daily_rate||0)*22.5*yearsOfService
 
- const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', finalPayEmployeeId).eq('status', 'Unpaid')
- const totalCA=cas?.reduce((s,c)=>s+Number(c.balance||0),0)||0
+ const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', finalPayEmployeeId)
+ const totalCA=(cas || []).filter(isOutstandingCashAdvance).reduce((s,c)=>s+getCashAdvanceEffectiveBalance(c),0)||0
  const lastSalary=unpaidDays*Number(activeEmp.daily_rate||0)
 
  setFinalPayResult({
@@ -16883,9 +22837,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const coveredCAs = (caRows || []).filter(ca => {
  const key = String(ca.employee_id || '')
  const advanceDate = String(ca.advance_date || ca.created_at || '').slice(0, 10)
- const status = String(ca.status || '').toLowerCase()
  const employeeHasPayrollDeduction = safeNum(payrollByEmployee[key]?.cash_advance_deduction, 0) > 0
- const currentlyOutstanding = status === 'unpaid' || safeNum(ca.balance, 0) > 0
+ const currentlyOutstanding = isOutstandingCashAdvance(ca)
  const createdWithinPayrollDates = advanceDate && advanceDate >= start && advanceDate <= end
 
  // Shows cash advances actually deducted in the selected payroll period,
@@ -16913,12 +22866,15 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  installmentsRemaining: 0
  }
  }
+ const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
+ const effectivePaid = getCashAdvancePaidAmount(ca)
+ const effectiveInstallmentsRemaining = getCashAdvanceRemainingInstallments(ca)
  grouped[key].caItems.push(ca)
  grouped[key].totalOriginal += safeNum(ca.amount, 0)
- grouped[key].totalPaid += safeNum(ca.amount_paid, 0)
- grouped[key].totalBalance += safeNum(ca.balance, 0)
+ grouped[key].totalPaid += effectivePaid
+ grouped[key].totalBalance += effectiveBalance
  grouped[key].totalPerPayroll += safeNum(ca.per_payroll_deduction, 0)
- grouped[key].installmentsRemaining += safeNum(ca.installments_remaining, 0)
+ grouped[key].installmentsRemaining += effectiveInstallmentsRemaining
  })
 
 ;(payrollRows || [])
@@ -17138,13 +23094,16 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 .eq('employee_id', empId).gte('attendance_date', startDate).lte('attendance_date', endDate)
 .order('attendance_date')
  const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
- const grouped = groupDTRLogsByDate(logs || [])
+ const enrichedLogs = await enrichAttendanceLogsWithBreakRows(logs || [])
+ const grouped = groupDTRLogsByDate(enrichedLogs)
  const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
- const totalDaysWorked = new Set(mergedLogs.filter(l=>l.time_in && l.time_out).map(l=>String(l.attendance_date || '').slice(0,10))).size
+ const totalDaysWorked = new Set(mergedLogs.filter(l=>getAttendanceDayIntegrity(getDTRDayLogs(l)).isValidCompleted).map(l=>String(l.attendance_date || '').slice(0,10))).size
  const totalAbsent = new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size
  const totalLate = mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0) || 0
- const totalOT = mergedLogs.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0) || 0
- const totalBreak = mergedLogs.reduce((s,l)=>s+Number(l.total_break_minutes||0),0) || 0
+ const totalOT = mergedLogs.reduce((s,l)=>s+getDTRApprovedOvertimeMinutes(l),0) || 0
+ const totalUT = mergedLogs.reduce((s,l)=>s+getDTRUndertimeMinutes(l),0) || 0
+ const totalBreak = mergedLogs.reduce((s,l)=>s+getDTRBreakMinutes(l),0) || 0
+ const totalOverbreak = mergedLogs.reduce((s,l)=>s+getDTROverbreakMinutes(l),0) || 0
  const totalDutyMinutes = mergedLogs.reduce((s,l)=>s+getDTRDutyMinutes(l),0) || 0
  const duplicateDays = Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
 
@@ -17155,14 +23114,14 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  <td style="padding:5px 8px;font-size:10px;text-align:center;">${formatDateForDisplay(dateStr)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_in?'#000':'#ccc'}">${log?.time_in||' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.time_out?'#000':'#ccc'}">${log?.time_out||' '}</td>
- <td style="padding:5px 8px;font-size:10px;text-align:center;">${log?.total_break_minutes||0}</td>
+ <td style="padding:5px 8px;font-size:10px;text-align:center;">${log?getDTRBreakMinutes(log):0}</td>
+ <td style="padding:5px 8px;font-size:10px;text-align:center;color:${getDTROverbreakMinutes(log)>0?'#ca1b1b':'#777'};font-weight:${getDTROverbreakMinutes(log)>0?'bold':'normal'};">${getDTROverbreakMinutes(log)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;font-weight:bold;color:${getDTRDutyMinutes(log)>0?'#1a1a2e':'#ccc'}">${log?formatDutyHours(getDTRDutyMinutes(log)):' '}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.late_minutes>0?'#ca1b1b':'#000'}">${log?.late_minutes||0}</td>
- <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.overtime_minutes>0?'#2d8a4e':'#000'}">${log?.overtime_approved?log.overtime_minutes:0}</td>
+ <td style="padding:5px 8px;font-size:10px;text-align:center;color:${getDTRUndertimeMinutes(log)>0?'#ca1b1b':'#000'}">${getDTRUndertimeMinutes(log)}</td>
+ <td style="padding:5px 8px;font-size:10px;text-align:center;color:${getDTRApprovedOvertimeMinutes(log)>0?'#2d8a4e':'#000'}">${getDTRApprovedOvertimeMinutes(log)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;">
- ${!log?'':log.duplicateCount>1?'<span style="color:#f5a623;font-weight:bold;">DUP</span>':log.status==='Absent'?'<span style="color:#ca1b1b;font-weight:bold;">ABS</span>':
- log.status==='Late'?'<span style="color:#f5a623;">LATE</span>':
- log.time_in?'<span style="color:#2d8a4e;">PRESENT</span>':''}
+ ${!log?'':`<span style="color:${getDTRStatusInfo(log).color==='red'?'#ca1b1b':getDTRStatusInfo(log).color==='orange'?'#f5a623':getDTRStatusInfo(log).color==='blue'?'#4a90d9':'#2d8a4e'};font-weight:bold;">${getDTRStatusInfo(log).label}</span>`}
  </td>
  </tr>`
  }).join('')
@@ -17195,14 +23154,16 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  <div style="font-size:11px;">Absences: <strong style="color:#ca1b1b;">${totalAbsent}</strong></div>
  <div style="font-size:11px;">Total Late: <strong style="color:#f5a623;">${totalLate} min</strong></div>
  <div style="font-size:11px;">Total OT: <strong style="color:#2d8a4e;">${totalOT} min</strong></div>
- <div style="font-size:11px;">Total Break: <strong>${totalBreak} min</strong></div>
+ <div style="font-size:11px;">Total UT: <strong style="color:#ca1b1b;">${totalUT} min</strong></div>
+ <div style="font-size:11px;">Automatic / Actual Break Deducted: <strong>${totalBreak} min</strong></div>
+ <div style="font-size:11px;">Total Overbreak: <strong style="color:#ca1b1b;">${totalOverbreak} min</strong></div>
  <div style="font-size:11px;">Duty Hours: <strong>${formatDutyHours(totalDutyMinutes)}</strong></div>
  </div>
  </div>
  <table>
  <thead><tr>
  <th>Day</th><th>Date</th><th>Time In</th><th>Time Out</th>
- <th>Break (min)</th><th>Duty Hours</th><th>Late (min)</th><th>OT (min)</th><th>Status</th>
+ <th>Break (min)</th><th>Overbreak</th><th>Duty Hours</th><th>Late (min)</th><th>UT (min)</th><th>OT (min)</th><th>Status</th>
  </tr></thead>
  <tbody>${rows}</tbody>
  <tfoot>
@@ -17210,8 +23171,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  <td colspan="2" style="padding:6px 8px;font-size:10px;">TOTALS</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;">${totalDaysWorked} day(s)</td><td></td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;">${totalBreak}</td>
+ <td style="padding:6px 8px;font-size:10px;text-align:center;color:#ca1b1b;">${totalOverbreak}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#1a1a2e;">${formatDutyHours(totalDutyMinutes)}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#ca1b1b;">${totalLate}</td>
+ <td style="padding:6px 8px;font-size:10px;text-align:center;color:#ca1b1b;">${totalUT}</td>
  <td style="padding:6px 8px;font-size:10px;text-align:center;color:#2d8a4e;">${totalOT}</td>
  <td></td>
  </tr>
@@ -17229,73 +23192,12 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  function printHistoryPayslips(records, start, end) {
  if (!records.length) { showToast('No records to print.', 'red'); return }
- const pw = window.open('', '_blank', 'width=900,height=700')
- const html = records.map((pay, idx) => `
- <div class="payslip-wrap">
- <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
- <div style="text-align:center;margin-bottom:8px;border-bottom:2px solid #ca1b1b;padding-bottom:8px;">
- <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
- <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
- <div style="font-size:13px;font-weight:bold;margin-top:4px;">EMPLOYEE PAYSLIP</div>
- <div style="font-size:10px;margin-top:2px;">Serial: ${pay.payslip_serial||' '}</div>
- <div style="font-size:10px;color:#666;">Period: ${start} to ${end}</div>
- </div>
- <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:8px;margin-bottom:10px;">
- <div style="font-size:15px;font-weight:bold;color:#ca1b1b;">${pay.employee_name}</div>
- <div style="font-size:12px;font-weight:bold;color:#555;">${pay.position||''}</div>
- <div style="font-size:10px;color:#888;">Code: ${pay.employee_code}</div>
- </div>
- <table style="width:100%;border-collapse:collapse;margin-bottom:8px;">
- <tr style="background:#ca1b1b;color:white;">
- <th style="padding:5px 8px;text-align:left;font-size:10px;">Description</th>
- <th style="padding:5px 8px;text-align:right;font-size:10px;">Amount</th>
- </tr>
- <tr style="background:#f0fff0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#2d8a4e;font-size:10px;">EARNINGS</td></tr>
- <tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Basic Pay (${pay.worked_days||0} day(s) worked)</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${'PHP '+Number(pay.basic_pay||0).toFixed(2)}</td></tr>
- ${Number(pay.overtime_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Overtime Pay</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.overtime_pay).toFixed(2)}</td></tr>`:''}
- ${Number(pay.night_diff_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.night_diff_pay).toFixed(2)}</td></tr>`:''}
- ${Number(pay.holiday_pay||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.holiday_pay).toFixed(2)}</td></tr>`:''}
- ${Number(pay.other_earnings||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Earnings / Bonus</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.other_earnings).toFixed(2)}</td></tr>`:''}
- <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:5px 8px;font-size:10px;">TOTAL EARNINGS</td><td style="padding:5px 8px;text-align:right;color:#2d8a4e;">${'PHP '+Number(pay.total_earnings||0).toFixed(2)}</td></tr>
- <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
- ${Number(pay.late_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Late Deduction</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.late_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.undertime_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime Deduction</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.undertime_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.cash_advance_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.cash_advance_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.sss_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.sss_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.pagibig_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.pagibig_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.philhealth_deduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth Contribution</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.philhealth_deduction).toFixed(2)}</td></tr>`:''}
- ${Number(pay.other_deductions||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Deductions</td><td style="padding:3px 8px;text-align:right;">${'PHP '+Number(pay.other_deductions).toFixed(2)}</td></tr>`:''}
- <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:5px 8px;font-size:10px;">TOTAL DEDUCTIONS</td><td style="padding:5px 8px;text-align:right;color:#ca1b1b;">${'PHP '+Number(pay.total_deductions||0).toFixed(2)}</td></tr>
- </table>
- <table style="width:100%;border-collapse:collapse;margin-bottom:8px;background:#f9f9f9;border:1px solid #eee;border-radius:4px;">
- <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Days Worked</td><td style="padding:4px 8px;text-align:right;font-size:10px;font-weight:bold;">${pay.worked_days||0}</td></tr>
- <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Absences</td><td style="padding:4px 8px;text-align:right;font-size:10px;font-weight:bold;color:#ca1b1b;">${pay.absent_days||0}</td></tr>
- <tr><td style="padding:4px 8px;font-size:10px;color:#555;">Period</td><td style="padding:4px 8px;text-align:right;font-size:10px;">${start} to ${end}</td></tr>
- </table>
- <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
- <span style="font-weight:bold;font-size:13px;">NET PAY</span>
- <span style="font-weight:bold;font-size:17px;">${'PHP '+Number(pay.net_pay||0).toFixed(2)}</span>
- </div>
- <div style="margin-top:20px;display:flex;justify-content:space-between;">
- <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Employee Signature</div></div>
- <div style="text-align:center;"><div style="border-top:1px solid #000;width:110px;padding-top:4px;font-size:9px;">Authorized Signature</div></div>
- </div>
- <div style="text-align:center;font-size:9px;color:#999;margin-top:8px;">${pay.payslip_serial||''}</div>
- </div>
- </div>`).join('')
- pw.document.write(`<!DOCTYPE html><html><head><title>Payslips ${start} to ${end}</title>
- <style>
- *{margin:0;padding:0;box-sizing:border-box;}
- body{background:#e0e0e0;display:flex;flex-direction:column;align-items:center;padding:16px 0;}
-.payslip-wrap{background:white;width:145mm;margin:10px auto;box-shadow:0 2px 8px rgba(0,0,0,0.2);}
- @media print{
- @page{size:145mm 210mm;margin:0;}
- body{background:white;display:block;padding:0;}
-.payslip-wrap{box-shadow:none;margin:0;page-break-after:always;}
- }
- </style></head><body>${html}</body></html>`)
- pw.document.close()
- setTimeout(() => { pw.focus(); pw.print() }, 800)
+ const firstPay = normalizePayslipForPrint(records[0] || {})
+ const filename = records.length === 1
+ ? `Romas_Donuts_Payslip_${firstPay.employeeName || firstPay.employeeCode || 'Employee'}_${start}_to_${end}`
+ : `Romas_Donuts_Payslips_${start}_to_${end}`
+ downloadPayslipsDocxFile(filename, records, start, end)
+ showToast(`Downloaded ${records.length} payslip${records.length === 1 ? '' : 's'} as a Word file.`)
  }
 
  function exportPayrollToCSV(records, start, end) {
@@ -17360,6 +23262,48 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  showToast(' Payroll exported to CSV!')
  }
 
+ async function sendPayslipSmsNotifications(start = payrollStart, end = payrollEnd, options = {}) {
+ if (!requireOwnerOrPayrollAction('send payslip SMS notifications')) return null
+ if (!start ||!end) { if (!options.silent) showToast('Please select payroll start and end dates.', 'red'); return null }
+ if (!navigator.onLine) { if (!options.silent) showToast('Internet connection is required to send SMS notifications.', 'red'); return null }
+ if (payslipSmsSending) return null
+
+ setPayslipSmsSending(true)
+ try {
+  const { data, error } = await supabase.functions.invoke('send-payslip-sms', {
+   body:{
+    payroll_start:start,
+    payroll_end:end,
+    retry_failed:true
+   }
+  })
+  if (error) throw error
+  if (!data?.ok) throw new Error(data?.error || 'SMS service returned an unexpected response.')
+
+  const sent = safeNum(data.sent, 0)
+  const skippedDuplicate = safeNum(data.skipped_duplicate, 0)
+  const skippedMissing = safeNum(data.skipped_missing_number, 0)
+  const failed = safeNum(data.failed, 0)
+  const summary = `SMS: ${sent} sent${skippedDuplicate?`, ${skippedDuplicate} already notified`:''}${skippedMissing?`, ${skippedMissing} missing/invalid number`:''}${failed?`, ${failed} failed`:''}.`
+
+  await logAudit(
+   'PAYSLIP SMS NOTIFICATIONS',
+   currentAdminLabel,
+   'Payroll',
+   `Period: ${start} to ${end} | Sent: ${sent} | Already sent: ${skippedDuplicate} | Missing/invalid: ${skippedMissing} | Failed: ${failed}`
+  )
+
+  if (!options.silent) showToast(summary, failed > 0? 'red':'green')
+  return { ...data, summary }
+ } catch(err) {
+  console.error('Payslip SMS notification failed:', err)
+  if (!options.silent) showToast(`SMS sending failed: ${err?.message || err}`, 'red')
+  return { ok:false, error:err?.message || String(err) }
+ } finally {
+  setPayslipSmsSending(false)
+ }
+ }
+
  async function sendPayslipsForEmployeeReview(start = payrollStart, end = payrollEnd) {
  if (!requireOwnerOrPayrollAction('send payslips for review')) return
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
@@ -17419,9 +23363,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   review_sent_by:currentAdminLabel
  }, { onConflict:'payroll_start,payroll_end' }) } catch(e) {}
 
- await logAudit('PAYSLIPS SENT FOR EMPLOYEE REVIEW', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Records: ${records.length}`)
+ const smsResult = await sendPayslipSmsNotifications(start, end, { silent:true })
+ await logAudit('PAYSLIPS SENT FOR EMPLOYEE REVIEW', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Records: ${records.length}${smsResult?.ok?` | SMS sent: ${safeNum(smsResult.sent,0)} | SMS failed: ${safeNum(smsResult.failed,0)} | Missing/invalid: ${safeNum(smsResult.skipped_missing_number,0)}`:' | SMS unavailable or failed'}`)
  await loadSavedPayrollForPeriod(start, end, { silent:true })
- showToast(`Payslips sent to ${records.length} employee${records.length===1?'':'s'} for review.`, 'green')
+ showToast(`Payslips sent to ${records.length} employee${records.length===1?'':'s'} for review.${smsResult?.ok?` ${smsResult.summary}`:' SMS notification was not completed; use SEND/RETRY SMS.'}`, smsResult?.ok && safeNum(smsResult.failed,0)===0? 'green':'red')
  }
 
  async function undoDraftPayroll(start = payrollStart, end = payrollEnd) {
@@ -17532,10 +23477,24 @@ async function computePayroll() {
  const startDay = Number(payrollStart.split('-')[2])
  const isFirstCutoff = startDay>=11&&startDay<=25
  for (const emp of empList||[]) {
-  const { data:logs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', payrollStart).lte('attendance_date', payrollEnd)
+  const holidayGuardStart = addDaysToDateString(payrollStart, -1) || payrollStart
+  const holidayGuardEnd = addDaysToDateString(payrollEnd, 1) || payrollEnd
+  const { data:allLogs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', holidayGuardStart).lte('attendance_date', holidayGuardEnd)
   if (logsError) throw logsError
-  const { data:leaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', payrollEnd).gte('leave_end', payrollStart)
+  const logs = (allLogs || []).filter(log => {
+   const dateKey = String(log.attendance_date || '').slice(0, 10)
+   return dateKey >= payrollStart && dateKey <= payrollEnd
+  })
+  const guardLogsByDate = groupDTRLogsByDate(allLogs || [])
+  const guardAttendanceByDate = {}
+  Object.entries(guardLogsByDate).forEach(([dateKey, dayLogs]) => {
+   guardAttendanceByDate[dateKey] = mergeDTRDayLogs(dayLogs)
+  })
+
+  const { data:allLeaves, error:leavesError } = await supabase.from('leave_requests').select('*').eq('employee_id', emp.id).eq('status', 'approved').lte('leave_start', holidayGuardEnd).gte('leave_end', holidayGuardStart)
   if (leavesError) throw leavesError
+  const leaves = (allLeaves || []).filter(leave => getLeaveOverlapDays(leave, payrollStart, payrollEnd) > 0)
+  const holidayGuardPaidLeaves = (allLeaves || []).filter(isPaidLeaveRecord)
   const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id)
   if (caError) throw caError
   const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
@@ -17549,7 +23508,23 @@ async function computePayroll() {
   .lte('attendance_date', payrollEnd)
   if (timeAdjError) throw timeAdjError
 
-  const workedLogs=logs?.filter(l=>l.time_in&&l.time_out)||[]
+  const payrollLogsByDate = groupDTRLogsByDate(logs || [])
+  const attendanceIntegrityIssues = Object.entries(payrollLogsByDate).map(([dateKey, dayLogs]) => {
+   const integrity = getAttendanceDayIntegrity(dayLogs)
+   return integrity.isIncomplete || integrity.isInvalidShortPunch
+    ? { dateKey, message:integrity.message }
+    : null
+  }).filter(Boolean)
+  if (attendanceIntegrityIssues.length > 0) {
+   const issueText = attendanceIntegrityIssues
+    .slice(0, 5)
+    .map(issue => `${issue.dateKey}: ${issue.message}`)
+    .join(' | ')
+   throw new Error(`Payroll blocked for ${emp.full_name}: attendance correction required. ${issueText}`)
+  }
+
+  const workedLogs=logs?.filter(l=>l.time_in&&l.time_out&&!isAbsentAttendanceLog(l))||[]
+  const workedDateKeys=[...new Set((workedLogs||[]).map(l=>String(l.attendance_date||'').slice(0,10)).filter(Boolean))]
   let breakRowsByLogId={}
   if (workedLogs.length>0) {
    const logIds = workedLogs.map(l=>l.id).filter(Boolean)
@@ -17567,39 +23542,102 @@ async function computePayroll() {
    }
   }
 
-  const workedDays=workedLogs.length||0
+  const workedDays=workedDateKeys.length||0
   const absentDays=logs?.filter(l=>l.status==='Absent').length||0
   const paidLeaveDays=leaves?.filter(isPaidLeaveRecord).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
   const unpaidLeaveDays=leaves?.filter(l=>!isPaidLeaveRecord(l)).reduce((s,l)=>s+getLeaveOverlapDays(l, payrollStart, payrollEnd),0)||0
+  const payrollBasis = normalizePayrollBasis(emp.payroll_basis)
+  const monthlySalary = safeNum(emp.monthly_salary, 0)
+  const semiMonthlySalary = safeNum(emp.semi_monthly_salary, 0)
+  const annualWorkingDays = positiveNum(emp.annual_working_days, 313)
+  const attendanceRequiredForPay = employeeRuleEnabled(emp.attendance_required_for_pay, payrollBasis === 'daily')
+  const absenceDeductionApplicable = employeeRuleEnabled(emp.absence_deduction_applicable, payrollBasis !== 'daily')
+  const overtimePayEligible = employeeRuleEnabled(emp.overtime_pay_eligible, true)
+  const undertimeDeductionApplicable = employeeRuleEnabled(emp.undertime_deduction_applicable, true)
+  const nightDifferentialPayEligible = employeeRuleEnabled(emp.night_differential_pay_eligible, true)
+
   const rawDailyRate=safeNum(emp.daily_rate, 0)
   const savedHourlyRate=safeNum(emp.hourly_rate, 0)
-  const dailyRate=rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0)
+  const fixedMonthlyEquivalent = payrollBasis === 'monthly'
+   ? monthlySalary
+   : payrollBasis === 'semi_monthly'
+    ? (semiMonthlySalary > 0 ? semiMonthlySalary * 2 : monthlySalary)
+    : 0
+  const derivedFixedDailyRate = fixedMonthlyEquivalent > 0 ? fixedMonthlyEquivalent * 12 / annualWorkingDays : 0
+  const dailyRate = payrollBasis === 'daily'
+   ? (rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0))
+   : (derivedFixedDailyRate>0?derivedFixedDailyRate:(rawDailyRate>0?rawDailyRate:(savedHourlyRate>0?savedHourlyRate*8:0)))
   const hourlyRate=dailyRate>0?dailyRate/8:savedHourlyRate
   const minuteRate=hourlyRate/60
+  const fixedCutoffBasePay = payrollBasis === 'monthly'
+   ? monthlySalary / 2
+   : payrollBasis === 'semi_monthly'
+    ? (semiMonthlySalary > 0 ? semiMonthlySalary : monthlySalary / 2)
+    : 0
 
-  // Daily-rate rule: one completed attendance day earns one full daily rate.
-  // Time-in/time-out minutes do not reduce basic pay automatically.
-  // Minutes are used only for approved OT, approved UT, and night differential premium.
+  // Payroll basis rule:
+  // Daily-paid: attendance earns salary. No attendance = no pay.
+  // Monthly/semi-monthly fixed: salary is paid per cutoff first, then attendance
+  // creates allowed deductions/premiums depending on employee rule switches.
   let totalWorkedMinutes=0
   let nightDiffMinutes=0
+  const actualOvertimeCapacityByDate={}
+  const actualUndertimeCapacityByDate={}
   const workDetailByDate={}
-  for (const log of workedLogs) {
-   const inM=minutesFromTime(log.time_in)
-   const outM=minutesFromTime(log.time_out)+(minutesFromTime(log.time_out)<minutesFromTime(log.time_in)?24*60:0)
-   const rawMins=Math.max(0,outM-inM)
-   const logBreakRows=breakRowsByLogId[String(log.id||'')]||[]
-   const recordedBreak=safeNum(log.total_break_minutes, 0)
-   const effectiveBreak=recordedBreak>0?recordedBreak:(rawMins>=9*60?ALLOWED_BREAK_MINUTES:0)
-   const actualMins=Math.max(0,rawMins-effectiveBreak)
-   const computedNightDiffMinutes=calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows)
+  const workedLogsByDate={}
+  ;(workedLogs || []).forEach(log => {
+   const dateKey=String(log.attendance_date||'').slice(0,10)
+   if (!dateKey) return
+   if (!workedLogsByDate[dateKey]) workedLogsByDate[dateKey]=[]
+   workedLogsByDate[dateKey].push(log)
+  })
+
+  for (const [logDateKey, dayLogs] of Object.entries(workedLogsByDate)) {
+   const dayMetrics=getAttendanceDayWorkMetrics(dayLogs, breakRowsByLogId)
+   let computedNightDiffMinutes=0
+   for (const log of dayLogs) {
+    const logBreakRows=breakRowsByLogId[String(log.id||'')]||[]
+    computedNightDiffMinutes += nightDifferentialPayEligible ? calculateNightDifferentialMinutes(log.time_in, log.time_out, logBreakRows) : 0
+   }
    nightDiffMinutes+=computedNightDiffMinutes
-   totalWorkedMinutes+=actualMins
-   workDetailByDate[String(log.attendance_date||'').slice(0,10)]={ rawMins, actualMins, paidRegularMins:8*60, regularPay:dailyRate, nightDiffMinutes:computedNightDiffMinutes }
+   totalWorkedMinutes+=dayMetrics.paidWorkedMinutes
+   actualUndertimeCapacityByDate[logDateKey]=dayMetrics.undertimeMinutes
+   const actualDayOvertimeMinutes = getAttendanceDayActualOvertimeMinutes(dayLogs, breakRowsByLogId)
+   actualOvertimeCapacityByDate[logDateKey]=actualDayOvertimeMinutes
+   workDetailByDate[logDateKey]={
+    rawMins:dayMetrics.rawSpanMinutes,
+    actualMins:dayMetrics.paidWorkedMinutes,
+    deductedBreakMins:dayMetrics.deductedBreakMinutes,
+    overbreakMins:dayMetrics.overbreakMinutes,
+    undertimeMins:dayMetrics.undertimeMinutes,
+    actualOvertimeMins:actualDayOvertimeMinutes,
+    paidRegularMins:REQUIRED_PAID_WORK_MINUTES,
+    regularPay:dailyRate,
+    nightDiffMinutes:computedNightDiffMinutes
+   }
+
+   // Overnight shift support: if a shift starts before midnight and ends on the next day,
+   // mark the next calendar date as worked too so holiday premium is not missed.
+   if (dayLogs.some(log => minutesFromTime(log.time_out) < minutesFromTime(log.time_in))) {
+    const nextDateKey=addDaysToDateString(logDateKey, 1)
+    if (nextDateKey && nextDateKey >= payrollStart && nextDateKey <= payrollEnd && !workDetailByDate[nextDateKey]) {
+     workDetailByDate[nextDateKey]={ ...workDetailByDate[logDateKey], overnightCarryover:true }
+    }
+   }
   }
 
-  const workedBasicPay=workedDays*dailyRate
-  const paidLeavePay=paidLeaveDays*dailyRate
-  const basicPay=workedBasicPay+paidLeavePay
+  let workedBasicPay = 0
+  let paidLeavePay = 0
+  let absenceDeduction = 0
+  if (payrollBasis === 'daily') {
+   workedBasicPay = attendanceRequiredForPay ? workedDays * dailyRate : dailyRate
+   paidLeavePay = paidLeaveDays * dailyRate
+  } else {
+   workedBasicPay = fixedCutoffBasePay
+   paidLeavePay = 0
+   absenceDeduction = absenceDeductionApplicable ? (absentDays + unpaidLeaveDays) * dailyRate : 0
+  }
+  const basicPay = moneyRound(workedBasicPay + paidLeavePay)
   const regularPaidMinutes=(workedDays+paidLeaveDays)*8*60
 
   // Birthday Pay: no work, no pay. If employee worked on birthday, add extra 100%.
@@ -17616,35 +23654,83 @@ async function computePayroll() {
    }
   }
 
-  const overtimeMinutes=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='overtime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
-  const overtimePay=overtimeMinutes*minuteRate*1.25
-  const undertimeMinutesApproved=(approvedTimeAdjs||[]).filter(r=>String(r.request_type||'').toLowerCase()==='undertime').reduce((s,r)=>s+safeNum(r.minutes,0),0)||0
-  const undertimeDeduction=undertimeMinutesApproved*minuteRate
+  const approvedOvertimeByDate = {}
+  const approvedUndertimeByDate = {}
+  ;(approvedTimeAdjs || []).forEach(r => {
+   const requestType = String(r.request_type || '').toLowerCase()
+   const dateKey = String(r.attendance_date || '').slice(0,10)
+   if (!dateKey) return
+   if (requestType === 'overtime') {
+    approvedOvertimeByDate[dateKey] = (approvedOvertimeByDate[dateKey] || 0) + Math.max(0, safeNum(r.minutes, 0))
+   } else if (requestType === 'undertime') {
+    approvedUndertimeByDate[dateKey] = (approvedUndertimeByDate[dateKey] || 0) + Math.max(0, safeNum(r.minutes, 0))
+   }
+  })
+
+  // OT and UT are approval-driven, but the approved request can never override
+  // actual attendance. Each date is recalculated from Time In to Time Out, less
+  // the mandatory break, then capped to its real OT or UT capacity.
+  const overtimeMinutes = overtimePayEligible
+   ? Object.entries(approvedOvertimeByDate).reduce((sum, [dateKey, approvedMinutes]) => {
+      const actualMinutes = Math.max(0, safeNum(actualOvertimeCapacityByDate[dateKey], 0))
+      return sum + Math.min(Math.max(0, approvedMinutes), actualMinutes)
+     }, 0)
+   : 0
+  const overtimePay=overtimePayEligible ? overtimeMinutes*minuteRate*1.25 : 0
+
+  const undertimeMinutesApproved = undertimeDeductionApplicable
+   ? Object.entries(approvedUndertimeByDate).reduce((sum, [dateKey, approvedMinutes]) => {
+      const actualMinutes = Math.max(0, safeNum(actualUndertimeCapacityByDate[dateKey], 0))
+      return sum + Math.min(Math.max(0, approvedMinutes), actualMinutes)
+     }, 0)
+   : 0
+  const undertimeDeduction=undertimeDeductionApplicable ? undertimeMinutesApproved*minuteRate : 0
 
   // Night differential premium: break time inside 10PM-6AM is excluded.
-  const nightDiffPay=nightDiffMinutes*minuteRate*0.10
+  // Employees marked night_differential_pay_eligible = false still keep worked hours,
+  // but receive ₱0 night differential premium.
+  const nightDiffPay=nightDifferentialPayEligible ? nightDiffMinutes*minuteRate*0.10 : 0
 
-  // Holiday premium based on worked holiday attendance date.
+  // Holiday pay policy.
+  // Absence guard: no holiday pay/premium when employee is marked ABSENT
+  // on the day before the holiday, on the holiday, or on the day after the holiday.
+  // Paid leave on any guard date is treated as not absent.
+  // Regular holiday: eligible employee receives one daily-rate holiday pay;
+  // if they worked, basic pay already covers the worked day, so total becomes 200%.
+  // Special holiday: premium is added only when the employee worked the special holiday.
   let holidayPay=0
+  const holidayEligibilityNotes=[]
   for (const h of holidayList||[]) {
-   const workedInfo=workDetailByDate[String(h.holiday_date||'').slice(0,10)]
-   const holidayBasePay=workedInfo?dailyRate:0
+   const holidayDate=String(h.holiday_date||'').slice(0,10)
+   const workedInfo=workDetailByDate[holidayDate]
    const holidayType = String(h.holiday_type || '').toLowerCase()
-   if (holidayType === 'regular' && isHolidayPayEligible(emp, 'regular')) holidayPay+=holidayBasePay
-   else if (holidayType === 'special' && isHolidayPayEligible(emp, 'special')) holidayPay+=holidayBasePay*0.3
+   const activeOnHoliday = !emp.hire_date || String(emp.hire_date).slice(0,10) <= holidayDate
+   const absenceGuard = getHolidayAbsenceGuardFailure(holidayDate, guardAttendanceByDate, holidayGuardPaidLeaves)
+   if (!absenceGuard.eligible) {
+    holidayEligibilityNotes.push(`${h.holiday_name || holidayDate}: no holiday pay due to ABS on ${absenceGuard.absentDates.join(', ')}`)
+    continue
+   }
+   if (holidayType === 'regular' && activeOnHoliday && isHolidayPayEligible(emp, 'regular')) {
+    const rate = workedInfo ? REGULAR_HOLIDAY_WORKED_PREMIUM_RATE : REGULAR_HOLIDAY_NOT_WORKED_PAY_RATE
+    holidayPay += dailyRate * rate
+   } else if (holidayType === 'special' && workedInfo && isHolidayPayEligible(emp, 'special')) {
+    holidayPay += dailyRate * SPECIAL_HOLIDAY_WORKED_PREMIUM_RATE
+   }
   }
 
   let adjEarnings=0,adjDeductions=0
   for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
-  const sssDeduction=workedDays>0&&emp.has_sss&&isFirstCutoff?375:0
-  const pagibigDeduction=workedDays>0&&emp.has_pagibig&&!isFirstCutoff?200:0
-  const philhealthDeduction=workedDays>0&&emp.has_philhealth&&!isFirstCutoff?250:0
+  const hasPayForCutoff = moneyRound(basicPay + paidLeavePay + overtimePay + nightDiffPay + holidayPay + adjEarnings) > 0
+  const sssDeduction=hasPayForCutoff&&emp.has_sss&&isFirstCutoff?375:0
+  const pagibigDeduction=hasPayForCutoff&&emp.has_pagibig&&!isFirstCutoff?200:0
+  const philhealthDeduction=hasPayForCutoff&&emp.has_philhealth&&!isFirstCutoff?250:0
   const totalEarnings=moneyRound(basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings)
   const undertimeDeductionRounded=moneyRound(undertimeDeduction)
+  const absenceDeductionRounded=moneyRound(absenceDeduction)
   const sssDeductionRounded=moneyRound(sssDeduction)
   const pagibigDeductionRounded=moneyRound(pagibigDeduction)
   const philhealthDeductionRounded=moneyRound(philhealthDeduction)
-  const adjDeductionsRounded=moneyRound(adjDeductions)
+  const adjDeductionsRounded=moneyRound(adjDeductions+absenceDeductionRounded)
   const nonCADeductions=moneyRound(undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
 
   // Payroll safety rule: deductions must never create negative net pay.
@@ -17661,7 +23747,7 @@ async function computePayroll() {
   const undertimeMinutesInfo=undertimeMinutesApproved
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -17765,16 +23851,16 @@ async function computePayroll() {
  }
  function printAllPayslips() {
  if (payrollResults.length===0) { showToast('No payroll results to print.','red'); return }
- const pw = window.open('','_blank','width=420,height=660')
- const html = payrollResults.map((pay,idx)=>buildPayslipHTML(pay,payrollStart,payrollEnd,idx)).join('')
- pw.document.write(`<!DOCTYPE html><html><head><title>All Payslips</title>${printCSS}</head><body>${html}</body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },800)
+ downloadPayslipsDocxFile(`Romas_Donuts_Payslips_${payrollStart}_to_${payrollEnd}`, payrollResults, payrollStart, payrollEnd)
+ showToast(`Downloaded ${payrollResults.length} payslips as one Word file.`)
  }
  function printSinglePayslip(pay, idx) {
- const pw = window.open('','_blank','width=420,height=660')
- pw.document.write(`<!DOCTYPE html><html><head><title>Payslip</title>${printCSS}</head><body>${buildPayslipHTML(pay,payrollStart,payrollEnd,idx)}</body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },800)
+ if (!pay) { showToast('No payslip selected.', 'red'); return }
+ const data = normalizePayslipForPrint(pay)
+ downloadPayslipsDocxFile(`Romas_Donuts_Payslip_${data.employeeName || data.employeeCode || 'Employee'}_${payrollStart}_to_${payrollEnd}`, [pay], payrollStart, payrollEnd)
+ showToast('Downloaded payslip as a Word file.')
  }
+
  function printFinalPay(fp) {
  const pw = window.open('','_blank','width=420,height=660')
  pw.document.write(`<!DOCTYPE html><html><head><title>Final Pay</title>
@@ -18071,8 +24157,18 @@ async function computePayroll() {
 
 
  
-function PosMonitorPanel() {
+function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }) {
+ const POS_INVENTORY_EDIT_ROLES = ['owner','manager','admin','pos_admin','hr']
+ const POS_CREDENTIAL_MANAGER_ROLES = ['owner','manager','admin','pos_admin']
+ const normalizedPosAdminRole = String(adminRole || '').trim().toLowerCase()
+ const canEditOutletInventory = POS_INVENTORY_EDIT_ROLES.includes(normalizedPosAdminRole)
+ const canManagePosCredentials = POS_CREDENTIAL_MANAGER_ROLES.includes(normalizedPosAdminRole)
+ const canManagePosOwnerAccounts = isOwnerRole === true || normalizedPosAdminRole === 'owner'
+ const posInventoryEditRoleLabel = 'Owner, Manager, Admin, SAGS POS Admin, or HR Admin'
+ const POS_OUTLET_ID = 'OUTLET-MALUED'
  const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
+ const SAGS_POS_SHIFT_DRAFTS_KEY = 'romas_sags_pos_shift_closing_drafts_v2'
+ const POS_SHIFT_MONITOR_DAYS = 90
  const readSagsDraft = (key, fallback = '') => {
   try {
    const saved = JSON.parse(localStorage.getItem(SAGS_POS_DRAFT_KEY) || '{}')
@@ -18081,13 +24177,73 @@ function PosMonitorPanel() {
    return fallback
   }
  }
- const [posDate, setPosDate] = useState(getTodayDate())
+ const readSagsDraftObject = (key, fallback = {}) => {
+  try {
+   const saved = JSON.parse(localStorage.getItem(SAGS_POS_DRAFT_KEY) || '{}')
+   const value = saved[key]
+   return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback
+  } catch {
+   return fallback
+  }
+ }
+ const readSagsShiftDraft = (businessDate, fallback = {}) => {
+  try {
+   const saved = JSON.parse(localStorage.getItem(SAGS_POS_SHIFT_DRAFTS_KEY) || '{}')
+   const value = saved[String(businessDate || '').slice(0, 10)]
+   return value && typeof value === 'object' && !Array.isArray(value) ? value : fallback
+  } catch {
+   return fallback
+  }
+ }
+ const writeSagsShiftDraft = (businessDate, payload = {}) => {
+  try {
+   const dateKey = String(businessDate || '').slice(0, 10)
+   if (!dateKey) return
+   const saved = JSON.parse(localStorage.getItem(SAGS_POS_SHIFT_DRAFTS_KEY) || '{}')
+   saved[dateKey] = { ...payload, savedAt:new Date().toISOString() }
+   localStorage.setItem(SAGS_POS_SHIFT_DRAFTS_KEY, JSON.stringify(saved))
+  } catch {}
+ }
+ const clearSagsShiftDraft = businessDate => {
+  try {
+   const dateKey = String(businessDate || '').slice(0, 10)
+   const saved = JSON.parse(localStorage.getItem(SAGS_POS_SHIFT_DRAFTS_KEY) || '{}')
+   delete saved[dateKey]
+   localStorage.setItem(SAGS_POS_SHIFT_DRAFTS_KEY, JSON.stringify(saved))
+  } catch {}
+ }
+ const OUTLET_POS_CATEGORY_OPTIONS = [
+  'Donuts',
+  'Biscuits',
+  'Coffee',
+  'Drinks',
+  'Noodles',
+  'Refreshing Drinks',
+  'Snacks',
+  'Others'
+ ]
+
+ const getDefaultNewOutletItem = () => ({
+  product_name:'',
+  category:'Donuts',
+  sku:'',
+  barcode:'',
+  buying_price:'',
+  selling_price:'',
+  stock:'',
+  min_stock:'10'
+ })
+ const initialPosBusinessDate = getPHDateTimeParts().date || getTodayDate()
+ const initialShiftClosingDraft = readSagsShiftDraft(initialPosBusinessDate, {})
+ const [posDate, setPosDate] = useState(initialPosBusinessDate)
  const [posLoading, setPosLoading] = useState(false)
  const [posSales, setPosSales] = useState([])
  const [posItems, setPosItems] = useState([])
  const [posMovements, setPosMovements] = useState([])
  const [posProducts, setPosProducts] = useState([])
  const [posRefreshing, setPosRefreshing] = useState(false)
+ const posSilentScrollSnapshotRef = useRef(null)
+ const posDeleteClickGuardRef = useRef({})
  const [stockInProductId, setStockInProductId] = useState(() => readSagsDraft('stockInProductId', ''))
  const [stockInSearch, setStockInSearch] = useState(() => readSagsDraft('stockInSearch', ''))
  const [stockInQty, setStockInQty] = useState(() => readSagsDraft('stockInQty', ''))
@@ -18095,20 +24251,1233 @@ function PosMonitorPanel() {
  const [stockInTransferNo, setStockInTransferNo] = useState(() => readSagsDraft('stockInTransferNo', ''))
  const [stockInTransferredBy, setStockInTransferredBy] = useState(() => readSagsDraft('stockInTransferredBy', ''))
  const [stockInReceivedBy, setStockInReceivedBy] = useState(() => readSagsDraft('stockInReceivedBy', ''))
+ const [priceEditProductId, setPriceEditProductId] = useState('')
+ const [priceEditSearch, setPriceEditSearch] = useState('')
+ const [priceEditValue, setPriceEditValue] = useState('')
  const [transactionSearch, setTransactionSearch] = useState(() => readSagsDraft('transactionSearch', ''))
  const [voidReceiptNo, setVoidReceiptNo] = useState(() => readSagsDraft('voidReceiptNo', ''))
  const [voidReason, setVoidReason] = useState(() => readSagsDraft('voidReason', ''))
  const [voidedBy, setVoidedBy] = useState(() => readSagsDraft('voidedBy', ''))
  const [voidAdminPin, setVoidAdminPin] = useState(() => readSagsDraft('voidAdminPin', ''))
- const [closingOpeningCash, setClosingOpeningCash] = useState(() => readSagsDraft('closingOpeningCash', ''))
- const [closingActualCash, setClosingActualCash] = useState(() => readSagsDraft('closingActualCash', ''))
- const [closingClosedBy, setClosingClosedBy] = useState(() => readSagsDraft('closingClosedBy', ''))
- const [closingRemarks, setClosingRemarks] = useState(() => readSagsDraft('closingRemarks', ''))
+ const [closingOpeningCash, setClosingOpeningCash] = useState(() => initialShiftClosingDraft.openingCash ?? '')
+ const [closingActualCash, setClosingActualCash] = useState(() => initialShiftClosingDraft.actualCash ?? '')
+ const [closingClosedBy, setClosingClosedBy] = useState(() => initialShiftClosingDraft.closedBy ?? '')
+ const [closingRemarks, setClosingRemarks] = useState(() => initialShiftClosingDraft.remarks ?? '')
+ const [existingShiftClosing, setExistingShiftClosing] = useState(null)
+ const [shiftClosingRows, setShiftClosingRows] = useState([])
+ const [shiftClosingLoading, setShiftClosingLoading] = useState(false)
+ const [shiftClosingSaving, setShiftClosingSaving] = useState(false)
+ const [shiftClosingError, setShiftClosingError] = useState('')
+ const [shiftClosingLoadedDate, setShiftClosingLoadedDate] = useState('')
+ const lastKnownPosBusinessDateRef = useRef(initialPosBusinessDate)
+ const [inventorySearch, setInventorySearch] = useState('')
+ const [showDisabledOutletItems, setShowDisabledOutletItems] = useState(false)
+ const [inventoryDrafts, setInventoryDrafts] = useState(() => readSagsDraftObject('inventoryDrafts', {}))
+ const [inventorySavingId, setInventorySavingId] = useState('')
+ const [posResettingStock, setPosResettingStock] = useState(false)
+ const [posRunningNightlyDonutReset, setPosRunningNightlyDonutReset] = useState(false)
+ const [showAddOutletItem, setShowAddOutletItem] = useState(() => readSagsDraft('showAddOutletItem', false) === true)
+ const [newOutletItem, setNewOutletItem] = useState(() => ({
+  ...getDefaultNewOutletItem(),
+  ...readSagsDraftObject('newOutletItem', {})
+ }))
  const [posError, setPosError] = useState('')
+ const [posEmployees, setPosEmployees] = useState([])
+ const [posEmployeesLoading, setPosEmployeesLoading] = useState(false)
+ const [posEmployeesError, setPosEmployeesError] = useState('')
+ const [posEmployeeSavingId, setPosEmployeeSavingId] = useState('')
+ const [posEmployeeDrafts, setPosEmployeeDrafts] = useState({})
+ const [showAddPosEmployee, setShowAddPosEmployee] = useState(false)
+ const [newPosEmployee, setNewPosEmployee] = useState({ full_name:'', role:'cashier', pin:'', confirm_pin:'' })
+
+ function normalizePosPin(value) {
+  return String(value || '').trim()
+ }
+
+ function isValidPosPin(value) {
+  return /^\d{4,8}$/.test(normalizePosPin(value))
+ }
+
+ function setPosEmployeeDraftValue(employeeId, field, value) {
+  setPosEmployeeDrafts(prev => ({
+   ...prev,
+   [employeeId]: {
+    ...(prev[employeeId] || {}),
+    [field]: value
+   }
+  }))
+ }
+
+ async function loadPosEmployees(options = {}) {
+  const silent = options?.silent === true
+  const resetPinDrafts = options?.resetPinDrafts === true
+  if (!silent) setPosEmployeesLoading(true)
+  setPosEmployeesError('')
+  try {
+   const { data, error } = await supabase
+    .from('pos_employees')
+    .select('id,outlet_id,full_name,role,is_active')
+    .eq('outlet_id', POS_OUTLET_ID)
+    .order('full_name', { ascending:true })
+   if (error) throw error
+   const rows = data || []
+   setPosEmployees(rows)
+   setPosEmployeeDrafts(prev => {
+    const next = {}
+    rows.forEach(employee => {
+     const existing = prev[employee.id] || {}
+     next[employee.id] = {
+      full_name: existing.full_name ?? employee.full_name ?? '',
+      role: existing.role ?? employee.role ?? 'cashier',
+      is_active: existing.is_active ?? (employee.is_active !== false),
+      new_pin: resetPinDrafts ? '' : (existing.new_pin || ''),
+      confirm_pin: resetPinDrafts ? '' : (existing.confirm_pin || '')
+     }
+    })
+    return next
+   })
+  } catch (err) {
+   console.error('POS employee load failed:', err)
+   setPosEmployeesError(err?.message || String(err))
+  } finally {
+   if (!silent) setPosEmployeesLoading(false)
+  }
+ }
+
+ async function findDuplicatePosPin(pin, excludeEmployeeId = '') {
+  let query = supabase
+   .from('pos_employees')
+   .select('id,full_name,role,is_active')
+   .eq('outlet_id', POS_OUTLET_ID)
+   .eq('pin', normalizePosPin(pin))
+   .limit(1)
+  if (excludeEmployeeId) query = query.neq('id', excludeEmployeeId)
+  const { data, error } = await query
+  if (error) throw error
+  return (data || [])[0] || null
+ }
+
+ async function createPosEmployeeAccount() {
+  if (!canManagePosCredentials) {
+   alert('Only the Owner, Manager, Admin, or SAGS POS Admin can create POS cashier accounts.')
+   return
+  }
+  const fullName = String(newPosEmployee.full_name || '').trim()
+  const pin = normalizePosPin(newPosEmployee.pin)
+  const confirmPin = normalizePosPin(newPosEmployee.confirm_pin)
+  const requestedRole = String(newPosEmployee.role || 'cashier').trim().toLowerCase()
+  const role = requestedRole === 'owner' ? 'owner' : 'cashier'
+  if (!fullName) {
+   alert('Please enter the cashier name.')
+   return
+  }
+  if (!isValidPosPin(pin)) {
+   alert('The POS PIN must contain 4 to 8 numbers.')
+   return
+  }
+  if (pin !== confirmPin) {
+   alert('The PIN confirmation does not match.')
+   return
+  }
+  if (role === 'owner' && !canManagePosOwnerAccounts) {
+   alert('Only the Owner can create another POS Owner account.')
+   return
+  }
+
+  setPosEmployeeSavingId('new')
+  try {
+   const duplicate = await findDuplicatePosPin(pin)
+   if (duplicate) {
+    alert(`That PIN is already assigned to ${duplicate.full_name || 'another POS user'}. Please use a different PIN.`)
+    return
+   }
+   const { data, error } = await supabase
+    .from('pos_employees')
+    .insert([{
+     outlet_id: POS_OUTLET_ID,
+     full_name: fullName,
+     role,
+     pin,
+     is_active:true
+    }])
+    .select('id,outlet_id,full_name,role,is_active')
+    .single()
+   if (error) throw error
+   if (logAudit) {
+    await logAudit(
+     'POS CASHIER ACCOUNT CREATED',
+     currentAdminLabel || 'Admin',
+     data?.full_name || fullName,
+     `Outlet: ${POS_OUTLET_ID} | Role: ${role} | Active: Yes`
+    )
+   }
+   setNewPosEmployee({ full_name:'', role:'cashier', pin:'', confirm_pin:'' })
+   setShowAddPosEmployee(false)
+   await loadPosEmployees({ silent:true, resetPinDrafts:true })
+   alert(`POS login account created for ${fullName}. Refresh the POS tablet before testing the new PIN.`)
+  } catch (err) {
+   console.error('POS employee creation failed:', err)
+   alert('POS account creation failed: ' + (err?.message || String(err)))
+  } finally {
+   setPosEmployeeSavingId('')
+  }
+ }
+
+ async function savePosEmployeeAccount(employee) {
+  if (!canManagePosCredentials) {
+   alert('Only the Owner, Manager, Admin, or SAGS POS Admin can manage POS cashier accounts.')
+   return
+  }
+  const employeeId = String(employee?.id || '')
+  if (!employeeId) return
+  const draft = posEmployeeDrafts[employeeId] || {}
+  const existingRole = String(employee.role || 'cashier').trim().toLowerCase()
+  if (existingRole === 'owner' && !canManagePosOwnerAccounts) {
+   alert('Only the Owner can modify a POS Owner account.')
+   return
+  }
+
+  const fullName = String(draft.full_name ?? employee.full_name ?? '').trim()
+  const requestedRole = String(draft.role ?? employee.role ?? 'cashier').trim().toLowerCase()
+  const role = requestedRole === 'owner' ? 'owner' : 'cashier'
+  const isActive = draft.is_active !== false
+  const newPin = normalizePosPin(draft.new_pin)
+  const confirmPin = normalizePosPin(draft.confirm_pin)
+
+  if (!fullName) {
+   alert('The cashier name cannot be blank.')
+   return
+  }
+  if (role === 'owner' && !canManagePosOwnerAccounts) {
+   alert('Only the Owner can assign the POS Owner role.')
+   return
+  }
+  if (newPin || confirmPin) {
+   if (!isValidPosPin(newPin)) {
+    alert('The new POS PIN must contain 4 to 8 numbers.')
+    return
+   }
+   if (newPin !== confirmPin) {
+    alert('The new PIN confirmation does not match.')
+    return
+   }
+  }
+
+  const isRemovingActiveOwner = existingRole === 'owner' && employee.is_active !== false && (role !== 'owner' || !isActive)
+  if (isRemovingActiveOwner) {
+   const otherActiveOwners = posEmployees.filter(row =>
+    String(row.id) !== employeeId &&
+    String(row.role || '').trim().toLowerCase() === 'owner' &&
+    row.is_active !== false
+   )
+   if (otherActiveOwners.length === 0) {
+    alert('This is the last active POS Owner account. Create or activate another POS Owner before changing this account.')
+    return
+   }
+  }
+
+  setPosEmployeeSavingId(employeeId)
+  try {
+   if (newPin) {
+    const duplicate = await findDuplicatePosPin(newPin, employeeId)
+    if (duplicate) {
+     alert(`That PIN is already assigned to ${duplicate.full_name || 'another POS user'}. Please use a different PIN.`)
+     return
+    }
+   }
+
+   const payload = { full_name:fullName, role, is_active:isActive }
+   if (newPin) payload.pin = newPin
+   const { data, error } = await supabase
+    .from('pos_employees')
+    .update(payload)
+    .eq('id', employeeId)
+    .eq('outlet_id', POS_OUTLET_ID)
+    .select('id,outlet_id,full_name,role,is_active')
+    .single()
+   if (error) throw error
+
+   if (logAudit) {
+    await logAudit(
+     newPin ? 'POS CASHIER PIN RESET' : 'POS CASHIER ACCOUNT UPDATED',
+     currentAdminLabel || 'Admin',
+     data?.full_name || fullName,
+     `Outlet: ${POS_OUTLET_ID} | Role: ${role} | Active: ${isActive ? 'Yes' : 'No'}${newPin ? ' | PIN reset completed' : ''}`
+    )
+   }
+
+   await loadPosEmployees({ silent:true, resetPinDrafts:true })
+   alert(`${fullName}'s POS account was updated.${newPin ? ' Refresh the POS tablet before testing the new PIN.' : ''}`)
+  } catch (err) {
+   console.error('POS employee update failed:', err)
+   alert('POS account update failed: ' + (err?.message || String(err)))
+  } finally {
+   setPosEmployeeSavingId('')
+  }
+ }
+
+ function getInventoryDraftKey(product = {}) {
+  return String(product.id || product.product_name || product.name || '')
+ }
+
+ function setInventoryDraftValue(product, field, value) {
+  const key = getInventoryDraftKey(product)
+  if (!key) return
+  setInventoryDrafts(prev => ({
+   ...prev,
+   [key]: {
+    ...(prev[key] || {}),
+    [field]: value
+   }
+  }))
+ }
+
+ function clearInventoryDraft(product) {
+  const key = getInventoryDraftKey(product)
+  if (!key) return
+  setInventoryDrafts(prev => {
+   const next = { ...prev }
+   delete next[key]
+   return next
+  })
+ }
+
+ function sanitizeInventoryDraftsForLoadedProducts(products = []) {
+  // Prevent stale blank product-name drafts from making products look missing after refresh/reload.
+  // The real database product_name is still the source of truth until the row is intentionally saved.
+  setInventoryDrafts(prev => {
+   if (!prev || typeof prev !== 'object') return prev
+   let changed = false
+   const validKeys = new Set((products || []).map(item => getInventoryDraftKey(item)).filter(Boolean))
+   const next = { ...prev }
+   Object.keys(next).forEach(key => {
+    const draft = next[key]
+    if (!validKeys.has(key)) {
+     delete next[key]
+     changed = true
+     return
+    }
+    if (draft && typeof draft === 'object' && draft.productName !== undefined && !String(draft.productName || '').trim()) {
+     next[key] = { ...draft }
+     delete next[key].productName
+     if (Object.keys(next[key]).length === 0) delete next[key]
+     changed = true
+    }
+   })
+   return changed ? next : prev
+  })
+ }
+
+ function capturePosSilentScrollSnapshot() {
+  if (typeof window === 'undefined') return null
+  const active = document.activeElement
+  const scrollingElement = document.scrollingElement || document.documentElement || document.body
+  const activeSnapshot = active && active !== document.body ? {
+   element: active,
+   selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+   selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null
+  } : null
+  return {
+   x: window.scrollX || scrollingElement?.scrollLeft || 0,
+   y: window.scrollY || scrollingElement?.scrollTop || 0,
+   docTop: scrollingElement?.scrollTop || 0,
+   docLeft: scrollingElement?.scrollLeft || 0,
+   activeSnapshot
+  }
+ }
+
+ function restorePosSilentScrollSnapshot(snapshot) {
+  if (!snapshot || typeof window === 'undefined') return
+  const restore = () => {
+   try {
+    const scrollingElement = document.scrollingElement || document.documentElement || document.body
+    if (scrollingElement) {
+     scrollingElement.scrollTop = snapshot.docTop ?? snapshot.y ?? 0
+     scrollingElement.scrollLeft = snapshot.docLeft ?? snapshot.x ?? 0
+    }
+    window.scrollTo({ left:snapshot.x || snapshot.docLeft || 0, top:snapshot.y || snapshot.docTop || 0, behavior:'auto' })
+    const active = snapshot.activeSnapshot
+    if (active?.element && typeof active.element.focus === 'function' && document.contains(active.element)) {
+     active.element.focus({ preventScroll:true })
+     if (typeof active.element.setSelectionRange === 'function' && active.selectionStart !== null && active.selectionEnd !== null) {
+      active.element.setSelectionRange(active.selectionStart, active.selectionEnd)
+     }
+    }
+   } catch {}
+  }
+  restore()
+  window.requestAnimationFrame?.(() => {
+   restore()
+   window.requestAnimationFrame?.(restore)
+  })
+  window.setTimeout(restore, 80)
+  window.setTimeout(restore, 250)
+ }
+
+
+ function isPosEditingNow() {
+  if (typeof document === 'undefined') return false
+  const active = document.activeElement
+  if (!active) return false
+  const tag = String(active.tagName || '').toLowerCase()
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || active.isContentEditable === true
+ }
+
+ function hasMeaningfulNewOutletItemDraft(item = newOutletItem) {
+  // Default values such as category=Donuts and min_stock=10 are not real unsaved work.
+  // Treat only fields the user actually typed as a draft, otherwise the first silent
+  // SAGS POS load can be skipped and the product list appears missing after deploy.
+  const draft = item || {}
+  return [
+   draft.product_name,
+   draft.sku,
+   draft.barcode,
+   draft.buying_price,
+   draft.selling_price,
+   draft.stock
+  ].some(value => String(value || '').trim() !== '')
+ }
+
+ function hasAnyUnsavedPosDrafts() {
+  const hasAddItemDraft = showAddOutletItem && hasMeaningfulNewOutletItemDraft(newOutletItem)
+  const hasRowDraft = Object.values(inventoryDrafts || {}).some(draft =>
+   draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
+  )
+  return hasAddItemDraft || hasRowDraft
+ }
+
+ function cleanOutletBarcodeCode(value) {
+  return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9 ./$+%-]+/g, '-')
+ }
+
+ function makeOutletSkuFromName(value) {
+  return String(value || 'ITEM')
+   .normalize('NFKD')
+   .replace(/[̀-ͯ]/g, '')
+   .replace(/&/g, 'AND')
+   .replace(/[^a-z0-9]+/gi, '-')
+   .replace(/^-+|-+$/g, '')
+   .replace(/-{2,}/g, '-')
+   .toUpperCase() || 'ITEM'
+ }
+
+
+ function isOutletMarkupPricingCategory(category = '') {
+  const label = String(category || '').trim().toLowerCase()
+  // Donuts are company-made items with direct retail prices. Bought-price markup
+  // is for bought/resold outlet items such as biscuits, drinks, noodles, coffee,
+  // snacks, and other non-donut POS products.
+  return !!label && label !== 'donuts' && label !== 'donut'
+ }
+
+ function isOutletDrinkMarkupCategory(category = '') {
+  const label = String(category || '').trim().toLowerCase()
+  return label === 'drinks' || label === 'refreshing drinks'
+ }
+
+ function getOutletMarkupPercentForCategory(category = '') {
+  return isOutletDrinkMarkupCategory(category) ? 40 : 30
+ }
+
+ function getOutletMarkupMultiplierForCategory(category = '') {
+  return 1 + (getOutletMarkupPercentForCategory(category) / 100)
+ }
+
+ function roundOutletSellingPrice(value) {
+  return Math.round(safeNum(value, 0))
+ }
+
+ function getOutletExplicitBuyingPrice(product = {}) {
+  const explicitBuying = safeNum(product.buyingPrice ?? product.buying_price, 0)
+  if (explicitBuying > 0) return moneyRound(explicitBuying)
+  const costPerUnit = safeNum(product.costPerUnit ?? product.cost_per_unit, 0)
+  if (costPerUnit > 0) return moneyRound(costPerUnit)
+  return 0
+ }
+
+ function getOutletMarkupSellingPrice(buyingPrice, category = '') {
+  return roundOutletSellingPrice(safeNum(buyingPrice, 0) * getOutletMarkupMultiplierForCategory(category))
+ }
+
+ function getOutletBuyingPrice(product = {}) {
+  const explicitBuying = getOutletExplicitBuyingPrice(product)
+  if (explicitBuying > 0) return explicitBuying
+  const selling = safeNum(product.sellingPrice ?? product.selling_price ?? product.price, 0)
+  const storedMarkupPercent = safeNum(product.markup_percent, 0)
+  const fallbackMarkupPercent = storedMarkupPercent > 0 ? storedMarkupPercent : 30
+  return isOutletMarkupPricingCategory(product.category) && selling > 0 ? moneyRound(selling / (1 + fallbackMarkupPercent / 100)) : 0
+ }
+
+ function getOutletDisplaySellingPrice(product = {}) {
+  const explicitSelling = safeNum(product.sellingPrice ?? product.selling_price ?? product.price, 0)
+  const explicitBuying = getOutletExplicitBuyingPrice(product)
+  if (isOutletMarkupPricingCategory(product.category) && explicitBuying > 0) return getOutletMarkupSellingPrice(explicitBuying, product.category)
+  return roundOutletSellingPrice(explicitSelling)
+ }
+
+ function isOutletProductDisabled(product = {}) {
+  const activeValue = product.is_active
+  const status = String(product.status || '').trim().toLowerCase()
+  return activeValue === false || String(activeValue).trim().toLowerCase() === 'false' || ['disabled', 'inactive', 'archived'].includes(status)
+ }
+
+ function isOutletProductDeleted(product = {}) {
+  const status = String(product.status || '').trim().toLowerCase()
+  const name = String(product.product_name || product.name || '').trim().toLowerCase()
+  const category = String(product.category || '').trim().toLowerCase()
+  return ['deleted', 'permanently_deleted', 'removed'].includes(status) || !!product.deleted_at || name.startsWith('[deleted]') || category === 'deleted'
+ }
+
+ function isPosProductsOptionalColumnError(error = null) {
+  const msg = String(error?.message || error || '').toLowerCase()
+  if (!msg) return false
+  const optionalColumns = ['name', 'price', 'buying_price', 'markup_percent', 'cost_per_unit', 'status', 'is_active', 'disabled_at', 'disabled_by', 'disabled_reason', 'deleted_at', 'deleted_by', 'deleted_reason']
+  return optionalColumns.some(col => msg.includes(col)) && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column') || msg.includes('record'))
+ }
+
+ function stripPosProductsOptionalColumns(payload = {}) {
+  const clean = { ...payload }
+  delete clean.name
+  delete clean.price
+  delete clean.buying_price
+  delete clean.markup_percent
+  delete clean.cost_per_unit
+  delete clean.status
+  delete clean.is_active
+  delete clean.disabled_at
+  delete clean.disabled_by
+  delete clean.disabled_reason
+  delete clean.deleted_at
+  delete clean.deleted_by
+  delete clean.deleted_reason
+  return clean
+ }
+
+ async function updatePosProductSafe(productId, payload = {}) {
+  const verifyUpdateResult = (result, attemptedPayload, optionalColumnsSaved, skippedOptionalColumns = []) => {
+   if (result.error) return { ...result, optionalColumnsSaved }
+   const rows = Array.isArray(result.data) ? result.data : []
+   if (!rows.length) {
+    return {
+     error:new Error('Supabase did not update the POS product row. The change may have been blocked by Row Level Security or the product ID no longer exists.'),
+     data:[],
+     optionalColumnsSaved
+    }
+   }
+
+   const updatedProduct = rows[0]
+   const verificationKeys = ['stock', 'product_name', 'selling_price', 'min_stock', 'sku', 'barcode']
+   for (const key of verificationKeys) {
+    if (!(key in attemptedPayload)) continue
+    const expected = attemptedPayload[key]
+    const actual = updatedProduct[key]
+    const matches = typeof expected === 'number'
+     ? Math.abs(safeNum(actual, Number.NaN) - expected) < 0.0001
+     : String(actual ?? '') === String(expected ?? '')
+    if (!matches) {
+     return {
+      error:new Error(`POS product update verification failed for ${key}. Expected ${expected}, but Supabase returned ${actual}.`),
+      data:rows,
+      updatedProduct,
+      optionalColumnsSaved
+     }
+    }
+   }
+
+   return { error:null, data:rows, updatedProduct, optionalColumnsSaved, skippedOptionalColumns }
+  }
+
+  const first = await supabase
+   .from('pos_products')
+   .update(payload)
+   .eq('id', productId)
+   .select('*')
+  if (!first.error) return verifyUpdateResult(first, payload, true)
+  if (!isPosProductsOptionalColumnError(first.error)) return first
+
+  const corePayload = stripPosProductsOptionalColumns(payload)
+  const skippedOptionalColumns = Object.keys(payload).filter(key => !(key in corePayload))
+  const second = await supabase
+   .from('pos_products')
+   .update(corePayload)
+   .eq('id', productId)
+   .select('*')
+  return verifyUpdateResult(second, corePayload, false, skippedOptionalColumns)
+ }
+
+ function getOutletCategoryPluStart(category) {
+  const map = {
+   Donuts:1000,
+   Biscuits:2000,
+   Coffee:3000,
+   Drinks:4000,
+   Noodles:5000,
+   'Refreshing Drinks':6000,
+   Snacks:7000,
+   Others:8000
+  }
+  return map[category] || 8000
+ }
+
+ function getNextAvailableOutletBarcode(category, products = []) {
+  const usedCodes = new Set((products || []).map(p => cleanOutletBarcodeCode(p.barcode)).filter(Boolean))
+  let next = getOutletCategoryPluStart(category) + 1
+  let code = String(next).padStart(4, '0')
+  while (usedCodes.has(code) && next < 9999) {
+   next += 1
+   code = String(next).padStart(4, '0')
+  }
+  return code
+ }
+
+ function normalizeOutletScanCodeForCompare(value) {
+  return cleanOutletBarcodeCode(value).replace(/[^A-Z0-9]/g, '')
+ }
+
+ async function findActiveOutletProductCodeOwnerFromDatabase(codeValue, currentProductId = '', fieldsToCheck = ['barcode', 'sku']) {
+  const normalizedCode = normalizeOutletScanCodeForCompare(codeValue)
+  if (!normalizedCode) return null
+
+  const { data, error } = await supabase
+   .from('pos_products')
+   .select('id, product_name, category, sku, barcode')
+
+  if (error) throw error
+
+  return (data || []).find(row => {
+   if (String(row.id || '') === String(currentProductId || '')) return false
+   if (isOutletProductDeleted(row)) return false
+   const rowBarcode = normalizeOutletScanCodeForCompare(row.barcode)
+   const rowSku = normalizeOutletScanCodeForCompare(row.sku)
+   return (fieldsToCheck.includes('barcode') && rowBarcode === normalizedCode) || (fieldsToCheck.includes('sku') && rowSku === normalizedCode)
+  }) || null
+ }
+
+ function buildCode39BarcodeSvg(codeValue, productName) {
+  const patterns = {
+   '0':'nnnwwnwnn','1':'wnnwnnnnw','2':'nnwwnnnnw','3':'wnwwnnnnn','4':'nnnwwnnnw',
+   '5':'wnnwwnnnn','6':'nnwwwnnnn','7':'nnnwnnwnw','8':'wnnwnnwnn','9':'nnwwnnwnn',
+   'A':'wnnnnwnnw','B':'nnwnnwnnw','C':'wnwnnwnnn','D':'nnnnwwnnw','E':'wnnnwwnnn',
+   'F':'nnwnwwnnn','G':'nnnnnwwnw','H':'wnnnnwwnn','I':'nnwnnwwnn','J':'nnnnwwwnn',
+   'K':'wnnnnnnww','L':'nnwnnnnww','M':'wnwnnnnwn','N':'nnnnwnnww','O':'wnnnwnnwn',
+   'P':'nnwnwnnwn','Q':'nnnnnnwww','R':'wnnnnnwwn','S':'nnwnnnwwn','T':'nnnnwnwwn',
+   'U':'wwnnnnnnw','V':'nwwnnnnnw','W':'wwwnnnnnn','X':'nwnnwnnnw','Y':'wwnnwnnnn',
+   'Z':'nwwnwnnnn','-':'nwnnnnwnw','.':'wwnnnnwnn',' ':'nwwnnnwnn','$':'nwnwnwnnn',
+   '/':'nwnwnnnwn','+':'nwnnnwnwn','%':'nnnwnwnwn','*':'nwnnwnwnn'
+  }
+  const escapeSvg = value => String(value || '')
+   .replace(/&/g, '&amp;')
+   .replace(/</g, '&lt;')
+   .replace(/>/g, '&gt;')
+   .replace(/"/g, '&quot;')
+   .replace(/'/g, '&apos;')
+  const cleanCode = cleanOutletBarcodeCode(codeValue).replace(/[^0-9A-Z ./$+%-]/g, '-')
+  const encoded = ('*' + cleanCode + '*').split('')
+  const narrow = 2
+  const wide = 5
+  const quiet = 18
+  const barY = 38
+  const barHeight = 72
+  let x = quiet
+  const rects = []
+  encoded.forEach(char => {
+   const pattern = patterns[char] || patterns['-']
+   for (let i = 0; i < pattern.length; i += 1) {
+    const width = pattern[i] === 'w' ? wide : narrow
+    if (i % 2 === 0) rects.push(`<rect x="${x}" y="${barY}" width="${width}" height="${barHeight}" fill="#111827"/>`)
+    x += width
+   }
+   x += narrow
+  })
+  const labelWidth = Math.max(330, x + quiet)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${labelWidth}" height="178" viewBox="0 0 ${labelWidth} 178">
+   <rect width="100%" height="100%" fill="#ffffff"/>
+   <rect x="8" y="8" width="${labelWidth - 16}" height="162" rx="12" fill="#fffdf7" stroke="#f4d35e" stroke-width="2"/>
+   <text x="${labelWidth / 2}" y="28" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#ca1b1b">Roma's Donuts POS Label</text>
+   ${rects.join('')}
+   <text x="${labelWidth / 2}" y="128" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="900" fill="#111827">${escapeSvg(cleanCode)}</text>
+   <text x="${labelWidth / 2}" y="152" text-anchor="middle" font-family="Arial, sans-serif" font-size="15" font-weight="800" fill="#1a1a2e">${escapeSvg(productName)}</text>
+  </svg>`
+ }
+
+ function downloadBlobAsFile(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+ }
+
+ function downloadTextAsFile(content, filename, type = 'image/svg+xml;charset=utf-8') {
+  downloadBlobAsFile(new Blob([content], { type }), filename)
+ }
+
+ function downloadSvgAsPng(svg, filename, scale = 3) {
+  if (typeof window === 'undefined') return
+  const svgBlob = new Blob([svg], { type:'image/svg+xml;charset=utf-8' })
+  const svgUrl = URL.createObjectURL(svgBlob)
+  const image = new Image()
+  image.onload = () => {
+   try {
+    const width = Math.max(1, image.naturalWidth || image.width || 360)
+    const height = Math.max(1, image.naturalHeight || image.height || 180)
+    const canvas = document.createElement('canvas')
+    canvas.width = width * scale
+    canvas.height = height * scale
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+    canvas.toBlob(blob => {
+     URL.revokeObjectURL(svgUrl)
+     if (blob) {
+      downloadBlobAsFile(blob, filename)
+     } else {
+      alert('PNG conversion failed. Please try again or use Print / Download Labels.')
+     }
+    }, 'image/png')
+   } catch (err) {
+    URL.revokeObjectURL(svgUrl)
+    alert('PNG conversion failed: ' + (err?.message || String(err)))
+   }
+  }
+  image.onerror = () => {
+   URL.revokeObjectURL(svgUrl)
+   alert('Barcode image could not be prepared. Please try again.')
+  }
+  image.src = svgUrl
+ }
+
+ function downloadBarcodeLabel(product) {
+  const code = cleanOutletBarcodeCode(product?.barcode || product?.sku || product?.id)
+  if (!code) {
+   alert('This product has no barcode or SKU to print. Generate a barcode first.')
+   return
+  }
+  const productName = product?.product_name || product?.name || 'POS Item'
+  const svg = buildCode39BarcodeSvg(code, productName)
+  const safeName = makeOutletSkuFromName(productName).slice(0, 60) || 'POS-LABEL'
+  downloadSvgAsPng(svg, `${safeName}-${code}-barcode.png`)
+ }
+
+ function printBarcodeLabelSheet(productsToPrint = []) {
+  const labelRows = (productsToPrint || []).filter(row => cleanOutletBarcodeCode(row.barcode || row.sku || row.id))
+  if (!labelRows.length) {
+   alert('No barcode labels available to print. Generate barcodes first.')
+   return
+  }
+  const labels = labelRows.map(row => {
+   const code = cleanOutletBarcodeCode(row.barcode || row.sku || row.id)
+   return `<div class="label">${buildCode39BarcodeSvg(code, row.product_name || row.name || 'POS Item')}</div>`
+  }).join('')
+  const html = `<!doctype html><html><head><title>Roma's Donuts POS Barcode Labels</title><style>
+   @page{size:A4;margin:10mm} body{font-family:Arial,sans-serif;margin:0;background:#fff;color:#111827} .sheet{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:8px} .label{break-inside:avoid;border:1px dashed #ddd;padding:5px;border-radius:10px;display:flex;justify-content:center} svg{max-width:100%;height:auto} @media print{.no-print{display:none}.sheet{gap:6px;padding:0}.label{border:0}}
+  </style></head><body><div class="no-print" style="padding:10px;text-align:center"><button onclick="window.print()" style="padding:10px 18px;border:0;border-radius:10px;background:#ca1b1b;color:white;font-weight:800;cursor:pointer">Print Labels</button></div><div class="sheet">${labels}</div></body></html>`
+  const printWindow = window.open('', '_blank')
+  if (!printWindow) {
+   downloadTextAsFile(html, 'romas-pos-barcode-label-sheet.html', 'text/html;charset=utf-8')
+   return
+  }
+  printWindow.document.write(html)
+  printWindow.document.close()
+  printWindow.focus()
+ }
+
+
+ function printAllOutletInventoryItems(productsToPrint = []) {
+  const rows = (productsToPrint || [])
+   .filter(row => row && !row.disabled && !isOutletProductDeleted(row))
+
+  if (!rows.length) {
+   alert('No active SAGS POS items are available to print.')
+   return
+  }
+
+  const escapeHtml = value => String(value ?? '')
+   .replace(/&/g, '&amp;')
+   .replace(/</g, '&lt;')
+   .replace(/>/g, '&gt;')
+   .replace(/"/g, '&quot;')
+   .replace(/'/g, '&#039;')
+
+  // Clean physical-count sheet: product name plus one blank count line only.
+  // Up to 100 active items use one short coupon-bond sheet; larger lists use two.
+  const pageCount = rows.length <= 100 ? 1 : 2
+  const itemsPerPage = Math.ceil(rows.length / pageCount)
+  const pageGroups = Array.from({ length:pageCount }, (_, pageIndex) =>
+   rows.slice(pageIndex * itemsPerPage, (pageIndex + 1) * itemsPerPage)
+  )
+  const printedAt = new Date().toLocaleString('en-PH', { dateStyle:'medium', timeStyle:'short' })
+
+  const pagesHtml = pageGroups.map((pageRows, pageIndex) => {
+   const columnCount = 4
+   const rowsPerColumn = Math.max(1, Math.ceil(pageRows.length / columnCount))
+   const rowHeightMm = Math.max(6.1, Math.min(7.1, 176 / rowsPerColumn))
+   const nameFontPt = rowsPerColumn > 28 ? 7.2 : 8.2
+
+   const columnsHtml = Array.from({ length:columnCount }, (_, columnIndex) => {
+    const columnRows = pageRows.slice(columnIndex * rowsPerColumn, (columnIndex + 1) * rowsPerColumn)
+    const itemsHtml = columnRows.map(row => {
+     const name = row.product_name || row.name || 'Unnamed Product'
+     return `<div class="inventory-item" style="--item-height:${rowHeightMm.toFixed(2)}mm;--name-font:${nameFontPt}pt">
+      <div class="item-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
+      <div class="count-field"><span>COUNT</span><b></b></div>
+     </div>`
+    }).join('')
+    return `<div class="inventory-column">${itemsHtml}</div>`
+   }).join('')
+
+   return `<section class="print-page">
+    <header class="page-header">
+     <div>
+      <div class="company">ROMA'S DONUTS</div>
+      <div class="title">SAGS POS — PHYSICAL INVENTORY COUNT SHEET</div>
+     </div>
+     <div class="header-meta">
+      <div>${rows.length} active items</div>
+      <div>Printed: ${escapeHtml(printedAt)}</div>
+      <div>Page ${pageIndex + 1} of ${pageCount}</div>
+     </div>
+    </header>
+    <div class="instructions">Write the verified physical quantity on the blank line beside each item.</div>
+    <div class="inventory-columns">${columnsHtml}</div>
+    <footer class="page-footer">
+     <span>Counted by: ______________________________</span>
+     <span>Verified by: ______________________________</span>
+     <span>Date/Time: ______________________________</span>
+    </footer>
+   </section>`
+  }).join('')
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Roma's Donuts SAGS POS Physical Count Sheet</title><style>
+   @page{size:Letter landscape;margin:6mm}
+   *{box-sizing:border-box}
+   html,body{margin:0;padding:0;background:#fff;color:#111827;font-family:Arial,Helvetica,sans-serif}
+   .print-toolbar{position:sticky;top:0;z-index:10;padding:9px;text-align:center;background:#fff7d6;border-bottom:1px solid #f4d35e}
+   .print-toolbar button{padding:9px 18px;border:0;border-radius:9px;background:#ca1b1b;color:#fff;font-weight:900;cursor:pointer}
+   .print-page{height:201mm;overflow:hidden;page-break-after:always;display:flex;flex-direction:column}
+   .print-page:last-child{page-break-after:auto}
+   .page-header{height:12mm;display:flex;align-items:center;justify-content:space-between;border-bottom:1.2px solid #ca1b1b;padding:0 1mm}
+   .company{font-size:10pt;font-weight:900;color:#ca1b1b;letter-spacing:.2px}
+   .title{font-size:8pt;font-weight:900;color:#1a1a2e;margin-top:.7mm}
+   .header-meta{text-align:right;font-size:6.2pt;line-height:1.35;font-weight:700;color:#374151}
+   .instructions{height:6mm;padding:1.4mm 1mm;font-size:6.3pt;line-height:1.2;color:#374151;border-bottom:1px solid #e5e7eb}
+   .inventory-columns{height:176mm;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2mm;padding:1.2mm 0}
+   .inventory-column{border:1px solid #d8c35a;border-radius:1.5mm;overflow:hidden;align-self:start;background:#fff}
+   .inventory-item{height:var(--item-height);min-height:var(--item-height);padding:.7mm 1.1mm;border-bottom:.25mm solid #e7dfb6;display:grid;grid-template-columns:minmax(0,1fr) 21mm;align-items:center;gap:1.5mm;overflow:hidden;background:#fff}
+   .inventory-item:nth-child(even){background:#fffdf4}
+   .inventory-item:last-child{border-bottom:0}
+   .item-name{font-size:var(--name-font);font-weight:800;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827}
+   .count-field{display:flex;align-items:flex-end;gap:1.2mm;font-size:5.8pt;font-weight:800;color:#6b7280;white-space:nowrap}
+   .count-field b{display:block;flex:1;min-width:12mm;height:3mm;border-bottom:.35mm solid #111827}
+   .page-footer{height:7mm;border-top:1px solid #d1d5db;display:flex;align-items:center;justify-content:space-between;gap:3mm;padding:0 1mm;font-size:6pt;font-weight:700;color:#374151}
+   @media print{.print-toolbar{display:none}.print-page{break-after:page}.print-page:last-child{break-after:auto}}
+  </style></head><body>
+   <div class="print-toolbar"><button onclick="window.print()">Print Physical Count Sheet</button></div>
+   ${pagesHtml}
+  </body></html>`
+
+  const printWindow = window.open('', '_blank')
+  if (!printWindow) {
+   downloadTextAsFile(html, 'romas-sags-pos-physical-count-sheet.html', 'text/html;charset=utf-8')
+   alert('The browser blocked the print window, so an HTML print file was downloaded instead.')
+   return
+  }
+  printWindow.document.write(html)
+  printWindow.document.close()
+  printWindow.focus()
+ }
+
+ async function generateBarcodeForProduct(product, options = {}) {
+  if (!canEditOutletInventory) {
+   alert(`Only ${posInventoryEditRoleLabel} can generate POS barcodes.`)
+   return null
+  }
+  if (!product?.id) {
+   alert('Product record is missing an ID. Please refresh and try again.')
+   return null
+  }
+  const existingBarcode = cleanOutletBarcodeCode(product.barcode)
+  if (existingBarcode && !options.force) return existingBarcode
+  const barcode = options.barcode || getNextAvailableOutletBarcode(product.category || 'Others', posProducts)
+  const existingOwner = await findActiveOutletProductCodeOwnerFromDatabase(barcode, product.id, ['barcode'])
+  if (existingOwner) {
+   alert(`Barcode ${barcode} is already registered to ${existingOwner.product_name || existingOwner.name || 'another active POS item'}.`)
+   return null
+  }
+  const { error } = await supabase
+   .from('pos_products')
+   .update({ barcode })
+   .eq('id', product.id)
+  if (error) throw error
+  if (logAudit) {
+   await logAudit(
+    'POS BARCODE GENERATED',
+    currentAdminLabel || 'Admin',
+    product.product_name || product.name || product.id,
+    `Barcode: ${barcode}`
+   )
+  }
+  await loadPosMonitor({ silent:true, forceProducts:true })
+  return barcode
+ }
+
+ async function generateMissingBarcodes() {
+  if (!canEditOutletInventory) {
+   alert(`Only ${posInventoryEditRoleLabel} can generate POS barcodes.`)
+   return
+  }
+  const missingRows = outletBalances.filter(row => !cleanOutletBarcodeCode(row.barcode))
+  if (!missingRows.length) {
+   alert('All visible POS products already have barcodes.')
+   return
+  }
+  const proceed = confirm(`Generate barcodes for ${missingRows.length} product(s) without barcode?`)
+  if (!proceed) return
+  const usedCodes = new Set((posProducts || []).map(p => cleanOutletBarcodeCode(p.barcode)).filter(Boolean))
+  const updates = []
+  for (const row of missingRows) {
+   let code = getNextAvailableOutletBarcode(row.category || 'Others', [...posProducts, ...updates.map(u => ({ barcode:u.barcode }))])
+   while (usedCodes.has(code)) {
+    const numeric = safeNum(code, 8000) + 1
+    code = String(numeric).padStart(4, '0')
+   }
+   usedCodes.add(code)
+   updates.push({ id:row.id, barcode:code, product_name:row.product_name })
+  }
+  try {
+   for (const update of updates) {
+    const { error } = await supabase.from('pos_products').update({ barcode:update.barcode }).eq('id', update.id)
+    if (error) throw error
+   }
+   if (logAudit) {
+    await logAudit('POS BARCODES GENERATED', currentAdminLabel || 'Admin', 'SAGS POS', `${updates.length} barcode(s) generated`)
+   }
+   alert(`Generated ${updates.length} barcode(s). You can now download or print labels.`)
+   await loadPosMonitor({ silent:true, forceProducts:true })
+  } catch (err) {
+   console.error('Barcode generation failed:', err)
+   alert('Barcode generation failed: ' + (err?.message || String(err)))
+  }
+ }
+
+ function isVoidedOrCancelledPosSale(sale = {}) {
+  const status = String(sale?.status || '').trim().toLowerCase()
+  return ['void','voided','cancelled','canceled','refunded','deleted'].includes(status)
+ }
+
+ function getPosSaleAmount(sale = {}) {
+  return moneyRound(safeNum(sale?.net_total ?? sale?.total ?? sale?.total_amount, 0))
+ }
+
+ function summarizeActivePosSales(rows = []) {
+  const activeRows = (rows || []).filter(row => !isVoidedOrCancelledPosSale(row))
+  const cashRows = activeRows.filter(row => String(row?.payment_method || '').trim().toLowerCase() === 'cash')
+  const gcashRows = activeRows.filter(row => String(row?.payment_method || '').trim().toLowerCase().includes('gcash'))
+  const onlineRows = activeRows.filter(row => String(row?.payment_method || '').trim().toLowerCase().includes('online'))
+  return {
+   rows:activeRows,
+   transactionCount:activeRows.length,
+   cashSales:moneyRound(cashRows.reduce((sum, row) => sum + getPosSaleAmount(row), 0)),
+   gcashSales:moneyRound(gcashRows.reduce((sum, row) => sum + getPosSaleAmount(row), 0)),
+   onlineSales:moneyRound(onlineRows.reduce((sum, row) => sum + getPosSaleAmount(row), 0)),
+   totalSales:moneyRound(activeRows.reduce((sum, row) => sum + getPosSaleAmount(row), 0))
+  }
+ }
+
+ function getShiftClosingStatusPresentation(code = '') {
+  const map = {
+   in_progress:{ label:'IN PROGRESS', color:'#92400e', background:'#fffbeb', border:'#f5c453' },
+   unclosed:{ label:'UNCLOSED', color:'#b91c1c', background:'#fff1f2', border:'#fecdd3' },
+   closed:{ label:'CLOSED + POSTED', color:'#166534', background:'#ecfdf5', border:'#bbf7d0' },
+   closed_not_posted:{ label:'CLOSED — NOT POSTED', color:'#9a3412', background:'#fff7ed', border:'#fed7aa' },
+   review_required:{ label:'REVIEW REQUIRED', color:'#b91c1c', background:'#fff1f2', border:'#fca5a5' },
+   no_sales:{ label:'NO SALES', color:'#4b5563', background:'#f8fafc', border:'#e5e7eb' }
+  }
+  return map[code] || map.no_sales
+ }
+
+ function buildPosShiftDailySalesNotes(closing = {}) {
+  const marker = getPosShiftDailySalesMarker(closing.outlet_id || POS_OUTLET_ID, closing.business_date)
+  return [
+   marker,
+   `Source: SAGS POS – ${closing.outlet_id || POS_OUTLET_ID}`,
+   'Status: Shift Closed',
+   `Cash ${php(closing.cash_sales)}`,
+   `GCash ${php(closing.gcash_sales)}`,
+   `Online ${php(closing.online_sales)}`,
+   `Transactions ${safeNum(closing.transaction_count, 0)}`,
+   `Closed by ${closing.closed_by || currentAdminLabel || 'Admin'}`,
+   closing.remarks ? `Closing remarks: ${closing.remarks}` : ''
+  ].filter(Boolean).join(' | ')
+ }
+
+ async function postShiftClosingToDailySales(closing = {}, options = {}) {
+  const businessDate = String(closing?.business_date || '').slice(0, 10)
+  const outletId = String(closing?.outlet_id || POS_OUTLET_ID)
+  if (!businessDate) throw new Error('Shift closing business date is missing.')
+  const marker = getPosShiftDailySalesMarker(outletId, businessDate)
+  const { data:dateSalesRows, error:dateSalesError } = await supabase
+   .from('daily_sales')
+   .select('*')
+   .eq('sale_date', businessDate)
+   .order('created_at', { ascending:false })
+  if (dateSalesError) throw dateSalesError
+
+  const linkedRows = (dateSalesRows || []).filter(row => String(row?.notes || '').includes(marker))
+  if (linkedRows.length > 1) {
+   throw new Error(`Multiple SAGS POS Daily Sales rows already exist for ${businessDate}. Review the duplicate records before posting again.`)
+  }
+
+  const legacyPossibleDuplicates = (dateSalesRows || []).filter(row => {
+   if (linkedRows.some(linked => String(linked.id) === String(row.id))) return false
+   return /sags\s*pos|outlet-malu(ed)?|shift\s*closing/i.test(String(row?.notes || ''))
+  })
+  if (legacyPossibleDuplicates.length > 0 && options.allowLegacyPossibleDuplicate !== true) {
+   throw new Error(`A possible manually posted SAGS POS Daily Sales record already exists for ${businessDate}. Review it first to prevent double-counting.`)
+  }
+
+  const totalSales = moneyRound(closing.total_sales)
+  const payload = {
+   sale_date:businessDate,
+   total_walkin:totalSales,
+   total_messenger:0,
+   total_reseller:0,
+   total_revenue:totalSales,
+   notes:buildPosShiftDailySalesNotes(closing),
+   encoded_by:currentAdminLabel || closing.closed_by || 'SAGS POS Shift Closing'
+  }
+
+  let savedRow = null
+  if (linkedRows.length === 1) {
+   const { data, error } = await supabase
+    .from('daily_sales')
+    .update(payload)
+    .eq('id', linkedRows[0].id)
+    .select()
+    .single()
+   if (error) throw error
+   savedRow = data
+  } else {
+   const { data, error } = await supabase
+    .from('daily_sales')
+    .insert(payload)
+    .select()
+    .single()
+   if (error) throw error
+   savedRow = data
+  }
+
+  if (logAudit && options.skipAudit !== true) {
+   await logAudit(
+    linkedRows.length === 1 ? 'SAGS POS DAILY SALES UPDATED' : 'SAGS POS DAILY SALES POSTED',
+    currentAdminLabel || 'Admin',
+    `${outletId} ${businessDate}`,
+    `${php(totalSales)} posted as Walk-in revenue from finalized POS shift closing.`
+   )
+  }
+  return savedRow
+ }
+
+ async function loadShiftClosingForDate(businessDate = posDate) {
+  const dateKey = String(businessDate || '').slice(0, 10)
+  if (!dateKey) return null
+  try {
+   const { data, error } = await supabase
+    .from('pos_shift_closings')
+    .select('*')
+    .eq('outlet_id', POS_OUTLET_ID)
+    .eq('business_date', dateKey)
+    .order('created_at', { ascending:false })
+   if (error) throw error
+   const rows = data || []
+   const existing = rows[0] || null
+   setExistingShiftClosing(existing)
+   if (existing) {
+    setClosingOpeningCash(String(safeNum(existing.opening_cash, 0)))
+    setClosingActualCash(String(safeNum(existing.actual_cash, 0)))
+    setClosingClosedBy(existing.closed_by || '')
+    setClosingRemarks(existing.remarks || '')
+   } else {
+    const draft = readSagsShiftDraft(dateKey, {})
+    setClosingOpeningCash(draft.openingCash ?? '')
+    setClosingActualCash(draft.actualCash ?? '')
+    setClosingClosedBy(draft.closedBy ?? '')
+    setClosingRemarks(draft.remarks ?? '')
+   }
+   setShiftClosingLoadedDate(dateKey)
+   return existing
+  } catch (err) {
+   console.error('Shift closing date load failed:', err)
+   setShiftClosingError(err?.message || String(err))
+   setExistingShiftClosing(null)
+   setShiftClosingLoadedDate(dateKey)
+   return null
+  }
+ }
+
+ async function loadShiftClosingMonitor(options = {}) {
+  const silent = options?.silent === true
+  if (!silent) setShiftClosingLoading(true)
+  setShiftClosingError('')
+  try {
+   const todayDate = getPHDateTimeParts().date || getTodayDate()
+   const startDate = addDaysToDateString(todayDate, -POS_SHIFT_MONITOR_DAYS)
+   const [salesRes, closingsRes, dailySalesRes] = await Promise.all([
+    supabase.from('pos_sales').select('*').gte('business_date', startDate).lte('business_date', todayDate).order('business_date', { ascending:false }),
+    supabase.from('pos_shift_closings').select('*').eq('outlet_id', POS_OUTLET_ID).gte('business_date', startDate).lte('business_date', todayDate).order('created_at', { ascending:false }),
+    supabase.from('daily_sales').select('*').gte('sale_date', startDate).lte('sale_date', todayDate).order('created_at', { ascending:false })
+   ])
+   if (salesRes.error) throw salesRes.error
+   if (closingsRes.error) throw closingsRes.error
+   if (dailySalesRes.error) throw dailySalesRes.error
+
+   const salesByDate = {}
+   ;(salesRes.data || []).forEach(sale => {
+    const outletId = String(sale?.outlet_id || POS_OUTLET_ID)
+    if (outletId !== POS_OUTLET_ID) return
+    const dateKey = String(sale?.business_date || '').slice(0, 10)
+    if (!dateKey) return
+    if (!salesByDate[dateKey]) salesByDate[dateKey] = []
+    salesByDate[dateKey].push(sale)
+   })
+   const closingsByDate = {}
+   ;(closingsRes.data || []).forEach(closing => {
+    const dateKey = String(closing?.business_date || '').slice(0, 10)
+    if (!dateKey) return
+    if (!closingsByDate[dateKey]) closingsByDate[dateKey] = []
+    closingsByDate[dateKey].push(closing)
+   })
+   const dailyByDate = {}
+   ;(dailySalesRes.data || []).forEach(row => {
+    const dateKey = String(row?.sale_date || '').slice(0, 10)
+    if (!dateKey) return
+    if (!dailyByDate[dateKey]) dailyByDate[dateKey] = []
+    dailyByDate[dateKey].push(row)
+   })
+
+   const allDates = Array.from(new Set([...Object.keys(salesByDate), ...Object.keys(closingsByDate)])).sort().reverse()
+   const rows = allDates.map(dateKey => {
+    const summary = summarizeActivePosSales(salesByDate[dateKey] || [])
+    const closingRows = closingsByDate[dateKey] || []
+    const closing = closingRows[0] || null
+    const marker = getPosShiftDailySalesMarker(POS_OUTLET_ID, dateKey)
+    const dayDailyRows = dailyByDate[dateKey] || []
+    const linkedDailyRows = dayDailyRows.filter(row => String(row?.notes || '').includes(marker))
+    const possibleLegacyRows = dayDailyRows.filter(row => !String(row?.notes || '').includes(marker) && /sags\s*pos|outlet-malu(ed)?|shift\s*closing/i.test(String(row?.notes || '')))
+    const linkedDaily = linkedDailyRows[0] || null
+    const closingMatchesSales = !!closing &&
+     Math.abs(moneyRound(closing.total_sales) - summary.totalSales) <= 0.01 &&
+     safeNum(closing.transaction_count, 0) === summary.transactionCount &&
+     Math.abs(moneyRound(closing.cash_sales) - summary.cashSales) <= 0.01 &&
+     Math.abs(moneyRound(closing.gcash_sales) - summary.gcashSales) <= 0.01
+    const dailyMatchesClosing = !!closing && !!linkedDaily &&
+     Math.abs(moneyRound(linkedDaily.total_walkin) - moneyRound(closing.total_sales)) <= 0.01 &&
+     Math.abs(moneyRound(linkedDaily.total_revenue) - moneyRound(closing.total_sales)) <= 0.01
+
+    let statusCode = 'no_sales'
+    const issues = []
+    if (!closing && summary.transactionCount > 0) {
+     statusCode = dateKey === todayDate ? 'in_progress' : 'unclosed'
+     if (dateKey !== todayDate) issues.push('POS transactions exist but no shift closing was saved.')
+    } else if (closing) {
+     if (closingRows.length > 1) issues.push(`${closingRows.length} shift closing records exist for the same date.`)
+     if (!closingMatchesSales) issues.push('Saved closing no longer matches current active POS transactions or payment totals.')
+     if (linkedDailyRows.length > 1) issues.push(`${linkedDailyRows.length} linked Daily Sales records exist for the same shift.`)
+     if (possibleLegacyRows.length > 0) issues.push('A possible manually posted POS Daily Sales record may duplicate the automatic posting.')
+     if (!linkedDaily) issues.push('Shift is closed but no linked Daily Sales posting exists.')
+     else if (!dailyMatchesClosing) issues.push('Linked Daily Sales amount does not match the saved shift closing.')
+
+     if (closingRows.length > 1 || !closingMatchesSales || linkedDailyRows.length > 1 || possibleLegacyRows.length > 0 || (linkedDaily && !dailyMatchesClosing)) statusCode = 'review_required'
+     else if (!linkedDaily) statusCode = 'closed_not_posted'
+     else statusCode = 'closed'
+    }
+
+    return {
+     date:dateKey,
+     ...summary,
+     closing,
+     closingCount:closingRows.length,
+     linkedDaily,
+     linkedDailyCount:linkedDailyRows.length,
+     possibleLegacyCount:possibleLegacyRows.length,
+     closingMatchesSales,
+     dailyMatchesClosing,
+     statusCode,
+     issues,
+     daysOpen:Math.max(0, safeNum(dateStringDiffDays(dateKey, todayDate), 0))
+    }
+   })
+   setShiftClosingRows(rows)
+   return rows
+  } catch (err) {
+   console.error('Shift closing monitor failed:', err)
+   setShiftClosingError(err?.message || String(err))
+   return []
+  } finally {
+   if (!silent) setShiftClosingLoading(false)
+  }
+ }
+
+ function saveCurrentShiftDraftBeforeDateChange() {
+  if (!posDate || shiftClosingLoadedDate !== posDate || existingShiftClosing) return
+  writeSagsShiftDraft(posDate, {
+   openingCash:closingOpeningCash,
+   actualCash:closingActualCash,
+   closedBy:closingClosedBy,
+   remarks:closingRemarks
+  })
+ }
+
+ function openShiftClosingDate(dateKey) {
+  const nextDate = String(dateKey || '').slice(0, 10)
+  if (!nextDate) return
+  saveCurrentShiftDraftBeforeDateChange()
+  setPosDate(nextDate)
+  setTimeout(() => {
+   const target = document.getElementById('sags-shift-closing')
+   if (target) target.scrollIntoView({ behavior:'smooth', block:'start' })
+  }, 250)
+ }
+
+ async function repairShiftClosingDailySales(row = null) {
+  const target = row || shiftClosingRows.find(item => item.date === posDate)
+  const closing = target?.closing || existingShiftClosing
+  if (!closing) {
+   alert('No saved shift closing is available to post.')
+   return
+  }
+  if (target && target.closingMatchesSales === false) {
+   alert('The saved closing does not match the current POS sales. Open the date and update the shift closing first.')
+   return
+  }
+  setShiftClosingSaving(true)
+  try {
+   await postShiftClosingToDailySales(closing)
+   alert(`Daily Sales posting repaired for ${closing.business_date}.`)
+   await loadShiftClosingMonitor({ silent:true })
+  } catch (err) {
+   console.error('Daily Sales posting repair failed:', err)
+   alert('Daily Sales posting repair failed: ' + (err?.message || String(err)))
+  } finally {
+   setShiftClosingSaving(false)
+  }
+ }
 
  async function loadPosMonitor(options = {}) {
   const silent = options && options.silent
-  silent ? setPosRefreshing(true) : setPosLoading(true)
+  const isAutoRefresh = options && options.auto === true
+  // Auto refresh must never interrupt typing or stock/barcode editing.
+  // When the user is actively working, skip the background refresh entirely.
+  if (silent && isAutoRefresh && !options.forceProducts && Array.isArray(posProducts) && posProducts.length > 0 && (isPosEditingNow() || hasAnyUnsavedPosDrafts())) return
+  const scrollSnapshot = silent ? capturePosSilentScrollSnapshot() : null
+  posSilentScrollSnapshotRef.current = scrollSnapshot
+  // A true silent refresh must not toggle visible loading state, because that
+  // causes layout shifts and can push the admin back to the top while typing.
+  if (!silent) setPosLoading(true)
   setPosError('')
   try {
    const start = posDate + 'T00:00:00'
@@ -18149,16 +25518,46 @@ function PosMonitorPanel() {
    setPosSales(filteredSales)
    setPosItems(filteredItems)
    setPosMovements(filteredMovements)
-   setPosProducts(productsRes.data || [])
+   const nextProducts = productsRes.data || []
+   sanitizeInventoryDraftsForLoadedProducts(nextProducts)
+   const hasUnsavedAddItem = showAddOutletItem && hasMeaningfulNewOutletItemDraft(newOutletItem)
+   const hasUnsavedRowEdits = Object.values(inventoryDrafts || {}).some(draft =>
+    draft && typeof draft === 'object' && Object.values(draft).some(value => String(value || '').trim() !== '')
+   )
+   const productListCurrentlyEmpty = !Array.isArray(posProducts) || posProducts.length === 0
+   const preserveProductRows = silent && !options.forceProducts && !productListCurrentlyEmpty && (hasUnsavedAddItem || hasUnsavedRowEdits)
+   if (!preserveProductRows) {
+    setPosProducts(prevProducts => {
+     if (!Array.isArray(prevProducts) || prevProducts.length !== nextProducts.length) return nextProducts
+     const changed = nextProducts.some((item, index) => {
+      const prev = prevProducts[index] || {}
+      return String(prev.id || '') !== String(item.id || '') ||
+       String(prev.product_name || prev.name || '') !== String(item.product_name || item.name || '') ||
+       String(prev.sku || '') !== String(item.sku || '') ||
+       String(prev.barcode || '') !== String(item.barcode || '') ||
+       safeNum(prev.selling_price, 0) !== safeNum(item.selling_price, 0) ||
+       safeNum(prev.buying_price, 0) !== safeNum(item.buying_price, 0) ||
+       safeNum(prev.stock, 0) !== safeNum(item.stock, 0) ||
+       safeNum(prev.min_stock, 0) !== safeNum(item.min_stock, 0)
+     })
+     return changed ? nextProducts : prevProducts
+    })
+   }
   } catch (err) {
    console.error('POS monitor error:', err)
    setPosError(err?.message || String(err))
   } finally {
-   silent ? setPosRefreshing(false) : setPosLoading(false)
+   if (!silent) setPosLoading(false)
+   if (silent) restorePosSilentScrollSnapshot(posSilentScrollSnapshotRef.current || scrollSnapshot)
   }
  }
 
  async function saveOutletStockIn() {
+  if (!canEditOutletInventory) {
+   alert(`Only ${posInventoryEditRoleLabel} can log stock in for the outlet.`)
+   return
+  }
+
   if (!stockInProductId) {
    alert('Please select a product.')
    return
@@ -18179,7 +25578,15 @@ function PosMonitorPanel() {
   const referenceNo = stockInTransferNo.trim() || ('STOCKIN-' + Date.now())
 
   try {
-   const { error } = await supabase.from('pos_inventory_movements').insert([{
+   const oldStock = safeNum(product.stock, 0)
+   const newStock = oldStock + qty
+
+   // Update and verify the sellable balance first. A movement record must never
+   // be written when the product balance itself was blocked or not updated.
+   const stockUpdate = await updatePosProductSafe(product.id, { stock:newStock })
+   if (stockUpdate.error) throw stockUpdate.error
+
+   const movementResult = await supabase.from('pos_inventory_movements').insert([{
     outlet_id: 'OUTLET-MALUED',
     product_id: product.id,
     sku: product.sku || '',
@@ -18191,7 +25598,21 @@ function PosMonitorPanel() {
     remarks: [stockInNote || 'Stock in to outlet', stockInTransferredBy ? 'Transferred by: ' + stockInTransferredBy : '', stockInReceivedBy ? 'Received by: ' + stockInReceivedBy : ''].filter(Boolean).join(' | ')
    }])
 
-   if (error) throw error
+   if (movementResult.error) {
+    // Best-effort rollback so Current Stock and Movement Today cannot disagree.
+    const rollback = await updatePosProductSafe(product.id, { stock:oldStock })
+    if (rollback.error) console.error('Stock-in rollback failed:', rollback.error)
+    throw movementResult.error
+   }
+
+   if (logAudit) {
+    await logAudit(
+     'OUTLET STOCK IN',
+     currentAdminLabel || 'Admin',
+     product.product_name || product.name || product.id,
+     `+${qty} (${safeNum(product.stock,0)} → ${newStock}) | Ref: ${referenceNo}${stockInNote ? ' | ' + stockInNote : ''}`
+    )
+   }
 
    alert('Stock in saved successfully.')
    setStockInProductId('')
@@ -18205,6 +25626,803 @@ function PosMonitorPanel() {
   } catch (err) {
    console.error('Stock in failed:', err)
    alert('Stock in failed: ' + (err?.message || String(err)))
+  }
+ }
+
+ async function saveProductPrice() {
+  if (!canEditOutletInventory) {
+   alert(`Only ${posInventoryEditRoleLabel} can change outlet prices.`)
+   return
+  }
+
+  if (!priceEditProductId) {
+   alert('Please select a product.')
+   return
+  }
+
+  const newPrice = String(priceEditValue || '').trim() === '' ? -1 : roundOutletSellingPrice(priceEditValue)
+  if (newPrice < 0) {
+   alert('Please enter a valid price.')
+   return
+  }
+
+  const product = posProducts.find(p => String(p.id) === String(priceEditProductId))
+  if (!product) {
+   alert('Selected product not found.')
+   return
+  }
+
+  const oldPrice = safeNum(product.selling_price, 0)
+
+  try {
+   const updateResult = await updatePosProductSafe(product.id, { selling_price: newPrice, price: newPrice })
+   if (updateResult.error) throw updateResult.error
+
+   if (logAudit) {
+    await logAudit(
+     'OUTLET PRICE CHANGE',
+     currentAdminLabel || 'Admin',
+     product.product_name || product.name || product.id,
+     `₱${oldPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`
+    )
+   }
+
+   alert('Price updated successfully.')
+   setPriceEditProductId('')
+   setPriceEditSearch('')
+   setPriceEditValue('')
+   await loadPosMonitor()
+  } catch (err) {
+   console.error('Price update failed:', err)
+   alert('Price update failed: ' + (err?.message || String(err)))
+  }
+ }
+
+
+ async function resetAllOutletStockToZero() {
+  if (!isOwnerRole) {
+   alert('Only the Owner can reset all SAGS POS stock to zero.')
+   return
+  }
+
+  if (posResettingStock) return
+
+  const resetTargets = (posProducts || []).filter(product =>
+   product?.id &&
+   !isOutletProductDeleted(product) &&
+   safeNum(product.stock, 0) !== 0
+  )
+
+  if (!resetTargets.length) {
+   alert('All SAGS POS product stocks are already zero.')
+   return
+  }
+
+  const totalUnits = resetTargets.reduce((sum, product) => sum + Math.max(0, safeNum(product.stock, 0)), 0)
+  const proceed = confirm(
+   `RESET ALL SAGS POS STOCK TO ZERO?\n\n` +
+   `Products affected: ${resetTargets.length}\n` +
+   `Current units to remove: ${totalUnits.toLocaleString('en-PH')}\n\n` +
+   `This will NOT delete products, prices, barcodes, sales, or transaction history. ` +
+   `It only clears the current POS stock so you can encode the actual physical count.\n\n` +
+   `This action cannot be undone automatically.`
+  )
+  if (!proceed) return
+
+  const confirmationText = prompt('For final confirmation, type exactly: RESET POS STOCK')
+  if (String(confirmationText || '').trim().toUpperCase() !== 'RESET POS STOCK') {
+   alert('Reset cancelled. The confirmation text did not match.')
+   return
+  }
+
+  setPosResettingStock(true)
+  const resetReference = `POS-STOCK-RESET-${Date.now()}`
+
+  try {
+   // Use verified batch updates. Supabase can sometimes return no error even when
+   // Row Level Security prevents rows from being changed, so we must request the
+   // updated rows and then read them back before reporting success.
+   const targetIds = resetTargets.map(product => product.id)
+   const updatedIdSet = new Set()
+
+   for (let i = 0; i < targetIds.length; i += 100) {
+    const batchIds = targetIds.slice(i, i + 100)
+    const { data:updatedRows, error:updateError } = await supabase
+     .from('pos_products')
+     .update({ stock:0 })
+     .in('id', batchIds)
+     .select('id, stock')
+
+    if (updateError) throw updateError
+    ;(updatedRows || []).forEach(row => {
+     if (safeNum(row.stock, 0) === 0) updatedIdSet.add(String(row.id))
+    })
+   }
+
+   const verifiedRows = []
+   for (let i = 0; i < targetIds.length; i += 100) {
+    const batchIds = targetIds.slice(i, i + 100)
+    const { data:rows, error:verifyError } = await supabase
+     .from('pos_products')
+     .select('id, stock')
+     .in('id', batchIds)
+
+    if (verifyError) throw verifyError
+    verifiedRows.push(...(rows || []))
+   }
+
+   const verifiedZeroIds = new Set(
+    verifiedRows
+     .filter(row => safeNum(row.stock, 0) === 0)
+     .map(row => String(row.id))
+   )
+
+   const successfulRows = resetTargets
+    .filter(product => verifiedZeroIds.has(String(product.id)))
+    .map(product => ({ product, oldStock:safeNum(product.stock, 0) }))
+
+   const failedRows = resetTargets.filter(product => !verifiedZeroIds.has(String(product.id)))
+
+   // Do not create stock_out movement rows for this reset. The previous 50-unit
+   // balances were temporary test/opening values, so clearing them is a baseline
+   // correction rather than an operational stock-out. The owner audit log below
+   // is the correct permanent record of the reset.
+
+   if (logAudit && successfulRows.length > 0) {
+    const removedUnits = successfulRows.reduce((sum, row) => sum + Math.max(0, row.oldStock), 0)
+    await logAudit(
+     'ALL SAGS POS STOCK RESET',
+     currentAdminLabel || 'Owner',
+     'SAGS POS',
+     `${successfulRows.length} product(s) verified at 0; ${removedUnits.toLocaleString('en-PH')} test unit(s) cleared before physical counting. Reference: ${resetReference}`
+    )
+   }
+
+   setInventoryDrafts({})
+   await loadPosMonitor({ silent:false, forceProducts:true })
+
+   if (failedRows.length > 0) {
+    const failedNames = failedRows.slice(0, 5).map(product => product.product_name || product.name || product.id).join(', ')
+    alert(
+     `The app could not verify the reset for ${failedRows.length} product(s).\n\n` +
+     `Still not zero: ${failedNames}${failedRows.length > 5 ? '...' : ''}\n\n` +
+     `This usually means Supabase Row Level Security blocked the browser update. ` +
+     `Run the supplied SQL in Supabase SQL Editor to complete the one-time reset.`
+    )
+   } else {
+    alert(`Done. All ${successfulRows.length} SAGS POS product stock balances were verified at zero. This baseline reset is excluded from Movement Today. You can now enter the actual physical counts.`)
+   }
+  } catch (err) {
+   console.error('Reset all SAGS POS stock failed:', err)
+   alert(
+    'Reset failed: ' + (err?.message || String(err)) +
+    '\n\nRun the supplied one-time SQL in Supabase SQL Editor to reset the stored POS balances directly.'
+   )
+   await loadPosMonitor({ silent:false, forceProducts:true })
+  } finally {
+   setPosResettingStock(false)
+  }
+ }
+
+
+ async function runNightlyDonutResetNow() {
+  if (!isOwnerRole) {
+   alert('Only the Owner can run the SAGS POS donut reset manually.')
+   return
+  }
+
+  if (posRunningNightlyDonutReset) return
+
+  const donutTargets = (posProducts || []).filter(product =>
+   product?.id &&
+   !isOutletProductDeleted(product) &&
+   String(product.category || '').trim().toLowerCase() === 'donuts' &&
+   safeNum(product.stock, 0) !== 0
+  )
+
+  if (!donutTargets.length) {
+   alert('All active donut stocks are already zero.')
+   return
+  }
+
+  const unitsToClear = donutTargets.reduce((sum, product) => sum + Math.max(0, safeNum(product.stock, 0)), 0)
+  const proceed = confirm(
+   `RESET DONUT STOCK TO ZERO NOW?\n\n` +
+   `Donut products affected: ${donutTargets.length}\n` +
+   `Units to clear: ${unitsToClear.toLocaleString('en-PH')}\n\n` +
+   `Only the Donuts category will be affected. Drinks, snacks, prices, barcodes, and sales history will not change.`
+  )
+  if (!proceed) return
+
+  setPosRunningNightlyDonutReset(true)
+  try {
+   const { data, error } = await supabase.rpc('reset_sags_pos_donut_stock_nightly', {
+    p_outlet_id:'OUTLET-MALUED',
+    p_run_source:'manual'
+   })
+   if (error) throw error
+
+   const result = data && typeof data === 'object' ? data : {}
+   const productsReset = safeNum(result.products_reset, donutTargets.length)
+   const unitsRemoved = safeNum(result.units_removed, unitsToClear)
+
+   if (logAudit) {
+    await logAudit(
+     'SAGS POS DONUT STOCK RESET',
+     currentAdminLabel || 'Owner',
+     'SAGS POS',
+     `${productsReset} donut product(s) reset to zero; ${unitsRemoved.toLocaleString('en-PH')} unit(s) cleared. Source: Manual owner test.`
+    )
+   }
+
+   setInventoryDrafts({})
+   await loadPosMonitor({ silent:false, forceProducts:true })
+   alert(`Done. ${productsReset} donut product(s) were reset to zero. ${unitsRemoved.toLocaleString('en-PH')} unit(s) were cleared.`)
+  } catch (err) {
+   console.error('Nightly donut reset failed:', err)
+   alert(
+    'Donut reset failed: ' + (err?.message || String(err)) +
+    '\n\nRun the supplied Supabase nightly-reset SQL first, then try again.'
+   )
+  } finally {
+   setPosRunningNightlyDonutReset(false)
+  }
+ }
+
+
+ async function saveOutletInventoryRow(product) {
+  if (!canEditOutletInventory) {
+   alert(`Only ${posInventoryEditRoleLabel} can update outlet inventory.`)
+   return
+  }
+
+  if (!product?.id) {
+   alert('Product record is missing an ID. Please refresh and try again.')
+   return
+  }
+
+  const key = getInventoryDraftKey(product)
+  const draft = inventoryDrafts[key] || {}
+  const stockInQty = Math.round(safeNum(draft.stockIn, 0))
+  const stockOutQty = Math.round(safeNum(draft.stockOut, 0))
+  const currentStock = safeNum(product.remainingStock ?? product.stock, 0)
+  const currentName = String(product.product_name || product.name || 'Unnamed Product').trim()
+  const newName = draft.productName !== undefined ? String(draft.productName || '').trim() : currentName
+  const category = String(product.category || '').trim()
+  const usesMarkupPricing = isOutletMarkupPricingCategory(category)
+  const currentBuyingPrice = getOutletBuyingPrice(product)
+  const currentPrice = getOutletDisplaySellingPrice(product)
+  const draftBuyingEntered = draft.buyingPrice !== undefined && String(draft.buyingPrice).trim() !== ''
+  const draftPriceEntered = draft.price !== undefined && String(draft.price).trim() !== ''
+  const newBuyingPrice = draftBuyingEntered ? safeNum(draft.buyingPrice, -1) : currentBuyingPrice
+  const newPrice = usesMarkupPricing && draftBuyingEntered
+   ? getOutletMarkupSellingPrice(newBuyingPrice, category)
+   : (draftPriceEntered ? roundOutletSellingPrice(draft.price) : currentPrice)
+  const remarks = String(draft.remarks || '').trim()
+
+  if (!newName) {
+   alert('Product name cannot be blank.')
+   return
+  }
+
+  if (stockInQty < 0 || stockOutQty < 0) {
+   alert('Stock In and Stock Out cannot be negative.')
+   return
+  }
+
+  if (usesMarkupPricing && draftBuyingEntered && newBuyingPrice < 0) {
+   alert('Please enter a valid bought price.')
+   return
+  }
+
+  if (newPrice < 0) {
+   alert('Please enter a valid selling price.')
+   return
+  }
+
+  const duplicateName = newName.toLowerCase() !== currentName.toLowerCase()
+   ? posProducts.find(p => String(p.id) !== String(product.id) && String(p.product_name || p.name || '').trim().toLowerCase() === newName.toLowerCase())
+   : null
+  if (duplicateName && !confirm(`Another POS item already uses the name "${newName}". Continue saving this name?`)) return
+
+  const newStock = currentStock + stockInQty - stockOutQty
+  if (newStock < 0) {
+   alert('Stock Out is greater than current stock. Current stock cannot go below zero.')
+   return
+  }
+
+  const nameChanged = newName !== currentName
+  const buyingChanged = usesMarkupPricing && draftBuyingEntered && Math.abs(newBuyingPrice - currentBuyingPrice) > 0.009
+  const priceChanged = Math.abs(newPrice - currentPrice) > 0.009
+  const stockChanged = stockInQty > 0 || stockOutQty > 0
+
+  if (!nameChanged && !buyingChanged && !priceChanged && !stockChanged) {
+   alert('No changes to save for this product.')
+   return
+  }
+
+  const referenceBase = 'INV-' + Date.now()
+  setInventorySavingId(key)
+
+  try {
+   const updatePayload = {}
+   if (nameChanged) {
+    updatePayload.product_name = newName
+    updatePayload.name = newName
+   }
+   if (stockChanged) updatePayload.stock = newStock
+   if (usesMarkupPricing && draftBuyingEntered) {
+    updatePayload.buying_price = moneyRound(newBuyingPrice)
+    updatePayload.cost_per_unit = moneyRound(newBuyingPrice)
+    updatePayload.markup_percent = getOutletMarkupPercentForCategory(category)
+   }
+   if (priceChanged || (usesMarkupPricing && draftBuyingEntered)) {
+    updatePayload.selling_price = moneyRound(newPrice)
+    updatePayload.price = moneyRound(newPrice)
+   }
+
+   const updateResult = await updatePosProductSafe(product.id, updatePayload)
+   if (updateResult.error) throw updateResult.error
+
+   if (stockChanged && Math.abs(safeNum(updateResult.updatedProduct?.stock, Number.NaN) - newStock) > 0.0001) {
+    throw new Error(`Stock update was not saved. Expected ${newStock}, but the database returned ${updateResult.updatedProduct?.stock ?? 'no value'}.`)
+   }
+
+   const movementRows = []
+   if (stockInQty > 0) {
+    movementRows.push({
+     outlet_id: 'OUTLET-MALUED',
+     product_id: product.id,
+     sku: product.sku || '',
+     barcode: product.barcode || '',
+     product_name: newName,
+     movement_type: 'stock_in',
+     qty: stockInQty,
+     reference_no: referenceBase + '-IN',
+     remarks: remarks || 'Stock in from unified POS inventory manager'
+    })
+   }
+
+   if (stockOutQty > 0) {
+    movementRows.push({
+     outlet_id: 'OUTLET-MALUED',
+     product_id: product.id,
+     sku: product.sku || '',
+     barcode: product.barcode || '',
+     product_name: newName,
+     movement_type: 'stock_out',
+     qty: -stockOutQty,
+     reference_no: referenceBase + '-OUT',
+     remarks: remarks || 'Stock out from unified POS inventory manager'
+    })
+   }
+
+   if (movementRows.length > 0) {
+    const { error: movementError } = await supabase
+     .from('pos_inventory_movements')
+     .insert(movementRows)
+    if (movementError) {
+     // Best-effort rollback keeps Current Stock aligned with the movement ledger.
+     if (stockChanged) {
+      const rollback = await updatePosProductSafe(product.id, { stock:currentStock })
+      if (rollback.error) console.error('Unified inventory rollback failed:', rollback.error)
+     }
+     throw movementError
+    }
+   }
+
+   if (logAudit) {
+    const changes = []
+    if (nameChanged) changes.push(`Name ${currentName} → ${newName}`)
+    if (usesMarkupPricing && draftBuyingEntered) changes.push(`Bought ₱${newBuyingPrice.toFixed(2)} + ${getOutletMarkupPercentForCategory(category)}% markup = Sell ₱${newPrice.toFixed(2)}`)
+    else if (priceChanged) changes.push(`Price ₱${currentPrice.toFixed(2)} → ₱${newPrice.toFixed(2)}`)
+    if (stockChanged) changes.push(`Stock ${currentStock} → ${newStock} (${stockInQty ? '+' + stockInQty : ''}${stockInQty && stockOutQty ? ', ' : ''}${stockOutQty ? '-' + stockOutQty : ''})`)
+    await logAudit(
+     'OUTLET INVENTORY UPDATED',
+     currentAdminLabel || 'Admin',
+     newName || product.product_name || product.name || product.id,
+     changes.join(' | ') + (remarks ? ' | ' + remarks : '')
+    )
+   }
+
+   if (updateResult.optionalColumnsSaved === false && (usesMarkupPricing && draftBuyingEntered)) {
+    alert(`Saved selling price using bought price + ${getOutletMarkupPercentForCategory(category)}%. Note: your pos_products table is missing buying_price/markup columns, so the bought price itself was not stored. Add those Supabase columns for permanent bought-price tracking.`)
+   }
+
+   clearInventoryDraft(product)
+   await loadPosMonitor({ silent:true, forceProducts:true })
+  } catch (err) {
+   console.error('Inventory update failed:', err)
+   alert('Inventory update failed: ' + (err?.message || String(err)))
+  } finally {
+   setInventorySavingId('')
+  }
+ }
+
+ async function hardDeletePosProductById(productId) {
+  // Supabase/RLS can return success with zero deleted rows. Use select() so the app
+  // can prove the row was actually removed before telling the user it is deleted.
+  const result = await supabase
+   .from('pos_products')
+   .delete()
+   .eq('id', productId)
+   .select('id, product_name, sku, barcode')
+  return result
+ }
+
+ async function tombstonePosProduct(product, reason) {
+  // If a product already has protected sales/history links, physical deletion may
+  // be blocked by foreign keys. This fallback removes it from active POS use by
+  // clearing scan codes and marking it deleted, while preserving old sales history.
+  // The final core payload uses only common pos_products columns so it still works
+  // even when optional status/deleted columns are not present in Supabase.
+  const deletedAt = new Date().toISOString()
+  const deletedBy = currentAdminLabel || 'Admin'
+  const originalName = String(product?.product_name || product?.name || 'POS Item').trim() || 'POS Item'
+  const deletedName = originalName.toLowerCase().startsWith('[deleted]') ? originalName : `[DELETED] ${originalName}`
+  const payloadAttempts = [
+   {
+    product_name:deletedName,
+    name:deletedName,
+    category:'Deleted',
+    barcode:null,
+    sku:null,
+    stock:0,
+    selling_price:0,
+    price:0,
+    status:'deleted',
+    is_active:false,
+    deleted_at:deletedAt,
+    deleted_by:deletedBy,
+    deleted_reason:reason
+   },
+   {
+    product_name:deletedName,
+    category:'Deleted',
+    barcode:null,
+    sku:null,
+    stock:0,
+    selling_price:0,
+    status:'deleted',
+    is_active:false
+   },
+   {
+    product_name:deletedName,
+    category:'Deleted',
+    barcode:null,
+    sku:null,
+    stock:0,
+    selling_price:0
+   },
+   {
+    barcode:null,
+    sku:null,
+    stock:0
+   }
+  ]
+
+  let lastError = null
+  for (const payload of payloadAttempts) {
+   const result = await supabase
+    .from('pos_products')
+    .update(payload)
+    .eq('id', product.id)
+    .select('id, product_name, sku, barcode')
+   if (!result.error && Array.isArray(result.data) && result.data.length > 0) return { error:null, data:result.data, mode:payload.product_name ? 'tombstone' : 'barcode_cleared' }
+   if (result.error) lastError = result.error
+  }
+  return { error:lastError || new Error('Supabase did not update any POS product row. Delete was not applied.'), data:[], mode:'failed' }
+ }
+
+ function removeDeletedPosProductFromLocalState(product) {
+  const productId = String(product?.id || '')
+  const productBarcode = cleanOutletBarcodeCode(product?.barcode || '')
+  const productSku = cleanOutletBarcodeCode(product?.sku || '')
+  const productName = String(product?.product_name || product?.name || '').trim().toLowerCase()
+
+  setPosProducts(prev => (prev || []).filter(row => {
+   if (productId && String(row.id || '') === productId) return false
+   if (productBarcode && cleanOutletBarcodeCode(row.barcode || '') === productBarcode && String(row.product_name || row.name || '').trim().toLowerCase() === productName) return false
+   if (productSku && cleanOutletBarcodeCode(row.sku || '') === productSku && String(row.product_name || row.name || '').trim().toLowerCase() === productName) return false
+   return true
+  }))
+
+  setInventoryDrafts(prev => {
+   if (!prev || typeof prev !== 'object') return prev
+   const next = { ...prev }
+   const keysToDelete = [getInventoryDraftKey(product), productId, productBarcode, productSku].filter(Boolean)
+   keysToDelete.forEach(key => delete next[key])
+   return next
+  })
+
+  setStockInProductId(current => String(current || '') === productId ? '' : current)
+  setPriceEditProductId(current => String(current || '') === productId ? '' : current)
+ }
+
+ async function findRemainingPosScanMatches(product) {
+  const matches = []
+  const productId = String(product?.id || '')
+  const barcode = String(product?.barcode || '').trim()
+  const sku = String(product?.sku || '').trim()
+
+  if (barcode) {
+   const { data, error } = await supabase
+    .from('pos_products')
+    .select('id, product_name, sku, barcode')
+    .eq('barcode', barcode)
+   if (!error) matches.push(...(data || []).filter(row => String(row.id || '') !== productId && !isOutletProductDeleted(row)))
+  }
+
+  if (sku) {
+   const { data, error } = await supabase
+    .from('pos_products')
+    .select('id, product_name, sku, barcode')
+    .eq('sku', sku)
+   if (!error) {
+    ;(data || []).forEach(row => {
+     if (String(row.id || '') === productId || isOutletProductDeleted(row)) return
+     if (!matches.some(existing => String(existing.id || '') === String(row.id || ''))) matches.push(row)
+    })
+   }
+  }
+  return matches
+ }
+
+ function triggerDeleteOutletInventoryItem(product, event = null) {
+  if (event) {
+   event.preventDefault?.()
+   event.stopPropagation?.()
+  }
+  const key = String(product?.id || getInventoryDraftKey(product) || '')
+  const now = Date.now()
+  const lastClick = key ? safeNum(posDeleteClickGuardRef.current?.[key], 0) : 0
+  if (key && now - lastClick < 900) return
+  if (key) posDeleteClickGuardRef.current = { ...(posDeleteClickGuardRef.current || {}), [key]:now }
+  deleteOutletInventoryItem(product)
+ }
+
+ async function deleteOutletInventoryItem(product) {
+  if (!canEditOutletInventory) {
+   alert(`Only ${posInventoryEditRoleLabel} can delete POS items.`)
+   return
+  }
+
+  if (!product?.id) {
+   alert('Product record is missing an ID. Please refresh and try again.')
+   return
+  }
+
+  const productName = String(product.product_name || product.name || 'this POS item').trim() || 'this POS item'
+  const typed = prompt(`This will delete "${productName}" from active SAGS POS products. Type DELETE to continue.`)
+  if (String(typed || '').trim().toUpperCase() !== 'DELETE') return
+
+  const reason = String(prompt('Reason for deleting this POS item? This is required for audit trail.') || '').trim()
+  if (!reason) {
+   alert('Delete cancelled. Please enter a reason before deleting an item.')
+   return
+  }
+
+  const key = getInventoryDraftKey(product)
+  setInventorySavingId(key)
+
+  try {
+   const hardDelete = await hardDeletePosProductById(product.id)
+   let deleteMode = 'hard_delete'
+
+   if (hardDelete.error || !Array.isArray(hardDelete.data) || hardDelete.data.length === 0) {
+    const fallback = await tombstonePosProduct(product, reason)
+    if (fallback.error || !Array.isArray(fallback.data) || fallback.data.length === 0) {
+     throw hardDelete.error || fallback.error || new Error('Delete was not applied. Supabase returned zero affected rows.')
+    }
+    deleteMode = fallback.mode || 'tombstone'
+   }
+
+   removeDeletedPosProductFromLocalState(product)
+   const remainingMatches = await findRemainingPosScanMatches(product)
+
+   if (logAudit) {
+    await logAudit(
+     deleteMode === 'hard_delete' ? 'OUTLET POS ITEM HARD DELETED' : 'OUTLET POS ITEM REMOVED FROM POS',
+     currentAdminLabel || 'Admin',
+     productName,
+     `${deleteMode === 'hard_delete' ? 'Physically deleted from pos_products.' : 'Removed from active POS use and barcode/SKU cleared because history may be protected.'} Reason: ${reason}`
+    )
+   }
+
+   clearInventoryDraft(product)
+   await loadPosMonitor({ silent:true, forceProducts:true })
+
+   if (remainingMatches.length > 0) {
+    alert(`Deleted/removed ${productName}, but ${remainingMatches.length} other POS item(s) still use the same barcode/SKU. Search the barcode/SKU and delete the duplicate too, otherwise the scanner can still find that other item.`)
+   } else {
+    alert(`Deleted ${productName}. It was removed from active POS products and its barcode should no longer scan.`)
+   }
+  } catch (err) {
+   console.error('Delete POS item failed:', err)
+   const msg = String(err?.message || err || '')
+   alert('Delete failed and no product was removed: ' + msg + '\n\nThis usually means Supabase blocked the delete/update by policy or table restrictions. Do not assume the item is deleted until it disappears after Force Reload Products From Database.')
+  } finally {
+   setInventorySavingId('')
+  }
+ }
+
+ async function saveNewOutletItem() {
+  if (!canEditOutletInventory) {
+   alert(`Only ${posInventoryEditRoleLabel} can add new POS items.`)
+   return
+  }
+
+  const productName = String(newOutletItem.product_name || '').trim()
+  const category = String(newOutletItem.category || '').trim() || 'Donuts'
+  const sku = String(newOutletItem.sku || '').trim()
+  const barcode = String(newOutletItem.barcode || '').trim()
+  // Database unique constraints treat empty strings as real values.
+  // Keep SKU/barcode optional by saving blanks as NULL, not ''.
+  const skuForDb = sku || null
+  const barcodeForDb = barcode || null
+  const startingStock = Math.round(safeNum(newOutletItem.stock, 0))
+  const usesMarkupPricing = isOutletMarkupPricingCategory(category)
+  const buyingPrice = safeNum(newOutletItem.buying_price, 0)
+  const sellingPrice = usesMarkupPricing && buyingPrice > 0 ? getOutletMarkupSellingPrice(buyingPrice, category) : (String(newOutletItem.selling_price || '').trim() === '' ? -1 : roundOutletSellingPrice(newOutletItem.selling_price))
+  const minStock = Math.round(safeNum(newOutletItem.min_stock, 10))
+
+  if (!productName) {
+   alert('Please enter a product name.')
+   return
+  }
+
+  if (usesMarkupPricing && buyingPrice < 0) {
+   alert('Please enter a valid bought price.')
+   return
+  }
+
+  if (sellingPrice < 0) {
+   alert('Please enter a valid selling price.')
+   return
+  }
+
+  if (startingStock < 0 || minStock < 0) {
+   alert('Starting stock and minimum stock cannot be negative.')
+   return
+  }
+
+  const duplicateName = posProducts.find(p =>
+   String(p.product_name || p.name || '').trim().toLowerCase() === productName.toLowerCase()
+  )
+
+  if (duplicateName && !confirm('A product with the same name already exists. Continue adding this item?')) return
+
+  try {
+   // Verify SKU/barcode ownership from Supabase, not stale browser state.
+   // This prevents false "already registered" blocks after deleted/old local rows.
+   const duplicateSku = sku ? await findActiveOutletProductCodeOwnerFromDatabase(sku, '', ['sku']) : null
+   const duplicateBarcode = barcode ? await findActiveOutletProductCodeOwnerFromDatabase(barcode, '', ['barcode']) : null
+
+   if (duplicateSku) {
+    alert(`SKU already exists for ${duplicateSku.product_name || duplicateSku.name || 'another active POS item'}. Use a different SKU or leave SKU blank.`)
+    return
+   }
+
+   if (duplicateBarcode) {
+    alert(`Barcode already exists for ${duplicateBarcode.product_name || duplicateBarcode.name || 'another active POS item'}. Use a different barcode or leave Barcode blank.`)
+    return
+   }
+
+   const makeCleanProductId = (suffix = '') => {
+    const rawBase = sku || barcode || productName || ('POS-' + Date.now())
+    const cleanBase = String(rawBase)
+     .trim()
+     .toUpperCase()
+     .replace(/[^A-Z0-9]+/g, '-')
+     .replace(/^-+|-+$/g, '')
+     .slice(0, 42) || 'POS-ITEM'
+    return suffix ? `${cleanBase}-${suffix}` : cleanBase
+   }
+
+   const uniqueSuffix = Date.now().toString().slice(-8)
+   const idCandidates = [
+    makeCleanProductId(),
+    makeCleanProductId(uniqueSuffix),
+    Number(Date.now()),
+    (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `POS-${Date.now()}-${Math.round(Math.random() * 9999)}`)
+   ]
+
+   const buildFullPayload = id => ({
+    id,
+    outlet_id: 'OUTLET-MALUED',
+    product_name: productName,
+    name: productName,
+    category,
+    sku: skuForDb,
+    barcode: barcodeForDb,
+    buying_price: usesMarkupPricing && buyingPrice > 0 ? moneyRound(buyingPrice) : null,
+    cost_per_unit: usesMarkupPricing && buyingPrice > 0 ? moneyRound(buyingPrice) : null,
+    markup_percent: usesMarkupPricing && buyingPrice > 0 ? getOutletMarkupPercentForCategory(category) : null,
+    selling_price: sellingPrice,
+    price: sellingPrice,
+    stock: startingStock,
+    min_stock: minStock,
+    is_active:true
+   })
+
+   const buildCorePayload = id => ({
+    id,
+    outlet_id: 'OUTLET-MALUED',
+    product_name: productName,
+    category,
+    sku: skuForDb,
+    barcode: barcodeForDb,
+    selling_price: sellingPrice,
+    stock: startingStock,
+    min_stock: minStock
+   })
+
+   let data = null
+   let insertError = null
+
+   for (const idCandidate of idCandidates) {
+    const payloadAttempts = [buildFullPayload(idCandidate), buildCorePayload(idCandidate)]
+
+    for (const payload of payloadAttempts) {
+     const result = await supabase
+      .from('pos_products')
+      .insert([payload])
+      .select()
+      .single()
+
+     if (!result.error) {
+      data = result.data
+      insertError = null
+      break
+     }
+
+     insertError = result.error
+     const msg = String(result.error?.message || '').toLowerCase()
+
+     // Retry with the core payload if this database does not have optional compatibility columns.
+     if (payload.name !== undefined && (msg.includes('name') || msg.includes('price') || msg.includes('is_active') || msg.includes('schema cache') || msg.includes('could not find'))) {
+      continue
+     }
+
+     // Wrong ID type or duplicate ID: try the next generated ID candidate.
+     break
+    }
+
+    if (data) break
+   }
+
+   if (insertError) throw insertError
+
+   if (startingStock > 0 && data?.id) {
+    const { error: movementError } = await supabase.from('pos_inventory_movements').insert([{
+     outlet_id: 'OUTLET-MALUED',
+     product_id: data.id,
+     sku: skuForDb,
+     barcode: barcodeForDb,
+     product_name: productName,
+     movement_type: 'new_item_stock',
+     qty: startingStock,
+     reference_no: 'NEWITEM-' + Date.now(),
+     remarks: 'Initial stock for new POS item'
+    }])
+    if (movementError) console.error('Initial stock movement log failed:', movementError)
+   }
+
+   if (logAudit) {
+    await logAudit(
+     'OUTLET POS ITEM ADDED',
+     currentAdminLabel || 'Admin',
+     productName,
+     `Category: ${category} | ${usesMarkupPricing && buyingPrice > 0 ? `Bought: ₱${buyingPrice.toFixed(2)} | Markup: 30% | ` : ''}Price: ₱${sellingPrice.toFixed(2)} | Starting stock: ${startingStock}`
+    )
+   }
+
+   setNewOutletItem(getDefaultNewOutletItem())
+   setShowAddOutletItem(false)
+   await loadPosMonitor({ silent:true, forceProducts:true })
+  } catch (err) {
+   console.error('Add POS item failed:', err)
+   alert('Add POS item failed: ' + (err?.message || String(err)))
   }
  }
 
@@ -18240,7 +26458,7 @@ function PosMonitorPanel() {
    return
   }
 
-  if (String(sale.status || 'completed').toLowerCase() === 'void') {
+  if (String(sale.status || 'completed').toLowerCase() === 'voided') {
    alert('This receipt is already voided.')
    return
   }
@@ -18260,7 +26478,7 @@ function PosMonitorPanel() {
    const { error: updateError } = await supabase
     .from('pos_sales')
     .update({
-     status: 'void',
+     status: 'voided',
      voided_at: new Date().toISOString(),
      voided_by: userName,
      void_reason: reason
@@ -18299,6 +26517,29 @@ function PosMonitorPanel() {
      .insert(returnMovements)
 
     if (movementError) throw movementError
+
+    // Actually give the stock back — logging the movement alone never
+    // changed what the POS shows as available, which meant a voided sale's
+    // items silently stayed "sold" forever from the register's point of view.
+    for (const move of returnMovements) {
+     if (!move.product_id) continue
+     const product = posProducts.find(p => String(p.id) === String(move.product_id))
+     if (!product) continue
+     const { error: stockError } = await supabase
+      .from('pos_products')
+      .update({ stock: safeNum(product.stock, 0) + move.qty })
+      .eq('id', move.product_id)
+     if (stockError) console.error('Stock restore failed for', move.product_id, stockError)
+    }
+   }
+
+   if (logAudit) {
+    await logAudit(
+     'POS SALE VOIDED',
+     currentAdminLabel || userName || 'Admin',
+     receiptNo,
+     `Voided receipt ${receiptNo} (₱${originalTotal.toFixed(2)}) | Reason: ${reason} | Stock restored for ${returnMovements.length} item(s)`
+    )
    }
 
    alert('Receipt voided successfully.')
@@ -18306,7 +26547,7 @@ function PosMonitorPanel() {
    setVoidReason('')
    setVoidedBy('')
    setVoidAdminPin('')
-   await loadPosMonitor()
+   await Promise.all([loadPosMonitor(), loadShiftClosingMonitor({ silent:true })])
   } catch (err) {
    console.error('Void sale failed:', err)
    alert('Void sale failed: ' + (err?.message || String(err)))
@@ -18314,47 +26555,113 @@ function PosMonitorPanel() {
  }
 
  async function saveShiftClosing() {
-  const openingCash = safeNum(closingOpeningCash, 0)
-  const actualCash = safeNum(closingActualCash, 0)
-  const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
-  const gcashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'gcash').reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
-  const onlineSales = posSales.filter(s => String(s.payment_method || '').toLowerCase().includes('online')).reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
-  const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
-  const expectedCash = openingCash + cashSales
-  const variance = actualCash - expectedCash
+  const openingText = String(closingOpeningCash ?? '').trim()
+  const actualText = String(closingActualCash ?? '').trim()
+  const openingCash = safeNum(openingText, 0)
+  const actualCash = safeNum(actualText, 0)
+  const summary = summarizeActivePosSales(posSales)
+  const expectedCash = moneyRound(openingCash + summary.cashSales)
+  const variance = moneyRound(actualCash - expectedCash)
 
+  if (!openingText) {
+   alert('Please enter the opening cash. Enter 0 when there was no opening cash fund.')
+   return
+  }
+  if (!actualText) {
+   alert('Please count and enter the actual cash before saving the shift closing.')
+   return
+  }
   if (!closingClosedBy.trim()) {
    alert('Please enter who closed the shift.')
    return
   }
+  if (summary.transactionCount === 0 && !confirm(`No active POS transaction was found for ${posDate}. Save a zero-sales shift closing?`)) return
 
+  setShiftClosingSaving(true)
   try {
-   const { error } = await supabase.from('pos_shift_closings').insert([{
-    outlet_id: 'OUTLET-MALUED',
-    business_date: posDate,
-    opening_cash: openingCash,
-    cash_sales: cashSales,
-    gcash_sales: gcashSales,
-    online_sales: onlineSales,
-    total_sales: totalSales,
-    expected_cash: expectedCash,
-    actual_cash: actualCash,
-    cash_variance: variance,
-    transaction_count: posSales.length,
-    closed_by: closingClosedBy,
-    remarks: closingRemarks
-   }])
+   const { data:existingRows, error:existingError } = await supabase
+    .from('pos_shift_closings')
+    .select('*')
+    .eq('outlet_id', POS_OUTLET_ID)
+    .eq('business_date', posDate)
+    .order('created_at', { ascending:false })
+   if (existingError) throw existingError
+   const existing = (existingRows || [])[0] || null
+   if (existing && !confirm(`A saved shift closing already exists for ${posDate}. Update the existing closing and synchronize Daily Sales?`)) return
 
-   if (error) throw error
+   const closingPayload = {
+    outlet_id:POS_OUTLET_ID,
+    business_date:posDate,
+    opening_cash:openingCash,
+    cash_sales:summary.cashSales,
+    gcash_sales:summary.gcashSales,
+    online_sales:summary.onlineSales,
+    total_sales:summary.totalSales,
+    expected_cash:expectedCash,
+    actual_cash:actualCash,
+    cash_variance:variance,
+    transaction_count:summary.transactionCount,
+    closed_by:closingClosedBy.trim(),
+    remarks:String(closingRemarks || '').trim() || null
+   }
 
-   alert('Shift closing saved successfully.')
-   setClosingOpeningCash('')
-   setClosingActualCash('')
-   setClosingClosedBy('')
-   setClosingRemarks('')
+   let savedClosing = null
+   if (existing) {
+    const { data, error } = await supabase
+     .from('pos_shift_closings')
+     .update(closingPayload)
+     .eq('id', existing.id)
+     .select()
+     .single()
+    if (error) throw error
+    savedClosing = data
+   } else {
+    const { data, error } = await supabase
+     .from('pos_shift_closings')
+     .insert([closingPayload])
+     .select()
+     .single()
+    if (error) throw error
+    savedClosing = data
+   }
+
+   setExistingShiftClosing(savedClosing || closingPayload)
+   clearSagsShiftDraft(posDate)
+
+   let dailySalesPosted = false
+   let dailySalesError = null
+   try {
+    await postShiftClosingToDailySales(savedClosing || closingPayload)
+    dailySalesPosted = true
+   } catch (postError) {
+    dailySalesError = postError
+    console.error('Shift closing saved but Daily Sales posting failed:', postError)
+   }
+
+   if (logAudit) {
+    await logAudit(
+     existing ? 'POS SHIFT CLOSING UPDATED' : 'POS SHIFT CLOSED',
+     currentAdminLabel || closingClosedBy.trim() || 'Admin',
+     `${POS_OUTLET_ID} ${posDate}`,
+     `${php(summary.totalSales)} | ${summary.transactionCount} transaction(s) | Cash variance ${php(variance)} | Daily Sales ${dailySalesPosted ? 'posted' : 'posting failed'}`
+    )
+   }
+
+   await Promise.all([
+    loadShiftClosingForDate(posDate),
+    loadShiftClosingMonitor({ silent:true })
+   ])
+
+   if (dailySalesPosted) {
+    alert(`Shift closing saved and ${php(summary.totalSales)} was automatically posted to Daily Sales as Walk-in revenue.`)
+   } else {
+    alert(`Shift closing was saved, but Daily Sales was not posted: ${dailySalesError?.message || dailySalesError}. Use Repair Daily Sales Posting after reviewing the warning.`)
+   }
   } catch (err) {
    console.error('Shift closing failed:', err)
    alert('Shift closing failed: ' + (err?.message || String(err)))
+  } finally {
+   setShiftClosingSaving(false)
   }
  }
 
@@ -18369,14 +26676,13 @@ function PosMonitorPanel() {
     stockInTransferredBy,
     stockInReceivedBy,
     transactionSearch,
-    closingOpeningCash,
-    closingActualCash,
-    closingClosedBy,
-    closingRemarks,
     voidReceiptNo,
     voidReason,
     voidedBy,
-    voidAdminPin
+    voidAdminPin,
+    inventoryDrafts,
+    showAddOutletItem,
+    newOutletItem
    }))
   } catch {}
  }, [
@@ -18388,23 +26694,58 @@ function PosMonitorPanel() {
   stockInTransferredBy,
   stockInReceivedBy,
   transactionSearch,
-  closingOpeningCash,
-  closingActualCash,
-  closingClosedBy,
-  closingRemarks,
   voidReceiptNo,
   voidReason,
   voidedBy,
-  voidAdminPin
+  voidAdminPin,
+  inventoryDrafts,
+  showAddOutletItem,
+  newOutletItem
  ])
 
- useEffect(() => { loadPosMonitor({ silent:true }) }, [posDate])
+ useEffect(() => {
+  Promise.all([
+   loadPosMonitor({ silent:true, auto:true, forceProducts:true }),
+   loadShiftClosingForDate(posDate),
+   loadShiftClosingMonitor({ silent:true })
+  ])
+ }, [posDate])
+ useEffect(() => { loadPosEmployees() }, [])
 
- const totalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
- const cashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
- const gcashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase().includes('gcash')).reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
- const onlineSales = posSales.filter(s => String(s.payment_method || '').toLowerCase().includes('online')).reduce((sum, s) => sum + safeNum(s.net_total, 0), 0)
- const avgSale = posSales.length ? totalSales / posSales.length : 0
+ useEffect(() => {
+  if (!posDate || shiftClosingLoadedDate !== posDate || existingShiftClosing) return
+  writeSagsShiftDraft(posDate, {
+   openingCash:closingOpeningCash,
+   actualCash:closingActualCash,
+   closedBy:closingClosedBy,
+   remarks:closingRemarks
+  })
+ }, [posDate, shiftClosingLoadedDate, existingShiftClosing, closingOpeningCash, closingActualCash, closingClosedBy, closingRemarks])
+
+ useEffect(() => {
+  const tick = () => {
+   const currentBusinessDate = getPHDateTimeParts().date || getTodayDate()
+   const previousBusinessDate = lastKnownPosBusinessDateRef.current
+   if (currentBusinessDate !== previousBusinessDate) {
+    lastKnownPosBusinessDateRef.current = currentBusinessDate
+    if (posDate === previousBusinessDate) {
+     saveCurrentShiftDraftBeforeDateChange()
+     setPosDate(currentBusinessDate)
+    }
+   }
+   loadShiftClosingMonitor({ silent:true })
+  }
+  const intervalId = setInterval(tick, 60 * 1000)
+  return () => clearInterval(intervalId)
+ }, [posDate, shiftClosingLoadedDate, existingShiftClosing, closingOpeningCash, closingActualCash, closingClosedBy, closingRemarks])
+
+ const currentPosSalesSummary = summarizeActivePosSales(posSales)
+ const activePosSales = currentPosSalesSummary.rows
+ const totalSales = currentPosSalesSummary.totalSales
+ const cashSales = currentPosSalesSummary.cashSales
+ const gcashSales = currentPosSalesSummary.gcashSales
+ const onlineSales = currentPosSalesSummary.onlineSales
+ const avgSale = activePosSales.length ? totalSales / activePosSales.length : 0
 
  const productMap = {}
  posItems.forEach(item => {
@@ -18421,13 +26762,57 @@ function PosMonitorPanel() {
   soldMap[key] = (soldMap[key] || 0) + safeNum(item.qty, 0)
  })
 
- const movementMap = {}
+ // Baseline/test-stock resets are administrative corrections, not real daily
+ // inventory movement. Exclude both properly tagged reset rows and any legacy
+ // mass-reset batch that removed exactly 50 test units from many products in
+ // the same minute. This prevents old 50-to-zero setup rows from appearing as
+ // -50 or -49 after actual counts begin.
+ const getPosMovementMinuteKey = move => {
+  const raw = String(move?.created_at || '')
+  return raw.length >= 16 ? raw.slice(0, 16) : raw
+ }
+ const legacyResetMinuteCounts = {}
  posMovements.forEach(move => {
+  const movementType = String(move?.movement_type || '').trim().toLowerCase()
+  const qty = safeNum(move?.qty, 0)
+  if (movementType !== 'stock_out' || qty !== -50) return
+  const minuteKey = getPosMovementMinuteKey(move)
+  if (!minuteKey) return
+  legacyResetMinuteCounts[minuteKey] = (legacyResetMinuteCounts[minuteKey] || 0) + 1
+ })
+ const legacyResetMinuteKeys = new Set(
+  Object.entries(legacyResetMinuteCounts)
+   .filter(([, count]) => count >= 10)
+   .map(([minuteKey]) => minuteKey)
+ )
+ const isPosBaselineResetMovement = move => {
+  const reference = String(move?.reference_no || '').trim().toUpperCase()
+  const movementType = String(move?.movement_type || '').trim().toLowerCase()
+  const remarks = String(move?.remarks || '').trim().toLowerCase()
+  const qty = safeNum(move?.qty, 0)
+  const isLegacyMassResetRow = movementType === 'stock_out' &&
+   qty === -50 &&
+   legacyResetMinuteKeys.has(getPosMovementMinuteKey(move))
+  return reference.startsWith('POS-STOCK-RESET-') ||
+   movementType === 'stock_baseline_reset' ||
+   remarks.includes('pre-operation sags pos stock reset to zero') ||
+   remarks.includes('actual physical count') ||
+   isLegacyMassResetRow
+ }
+ const operationalPosMovements = posMovements.filter(move => !isPosBaselineResetMovement(move))
+
+ const movementMap = {}
+ operationalPosMovements.forEach(move => {
   const key = move.product_id || move.product_name
   movementMap[key] = (movementMap[key] || 0) + safeNum(move.qty, 0)
  })
 
- const filteredStockInProducts = posProducts.filter(p => {
+ const activePosProducts = posProducts.filter(product => !isOutletProductDeleted(product))
+ const deletedOutletProductCount = posProducts.length - activePosProducts.length
+ const disabledOutletProductCount = deletedOutletProductCount
+ const visibleOutletProducts = showDisabledOutletItems ? posProducts : activePosProducts
+
+ const filteredStockInProducts = activePosProducts.filter(p => {
   const text = [
    p.product_name,
    p.name,
@@ -18438,12 +26823,23 @@ function PosMonitorPanel() {
   return stockInSearch.trim() && text.includes(stockInSearch.toLowerCase())
  }).slice(0, 12)
 
- const selectedStockInProduct = posProducts.find(p => String(p.id) === String(stockInProductId))
+ const selectedStockInProduct = activePosProducts.find(p => String(p.id) === String(stockInProductId))
 
- const lowStockProducts = posProducts.map(product => {
-  const key = product.id || product.product_name
-  const movementQty = safeNum(movementMap[key], 0)
-  const remainingStock = safeNum(product.stock, 0) + movementQty
+ const filteredPriceEditProducts = activePosProducts.filter(p => {
+  const text = [
+   p.product_name,
+   p.name,
+   p.sku,
+   p.barcode,
+   p.category
+  ].join(' ').toLowerCase()
+  return priceEditSearch.trim() && text.includes(priceEditSearch.toLowerCase())
+ }).slice(0, 12)
+
+ const selectedPriceEditProduct = activePosProducts.find(p => String(p.id) === String(priceEditProductId))
+
+ const lowStockProducts = activePosProducts.map(product => {
+  const remainingStock = safeNum(product.stock, 0)
   const minStock = safeNum(product.min_stock, 10)
   return {
    id: product.id,
@@ -18456,7 +26852,7 @@ function PosMonitorPanel() {
  }).filter(p => p.status !== 'OK').sort((a,b) => a.remainingStock - b.remainingStock)
 
  const movementSummaryMap = {}
- posMovements.forEach(move => {
+ operationalPosMovements.forEach(move => {
   const type = move.movement_type || 'movement'
   if (!movementSummaryMap[type]) movementSummaryMap[type] = { type, qty: 0, count: 0 }
   movementSummaryMap[type].qty += safeNum(move.qty, 0)
@@ -18477,58 +26873,308 @@ function PosMonitorPanel() {
   return !transactionSearch.trim() || text.includes(transactionSearch.toLowerCase())
  })
 
- const closingCashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'cash').reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
- const closingGcashSales = posSales.filter(s => String(s.payment_method || '').toLowerCase() === 'gcash').reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
- const closingOnlineSales = posSales.filter(s => String(s.payment_method || '').toLowerCase().includes('online')).reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
- const closingTotalSales = posSales.reduce((sum, s) => sum + safeNum(s.net_total || s.total || s.total_amount, 0), 0)
+ const closingCashSales = currentPosSalesSummary.cashSales
+ const closingGcashSales = currentPosSalesSummary.gcashSales
+ const closingOnlineSales = currentPosSalesSummary.onlineSales
+ const closingTotalSales = currentPosSalesSummary.totalSales
  const closingExpectedCash = safeNum(closingOpeningCash, 0) + closingCashSales
  const closingVariance = safeNum(closingActualCash, 0) - closingExpectedCash
 
- const outletBalances = posProducts.map(product => {
+ const outletBalances = visibleOutletProducts.map(product => {
   const key = product.id || product.product_name
-  const startingStock = safeNum(product.stock, 0)
+  const currentStock = safeNum(product.stock, 0)
   const soldQty = safeNum(soldMap[key], 0)
   const movementQty = safeNum(movementMap[key], 0)
-  const remainingStock = startingStock + movementQty
   const minStock = safeNum(product.min_stock, 10)
-  const status = remainingStock <= 0 ? 'Out of Stock' : remainingStock <= minStock ? 'Low Stock' : 'OK'
+  const disabled = isOutletProductDeleted(product)
+  const status = disabled ? 'Deleted' : currentStock <= 0 ? 'Out of Stock' : currentStock <= minStock ? 'Low Stock' : 'OK'
   return {
    id: product.id,
    product_name: product.product_name || product.name || 'Unnamed Product',
+   name: product.name || product.product_name || 'Unnamed Product',
    category: product.category || '',
-   startingStock,
+   sku: product.sku || '',
+   barcode: product.barcode || '',
+   buyingPrice: getOutletBuyingPrice(product),
+   markupPercent: safeNum(product.markup_percent, isOutletMarkupPricingCategory(product.category) ? getOutletMarkupPercentForCategory(product.category) : 0),
+   usesMarkupPricing: isOutletMarkupPricingCategory(product.category),
+   sellingPrice: getOutletDisplaySellingPrice(product),
+   stock: currentStock,
+   startingStock: currentStock,
    soldQty,
    movementQty,
-   remainingStock,
+   remainingStock: currentStock,
    minStock,
+   disabled,
    status
   }
- }).sort((a,b) => a.remainingStock - b.remainingStock)
+ }).sort((a,b) => {
+  const outletCategoryOrder = ['Donuts', 'Biscuits', 'Coffee', 'Drinks', 'Noodles', 'Refreshing Drinks', 'Snacks', 'Others', 'Uncategorized']
+  const categoryA = a.category || 'Uncategorized'
+  const categoryB = b.category || 'Uncategorized'
+  const indexA = outletCategoryOrder.indexOf(categoryA) === -1 ? 998 : outletCategoryOrder.indexOf(categoryA)
+  const indexB = outletCategoryOrder.indexOf(categoryB) === -1 ? 998 : outletCategoryOrder.indexOf(categoryB)
+  return indexA - indexB || String(categoryA).localeCompare(String(categoryB)) || String(a.product_name).localeCompare(String(b.product_name))
+ })
+
+ const filteredOutletInventoryRows = outletBalances.filter(row => {
+  const search = inventorySearch.trim().toLowerCase()
+  if (!search) return true
+  return [row.product_name, row.category, row.sku, row.barcode, row.buyingPrice, row.sellingPrice, row.remainingStock].join(' ').toLowerCase().includes(search)
+ })
+
+ const outletCategoryCounts = filteredOutletInventoryRows.reduce((acc, row) => {
+  const category = row.category || 'Uncategorized'
+  acc[category] = (acc[category] || 0) + 1
+  return acc
+ }, {})
+ const categorizedOutletInventoryRows = []
+ let lastOutletCategory = null
+ filteredOutletInventoryRows.forEach(row => {
+  const category = row.category || 'Uncategorized'
+  if (category !== lastOutletCategory) {
+   categorizedOutletInventoryRows.push({ __categoryHeader:true, category, count:outletCategoryCounts[category] || 0 })
+   lastOutletCategory = category
+  }
+  categorizedOutletInventoryRows.push(row)
+ })
+
+ const selectedShiftClosingRow = shiftClosingRows.find(row => row.date === posDate) || null
+ const actionableShiftClosingRows = shiftClosingRows.filter(row => ['unclosed','closed_not_posted','review_required'].includes(row.statusCode))
+ const unclosedShiftCount = shiftClosingRows.filter(row => row.statusCode === 'unclosed').length
+ const reviewShiftCount = shiftClosingRows.filter(row => ['closed_not_posted','review_required'].includes(row.statusCode)).length
+ const selectedShiftStatus = getShiftClosingStatusPresentation(selectedShiftClosingRow?.statusCode || (posDate === (getPHDateTimeParts().date || getTodayDate()) && activePosSales.length > 0 ? 'in_progress' : 'no_sales'))
 
  const card = (label, value, note, color) => (
-  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)' }}>
-   <p style={{ margin:'0 0 6px', color:'#777', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px', fontWeight:'bold' }}>{label}</p>
-   <h3 style={{ margin:'0 0 4px', color:color || '#ca1b1b', fontSize:'22px' }}>{value}</h3>
-   <p style={{ margin:0, color:'#999', fontSize:'11px' }}>{note}</p>
+  <div style={{ background:'#ffffff', border:'1px solid #f1e1a6', borderRadius:'12px', padding:'10px 12px', boxShadow:'0 2px 8px rgba(26,26,46,0.04)' }}>
+   <p style={{ margin:'0 0 4px', color:'#6b5b1d', fontSize:'10px', textTransform:'uppercase', letterSpacing:'0.45px', fontWeight:'900' }}>{label}</p>
+   <h3 style={{ margin:'0 0 2px', color:color || '#ca1b1b', fontSize:'18px', lineHeight:1.05, fontWeight:'900' }}>{value}</h3>
+   <p style={{ margin:0, color:'#6b7280', fontSize:'10px', fontWeight:'700' }}>{note}</p>
   </div>
  )
 
  return (
   <div>
-   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'16px' }}>
+   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
     <div>
-     <h2 style={h2s}>SAGS POS</h2>
-     <p style={{ margin:0, color:'#777', fontSize:'13px' }}>Outlet POS sales, payment breakdown, product movement, and inventory deductions.</p>
+     <h2 style={{...h2s, marginBottom:'4px', fontSize:'22px'}}>SAGS POS</h2>
+     <p style={{ margin:0, color:'#555', fontSize:'12px', fontWeight:'650' }}>Outlet POS sales, payment breakdown, product movement, and inventory deductions.</p>
     </div>
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-     <input type="date" value={posDate} onChange={e=>setPosDate(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0}} />
-     <button style={{...btnGreen, width:'auto', marginTop:0}} onClick={() => loadPosMonitor({ silent:true })} disabled={posLoading}>{posLoading ? 'Loading...' : 'Refresh'}</button>
+     <input type="date" value={posDate} onChange={e=>{ saveCurrentShiftDraftBeforeDateChange(); setPosDate(e.target.value) }} style={{...inputStyle, width:'auto', marginBottom:0}} />
+     <button
+      style={{...btnGreen, width:'auto', marginTop:0}}
+      onClick={async () => {
+       await Promise.all([
+        loadPosMonitor({ silent:true, manual:true, forceProducts:true }),
+        loadPosEmployees({ silent:true }),
+        loadShiftClosingForDate(posDate),
+        loadShiftClosingMonitor({ silent:true })
+       ])
+      }}
+      disabled={posLoading || posEmployeesLoading}
+     >
+      {(posLoading || posEmployeesLoading) ? 'Loading...' : 'Refresh'}
+     </button>
     </div>
    </div>
 
    {posError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'12px', padding:'12px', marginBottom:'14px', fontSize:'12px' }}>POS Monitor error: {posError}</div>}
 
-   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'12px', marginBottom:'16px' }}>
+   <div style={{ background:'#ffffff', border:`2px solid ${actionableShiftClosingRows.length > 0 ? '#ca1b1b' : '#2d8a4e'}`, borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+     <div>
+      <h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'17px', fontWeight:'950' }}>POS Shift Closing Status</h3>
+      <p style={{ margin:0, color:'#4b5563', fontSize:'11.5px', fontWeight:'700' }}>Automatically detects POS dates with sales but no closing, mismatched closings, and missing Daily Sales postings.</p>
+     </div>
+     <div style={{ display:'flex', gap:'7px', alignItems:'center', flexWrap:'wrap' }}>
+      <span style={{ background:unclosedShiftCount > 0 ? '#fff1f2' : '#ecfdf5', border:`1px solid ${unclosedShiftCount > 0 ? '#fecdd3' : '#bbf7d0'}`, color:unclosedShiftCount > 0 ? '#b91c1c' : '#166534', borderRadius:'999px', padding:'7px 10px', fontSize:'11px', fontWeight:'950' }}>{unclosedShiftCount} unclosed</span>
+      <span style={{ background:reviewShiftCount > 0 ? '#fff7ed' : '#ecfdf5', border:`1px solid ${reviewShiftCount > 0 ? '#fed7aa' : '#bbf7d0'}`, color:reviewShiftCount > 0 ? '#9a3412' : '#166534', borderRadius:'999px', padding:'7px 10px', fontSize:'11px', fontWeight:'950' }}>{reviewShiftCount} review</span>
+      <button onClick={()=>loadShiftClosingMonitor()} disabled={shiftClosingLoading} style={{...btnGray, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>{shiftClosingLoading ? 'Checking...' : 'Check All Shifts'}</button>
+     </div>
+    </div>
+
+    {shiftClosingError && <div style={{ background:'#fff5f5', border:'1px solid #fecaca', color:'#b91c1c', borderRadius:'10px', padding:'9px 10px', marginBottom:'9px', fontSize:'11px', fontWeight:'750' }}>Shift monitor error: {shiftClosingError}</div>}
+
+    {actionableShiftClosingRows.length === 0 ? (
+     <div style={{ background:'#ecfdf5', border:'1px solid #bbf7d0', color:'#166534', borderRadius:'10px', padding:'10px 12px', fontSize:'12px', fontWeight:'850' }}>No previous unclosed or unsynchronized POS shift was found in the last {POS_SHIFT_MONITOR_DAYS} days.</div>
+    ) : (
+     <div style={{ overflowX:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'900px', fontSize:'11px' }}>
+       <thead><tr style={{ background:'#fff5f5', color:'#7f1d1d' }}>
+        <th style={{ padding:'8px', textAlign:'left' }}>Business Date</th>
+        <th style={{ padding:'8px', textAlign:'right' }}>POS Sales</th>
+        <th style={{ padding:'8px', textAlign:'right' }}>Transactions</th>
+        <th style={{ padding:'8px', textAlign:'left' }}>Shift Closing</th>
+        <th style={{ padding:'8px', textAlign:'left' }}>Daily Sales</th>
+        <th style={{ padding:'8px', textAlign:'left' }}>Status / Issue</th>
+        <th style={{ padding:'8px', textAlign:'center' }}>Action</th>
+       </tr></thead>
+       <tbody>
+        {actionableShiftClosingRows.slice(0, 20).map(row => {
+         const presentation = getShiftClosingStatusPresentation(row.statusCode)
+         return (
+          <tr key={row.date} style={{ background:row.date === posDate ? '#fffbea' : '#fff' }}>
+           <td style={{ padding:'8px', borderBottom:'1px solid #eee', fontWeight:'900' }}>{formatDateForDisplay(row.date)}{row.daysOpen > 0 ? <span style={{ display:'block', color:'#9ca3af', fontSize:'9.5px' }}>{row.daysOpen} day(s) ago</span> : null}</td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #eee', textAlign:'right', fontWeight:'900' }}>{php(row.totalSales)}</td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #eee', textAlign:'right' }}>{row.transactionCount}</td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #eee' }}>{row.closing ? `${php(row.closing.total_sales)} by ${row.closing.closed_by || '-'}` : 'Not saved'}</td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #eee' }}>{row.linkedDaily ? `${php(row.linkedDaily.total_walkin)} posted` : 'Not posted'}</td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #eee', maxWidth:'340px' }}>
+            <span style={{ display:'inline-block', background:presentation.background, border:`1px solid ${presentation.border}`, color:presentation.color, borderRadius:'999px', padding:'4px 8px', fontSize:'9.5px', fontWeight:'950', marginBottom:'3px' }}>{presentation.label}</span>
+            <span style={{ display:'block', color:'#6b7280', fontSize:'10px', lineHeight:1.35 }}>{row.issues[0] || 'Ready'}</span>
+           </td>
+           <td style={{ padding:'8px', borderBottom:'1px solid #eee', textAlign:'center' }}>
+            <div style={{ display:'flex', gap:'5px', justifyContent:'center', flexWrap:'wrap' }}>
+             <button onClick={()=>openShiftClosingDate(row.date)} style={{...btnBlack, width:'auto', marginTop:0, padding:'7px 9px', fontSize:'10px' }}>{row.statusCode === 'unclosed' ? 'Open & Close' : 'Open Review'}</button>
+             {row.closing && row.closingMatchesSales && ['closed_not_posted','review_required'].includes(row.statusCode) && row.possibleLegacyCount === 0 && (
+              <button onClick={()=>repairShiftClosingDailySales(row)} disabled={shiftClosingSaving} style={{...btnGreen, width:'auto', marginTop:0, padding:'7px 9px', fontSize:'10px'}}>Repair Posting</button>
+             )}
+            </div>
+           </td>
+          </tr>
+         )
+        })}
+       </tbody>
+      </table>
+     </div>
+    )}
+   </div>
+
+   <div style={{ background:'#ffffff', border:'1px solid #f1d35a', borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+     <div>
+      <h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'17px', fontWeight:'900' }}>Cashier Login Accounts</h3>
+      <p style={{ margin:0, color:'#4b5563', fontSize:'11.5px', fontWeight:'700' }}>Create cashiers, reset POS PINs, assign roles, and activate or deactivate outlet access. Existing PINs are never displayed.</p>
+     </div>
+     <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', alignItems:'center' }}>
+      <span style={{ background:'#fff9db', border:'1px solid #f1d35a', color:'#7c2d12', borderRadius:'999px', padding:'7px 10px', fontSize:'11px', fontWeight:'950' }}>
+       {posEmployees.filter(employee => employee.is_active !== false).length} active / {posEmployees.length} total
+      </span>
+      <button onClick={()=>loadPosEmployees()} disabled={posEmployeesLoading} style={{...btnGray, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>
+       {posEmployeesLoading ? 'Loading...' : 'Refresh Accounts'}
+      </button>
+      {canManagePosCredentials && (
+       <button onClick={()=>setShowAddPosEmployee(value=>!value)} style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>
+        {showAddPosEmployee ? 'Close' : '+ Add Cashier'}
+       </button>
+      )}
+     </div>
+    </div>
+
+    {posEmployeesError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'10px', padding:'10px', marginBottom:'10px', fontSize:'12px' }}>Cashier account error: {posEmployeesError}</div>}
+
+    {!canManagePosCredentials && (
+     <div style={{ background:'#fffbeb', border:'1px solid #fde68a', color:'#92400e', borderRadius:'10px', padding:'10px', marginBottom:'10px', fontSize:'12px', fontWeight:'750' }}>
+      Viewing only — Owner, Manager, Admin, or SAGS POS Admin access is required to change cashier credentials.
+     </div>
+    )}
+
+    {showAddPosEmployee && canManagePosCredentials && (
+     <div style={{ background:'#fffbe8', border:'1px solid #f4d35e', borderRadius:'12px', padding:'10px', marginBottom:'10px' }}>
+      <h4 style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'14px', fontWeight:'900' }}>Create POS Login Account</h4>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.5fr 0.8fr 0.8fr 0.8fr auto', gap:'8px', alignItems:'end' }}>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Cashier Name</label>
+        <input value={newPosEmployee.full_name} onChange={e=>setNewPosEmployee(prev=>({...prev, full_name:e.target.value}))} placeholder="Full name" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Role</label>
+        <select value={newPosEmployee.role} onChange={e=>setNewPosEmployee(prev=>({...prev, role:e.target.value}))} style={{...inputStyle, marginBottom:0}}>
+         <option value="cashier">Cashier</option>
+         {canManagePosOwnerAccounts && <option value="owner">POS Owner</option>}
+        </select>
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>New PIN</label>
+        <input type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={newPosEmployee.pin} onChange={e=>setNewPosEmployee(prev=>({...prev, pin:e.target.value}))} placeholder="4–8 digits" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Confirm PIN</label>
+        <input type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={newPosEmployee.confirm_pin} onChange={e=>setNewPosEmployee(prev=>({...prev, confirm_pin:e.target.value}))} placeholder="Repeat PIN" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <button onClick={createPosEmployeeAccount} disabled={posEmployeeSavingId === 'new'} style={{...btnGreen, width:'auto', marginTop:0, padding:'11px 14px', opacity:posEmployeeSavingId === 'new' ? 0.65 : 1}}>
+        {posEmployeeSavingId === 'new' ? 'Saving...' : 'Create Account'}
+       </button>
+      </div>
+     </div>
+    )}
+
+    {posEmployeesLoading && posEmployees.length === 0 ? (
+     <p style={{ color:'#6b7280', fontSize:'12px', margin:'6px 0' }}>Loading POS cashier accounts...</p>
+    ) : posEmployees.length === 0 ? (
+     <p style={{ color:'#888', fontSize:'12px', margin:'6px 0' }}>No POS cashier account was found for {POS_OUTLET_ID}.</p>
+    ) : (
+     <div style={{ overflowX:'auto' }}>
+      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'11.5px', minWidth:'900px' }}>
+       <thead>
+        <tr style={{ background:'#fff9db', color:'#7c2d12' }}>
+         <th style={{ textAlign:'left', padding:'8px' }}>Cashier Name</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>Role</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>Access</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>New PIN</th>
+         <th style={{ textAlign:'left', padding:'8px' }}>Confirm PIN</th>
+         <th style={{ textAlign:'center', padding:'8px' }}>Action</th>
+        </tr>
+       </thead>
+       <tbody>
+        {posEmployees.map(employee => {
+         const draft = posEmployeeDrafts[employee.id] || {
+          full_name:employee.full_name || '',
+          role:employee.role || 'cashier',
+          is_active:employee.is_active !== false,
+          new_pin:'',
+          confirm_pin:''
+         }
+         const employeeRole = String(employee.role || 'cashier').trim().toLowerCase()
+         const rowOwnerProtected = employeeRole === 'owner' && !canManagePosOwnerAccounts
+         const rowEditable = canManagePosCredentials && !rowOwnerProtected
+         const saving = String(posEmployeeSavingId) === String(employee.id)
+         const draftRole = String(draft.role || 'cashier').trim().toLowerCase()
+         return (
+          <tr key={employee.id} style={{ background:employee.is_active === false ? '#f8fafc' : '#ffffff', opacity:employee.is_active === false ? 0.78 : 1 }}>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <input disabled={!rowEditable || saving} value={draft.full_name || ''} onChange={e=>setPosEmployeeDraftValue(employee.id, 'full_name', e.target.value)} style={{...inputStyle, marginBottom:0, padding:'7px 9px', fontWeight:'850'}} />
+            {rowOwnerProtected && <span style={{ display:'block', marginTop:'3px', color:'#92400e', fontSize:'9.5px', fontWeight:'850' }}>Owner-protected account</span>}
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <select disabled={!rowEditable || saving} value={draftRole} onChange={e=>setPosEmployeeDraftValue(employee.id, 'role', e.target.value)} style={{...inputStyle, marginBottom:0, padding:'7px 9px', fontWeight:'850'}}>
+             {!['cashier','owner'].includes(draftRole) && <option value={draftRole}>{draftRole || 'Other'}</option>}
+             <option value="cashier">Cashier</option>
+             {canManagePosOwnerAccounts && <option value="owner">POS Owner</option>}
+            </select>
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <select disabled={!rowEditable || saving} value={draft.is_active === false ? 'inactive' : 'active'} onChange={e=>setPosEmployeeDraftValue(employee.id, 'is_active', e.target.value === 'active')} style={{...inputStyle, marginBottom:0, padding:'7px 9px', fontWeight:'850', color:draft.is_active === false ? '#b91c1c' : '#166534'}}>
+             <option value="active">Active</option>
+             <option value="inactive">Inactive</option>
+            </select>
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <input disabled={!rowEditable || saving} type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={draft.new_pin || ''} onChange={e=>setPosEmployeeDraftValue(employee.id, 'new_pin', e.target.value)} placeholder="Leave blank to keep" style={{...inputStyle, marginBottom:0, padding:'7px 9px'}} />
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0' }}>
+            <input disabled={!rowEditable || saving} type="password" inputMode="numeric" autoComplete="new-password" maxLength={8} value={draft.confirm_pin || ''} onChange={e=>setPosEmployeeDraftValue(employee.id, 'confirm_pin', e.target.value)} placeholder="Confirm new PIN" style={{...inputStyle, marginBottom:0, padding:'7px 9px'}} />
+           </td>
+           <td style={{ padding:'7px 8px', borderBottom:'1px solid #f0f0f0', textAlign:'center' }}>
+            <button disabled={!rowEditable || saving} onClick={()=>savePosEmployeeAccount(employee)} style={{...btnGreen, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10.5px', opacity:(!rowEditable || saving) ? 0.55 : 1}}>
+             {saving ? 'Saving...' : ((draft.new_pin || draft.confirm_pin) ? 'Reset PIN & Save' : 'Save Changes')}
+            </button>
+           </td>
+          </tr>
+         )
+        })}
+       </tbody>
+      </table>
+     </div>
+    )}
+
+    <div style={{ marginTop:'9px', background:'#f0f9ff', border:'1px solid #bae6fd', color:'#075985', borderRadius:'10px', padding:'9px 10px', fontSize:'11px', fontWeight:'750' }}>
+     After creating or resetting a PIN, refresh or reopen the Roma's POS tablet while it is online. The tablet keeps a local employee cache for offline operation.
+    </div>
+   </div>
+
+   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'8px', marginBottom:'10px' }}>
     {card('Total POS Sales', php(totalSales), posDate, '#ca1b1b')}
     {card('Cash Sales', php(cashSales), 'Cash collected', '#2d8a4e')}
     {card('GCash Sales', php(gcashSales), 'Digital payment', '#4a90d9')}
@@ -18536,9 +27182,9 @@ function PosMonitorPanel() {
     {card('Transactions', posSales.length, 'Avg: ' + php(avgSale), '#ca1b1b')}
    </div>
 
-   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'14px', marginBottom:'14px' }}>
-    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
-     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Top Selling Products</h3>
+   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'10px', marginBottom:'10px' }}>
+    <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'10px', padding:'7px 9px' }}>
+     <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'16px' }}>Top Selling Products</h3>
      {topProducts.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS items found for this date.</p> : (
       <div style={{ overflowX:'auto' }}>
        <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
@@ -18555,8 +27201,8 @@ function PosMonitorPanel() {
      )}
     </div>
 
-    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
-     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Recent Receipts</h3>
+    <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'10px', padding:'7px 9px' }}>
+     <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'16px' }}>Recent Receipts</h3>
     <input value={transactionSearch} onChange={e=>setTransactionSearch(e.target.value)} placeholder="Search receipt, cashier, payment method..." style={{...inputStyle, marginBottom:'10px'}} />
      {posSales.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS receipts found for this date.</p> : (
       <div style={{ display:'grid', gap:'8px' }}>
@@ -18572,9 +27218,9 @@ function PosMonitorPanel() {
    </div>
 
    
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Void / Cancel Sale</h3>
-    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>
+   <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'12px', padding:'10px 12px', marginBottom:'10px' }}>
+    <h3 style={{ margin:'0 0 5px', color:'#ca1b1b', fontSize:'16px' }}>Void / Cancel Sale</h3>
+    <p style={{ margin:'0 0 8px', color:'#555', fontSize:'12px' }}>
      Void a receipt using admin PIN. The sale will be marked as void and inventory will be returned.
     </p>
 
@@ -18618,38 +27264,80 @@ function PosMonitorPanel() {
    </div>
 
 
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Low Stock Alert Dashboard</h3>
-    {lowStockProducts.length === 0 ? (
-     <p style={{ color:'#2d8a4e', fontSize:'13px', margin:0 }}>No low stock alerts for this outlet.</p>
-    ) : (
-     <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(3, 1fr)', gap:'10px' }}>
-      {lowStockProducts.slice(0, 12).map(p => (
-       <div key={p.id || p.product_name} style={{ border:'1px solid #ffd4d4', background:'#fff7f7', borderRadius:'12px', padding:'10px' }}>
-        <strong style={{ color:'#ca1b1b', display:'block' }}>{p.product_name}</strong>
-        <span style={{ fontSize:'12px', color:'#777' }}>{p.category}</span><br/>
-        <span style={{ fontSize:'12px' }}>Remaining: <strong>{p.remainingStock}</strong> / Min: {p.minStock}</span><br/>
-        <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>{p.status}</span>
-       </div>
-      ))}
+   <div style={{ background:'#fffdf7', border:'1px solid #f6d85c', borderRadius:'14px', padding:'10px 12px', marginBottom:'14px', boxShadow:'0 2px 10px rgba(202,27,27,0.04)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:lowStockProducts.length === 0 ? 0 : '8px' }}>
+     <div>
+      <h3 style={{ margin:0, color:'#ca1b1b', fontSize:'17px', fontWeight:'900', letterSpacing:'-0.2px' }}>Low Stock Alerts</h3>
+      <p style={{ margin:'2px 0 0', color:'#7c2d12', fontSize:'11px', fontWeight:'700' }}>Compact view for items that need refill or review.</p>
      </div>
+     <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', minHeight:'28px', padding:'0 10px', borderRadius:'999px', background:lowStockProducts.length > 0 ? '#fff1f2' : '#ecfdf5', border:`1px solid ${lowStockProducts.length > 0 ? '#fecdd3' : '#bbf7d0'}`, color:lowStockProducts.length > 0 ? '#b91c1c' : '#166534', fontSize:'12px', fontWeight:'900' }}>
+      {lowStockProducts.length} alert{lowStockProducts.length === 1 ? '' : 's'}
+     </span>
+    </div>
+    {lowStockProducts.length === 0 ? (
+     <p style={{ color:'#166534', fontSize:'12px', fontWeight:'800', margin:0 }}>All POS products are above minimum stock.</p>
+    ) : (
+     <>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(auto-fill, minmax(160px, 1fr))', gap:'6px', maxHeight:isMobile ? 'none' : '140px', overflowY:isMobile ? 'visible' : 'auto', paddingRight:isMobile ? 0 : '2px' }}>
+       {lowStockProducts.slice(0, 24).map(p => {
+        const outOfStock = safeNum(p.remainingStock, 0) <= 0
+        return (
+         <div key={p.id || p.product_name} style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:'6px', alignItems:'center', border:`1px solid ${outOfStock ? '#fecaca' : '#fde68a'}`, background:outOfStock ? '#fff7f7' : '#fffbeb', borderRadius:'10px', padding:'6px 8px', minHeight:'46px' }}>
+          <div style={{ minWidth:0 }}>
+           <strong style={{ color:'#1a1a2e', display:'block', fontSize:'12px', lineHeight:1.15, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{p.product_name}</strong>
+           <span style={{ display:'block', marginTop:'2px', fontSize:'10px', color:'#6b7280', fontWeight:'700', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{p.category || 'Uncategorized'}</span>
+          </div>
+          <div style={{ textAlign:'right', minWidth:'52px' }}>
+           <strong style={{ display:'block', color:outOfStock ? '#ca1b1b' : '#b45309', fontSize:'14px', lineHeight:1 }}>{p.remainingStock}</strong>
+           <span style={{ color:'#6b7280', fontSize:'10px', fontWeight:'800' }}>Min {p.minStock}</span>
+          </div>
+          <div style={{ gridColumn:'1 / -1', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'6px', marginTop:'1px' }}>
+           <span style={{ fontSize:'10px', color:outOfStock ? '#b91c1c' : '#92400e', fontWeight:'900' }}>{p.status}</span>
+           <span style={{ height:'5px', flex:1, borderRadius:'999px', background:'#f3f4f6', overflow:'hidden' }}>
+            <span style={{ display:'block', height:'100%', width:`${Math.max(0, Math.min(100, (safeNum(p.remainingStock,0) / Math.max(1, safeNum(p.minStock,1))) * 100))}%`, background:outOfStock ? '#ca1b1b' : '#f5a623' }} />
+           </span>
+          </div>
+         </div>
+        )
+       })}
+      </div>
+      {lowStockProducts.length > 24 && (
+       <p style={{ margin:'7px 0 0', color:'#7c2d12', fontSize:'11px', fontWeight:'800' }}>Showing first 24 of {lowStockProducts.length} alerts. Use the inventory search below to review more items.</p>
+      )}
+     </>
     )}
    </div>
 
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Shift Closing Report</h3>
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'10px', marginBottom:'12px' }}>
-     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>Cash Sales</small><br/><strong>?{closingCashSales.toLocaleString()}</strong>
+   <div id="sags-shift-closing" style={{ background:'#ffffff', border:`2px solid ${selectedShiftStatus.border}`, borderRadius:'12px', padding:'10px 12px', marginBottom:'10px', scrollMarginTop:'14px' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginBottom:'8px' }}>
+     <div>
+      <h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'16px' }}>Shift Closing Report — {formatDateForDisplay(posDate)}</h3>
+      <p style={{ margin:0, color:'#6b7280', fontSize:'10.5px', fontWeight:'750' }}>Saving finalizes the cash reconciliation and automatically creates or updates one linked Walk-in record in Daily Sales.</p>
+     </div>
+     <span style={{ background:selectedShiftStatus.background, border:`1px solid ${selectedShiftStatus.border}`, color:selectedShiftStatus.color, borderRadius:'999px', padding:'6px 10px', fontSize:'10px', fontWeight:'950' }}>{selectedShiftStatus.label}</span>
+    </div>
+    {selectedShiftClosingRow?.issues?.length > 0 && (
+     <div style={{ background:'#fff5f5', border:'1px solid #fecaca', borderRadius:'10px', padding:'8px 10px', marginBottom:'9px', color:'#b91c1c', fontSize:'10.5px', fontWeight:'800' }}>
+      {selectedShiftClosingRow.issues.join(' ')}
+     </div>
+    )}
+    {existingShiftClosing && (
+     <div style={{ background:'#ecfdf5', border:'1px solid #bbf7d0', borderRadius:'10px', padding:'8px 10px', marginBottom:'9px', color:'#166534', fontSize:'10.5px', fontWeight:'800' }}>
+      Saved closing found: {php(existingShiftClosing.total_sales)} • {safeNum(existingShiftClosing.transaction_count,0)} transaction(s) • Closed by {existingShiftClosing.closed_by || '-'}
+     </div>
+    )}
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(4, 1fr)', gap:'8px', marginBottom:'8px' }}>
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'10px', padding:'7px 9px' }}>
+      <small>Cash Sales</small><br/><strong>{php(closingCashSales)}</strong>
+     </div>
+     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'10px', padding:'7px 9px' }}>
+      <small>GCash Sales</small><br/><strong>{php(closingGcashSales)}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>GCash Sales</small><br/><strong>?{closingGcashSales.toLocaleString()}</strong>
+      <small>Total POS Sales</small><br/><strong>{php(closingTotalSales)}</strong>
      </div>
      <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>Total POS Sales</small><br/><strong>?{closingTotalSales.toLocaleString()}</strong>
-     </div>
-     <div style={{ background:'#fff8e8', border:'1px solid #ffe0a3', borderRadius:'12px', padding:'10px' }}>
-      <small>Transactions</small><br/><strong>{posSales.length}</strong>
+      <small>Transactions</small><br/><strong>{activePosSales.length}</strong>
      </div>
     </div>
 
@@ -18673,129 +27361,363 @@ function PosMonitorPanel() {
     </div>
 
     <div style={{ marginTop:'12px', padding:'10px', borderRadius:'12px', background:'#f8f8f8', fontSize:'13px' }}>
-     Expected Cash: <strong>?{closingExpectedCash.toLocaleString()}</strong> | 
-     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>?{closingVariance.toLocaleString()}</strong>
+     Expected Cash: <strong>{php(closingExpectedCash)}</strong> | 
+     Variance: <strong style={{ color:closingVariance === 0 ? '#2d8a4e' : '#ca1b1b' }}>{php(closingVariance)}</strong>
     </div>
 
-    <button onClick={saveShiftClosing} style={{...btnGreen, marginTop:'12px'}}>Save Shift Closing</button>
+    <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center', marginTop:'12px' }}>
+     <button onClick={saveShiftClosing} disabled={shiftClosingSaving} style={{...btnGreen, width:'auto', marginTop:0, opacity:shiftClosingSaving ? 0.65 : 1}}>
+      {shiftClosingSaving ? 'Saving & Syncing...' : existingShiftClosing ? 'Update Closing & Sync Daily Sales' : 'Save Closing & Post to Daily Sales'}
+     </button>
+     {selectedShiftClosingRow?.closing && selectedShiftClosingRow.closingMatchesSales && selectedShiftClosingRow.statusCode !== 'closed' && selectedShiftClosingRow.possibleLegacyCount === 0 && (
+      <button onClick={()=>repairShiftClosingDailySales(selectedShiftClosingRow)} disabled={shiftClosingSaving} style={{...btnYellow, width:'auto', marginTop:0}}>Repair Daily Sales Posting</button>
+     )}
+    </div>
    </div>
 
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Stock In to Outlet</h3>
-    <p style={{ margin:'0 0 12px', color:'#777', fontSize:'13px' }}>Record products delivered or transferred to Roma�s Donuts - Malued.</p>
-
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+   <div style={{ background:'#ffffff', border:'1px solid #f1d35a', borderRadius:'14px', padding:'10px', marginBottom:'12px', boxShadow:'0 2px 10px rgba(26,26,46,0.04)' }}>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'minmax(280px, 1fr) auto', gap:'10px', alignItems:'center', marginBottom:'8px', background:'#fff9db', border:'1px solid #f4d35e', borderRadius:'12px', padding:'9px 10px' }}>
      <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transfer No.</label>
-      <input value={stockInTransferNo} onChange={e=>setStockInTransferNo(e.target.value)} placeholder="Example: TR-MALUED-001" style={{...inputStyle, marginBottom:0}} />
+      <h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'17px', fontWeight:'900', letterSpacing:'-0.2px' }}>Outlet Inventory Manager</h3>
+      <p style={{ margin:0, color:'#374151', fontSize:'11.5px', fontWeight:'750' }}>Manage POS items, stock, price, barcode, and balance in one compact screen.</p>
+      <p style={{ margin:'3px 0 0', color:'#087a37', fontSize:'10.5px', fontWeight:'850' }}>Silent refresh is safe — unsaved Add Item details and row edits are preserved.</p>
      </div>
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Transferred By</label>
-      <input value={stockInTransferredBy} onChange={e=>setStockInTransferredBy(e.target.value)} placeholder="Sender name" style={{...inputStyle, marginBottom:0}} />
-     </div>
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Received By</label>
-      <input value={stockInReceivedBy} onChange={e=>setStockInReceivedBy(e.target.value)} placeholder="Receiver name" style={{...inputStyle, marginBottom:0}} />
-     </div>
-    </div>
-
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '2fr 1fr 2fr auto', gap:'10px', alignItems:'end' }}>
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Search Product</label>
+     <div style={{ display:'flex', gap:'7px', alignItems:'center', flexWrap:'wrap', justifyContent:isMobile ? 'stretch' : 'flex-end' }}>
+      <span style={{ background:'#fff', border:'1px solid #f1d35a', color:'#7c2d12', borderRadius:'999px', padding:'7px 10px', fontSize:'11px', fontWeight:'950', whiteSpace:'nowrap' }}>
+       Showing {filteredOutletInventoryRows.length} / {outletBalances.length} products{disabledOutletProductCount > 0 && !showDisabledOutletItems ? ` • ${disabledOutletProductCount} deleted hidden` : ''}
+      </span>
+      {disabledOutletProductCount > 0 && (
+       <button
+        onClick={()=>setShowDisabledOutletItems(prev=>!prev)}
+        style={{...btnGray, width:'auto', marginTop:0, padding:'8px 10px', fontSize:'11px', fontWeight:'950', border:'1px solid #f1d35a', whiteSpace:'nowrap'}}
+       >
+        {showDisabledOutletItems ? 'Hide Deleted' : `Show Deleted (${disabledOutletProductCount})`}
+       </button>
+      )}
       <input
-       value={stockInSearch}
-       onChange={e=>{
-        setStockInSearch(e.target.value)
-        setStockInProductId('')
-       }}
-       placeholder="Search product, SKU, barcode..."
-       style={{...inputStyle, marginBottom:'6px'}}
+       value={inventorySearch}
+       onChange={e=>setInventorySearch(e.target.value)}
+       placeholder="Search product, SKU, barcode, category..."
+       style={{...inputStyle, width:isMobile ? '100%' : '300px', marginBottom:0, padding:'8px 10px', border:'1.5px solid #d7bf42', color:'#111827', fontWeight:'800', background:'#ffffff', fontSize:'12px'}}
       />
-
-      {selectedStockInProduct && (
-       <div style={{ border:'1px solid #d9f2e3', background:'#f0fff6', borderRadius:'10px', padding:'8px 10px', marginBottom:'6px', fontSize:'12px' }}>
-        <strong style={{ color:'#2d8a4e' }}>Selected:</strong> {selectedStockInProduct.product_name || selectedStockInProduct.name}
-       </div>
+      {inventorySearch.trim() && (
+       <button
+        onClick={()=>setInventorySearch('')}
+        style={{...btnGray, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px', fontWeight:'900'}}
+       >
+        Clear Search
+       </button>
       )}
-
-      {stockInSearch.trim() && !stockInProductId && (
-       <div style={{ border:'1px solid #eee', borderRadius:'12px', background:'white', maxHeight:'220px', overflowY:'auto', boxShadow:'0 6px 18px rgba(0,0,0,0.08)' }}>
-        {filteredStockInProducts.length === 0 ? (
-         <div style={{ padding:'10px', color:'#999', fontSize:'12px' }}>No product found.</div>
-        ) : (
-         filteredStockInProducts.map(p => (
-          <button
-           key={p.id}
-           type="button"
-           onClick={()=>{
-            setStockInProductId(p.id)
-            setStockInSearch(p.product_name || p.name || '')
-           }}
-           style={{
-            width:'100%',
-            textAlign:'left',
-            border:'none',
-            borderBottom:'1px solid #f2f2f2',
-            background:'white',
-            padding:'10px',
-            cursor:'pointer',
-            fontFamily:'inherit'
-           }}
-          >
-           <strong style={{ display:'block', color:'#222', fontSize:'13px' }}>{p.product_name || p.name}</strong>
-           <span style={{ color:'#888', fontSize:'11px' }}>{p.category || ''} {p.sku ? '� ' + p.sku : ''} {p.barcode ? '� ' + p.barcode : ''}</span>
-          </button>
-         ))
-        )}
-       </div>
+      <button
+       onClick={()=>printAllOutletInventoryItems(outletBalances.filter(row=>!row.disabled))}
+       title={`Print all ${outletBalances.filter(row=>!row.disabled).length} active SAGS POS items in a compact physical-count sheet designed for two short coupon-bond pages or less.`}
+       style={{...btnBlack, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px'}}
+      >
+       Print All Items
+      </button>
+      {/* The former owner-only "Reset All Stock to 0" control was intentionally removed.
+          Nightly automation must only reset the Donuts category. Non-donut balances
+          must be adjusted through normal Stock In / Stock Out transactions. */}
+      {canEditOutletInventory && (
+       <button
+        onClick={()=>setShowAddOutletItem(v=>!v)}
+        style={{...btnGreen, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px'}}
+       >
+        {showAddOutletItem ? 'Close Add Item' : '+ Add New Item'}
+       </button>
       )}
      </div>
-
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Qty</label>
-      <input type="number" min="1" value={stockInQty} onChange={e=>setStockInQty(e.target.value)} placeholder="0" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Remarks</label>
-      <input value={stockInNote} onChange={e=>setStockInNote(e.target.value)} placeholder="Delivery / transfer note" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
-     <button onClick={saveOutletStockIn} style={{...btnGreen, width:'auto', marginTop:0}}>Save Stock In</button>
     </div>
-   </div>
 
-   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
-    <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Outlet Inventory Balance</h3>
-    {outletBalances.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No outlet product balance found.</p> : (
+    <div style={{ background:'#eefbf3', border:'1px solid #86d6a5', borderLeft:'5px solid #2d8a4e', borderRadius:'12px', padding:'9px 11px', marginBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+     <div>
+      <h4 style={{ margin:'0 0 2px', color:'#176b36', fontSize:'13px', fontWeight:'950' }}>Automatic Nightly Donut Reset</h4>
+      <p style={{ margin:0, color:'#285c3d', fontSize:'11px', fontWeight:'800' }}>At 10:00 PM Philippine time, every active Donuts-category stock balance is reset to 0 on the server. Other categories are not affected.</p>
+     </div>
+     {isOwnerRole && (
+      <button
+       onClick={runNightlyDonutResetNow}
+       disabled={posRunningNightlyDonutReset}
+       title="Owner-only manual test of the same database function used by the 10:00 PM schedule. This immediately zeros active donut stock."
+       style={{...btnGreen, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'8px 11px', fontSize:'11px', opacity:posRunningNightlyDonutReset ? 0.65 : 1, cursor:posRunningNightlyDonutReset ? 'not-allowed' : 'pointer'}}
+      >
+       {posRunningNightlyDonutReset ? 'Resetting Donuts...' : 'Reset Donuts Now'}
+      </button>
+     )}
+    </div>
+
+
+    {!canEditOutletInventory && (
+     <p style={{ margin:'0 0 12px', color:'#92400e', background:'#fffbeb', border:'1px solid #f5c453', borderRadius:'10px', padding:'10px 12px', fontSize:'12.5px' }}>
+      Viewing only — Owner, Manager, Admin, SAGS POS Admin, or HR Admin access is needed to add items, edit prices, delete items, or change outlet stock.
+     </p>
+    )}
+
+    <div style={{ background:'#f8fafc', border:'1px solid #e5e7eb', borderLeft:'4px solid #FDD412', borderRadius:'12px', padding:'8px 10px', marginBottom:'10px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+     <div>
+      <h4 style={{ margin:'0 0 2px', color:'#ca1b1b', fontSize:'13px', fontWeight:'900' }}>Barcode & Label Generator</h4>
+      <p style={{ margin:0, color:'#374151', fontSize:'11px', fontWeight:'750' }}>Generate 4-digit scan codes, then download labels or print a label sheet.</p>
+     </div>
+     <div style={{ display:'flex', gap:'7px', flexWrap:'wrap' }}>
+      {canEditOutletInventory && (
+       <button onClick={generateMissingBarcodes} style={{...btnYellow, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>Generate Missing Barcodes</button>
+      )}
+      <button onClick={()=>printBarcodeLabelSheet(filteredOutletInventoryRows)} style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 11px', fontSize:'11px', fontWeight:'900'}}>Print / Download Labels</button>
+     </div>
+    </div>
+
+    {showAddOutletItem && canEditOutletInventory && (
+     <div style={{ background:'#fffbe8', border:'1px solid #f4d35e', borderRadius:'12px', padding:'10px', marginBottom:'10px' }}>
+      <h4 style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'14px', fontWeight:'900' }}>Add New POS Item</h4>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.5fr 1fr 1fr 1fr 0.85fr 0.85fr 0.8fr 0.8fr', gap:'8px', alignItems:'end' }}>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Product Name</label>
+        <input value={newOutletItem.product_name} onChange={e=>setNewOutletItem(prev=>({...prev, product_name:e.target.value}))} placeholder="Example: Bavarian Pops" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Category ▼</label>
+        <div style={{ position:'relative' }}>
+         <select
+          value={newOutletItem.category || 'Donuts'}
+          onChange={e=>{
+           const category = e.target.value
+           setNewOutletItem(prev=>({
+            ...prev,
+            category,
+            ...(isOutletMarkupPricingCategory(category) && safeNum(prev.buying_price,0) > 0 ? { selling_price:getOutletMarkupSellingPrice(prev.buying_price, category) } : {})
+           }))
+          }}
+          style={{
+           ...inputStyle,
+           marginBottom:0,
+           cursor:'pointer',
+           color:'#111827',
+           fontWeight:'900',
+           background:'#ffffff',
+           border:'2px solid #d7bf42',
+           paddingRight:'34px',
+           WebkitAppearance:'menulist',
+           MozAppearance:'menulist',
+           appearance:'menulist'
+          }}
+         >
+          {OUTLET_POS_CATEGORY_OPTIONS.map(category => (
+           <option key={category} value={category}>{category}</option>
+          ))}
+         </select>
+         <span style={{ position:'absolute', right:'10px', top:'50%', transform:'translateY(-50%)', pointerEvents:'none', color:'#1a1a2e', fontSize:'13px', fontWeight:'950' }}>▾</span>
+        </div>
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>SKU</label>
+        <input value={newOutletItem.sku} onChange={e=>setNewOutletItem(prev=>({...prev, sku:e.target.value}))} placeholder="Optional" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Barcode</label>
+        <input value={newOutletItem.barcode} onChange={e=>setNewOutletItem(prev=>({...prev, barcode:e.target.value}))} placeholder="Scan/type" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Bought Price</label>
+        <input type="number" min="0" step="0.01" value={newOutletItem.buying_price || ''} onChange={e=>{
+         const bought = e.target.value
+         setNewOutletItem(prev=>({
+          ...prev,
+          buying_price:bought,
+          ...(isOutletMarkupPricingCategory(prev.category) && String(bought).trim() !== '' ? { selling_price:getOutletMarkupSellingPrice(bought, prev.category) } : {})
+         }))
+        }} placeholder="Supplier" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Sell Price</label>
+        <input type="number" min="0" step="0.01" value={newOutletItem.selling_price} onChange={e=>setNewOutletItem(prev=>({...prev, selling_price:e.target.value}))} placeholder={`Auto +${getOutletMarkupPercentForCategory(newOutletItem.category)}%`} style={{...inputStyle, marginBottom:0}} />
+        {isOutletMarkupPricingCategory(newOutletItem.category) && safeNum(newOutletItem.buying_price,0) > 0 && <div style={{ fontSize:'9.5px', color:'#087a37', fontWeight:'900', marginTop:'3px' }}>Auto: bought + {getOutletMarkupPercentForCategory(newOutletItem.category)}%</div>}
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Start Stock</label>
+        <input type="number" min="0" value={newOutletItem.stock} onChange={e=>setNewOutletItem(prev=>({...prev, stock:e.target.value}))} placeholder="0" style={{...inputStyle, marginBottom:0}} />
+       </div>
+       <div>
+        <label style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>Min Stock</label>
+        <input type="number" min="0" value={newOutletItem.min_stock} onChange={e=>setNewOutletItem(prev=>({...prev, min_stock:e.target.value}))} placeholder="10" style={{...inputStyle, marginBottom:0}} />
+       </div>
+      </div>
+      <div style={{ display:'flex', justifyContent:'flex-end', gap:'8px', marginTop:'10px', flexWrap:'wrap' }}>
+       <button onClick={()=>setNewOutletItem(getDefaultNewOutletItem())} style={{...btnGray, width:'auto', marginTop:0}}>Clear</button>
+       <button onClick={saveNewOutletItem} style={{...btnGreen, width:'auto', marginTop:0}}>Save New Item</button>
+      </div>
+     </div>
+    )}
+
+    {outletBalances.length === 0 ? (
+     <div style={{ background:'#fff7ed', border:'1px solid #fdba74', borderRadius:'12px', padding:'12px', color:'#7c2d12', fontSize:'12px', fontWeight:'800' }}>
+      <p style={{ margin:'0 0 8px' }}>No outlet product balance found on this device. Products may be hidden by stale browser draft/cache, not deleted.</p>
+      <button
+       style={{...btnYellow, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'12px'}}
+       onClick={() => {
+        try { localStorage.removeItem(SAGS_POS_DRAFT_KEY) } catch {}
+        setInventorySearch('')
+        setInventoryDrafts({})
+        setShowAddOutletItem(false)
+        setNewOutletItem(getDefaultNewOutletItem())
+        loadPosMonitor({ silent:false, manual:true, forceProducts:true })
+       }}
+      >Force Reload Products From Database</button>
+     </div>
+    ) : (
      <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'760px' }}>
+      {outletBalances.length > 0 && filteredOutletInventoryRows.length === 0 && inventorySearch.trim() && (
+       <div style={{ margin:'0 0 10px', padding:'12px', background:'#fff7ed', border:'1px solid #fed7aa', borderRadius:'12px', color:'#9a3412', fontSize:'13px', fontWeight:'850', display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+        <span>Your products are hidden by the current search filter: <strong>"{inventorySearch}"</strong>.</span>
+        <button onClick={()=>setInventorySearch('')} style={{...btnYellow, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'12px'}}>Show All Products</button>
+       </div>
+      )}
+      <table style={{ width:'100%', borderCollapse:'separate', borderSpacing:0, fontSize:'12px', minWidth:'1320px', color:'#111827', background:'white', border:'1px solid #f1d35a', borderRadius:'12px', overflow:'hidden' }}>
        <thead>
-        <tr style={{ background:'#f8f8f8' }}>
-         <th style={{ textAlign:'left', padding:'8px' }}>Product</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Starting</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Sold</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Movement</th>
-         <th style={{ textAlign:'right', padding:'8px' }}>Remaining</th>
-         <th style={{ textAlign:'center', padding:'8px', width:'90px' }}>Status</th>
+        <tr style={{ background:'linear-gradient(90deg,#ca1b1b 0%,#d9362d 100%)', color:'white' }}>
+         <th style={{ textAlign:'left', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Product</th>
+         <th style={{ textAlign:'left', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>SKU / Barcode</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Bought Price</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Sell Price</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Current Stock</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Sold Today</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', fontSize:'11px', fontWeight:'900', color:'white' }}>Movement Today</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Stock In</th>
+         <th style={{ textAlign:'right', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Stock Out</th>
+         <th style={{ textAlign:'left', padding:'8px 8px', width:'180px', fontSize:'11px', fontWeight:'900', color:'white' }}>Remarks</th>
+         <th style={{ textAlign:'center', padding:'8px 8px', width:'90px', fontSize:'11px', fontWeight:'900', color:'white' }}>Status</th>
+         <th style={{ textAlign:'center', padding:'8px 8px', width:'160px', fontSize:'11px', fontWeight:'900', color:'white' }}>Action</th>
         </tr>
        </thead>
        <tbody>
-        {outletBalances.map(row => (
-         <tr key={row.id || row.product_name}>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>
-           <strong>{row.product_name}</strong><br/>
-           <span style={{ color:'#999', fontSize:'10px' }}>{row.category}</span>
-          </td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.startingStock}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', color:'#ca1b1b', fontWeight:'bold' }}>{row.soldQty}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right' }}>{row.movementQty}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0', textAlign:'right', fontWeight:'bold' }}>{row.remainingStock}</td>
-          <td style={{ padding:'8px', borderBottom:'1px solid #efefef', textAlign:'center', width:'90px', color:row.status === 'OK' ? '#2d8a4e' : '#ca1b1b', fontWeight:'bold' }}>{row.status}</td>
-         </tr>
-        ))}
+        {categorizedOutletInventoryRows.map((row, rowIndex) => {
+         if (row.__categoryHeader) {
+          return (
+           <tr key={`category-${row.category}`}>
+            <td colSpan={12} style={{ padding:'7px 10px', background:'#fff4b8', borderTop:'1px solid #f1d35a', borderBottom:'1px solid #f1d35a', color:'#7c2d12', fontSize:'11px', fontWeight:'950', letterSpacing:'0.05em', textTransform:'uppercase' }}>
+             {row.category} <span style={{ color:'#92400e', fontWeight:'800', textTransform:'none', letterSpacing:0 }}>({row.count} item{row.count === 1 ? '' : 's'})</span>
+            </td>
+           </tr>
+          )
+         }
+         const draftKey = getInventoryDraftKey(row)
+         const draft = inventoryDrafts[draftKey] || {}
+         const projectedStock = safeNum(row.remainingStock, 0) + safeNum(draft.stockIn, 0) - safeNum(draft.stockOut, 0)
+         const saving = inventorySavingId === draftKey
+         const rowDisabled = row.disabled === true
+         const rowBackground = rowDisabled ? '#f3f4f6' : projectedStock < 0 ? '#fff1f1' : (rowIndex % 2 === 0 ? '#ffffff' : '#fffdf5')
+         return (
+          <tr key={row.id || row.product_name} style={{ background:rowBackground, opacity:rowDisabled ? 0.74 : 1 }}>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'850', minWidth:'205px', position:'sticky', left:0, zIndex:2, background:rowBackground }}>
+            <input
+             disabled={!canEditOutletInventory || rowDisabled}
+             value={draft.productName ?? row.product_name}
+             onChange={e=>setInventoryDraftValue(row, 'productName', e.target.value)}
+             placeholder="Item name"
+             style={{...inputStyle, width:'170px', marginBottom:'3px', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#ffffff'}}
+            />
+            <span style={{ color:'#6b7280', fontSize:'10px', fontWeight:'750' }}>{row.category || '-'}</span>
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#374151', fontWeight:'750' }}>
+            <strong style={{ fontSize:'11px', color:'#111827', fontWeight:'950' }}>{row.sku || '-'}</strong>
+            <span style={{ fontSize:'10px', color:'#6b7280', fontWeight:'750', marginLeft:'6px' }}>{row.barcode || '-'}</span>
+            <div style={{ display:'flex', gap:'4px', marginTop:'4px', flexWrap:'wrap' }}>
+             {!row.barcode && canEditOutletInventory && (
+              <button
+               onClick={()=>generateBarcodeForProduct(row).catch(err=>alert('Barcode generation failed: ' + (err?.message || String(err))))}
+               style={{ background:'#FDD412', color:'#111827', border:'none', borderRadius:'7px', padding:'3px 6px', fontSize:'9.5px', fontWeight:'900', cursor:'pointer' }}
+              >Generate</button>
+             )}
+             {(row.barcode || row.sku || row.id) && (
+              <button
+               onClick={()=>downloadBarcodeLabel(row)}
+               style={{ background:'#ffffff', color:'#ca1b1b', border:'1px solid #f1d35a', borderRadius:'7px', padding:'3px 6px', fontSize:'9.5px', fontWeight:'900', cursor:'pointer' }}
+              >PNG Label</button>
+             )}
+            </div>
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
+            {row.usesMarkupPricing ? (
+             <input
+              type="number"
+              min="0"
+              step="0.01"
+              disabled={!canEditOutletInventory || rowDisabled}
+              value={draft.buyingPrice ?? (row.buyingPrice || '')}
+              onChange={e=>{
+               const buying = e.target.value
+               setInventoryDrafts(prev => ({
+                ...prev,
+                [draftKey]: {
+                 ...(prev[draftKey] || {}),
+                 buyingPrice:buying,
+                 price:String(buying).trim() !== '' ? getOutletMarkupSellingPrice(buying, row.category) : ''
+                }
+               }))
+              }}
+              placeholder="Bought"
+              style={{...inputStyle, width:'78px', marginBottom:0, textAlign:'right', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}}
+             />
+            ) : (
+             <span style={{ color:'#6b7280', fontSize:'10px', fontWeight:'800' }}>Direct</span>
+            )}
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
+            <input
+             type="number"
+             min="0"
+             step="0.01"
+             disabled={!canEditOutletInventory || rowDisabled || row.usesMarkupPricing}
+             value={draft.price ?? row.sellingPrice}
+             onChange={e=>setInventoryDraftValue(row, 'price', e.target.value)}
+             style={{...inputStyle, width:'76px', marginBottom:0, textAlign:'right', padding:'5px 7px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:row.usesMarkupPricing ? '#f8fafc' : '#fffdf2'}}
+            />
+            {row.usesMarkupPricing && <div style={{ fontSize:'9px', color:'#087a37', fontWeight:'900', marginTop:'2px', whiteSpace:'nowrap' }}>{`+${getOutletMarkupPercentForCategory(row.category)}%`}</div>}
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', fontWeight:'950', color:'#111827', fontSize:'12px' }}>{row.remainingStock}</td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:'#ca1b1b', fontWeight:'950', fontSize:'12px' }}>{row.soldQty}</td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right', color:row.movementQty < 0 ? '#ca1b1b' : '#087a37', fontWeight:'950', fontSize:'12px' }}>{row.movementQty}</td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
+            <input type="number" min="0" disabled={!canEditOutletInventory || rowDisabled} value={draft.stockIn || ''} onChange={e=>setInventoryDraftValue(row, 'stockIn', e.target.value)} placeholder="0" style={{...inputStyle, width:'62px', marginBottom:0, textAlign:'right', padding:'5px 6px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}} />
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'right' }}>
+            <input type="number" min="0" disabled={!canEditOutletInventory || rowDisabled} value={draft.stockOut || ''} onChange={e=>setInventoryDraftValue(row, 'stockOut', e.target.value)} placeholder="0" style={{...inputStyle, width:'62px', marginBottom:0, textAlign:'right', padding:'5px 6px', color:'#111827', fontWeight:'950', fontSize:'11px', border:'1px solid #d7bf42', background:'#fffdf2'}} />
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', color:'#111827', fontWeight:'800' }}>
+            <input disabled={!canEditOutletInventory || rowDisabled} value={draft.remarks || ''} onChange={e=>setInventoryDraftValue(row, 'remarks', e.target.value)} placeholder="Reason / note" style={{...inputStyle, width:'145px', marginBottom:0, padding:'5px 7px', color:'#111827', fontWeight:'750', fontSize:'11px', border:'1px solid #e2d078', background:'#ffffff'}} />
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center', color:rowDisabled ? '#6b7280' : row.status === 'OK' ? '#087a37' : '#ca1b1b', fontWeight:'950', fontSize:'11px' }}>
+            {rowDisabled ? 'Deleted' : projectedStock < 0 ? 'Invalid' : row.status}
+           </td>
+           <td style={{ padding:'6px 8px', borderBottom:'1px solid #f3e5a5', textAlign:'center' }}>
+            <div style={{ display:'flex', justifyContent:'center', gap:'5px', flexWrap:'wrap' }}>
+             {!rowDisabled && (
+              <button
+               disabled={!canEditOutletInventory || saving}
+               onClick={()=>saveOutletInventoryRow(row)}
+               style={{...btnGreen, width:'auto', marginTop:0, padding:'6px 10px', opacity:(!canEditOutletInventory || saving) ? 0.65 : 1, fontSize:'11px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(45,138,78,0.18)'}}
+              >
+               {saving ? 'Saving...' : 'Save'}
+              </button>
+             )}
+             {canEditOutletInventory && (
+              <button
+               type="button"
+               disabled={saving}
+               onClick={e=>{ if (!saving) triggerDeleteOutletInventoryItem(row, e) }}
+               style={{...btnBase, width:'auto', marginTop:0, padding:'6px 9px', background:'#ca1b1b', color:'white', opacity:saving ? 0.65 : 1, fontSize:'10px', fontWeight:'950', borderRadius:'8px', boxShadow:'0 2px 7px rgba(0,0,0,0.14)', position:'relative', zIndex:20, pointerEvents:'auto', cursor:saving ? 'not-allowed' : 'pointer'}}
+               title='Permanently delete this POS item from the product master list'
+              >
+               Delete
+              </button>
+             )}
+            </div>
+           </td>
+          </tr>
+         )
+        })}
        </tbody>
       </table>
+      {filteredOutletInventoryRows.length === 0 && <p style={{ color:'#888', fontSize:'13px', padding:'12px' }}>{outletBalances.length > 0 ? 'No product matched your search. Clear the search to show all products.' : disabledOutletProductCount > 0 && !showDisabledOutletItems ? 'All available products are deleted/hidden. Click Show Deleted to review deleted items.' : 'No POS products loaded yet. Click Refresh, or check the pos_products table if this remains empty.'}</p>}
      </div>
     )}
    </div>
@@ -18828,11 +27750,11 @@ function PosMonitorPanel() {
 
    <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
     <h3 style={{ margin:'0 0 10px', color:'#ca1b1b' }}>Inventory Movements</h3>
-    {posMovements.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS inventory movement found for this date.</p> : (
+    {operationalPosMovements.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No operational POS inventory movement found for this date.</p> : (
      <div style={{ overflowX:'auto' }}>
       <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px', minWidth:'680px' }}>
        <thead><tr style={{ background:'#f8f8f8' }}><th style={{ textAlign:'left', padding:'8px' }}>Product</th><th style={{ textAlign:'left', padding:'8px' }}>Movement</th><th style={{ textAlign:'right', padding:'8px' }}>Qty</th><th style={{ textAlign:'left', padding:'8px' }}>Reference</th></tr></thead>
-       <tbody>{posMovements.slice(0,100).map(m=>(
+       <tbody>{operationalPosMovements.slice(0,100).map(m=>(
         <tr key={m.id}>
          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}><strong>{m.product_name}</strong><br/><span style={{ color:'#999', fontSize:'10px' }}>{m.sku || ''}</span></td>
          <td style={{ padding:'8px', borderBottom:'1px solid #f0f0f0' }}>{m.movement_type}</td>
@@ -18850,26 +27772,27 @@ function PosMonitorPanel() {
 
 // Camera Screen 
  if (cameraMode) {
+ const strictTimeIn = cameraMode === 'timein' && requiresStrictCameraTimeIn(employee)
  return (
  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#000', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'20px', zIndex:9999 }}>
  <h2 style={{ color:'white', marginBottom:'8px', fontSize:'18px' }}>{cameraMode==='timein'?' Selfie for Time In':' Selfie for Time Out'}</h2>
- <p style={{ color:'#aaa', marginBottom:'16px', fontSize:'13px' }}>Take a clear selfie to confirm your attendance</p>
+ <p style={{ color:'#aaa', marginBottom:'16px', fontSize:'13px' }}>{strictTimeIn?'Take a clear live selfie. It will upload and save Time In automatically.':'Take a clear selfie to confirm your attendance'}</p>
  {!capturedPhoto? (
  <>
  <video ref={videoRef} autoPlay playsInline style={{ width:'100%', maxWidth:'360px', borderRadius:'14px', border:'3px solid #ca1b1b' }} />
  <canvas ref={canvasRef} style={{ display:'none' }} />
- <button style={{...btnRed, maxWidth:'360px', marginTop:'16px' }} onClick={capturePhoto}> TAKE SELFIE</button>
+ <button style={{...btnRed, maxWidth:'360px', marginTop:'16px' }} onClick={capturePhoto} disabled={loading}>{strictTimeIn?' CAPTURE & TIME IN':' TAKE SELFIE'}</button>
  </>
  ): (
  <>
  <img src={capturedPhoto} alt="Selfie" style={{ width:'100%', maxWidth:'360px', borderRadius:'14px', border:'3px solid #2d8a4e' }} />
  <div style={{ display:'flex', gap:'10px', marginTop:'16px', width:'100%', maxWidth:'360px' }}>
- <button style={{...btnGray, flex:1, marginTop:0 }} onClick={retakePhoto}> RETAKE</button>
- <button style={{...btnGreen, flex:1, marginTop:0 }} onClick={cameraMode==='timein'?confirmTimeIn:confirmTimeOut} disabled={loading}>{loading?' SAVING...':' CONFIRM'}</button>
+ <button style={{...btnGray, flex:1, marginTop:0 }} onClick={retakePhoto} disabled={loading}> RETAKE</button>
+ <button style={{...btnGreen, flex:1, marginTop:0 }} onClick={cameraMode==='timein'?()=>confirmTimeIn():confirmTimeOut} disabled={loading}>{loading?(strictTimeIn?' UPLOADING & SAVING...':' SAVING...'):(strictTimeIn?' RETRY TIME IN':' CONFIRM')}</button>
  </div>
  </>
  )}
- <button style={{...btnGray, maxWidth:'360px', marginTop:'12px' }} onClick={()=>{ setCameraMode(null); setCapturedPhoto(null); stopCamera() }}>CANCEL</button>
+ <button style={{...btnGray, maxWidth:'360px', marginTop:'12px' }} disabled={loading} onClick={()=>{ setCameraMode(null); setCapturedPhoto(null); stopCamera() }}>{loading?'PLEASE WAIT...':'CANCEL'}</button>
  </div>
  )
  }
@@ -18877,7 +27800,7 @@ function PosMonitorPanel() {
  // Admin Render 
  if (adminMode) {
  const SECTIONS = [
- { key:'posMonitor', icon:<img src="/icons/pos-machine.svg" alt="" style={{width:18,height:18,objectFit:'contain'}} />, label:'SAGS POS', tabs:[{key:'posMonitor',label:'Outlet POS Monitor'}], roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
+ { key:'posMonitor', icon:<img src="/icons/pos-machine.svg" alt="" style={{width:18,height:18,objectFit:'contain'}} />, label:'SAGS POS', tabs:[{key:'posMonitor',label:'Outlet POS Monitor'}], roles:['owner','manager','pos_admin','hr','payroll','supervisor','asst_supervisor'] },
  { key:'dashboard', icon:'\uD83C\uDFE0', label:'Dashboard',
  tabs:[{key:'dashboard',label:'Overview'}],
  roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
@@ -19006,6 +27929,9 @@ function PosMonitorPanel() {
  const currentRecipePreviewCost = computeRecipeVaultCost(recipeVaultForm, recipeCostRows)
 
  const pendingExpenses = dailyExpenses.filter(e => e.status === 'pending').length
+ const selectedBatch1DocumentForm = findBatch1DocumentForm(documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS.find(form => !form.externalTab) || DOCUMENT_BATCH1A_FORMS[0]
+ const activeBatch1FillableForms = DOCUMENT_BATCH1A_FORMS.filter(form => !form.externalTab)
+ const isChargeSlipDocumentForm = selectedBatch1DocumentForm?.key === 'FIN-CHARGE-SLIP'
  const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
     const payablesDeadlineKey = (ownerDeadlineSummary.warningRows || [])
       .map(r => String(r.source || '') + ':' + String(r.id || '') + ':' + String(r.due_date_effective || r.due_date || ''))
@@ -19031,6 +27957,27 @@ function PosMonitorPanel() {
   acc.count += 1
   return acc
  }, { count:0, additions:0, deductions:0 })
+ const attendanceReconPeriodOptions = (() => {
+  const map = {}
+  if (attendanceReconStart && attendanceReconEnd) map[`${attendanceReconStart}|${attendanceReconEnd}`] = { value:`${attendanceReconStart}|${attendanceReconEnd}`, label:`Selected: ${attendanceReconStart} to ${attendanceReconEnd}` }
+  ;(payrollHistory || []).forEach(period => {
+   const value = `${period.payroll_start}|${period.payroll_end}`
+   map[value] = { value, label:`${period.payroll_start} to ${period.payroll_end} (${period.released || 0} released / ${period.total || 0} records)` }
+  })
+  return Object.values(map)
+ })()
+ const selectedAttendanceReconRows = (attendanceReconRows || []).filter(row => row.canCreate && attendanceReconSelected[row.employeeId])
+ const attendanceReconSummary = (attendanceReconRows || []).reduce((acc, row) => {
+  acc.employees += 1
+  acc.correctDeduction += safeNum(row.correctDeduction, 0)
+  acc.previouslyDeducted += safeNum(row.priorAttendanceDeduction, 0)
+  acc.existingCorrections += safeNum(row.existingReconAmount, 0)
+  acc.missingAmount += row.canCreate ? safeNum(row.missingAdjustment, 0) : 0
+  if (row.canCreate) acc.ready += 1
+  if (row.incompleteLogs?.length) acc.flagged += 1
+  return acc
+ }, { employees:0, ready:0, flagged:0, correctDeduction:0, previouslyDeducted:0, existingCorrections:0, missingAmount:0 })
+ const selectedAttendanceReconAmount = moneyRound(selectedAttendanceReconRows.reduce((sum, row) => sum + safeNum(row.missingAdjustment, 0), 0))
  const cashAdvanceCoveragePeriodOptions = (() => {
  const map = {}
  if (payrollStart && payrollEnd) map[`${payrollStart}|${payrollEnd}`] = { value:`${payrollStart}|${payrollEnd}`, label:`Current selected dates: ${payrollStart} ${payrollEnd}` }
@@ -19042,10 +27989,89 @@ function PosMonitorPanel() {
  })()
 
 
- const updateDocumentFormDraft = (field, value) => {
-  setDocumentFormDraft(prev => ({ ...prev, [field]:value }))
+
+ const getDocumentFormFieldValue = (fieldKey, draft = documentFormDraft) => {
+  if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(fieldKey)) return draft?.[fieldKey] ?? ''
+  return draft?.customFields?.[fieldKey] ?? ''
  }
 
+ const updateDocumentFormDraft = (field, value) => {
+  setDocumentFormDraft(prev => {
+   if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(field)) return { ...prev, [field]:value }
+   return { ...prev, customFields:{ ...(prev.customFields || {}), [field]:value } }
+  })
+ }
+
+ const selectDocumentFormType = (formKey, options = {}) => {
+  const form = findBatch1DocumentForm(formKey)
+  if (!form) {
+   showToast('This document form could not be found.', 'red')
+   return
+  }
+  if (form.externalTab) {
+   showToast(form.title + ' is managed in the dedicated module.')
+   handleTabClick(form.externalTab)
+   return
+  }
+
+  setDocumentCenterView('forms')
+  setDocumentFormDraft(prev => createDocumentFormDraft(form.key, today, currentAdminLabel || 'Admin', prev))
+  if (!employees.length && form.employeeMode !== 'none') loadEmployees()
+
+  if (options.showToast !== false) showToast(form.title + ' form opened.')
+  if (options.scroll !== false) {
+   setTimeout(() => {
+    document.getElementById('document-batch1a-form-builder')?.scrollIntoView({ behavior:'smooth', block:'start' })
+   }, 100)
+  }
+ }
+
+ const openDocumentBatch1AForm = (formKey) => {
+  selectDocumentFormType(formKey, { showToast:true, scroll:true })
+ }
+
+ const clearCurrentDocumentForm = () => {
+  const form = getSelectedDocumentBatch1AForm()
+  setDocumentFormDraft(prev => createDocumentFormDraft(form.key, today, currentAdminLabel || 'Admin', prev))
+  showToast(form.title + ' fields cleared.')
+ }
+
+ const renderDocumentFormField = (field) => {
+  const value = getDocumentFormFieldValue(field.key)
+  const gridColumn = isMobile ? '1 / -1' : field.span === 'full' ? '1 / -1' : field.span === 2 ? 'span 2' : 'span 1'
+  const commonStyle = { ...inputStyle, marginBottom:0 }
+  const inputType = ['date','time','number'].includes(field.type) ? field.type : 'text'
+
+  return (
+   <div key={field.key} style={{ gridColumn }}>
+    <label style={lblS}>{field.label}{field.required ? ' *' : ''}</label>
+    {field.type === 'textarea' ? (
+     <textarea
+      value={value}
+      onChange={e=>updateDocumentFormDraft(field.key, e.target.value)}
+      placeholder={field.placeholder || ''}
+      style={{...commonStyle, minHeight:'84px', resize:'vertical'}}
+     />
+    ) : field.type === 'select' ? (
+     <select value={value} onChange={e=>updateDocumentFormDraft(field.key, e.target.value)} style={commonStyle}>
+      <option value="">Select {String(field.label || '').toLowerCase()}</option>
+      {(field.options || []).map(option => <option key={String(option)} value={option}>{option}</option>)}
+     </select>
+    ) : (
+     <input
+      type={inputType}
+      value={value}
+      onChange={e=>updateDocumentFormDraft(field.key, e.target.value)}
+      placeholder={field.placeholder || ''}
+      min={field.min}
+      step={field.step}
+      style={commonStyle}
+     />
+    )}
+    {field.help && <p style={{ margin:'5px 2px 0', color:'#888', fontSize:'10px', lineHeight:1.4 }}>{field.help}</p>}
+   </div>
+  )
+ }
 
  async function loadCompanyDocumentRecords() {
   setCompanyDocumentRecordsLoading(true)
@@ -19054,7 +28080,7 @@ function PosMonitorPanel() {
     .from('company_document_records')
     .select('*')
     .order('created_at', { ascending:false })
-    .limit(200)
+    .limit(500)
 
    if (error) throw error
    setCompanyDocumentRecords(data || [])
@@ -19087,35 +28113,112 @@ function PosMonitorPanel() {
   return s.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
  }
 
+ const getSelectedDocumentBatch1AForm = () => {
+  return findBatch1DocumentForm(documentFormDraft.formKey) || activeBatch1FillableForms[0]
+ }
+
+ const getDocumentFormEmployee = () => {
+  return (employees || []).find(e => String(e.id) === String(documentFormDraft.employeeId)) || null
+ }
+
+ const getDocumentReferenceNumber = (form = getSelectedDocumentBatch1AForm(), forcedDocumentNo = '') => {
+  if (forcedDocumentNo) return forcedDocumentNo
+  if (documentFormDraft.documentNo) return documentFormDraft.documentNo
+  const cleanDate = String(documentFormDraft.documentDate || today).replace(/-/g, '')
+  return String(form?.refPrefix || 'RD-DOC') + '-' + cleanDate + '-' + String(Date.now()).slice(-5)
+ }
+
+ const getFormFieldValueFromValues = (values = {}, fieldKey = '') => {
+  if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(fieldKey)) return values?.[fieldKey] ?? ''
+  return values?.customFields?.[fieldKey] ?? ''
+ }
+
+ const formatDocumentFieldValue = (field = {}, value, blankRequired = false) => {
+  const isBlank = value === null || value === undefined || String(value).trim() === ''
+  if (isBlank) return blankRequired && field.required ? '____________________________' : ''
+  if (field.type === 'date') return formatDateForDisplay(value)
+  if (field.format === 'currency') return php(safeNum(value, 0))
+  return String(value)
+ }
+
+ const getDocumentRecordSummary = (form, values = {}) => {
+  const preferredSubjectKeys = ['subject','payrollPeriod','policyVersion','adjustmentType','leaveType','disputeType','warningLevel','evaluationPeriod','clearanceReason','purpose']
+  const preferredItemKeys = ['items','relatedDocument','referenceNumber','transactionReference','handbookVersion']
+  const getFirst = keys => {
+   for (const key of keys) {
+    const value = getFormFieldValueFromValues(values, key)
+    if (String(value || '').trim()) return String(value).trim()
+   }
+   return ''
+  }
+  return {
+   subject:getFirst(preferredSubjectKeys) || form?.title || 'Company Document',
+   items:getFirst(preferredItemKeys),
+   details:String(values.details || '').trim()
+  }
+ }
+
+ const validateCurrentDocumentForm = (form) => {
+  const missing = []
+  if (!documentFormDraft.documentDate) missing.push('Document Date')
+  if (form.employeeMode === 'required' && !documentFormDraft.employeeId) missing.push(form.employeeLabel || 'Employee')
+
+  ;(form.fields || []).forEach(field => {
+   if (!field.required) return
+   const value = getDocumentFormFieldValue(field.key)
+   const isBlank = value === null || value === undefined || String(value).trim() === ''
+   if (isBlank) {
+    missing.push(field.label)
+    return
+   }
+   if (field.type === 'number') {
+    const minimum = field.min !== undefined ? safeNum(field.min, 0) : 0
+    if (!Number.isFinite(Number(value)) || Number(value) < minimum) missing.push(field.label)
+   }
+  })
+
+  if (missing.length) {
+   showToast('Complete required field(s): ' + missing.join(', '), 'red')
+   return false
+  }
+  return true
+ }
+
  async function saveCurrentDocumentRecord(status = 'draft', options = {}) {
   const form = getSelectedDocumentBatch1AForm()
+  if (!form || form.externalTab) {
+   showToast('Select a fillable Batch 1 form.', 'red')
+   return null
+  }
+  if (!validateCurrentDocumentForm(form)) return null
+
   const emp = getDocumentFormEmployee()
   const docNo = getDocumentReferenceNumber(form)
-
-  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Save blank document record?')) return null
+  const summary = getDocumentRecordSummary(form, documentFormDraft)
+  const structuredRemarks = encodeCompanyDocumentFormData(form.key, { ...documentFormDraft, documentNo:docNo })
 
   const payload = {
-   document_no: docNo,
-   form_key: form.key,
-   document_type: form.title,
-   employee_id: emp?.id || documentFormDraft.employeeId || null,
-   employee_name: emp?.full_name || null,
-   employee_code: emp?.employee_code || null,
-   position: emp?.position || null,
-   department: emp?.department || null,
-   document_date: documentFormDraft.documentDate || today,
-   incident_date: documentFormDraft.incidentDate || null,
-   effective_date: documentFormDraft.effectiveDate || null,
-   subject: documentFormDraft.subject || null,
-   details: documentFormDraft.details || null,
-   amount: documentFormDraft.amount ? safeNum(documentFormDraft.amount, 0) : null,
-   deduction_per_cutoff: documentFormDraft.deductionPerCutoff ? safeNum(documentFormDraft.deductionPerCutoff, 0) : null,
-   items: documentFormDraft.items || null,
-   remarks: documentFormDraft.remarks || null,
-   prepared_by: documentFormDraft.preparedBy || currentAdminLabel || 'Admin',
-   approved_by: documentFormDraft.approvedBy || null,
+   document_no:docNo,
+   form_key:form.key,
+   document_type:form.title,
+   employee_id:emp?.id || documentFormDraft.employeeId || null,
+   employee_name:emp?.full_name || null,
+   employee_code:emp?.employee_code || null,
+   position:emp?.position || null,
+   department:emp?.department || null,
+   document_date:documentFormDraft.documentDate || today,
+   incident_date:documentFormDraft.incidentDate || null,
+   effective_date:documentFormDraft.effectiveDate || null,
+   subject:summary.subject || null,
+   details:summary.details || null,
+   amount:String(documentFormDraft.amount || '').trim() ? safeNum(documentFormDraft.amount, 0) : null,
+   deduction_per_cutoff:String(documentFormDraft.deductionPerCutoff || '').trim() ? safeNum(documentFormDraft.deductionPerCutoff, 0) : null,
+   items:summary.items || null,
+   remarks:structuredRemarks,
+   prepared_by:documentFormDraft.preparedBy || currentAdminLabel || 'Admin',
+   approved_by:documentFormDraft.approvedBy || null,
    status,
-   created_by: currentAdminLabel || adminRole || 'Admin'
+   created_by:currentAdminLabel || adminRole || 'Admin'
   }
 
   try {
@@ -19127,11 +28230,12 @@ function PosMonitorPanel() {
 
    if (error) throw error
 
-   showToast((options.printAfter ? 'Document saved. Preparing print...' : 'Document saved to Document Records.'))
+   setDocumentFormDraft(prev => ({ ...prev, documentNo:docNo }))
+   showToast(options.printAfter ? 'Document saved. Preparing print...' : 'Document saved to Document Records.')
    await loadCompanyDocumentRecords()
 
    if (options.printAfter) {
-    setTimeout(() => printBatch1ADocumentForm(), 150)
+    setTimeout(() => printBatch1ADocumentForm(docNo), 150)
    }
 
    return data
@@ -19181,231 +28285,195 @@ function PosMonitorPanel() {
   }
  }
 
-function printCompanyDocumentRecord(record) {
-  if (!record) {
-   showToast('No document record selected.', 'red')
-   return
+ const getSavedDocumentValues = (record = {}) => {
+  const structured = decodeCompanyDocumentFormData(record.remarks)
+  const structuredValues = structured?.values || {}
+  return {
+   documentNo:record.document_no || structuredValues.documentNo || '',
+   formKey:record.form_key || structuredValues.formKey || '',
+   documentDate:record.document_date || structuredValues.documentDate || '',
+   incidentDate:record.incident_date || structuredValues.incidentDate || '',
+   effectiveDate:record.effective_date || structuredValues.effectiveDate || '',
+   amount:record.amount ?? structuredValues.amount ?? '',
+   deductionPerCutoff:record.deduction_per_cutoff ?? structuredValues.deductionPerCutoff ?? '',
+   subject:structuredValues.subject ?? record.subject ?? '',
+   details:structuredValues.details ?? record.details ?? '',
+   items:structuredValues.items ?? record.items ?? '',
+   remarks:structured ? (structuredValues.remarks || '') : (record.remarks || ''),
+   preparedBy:record.prepared_by || structuredValues.preparedBy || '',
+   approvedBy:record.approved_by || structuredValues.approvedBy || '',
+   customFields:structuredValues.customFields || {}
   }
+ }
 
-  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, ch => ({
-   '&':'&amp;',
-   '<':'&lt;',
-   '>':'&gt;',
-   '"':'&quot;',
-   "'":'&#39;'
-  }[ch]))
-
-  const docNo = record.document_no || record.document_number || 'RD-DOCUMENT'
-  const title = record.document_type || record.form_title || record.form_key || 'Company Document'
-  const status = getCompanyDocumentRecordStatusLabel(record.status)
-  const employee = record.employee_name || '____________________________'
-  const employeeCode = record.employee_code || ''
-  const documentDate = record.document_date || record.created_at || today
-
+ const buildPrintableDocumentRows = (form, emp, values = documentFormDraft, options = {}) => {
+  const docNo = options.documentNo || values.documentNo || getDocumentReferenceNumber(form)
   const rows = [
    ['Document No.', docNo],
-   ['Document Type', title],
-   ['Status', status],
-   ['Employee', employee],
-   ['Employee Code', employeeCode],
-   ['Document Date', formatDateForDisplay(documentDate)],
-   ['Incident Date', record.incident_date ? formatDateForDisplay(record.incident_date) : ''],
-   ['Effective Date', record.effective_date ? formatDateForDisplay(record.effective_date) : ''],
-   ['Subject', record.subject || ''],
-   ['Details', record.details || ''],
-   ['Items / Accountabilities', record.items || ''],
-   ['Amount', safeNum(record.amount, 0) > 0 ? php(record.amount) : ''],
-   ['Deduction Per Cutoff', safeNum(record.deduction_per_cutoff, 0) > 0 ? php(record.deduction_per_cutoff) : ''],
-   ['Remarks', record.remarks || ''],
-   ['Prepared By', record.prepared_by || currentAdminLabel || 'Admin'],
-   ['Approved By', record.approved_by || '']
-  ].filter(([label, value]) => String(value || '').trim() !== '')
-
-  const rowHtml = rows.map(([label, value]) =>
-   '<tr><td>' + esc(label) + '</td><td>' + esc(value).replace(/\\n/g, '<br/>') + '</td></tr>'
-  ).join('')
-
-  const pw = window.open('', '_blank')
-  if (!pw) {
-   showToast('Popup blocked. Please allow popups to print document.', 'red')
-   return
-  }
-
-  const html = [
-   '<!DOCTYPE html><html><head><title>' + esc(docNo) + '</title>',
-   '<style>',
-   '@page { size:A4; margin:16mm; }',
-   'body { font-family:Arial, sans-serif; color:#1a1a2e; margin:0; }',
-   '.header { display:flex; justify-content:space-between; align-items:flex-start; border-bottom:3px solid #ca1b1b; padding-bottom:10px; margin-bottom:18px; }',
-   'h1 { margin:0; color:#ca1b1b; font-size:20px; }',
-   'h2 { margin:0; color:#1a1a2e; font-size:17px; text-transform:uppercase; text-align:right; }',
-   '.sub { margin:3px 0 0; color:#666; font-size:11px; }',
-   '.badge { display:inline-block; padding:4px 9px; border-radius:999px; background:#f7f9fc; border:1px solid #ddd; font-size:10px; font-weight:bold; margin-top:6px; }',
-   'table { width:100%; border-collapse:collapse; margin-top:10px; }',
-   'td { border:1px solid #ddd; padding:8px 10px; font-size:12px; vertical-align:top; line-height:1.45; }',
-   'td:first-child { width:28%; background:#f8f7f5; font-weight:bold; color:#333; }',
-   '.signatures { display:grid; grid-template-columns:1fr 1fr; gap:40px; margin-top:55px; }',
-   '.sig { text-align:center; font-size:11px; color:#333; }',
-   '.line { border-top:1px solid #333; padding-top:6px; font-weight:bold; }',
-   '.footer { margin-top:30px; padding-top:10px; border-top:1px solid #eee; font-size:10px; color:#777; text-align:center; }',
-   '.no-print { margin-top:18px; text-align:center; }',
-   'button { background:#ca1b1b; color:white; border:none; padding:10px 18px; border-radius:8px; font-weight:bold; cursor:pointer; }',
-   '@media print { .no-print { display:none; } }',
-   '</style></head><body>',
-   '<div class="header"><div>',
-   '<h1>Roma\'s Donuts</h1>',
-   '<p class="sub">Management System</p>',
-   '<p class="sub">Company Documents & Forms Center</p>',
-   '</div><div>',
-   '<h2>' + esc(title) + '</h2>',
-   '<p class="sub" style="text-align:right;">' + esc(docNo) + '</p>',
-   '<p style="text-align:right;"><span class="badge">' + esc(status) + '</span></p>',
-   '</div></div>',
-   '<table>' + rowHtml + '</table>',
-   '<div class="signatures">',
-   '<div class="sig"><div class="line">' + esc(record.prepared_by || currentAdminLabel || 'Prepared By') + '</div><div>Prepared By</div></div>',
-   '<div class="sig"><div class="line">' + esc(record.approved_by || 'Approved By') + '</div><div>Approved By</div></div>',
-   '</div>',
-   '<div class="footer">Printed from Roma\'s Donuts Management System • ' + new Date().toLocaleString() + '</div>',
-   '<div class="no-print"><button onclick="window.print()">PRINT DOCUMENT</button></div>',
-   '</body></html>'
-  ].join('')
-
-  pw.document.write(html)
-  pw.document.close()
-  pw.focus()
-  setTimeout(() => pw.print(), 300)
- }
-
-
- const getSelectedDocumentBatch1AForm = () => {
-  return DOCUMENT_BATCH1A_FORMS.find(f => f.key === documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS[0]
- }
-
- const getDocumentFormEmployee = () => {
-  return (employees || []).find(e => String(e.id) === String(documentFormDraft.employeeId)) || null
- }
-
- const getDocumentReferenceNumber = (form = getSelectedDocumentBatch1AForm()) => {
-  const cleanDate = String(documentFormDraft.documentDate || today).replace(/-/g, '')
-  return form.refPrefix + '-' + cleanDate + '-' + String(Date.now()).slice(-5)
- }
-
- const buildPrintableDocumentRows = (form, emp) => {
-  const rows = [
-   ['Document No.', getDocumentReferenceNumber(form)],
    ['Document Type', form.title],
-   ['Date Prepared', formatDateForDisplay(documentFormDraft.documentDate || today)],
-   ['Employee Name', emp?.full_name || '____________________________'],
-   ['Employee Code', emp?.employee_code || '________________'],
-   ['Position / Department', (emp?.position || '________________') + ' / ' + (emp?.department || '________________')]
+   ['Date Prepared', formatDateForDisplay(values.documentDate || today)]
   ]
 
-  if (['DISC-NTE','DISC-IR','DISC-EXPLAIN'].includes(form.key)) {
-   rows.push(['Incident Date', formatDateForDisplay(documentFormDraft.incidentDate || documentFormDraft.documentDate || today)])
-   rows.push(['Subject / Violation', documentFormDraft.subject || '____________________________'])
-   rows.push(['Details / Explanation', documentFormDraft.details || ''])
+  if (options.status) rows.push(['Status', options.status])
+
+  if (form.employeeMode !== 'none') {
+   rows.push([form.employeeLabel || 'Employee', emp?.full_name || options.employeeName || '____________________________'])
+   rows.push(['Employee Code', emp?.employee_code || options.employeeCode || '________________'])
+   rows.push(['Position / Department', ((emp?.position || options.position || '________________') + ' / ' + (emp?.department || options.department || '________________'))])
   }
 
-  if (form.key === 'PAY-CA-AGREEMENT') {
-   rows.push(['Cash Advance Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
-   rows.push(['Repayment Terms', documentFormDraft.details || 'Deduction shall be made every payroll cut-off until fully paid, unless modified by written approval.'])
-  }
+  ;(form.fields || []).forEach(field => {
+   const value = getFormFieldValueFromValues(values, field.key)
+   const formatted = formatDocumentFieldValue(field, value, options.blankRequired !== false)
+   if (formatted || field.required || options.includeBlankOptional) rows.push([field.label, formatted])
+  })
 
-  if (form.key === 'PAY-DEDUCTION-AUTH') {
-   rows.push(['Deduction Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Deduction Per Cutoff', documentFormDraft.deductionPerCutoff ? php(safeNum(documentFormDraft.deductionPerCutoff, 0)) : '________________'])
-   rows.push(['Reason for Deduction', documentFormDraft.subject || '____________________________'])
-   rows.push(['Details', documentFormDraft.details || ''])
-  }
-
-  if (form.key === 'HR-CLEARANCE') {
-   rows.push(['Effective / Last Working Date', formatDateForDisplay(documentFormDraft.effectiveDate || documentFormDraft.documentDate || today)])
-   rows.push(['Accountabilities to Clear', documentFormDraft.items || 'Uniform/PPE, cash advance, tools, documents, inventory, crates, keys, and other company property.'])
-   rows.push(['Remarks', documentFormDraft.remarks || ''])
-  }
-
-  if (form.key === 'HR-PPE-ISSUE') {
-   rows.push(['Items Issued', documentFormDraft.items || '____________________________'])
-   rows.push(['Accountability Terms', documentFormDraft.details || 'Employee acknowledges receipt and agrees to return company property or accept approved accountability deduction for lost/damaged items.'])
-  }
-
-
-  if (form.key === 'INV-WITHDRAWAL') {
-   rows.push(['Withdrawal Purpose', documentFormDraft.subject || 'Production Use / Outlet Transfer / Staff Meal / Sample / Damage Replacement / Marketing / Promo / Company Use / Finished Goods Release / Other'])
-   rows.push(['Department / Area', emp?.department || 'Production / Inventory / Outlet / Company Use'])
-   rows.push(['Items Withdrawn', documentFormDraft.items || 'Item name, category, quantity, and unit'])
-   rows.push(['Quantity / Unit', documentFormDraft.amount || '________________'])
-   rows.push(['Released By', documentFormDraft.preparedBy || currentAdminLabel || '____________________________'])
-   rows.push(['Approved By', documentFormDraft.approvedBy || '____________________________'])
-   rows.push(['Remarks / Reason', documentFormDraft.details || documentFormDraft.remarks || 'This slip records company inventory, finished goods, supplies, tools, equipment, crates, crate covers, or other company property withdrawn from company custody.'])
-  }
-
-  if (form.key === 'PAY-RELEASE') {
-   rows.push(['Payroll / Release Amount', documentFormDraft.amount ? php(safeNum(documentFormDraft.amount, 0)) : '________________'])
-   rows.push(['Payroll Period / Reason', documentFormDraft.subject || '____________________________'])
-   rows.push(['Remarks', documentFormDraft.remarks || 'Employee acknowledges receipt of the stated amount.'])
-  }
-
-  rows.push(['Prepared By', documentFormDraft.preparedBy || currentAdminLabel || 'Admin'])
-  rows.push(['Approved By', documentFormDraft.approvedBy || '____________________________'])
+  if (String(values.remarks || '').trim()) rows.push(['Remarks', values.remarks])
+  rows.push(['Prepared By', values.preparedBy || currentAdminLabel || 'Admin'])
+  rows.push(['Approved By', values.approvedBy || '____________________________'])
   return rows
  }
 
- const printBatch1ADocumentForm = () => {
-  const form = getSelectedDocumentBatch1AForm()
-  const emp = getDocumentFormEmployee()
-  if (!documentFormDraft.employeeId && !window.confirm('No employee selected. Print blank form?')) return
-
+ const openDocumentPrintWindow = ({ form, rows, documentNo, status = '', autoPrint = false }) => {
   const escDoc = value => {
    const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }
    return String(value ?? '').replace(/[&<>"']/g, ch => map[ch] || ch)
   }
 
-  const rows = buildPrintableDocumentRows(form, emp)
-  const rowHtml = rows.map(row => {
-   const label = row[0]
-   const value = row[1]
-   return '<tr><td class="label">' + escDoc(label) + '</td><td>' + escDoc(value).replace(/\n/g, '<br/>') + '</td></tr>'
-  }).join('')
+  const rowHtml = rows
+   .filter(([,value]) => String(value ?? '').trim() !== '')
+   .map(([label,value]) => '<tr><td class="label">' + escDoc(label) + '</td><td>' + escDoc(value).replace(/\n/g, '<br/>') + '</td></tr>')
+   .join('')
 
-  let reminder = 'This form documents the details stated above for company records and proper review.'
-  if (form.key === 'DISC-NTE') reminder = 'Employee is given the opportunity to submit a written explanation. Management shall review the explanation and available evidence before making a decision.'
-  if (form.key === 'PAY-CA-AGREEMENT') reminder = "Employee authorizes Roma's Donuts to deduct the agreed repayment amount from payroll until the cash advance is fully paid."
-  if (form.key === 'PAY-DEDUCTION-AUTH') reminder = 'Employee confirms that the deduction details were explained and authorizes payroll deduction according to the approved terms.'
-  if (form.key === 'HR-CLEARANCE') reminder = 'Final pay or release may be processed only after all required clearances and accountabilities are reviewed.'
-  if (form.key === 'HR-PPE-ISSUE') reminder = 'Employee acknowledges receipt of the listed items and responsibility for proper use, care, and return when required.'
-  if (form.key === 'PAY-RELEASE') reminder = 'Employee acknowledges receipt of the stated payroll or release amount.'
+  const signatureLabels = form.signatureLabels || ['Employee Signature / Date','Authorized Representative / Date','Prepared By','Approved By']
+  const signatureHtml = signatureLabels.map(label => '<div class="sig"><div class="line"></div><div>' + escDoc(label) + '</div></div>').join('')
+  const reminder = form.reminder || 'This form documents the details stated above for company records and proper review.'
 
   const html =
-   '<!DOCTYPE html><html><head><title>' + escDoc(form.title) + '</title>' +
+   '<!DOCTYPE html><html><head><title>' + escDoc(documentNo || form.title) + '</title>' +
    '<style>' +
-   '*{box-sizing:border-box}body{font-family:Arial,sans-serif;background:#e5e5e5;margin:0;padding:18px;color:#111;font-size:12px}' +
-   '.page{width:210mm;min-height:297mm;background:white;margin:0 auto;padding:18mm;box-shadow:0 2px 10px rgba(0,0,0,.18)}' +
-   '.brand{text-align:center;border-bottom:3px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px}.brand h1{margin:0;color:#ca1b1b;font-size:24px;letter-spacing:.5px}.brand p{margin:3px 0;color:#555;font-size:11px}' +
-   'h2{text-align:center;margin:14px 0 8px;font-size:16px;text-decoration:underline;letter-spacing:.5px}.purpose{text-align:center;color:#555;font-size:11px;margin:0 0 14px;line-height:1.45}' +
-   'table{width:100%;border-collapse:collapse;margin:10px 0 14px}td{border:1px solid #ddd;padding:7px 8px;vertical-align:top;line-height:1.4}td.label{width:31%;background:#fff8dc;font-weight:bold;color:#333}' +
-   '.notice{border:1px solid #f5c518;background:#fff8dc;border-radius:8px;padding:10px;margin:14px 0;font-size:11px;line-height:1.5;color:#444;text-align:justify}' +
-   '.sig-wrap{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:35px}.sig{border-top:1px solid #000;text-align:center;padding-top:6px;font-size:10px;min-height:30px}' +
-   '.footer{text-align:center;color:#888;font-size:9px;margin-top:18px;border-top:1px solid #eee;padding-top:8px}.no-print{text-align:center;margin:0 0 18px}button{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 22px;font-weight:bold;cursor:pointer}' +
+   '*{box-sizing:border-box}body{font-family:Arial,sans-serif;background:#e5e5e5;margin:0;padding:12px;color:#111;font-size:11px}' +
+   '.page{width:210mm;min-height:297mm;background:white;margin:0 auto;padding:13mm 15mm;box-shadow:0 2px 10px rgba(0,0,0,.18)}' +
+   '.brand{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #ca1b1b;padding-bottom:8px;margin-bottom:10px}.brand h1{margin:0;color:#ca1b1b;font-size:22px}.brand p{margin:2px 0;color:#555;font-size:9.5px}' +
+   '.doc-head{text-align:right}.doc-head h2{margin:0;font-size:15px;color:#1a1a2e;text-transform:uppercase;max-width:105mm}.doc-no{font-size:9.5px;color:#666;margin-top:4px}.status{display:inline-block;margin-top:4px;border:1px solid #ddd;background:#f7f9fc;border-radius:999px;padding:3px 8px;font-size:9px;font-weight:bold}' +
+   '.purpose{text-align:center;color:#555;font-size:10px;margin:0 0 9px;line-height:1.35}' +
+   'table{width:100%;border-collapse:collapse;margin:7px 0 10px}td{border:1px solid #d8d8d8;padding:5.5px 7px;vertical-align:top;line-height:1.32;font-size:10.5px}td.label{width:31%;background:#fff8dc;font-weight:bold;color:#333}' +
+   '.notice{border:1px solid #f5c518;background:#fff8dc;border-radius:7px;padding:8px;margin:10px 0;font-size:9.5px;line-height:1.4;color:#444;text-align:justify}' +
+   '.signatures{display:grid;grid-template-columns:1fr 1fr;gap:25px 34px;margin-top:28px}.sig{text-align:center;font-size:9.5px;color:#333}.line{border-top:1px solid #222;min-height:1px;margin-bottom:5px}' +
+   '.footer{text-align:center;color:#888;font-size:8.5px;margin-top:14px;border-top:1px solid #eee;padding-top:6px}.no-print{text-align:center;margin:0 0 10px}button{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:9px 20px;font-weight:bold;cursor:pointer}' +
    '@media print{@page{size:A4;margin:0}body{background:white;padding:0}.page{box-shadow:none;margin:0}.no-print{display:none}}' +
    '</style></head><body>' +
    '<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>' +
-   '<div class="page"><div class="brand"><h1>Roma\'s Donuts</h1><p>Payroll, HR, Production &amp; Business Documents System</p><p>Every bite is a little piece of heaven.</p></div>' +
-   '<h2>' + escDoc(form.title).toUpperCase() + '</h2><p class="purpose">' + escDoc(form.purpose) + '</p><table>' + rowHtml + '</table>' +
+   '<div class="page"><div class="brand"><div><h1>Roma\'s Donuts</h1><p>Management System</p><p>Every bite is a little piece of heaven.</p></div>' +
+   '<div class="doc-head"><h2>' + escDoc(form.title) + '</h2><div class="doc-no">' + escDoc(documentNo || '') + '</div>' + (status ? '<span class="status">' + escDoc(status) + '</span>' : '') + '</div></div>' +
+   '<p class="purpose">' + escDoc(form.purpose || '') + '</p><table>' + rowHtml + '</table>' +
    '<div class="notice">' + escDoc(reminder) + '</div>' +
-   '<div class="sig-wrap"><div class="sig">Employee Signature / Date</div><div class="sig">Authorized Representative / Date</div></div>' +
-   '<div class="sig-wrap" style="margin-top:28px"><div class="sig">Prepared By</div><div class="sig">Approved By</div></div>' +
-   '<div class="footer">Generated from Roma\'s Donuts Company Documents &amp; Forms Center</div></div></body></html>'
+   '<div class="signatures">' + signatureHtml + '</div>' +
+   '<div class="footer">Generated from Roma\'s Donuts Company Documents &amp; Forms Center • ' + escDoc(new Date().toLocaleString('en-PH')) + '</div></div></body></html>'
 
-  const pw = window.open('', '_blank', 'width=900,height=700')
-  if (!pw) { showToast('Popup blocked. Please allow popups to print documents.', 'red'); return }
+  const pw = window.open('', '_blank', 'width=950,height=760')
+  if (!pw) {
+   showToast('Popup blocked. Please allow popups to print documents.', 'red')
+   return
+  }
   pw.document.write(html)
   pw.document.close()
   pw.focus()
+  if (autoPrint) setTimeout(() => pw.print(), 300)
  }
 
+ const printBatch1ADocumentForm = (forcedDocumentNo = '') => {
+  const form = getSelectedDocumentBatch1AForm()
+  if (!form || form.externalTab) {
+   showToast('Select a fillable form.', 'red')
+   return
+  }
+  if (form.employeeMode === 'required' && !documentFormDraft.employeeId && !window.confirm('No employee selected. Print a blank form?')) return
+
+  const emp = getDocumentFormEmployee()
+  const docNo = getDocumentReferenceNumber(form, forcedDocumentNo)
+  if (!documentFormDraft.documentNo) setDocumentFormDraft(prev => ({ ...prev, documentNo:docNo }))
+  const rows = buildPrintableDocumentRows(form, emp, { ...documentFormDraft, documentNo:docNo }, { documentNo:docNo, blankRequired:true, includeBlankOptional:false })
+  openDocumentPrintWindow({ form, rows, documentNo:docNo })
+ }
+
+ function printCompanyDocumentRecord(record) {
+  if (!record) {
+   showToast('No document record selected.', 'red')
+   return
+  }
+
+  const form = findBatch1DocumentForm(record.form_key) || {
+   key:record.form_key || 'GENERIC',
+   title:record.document_type || 'Company Document',
+   purpose:'Saved company document record.',
+   employeeMode:'optional',
+   fields:[
+    { key:'incidentDate', label:'Incident Date', type:'date' },
+    { key:'effectiveDate', label:'Effective Date', type:'date' },
+    { key:'subject', label:'Subject', type:'text' },
+    { key:'details', label:'Details', type:'textarea' },
+    { key:'items', label:'Items / Accountabilities', type:'textarea' },
+    { key:'amount', label:'Amount', type:'number', format:'currency' },
+    { key:'deductionPerCutoff', label:'Deduction Per Cutoff', type:'number', format:'currency' }
+   ],
+   signatureLabels:['Employee / Recipient','Authorized Representative','Prepared By','Approved By']
+  }
+
+  const values = getSavedDocumentValues(record)
+  const employeeInfo = {
+   full_name:record.employee_name || '',
+   employee_code:record.employee_code || '',
+   position:record.position || '',
+   department:record.department || ''
+  }
+  const status = getCompanyDocumentRecordStatusLabel(record.status)
+  const docNo = record.document_no || values.documentNo || 'RD-DOCUMENT'
+  const rows = buildPrintableDocumentRows(form, employeeInfo, values, {
+   documentNo:docNo,
+   status,
+   employeeName:record.employee_name,
+   employeeCode:record.employee_code,
+   position:record.position,
+   department:record.department,
+   blankRequired:false,
+   includeBlankOptional:false
+  })
+  openDocumentPrintWindow({ form, rows, documentNo:docNo, status, autoPrint:true })
+ }
+
+ const viewCompanyDocumentRecord = (record) => {
+  if (!record) return
+  const form = findBatch1DocumentForm(record.form_key) || {
+   key:record.form_key || 'GENERIC',
+   title:record.document_type || 'Company Document',
+   employeeMode:'optional',
+   fields:[
+    { key:'incidentDate', label:'Incident Date', type:'date' },
+    { key:'effectiveDate', label:'Effective Date', type:'date' },
+    { key:'subject', label:'Subject', type:'text' },
+    { key:'details', label:'Details', type:'textarea' },
+    { key:'items', label:'Items / Accountabilities', type:'textarea' },
+    { key:'amount', label:'Amount', type:'number', format:'currency' },
+    { key:'deductionPerCutoff', label:'Deduction Per Cutoff', type:'number', format:'currency' }
+   ]
+  }
+  const values = getSavedDocumentValues(record)
+  const employeeInfo = {
+   full_name:record.employee_name || '',
+   employee_code:record.employee_code || '',
+   position:record.position || '',
+   department:record.department || ''
+  }
+  const rows = buildPrintableDocumentRows(form, employeeInfo, values, {
+   documentNo:record.document_no || values.documentNo,
+   status:getCompanyDocumentRecordStatusLabel(record.status),
+   blankRequired:false,
+   includeBlankOptional:false
+  }).filter(([,value]) => String(value || '').trim())
+
+  window.alert(rows.map(([label,value]) => label + ': ' + value).join('\n\n'))
+ }
 
  const handleTabClick = (key) => {
       if(key==='payablesMain') {
@@ -19436,11 +28504,13 @@ function printCompanyDocumentRecord(record) {
   setPayrollAdjustmentFrom(payrollStart || today)
   setPayrollAdjustmentTo(payrollEnd || today)
   loadPayrollAdjustmentHistory({ from:payrollStart || today, to:payrollEnd || today, silent:true })
+  loadPayrollHistory()
   loadSILCashouts()
  }
  if(key==='remittance') loadPayrollHistory()
  if(key==='dtr') loadEmployees()
  if(key==='contracts') { loadContracts(); loadEmployees(); setTimeout(()=>autoGenerateMissingContracts({ silent:true }), 800) }
+ if(key==='documents') { loadEmployees(); loadCompanyDocumentRecords() }
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
@@ -19463,6 +28533,7 @@ function printCompanyDocumentRecord(record) {
  loadMyCashAdvances(adminEmployee)
  loadMyAttendanceHistory(adminEmployee)
  loadMyLeaveBalance(adminEmployee)
+ loadMedicalCertificateLock(adminEmployee)
  checkAnnouncements(adminEmployee)
  setCameFromAdmin(true)
  setAdminMode(false)
@@ -19480,6 +28551,7 @@ function printCompanyDocumentRecord(record) {
  {toast.msg}
  </div>
  )}
+ {renderAppUpdateBanner()}
  {showAdminPasswordForm && (
  <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:99998, display:'flex', alignItems:'center', justifyContent:'center', padding:'20px' }}>
  <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'420px', width:'100%', boxShadow:'0 10px 40px rgba(0,0,0,0.35)' }}>
@@ -19556,7 +28628,7 @@ function printCompanyDocumentRecord(record) {
  <div style={{ padding:'10px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
  <div style={{ background:'#ca1b1b', borderRadius:'6px', padding:'5px 10px', textAlign:'center', marginBottom: availableRoles.length > 1? '8px': '0' }}>
  <p style={{ color:'white', fontSize:'11px', fontWeight:'bold', margin:0 }}>
- {adminRole==='owner'?' Owner':adminRole==='manager'?' Manager':adminRole==='hr'?' HR Admin':adminRole==='payroll'?' Payroll Officer':adminRole==='supervisor'?' Supervisor':adminRole==='asst_supervisor'?' Asst. Supervisor':' Owner'}
+ {adminRole==='owner'?' Owner':adminRole==='manager'?' Manager':adminRole==='pos_admin'?' SAGS POS Admin':adminRole==='hr'?' HR Admin':adminRole==='payroll'?' Payroll Officer':adminRole==='supervisor'?' Supervisor':adminRole==='asst_supervisor'?' Asst. Supervisor':' Owner'}
  </p>
  {(adminEmployee || adminAuthProfile || adminAuthUser) && <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'10px', margin:'2px 0 0' }}>{adminEmployee?.full_name || adminAuthProfile?.full_name || adminAuthUser?.email}</p>}
  </div>
@@ -19566,8 +28638,8 @@ function printCompanyDocumentRecord(record) {
  <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'9px', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'0.5px', textAlign:'center' }}>Switch Role</p>
  <div style={{ display:'flex', flexDirection:'column', gap:'3px' }}>
  {availableRoles.map(role => (
- <button key={role} onClick={()=>{ setAdminRole(role); setActiveTab(role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'); showToast(` Switched to ${role==='owner'?'Owner':role==='manager'?'Manager':role==='hr'?'HR Admin':role==='payroll'?'Payroll Officer':role==='supervisor'?'Supervisor':'Asst. Supervisor'}`) }} style={{ padding:'5px 8px', borderRadius:'6px', border:`1px solid ${adminRole===role?'#ca1b1b':'rgba(255,255,255,0.15)'}`, background:adminRole===role?'#ca1b1b':'rgba(255,255,255,0.05)', color:adminRole===role?'white':'rgba(255,255,255,0.6)', cursor:'pointer', fontSize:'10px', fontWeight:adminRole===role?'bold':'normal', textAlign:'left', transition:'all 0.15s' }}>
- {role==='owner'?' Owner':role==='manager'?' Manager':role==='hr'?' HR Admin':role==='payroll'?' Payroll':role==='supervisor'?' Supervisor':' Asst. Supervisor'}
+ <button key={role} onClick={()=>{ setAdminRole(role); setActiveTab(role==='pos_admin'?'posMonitor':role==='payroll'?'payroll':role==='supervisor'||role==='asst_supervisor'?'attendance':role==='hr'?'employees':'dashboard'); showToast(` Switched to ${role==='owner'?'Owner':role==='manager'?'Manager':role==='pos_admin'?'SAGS POS Admin':role==='hr'?'HR Admin':role==='payroll'?'Payroll Officer':role==='supervisor'?'Supervisor':'Asst. Supervisor'}`) }} style={{ padding:'5px 8px', borderRadius:'6px', border:`1px solid ${adminRole===role?'#ca1b1b':'rgba(255,255,255,0.15)'}`, background:adminRole===role?'#ca1b1b':'rgba(255,255,255,0.05)', color:adminRole===role?'white':'rgba(255,255,255,0.6)', cursor:'pointer', fontSize:'10px', fontWeight:adminRole===role?'bold':'normal', textAlign:'left', transition:'all 0.15s' }}>
+ {role==='owner'?' Owner':role==='manager'?' Manager':role==='pos_admin'?' SAGS POS Admin':role==='hr'?' HR Admin':role==='payroll'?' Payroll':role==='supervisor'?' Supervisor':' Asst. Supervisor'}
  {adminRole===role && <span style={{ float:'right', fontSize:'9px' }}> Active</span>}
  </button>
  ))}
@@ -19630,7 +28702,7 @@ function printCompanyDocumentRecord(record) {
  <SectionErrorBoundary resetKey={activeTab}>
 
  {/* POS MONITOR */}
- {activeTab==='posMonitor' && <PosMonitorPanel />}
+ {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
 
  {/* DASHBOARD */}
  {activeTab==='dashboard' && (
@@ -20008,6 +29080,44 @@ function printCompanyDocumentRecord(record) {
  </div>
  ))}
 
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'14px', marginBottom:'16px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'8px' }}>
+ <div>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Staff Hourly Rates</h3>
+ <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Computed using the same payroll basis: daily rate ÷ 8, or fixed monthly/semi-monthly converted using annual working days.</p>
+ </div>
+ <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={exportEmployeeHourlyRatesCSV}>EXPORT CSV</button>
+ </div>
+ <div style={{ overflowX:'auto', border:'1px solid #eee', borderRadius:'10px' }}>
+ <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'900px', fontSize:'12px' }}>
+ <thead>
+ <tr style={{ background:'#1a1a2e', color:'white' }}>
+ {['Employee','Position','Basis','Daily Equivalent','Monthly','Semi-Monthly','Hourly Rate','Formula / Source','Status'].map(h => <th key={h} style={{ padding:'8px', textAlign:h==='Employee'||h==='Position'||h==='Formula / Source'?'left':'right' }}>{h}</th>)}
+ </tr>
+ </thead>
+ <tbody>
+ {(employees || []).map(emp => {
+ const rateInfo = getEmployeeHourlyRateInfo(emp)
+ return (
+ <tr key={emp.id} style={{ borderBottom:'1px solid #f0f0f0', background:rateInfo.isConfigured?'white':'#fff5f5' }}>
+ <td style={{ padding:'8px', fontWeight:'bold', color:'#333', textAlign:'left' }}>{emp.full_name}<div style={{ color:'#888', fontSize:'10px', fontWeight:'500' }}>{emp.employee_code || ''}</div></td>
+ <td style={{ padding:'8px', textAlign:'left' }}>{emp.position || '-'}<div style={{ color:'#999', fontSize:'10px' }}>{emp.department || ''}</div></td>
+ <td style={{ padding:'8px', textAlign:'right', whiteSpace:'nowrap' }}>{rateInfo.basisLabel}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'bold' }}>{rateInfo.dailyEquivalent > 0 ? php(rateInfo.dailyEquivalent) : '-'}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.monthlySalary > 0 ? php(rateInfo.monthlySalary) : '-'}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.semiMonthlySalary > 0 ? php(rateInfo.semiMonthlySalary) : '-'}</td>
+ <td style={{ padding:'8px', textAlign:'right', fontWeight:'900', color:rateInfo.isConfigured?'#2d8a4e':'#ca1b1b' }}>{rateInfo.isConfigured ? php(rateInfo.hourlyRate) : 'Missing'}</td>
+ <td style={{ padding:'8px', textAlign:'left', color:'#666', fontSize:'11px' }}>{rateInfo.formulaNote}</td>
+ <td style={{ padding:'8px', textAlign:'right' }}>{rateInfo.isConfigured ? <Badge label="OK" color="green" /> : <Badge label="MISSING RATE" color="red" />}</td>
+ </tr>
+ )
+ })}
+ </tbody>
+ </table>
+ </div>
+ </div>
+
  <h3 style={{ color:'#ca1b1b', marginTop:'16px', marginBottom:'10px' }}> Add New Employee</h3>
  <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
  {[[' Basic Information'],[['Employee Code *','code'],['Full Name *','name'],['Position *','position'],['PIN *','pin'],['Department','department']]].length && null}
@@ -20039,10 +29149,10 @@ function printCompanyDocumentRecord(record) {
  </select>
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Production Labor / COGS will be included in COGS after payroll is released. Other classifications remain operating payroll expense.</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
- <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
- <label style={lblS}><input type="checkbox" checked={newEmpFields.regularHolidayEligible !== false} onChange={e=>setNewEmpFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
- <label style={lblS}><input type="checkbox" checked={newEmpFields.specialHolidayEligible !== false} onChange={e=>setNewEmpFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
- <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Uncheck for supervisors or employees you want exempted from holiday premium computation.</p>
+ <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Policy</p>
+ <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Regular Holiday premium</label>
+ <label style={lblS}><input type="checkbox" checked={true} disabled style={{ marginRight:'8px' }} />All employees eligible for Special Holiday premium</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Company rule: no staff or supervisor is exempted from worked-holiday premium computation.</p>
  </div>
  {adminRole==='owner' && (<>
  <label style={lblS}> Admin Role (Owner only grants system access):</label>
@@ -20125,13 +29235,13 @@ function printCompanyDocumentRecord(record) {
  <p style={cps}>SIL: {safeNum(emp.sil_balance,0)}d | {hasOneYearService(emp.hire_date)?'Qualified':'Not yet qualified'} | Sick/Vacation Leave removed</p>
  {(()=>{ const cs = getContractStatusForEmployee(emp); const rs = getRegularizationStatus(emp); return <p style={cps}>Contract: <Badge label={cs.label} color={cs.color} /> | Regularization: <Badge label={rs.label} color={rs.color} /> {rs.dueDate? `| Review: ${rs.dueDate}`:''}</p> })()}
  <p style={cps}>{emp.has_sss?' ':' '} SSS &nbsp;{emp.has_pagibig?' ':' '} Pag-IBIG &nbsp;{emp.has_philhealth?' ':' '} PhilHealth</p>
- <p style={cps}>Holiday Pay: <Badge label={emp.regular_holiday_pay_eligible === false?'Regular Exempt':'Regular Eligible'} color={emp.regular_holiday_pay_eligible === false?'red':'green'} /> <Badge label={emp.special_holiday_pay_eligible === false?'Special Exempt':'Special Eligible'} color={emp.special_holiday_pay_eligible === false?'red':'green'} /></p>
+ <p style={cps}>Holiday Pay: <Badge label={emp.regular_holiday_pay_eligible !== false ? "Regular Eligible" : "No Regular Holiday Pay"} color={emp.regular_holiday_pay_eligible !== false ? "green" : "red"} /> <Badge label={emp.special_holiday_pay_eligible !== false ? "Special Eligible" : "No Special Holiday Pay"} color={emp.special_holiday_pay_eligible !== false ? "green" : "red"} /></p>
  </div>
  </div>
  <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'' }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -20164,9 +29274,9 @@ function printCompanyDocumentRecord(record) {
  <p style={{ color:'#777', fontSize:'11px', margin:'-6px 0 8px' }}>Use Production Labor / COGS for mixers, frymen, bakers, finishers, and packers directly making products.</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
  <p style={{ margin:'0 0 6px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Holiday Pay Eligibility</p>
- <label style={lblS}><input type="checkbox" checked={editFields.regularHolidayEligible !== false} onChange={e=>setEditFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Regular Holiday Pay Eligible</label>
- <label style={lblS}><input type="checkbox" checked={editFields.specialHolidayEligible !== false} onChange={e=>setEditFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Special Holiday Pay Eligible</label>
- <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0' }}>Uncheck Regular and/or Special if this employee should not receive that holiday premium.</p>
+ <label style={{...lblS, marginBottom:'8px'}}><input type="checkbox" checked={editFields.regularHolidayEligible !== false} disabled={adminRole!=='owner'} onChange={e=>setEditFields(p=>({...p,regularHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Eligible for Regular Holiday pay</label>
+ <label style={{...lblS, marginBottom:'8px'}}><input type="checkbox" checked={editFields.specialHolidayEligible !== false} disabled={adminRole!=='owner'} onChange={e=>setEditFields(p=>({...p,specialHolidayEligible:e.target.checked}))} style={{ marginRight:'8px' }} />Eligible for Special Holiday premium</label>
+ <p style={{ color:'#777', fontSize:'11px', margin:'2px 0 0', lineHeight:1.5 }}>{adminRole==='owner' ? 'Owner-only control. Uncheck both boxes only for an employee whose approved pay arrangement excludes holiday pay.' : 'Only the Owner can change holiday-pay eligibility.'}</p>
  </div>
  {adminRole==='owner'||adminRole==='manager'? (<>
  <label style={lblS}> Primary Role (grants system access):</label>
@@ -20174,6 +29284,7 @@ function printCompanyDocumentRecord(record) {
  <option value=""> None (Regular Employee) </option>
  <option value="owner"> Owner Full Access</option>
  <option value="manager"> Manager Full Access</option>
+ <option value="pos_admin"> SAGS POS Admin POS edits only</option>
  <option value="hr"> HR Admin People & Attendance</option>
  <option value="payroll"> Payroll Officer Payroll & Finance</option>
  <option value="supervisor"> Supervisor Attendance & Inventory</option>
@@ -20183,6 +29294,7 @@ function printCompanyDocumentRecord(record) {
  <select multiple value={(editFields.extra_roles||'').split(',').filter(r=>r)} onChange={e=>{ const selected=Array.from(e.target.selectedOptions).map(o=>o.value); setEditFields(p=>({...p,extra_roles:selected.join(',')})) }} style={{...inputStyle, height:'100px', borderColor:'#4a90d9' }}>
  <option value="owner"> Owner</option>
  <option value="manager"> Manager</option>
+ <option value="pos_admin"> SAGS POS Admin</option>
  <option value="hr"> HR Admin</option>
  <option value="payroll"> Payroll Officer</option>
  <option value="supervisor"> Supervisor</option>
@@ -20212,6 +29324,10 @@ function printCompanyDocumentRecord(record) {
  <input type="date" value={editFields.hireDate||''} onChange={e=>setEditFields(p=>({...p,hireDate:e.target.value}))} style={inputStyle} />
  <label style={lblS}>Grace Period (minutes):</label>
  <input type="number" value={editFields.gracePeriod||10} onChange={e=>setEditFields(p=>({...p,gracePeriod:e.target.value}))} style={inputStyle} />
+ <div style={{ background:'#eef8ff', border:'1px solid #9cccf0', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+ <label style={{...lblS, marginBottom:'6px', color:'#075985'}}><input type="checkbox" checked={editFields.strictCameraTimeIn===true} onChange={e=>setEditFields(p=>({...p,strictCameraTimeIn:e.target.checked}))} style={{ marginRight:'8px' }} />Strict Camera Time In for this employee</label>
+ <p style={{ margin:0, color:'#456', fontSize:'11px', lineHeight:1.5 }}>When enabled, Time In opens the live camera, uploads the selfie automatically after capture, and saves attendance only after the upload succeeds. Other employees keep their current Time In process.</p>
+ </div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 8px' }}> Leave & Benefits</p>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
  <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>SIL / Unpaid Leave Rules</p>
@@ -20595,7 +29711,7 @@ function printCompanyDocumentRecord(record) {
  <h2 style={h2s}>Holiday Calendar</h2>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'13px', color:'#555' }}>
  <strong style={{ color:'#ca1b1b' }}>Holiday Pay Rules (DOLE):</strong><br/>
- Regular Holiday Worked: <strong>200%</strong> | Not Worked: <strong>100%</strong> (paid even if absent)<br/>
+ Regular Holiday Worked: <strong>200%</strong> | Not Worked: <strong>100%</strong> only if not ABS before/on/after holiday<br/>
  Special Non-Working Worked: <strong>130%</strong> | Not Worked: <strong>No Pay (NWNP)</strong>
  </div>
 
@@ -20649,7 +29765,7 @@ function printCompanyDocumentRecord(record) {
  <h2 style={h2s}>Overtime / Undertime Requests</h2>
  <div style={{ background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>OT/UT Control Center</strong>
- <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>Use <strong>Void / Undo</strong> for wrong OT/UT before payroll release. If payroll was already released, the system blocks the undo and you should use Payroll Adjustment for the next payroll correction.</p>
+ <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>Approval is never blocked by a mismatched or legacy filed duration. The system recalculates from actual Time In and Time Out, deducts the mandatory break, and saves only the resulting OT or UT minutes. Use <strong>Void / Undo</strong> before payroll release; use Payroll Adjustment after release.</p>
  </div>
 
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.04)' }}>
@@ -20743,17 +29859,59 @@ function printCompanyDocumentRecord(record) {
  <button style={{...btnGreen, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'12px' }} onClick={async()=>{ await loadTimeAdjRequests(timeAdjView); showToast(' OT/UT requests refreshed!') }}>REFRESH</button>
  </div>
  {timeAdjRequests.length===0 && <p style={{ color:'#888' }}>No OT/UT records found in this view.</p>}
- {timeAdjRequests.map(req=>(
- <div key={req.id} style={{...cardS, border:`2px solid ${req.request_type==='overtime'?'#2d8a4e':'#f5a623'}`, background:req.request_type==='overtime'?'#f0fff0':'#fffbf0' }}>
+ {timeAdjRequests.map(req=>{
+ const requestType = String(req.request_type || '').toLowerCase()
+ const isOvertimeRequest = requestType === 'overtime'
+ const parsedEmployeeReason = parseTimeAdjustmentEmployeeReason(req.employee_reason || '')
+ const otMeta = parsedEmployeeReason.overtimeRange || {}
+ const adminValidation = timeAdjValidationById[req.id]
+ const verifiedWindow = adminValidation?.window || adminValidation?.validation?.overtimeWindow || {}
+ const attendanceMetrics = adminValidation?.validation?.metrics || {}
+ const attendanceValid = !!adminValidation?.validation?.integrity?.isValidCompleted
+ const savedMinutes = Math.max(0, Math.round(safeNum(req.minutes, 0)))
+ const actualMinutes = Math.max(0, Math.round(safeNum(adminValidation?.actualMinutes, requestType === 'overtime' ? adminValidation?.validation?.actualOvertimeMinutes : adminValidation?.validation?.actualUndertimeMinutes)))
+ const discrepancyMinutes = attendanceValid ? savedMinutes - actualMinutes : null
+ const resolvedAttendanceDate = String(adminValidation?.validation?.resolvedAttendanceDate || req.attendance_date || '').slice(0,10)
+ const resolvedFromPreviousDay = !!adminValidation?.validation?.resolvedFromPreviousDay
+ const actualTimeIn = verifiedWindow.actualTimeIn || adminValidation?.validation?.logs?.[0]?.time_in || otMeta.actualTimeIn || ''
+ const actualTimeOut = verifiedWindow.actualTimeOut || adminValidation?.validation?.logs?.[0]?.time_out || otMeta.actualTimeOut || ''
+ const validationBadgeLabel = adminValidation?.loading
+  ? 'CALCULATING'
+  : attendanceValid && actualMinutes > 0
+   ? (adminValidation?.willAutoSync ? 'AUTO-SYNC READY' : 'ACTUAL MATCH')
+   : attendanceValid ? 'NO PAYABLE MINUTES' : 'DTR REVIEW'
+ const validationBadgeColor = adminValidation?.loading ? 'orange' : attendanceValid && actualMinutes > 0 ? 'green' : 'red'
+ return (
+ <div key={req.id} style={{...cardS, border:`2px solid ${isOvertimeRequest?'#2d8a4e':'#f5a623'}`, background:isOvertimeRequest?'#f0fff0':'#fffbf0' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', justifyContent:'flex-end' }}>
- <Badge label={req.request_type==='overtime'?'OVERTIME':'UNDERTIME'} color={req.request_type==='overtime'?'green':'orange'} />
+ <Badge label={isOvertimeRequest?'OVERTIME':'UNDERTIME'} color={isOvertimeRequest?'green':'orange'} />
  <Badge label={String(req.status || 'pending').toUpperCase()} color={req.status==='approved'?'blue':req.status==='rejected'?'red':req.status==='voided'?'gray':'orange'} />
+ <Badge label={validationBadgeLabel} color={validationBadgeColor} />
  </div>
  </div>
- <p style={cps}>Date: {req.attendance_date} | Minutes: <strong>{req.minutes}</strong></p>
- <p style={cps}>Employee Reason: <em>"{req.employee_reason || 'No employee reason'}"</em></p>
+ <p style={cps}>Request Date: <strong>{req.attendance_date}</strong>{resolvedAttendanceDate && resolvedAttendanceDate !== String(req.attendance_date || '').slice(0,10) ? <> | Attendance Source Date: <strong style={{ color:'#2d8a4e' }}>{resolvedAttendanceDate}</strong></> : ''} | Saved Request: <strong>{req.minutes} min</strong></p>
+ {resolvedFromPreviousDay && <p style={{ margin:'4px 0', padding:'7px 9px', background:'#eef8ff', border:'1px solid #b9ddff', borderRadius:'8px', color:'#1261a0', fontSize:'11px', fontWeight:'800' }}>OVERNIGHT SHIFT MATCH: This request used the Time Out calendar date. The attendance record is correctly stored under the previous day, {resolvedAttendanceDate}.</p>}
+ <p style={cps}>Employee Reason: <em>"{parsedEmployeeReason.cleanReason || 'No employee reason'}"</em></p>
+ <div style={{ background:'white', border:`1.5px solid ${attendanceValid && actualMinutes > 0?'#2d8a4e':'#ffd0d0'}`, borderRadius:'12px', padding:'12px', margin:'10px 0' }}>
+  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:'8px' }}>
+   <div><span style={lblS}>Actual Time In</span><strong>{formatClockTimeForDisplay(actualTimeIn)}</strong></div>
+   <div><span style={lblS}>Actual Time Out</span><strong>{formatClockTimeForDisplay(actualTimeOut)}</strong></div>
+   <div><span style={lblS}>Raw Attendance Span</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.rawSpanMinutes,0)} min` : 'Not available'}</strong></div>
+   <div><span style={lblS}>Break Deducted</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.deductedBreakMinutes,0)} min` : 'Not available'}</strong></div>
+   <div><span style={lblS}>Net Paid Work</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.paidWorkedMinutes,0)} min` : 'Not available'}</strong></div>
+   <div><span style={lblS}>Saved Request</span><strong>{savedMinutes} min</strong></div>
+   <div><span style={lblS}>Actual {isOvertimeRequest?'OT':'UT'} to Approve</span><strong style={{ color:actualMinutes>0?'#2d8a4e':'#ca1b1b' }}>{attendanceValid ? `${actualMinutes} min` : 'Cannot calculate'}</strong></div>
+   <div><span style={lblS}>Automatic Correction</span><strong style={{ color:discrepancyMinutes===0?'#2d8a4e':'#ca1b1b' }}>{discrepancyMinutes===null ? 'Pending DTR' : discrepancyMinutes===0 ? 'No correction' : `${savedMinutes} → ${actualMinutes} min`}</strong></div>
+   {isOvertimeRequest && <div><span style={lblS}>Actual OT Window</span><strong>{attendanceValid && verifiedWindow?.valid ? `${formatClockTimeForDisplay(verifiedWindow.verifiedFrom)} – ${formatClockTimeForDisplay(verifiedWindow.verifiedTo)}` : 'No actual OT window'}</strong></div>}
+  </div>
+  <p style={{ margin:'10px 0 0', color:attendanceValid && actualMinutes > 0?'#2d8a4e':'#ca1b1b', fontWeight:'800', fontSize:'12px', lineHeight:1.5 }}>{adminValidation?.message || 'Attendance calculation is loading. You may still click approve; the system will revalidate before saving.'}</p>
+  <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', marginTop:'8px' }}>
+   <button style={{...btnGray, width:'auto', padding:'7px 11px', marginTop:0, fontSize:'11px' }} onClick={()=>refreshTimeAdjAdminValidation(req)}>RECALCULATE ACTUAL ATTENDANCE</button>
+  </div>
+ </div>
+
  {req.reviewed_at && <p style={cps}>Reviewed: {new Date(req.reviewed_at).toLocaleString()} {req.reviewed_by? `by ${req.reviewed_by}`: ''}</p>}
  {req.admin_reason && req.status!=='pending' && <p style={cps}>Admin Note: <em>"{req.admin_reason}"</em></p>}
  {(req.status==='pending' || req.status==='approved') && (
@@ -20761,15 +29919,15 @@ function printCompanyDocumentRecord(record) {
  <label style={lblS}>Admin Response / Reason {req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
  <textarea placeholder={req.status==='approved'? 'Enter reason for undoing this approved OT/UT...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
- {req.status==='pending' && <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await approveTimeAdj(req); btn.disabled=false; btn.textContent=' APPROVE' }}> APPROVE</button>}
+ {req.status==='pending' && <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Calculating actual minutes...'; await approveTimeAdj(req); btn.disabled=false; btn.textContent='APPROVE ACTUAL MINUTES' }}>APPROVE ACTUAL MINUTES</button>}
  {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent=' REJECT' }}> REJECT</button>}
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? ' UNDO APPROVED OT/UT':' VOID / CANCEL' }}>{req.status==='approved'? ' UNDO APPROVED OT/UT':' VOID / CANCEL'}</button>
  </div>
  </>
  )}
  </div>
- ))}
- </div>
+ )
+ })} </div>
  )}
 
  {/* ADJUSTMENT */}
@@ -20777,6 +29935,139 @@ function printCompanyDocumentRecord(record) {
  <div>
  <h2 style={h2s}>Payroll Adjustment</h2>
  <p style={{ color:'#888', fontSize:'13px', marginBottom:'15px' }}>Add bonuses or deductions. Applied automatically during payroll computation.</p>
+
+ <div style={{ marginBottom:'24px', padding:'16px', background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+ <div style={{ flex:1, minWidth:'240px' }}>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 5px', fontSize:'17px' }}>Historical Late / Undertime Reconciliation</h3>
+ <p style={{ margin:0, color:'#666', fontSize:'12px', lineHeight:1.6 }}>Recalculate a past payroll from actual Time In and Time Out, automatically subtract the mandatory 60-minute break, compare the corrected attendance deduction with the saved payroll, and create only the missing difference as a deduction in a later payroll. The released historical payroll is never edited.</p>
+ </div>
+ <button style={{...btnBlack, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'12px' }} onClick={async()=>{ await loadPayrollHistory(); showToast('Payroll period list refreshed.') }}>REFRESH PERIODS</button>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.5fr 1fr 1fr 1fr', gap:'10px', alignItems:'end' }}>
+ <div>
+ <label style={lblS}>Saved Historical Payroll Period</label>
+ <select value={`${attendanceReconStart}|${attendanceReconEnd}`} onChange={e=>{ const [start,end] = e.target.value.split('|'); setAttendanceReconStart(start || ''); setAttendanceReconEnd(end || ''); setAttendanceReconRows([]); setAttendanceReconSelected({}) }} style={inputStyle}>
+ {attendanceReconPeriodOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+ </select>
+ </div>
+ <div>
+ <label style={lblS}>Historical Start</label>
+ <input type="date" value={attendanceReconStart} onChange={e=>{ setAttendanceReconStart(e.target.value); setAttendanceReconRows([]); setAttendanceReconSelected({}) }} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>Historical End</label>
+ <input type="date" value={attendanceReconEnd} onChange={e=>{ setAttendanceReconEnd(e.target.value); setAttendanceReconRows([]); setAttendanceReconSelected({}) }} style={inputStyle} />
+ </div>
+ <div>
+ <label style={lblS}>Apply Adjustment On</label>
+ <input type="date" value={attendanceReconAdjustmentDate} onChange={e=>setAttendanceReconAdjustmentDate(e.target.value)} style={inputStyle} />
+ </div>
+ </div>
+
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'2px' }}>
+ <button disabled={attendanceReconLoading || attendanceReconCreating} style={{...btnGreen, width:'auto', padding:'10px 15px', marginTop:0, opacity:attendanceReconLoading?0.65:1 }} onClick={()=>runHistoricalAttendanceReconciliation()}>{attendanceReconLoading?'AUDITING...':'RUN AUTOMATIC AUDIT'}</button>
+ <button disabled={!attendanceReconRows.length} style={{...btnGray, width:'auto', padding:'10px 15px', marginTop:0 }} onClick={downloadAttendanceReconciliationCsv}>EXPORT CSV</button>
+ {attendanceReconRows.length>0 && <button style={{...btnGray, width:'auto', padding:'10px 15px', marginTop:0 }} onClick={()=>{ const selected={}; attendanceReconRows.forEach(row=>{ if(row.canCreate) selected[row.employeeId]=true }); setAttendanceReconSelected(selected) }}>SELECT ALL READY</button>}
+ {attendanceReconRows.length>0 && <button style={{...btnGray, width:'auto', padding:'10px 15px', marginTop:0 }} onClick={()=>setAttendanceReconSelected({})}>CLEAR SELECTION</button>}
+ </div>
+
+ {attendanceReconLastRunAt && <p style={{ color:'#888', fontSize:'11px', margin:'9px 0 0' }}>Last audit: {new Date(attendanceReconLastRunAt).toLocaleString('en-PH')}</p>}
+
+ {attendanceReconRows.length>0 && (
+ <>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px', margin:'14px 0 12px' }}>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Employees Audited</p><strong>{attendanceReconSummary.employees}</strong></div>
+ <div style={{ background:'white', border:'1px solid #ffd6d6', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Ready for Correction</p><strong style={{ color:'#ca1b1b' }}>{attendanceReconSummary.ready}</strong></div>
+ <div style={{ background:'white', border:'1px solid #ffd6d6', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Total Missing Deduction</p><strong style={{ color:'#ca1b1b' }}>{php(attendanceReconSummary.missingAmount)}</strong></div>
+ <div style={{ background:'white', border:'1px solid #dbe8ff', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Selected to Create</p><strong style={{ color:'#4a90d9' }}>{selectedAttendanceReconRows.length} / {php(selectedAttendanceReconAmount)}</strong></div>
+ <div style={{ background:'white', border:'1px solid #ffe0b2', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Attendance Issues</p><strong style={{ color:'#f57c00' }}>{attendanceReconSummary.flagged}</strong></div>
+ </div>
+
+ <div style={{ overflowX:'auto', background:'white', border:'1px solid #ead9c4', borderRadius:'12px' }}>
+ <table style={{ width:'100%', minWidth:'1450px', borderCollapse:'collapse', fontSize:'12px' }}>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}>
+ <th style={{ padding:'9px', textAlign:'center' }}>Use</th>
+ <th style={{ padding:'9px', textAlign:'left' }}>Employee</th>
+ <th style={{ padding:'9px', textAlign:'right' }}>Attendance Trace</th>
+ <th style={{ padding:'9px', textAlign:'left' }}>Source Dates / Specific Deduction</th>
+ <th style={{ padding:'9px', textAlign:'right' }}>Correct UT</th>
+ <th style={{ padding:'9px', textAlign:'right' }}>Correct Deduction</th>
+ <th style={{ padding:'9px', textAlign:'right' }}>Saved Payroll Deducted</th>
+ <th style={{ padding:'9px', textAlign:'right' }}>Prior Auto Correction</th>
+ <th style={{ padding:'9px', textAlign:'right' }}>New Adjustment</th>
+ <th style={{ padding:'9px', textAlign:'left' }}>Status</th>
+ </tr></thead>
+ <tbody>
+ {attendanceReconRows.map(row => (
+ <tr key={`${row.employeeId}|${row.employeeCode}`} style={{ background:row.canCreate?'#fffafa':'white' }}>
+ <td style={{ padding:'9px', textAlign:'center', borderBottom:'1px solid #eee' }}><input type="checkbox" checked={!!attendanceReconSelected[row.employeeId]} disabled={!row.canCreate || attendanceReconCreating} onChange={e=>setAttendanceReconSelected(prev=>({...prev,[row.employeeId]:e.target.checked}))} /></td>
+ <td style={{ padding:'9px', borderBottom:'1px solid #eee' }}><strong style={{ color:'#ca1b1b' }}>{row.employeeName}</strong><div style={{ color:'#888', fontSize:'11px' }}>{row.employeeCode || 'No code'} | {row.sourcePayrollReleased?'Released payroll':'Draft/unreleased payroll'}</div><div style={{ color:'#888', fontSize:'10px' }}>Rate: {php(row.hourlyRate)}/hour</div></td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><div>{row.completedWorkdays} completed day(s)</div><div style={{ color:'#f57c00' }}>{row.lateMinutesRecorded} late min recorded</div>{row.incompleteLogs?.length>0 && <div style={{ color:'#ca1b1b', fontWeight:'bold' }}>{row.incompleteLogs.length} missing Time Out</div>}</td>
+ <td style={{ padding:'9px', borderBottom:'1px solid #eee', minWidth:'240px' }}>
+ {(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).slice(0,3).map(day=><button key={day.date} onClick={()=>{ openAttendanceReconciliationTrace(row); setTimeout(()=>openAttendanceReconciliationSourceDTR(row, day.date), 0) }} style={{ display:'block', width:'100%', textAlign:'left', border:'none', background:'transparent', padding:'2px 0', color:safeNum(day.undertimeMinutes,0)>0?'#ca1b1b':'#f57c00', cursor:'pointer', fontSize:'11px', fontWeight:'700' }}>{formatDateForDisplay(day.date)} — Late {day.lateMinutes}m | Auto UT {day.undertimeMinutes}m | {php(day.deductionAmount)}</button>)}
+ {(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).length>3 && <div style={{ color:'#888', fontSize:'10px' }}>+{(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).length-3} more date(s)</div>}
+ <button style={{...btnGray, width:'auto', padding:'5px 8px', marginTop:'5px', fontSize:'10px' }} onClick={()=>openAttendanceReconciliationTrace(row)}>VIEW FULL TRACE</button>
+ </td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee', fontWeight:'800' }}>{row.correctUndertimeMinutes} min</td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><button onClick={()=>openAttendanceReconciliationTrace(row)} style={{ border:'none', background:'transparent', color:'#ca1b1b', fontWeight:'900', cursor:'pointer', padding:0 }}>{php(row.correctDeduction)}</button></td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><strong>{php(row.priorAttendanceDeduction)}</strong><div style={{ color:'#888', fontSize:'10px' }}>Late {php(row.priorLateDeduction)} + UT {php(row.priorUndertimeDeduction)}</div></td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><button disabled={safeNum(row.existingReconAmount,0)<=0} onClick={()=>openAttendanceReconciliationTrace(row,{ correctionAmount:row.existingReconAmount, correctionAppliedDate:row.existingReconRows?.[0]?.adjustment_date || '', correctionCreatedAt:row.existingReconRows?.[0]?.created_at || '', adjustmentId:row.existingReconRows?.[0]?.id || '' })} style={{ border:'none', background:'transparent', color:safeNum(row.existingReconAmount,0)>0?'#4a90d9':'#777', cursor:safeNum(row.existingReconAmount,0)>0?'pointer':'default', padding:0, fontWeight:'800' }}>{php(row.existingReconAmount)}</button>{row.existingReconRows?.[0]?.adjustment_date && <div style={{ color:'#4a90d9', fontSize:'10px', marginTop:'2px' }}>Applied {formatDateForDisplay(row.existingReconRows[0].adjustment_date)}</div>}</td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee', color:row.canCreate?'#ca1b1b':'#555', fontWeight:'900' }}><button onClick={()=>openAttendanceReconciliationTrace(row,{ correctionAmount:row.missingAdjustment, correctionAppliedDate:attendanceReconAdjustmentDate })} style={{ border:'none', background:'transparent', color:row.canCreate?'#ca1b1b':'#555', cursor:'pointer', padding:0, fontWeight:'900' }}>{php(row.missingAdjustment)}</button>{row.canCreate && <div style={{ color:'#777', fontSize:'10px', marginTop:'2px' }}>Will apply {formatDateForDisplay(attendanceReconAdjustmentDate)}</div>}</td>
+ <td style={{ padding:'9px', borderBottom:'1px solid #eee', color:row.statusColor, fontWeight:'700' }}>{row.statusLabel}</td>
+ </tr>
+ ))}
+ </tbody>
+ </table>
+ </div>
+
+ <div style={{ marginTop:'12px', background:'#fff', border:'1px solid #ffd0d0', borderRadius:'10px', padding:'12px', color:'#555', fontSize:'12px', lineHeight:1.6 }}>
+ <strong style={{ color:'#ca1b1b' }}>Protection:</strong> Employees with missing Time Out records, missing rates, exemptions, over-deductions, or unresolved data are blocked from automatic creation. The duplicate marker prevents this tool from generating the same historical correction twice. Late minutes are informational only; the correction is based on the total actual shortage after the mandatory one-hour break.
+ </div>
+ <button disabled={attendanceReconCreating || selectedAttendanceReconRows.length===0} style={{...btnRed, marginTop:'12px', opacity:(attendanceReconCreating || selectedAttendanceReconRows.length===0)?0.6:1 }} onClick={createHistoricalAttendanceReconciliationAdjustments}>{attendanceReconCreating?'CREATING ADJUSTMENTS...':`CREATE ${selectedAttendanceReconRows.length} SELECTED ADJUSTMENT(S) — ${php(selectedAttendanceReconAmount)}`}</button>
+ </>
+ )}
+ </div>
+
+ {attendanceReconTrace && (
+ <div id="attendance-reconciliation-source-trace" style={{ margin:'18px 0', padding:'16px', background:'#f8fbff', border:'2px solid #4a90d9', borderRadius:'14px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'flex-start' }}>
+ <div>
+ <h3 style={{ margin:'0 0 4px', color:'#1a1a2e' }}>Attendance Deduction Source Trace</h3>
+ <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontWeight:'800' }}>{attendanceReconTrace.employeeName} ({attendanceReconTrace.employeeCode || 'No code'})</p>
+ <p style={{ margin:'0 0 3px', color:'#555', fontSize:'12px' }}>Source payroll: <strong>{formatDateForDisplay(attendanceReconTrace.sourceStart)} – {formatDateForDisplay(attendanceReconTrace.sourceEnd)}</strong></p>
+ {attendanceReconTrace.correctionAppliedDate && <p style={{ margin:'0 0 3px', color:'#555', fontSize:'12px' }}>Correction applied to payroll on: <strong>{formatDateForDisplay(attendanceReconTrace.correctionAppliedDate)}</strong></p>}
+ {attendanceReconTrace.correctionCreatedAt && <p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Correction record created: {new Date(attendanceReconTrace.correctionCreatedAt).toLocaleString('en-PH')}</p>}
+ {safeNum(attendanceReconTrace.correctionAmount,0)>0 && <p style={{ margin:'4px 0 0', color:'#ca1b1b', fontWeight:'900' }}>Correction amount: {php(attendanceReconTrace.correctionAmount)}</p>}
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>openAttendanceReconciliationSourceDTR(attendanceReconTrace)}>OPEN FULL SOURCE DTR</button>
+ <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setAttendanceReconTrace(null)}>CLOSE TRACE</button>
+ </div>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'8px', margin:'12px 0' }}>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Correct Automatic UT</div><strong>{attendanceReconTrace.correctUndertimeMinutes || 0} min</strong></div>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Correct Deduction</div><strong>{php(attendanceReconTrace.correctDeduction)}</strong></div>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Old Payroll Deducted</div><strong>{php(attendanceReconTrace.priorAttendanceDeduction)}</strong><div style={{ color:'#888', fontSize:'10px' }}>Late {php(attendanceReconTrace.priorLateDeduction)} + UT {php(attendanceReconTrace.priorUndertimeDeduction)}</div></div>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Still Missing / Corrected</div><strong style={{ color:'#ca1b1b' }}>{php(attendanceReconTrace.correctionAmount || attendanceReconTrace.missingAdjustment)}</strong></div>
+ </div>
+ <div style={{ overflowX:'auto', background:'white', border:'1px solid #dce5f5', borderRadius:'10px' }}>
+ <table style={{ width:'100%', minWidth:'920px', borderCollapse:'collapse', fontSize:'11px' }}>
+ <thead><tr style={{ background:'#1a1a2e', color:'white' }}><th style={{ padding:'8px', textAlign:'left' }}>Attendance Date</th><th style={{ padding:'8px' }}>Time In</th><th style={{ padding:'8px' }}>Time Out</th><th style={{ padding:'8px' }}>Break Deducted</th><th style={{ padding:'8px' }}>Paid Work</th><th style={{ padding:'8px' }}>Late Record</th><th style={{ padding:'8px' }}>Specific Deduction</th><th style={{ padding:'8px', textAlign:'right' }}>Amount</th><th style={{ padding:'8px' }}>Source</th></tr></thead>
+ <tbody>
+ {(attendanceReconTrace.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).map(day=><tr key={day.date} style={{ background:safeNum(day.undertimeMinutes,0)>0?'#fffafa':'#fffaf0', borderBottom:'1px solid #eee' }}><td style={{ padding:'8px', fontWeight:'800' }}>{formatDateForDisplay(day.date)}</td><td style={{ padding:'8px', textAlign:'center' }}>{day.timeIn || '--'}</td><td style={{ padding:'8px', textAlign:'center' }}>{day.timeOut || '--'}</td><td style={{ padding:'8px', textAlign:'center' }}>{day.deductedBreakMinutes || 0} min</td><td style={{ padding:'8px', textAlign:'center' }}>{formatDutyHours(day.paidWorkedMinutes || 0)}</td><td style={{ padding:'8px', textAlign:'center', color:safeNum(day.lateMinutes,0)>0?'#f57c00':'#777' }}>{day.lateMinutes || 0} min</td><td style={{ padding:'8px', color:safeNum(day.undertimeMinutes,0)>0?'#ca1b1b':'#555', fontWeight:'700' }}>{day.deductionType || 'Automatic undertime deduction'}{safeNum(day.undertimeMinutes,0)>0 && <div>{day.undertimeMinutes} minute(s)</div>}</td><td style={{ padding:'8px', textAlign:'right', color:'#ca1b1b', fontWeight:'900' }}>{php(day.deductionAmount)}</td><td style={{ padding:'8px', textAlign:'center' }}><button style={{...btnGray, width:'auto', padding:'5px 8px', marginTop:0, fontSize:'10px' }} onClick={()=>openAttendanceReconciliationSourceDTR(attendanceReconTrace, day.date)}>OPEN THIS DATE</button></td></tr>)}
+ {(attendanceReconTrace.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).length===0 && <tr><td colSpan={9} style={{ padding:'14px', color:'#888', textAlign:'center' }}>No date-level late or undertime source was found.</td></tr>}
+ </tbody>
+ </table>
+ </div>
+ </div>
+ )}
+
+ <div style={{ marginBottom:'10px', paddingTop:'4px' }}>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'16px' }}>Manual Payroll Adjustment</h3>
+ <p style={{ margin:'0 0 10px', color:'#777', fontSize:'12px' }}>Use this form for one employee or for corrections not generated by the historical audit.</p>
+ </div>
  <EmployeeSelect value={adjustmentEmployeeId} onChange={setAdjustmentEmployeeId} employees={employees} />
  <input type="date" value={adjustmentDate} onChange={e=>setAdjustmentDate(e.target.value)} style={inputStyle} />
  <select value={adjustmentType} onChange={e=>setAdjustmentType(e.target.value)} style={inputStyle}><option value="deduction">Deduction</option><option value="addition">Addition / Bonus</option></select>
@@ -20825,6 +30116,8 @@ function printCompanyDocumentRecord(record) {
  {!payrollAdjustmentLoading && filteredPayrollAdjustmentHistory.length===0 && <p style={{ color:'#888', fontSize:'13px', margin:'10px 0 0' }}>No adjustment records found for the selected search and date range.</p>}
  {!payrollAdjustmentLoading && filteredPayrollAdjustmentHistory.slice(0, 100).map(adj => {
   const isAddition = String(adj.adjustment_type || '').toLowerCase() === 'addition'
+  const reconMeta = parsePayrollAttendanceReconMetadata(adj.notes || '')
+  const isAttendanceRecon = reconMeta.isHistoricalAttendanceRecon || String(adj.category || '') === PAYROLL_ATTENDANCE_RECON_CATEGORY
   return (
   <div key={adj.id} style={{ background:'white', border:`1px solid ${isAddition?'#d5efd9':'#ffd6d6'}`, borderRadius:'12px', padding:'12px', marginTop:'8px' }}>
   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap' }}>
@@ -20835,11 +30128,13 @@ function printCompanyDocumentRecord(record) {
   </div>
   <p style={cps}>Code: {adj.employee_code || 'No code'} | Date applied: <strong>{adj.adjustment_date}</strong> | Created: {adj.created_at? new Date(adj.created_at).toLocaleString(): 'No timestamp'}</p>
   <p style={cps}>Category: <strong>{adj.category || 'Uncategorized'}</strong></p>
-  {adj.notes && <p style={cps}>Notes: <em>"{adj.notes}"</em></p>}
+  {isAttendanceRecon && <div style={{ background:'#f8fbff', border:'1px solid #dce5f5', borderRadius:'8px', padding:'8px', marginTop:'6px' }}><p style={{...cps, margin:'0 0 3px' }}>Source payroll: <strong>{reconMeta.sourceStart || 'Unknown'} to {reconMeta.sourceEnd || 'Unknown'}</strong></p><p style={{...cps, margin:'0 0 3px' }}>Correction applied on: <strong>{adj.adjustment_date || reconMeta.correctionAppliedDate || 'Unknown'}</strong></p>{reconMeta.days.length>0 && <p style={{...cps, margin:0 }}>Source dates: <strong>{reconMeta.days.map(day=>`${day.date} (${day.undertimeMinutes}m UT / ${php(day.deductionAmount)})`).join(', ')}</strong></p>}</div>}
+  {adj.notes && <p style={{...cps, maxHeight:'54px', overflow:'hidden' }}>Notes: <em>"{adj.notes}"</em></p>}
   </div>
   <div style={{ textAlign:'right', minWidth:'120px' }}>
-  <p style={{ margin:0, color:isAddition?'#2d8a4e':'#ca1b1b', fontWeight:'900', fontSize:'15px' }}>{php(adj.amount)}</p>
+  {isAttendanceRecon?<button disabled={attendanceReconTraceLoading} onClick={()=>openPayrollAdjustmentAttendanceSource(adj)} style={{ margin:0, padding:0, border:'none', background:'transparent', color:'#ca1b1b', fontWeight:'900', fontSize:'15px', cursor:'pointer', textDecoration:'underline' }}>{php(adj.amount)}</button>:<p style={{ margin:0, color:isAddition?'#2d8a4e':'#ca1b1b', fontWeight:'900', fontSize:'15px' }}>{php(adj.amount)}</p>}
   <p style={{ margin:'3px 0 0', color:'#888', fontSize:'11px' }}>Adjustment ID: {String(adj.id || '').slice(0,8)}</p>
+  {isAttendanceRecon && <button disabled={attendanceReconTraceLoading} style={{...btnBlack, width:'auto', padding:'7px 10px', marginTop:'8px', fontSize:'11px' }} onClick={()=>openPayrollAdjustmentAttendanceSource(adj)}>{attendanceReconTraceLoading?'LOADING SOURCE...':'VIEW SOURCE / DATES'}</button>}
   <button style={{...btnRed, width:'auto', padding:'7px 10px', marginTop:'8px', fontSize:'11px' }} onClick={()=>undoPayrollAdjustment(adj)}>UNDO / DELETE</button>
   </div>
   </div>
@@ -20947,13 +30242,14 @@ function printCompanyDocumentRecord(record) {
  <button style={{...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?' LOADING...':' COMPUTE DRAFT PAYROLL'}</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollComputing?0.5:1 }} onClick={()=>loadSavedPayrollForPeriod(payrollStart, payrollEnd)} disabled={payrollComputing}> LOAD SAVED PAYROLL</button>
  <button style={{ background:'#0ea5e9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>sendPayslipsForEmployeeReview(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> SEND PAYSLIPS TO EMPLOYEES FOR REVIEW</button>
+ <button style={{ background:'#16a34a', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:payslipSmsSending?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || payslipSmsSending)?0.5:1 }} onClick={()=>sendPayslipSmsNotifications(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || payslipSmsSending}>{payslipSmsSending?' SENDING SMS...':' SEND / RETRY SMS NOTIFICATION'}</button>
  <button style={{ background:'#ef4444', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>undoDraftPayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> UNDO DRAFT PAYROLL</button>
  {payrollResults.some(p=>p.payrollApproved) && (
  <button style={{ background:'#b45309', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }} onClick={()=>reopenReleasedPayroll(payrollStart, payrollEnd)}> REOPEN RELEASED PAYROLL</button>
  )}
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT CSV</button>
- <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> RELEASE FINAL PAYROLL</button>
+ <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
  {payrollSummary && (
@@ -20999,13 +30295,13 @@ function printCompanyDocumentRecord(record) {
  {pay.nightDiffPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Night Differential</span><span>{php(pay.nightDiffPay)}</span></div>}
  {pay.holidayPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Holiday Pay</span><span>{php(pay.holidayPay)}</span></div>}
  {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Earnings <button style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #bfe5ca', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'addition')}>FIND SOURCE</button></span><span>{php(pay.adjustmentEarnings)}</span></div>}
- {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late recorded: {pay.lateMinutes}min (no automatic deduction)</span><span> </span></div>}
- {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Approved Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
+ {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late recorded: {pay.lateMinutes}min (no separate deduction; actual work shortage is already covered by undertime)</span><span> </span></div>}
+ {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Automatic Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Earnings</span><span style={{ color:'#2d8a4e' }}>{php(pay.totalEarnings)}</span></div>
  <div style={{ color:'#ca1b1b', fontWeight:'bold', margin:'8px 0 4px' }}>DEDUCTIONS</div>
  {pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
  {(pay.deferredCADeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>CA not deducted this cutoff; remains in CA balance</span><span>{php(pay.deferredCADeduction)}</span></div>}
- {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Approved Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
+ {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Automatic Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
  {pay.sssDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>SSS</span><span>{php(pay.sssDeduction)}</span></div>}
  {pay.pagibigDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Pag-IBIG</span><span>{php(pay.pagibigDeduction)}</span></div>}
  {pay.philhealthDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>PhilHealth</span><span>{php(pay.philhealthDeduction)}</span></div>}
@@ -21140,7 +30436,10 @@ function printCompanyDocumentRecord(record) {
  </thead>
  <tbody>
  {row.caItems.map(ca => {
- const inst = getCAInstallmentInfo(ca, {})
+ const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
+ const effectivePaid = getCashAdvancePaidAmount(ca)
+ const effectiveStatus = getCashAdvanceStatusForBalance(effectiveBalance, ca.status)
+ const inst = getCAInstallmentInfo({ ...ca, balance:effectiveBalance, amount_paid:effectivePaid }, {})
  const sourceReq = ca.source_request_id || ca.cash_advance_request_id || ca.approved_request_id || ''
  return (
  <tr key={ca.id}>
@@ -21156,11 +30455,14 @@ function printCompanyDocumentRecord(record) {
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount)}</td>
  <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(inst.perPayroll)}</td>
  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>{inst.total? `${inst.completed}/${inst.total} done · ${inst.remaining} left` : `${ca.installments_remaining?? 'Not recorded'} left`}</td>
- <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(ca.amount_paid)}</td>
- <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:safeNum(ca.balance,0)>0?'#ca1b1b':'#2d8a4e' }}>{php(ca.balance)}</td>
+ <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0' }}>{php(effectivePaid)}</td>
+ <td style={{ padding:'7px', textAlign:'right', borderBottom:'1px solid #f0f0f0', fontWeight:'bold', color:effectiveBalance>0?'#ca1b1b':'#2d8a4e' }}>{php(effectiveBalance)}</td>
  <td style={{ padding:'7px', textAlign:'center', borderBottom:'1px solid #f0f0f0' }}>
- <Badge label={String(ca.status||'Unknown')} color={String(ca.status||'').toLowerCase()==='paid'?'green':'orange'} />
- {adminRole==='owner' && String(ca.status||'').toLowerCase()==='paid' && safeNum(ca.balance,0)<=0 && safeNum(ca.amount,0)>0 && safeNum(ca.amount_paid,0)>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
+ <Badge label={effectiveStatus} color={effectiveStatus.toLowerCase()==='paid'?'green':'orange'} />
+ {String(ca.status || '').trim().toLowerCase() !== effectiveStatus.toLowerCase() && (
+  <div style={{ color:'#b45309', fontSize:'10px', fontWeight:'bold', marginTop:'4px' }}>stored: {String(ca.status || 'Blank')}</div>
+ )}
+ {adminRole==='owner' && effectiveStatus.toLowerCase()==='paid' && effectiveBalance<=0.009 && safeNum(ca.amount,0)>0 && effectivePaid>=safeNum(ca.amount,0) && safeNum(row.payrollDeduction,0)<=0 && (
  <button
  style={{ background:'#fff8dc', color:'#ca1b1b', border:'1px solid #FDD412', borderRadius:'8px', padding:'5px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'10px', marginTop:'6px' }}
  onClick={()=>reopenCashAdvanceForPayrollDeduction(ca)}
@@ -21627,7 +30929,7 @@ function printCompanyDocumentRecord(record) {
 
  {/* DTR PRINT */}
  {activeTab==='dtr' && (
- <div>
+ <div id="dtr-source-view">
  <h2 style={h2s}> DTR Daily Time Record</h2>
  <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>View and print the official Daily Time Record by payroll cutoff, not by calendar month.</p>
 
@@ -21635,11 +30937,11 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end' }}>
  <div style={{ flex:1, minWidth:'220px' }}>
  <label style={lblS}>Select Employee:</label>
- <EmployeeSelect value={dtrEmployeeId} onChange={v=>{ setDtrEmployeeId(v); setDtrRecords([]); setDtrStats(null) }} employees={employees} />
+ <EmployeeSelect value={dtrEmployeeId} onChange={v=>{ setDtrEmployeeId(v); setDtrRecords([]); setDtrStats(null); setDtrHighlightDates([]); setDtrHighlightContext(null); setDtrBreakTrace(null) }} employees={employees} />
  </div>
  <div style={{ flex:1, minWidth:'280px' }}>
  <label style={lblS}>Cutoff Period:</label>
- <select value={dtrCutoffKey} onChange={e=>{ setDtrCutoffKey(e.target.value); setDtrRecords([]); setDtrStats(null) }} style={{...inputStyle, marginBottom:0 }}>
+ <select value={dtrCutoffKey} onChange={e=>{ setDtrCutoffKey(e.target.value); setDtrRecords([]); setDtrStats(null); setDtrHighlightDates([]); setDtrHighlightContext(null); setDtrBreakTrace(null) }} style={{...inputStyle, marginBottom:0 }}>
  {getDTRCutoffOptions(36, today).map(period=>(
  <option key={period.key} value={period.key}>{period.label}</option>
  ))}
@@ -21649,6 +30951,7 @@ function printCompanyDocumentRecord(record) {
  <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'10px 12px', marginTop:'12px', fontSize:'12px', color:'#555', lineHeight:1.5 }}>
  <strong style={{ color:'#ca1b1b' }}>DTR rule:</strong> This view follows your payroll cutoffs: <strong>26th–10th next month</strong> and <strong>11th–25th same month</strong>. Overnight shifts are counted by the attendance/shift start date.
  </div>
+ {dtrHighlightContext && <div style={{ background:'#f8fbff', border:'2px solid #4a90d9', borderRadius:'10px', padding:'10px 12px', marginTop:'10px', fontSize:'12px', color:'#333', lineHeight:1.5 }}><strong style={{ color:'#1a1a2e' }}>Historical correction source:</strong> Highlighted rows are the dates used for {dtrHighlightContext.employeeName}'s attendance correction from <strong>{formatDateForDisplay(dtrHighlightContext.sourceStart)} to {formatDateForDisplay(dtrHighlightContext.sourceEnd)}</strong>.{dtrHighlightContext.correctionAppliedDate && <> Correction applied on <strong>{formatDateForDisplay(dtrHighlightContext.correctionAppliedDate)}</strong>.</>}<button style={{...btnGray, width:'auto', padding:'4px 8px', margin:'0 0 0 8px', fontSize:'10px' }} onClick={()=>{ setDtrHighlightDates([]); setDtrHighlightContext(null) }}>CLEAR HIGHLIGHT</button></div>}
  <div style={{ display:'flex', gap:'10px', marginTop:'12px', flexWrap:'wrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
  if(!dtrEmployeeId){ showToast('Please select an employee.','red'); return }
@@ -21661,7 +30964,8 @@ function printCompanyDocumentRecord(record) {
 .gte('attendance_date', period.start)
 .lte('attendance_date', period.end)
 .order('attendance_date')
- const grouped = groupDTRLogsByDate(logs || [])
+ const enrichedLogs = await enrichAttendanceLogsWithBreakRows(logs || [])
+ const grouped = groupDTRLogsByDate(enrichedLogs)
  const allDays = buildDateRangeRows(period.start, period.end, ({ dateStr, day, dayName })=>{
  const log = mergeDTRDayLogs(grouped[dateStr] || [])
  return { dateStr, day, dayName, log }
@@ -21671,11 +30975,13 @@ function printCompanyDocumentRecord(record) {
  setDtrStats({
  emp,
  period,
- totalWorked: new Set(mergedLogs.filter(l=>l.time_in && l.time_out).map(l=>String(l.attendance_date || '').slice(0,10))).size,
+ totalWorked: new Set(mergedLogs.filter(l=>getAttendanceDayIntegrity(getDTRDayLogs(l)).isValidCompleted).map(l=>String(l.attendance_date || '').slice(0,10))).size,
  totalAbsent: new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size,
  totalLate: mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0,
- totalOT: mergedLogs.filter(l=>l.overtime_approved===true).reduce((s,l)=>s+Number(l.overtime_minutes||0),0)||0,
- totalBreak: mergedLogs.reduce((s,l)=>s+Number(l.total_break_minutes||0),0)||0,
+ totalOT: mergedLogs.reduce((s,l)=>s+getDTRApprovedOvertimeMinutes(l),0)||0,
+ totalUT: mergedLogs.reduce((s,l)=>s+getDTRUndertimeMinutes(l),0)||0,
+ totalBreak: mergedLogs.reduce((s,l)=>s+getDTRBreakMinutes(l),0)||0,
+ totalOverbreak: mergedLogs.reduce((s,l)=>s+getDTROverbreakMinutes(l),0)||0,
  totalDutyMinutes: mergedLogs.reduce((s,l)=>s+getDTRDutyMinutes(l),0)||0,
  duplicateDays: Object.values(grouped).filter(dayLogs => dayLogs.length > 1).length
  })
@@ -21715,7 +31021,9 @@ function printCompanyDocumentRecord(record) {
  ['Absences', dtrStats.totalAbsent, '#ca1b1b'],
  ['Late (min)', dtrStats.totalLate, '#f5a623'],
  ['OT (min)', dtrStats.totalOT, '#4a90d9'],
- ['Break (min)', dtrStats.totalBreak, '#888'],
+ ['UT (min)', dtrStats.totalUT || 0, '#ca1b1b'],
+ ['Break Deducted (min)', dtrStats.totalBreak, '#888'],
+ ['Overbreak (min)', dtrStats.totalOverbreak || 0, '#ca1b1b'],
  ['Duty Hours', formatDutyHours(dtrStats.totalDutyMinutes || 0), '#1a1a2e'],
  ['Duplicate Days', dtrStats.duplicateDays || 0, '#f5a623'],
  ].map(([label, value, color])=>(
@@ -21738,8 +31046,10 @@ function printCompanyDocumentRecord(record) {
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Time In</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Time Out</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Break</th>
+ <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Overbreak</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Duty Hours</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Late</th>
+ <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>UT</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>OT</th>
  <th style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>Status</th>
  </tr>
@@ -21747,24 +31057,29 @@ function printCompanyDocumentRecord(record) {
  <tbody>
  {dtrRecords.map(({ dateStr, day, dayName, log }, i)=>{
  const isWeekend = new Date(dateStr).getDay()===0||new Date(dateStr).getDay()===6
- const rowBg = isWeekend?'#f5f5f5':log?.status==='Absent'?'#fff5f5':i%2===0?'white':'#fafafa'
+ const isSourceDate = dtrHighlightDates.includes(dateStr)
+ const isFocusedSourceDate = dtrHighlightContext?.focusDate === dateStr
+ const rowBg = isFocusedSourceDate?'#fff0b3':isSourceDate?'#fff8dc':isWeekend?'#f5f5f5':log?.status==='Absent'?'#fff5f5':i%2===0?'white':'#fafafa'
  return (
- <tr key={dateStr} style={{ background:rowBg, borderBottom:'1px solid #eee' }}>
+ <tr id={`dtr-row-${dateStr}`} key={dateStr} style={{ background:rowBg, borderBottom:'1px solid #eee', outline:isFocusedSourceDate?'3px solid #ca1b1b':isSourceDate?'2px solid #FDD412':'none', outlineOffset:'-2px' }}>
  <td style={{ padding:'7px 10px', fontWeight:'bold', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{dayName}</td>
- <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{formatDateForDisplay(dateStr)}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', color:isWeekend?'#aaa':'#333', fontSize:'12px' }}>{formatDateForDisplay(dateStr)}{dtrHighlightDates.includes(dateStr) && <div style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'9px' }}>CORRECTION SOURCE</div>}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_in?'#2d8a4e':'#ccc', fontSize:'12px', fontWeight:log?.time_in?'bold':'normal' }}>{log?.time_in||' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', color:log?.time_out?'#333':'#ccc', fontSize:'12px' }}>{log?.time_out||' '}</td>
- <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:'#888' }}>{log?.total_break_minutes||0}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px' }}>
+ {log ? <button type="button" onClick={()=>setDtrBreakTrace({ employeeName:dtrStats.emp.full_name, employeeCode:dtrStats.emp.employee_code, date:dateStr, rows:getDTRBreakRows(log), metrics:getDTRDayMetrics(log) })} style={{ border:'none', background:'transparent', color:'#555', fontWeight:'700', cursor:'pointer', padding:'3px 6px', textDecoration:'underline' }}>{getDTRBreakMinutes(log)}</button> : 0}
+ </td>
+ <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTROverbreakMinutes(log)>0?'#ca1b1b':'#888', fontWeight:getDTROverbreakMinutes(log)>0?'bold':'normal' }}>
+ {log && getDTROverbreakMinutes(log)>0 ? <button type="button" onClick={()=>setDtrBreakTrace({ employeeName:dtrStats.emp.full_name, employeeCode:dtrStats.emp.employee_code, date:dateStr, rows:getDTRBreakRows(log), metrics:getDTRDayMetrics(log) })} style={{ border:'none', background:'#fff0f0', color:'#ca1b1b', fontWeight:'900', cursor:'pointer', borderRadius:'6px', padding:'4px 7px' }}>+{getDTROverbreakMinutes(log)}</button> : 0}
+ </td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTRDutyMinutes(log)>0?'#1a1a2e':'#ccc', fontWeight:getDTRDutyMinutes(log)>0?'bold':'normal' }}>{log?formatDutyHours(getDTRDutyMinutes(log)):' '}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:Number(log?.late_minutes||0)>0?'#ca1b1b':'#888', fontWeight:Number(log?.late_minutes||0)>0?'bold':'normal' }}>{log?.late_minutes||0}</td>
- <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:log?.overtime_approved?'#2d8a4e':'#888', fontWeight:log?.overtime_approved?'bold':'normal' }}>{log?.overtime_approved?log.overtime_minutes:0}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTRUndertimeMinutes(log)>0?'#ca1b1b':'#888', fontWeight:getDTRUndertimeMinutes(log)>0?'bold':'normal' }}>{getDTRUndertimeMinutes(log)}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTRApprovedOvertimeMinutes(log)>0?'#2d8a4e':'#888', fontWeight:getDTRApprovedOvertimeMinutes(log)>0?'bold':'normal' }}>{getDTRApprovedOvertimeMinutes(log)}</td>
  <td style={{ padding:'7px 10px', textAlign:'center' }}>
  {!log && isWeekend? <span style={{ fontSize:'11px', color:'#aaa' }}>REST</span>:
 !log? <span style={{ fontSize:'11px', color:'#ccc' }}> </span>:
- log.duplicateCount>1? <Badge label="DUP" color="orange" />:
- log.status==='Absent'? <Badge label="ABS" color="red" />:
- log.status==='Late'? <Badge label="LATE" color="orange" />:
- log.time_in? <Badge label="PRESENT" color="green" />: <span style={{ color:'#ccc' }}> </span>}
+ <Badge label={getDTRStatusInfo(log).label} color={getDTRStatusInfo(log).color} />}
  </td>
  </tr>
  )
@@ -21776,13 +31091,34 @@ function printCompanyDocumentRecord(record) {
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>{dtrStats.totalWorked} days</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}></td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px' }}>{dtrStats.totalBreak} min</td>
+ <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#ff8a80' }}>{dtrStats.totalOverbreak || 0} min</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#4ade80' }}>{formatDutyHours(dtrStats.totalDutyMinutes || 0)}</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#f5a623' }}>{dtrStats.totalLate} min</td>
+ <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#ff8a80' }}>{dtrStats.totalUT || 0} min</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#4ade80' }}>{dtrStats.totalOT} min</td>
  <td style={{ padding:'8px 10px', textAlign:'center', fontSize:'12px', color:'#ca1b1b' }}>{dtrStats.totalAbsent} ABS</td>
  </tr>
  </tfoot>
  </table>
+ </div>
+ </div>
+ )}
+
+ {dtrBreakTrace && (
+ <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', zIndex:10050, display:'flex', alignItems:'center', justifyContent:'center', padding:'18px' }} onClick={()=>setDtrBreakTrace(null)}>
+ <div style={{ background:'white', width:'min(720px, 100%)', maxHeight:'88vh', overflowY:'auto', borderRadius:'16px', border:'3px solid #ca1b1b', boxShadow:'0 20px 60px rgba(0,0,0,0.35)', padding:'18px' }} onClick={event=>event.stopPropagation()}>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start', marginBottom:'12px' }}>
+ <div>
+ <h3 style={{ margin:'0 0 4px', color:'#ca1b1b' }}>Break / Overbreak Source Details</h3>
+ <p style={{ margin:0, color:'#555', fontSize:'12px' }}>{dtrBreakTrace.employeeName} {dtrBreakTrace.employeeCode?`(${dtrBreakTrace.employeeCode})`:''} — {formatDateForDisplay(dtrBreakTrace.date)}</p>
+ </div>
+ <button type="button" onClick={()=>setDtrBreakTrace(null)} style={{ border:'none', borderRadius:'8px', background:'#1a1a2e', color:'white', padding:'7px 10px', fontWeight:'800', cursor:'pointer' }}>CLOSE</button>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px', marginBottom:'12px' }}>
+ {[['Recorded Break', `${dtrBreakTrace.metrics?.recordedBreakMinutes || 0} min`, '#1a1a2e'], ['Break Deducted', `${dtrBreakTrace.metrics?.deductedBreakMinutes || 0} min`, '#555'], ['Overbreak', `${dtrBreakTrace.metrics?.overbreakMinutes || 0} min`, dtrBreakTrace.metrics?.overbreakMinutes>0?'#ca1b1b':'#2d8a4e']].map(([label,value,color])=><div key={label} style={{ background:'#f8f8f8', border:'1px solid #eee', borderRadius:'10px', padding:'10px', textAlign:'center' }}><p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', textTransform:'uppercase' }}>{label}</p><p style={{ margin:0, color, fontWeight:'900', fontSize:'16px' }}>{value}</p></div>)}
+ </div>
+ {dtrBreakTrace.rows?.length > 0 ? <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}><thead><tr style={{ background:'#ca1b1b', color:'white' }}><th style={{ padding:'8px' }}>Break #</th><th style={{ padding:'8px' }}>Break Out</th><th style={{ padding:'8px' }}>Break In</th><th style={{ padding:'8px' }}>Duration</th><th style={{ padding:'8px' }}>Result</th></tr></thead><tbody>{dtrBreakTrace.rows.map((row,index)=>{ const duration=Math.max(0, safeNum(row?.break_minutes, row?.break_out&&row?.break_in?diffMinutesAcrossMidnight(row.break_out,row.break_in):0)); return <tr key={row?.id || index} style={{ borderBottom:'1px solid #eee' }}><td style={{ padding:'8px', textAlign:'center', fontWeight:'800' }}>{index+1}</td><td style={{ padding:'8px', textAlign:'center' }}>{row?.break_out || '--'}</td><td style={{ padding:'8px', textAlign:'center' }}>{row?.break_in || 'ONGOING'}</td><td style={{ padding:'8px', textAlign:'center', fontWeight:'800' }}>{duration} min</td><td style={{ padding:'8px', textAlign:'center', color:duration>ALLOWED_BREAK_MINUTES?'#ca1b1b':'#2d8a4e', fontWeight:'800' }}>{duration>ALLOWED_BREAK_MINUTES?`${duration-ALLOWED_BREAK_MINUTES}m over limit`:'Within limit'}</td></tr>})}</tbody></table> : <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'12px', color:'#555', fontSize:'12px', lineHeight:1.5 }}>Detailed Break Out / Break In rows were not available for this historical record. The displayed total came from the attendance record saved at Time Out.</div>}
+ <div style={{ background:'#f8fbff', border:'1px solid #4a90d9', borderRadius:'10px', padding:'10px 12px', marginTop:'12px', fontSize:'11px', color:'#444', lineHeight:1.5 }}><strong>Payroll rule:</strong> Overbreak is recorded for monitoring and is already included in the attendance calculation. OT and UT enter payroll only after approval, and approved minutes are capped to the actual Time In/Time Out calculation.</div>
  </div>
  </div>
  )}
@@ -21919,7 +31255,10 @@ function printCompanyDocumentRecord(record) {
  <button style={{...btnBlack, marginTop:'20px' }} onClick={async()=>{ await loadResolvedCARequests(); setShowResolvedCA(!showResolvedCA) }}>{showResolvedCA?' HIDE':' VIEW'} RESOLVED REQUESTS</button>
  {showResolvedCA && resolvedCARequests.map(req=>{
  const ledger = req.cashAdvanceLedger || null
- const inst = getCAInstallmentInfo(ledger || {}, req)
+ const ledgerEffectiveBalance = ledger ? getCashAdvanceEffectiveBalance(ledger) : 0
+ const ledgerEffectivePaid = ledger ? getCashAdvancePaidAmount(ledger) : 0
+ const ledgerEffectiveStatus = ledger ? getCashAdvanceStatusForBalance(ledgerEffectiveBalance, ledger.status) : 'Unknown'
+ const inst = getCAInstallmentInfo(ledger ? { ...ledger, balance:ledgerEffectiveBalance, amount_paid:ledgerEffectivePaid } : {}, req)
  const approved = String(req.status || '').toLowerCase() === 'approved'
  const disapproved = String(req.status || '').toLowerCase() === 'disapproved'
  return (
@@ -21948,9 +31287,12 @@ function printCompanyDocumentRecord(record) {
  {approved && (
  <div style={{ marginTop:'10px', background:'white', border:'1px solid #d9f2df', borderRadius:'10px', padding:'10px' }}>
  <p style={{ margin:'0 0 8px', color:'#2d8a4e', fontWeight:'bold', fontSize:'13px' }}>Cash Advance Ledger / Payroll Deduction Plan</p>
- {ledger && safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
+ {ledger && adminRole === 'owner' && (
   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', margin:'0 0 10px' }}>
-   <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
+   {safeNum(ledger.amount_paid, 0) <= 0 && safeNum(ledger.installments_total, ledger.installments_remaining || 1) === safeNum(ledger.installments_remaining, ledger.installments_total || 1) && (
+    <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>editCashAdvanceDeductionPlan(ledger, req)}>EDIT DEDUCTION PLAN</button>
+   )}
+   <button style={{...btnYellow, background:'#FDD412', width:'auto', padding:'7px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>correctCashAdvanceAmount(ledger, req)}>CORRECT CA AMOUNT</button>
   </div>
  )}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px' }}>
@@ -21971,13 +31313,13 @@ function printCompanyDocumentRecord(record) {
   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'8px' }}>
   {[
    ['Original Amount', php(ledger.amount)],
-   ['Already Paid/Deducted', php(ledger.amount_paid)],
-   ['Current Balance', php(ledger.balance)],
-   ['Ledger Status', ledger.status || 'Unknown']
+   ['Already Paid/Deducted', php(ledgerEffectivePaid)],
+   ['Current Balance', php(ledgerEffectiveBalance)],
+   ['Ledger Status', ledgerEffectiveStatus]
   ].map(([label,value])=>(
    <div key={label} style={{ background:'#fff', border:'1px solid #eee', borderRadius:'8px', padding:'8px' }}>
    <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
-   <p style={{ margin:0, fontWeight:'bold', color:label==='Current Balance' && safeNum(ledger.balance,0)>0?'#ca1b1b':'#333', fontSize:'12px' }}>{value}</p>
+   <p style={{ margin:0, fontWeight:'bold', color:label==='Current Balance' && ledgerEffectiveBalance>0?'#ca1b1b':'#333', fontSize:'12px' }}>{value}</p>
    </div>
   ))}
   </div>
@@ -22359,143 +31701,210 @@ function printCompanyDocumentRecord(record) {
  <div>
  <h2 style={h2s}> Company Documents & Forms Center</h2>
  <p style={{ color:'#888', fontSize:'13px', margin:'0 0 6px' }}>Central catalog for agreements, slips, NTE, contracts, production forms, food safety records, delivery documents, finance slips, compliance trackers, SOPs, and management checklists.</p>
- <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Batch 0 is the library foundation. Forms marked Existing Module already have partial or full app support. Forms marked Template Listed are ready to build in the next batches.</p>
+ <p style={{ color:'#555', fontSize:'12px', margin:0 }}>Batch 1 is fully active. All essential HR, payroll, NTE, accountability, finance, policy, and acknowledgment documents can now be opened, completed, saved, printed, and archived.</p>
  </div>
- <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Documents Center Batch 0 is active. Choose the next batch to build real forms.')}>BATCH 0 ACTIVE</button>
+ <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>showToast('Full Batch 1 is active: 30 fillable forms plus the Employment Contracts module.')}>FULL BATCH 1 ACTIVE</button>
  </div>
 
- <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
+ {/* Documents Center Sub-Navigation */}
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'16px', background:'white', padding:'10px', borderRadius:'14px', border:'1px solid #eee', boxShadow:'0 1px 6px rgba(0,0,0,0.05)' }}>
+  <button
+   onClick={()=>setDocumentCenterView('forms')}
+   style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='forms'?'#ca1b1b':'#f4f4f4', color:documentCenterView==='forms'?'white':'#555', boxShadow:documentCenterView==='forms'?'0 2px 8px rgba(202,27,27,0.25)':'none' }}
+  >FORMS & TEMPLATES</button>
+  <button
+   onClick={()=>{ setDocumentCenterView('records'); loadCompanyDocumentRecords() }}
+   style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='records'?'#1a1a2e':'#f4f4f4', color:documentCenterView==='records'?'white':'#555', boxShadow:documentCenterView==='records'?'0 2px 8px rgba(26,26,46,0.22)':'none', display:'inline-flex', alignItems:'center', gap:'8px' }}
+  >DOCUMENT RECORDS & NTE ARCHIVE <span style={{ background:documentCenterView==='records'?'#FDD412':'#ddd', color:'#1a1a2e', borderRadius:'999px', minWidth:'24px', height:'20px', padding:'0 7px', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:'10px' }}>{companyDocumentRecords.length}</span></button>
+ </div>
+
+ {documentCenterView==='forms' && (
+ <>
+ <div id="document-batch1a-form-builder" style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px', scrollMarginTop:'18px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Batch 1A Printable Forms Builder</h3>
- <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Create professional printable HR, payroll, NTE, clearance, PPE, and acknowledgment forms. Database saving will be added in the next batch.</p>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Full Batch 1 Documents Builder</h3>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>All 31 Batch 1 documents are active: 30 fillable, savable, and printable forms plus the dedicated Employment Contracts module.</p>
  </div>
- <Badge label="Printable Only" color="yellow" />
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Form Type</label>
- <select value={documentFormDraft.formKey} onChange={e=>updateDocumentFormDraft('formKey', e.target.value)} style={{...inputStyle, marginBottom:0 }}>
- {DOCUMENT_BATCH1A_FORMS.map(form => <option key={form.key} value={form.key}>{form.title}</option>)}
- </select>
- </div>
- <div>
- <label style={lblS}>Employee</label>
- <EmployeeSelect value={documentFormDraft.employeeId} onChange={value=>updateDocumentFormDraft('employeeId', value)} employees={employees} />
- </div>
- <div>
- <label style={lblS}>Document Date</label>
- <input type="date" value={documentFormDraft.documentDate} onChange={e=>updateDocumentFormDraft('documentDate', e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+ <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+  <Badge label="31 / 31 ACTIVE" color="green" />
+  <Badge label={activeBatch1FillableForms.length + ' FILLABLE FORMS'} color="blue" />
  </div>
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Incident / Effective Date</label>
- <input type="date" value={documentFormDraft.incidentDate} onChange={e=>{ updateDocumentFormDraft('incidentDate', e.target.value); updateDocumentFormDraft('effectiveDate', e.target.value) }} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Amount</label>
- <input value={documentFormDraft.amount} onChange={e=>updateDocumentFormDraft('amount', e.target.value)} placeholder="Example: 2000" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Deduction Per Cutoff</label>
- <input value={documentFormDraft.deductionPerCutoff} onChange={e=>updateDocumentFormDraft('deductionPerCutoff', e.target.value)} placeholder="Example: 500" style={{...inputStyle, marginBottom:0 }} />
- </div>
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'12px', padding:'11px 12px', marginBottom:'12px' }}>
+  <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'13px', fontWeight:'900' }}>{selectedBatch1DocumentForm.title}</p>
+  <p style={{ margin:'0 0 3px', color:'#555', fontSize:'11px', fontWeight:'800' }}>{selectedBatch1DocumentForm.category}</p>
+  <p style={{ margin:0, color:'#666', fontSize:'11px', lineHeight:1.45 }}>{selectedBatch1DocumentForm.purpose}</p>
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Subject / Reason / Payroll Period</label>
- <input value={documentFormDraft.subject} onChange={e=>updateDocumentFormDraft('subject', e.target.value)} placeholder="Example: Cash advance repayment / Late attendance / Payroll period" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Items / Accountabilities</label>
- <input value={documentFormDraft.items} onChange={e=>updateDocumentFormDraft('items', e.target.value)} placeholder="Example: 2 uniforms, apron, cap, ID, cash advance balance" style={{...inputStyle, marginBottom:0 }} />
- </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.35fr 1fr 1fr', gap:'10px', marginBottom:'12px' }}>
+  <div>
+   <label style={lblS}>Form Type</label>
+   <select value={documentFormDraft.formKey} onChange={e=>selectDocumentFormType(e.target.value, { showToast:false, scroll:false })} style={{...inputStyle, marginBottom:0 }}>
+    {DOCUMENT_BATCH1A_FORMS.map(form => <option key={form.key} value={form.key}>{form.title}{form.externalTab ? ' — Open Dedicated Module' : ''}</option>)}
+   </select>
+  </div>
+  {selectedBatch1DocumentForm.employeeMode !== 'none' ? (
+   <div>
+    <label style={lblS}>{selectedBatch1DocumentForm.employeeLabel || 'Employee'}{selectedBatch1DocumentForm.employeeMode === 'required' ? ' *' : ' (Optional)'}</label>
+    <EmployeeSelect value={documentFormDraft.employeeId} onChange={value=>updateDocumentFormDraft('employeeId', value)} employees={employees} />
+   </div>
+  ) : (
+   <div style={{ background:'#f7f9fc', border:'1px solid #d9e2ec', borderRadius:'10px', padding:'10px 12px' }}>
+    <p style={{ margin:'0 0 3px', color:'#555', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Document Scope</p>
+    <p style={{ margin:0, color:'#1a1a2e', fontSize:'12px', fontWeight:'800' }}>Company / Payroll-Level Record</p>
+   </div>
+  )}
+  <div>
+   <label style={lblS}>Document Date *</label>
+   <input type="date" value={documentFormDraft.documentDate} onChange={e=>updateDocumentFormDraft('documentDate', e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+  </div>
  </div>
 
- <label style={lblS}>Details / Explanation / Terms</label>
- <textarea value={documentFormDraft.details} onChange={e=>updateDocumentFormDraft('details', e.target.value)} placeholder="Write the important details here. This will appear in the printed form." style={{...inputStyle, minHeight:'90px', resize:'vertical' }} />
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,minmax(0,1fr))', gap:'10px', marginBottom:'12px' }}>
+  {(selectedBatch1DocumentForm.fields || []).map(renderDocumentFormField)}
+ </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px', marginBottom:'10px' }}>
- <div>
- <label style={lblS}>Remarks</label>
- <input value={documentFormDraft.remarks} onChange={e=>updateDocumentFormDraft('remarks', e.target.value)} placeholder="Optional remarks" style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Prepared By</label>
- <input value={documentFormDraft.preparedBy} onChange={e=>updateDocumentFormDraft('preparedBy', e.target.value)} placeholder={currentAdminLabel || 'Admin'} style={{...inputStyle, marginBottom:0 }} />
- </div>
- <div>
- <label style={lblS}>Approved By</label>
- <input value={documentFormDraft.approvedBy} onChange={e=>updateDocumentFormDraft('approvedBy', e.target.value)} placeholder="Owner / Manager / HR / Payroll" style={{...inputStyle, marginBottom:0 }} />
- </div>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.2fr 1fr 1fr', gap:'10px', marginBottom:'12px' }}>
+  <div>
+   <label style={lblS}>Remarks</label>
+   <textarea value={documentFormDraft.remarks} onChange={e=>updateDocumentFormDraft('remarks', e.target.value)} placeholder="Optional remarks not already covered above" style={{...inputStyle, minHeight:'74px', resize:'vertical', marginBottom:0}} />
+  </div>
+  <div>
+   <label style={lblS}>Prepared By</label>
+   <input value={documentFormDraft.preparedBy} onChange={e=>updateDocumentFormDraft('preparedBy', e.target.value)} placeholder={currentAdminLabel || 'Admin'} style={{...inputStyle, marginBottom:0 }} />
+  </div>
+  <div>
+   <label style={lblS}>Approved By</label>
+   <input value={documentFormDraft.approvedBy} onChange={e=>updateDocumentFormDraft('approvedBy', e.target.value)} placeholder="Owner / Manager / HR / Payroll" style={{...inputStyle, marginBottom:0 }} />
+  </div>
  </div>
 
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>SAVE AS DRAFT</button>
+  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>SAVE AS DRAFT</button>
   <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
-  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={printBatch1ADocumentForm}>PRINT ONLY</button>
- <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>setDocumentFormDraft(prev=>({ ...prev, subject:'', details:'', amount:'', deductionPerCutoff:'', items:'', remarks:'' }))}>CLEAR FIELDS</button>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Selected: <strong>{getSelectedDocumentBatch1AForm().title}</strong></p>
+  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>printBatch1ADocumentForm()}>PRINT ONLY</button>
+  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={clearCurrentDocumentForm}>CLEAR FORM</button>
+  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Required fields are marked with <strong>*</strong>. Saved records remain in the Document Records & NTE Archive tab.</p>
  </div>
  </div>
+ </>
+ )}
 
-
+ {documentCenterView==='records' && (() => {
+  const recordQuery = documentRecordSearch.trim().toLowerCase()
+  const documentRecordTypes = Array.from(new Set(companyDocumentRecords.map(record => String(record.document_type || '').trim()).filter(Boolean))).sort((a,b)=>a.localeCompare(b))
+  const filteredDocumentRecords = companyDocumentRecords.filter(record => {
+   const status = String(record.status || 'draft').toLowerCase()
+   const matchesSearch = !recordQuery || [record.document_no, record.document_type, record.employee_name, record.employee_code, record.document_date, record.subject, record.items, record.details, record.remarks]
+    .some(value => String(value || '').toLowerCase().includes(recordQuery))
+   const matchesStatus = documentRecordStatusFilter === 'all' || status === documentRecordStatusFilter || (documentRecordStatusFilter === 'served' && status === 'issued') || (documentRecordStatusFilter === 'closed' && status === 'completed')
+   const matchesType = documentRecordTypeFilter === 'all' || String(record.document_type || '') === documentRecordTypeFilter
+   return matchesSearch && matchesStatus && matchesType
+  })
+  const recordStatusCount = statusKey => companyDocumentRecords.filter(record => {
+   const status = String(record.status || 'draft').toLowerCase()
+   if (statusKey === 'all') return true
+   if (statusKey === 'served') return status === 'served' || status === 'issued'
+   if (statusKey === 'closed') return status === 'closed' || status === 'completed'
+   return status === statusKey
+  }).length
+  return (
  <div style={{ background:'white', border:'1px solid #e5e5e5', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
    <div>
-    <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'15px' }}>Document Records</h3>
-    <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Saved NTE, incident reports, inventory withdrawal slips, agreements, clearance forms, and other company documents.</p>
+    <h3 style={{ color:'#1a1a2e', margin:'0 0 4px', fontSize:'16px' }}>Document Records & NTE Archive</h3>
+    <p style={{ color:'#666', fontSize:'12px', margin:0 }}>All saved NTEs, charge slips, incident reports, accountability forms, agreements, and company documents are stored here instead of being scattered across the main screen.</p>
    </div>
-   <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={loadCompanyDocumentRecords}>REFRESH RECORDS</button>
+   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+    <button style={{...btnGray, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setDocumentRecordSearch(''); setDocumentRecordStatusFilter('all'); setDocumentRecordTypeFilter('all') }}>CLEAR FILTERS</button>
+    <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'12px' }} onClick={loadCompanyDocumentRecords}>REFRESH RECORDS</button>
+   </div>
   </div>
 
-  {companyDocumentRecordsLoading && <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Loading document records...</p>}
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)', gap:'8px', marginBottom:'12px' }}>
+   {[
+    ['all','All Records','#1a1a2e'],
+    ['draft','Draft','#f5a623'],
+    ['served','Served / Issued','#4a90d9'],
+    ['closed','Closed','#2d8a4e'],
+    ['voided','Voided','#ca1b1b']
+   ].map(([key,label,color]) => (
+    <button key={key} onClick={()=>setDocumentRecordStatusFilter(key)} style={{ background:documentRecordStatusFilter===key?color:'white', color:documentRecordStatusFilter===key?'white':'#444', border:`1px solid ${documentRecordStatusFilter===key?color:'#e5e5e5'}`, borderRadius:'12px', padding:'10px', cursor:'pointer', textAlign:'left' }}>
+     <p style={{ margin:'0 0 3px', fontSize:'10px', fontWeight:'900', textTransform:'uppercase', opacity:0.82 }}>{label}</p>
+     <p style={{ margin:0, fontSize:'20px', fontWeight:'900' }}>{recordStatusCount(key)}</p>
+    </button>
+   ))}
+  </div>
+
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr', gap:'10px', padding:'12px', background:'#f7f9fc', border:'1px solid #e6ebf1', borderRadius:'12px', marginBottom:'12px' }}>
+   <div>
+    <label style={lblS}>Search records</label>
+    <input value={documentRecordSearch} onChange={e=>setDocumentRecordSearch(e.target.value)} placeholder="Search document no., employee, NTE, charge slip, subject, item..." style={{...inputStyle, marginBottom:0 }} />
+   </div>
+   <div>
+    <label style={lblS}>Document type</label>
+    <select value={documentRecordTypeFilter} onChange={e=>setDocumentRecordTypeFilter(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+     <option value="all">All document types</option>
+     {documentRecordTypes.map(type => <option key={type} value={type}>{type}</option>)}
+    </select>
+   </div>
+   <div>
+    <label style={lblS}>Status</label>
+    <select value={documentRecordStatusFilter} onChange={e=>setDocumentRecordStatusFilter(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+     <option value="all">All statuses</option>
+     <option value="draft">Draft</option>
+     <option value="served">Served / Issued</option>
+     <option value="closed">Closed / Completed</option>
+     <option value="voided">Voided</option>
+    </select>
+   </div>
+  </div>
+
+  {companyDocumentRecordsLoading && <div style={{ background:'#f7f9fc', border:'1px solid #e6ebf1', borderRadius:'12px', padding:'16px', color:'#666', fontSize:'12px' }}>Loading document records...</div>}
 
   {!companyDocumentRecordsLoading && companyDocumentRecords.length === 0 && (
-   <div style={{ background:'#fafafa', border:'1px dashed #ccc', borderRadius:'12px', padding:'14px', color:'#888', fontSize:'12px' }}>
-    No saved document records yet. Create a form above, then click SAVE AS DRAFT or SAVE & PRINT.
+   <div style={{ background:'#fafafa', border:'1px dashed #ccc', borderRadius:'12px', padding:'20px', textAlign:'center', color:'#888', fontSize:'12px' }}>
+    <p style={{ margin:'0 0 5px', color:'#333', fontWeight:'900' }}>No saved document records yet.</p>
+    <p style={{ margin:'0 0 10px' }}>Create a form in Forms & Templates, then click SAVE AS DRAFT or SAVE & PRINT.</p>
+    <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={()=>setDocumentCenterView('forms')}>OPEN FORMS & TEMPLATES</button>
    </div>
   )}
 
-  {!companyDocumentRecordsLoading && companyDocumentRecords.length > 0 && (
+  {!companyDocumentRecordsLoading && companyDocumentRecords.length > 0 && filteredDocumentRecords.length === 0 && (
+   <div style={{ background:'#fafafa', border:'1px dashed #ccc', borderRadius:'12px', padding:'18px', textAlign:'center', color:'#888', fontSize:'12px' }}>
+    No records match the current search and filters.
+   </div>
+  )}
+
+  {!companyDocumentRecordsLoading && filteredDocumentRecords.length > 0 && (
    <div style={{ overflowX:'auto', border:'1px solid #eee', borderRadius:'12px' }}>
-    <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'980px', fontSize:'12px' }}>
+    <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1050px', fontSize:'12px' }}>
      <thead>
       <tr style={{ background:'#f7f9fc', color:'#555' }}>
-       <th style={{ padding:'9px', textAlign:'left' }}>Document No.</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Type</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Employee</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Date</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Subject / Items</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Status</th>
-       <th style={{ padding:'9px', textAlign:'left' }}>Actions</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Document No.</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Type</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Employee</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Date</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Subject / Items</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Status</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Actions</th>
       </tr>
      </thead>
      <tbody>
-      {companyDocumentRecords.map(record => (
-       <tr key={record.id} style={{ borderTop:'1px solid #eee' }}>
-        <td style={{ padding:'9px', fontWeight:'bold', color:'#333' }}>{record.document_no}</td>
-        <td style={{ padding:'9px' }}>{record.document_type}</td>
-        <td style={{ padding:'9px' }}>{record.employee_name || '—'}<br/><span style={{ color:'#888', fontSize:'10px' }}>{record.employee_code || ''}</span></td>
-        <td style={{ padding:'9px' }}>{formatDateForDisplay(record.document_date)}</td>
-        <td style={{ padding:'9px' }}>{record.subject || record.items || '—'}</td>
-        <td style={{ padding:'9px' }}><Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} /></td>
-        <td style={{ padding:'9px' }}>
+      {filteredDocumentRecords.map(record => (
+       <tr key={record.id} style={{ borderTop:'1px solid #eee', background:String(record.status || '').toLowerCase()==='voided'?'#fff8f8':'white' }}>
+        <td style={{ padding:'10px', fontWeight:'bold', color:'#333' }}>{record.document_no}</td>
+        <td style={{ padding:'10px' }}>{record.document_type}</td>
+        <td style={{ padding:'10px' }}>{record.employee_name || '—'}<br/><span style={{ color:'#888', fontSize:'10px' }}>{record.employee_code || ''}</span></td>
+        <td style={{ padding:'10px' }}>{formatDateForDisplay(record.document_date)}</td>
+        <td style={{ padding:'10px', maxWidth:'360px' }}>{record.subject || record.items || '—'}</td>
+        <td style={{ padding:'10px' }}><Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} /></td>
+        <td style={{ padding:'10px' }}>
          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-          <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>alert(
-           'Document No.: ' + (record.document_no || '') +
-           '\nType: ' + (record.document_type || '') +
-           '\nEmployee: ' + (record.employee_name || '') +
-           '\nSubject: ' + (record.subject || '') +
-           '\nItems: ' + (record.items || '') +
-           '\nDetails: ' + (record.details || '') +
-           '\nRemarks: ' + (record.remarks || '')
-          )}>VIEW</button>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
+          <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>viewCompanyDocumentRecord(record)}>VIEW</button>
+          <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
           {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
           {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
           {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
@@ -22508,16 +31917,21 @@ function printCompanyDocumentRecord(record) {
    </div>
   )}
  </div>
+  )
+ })()}
 
- {(()=>{
+
+ {documentCenterView==='forms' && (()=>{
  const q = documentCenterSearch.trim().toLowerCase()
+ const getDocumentCatalogEffectiveStatus = doc => findBatch1DocumentForm(doc.code) ? 'Existing Module' : doc.status
  const filteredDocs = DOCUMENT_CENTER_CATALOG.filter(doc => {
-  const matchesSearch = !q || [doc.code, doc.name, doc.category, doc.batch, doc.priority, doc.status, doc.purpose].some(v => String(v || '').toLowerCase().includes(q))
+  const effectiveStatus = getDocumentCatalogEffectiveStatus(doc)
+  const matchesSearch = !q || [doc.code, doc.name, doc.category, doc.batch, doc.priority, effectiveStatus, doc.purpose].some(v => String(v || '').toLowerCase().includes(q))
   const matchesCategory = documentCenterCategory === 'all' || doc.category === documentCenterCategory
   const matchesBatch = documentCenterBatch === 'all' || doc.batch === documentCenterBatch
   return matchesSearch && matchesCategory && matchesBatch
  })
- const existingCount = DOCUMENT_CENTER_CATALOG.filter(d => d.status === 'Existing Module').length
+ const existingCount = DOCUMENT_CENTER_CATALOG.filter(d => getDocumentCatalogEffectiveStatus(d) === 'Existing Module').length
  const highPriorityCount = DOCUMENT_CENTER_CATALOG.filter(d => d.priority === 'High').length
  const batch1Count = DOCUMENT_CENTER_CATALOG.filter(d => d.batch === 'Batch 1').length
  const categoriesWithCount = DOCUMENT_CENTER_CATEGORIES.map(cat => ({ category:cat, count:DOCUMENT_CENTER_CATALOG.filter(d => d.category === cat).length }))
@@ -22580,8 +31994,11 @@ function printCompanyDocumentRecord(record) {
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'10px' }}>
  {filteredDocs.map(doc => {
- const statusColor = doc.status === 'Existing Module' ? 'green' : doc.priority === 'High' ? 'red' : 'gray'
- const canOpenContracts = doc.code === 'HR-EMP-CONTRACT'
+ const activeForm = findBatch1DocumentForm(doc.code)
+ const effectiveStatus = activeForm ? 'Existing Module' : doc.status
+ const statusColor = effectiveStatus === 'Existing Module' ? 'green' : doc.priority === 'High' ? 'red' : 'gray'
+ const canOpenContracts = activeForm?.externalTab === 'contracts'
+ const canOpenBatch1AForm = !!activeForm && !activeForm.externalTab
  return (
  <div key={doc.code} style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.04)' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px', flexWrap:'wrap', marginBottom:'8px' }}>
@@ -22593,13 +32010,15 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:'flex-end' }}>
  <Badge label={doc.batch} color="blue" />
  <Badge label={doc.priority} color={doc.priority === 'High'?'red':'gray'} />
- <Badge label={doc.status} color={statusColor} />
+ <Badge label={effectiveStatus} color={statusColor} />
  </div>
  </div>
  <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px' }}>{doc.purpose}</p>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  {canOpenContracts ? (
  <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>handleTabClick('contracts')}>OPEN CONTRACTS</button>
+ ) : canOpenBatch1AForm ? (
+ <button style={{...btnGreen, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>openDocumentBatch1AForm(doc.code)}>OPEN FORM</button>
  ) : (
  <button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, fontSize:'11px', opacity:0.8 }} onClick={()=>showToast(doc.name + ' is listed. We will activate this form in ' + doc.batch + '.')}>BUILD NEXT</button>
  )}
@@ -23591,7 +33010,7 @@ function printCompanyDocumentRecord(record) {
   return `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(searchText)
  })
  if (!catItems.length) return null
- return <optgroup key={cat} label={cat}>{catItems.map(i=><option key={i.id} value={i.id}>{i.name} {Number(i.current_stock||0).toFixed(2)} {i.unit} on hand</option>)}</optgroup>
+ return <optgroup key={cat} label={cat}>{catItems.map(i=>{ const info=isRawMaterialItem(i)?getFriendlyRawStockInfo(i):null; return <option key={i.id} value={i.id}>{i.name} {info ? info.primary : `${Number(i.current_stock||0).toFixed(2)} ${i.unit}`} on hand</option> })}</optgroup>
  }) }
  </select>
  {wastageItemSearch && !INVENTORY_CATEGORIES.some(cat=>inventoryItems.some(i=>getInventoryCategoryLabel(i)===cat && `${i.name || ''} ${i.category || ''} ${getInventoryCategoryLabel(i)} ${i.unit || ''} ${i.supplier_name || ''} ${Number(i.current_stock||0).toFixed(2)}`.toLowerCase().includes(String(wastageItemSearch || '').trim().toLowerCase()))) && (
@@ -24068,6 +33487,7 @@ function printCompanyDocumentRecord(record) {
  </select>
  <label style={lblS}>Quantity ({stockTxItemId? (inventoryItems.find(i=>i.id===stockTxItemId)?.unit||'units'): 'units'}):</label>
  <input type="number" placeholder="Enter quantity" value={stockTxQty} onChange={e=>setStockTxQty(e.target.value)} style={inputStyle} min="0.01" step="0.01" />
+ {stockTxItemId && isRawMaterialItem(inventoryItems.find(i=>i.id===stockTxItemId) || {}) && (()=>{ const info=getFriendlyRawStockInfo(inventoryItems.find(i=>i.id===stockTxItemId) || {}); return <p style={{ margin:'-6px 0 10px', color:'#4a90d9', fontSize:'11px', fontWeight:'800' }}>Raw material base unit is grams. Current display: {info.primary}{info.secondary ? ` (${info.secondary})` : ''}. {info.purchaseUnit && info.purchaseSize>0 ? `1 ${info.purchaseUnit} = ${info.purchaseSize.toLocaleString('en-PH')} g.` : ''}</p> })()}
  <label style={lblS}>Reference <span style={{ color:'#aaa', fontWeight:'normal' }}>(e.g. DR#, PO#, batch no.)</span>:</label>
  <input type="text" placeholder="Optional reference number" value={stockTxReference} onChange={e=>setStockTxReference(e.target.value)} style={inputStyle} />
  {stockTxType==='in' && stockTxItemId && isExpiryTrackedItem(inventoryItems.find(i=>i.id===stockTxItemId)) && (
@@ -24170,6 +33590,9 @@ function printCompanyDocumentRecord(record) {
  <select value={newItemCategory} onChange={e=>{
  const category = e.target.value
  setNewItemCategory(category)
+ if (isRawMaterialCategoryName(category)) {
+  setNewItemUnit('g')
+ }
  if (isSnackDrinkCategoryName(category) && safeNum(newItemBuyingPrice, 0) > 0) {
   setNewItemSellingPrice(snackDrinkAutoSellingPrice(newItemBuyingPrice))
  }
@@ -24181,6 +33604,49 @@ function printCompanyDocumentRecord(record) {
  <option value=""> No supplier assigned </option>
  {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
  </select>
+ {isRawMaterialCategoryName(newItemCategory) ? (()=>{
+ const setup = computeRawMaterialAddSetup()
+ const previewItem = { current_stock:setup.currentStock, unit:'g', base_unit:'g', purchase_unit:newItemPurchaseUnit, purchase_unit_size:setup.purchaseSize, purchase_unit_cost:setup.purchaseCost, cost_per_unit:setup.costPerUnit }
+ const stockInfo = getFriendlyRawStockInfo(previewItem)
+ return (
+ <div style={{ background:'#fff', border:'1px solid #b7d9ff', borderRadius:'12px', padding:'12px', marginBottom:'10px' }}>
+  <p style={{ margin:'0 0 6px', color:'#4a90d9', fontSize:'12px', fontWeight:'900' }}>Professional Raw Material Setup</p>
+  <p style={{ margin:'0 0 10px', color:'#777', fontSize:'11px', lineHeight:1.4 }}>Recipes and costing will use grams internally. You can encode inventory using sack/kg/pack so the screen stays easy to understand.</p>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px' }}>
+   <div>
+    <label style={lblS}>Purchase Unit</label>
+    <select value={newItemPurchaseUnit} onChange={e=>setNewItemPurchaseUnit(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
+     {RAW_MATERIAL_PURCHASE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
+    </select>
+   </div>
+   <div>
+    <label style={lblS}>Size per Purchase Unit (grams)</label>
+    <input type="number" placeholder="e.g. 25000 for 25kg sack" value={newItemPurchaseUnitSize} onChange={e=>setNewItemPurchaseUnitSize(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+   </div>
+   <div>
+    <label style={lblS}>Cost per Purchase Unit</label>
+    <input type="number" placeholder="e.g. 4825" value={newItemPurchaseUnitCost} onChange={e=>setNewItemPurchaseUnitCost(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+   </div>
+   <div>
+    <label style={lblS}>Current Stock ({newItemPurchaseUnit || 'unit'} count)</label>
+    <input type="number" placeholder="e.g. 2" value={newItemStockPurchaseQty} onChange={e=>setNewItemStockPurchaseQty(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+   </div>
+   <div>
+    <label style={lblS}>Minimum Stock ({newItemPurchaseUnit || 'unit'} count)</label>
+    <input type="number" placeholder="e.g. 1" value={newItemMinPurchaseQty} onChange={e=>setNewItemMinPurchaseQty(e.target.value)} style={{...inputStyle, marginBottom:0 }} min="0" step="0.01" />
+   </div>
+   <div>
+    <label style={lblS}>Expiry Date / FEFO Date</label>
+    <input type="date" value={newItemExpiryDate} onChange={e=>setNewItemExpiryDate(e.target.value)} style={{...inputStyle, marginBottom:0 }} />
+   </div>
+  </div>
+  <div style={{ marginTop:'10px', background:'#f0fff4', border:'1px solid #b7ebc6', borderRadius:'10px', padding:'10px', color:'#1f7a3a', fontSize:'11px', fontWeight:'800', lineHeight:1.5 }}>
+   Preview: Stock will save as {setup.currentStock.toLocaleString('en-PH', { maximumFractionDigits:2 })} g ({stockInfo.primary}) | Min: {setup.minStock.toLocaleString('en-PH', { maximumFractionDigits:2 })} g | Cost: {php(setup.costPerUnit)}/g{setup.costPerUnit > 0 ? ` (${php(setup.costPerUnit * 1000)}/kg)` : ''}
+  </div>
+  {setup.purchaseSize <= 0 || setup.purchaseCost <= 0 ? <p style={{ margin:'8px 0 0', color:'#ca1b1b', fontSize:'11px', fontWeight:'800' }}>Enter purchase size and purchase cost to auto-compute cost per gram.</p> : null}
+ </div>
+ )
+})() : (
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
  <div>
  <label style={lblS}>Unit of Measure:</label>
@@ -24234,6 +33700,7 @@ function printCompanyDocumentRecord(record) {
  </div>
  )}
  </div>
+)}
  <button style={{...btnBlack, background:'#4a90d9', marginTop:'14px', opacity:addItemLoading?0.6:1 }} disabled={addItemLoading} onClick={addInventoryItem}>{addItemLoading?' Adding...':' ADD ITEM'}</button>
  </div>
  )}
@@ -24309,12 +33776,12 @@ function printCompanyDocumentRecord(record) {
  <thead>
  <tr style={{ background:'#fff8dc', borderBottom:'1px solid #eadf9a' }}>
  <th style={{ padding:'6px 7px', textAlign:'left', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Item</th>
- <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Unit</th>
- <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>On Hand</th>
+ <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Base</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Stock Display</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Used/Sold</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Added</th>
  <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Min</th>
- <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Cost</th>
+ <th style={{ padding:'6px 6px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Costing / Purchase</th>
  <th style={{ padding:'6px 6px', textAlign:'center', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Status</th>
  <th style={{ padding:'6px 7px', textAlign:'right', fontSize:'10px', color:'#555', fontWeight:'800', border:'1px solid #d7d7d7', lineHeight:1.1 }}>Action</th>
  </tr>
@@ -24323,8 +33790,17 @@ function printCompanyDocumentRecord(record) {
  {group.items.map(item=>{
  const isLow = Number(item.current_stock||0)<=Number(item.min_stock||0)&&Number(item.min_stock||0)>0
  const isEditing = editingItemId===item.id
+ const isRawMaterialRow = isRawMaterialItem(item)
+ const rawStockInfo = isRawMaterialRow ? getFriendlyRawStockInfo(item) : null
+ const rawMinInfo = isRawMaterialRow ? getFriendlyRawStockInfo(item, item.min_stock) : null
  const movement = movementByItem[String(item.id)] || { inQty:0, outQty:0 }
- const manualCurrent = editItemFields.current_stock!==undefined && editItemFields.current_stock!=='' ? Number(editItemFields.current_stock) : Number(item.current_stock || 0)
+ const activeStockDisplayUnit = editItemFields.stock_display_unit ?? getDefaultInventoryStockDisplayUnit(item, editItemFields)
+ const activeStockDisplayQty = editItemFields.stock_display_quantity !== undefined
+  ? editItemFields.stock_display_quantity
+  : convertInventoryBaseToDisplay(item, item.current_stock, activeStockDisplayUnit, editItemFields)
+ const manualCurrent = isEditing
+  ? convertInventoryDisplayToBase(item, activeStockDisplayQty, activeStockDisplayUnit, editItemFields)
+  : Number(item.current_stock || 0)
  const addQty = Number(editItemFields.additional_stock_today || 0)
  const usedQty = Number(editItemFields.used_sold_today || 0)
  const finalPreview = manualCurrent + Math.max(0, addQty) - Math.max(0, usedQty)
@@ -24354,6 +33830,16 @@ function printCompanyDocumentRecord(record) {
  <option value="">No supplier</option>
  {suppliers.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
  </select>
+ {isRawMaterialCategoryName(editItemFields.category ?? item.category) && (
+  <div style={{ background:'#f7fbff', border:'1px solid #cfe4ff', borderRadius:'8px', padding:'7px', display:'grid', gap:'5px' }}>
+   <div style={{ fontSize:'9.5px', color:'#4a90d9', fontWeight:'900' }}>Purchase unit setup</div>
+   <select value={editItemFields.purchase_unit??item.purchase_unit??'sack'} onChange={e=>setEditItemFields(p=>({...p,purchase_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }}>
+    {RAW_MATERIAL_PURCHASE_UNITS.map(u=><option key={u} value={u}>{u}</option>)}
+   </select>
+   <input type="number" placeholder="Size in grams per unit" value={editItemFields.purchase_unit_size??item.purchase_unit_size??''} onChange={e=>setEditItemFields(p=>({...p,purchase_unit_size:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }} min="0" step="0.01" />
+   <input type="number" placeholder="Cost per purchase unit" value={editItemFields.purchase_unit_cost??item.purchase_unit_cost??''} onChange={e=>setEditItemFields(p=>({...p,purchase_unit_cost:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'7px 8px' }} min="0" step="0.01" />
+  </div>
+ )}
  {EXPIRY_TRACKED_CATEGORIES.includes(editItemFields.category??item.category) && (
  <input type="date" title="Expiry / FEFO date" value={editItemFields.expiry_date??item.expiry_date??''} onChange={e=>setEditItemFields(p=>({...p,expiry_date:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 10px' }} />
  )}
@@ -24362,6 +33848,7 @@ function printCompanyDocumentRecord(record) {
  <div>
  <div style={{ fontWeight:'700', color:'#1a1a2e', fontSize:'11.5px', lineHeight:1.2, textTransform:'none' }}>{item.name}</div>
  <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', lineHeight:1.15 }}>{suppliers.find(s=>s.id===item.supplier_id)?.name || 'No supplier'}</div>
+ {isRawMaterialRow && rawStockInfo?.purchaseUnit && rawStockInfo?.purchaseSize > 0 && <div style={{ fontSize:'9.5px', color:'#4a90d9', marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>Purchase: {rawStockInfo.purchaseUnit} = {rawStockInfo.purchaseSize.toLocaleString('en-PH')} g{rawStockInfo.purchaseCostText ? ` | ${rawStockInfo.purchaseCostText}` : ''}</div>}
  {item.expiry_date && (()=>{ const ex = getExpiryStatusInfo(item); return <div style={{ fontSize:'9.5px', color:ex.color, marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>FEFO: {ex.label}</div> })()}
  {(() => { const bs = getBatchSummaryForItem(item); return bs.batchCount > 0 ? <div style={{ fontSize:'9.5px', color:bs.expiredQty>0?'#ca1b1b':bs.nearQty>0?'#f57c00':'#4a90d9', marginTop:'2px', fontWeight:'800', lineHeight:1.15 }}>Lots: {bs.batchCount} | Batch qty: {safeNum(bs.totalBatchQty,0).toLocaleString('en-PH')} | Nearest: {bs.nearest?.expiry_date || 'No expiry'}</div> : null })()}
  </div>
@@ -24370,17 +33857,75 @@ function printCompanyDocumentRecord(record) {
 
  <td style={{ ...rowBase, textAlign:'center', color:'#666' }}>
  {isEditing? (
- <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 6px' }}>
- {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
- </select>
- ): item.unit}
+ isRawMaterialCategoryName(editItemFields.category ?? item.category) ? (
+  <div style={{ fontSize:'10px', fontWeight:'900', color:'#4a90d9' }}>g<div style={{ fontSize:'9px', color:'#888', fontWeight:'600' }}>base</div></div>
+ ) : (
+  <select value={editItemFields.unit??item.unit} onChange={e=>setEditItemFields(p=>({...p,unit:e.target.value}))} style={{...inputStyle, marginBottom:0, fontSize:'12px', padding:'8px 6px' }}>
+  {['kg','g','L','mL','pcs','boxes','bags','sacks','bottles','rolls','pairs','sets'].map(u=><option key={u} value={u}>{u}</option>)}
+  </select>
+ )
+ ): (isRawMaterialRow ? <><strong style={{ color:'#4a90d9' }}>g</strong><div style={{ fontSize:'9px', color:'#888' }}>base</div></> : item.unit)}
  </td>
 
  <td style={numStyle}>
  {isEditing? (
- <input type="number" value={editItemFields.current_stock??item.current_stock} onChange={e=>setEditItemFields(p=>({...p,current_stock:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
+ <div style={{ display:'grid', gridTemplateColumns:'minmax(78px,1fr) 78px', gap:'5px', alignItems:'center', minWidth:'158px' }}>
+  <input
+   type="number"
+   value={activeStockDisplayQty}
+   onChange={e=>setEditItemFields(p=>({...p,stock_display_quantity:e.target.value}))}
+   style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }}
+   min="0"
+   step="0.01"
+  />
+  <select
+   value={activeStockDisplayUnit}
+   onChange={e=>{
+    const newUnit = e.target.value
+    setEditItemFields(p=>{
+     const oldUnit = p.stock_display_unit ?? getDefaultInventoryStockDisplayUnit(item, p)
+     const oldDisplayQty = p.stock_display_quantity !== undefined
+      ? p.stock_display_quantity
+      : convertInventoryBaseToDisplay(item, item.current_stock, oldUnit, p)
+     const baseQty = convertInventoryDisplayToBase(item, oldDisplayQty, oldUnit, p)
+     const rawMaterialEdit = isRawMaterialCategoryName(p.category ?? item.category)
+     const baseUnit = normalizeInventoryBaseUnit(p.base_unit ?? item.base_unit ?? item.unit ?? 'g')
+     const newUnitKey = getInventoryUnitKey(newUnit)
+     const isMetricStockUnit = newUnitKey === getInventoryUnitKey(baseUnit)
+      || (getInventoryUnitKey(baseUnit) === 'g' && newUnitKey === 'kg')
+      || (getInventoryUnitKey(baseUnit) === 'ml' && newUnitKey === 'l')
+     const nextFields = {
+      ...p,
+      stock_display_unit:newUnit,
+      ...(!rawMaterialEdit ? { unit:newUnit } : {}),
+      ...(rawMaterialEdit && !isMetricStockUnit ? { purchase_unit:newUnit } : {})
+     }
+     return {
+      ...nextFields,
+      stock_display_quantity:convertInventoryBaseToDisplay(item, baseQty, newUnit, nextFields)
+     }
+    })
+   }}
+   style={{...inputStyle, marginBottom:0, fontSize:'11px', padding:'8px 5px' }}
+   title="Choose how stock is entered and displayed"
+  >
+   {getInventoryStockDisplayUnitOptions(item, editItemFields).map(unit=><option key={unit} value={unit}>{unit}</option>)}
+  </select>
+  {isRawMaterialCategoryName(editItemFields.category ?? item.category) && (
+   <div style={{ gridColumn:'1 / -1', fontSize:'9px', color:'#4a90d9', fontWeight:'800', textAlign:'right' }}>
+    Saves internally as {manualCurrent.toLocaleString('en-PH', { maximumFractionDigits:2 })} g
+   </div>
+  )}
+ </div>
  ): (
- <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'700' }}>{Number(item.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}</strong>
+ isRawMaterialRow ? (
+  <div>
+   <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'800' }}>{rawStockInfo.primary}</strong>
+   {rawStockInfo.secondary && <div style={{ fontSize:'9.5px', color:'#888', marginTop:'2px', fontWeight:'700' }}>{rawStockInfo.secondary}</div>}
+  </div>
+ ) : (
+  <strong style={{ color:isLow?'#ca1b1b':'#157f3b', fontWeight:'700' }}>{Number(item.current_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}</strong>
+ )
  )}
  </td>
 
@@ -24403,7 +33948,7 @@ function printCompanyDocumentRecord(record) {
  <td style={{ ...numStyle, color:'#777' }}>
  {isEditing? (
  <input type="number" value={editItemFields.min_stock??item.min_stock} onChange={e=>setEditItemFields(p=>({...p,min_stock:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
- ): Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 })}
+ ): (isRawMaterialRow && rawMinInfo ? <><strong>{rawMinInfo.primary}</strong>{rawMinInfo.secondary && <div style={{ fontSize:'9px', color:'#999' }}>{rawMinInfo.secondary}</div>}</> : Number(item.min_stock||0).toLocaleString('en-PH', { maximumFractionDigits:2 }))}
  </td>
 
  
@@ -24433,6 +33978,14 @@ function printCompanyDocumentRecord(record) {
      Auto Sell: {php(snackDrinkAutoSellingPrice(editItemFields.buying_price ?? item.buying_price ?? getSnackDrinkDisplayBuyingPrice(item)))}
     </div>
    </div>
+  ) : isRawMaterialCategoryName(editItemFields.category ?? item.category) ? (
+   <div>
+    <input type="number" value={(() => { const size=safeNum(editItemFields.purchase_unit_size ?? item.purchase_unit_size,0); const cost=safeNum(editItemFields.purchase_unit_cost ?? item.purchase_unit_cost,0); return size>0&&cost>0 ? Math.round(((cost/size)+Number.EPSILON)*1000000)/1000000 : (editItemFields.cost_per_unit??item.cost_per_unit) })()} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value,purchase_unit_cost:''}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.000001" />
+    <div style={{ fontSize:'9px', color:'#4a90d9', fontWeight:'900', marginTop:'3px' }}>Cost per g</div>
+    {safeNum(editItemFields.purchase_unit_size ?? item.purchase_unit_size,0)>0 && safeNum(editItemFields.purchase_unit_cost ?? item.purchase_unit_cost,0)>0 && (
+     <div style={{ fontSize:'9px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>Auto from purchase</div>
+    )}
+   </div>
   ) : (
    <input type="number" value={editItemFields.cost_per_unit??item.cost_per_unit} onChange={e=>setEditItemFields(p=>({...p,cost_per_unit:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'right', fontSize:'12px', padding:'8px 6px' }} min="0" step="0.01" />
   )
@@ -24444,6 +33997,12 @@ function printCompanyDocumentRecord(record) {
      Supplier: {php(getSnackDrinkDisplayBuyingPrice(item))}
     </div>
    </>
+  ) : isRawMaterialRow ? (
+   <div>
+    <div style={{ color:'#1a1a2e', fontWeight:'900' }}>{php(rawStockInfo.costPerBase)}/g</div>
+    {rawStockInfo.costPerKg > 0 && <div style={{ fontSize:'9.5px', color:'#2d8a4e', fontWeight:'800', marginTop:'2px' }}>{php(rawStockInfo.costPerKg)}/kg</div>}
+    {rawStockInfo.purchaseCostText && <div style={{ fontSize:'9.5px', color:'#4a90d9', fontWeight:'800', marginTop:'2px' }}>{rawStockInfo.purchaseCostText}</div>}
+   </div>
   ) : php(item.cost_per_unit || 0)
  )}
  </td>
@@ -24474,7 +34033,14 @@ function printCompanyDocumentRecord(record) {
  ): (
  <div style={{ display:'flex', gap:'5px', justifyContent:'flex-end', flexWrap:'nowrap' }}>
  {isLow && item.supplier_id && <button style={{...btnGreen, background:'#2d6a4f', width:'auto', padding:'6px 7px', marginTop:0, fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>addReorderToPODraft(item)}>PO</button>}
- <button style={{...btnYellow, padding:'6px 8px', fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>{ setEditingItemId(item.id); setEditItemFields({}) }}>EDIT</button>
+ <button style={{...btnYellow, padding:'6px 8px', fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>{
+  const stockDisplayUnit = getDefaultInventoryStockDisplayUnit(item)
+  setEditingItemId(item.id)
+  setEditItemFields({
+   stock_display_unit:stockDisplayUnit,
+   stock_display_quantity:convertInventoryBaseToDisplay(item, item.current_stock, stockDisplayUnit)
+  })
+ }}>EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9.5px', borderRadius:'7px' }} onClick={()=>deleteInventoryItem(item)}>DEL</button>
  </div>
  )}
@@ -24676,6 +34242,7 @@ function printCompanyDocumentRecord(record) {
  <strong style={{ color:'#ca1b1b' }}> Required Supabase Tables:</strong>
  <p style={{ color:'#555', margin:'6px 0 2px' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> id (uuid PK), name, category, selling_price (numeric), pieces_per_batch (numeric), is_active (bool default true), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>base_dough_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
+ <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>powder_base_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at <strong style={{ color:'#ca1b1b' }}>required for permanent Powder Base saving</strong></p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>variant_recipes</code> id (uuid PK), variant_id (uuid), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), ingredient_type (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_logs</code> id (uuid PK), production_date (date), total_pieces (numeric), ingredient_cost (numeric), labor_cost (numeric), overhead_cost (numeric), total_cost (numeric), notes (text), logged_by (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_log_items</code> id (uuid PK), log_id (uuid), variant_id (uuid), variant_name (text), pieces_produced (numeric), ingredient_cost (numeric), created_at</p>
@@ -24697,10 +34264,20 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Base Dough Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Shared across ALL variants. Enter ingredients per batch.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Shared across ALL variants. Enter all production recipe quantities in grams (g) per batch.</p>
+ {baseDoughIngredients.length > 0 && (() => {
+ const { totalCost, totalGrams, costPerGram } = computeBaseDoughTotals()
+ return (
+ <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', fontSize:'12px', fontWeight:'800' }}>
+ <span style={{ color:'#ca1b1b' }}>Total batch cost: {php(totalCost)}</span>
+ <span style={{ color:'#555' }}>Total batch weight: {totalGrams.toLocaleString('en-PH')}g</span>
+ <span style={{ color:'#2d8a4e' }}>Cost per gram: ₱{costPerGram.toFixed(4)}/g</span>
+ </div>
+ )
+ })()}
  </div>
  {selectedRecipeVariantId!== 'base'? (
- <button style={{...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
+ <button style={{...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
  ): (
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={saveBaseDough}>{savingRecipe?' Saving...':' SAVE'}</button>
@@ -24713,15 +34290,15 @@ function printCompanyDocumentRecord(record) {
  {editingBaseDough.map((row,i)=>(
  <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
  <div>
- <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingBaseDough]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:inv?.unit||upd[i].unit}; setEditingBaseDough(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
+ <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingBaseDough]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:'g'}; setEditingBaseDough(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
  <option value=""> Link to inventory item </option>
- {inventoryItems.filter(it=>it.category==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
+ {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
  </select>
  <input placeholder="Or type ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],item_name:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'4px' }} />
  </div>
  <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],quantity_per_batch:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }} min="0" step="0.01" />
  <select value={row.unit||'g'} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],unit:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
- {['g','kg','mL','L','pcs','tbsp','tsp','cups'].map(u=><option key={u} value={u}>{u}</option>)}
+ {['g'].map(u=><option key={u} value={u}>{u}</option>)}
  </select>
  <input placeholder="Notes (optional)" value={row.notes||''} onChange={e=>{const upd=[...editingBaseDough];upd[i]={...upd[i],notes:e.target.value};setEditingBaseDough(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} />
  <button onClick={()=>setEditingBaseDough(editingBaseDough.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}> </button>
@@ -24740,12 +34317,91 @@ function printCompanyDocumentRecord(record) {
  </div>
  {baseDoughIngredients.map((r,i)=>{
  const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const cost = inv? Number(r.quantity_per_batch||0) * Number(inv.cost_per_unit||0): 0
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r): 0
+ const warning = inv? productionRecipeCostWarning(inv): ''
  return (
  <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{r.quantity_per_batch}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{r.unit}</span>
+ <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ {warning}</div>:null}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
+ <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
+ </div>
+ )
+ }) }
+ </div>
+ )}
+ </div>
+ )}
+ </div>
+
+
+ {/* POWDER BASE RECIPE */}
+ <div style={{ background:'white', border:'2px solid #7b4f9e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+ <div>
+ <h3 style={{ color:'#7b4f9e', margin:'0 0 4px', fontSize:'15px' }}> Powder Base Recipe</h3>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Shared across variants like Base Dough. Enter all powder base quantities in grams (g) per batch.</p>
+ {powderBaseIngredients.length > 0 && (() => {
+ const { totalCost, totalGrams, costPerGram } = computePowderBaseTotals()
+ return (
+ <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', fontSize:'12px', fontWeight:'800' }}>
+ <span style={{ color:'#7b4f9e' }}>Total batch cost: {php(totalCost)}</span>
+ <span style={{ color:'#555' }}>Total batch weight: {totalGrams.toLocaleString('en-PH')}g</span>
+ <span style={{ color:'#2d8a4e' }}>Cost per gram: ₱{costPerGram.toFixed(4)}/g</span>
+ </div>
+ )
+ })()}
+ </div>
+ {selectedRecipeVariantId!== 'powder_base'? (
+ <button style={{...btnBlack, background:'#7b4f9e', width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('powder_base'); setEditingPowderBase(powderBaseIngredients.length>0?powderBaseIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT POWDER BASE</button>
+ ): (
+ <div style={{ display:'flex', gap:'8px' }}>
+ <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={savePowderBase}>{savingRecipe?' Saving...':' SAVE'}</button>
+ <button style={{...btnGray, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>setSelectedRecipeVariantId(null)}>CANCEL</button>
+ </div>
+ )}
+ </div>
+ {selectedRecipeVariantId === 'powder_base'? (
+ <div>
+ {editingPowderBase.map((row,i)=>(
+ <div key={i} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 2fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
+ <div>
+ <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingPowderBase]; upd[i]={...upd[i],inventory_item_id:e.target.value,item_name:inv?.name||upd[i].item_name,unit:'g'}; setEditingPowderBase(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
+ <option value=""> Link to inventory item </option>
+ {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
+ </select>
+ <input placeholder="Or type ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],item_name:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'4px' }} />
+ </div>
+ <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],quantity_per_batch:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }} min="0" step="0.01" />
+ <select value={row.unit||'g'} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],unit:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
+ {['g'].map(u=><option key={u} value={u}>{u}</option>)}
+ </select>
+ <input placeholder="Notes (optional)" value={row.notes||''} onChange={e=>{const upd=[...editingPowderBase];upd[i]={...upd[i],notes:e.target.value};setEditingPowderBase(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} />
+ <button onClick={()=>setEditingPowderBase(editingPowderBase.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}> </button>
+ </div>
+ ))}
+ <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 16px', marginTop:'8px', fontSize:'12px' }} onClick={()=>setEditingPowderBase([...editingPowderBase, { item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }])}>+ ADD INGREDIENT</button>
+ </div>
+ ): (
+ <div>
+ {powderBaseIngredients.length === 0? (
+ <p style={{ color:'#aaa', fontSize:'13px', fontStyle:'italic' }}>No powder base recipe set yet. Click Edit to define your powder base ingredients.</p>
+ ): (
+ <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
+ <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#f9f9f9', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#888' }}>
+ <span>Ingredient</span><span style={{ textAlign:'right' }}>Qty/batch</span><span style={{ textAlign:'right' }}>Unit</span><span style={{ textAlign:'right' }}>Cost/batch</span>
+ </div>
+ {powderBaseIngredients.map((r,i)=>{
+ const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r): 0
+ const warning = inv? productionRecipeCostWarning(inv): ''
+ return (
+ <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ {warning}</div>:null}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
+ <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
  <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(cost)}</span>
  </div>
  )
@@ -24758,7 +34414,7 @@ function printCompanyDocumentRecord(record) {
 
  {/* VARIANT RECIPES */}
  <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}> Per-Variant Topping / Filling Recipes</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define the additional ingredients (toppings, fillings, glazes) for each variant on top of the base dough.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define toppings, fillings, and glazes in grams (g) only. Costing uses converted cost per gram.</p>
  {variantsLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading variants...</p>}
  {VARIANT_CATEGORIES.map(cat => {
  const catVariants = donutVariants.filter(v => v.category === cat)
@@ -24768,8 +34424,13 @@ function printCompanyDocumentRecord(record) {
  <div key={cat} style={{ marginBottom:'16px' }}>
  <div style={{ background:catColor, color:'white', padding:'8px 14px', borderRadius:'10px 10px 0 0', fontWeight:'bold', fontSize:'13px' }}> {cat}</div>
  {catVariants.map((v,i)=>{
- const hasRecipe = (variantRecipes[v.id]||[]).length > 0
- const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId!== 'base'
+ const variantExtraRows = variantRecipes[v.id] || []
+ const hasVariantRecipe = variantExtraRows.length > 0
+ const hasBaseRecipe = (baseDoughIngredients || []).length > 0
+ const hasPowderBaseRecipe = (powderBaseIngredients || []).length > 0
+ const hasAnyRecipeIngredients = hasBaseRecipe || hasPowderBaseRecipe || hasVariantRecipe
+ const totalIngredientRows = (baseDoughIngredients || []).length + (powderBaseIngredients || []).length + variantExtraRows.length
+ const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId!== 'base' && selectedRecipeVariantId!== 'powder_base'
  return (
  <div key={v.id} style={{ border:`1px solid ${catColor}33`, borderTop:'none', background:i%2===0?'white':'#fafafa', padding:'10px 14px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
@@ -24780,8 +34441,9 @@ function printCompanyDocumentRecord(record) {
  {!editingVariantId || editingVariantId!== v.id? (
  <span style={{ fontSize:'11px', color:'#888' }}>{v.pieces_per_batch} pcs/batch</span>
  ): null}
- {hasRecipe &&!isEditing && <Badge label={`${variantRecipes[v.id].length} ingredient(s)`} color="green" />}
- {!hasRecipe &&!isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No toppings/filling set</span>}
+ {hasAnyRecipeIngredients &&!isEditing && <Badge label={`${totalIngredientRows} ingredient(s) incl. shared base`} color="green" />}
+ {!hasAnyRecipeIngredients &&!isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No recipe set</span>}
+ {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && !isEditing && <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'700' }}>Shared base recipes auto-included. Add topping/filling only if needed.</span>}
  </div>
  {editingVariantId === v.id && (
  <div style={{ display:'flex', gap:'8px', marginTop:'8px', alignItems:'center', flexWrap:'wrap' }}>
@@ -24797,7 +34459,7 @@ function printCompanyDocumentRecord(record) {
  <div style={{ display:'flex', gap:'6px' }}>
  {editingVariantId!== v.id && <button style={{...btnYellow, padding:'5px 10px', fontSize:'11px' }} onClick={()=>{ setEditingVariantId(v.id); setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price }) }}> EDIT</button>}
  {!isEditing? (
- <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasRecipe?variantRecipes[v.id].map(r=>({...r})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasRecipe?'EDIT':'ADD'} RECIPE</button>
+ <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasVariantRecipe?variantExtraRows.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasVariantRecipe?'EDIT':'ADD'} RECIPE</button>
  ): (
  <div style={{ display:'flex', gap:'6px' }}>
  <button style={{...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?' ':' SAVE'}</button>
@@ -24808,18 +34470,35 @@ function printCompanyDocumentRecord(record) {
  </div>
  {isEditing && (
  <div style={{ marginTop:'10px', background:'#f9f9f9', padding:'12px', borderRadius:'8px', border:'1px solid #eee' }}>
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', marginBottom:'10px', fontSize:'11px', color:'#555', lineHeight:1.45 }}>
+ <strong style={{ color:'#ca1b1b' }}>Base dough and powder base are NOT automatic anymore.</strong> If this variant uses them, select "Base Dough Recipe" or "Powder Base Recipe" from the dropdown below and enter the gram amount, the same way you'd add any other ingredient. Leave them out only if this variant genuinely doesn't need them.
+ </div>
  {editingVariantRecipe.map((row,ri)=>(
  <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
  <div>
- <select value={row.inventory_item_id||''} onChange={e=>{ const inv=inventoryItems.find(it=>it.id===e.target.value); const upd=[...editingVariantRecipe]; upd[ri]={...upd[ri],inventory_item_id:e.target.value,item_name:inv?.name||upd[ri].item_name,unit:inv?.unit||upd[ri].unit}; setEditingVariantRecipe(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
+ <select value={row.inventory_item_id||''} onChange={e=>{
+ const val = e.target.value
+ const upd=[...editingVariantRecipe]
+ if (val === BASE_DOUGH_RECIPE_LINK_ID) {
+ upd[ri]={...upd[ri],inventory_item_id:val,item_name:'Base Dough Recipe',unit:'g'}
+ } else if (val === POWDER_BASE_RECIPE_LINK_ID) {
+ upd[ri]={...upd[ri],inventory_item_id:val,item_name:'Powder Base Recipe',unit:'g'}
+ } else {
+ const inv=inventoryItems.find(it=>it.id===val)
+ upd[ri]={...upd[ri],inventory_item_id:val,item_name:inv?.name||upd[ri].item_name,unit:'g'}
+ }
+ setEditingVariantRecipe(upd)
+ }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value=""> Link inventory item </option>
- {inventoryItems.map(it=><option key={it.id} value={it.id}>{it.name} ({php(it.cost_per_unit||0)}/{it.unit})</option>)}
+ <option value={BASE_DOUGH_RECIPE_LINK_ID}> Base Dough Recipe ({php(computeBaseDoughTotals().costPerGram)}/g computed)</option>
+ <option value={POWDER_BASE_RECIPE_LINK_ID}> Powder Base Recipe ({php(computePowderBaseTotals().costPerGram)}/g computed)</option>
+ {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
  </select>
  <input placeholder="Ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],item_name:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'3px' }} />
  </div>
  <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],quantity_per_batch:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" step="0.01" />
  <select value={row.unit||'g'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],unit:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
- {['g','kg','mL','L','pcs','tbsp','tsp','cups'].map(u=><option key={u} value={u}>{u}</option>)}
+ {['g'].map(u=><option key={u} value={u}>{u}</option>)}
  </select>
  <select value={row.ingredient_type||'topping'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],ingredient_type:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value="topping">Topping</option>
@@ -24834,17 +34513,66 @@ function printCompanyDocumentRecord(record) {
  </div>
  )}
  {/* Show existing recipe (read mode) */}
- {!isEditing && hasRecipe && (
- <div style={{ marginTop:'8px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
- {variantRecipes[v.id].map((r,ri)=>{
- const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const cost = inv? Number(r.quantity_per_batch||0)*Number(inv.cost_per_unit||0)/Math.max(1,Number(v.pieces_per_batch)): 0
+ {!isEditing && hasAnyRecipeIngredients && (
+ <div style={{ marginTop:'8px' }}>
+ {(() => {
+ const pieces = Math.max(1, Number(v.pieces_per_batch) || 1)
+ const baseDoughLinkRow = variantExtraRows.find(r => String(r.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID)
+ const powderBaseLinkRow = variantExtraRows.find(r => String(r.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID)
+ const baseDoughStatus = !baseDoughLinkRow ? 'Not added' : (safeNum(baseDoughLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
+ const powderBaseStatus = !powderBaseLinkRow ? 'Not added' : (safeNum(powderBaseLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
+ const basePerPc = baseDoughLinkRow ? (productionRecipeIngredientCost(baseDoughLinkRow) / pieces) : 0
+ const powderPerPc = powderBaseLinkRow ? (productionRecipeIngredientCost(powderBaseLinkRow) / pieces) : 0
+ const otherRows = variantExtraRows.filter(r => String(r.inventory_item_id) !== BASE_DOUGH_RECIPE_LINK_ID && String(r.inventory_item_id) !== POWDER_BASE_RECIPE_LINK_ID)
+ const variantPerPc = otherRows.reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
  return (
- <div key={ri} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {r.quantity_per_batch}{r.unit} <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({r.ingredient_type})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'7px 9px', marginBottom:'7px', fontSize:'11px', color:'#555', display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
+ <strong style={{ color:'#ca1b1b' }}>Total ingredients/pc: {php(basePerPc + powderPerPc + variantPerPc)}</strong>
+ <span>Base dough: {php(basePerPc)} <span style={{ color:'#888', fontSize:'9px' }}>({baseDoughStatus})</span></span>
+ <span>Powder base: {php(powderPerPc)} <span style={{ color:'#888', fontSize:'9px' }}>({powderBaseStatus})</span></span>
+ <span>Other ingredients: {php(variantPerPc)}</span>
+ </div>
+ )
+ })()}
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ {(baseDoughIngredients || []).map((r,ri)=>{
+ const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
+ return (
+ <div key={`base-${ri}`} style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+ <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#2d8a4e', fontSize:'10px' }}>(base dough)</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
  </div>
  )
  }) }
+ {(powderBaseIngredients || []).map((r,ri)=>{
+ const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
+ const warning = inv? productionRecipeCostWarning(inv): ''
+ return (
+ <div key={`powder-${ri}`} style={{ background:'#f3e8ff', border:'1px solid #e4d0ff', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+ <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>(powder base)</span> {inv?<span style={{ color:warning?'#f57c00':'#ca1b1b', fontSize:'10px', fontWeight:'800' }}>= {warning?'COST SETUP NEEDED':`${php(cost)}/pc`}</span>:null}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ excluded from costing until purchase size/cost is fixed</div>:null}
+ </div>
+ )
+ }) }
+ {variantExtraRows.map((r,ri)=>{
+ const isBaseDoughLink = String(r.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID
+ const isPowderBaseLink = String(r.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID
+ const inv = (isBaseDoughLink || isPowderBaseLink) ? true : inventoryItems.find(it=>it.id===r.inventory_item_id)
+ const qtyGrams = productionRecipeQuantityGrams(r)
+ const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
+ const typeLabel = isBaseDoughLink ? 'linked: base dough' : isPowderBaseLink ? 'linked: powder base' : r.ingredient_type
+ return (
+ <div key={`variant-${ri}`} style={{ background:(isBaseDoughLink||isPowderBaseLink)?'#fff8dc':'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
+ <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({typeLabel})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
+ </div>
+ )
+ }) }
+ {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && (
+ <div style={{ background:'#fff3cd', border:'1px solid #f5c518', borderRadius:'6px', padding:'4px 8px', fontSize:'11px', color:'#856404' }}>⚠ No ingredients added for this variant yet — ingredient cost is currently ₱0. Add Base Dough, Powder Base, and/or toppings from the dropdown above if this variant should be costed.</div>
+ )}
+ </div>
  </div>
  )}
  </div>
@@ -25849,7 +35577,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </select>
  </div>
  <div style={{ color:'#777', fontSize:'11px', lineHeight:1.5 }}>
- Showing invoices by selected delivery day. Dates are sorted newest first. Dropdown includes the latest 1-month operating window plus future invoice dates.
+ Showing invoices by selected delivery day. Dates are sorted newest first. Dropdown includes every saved delivery date loaded from Supabase.
  </div>
  </div>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
@@ -25872,7 +35600,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  type="text"
  value={invoiceSearchTerm}
  onChange={e=>setInvoiceSearchTerm(e.target.value)}
- placeholder="Search by reseller name, invoice number, date, area, or address..."
+ placeholder="Search reseller, invoice no., or date (example: 2026-06-08, June 8, 2026, 06/08/2026)..."
  style={{...inputStyle, marginBottom:0, flex:'1 1 260px', fontSize:'13px', border:'2px solid #f0f0f0' }}
  />
  {invoiceSearchTerm && (
@@ -25888,7 +35616,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>
  {invoiceSearchTerm
 ? `Showing ${getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter).length} result(s) from all loaded invoices. Status tab still applies.`
-: 'Type to search live by reseller, invoice number, delivery date, area, or address.'}
+: 'Type any saved delivery date using YYYY-MM-DD, month name, or numeric date format. You can also search reseller, invoice number, area, or address.'}
  </p>
  </div>
 
@@ -25965,6 +35693,8 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 <label style={lblS}>Discount:</label>
 <select value={invoiceDiscountPct} onChange={e=>setInvoiceDiscountPct(e.target.value)} style={inputStyle}>
 <option value="20">20% discount</option>
+<option value="10">10% discount</option>
+<option value="5">5% discount</option>
 <option value="0">0% discount</option>
 </select>
 </div>
@@ -25982,6 +35712,16 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked? ' CREDIT WARNING': ''}</option>
 })}
 </select>
+{invoiceResellerId && (()=>{
+ const target = resellers.find(r=>String(r.id)===String(invoiceResellerId))
+ const source = invoiceCopyFromResellerId ? resellers.find(r=>String(r.id)===String(invoiceCopyFromResellerId)) : null
+ return (
+  <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'9px 10px', marginTop:'6px' }}>
+   <p style={{ margin:'0 0 3px', color:'#1b5e20', fontSize:'12px', fontWeight:'900' }}>THIS INVOICE WILL BE CREATED FOR: {target?.name || 'Selected branch'} {target?.area?`(${target.area})`:''}</p>
+   <p style={{ margin:0, color:'#555', fontSize:'11px', lineHeight:1.4 }}>Copy Template is quantities only. It does not change the invoice branch. {source && String(source.id)!==String(target?.id || '') ? `Currently copying quantities from: ${source.name}${source.area?` (${source.area})`:''}.` : 'Template source is the same as the selected branch.'}</p>
+  </div>
+ )
+})()}
 </div>
 ) : (
 <>
@@ -26038,7 +35778,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 </div>
 {invoiceCustomerType === 'reseller' && (
 <div style={{ background:'#fff9e6', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
-<label style={lblS}>Copy order quantities from another branch/template:</label>
+<label style={lblS}>Copy quantities only from another branch/template:</label>
 <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
 <select value={invoiceCopyFromResellerId} onChange={e=>setInvoiceCopyFromResellerId(e.target.value)} style={{...inputStyle, marginBottom:0, flex:'1 1 240px' }}>
 <option value="">Select branch template to copy</option>
@@ -26046,7 +35786,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 </select>
 <button style={{...btnYellow, width:'auto', padding:'8px 14px', fontSize:'11px' }} onClick={()=>applyTemplateFromReseller(invoiceCopyFromResellerId || invoiceResellerId, 'invoice')}>COPY TEMPLATE</button>
 </div>
-<p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>Use this when one branch will receive the same quantities/variants as another branch. You can still edit quantities before saving.</p>
+<p style={{ color:'#777', fontSize:'11px', margin:'6px 0 0' }}>This copies quantities only. It does not change the invoice recipient/reseller selected above. You can still edit quantities before saving.</p>
 </div>
 )}
 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
@@ -26175,7 +35915,7 @@ onClick={async ()=>{
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
  <button style={{...btnYellow, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>startInvoiceAdjustment(inv)}> ADJUST</button>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setViewingInvoice(inv)}> VIEW</button>
+ <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {inv.status==='unpaid' && (
  <button style={{...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#4a90d9' }} onClick={()=>markAsDelivered(inv)} disabled={markingDelivered[inv.id]}> {markingDelivered[inv.id]?'Saving...':'MARK DELIVERED'}</button>
  )}
@@ -26186,7 +35926,7 @@ onClick={async ()=>{
  <button style={{...btnRed, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>initDriverReturn(inv)}> RECORD RETURNS</button>
  )}
  {inv.status!=='unpaid' && (
- <button style={{...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv,[])}> RETURN FORM</button>
+ <button style={{...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv)}> RETURN FORM</button>
  )}
  {adminRole==='owner' && (
  <button title="Owner-only force delete" style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:processingItems[`delete_invoice_${inv.id}`]?'not-allowed':'pointer', opacity:processingItems[`delete_invoice_${inv.id}`]?0.65:1, fontWeight:'bold', fontSize:'11px' }} disabled={processingItems[`delete_invoice_${inv.id}`]} onClick={()=>deleteInvoice(inv)}>{processingItems[`delete_invoice_${inv.id}`]?' DELETING...':' OWNER DELETE'}</button>
@@ -26432,6 +36172,19 @@ onClick={async ()=>{
  )}
  {/* Invoice details editable */}
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'12px' }}>
+ <div>
+ <label style={lblS}>Invoice Type:</label>
+ <input value={getDeliveryInvoiceCustomerType(editingInvoice)==='reseller'?'Reseller Invoice':'Non-reseller Invoice'} readOnly style={{...inputStyle, marginBottom:0, background:'#f7f7f7', color:'#555' }} />
+ </div>
+ <div>
+ <label style={lblS}>Discount:</label>
+ <select value={String(getDeliveryInvoiceDiscountPct(editingInvoice))} onChange={e=>setEditingInvoice(p=>({...p,discount_pct:Number(e.target.value)}))} style={{...inputStyle, marginBottom:0 }}>
+ <option value="20">20% discount</option>
+ <option value="10">10% discount</option>
+ <option value="5">5% discount</option>
+ <option value="0">0% discount</option>
+ </select>
+ </div>
  <div><label style={lblS}>Dispatcher:</label><input value={editingInvoice.prepared_by||''} onChange={e=>setEditingInvoice(p=>({...p,prepared_by:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Delivery Personnel:</label><input value={editingInvoice.dispatched_by||''} onChange={e=>setEditingInvoice(p=>({...p,dispatched_by:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Crates Used:</label><input type="number" value={editingInvoice.crates_used||0} onChange={e=>setEditingInvoice(p=>({...p,crates_used:e.target.value}))} style={{...inputStyle, marginBottom:0 }} min="0" /></div>
@@ -26440,21 +36193,21 @@ onClick={async ()=>{
  {/* Line items */}
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 8px' }}>Items:</p>
  <div style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
- {['Variant','Qty','Retail','Reseller',''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
+ {['Variant','Qty','Retail',`${getDeliveryInvoiceDiscountPct(editingInvoice)}% Price`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888' }}>{h}</span>)}
  </div>
  {editInvoiceItems.map((item,i)=>{
  const variant = donutVariants.find(v=>v.id===item.variant_id)
- const retailPrice = variant?.selling_price || Number(item.retail_price) || 0
- const resellerPrice = Math.round(retailPrice*0.80*100)/100
+ const retailPrice = safeNum(variant?.selling_price ?? item.retail_price, 0)
+ const invoicePrice = getDeliveryInvoiceEditUnitPrice(editingInvoice, retailPrice)
  return (
  <div key={i} style={{ display:'grid', gridTemplateColumns:'3fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'6px', alignItems:'center' }}>
- <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const upd=[...editInvoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||''}; setEditInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
+ <select value={item.variant_id||''} onChange={e=>{ const v=donutVariants.find(dv=>dv.id===e.target.value); const retail=safeNum(v?.selling_price,0); const upd=[...editInvoiceItems]; upd[i]={...upd[i],variant_id:e.target.value,variant_name:v?.name||'',retail_price:retail,reseller_price:getDeliveryInvoiceEditUnitPrice(editingInvoice, retail)}; setEditInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
  <option value=""> Select </option>
  {donutVariants.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
  </select>
  <input type="number" value={item.quantity} onChange={e=>{ const upd=[...editInvoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setEditInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" />
  <span style={{ fontSize:'11px', color:'#888', textAlign:'center' }}>{php(retailPrice)}</span>
- <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold', textAlign:'center' }}>{php(resellerPrice)}</span>
+ <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'bold', textAlign:'center' }}>{php(invoicePrice)}</span>
  <button onClick={()=>setEditInvoiceItems(editInvoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}> </button>
  </div>
  )
@@ -26464,7 +36217,7 @@ onClick={async ()=>{
  <div style={{ background:'#fff9e6', borderRadius:'8px', padding:'8px 12px', margin:'6px 0', display:'flex', justifyContent:'space-between' }}>
  <span style={{ fontSize:'12px', color:'#555' }}>{editInvoiceItems.reduce((s,i)=>s+Number(i.quantity||0),0)} pieces</span>
  <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px' }}>
- New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); return s+Math.round((v?.selling_price||0)*0.80*100)/100*Number(i.quantity||0) },0))}
+ New Total: {php(editInvoiceItems.reduce((s,i)=>{ const v=donutVariants.find(dv=>dv.id===i.variant_id); const retail=safeNum(v?.selling_price ?? i.retail_price,0); return s+getDeliveryInvoiceEditUnitPrice(editingInvoice, retail)*Number(i.quantity||0) },0))}
  </span>
  </div>
  )}
@@ -26477,7 +36230,7 @@ onClick={async ()=>{
  {/* VIEW INVOICE MODAL */}
  {viewingInvoice && (
  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'16px' }} onClick={()=>setViewingInvoice(null)}>
- <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'580px', width:'100%', maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
+ <div style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'820px', width:'100%', maxHeight:'90vh', overflowY:'auto', boxShadow:'0 20px 60px rgba(0,0,0,0.4)' }} onClick={e=>e.stopPropagation()}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'14px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:'0 0 2px' }}>{viewingInvoice.invoice_number}</p>
@@ -26505,32 +36258,55 @@ onClick={async ()=>{
  ))}
  </div>
  {/* Items */}
- <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', marginBottom:'12px' }}>
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#ca1b1b', padding:'6px 10px' }}>
- {['Variant','Qty','Reseller Price','Amount'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold', textAlign:'right' }}>{h==='Variant'?h:h}</span>)}
- </div>
- {(viewingInvoice.delivery_invoice_items||[]).map((item,i)=>(
- <div key={item.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{Number(item.quantity).toLocaleString()}</span>
- <span style={{ textAlign:'right', fontSize:'12px', color:'#2d8a4e' }}>{php(item.reseller_price)}</span>
- <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:'#ca1b1b' }}>{php(item.total_price)}</span>
- </div>
+ {(()=>{
+ const viewRows = getInvoiceViewItemRows(viewingInvoice)
+ const totalDelivered = viewRows.reduce((s,i)=>s+i.deliveredQty,0)
+ const totalUnsold = viewRows.reduce((s,i)=>s+i.unsoldQty,0)
+ const totalSold = viewRows.reduce((s,i)=>s+i.soldQty,0)
+ const totalGross = viewRows.reduce((s,i)=>moneyRound(s+i.grossAmount),0)
+ const totalNet = viewRows.reduce((s,i)=>moneyRound(s+i.netAmount),0)
+ return (
+ <div style={{ border:'1px solid #eee', borderRadius:'8px', overflowX:'auto', marginBottom:'12px' }}>
+ <table style={{ width:'100%', minWidth:'760px', borderCollapse:'collapse', fontSize:'11px' }}>
+ <thead>
+ <tr style={{ background:'#ca1b1b', color:'white' }}>
+ {['Variant','Delivered','Unsold','Sold','Price','Gross','Net Amount'].map(h=>(
+ <th key={h} style={{ padding:'7px 8px', textAlign:h==='Variant'?'left':'right', fontSize:'10px' }}>{h}</th>
  ))}
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'10px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>TOTAL</span>
- <span style={{ textAlign:'right', fontWeight:'bold', fontSize:'12px' }}>{(viewingInvoice.delivery_invoice_items||[]).reduce((s,i)=>s+Number(i.quantity||0),0).toLocaleString()} pcs</span>
- <span></span>
- <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>{php(viewingInvoice.total_amount)}</span>
+ </tr>
+ </thead>
+ <tbody>
+ {viewRows.map((item,i)=>(
+ <tr key={item.id || `${item.variant_name}-${i}`} style={{ background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <td style={{ padding:'7px 8px', fontWeight:'bold', color:'#333' }}>{item.variant_name}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right' }}>{item.deliveredQty.toLocaleString('en-PH')}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', color:item.unsoldQty>0?'#ca1b1b':'#777', fontWeight:item.unsoldQty>0?'bold':'normal' }}>{item.unsoldQty ? item.unsoldQty.toLocaleString('en-PH') : '-'}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', fontWeight:'bold', color:'#2d8a4e' }}>{item.soldQty.toLocaleString('en-PH')}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', color:'#2d8a4e' }}>{php(item.price)}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right' }}>{php(item.grossAmount)}</td>
+ <td style={{ padding:'7px 8px', textAlign:'right', fontWeight:'bold', color:'#ca1b1b' }}>{php(item.netAmount)}</td>
+ </tr>
+ ))}
+ <tr style={{ background:'#fff9e6', borderTop:'2px solid #ca1b1b', fontWeight:'bold' }}>
+ <td style={{ padding:'9px 8px', color:'#ca1b1b' }}>TOTAL</td>
+ <td style={{ padding:'9px 8px', textAlign:'right' }}>{totalDelivered.toLocaleString('en-PH')}</td>
+ <td style={{ padding:'9px 8px', textAlign:'right', color:'#ca1b1b' }}>{totalUnsold.toLocaleString('en-PH')}</td>
+ <td style={{ padding:'9px 8px', textAlign:'right', color:'#2d8a4e' }}>{totalSold.toLocaleString('en-PH')}</td>
+ <td></td>
+ <td style={{ padding:'9px 8px', textAlign:'right' }}>{php(totalGross)}</td>
+ <td style={{ padding:'9px 8px', textAlign:'right', color:'#ca1b1b', fontSize:'14px' }}>{php(totalNet)}</td>
+ </tr>
+ </tbody>
+ </table>
  </div>
- </div>
+ )
+ })()}
  {/* Payment status */}
- {viewingInvoice.paid_amount > 0 && (
- <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', marginBottom:'12px', display:'flex', justifyContent:'space-between' }}>
- <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>Paid: {php(viewingInvoice.paid_amount)}</span>
- <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>Balance: {php(Number(viewingInvoice.total_amount)-Number(viewingInvoice.paid_amount))}</span>
+ <div style={{ background:'#e8f5e9', borderRadius:'8px', padding:'10px', marginBottom:'12px', display:'flex', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
+ <span style={{ fontSize:'12px', color:'#2d8a4e', fontWeight:'bold' }}>Paid: {php(viewingInvoice.paid_amount||0)}</span>
+ <span style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'bold' }}>Balance: {php(Math.max(0, safeNum(viewingInvoice.total_amount,0)-safeNum(viewingInvoice.paid_amount,0)))}</span>
+ <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Reported Unsold: {getInvoiceViewItemRows(viewingInvoice).reduce((s,i)=>s+i.unsoldQty,0).toLocaleString('en-PH')} pcs</span>
  </div>
- )}
  {viewingInvoice.notes && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}> {viewingInvoice.notes}</p>}
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}> PRINT INVOICE</button>
@@ -26629,6 +36405,7 @@ onClick={async ()=>{
  {/* Action Buttons */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
+ <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {displayStatus!=='paid' && (
  <button style={{...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>openInvoiceSettlement(inv)}>
  {showPaymentFormMap[inv.id]?' CANCEL SETTLEMENT':' RECORD PAYMENT'}
@@ -26829,12 +36606,15 @@ onClick={async ()=>{
  )}
  {dailySalesLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading...</p>}
  {!dailySalesLoading && dailySales.length===0 && <p style={{ color:'#aaa', textAlign:'center', padding:'30px', fontSize:'13px' }}>No sales encoded yet. Start encoding above.</p>}
- {dailySales.map(sale=>(
- <div key={sale.id} style={{...cardS, border:'2px solid #4a90d933', marginBottom:'10px' }}>
+ {dailySales.map(sale=>{
+ const posShiftMeta = parsePosShiftDailySalesMetadata(sale.notes || '')
+ return (
+ <div key={sale.id} style={{...cardS, border:posShiftMeta.isPosShiftClosing ? '2px solid #2d8a4e' : '2px solid #4a90d933', marginBottom:'10px', background:posShiftMeta.isPosShiftClosing ? '#f3fff7' : 'white' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'14px', margin:'0 0 2px' }}> {sale.sale_date}</p>
  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Encoded by: {sale.encoded_by}</p>
+ {posShiftMeta.isPosShiftClosing && <span style={{ display:'inline-block', marginTop:'5px', background:'#dcfce7', border:'1px solid #86efac', color:'#166534', borderRadius:'999px', padding:'3px 7px', fontSize:'9.5px', fontWeight:'950' }}>SAGS POS • SHIFT CLOSED • AUTO-SYNCED</span>}
  </div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'18px', margin:0 }}>{php(sale.total_revenue)}</p>
  </div>
@@ -26848,7 +36628,7 @@ onClick={async ()=>{
  </div>
  {sale.notes && <p style={{...cps, color:'#888', marginTop:'6px' }}> {sale.notes}</p>}
  </div>
- ))}
+ )})}
  </div>
  )}
 
@@ -29671,7 +39451,10 @@ onClick={async ()=>{
  // Employee Portal 
  if (employee) {
  const onBreak = todayBreaks.length>0 &&!todayBreaks[todayBreaks.length-1]?.break_in
- const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
+ const completedBreakMins = todayBreaks.reduce((sum, row) => sum + Math.max(0, safeNum(row?.break_minutes, 0)), 0)
+ const ongoingBreakMins = onBreak ? Math.floor(breakTimerSeconds / 60) : 0
+ const totalBreakMins = completedBreakMins + ongoingBreakMins
+ const liveOverbreakMins = Math.max(0, totalBreakMins - ALLOWED_BREAK_MINUTES)
  return (
  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f8f7f5', display:'flex', flexDirection:'column', overflow:'hidden' }}>
  {/* Header */}
@@ -29715,6 +39498,7 @@ onClick={async ()=>{
  <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
  )}
 
+ {renderAppUpdateBanner()}
  {/* Scrollable Content Area */}
  <div style={{ flex:1, overflowY:'auto', padding:isMobile?'12px':'20px', display:'flex', justifyContent:'center', background:'#f8f7f5' }}>
  <div style={{ background:'white', borderRadius:'16px', padding:isMobile?'16px':'20px', width:'100%', maxWidth:'560px', boxShadow:'0 4px 20px rgba(0,0,0,0.08)', marginBottom:'16px', border:'1px solid #eee' }}>
@@ -29745,6 +39529,18 @@ onClick={async ()=>{
  )}
  {geoStatus && <p style={{ color:'#f5a623', textAlign:'center', fontWeight:'bold', fontSize:'13px', margin:'0 0 8px' }}>{geoStatus}</p>}
 
+ {medicalCertLock?.locked && (
+ <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'12px', boxShadow:'0 4px 14px rgba(202,27,27,0.12)' }}>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', textAlign:'center' }}> Time In Locked — Medical Certificate Required</p>
+ <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px', textAlign:'center' }}>{medicalCertLock.message || 'You were marked absent for 2 consecutive days. Upload a medical certificate to unlock Time In.'}</p>
+ <label style={{ display:'block', background:medicalCertUploading?'#f0f0f0':'#ca1b1b', color:medicalCertUploading?'#999':'white', borderRadius:'10px', padding:'11px 14px', textAlign:'center', fontWeight:'bold', fontSize:'12px', cursor:medicalCertUploading?'wait':'pointer' }}>
+ {medicalCertUploading?'UPLOADING MEDICAL CERTIFICATE...':'UPLOAD MEDICAL CERTIFICATE'}
+ <input type="file" accept="image/*,.pdf" disabled={medicalCertUploading} onChange={handleMedicalCertificateUpload} style={{ display:'none' }} />
+ </label>
+ <p style={{ color:'#888', fontSize:'10px', margin:'8px 0 0', textAlign:'center' }}>Accepted: PDF, JPG, PNG, WEBP. After upload, Time In unlocks automatically.</p>
+ </div>
+ )}
+
  <div style={{ background:'#f8f9fa', borderRadius:'12px', padding:'14px', marginBottom:'12px', border:'1px solid #eee' }}>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Today's Attendance</p>
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
@@ -29767,13 +39563,13 @@ onClick={async ()=>{
  </div>
  <div style={{ background:'white', borderRadius:'8px', padding:'8px 10px', border:'1px solid #eee', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
  <span style={{ color:'#888', fontSize:'11px' }}>Break used</span>
- <span style={{ fontWeight:'bold', color:totalBreakMins>60?'#ca1b1b':'#1a1a2e', fontSize:'12px' }}>{totalBreakMins} min {totalBreakMins>60&&!onBreak?' Over limit':''}</span>
+ <span style={{ fontWeight:'bold', color:liveOverbreakMins>0?'#ca1b1b':'#1a1a2e', fontSize:'12px' }}>{totalBreakMins} min {liveOverbreakMins>0?` (${liveOverbreakMins}m overbreak)`:''}</span>
  </div>
  {onBreak && (
  <div style={{ background:breakTimerSeconds>=3600?'#ca1b1b':breakTimerSeconds>=3000?'#f57c00':'#2d8a4e', borderRadius:'10px', padding:'10px 14px', marginTop:'8px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
  <div>
  <p style={{ color:'white', fontWeight:'bold', fontSize:'12px', margin:'0 0 2px' }}>On Break</p>
- <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', margin:0 }}>{breakTimerSeconds>=3600?' Overtime Return now!':breakTimerSeconds>=3000?' Almost at limit':'Within allowed time'}</p>
+ <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', margin:0 }}>{breakTimerSeconds>=3600?' Overbreak: BREAK IN now!':breakTimerSeconds>=3300?' 5 minutes or less remaining':'Within allowed time'}</p>
  </div>
  <p style={{ color:'white', fontWeight:'bold', fontSize:'22px', margin:0, fontFamily:'monospace' }}>{String(Math.floor(breakTimerSeconds/60)).padStart(2,'0')}:{String(breakTimerSeconds%60).padStart(2,'0')}</p>
  </div>
@@ -29805,10 +39601,12 @@ onClick={async ()=>{
  {(()=>{
  const needsCompanyDevice = DEVICE_RESTRICTED_DEPTS.includes(employee?.department)
  const deviceOk =!needsCompanyDevice || isCompanyDevice
+ const timeInLockedByMedicalCert = !!medicalCertLock?.locked
+ const canTimeInNow = !todayLog && deviceOk && !timeInLockedByMedicalCert
  return (
  <div>
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
- <button style={{ background:todayLog?'#f0f0f0':deviceOk?'#ca1b1b':'#e0e0e0', color:todayLog?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(todayLog||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog}> TIME IN</button>
+ <button style={{ background:!canTimeInNow?'#f0f0f0':'#ca1b1b', color:!canTimeInNow?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:!canTimeInNow?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={timeInLockedByMedicalCert?()=>showToast(' Upload medical certificate first to unlock Time In.','red'):deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog||timeInLockedByMedicalCert||!deviceOk}> TIME IN</button>
  <button style={{ background:(!todayLog||!!todayLog?.time_out)?'#f0f0f0':deviceOk?'#1a1a2e':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out)?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeOut:()=>showToast(' Production staff must time out on the company tablet.','red')} disabled={loading||!todayLog||!!todayLog?.time_out}> TIME OUT</button>
  <button style={{ background:(!todayLog||!!todayLog?.time_out||onBreak)?'#f0f0f0':deviceOk?'#4a90d9':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out||onBreak)?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakOut:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!todayLog||!!todayLog?.time_out||onBreak}> BREAK OUT</button>
  <button style={{ background:!onBreak?'#f0f0f0':deviceOk?'#2d8a4e':'#e0e0e0', color:!onBreak?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakIn:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!onBreak}> BREAK IN</button>
@@ -29837,7 +39635,18 @@ onClick={async ()=>{
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Quick Actions</p>
  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px' }}>
  {[
- { label:'OT / UT', icon:' ', action:()=>{ closeAllPanels(); setShowOTRequest(!showOTRequest) }, disabled:!todayLog||!todayLog?.time_out },
+ { label:'OT / UT', icon:' ', action:()=>{
+  const opening = !showOTRequest
+  closeAllPanels()
+  setShowOTRequest(opening)
+  if (opening) {
+   const defaultDate = String(todayLog?.attendance_date || today).slice(0,10)
+   setOtRequestDate(defaultDate)
+   setOtRequestFrom('')
+   setOtRequestTo('')
+   setTimeout(()=>refreshTimeAdjustmentPreview(defaultDate, otRequestType, '', ''), 0)
+  }
+ }, disabled:!todayLog||!todayLog?.time_out },
  { label:getEmployeeLeaveInfo(employee).buttonLabel, icon:' ', action:()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }, disabled:false },
  { label:'Cash Advance', icon:' ', action:()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }, disabled:false },
  { label:'My Payslips', icon:' ', action:()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }, disabled:false },
@@ -29934,11 +39743,85 @@ onClick={async ()=>{
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}> BACK</button>
  <h3 style={{ color:'#8b5cf6', margin:'0 0 10px', fontSize:'14px' }}> File OT / Undertime Request</h3>
  <label style={lblS}>Date of OT / Undertime:</label>
- <input type="date" value={otRequestDate} max={today} onChange={e=>setOtRequestDate(e.target.value)} style={inputStyle} />
+ <input
+  type="date"
+  value={otRequestDate}
+  max={today}
+  onChange={async e=>{
+   const selectedDate = e.target.value
+   setOtRequestDate(selectedDate)
+   setOtRequestFrom('')
+   setOtRequestTo('')
+   await refreshTimeAdjustmentPreview(selectedDate, otRequestType, '', '')
+  }}
+  style={inputStyle}
+ />
  <label style={lblS}>Request Type:</label>
- <select value={otRequestType} onChange={e=>setOtRequestType(e.target.value)} style={inputStyle}><option value="overtime">Overtime</option><option value="undertime">Undertime</option></select>
- <label style={lblS}>Minutes:</label>
- <input type="number" placeholder="Number of minutes" value={otRequestMinutes} onChange={e=>setOtRequestMinutes(e.target.value)} style={inputStyle} />
+ <select
+  value={otRequestType}
+  onChange={async e=>{
+   const selectedType = e.target.value
+   setOtRequestType(selectedType)
+   setOtRequestReasonPreset('')
+   setOtRequestReason('')
+   setOtRequestFrom('')
+   setOtRequestTo('')
+   await refreshTimeAdjustmentPreview(otRequestDate, selectedType, '', '')
+  }}
+  style={inputStyle}
+ >
+  <option value="overtime">Overtime</option>
+  <option value="undertime">Undertime</option>
+ </select>
+ {otRequestType === 'overtime' ? (
+ <>
+ <div style={{ background:'#f0f7ff', border:'1px solid #b8d8ff', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
+  <p style={{ margin:'0 0 4px', color:'#1a1a2e', fontSize:'11px' }}>Actual attendance: <strong>{formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.actualTimeIn)} – {formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.actualTimeOut)}</strong></p>
+  <p style={{ margin:'0 0 4px', color:'#1a1a2e', fontSize:'11px' }}>Scheduled / required regular-work window: <strong>{formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.shiftStart)} – {formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.shiftEnd)}</strong>{timeAdjPreview?.validation?.overtimeWindow?.shiftEndDerived ? ' (derived because the saved attendance had no shift end)' : ''}</p>
+  <p style={{ margin:0, color:'#1f6d3b', fontSize:'11px', fontWeight:'900' }}>Verified payable OT: {formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.verifiedFrom)} – {formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.verifiedTo)} ({safeNum(timeAdjPreview?.validation?.overtimeWindow?.minutes,0)} minutes)</p>
+ </div>
+ <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+  <div>
+   <label style={lblS}>Verified OT From (Locked):</label>
+   <input
+    type="time"
+    value={otRequestFrom}
+    disabled
+    aria-label="Verified OT From locked by attendance"
+    title="Automatically set to the verified payable overtime start"
+    style={{...inputStyle, background:'#eef2f7', color:'#1a1a2e', fontWeight:'900', cursor:'not-allowed', opacity:1 }}
+   />
+  </div>
+  <div>
+   <label style={lblS}>Actual Time Out / OT To (Locked):</label>
+   <input
+    type="time"
+    value={otRequestTo}
+    disabled
+    aria-label="OT To locked to actual Time Out"
+    title="Automatically capped at the actual recorded Time Out"
+    style={{...inputStyle, background:'#eef2f7', color:'#1a1a2e', fontWeight:'900', cursor:'not-allowed', opacity:1 }}
+   />
+  </div>
+ </div>
+ <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'9px 10px', marginBottom:'8px' }}>
+  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'800' }}>The system controls both times. OT From starts only after the regular eight paid hours and scheduled shift are completed. OT To is the actual recorded Time Out and cannot be extended or manually changed.</p>
+ </div>
+ <div style={{...inputStyle, marginBottom:'6px', background:timeAdjPreview.canSubmit?'#eefaf1':'#fff5f5', border:`1.5px solid ${timeAdjPreview.canSubmit?'#2d8a4e':'#ffd0d0'}`, color:timeAdjPreview.canSubmit?'#1f6d3b':'#8b0000', fontWeight:'900', fontSize:'16px' }}>
+  Locked OT: {safeNum(timeAdjPreview?.rangeValidation?.filedMinutes,0)} minute(s) | Attendance Maximum: {safeNum(timeAdjPreview?.validation?.overtimeWindow?.minutes,0)} minute(s)
+ </div>
+ </>
+ ) : (
+ <>
+ <label style={lblS}>Attendance-Supported Minutes:</label>
+ <div style={{...inputStyle, marginBottom:'6px', background:timeAdjPreview.canSubmit?'#eefaf1':timeAdjPreview.loading?'#f8f9fa':'#fff5f5', border:`1.5px solid ${timeAdjPreview.canSubmit?'#2d8a4e':timeAdjPreview.loading?'#ddd':'#ffd0d0'}`, color:timeAdjPreview.canSubmit?'#1f6d3b':'#8b0000', fontWeight:'900', fontSize:'18px' }}>
+  {timeAdjPreview.loading?'Checking...':`${safeNum(timeAdjPreview.minutes,0)} minute(s)`}
+ </div>
+ </>
+ )}
+ <p style={{ margin:'0 0 12px', color:timeAdjPreview.canSubmit?'#2d8a4e':'#8b0000', fontSize:'11px', lineHeight:1.5, fontWeight:timeAdjPreview.canSubmit?'700':'600' }}>
+  {timeAdjPreview.message}
+ </p>
  <label style={lblS}>Reason:</label>
  <select
  value={otRequestReasonPreset}
@@ -29978,7 +39861,23 @@ onClick={async ()=>{
  style={{...inputStyle, minHeight:'70px', resize:'none' }}
  />
  )}
- <button style={{ background:'#8b5cf6', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'14px' }} onClick={submitTimeAdjRequest}>SUBMIT REQUEST</button>
+ <button
+  disabled={timeAdjPreview.loading || !timeAdjPreview.canSubmit}
+  style={{
+   background:timeAdjPreview.canSubmit?'#8b5cf6':'#bbb',
+   color:'white',
+   padding:'12px',
+   border:'none',
+   borderRadius:'10px',
+   width:'100%',
+   cursor:timeAdjPreview.canSubmit?'pointer':'not-allowed',
+   fontWeight:'bold',
+   fontSize:'14px'
+  }}
+  onClick={submitTimeAdjRequest}
+ >
+  {timeAdjPreview.loading?'VALIDATING ATTENDANCE...':'SUBMIT SYSTEM-LOCKED OT / UT REQUEST'}
+ </button>
  </div>
  )}
 
@@ -29989,13 +39888,24 @@ onClick={async ()=>{
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'6px', padding:'5px 10px', cursor:'pointer', fontSize:'11px', color:'#555' }} onClick={()=>setShowLeaveRequest(false)}> Close</button>
  </div>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
- <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Leave Type: {getEmployeeLeaveInfo(employee).label}</p>
+ <p style={{ margin:'0 0 4px', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Leave Pay Type: {getEmployeeLeaveInfo(employee).label}</p>
  <p style={{ margin:0, color:'#666', fontSize:'12px' }}>{getEmployeeLeaveInfo(employee).note}</p>
  </div>
- <input type="date" value={leaveStartDate} min={new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
+ <label style={{...lblS, marginTop:'8px' }}>FILING TYPE</label>
+ <select
+ value={leaveFilingType}
+ onChange={e=>setLeaveFilingType(e.target.value)}
+ style={inputStyle}
+ >
+ {LEAVE_FILING_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+ </select>
+ <div style={{ background:isEmergencyLeaveFiling(leaveFilingType)?'#fff5f5':'#f8f9fa', border:`1px solid ${isEmergencyLeaveFiling(leaveFilingType)?'#ffd0d0':'#eee'}`, borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
+ <p style={{ margin:0, color:isEmergencyLeaveFiling(leaveFilingType)?'#ca1b1b':'#555', fontSize:'12px', fontWeight:'700' }}>{getLeaveFilingTypeInfo(leaveFilingType).note}</p>
+ </div>
+ <input type="date" value={leaveStartDate} min={isEmergencyLeaveFiling(leaveFilingType)?'':new Date(Date.now()+3*24*60*60*1000).toISOString().split('T')[0]} onChange={e=>setLeaveStartDate(e.target.value)} style={inputStyle} />
  <input type="date" value={leaveEndDate} onChange={e=>setLeaveEndDate(e.target.value)} style={inputStyle} />
  {leaveStartDate&&leaveEndDate&&<p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'8px', fontSize:'13px' }}>Duration: {daysInclusive(leaveStartDate, leaveEndDate)} day(s)</p>}
- <textarea placeholder="Reason for leave..." value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'none' }} />
+ <textarea placeholder={isEmergencyLeaveFiling(leaveFilingType)?'Explain the emergency / illness clearly...':'Reason for planned leave...'} value={leaveReason} onChange={e=>setLeaveReason(e.target.value)} style={{...inputStyle, minHeight:'70px', resize:'none' }} />
  <button style={{...btnRed }} onClick={submitLeaveRequest}>{getEmployeeLeaveInfo(employee).type==='SIL'?'SUBMIT SIL REQUEST':'SUBMIT LEAVE REQUEST'}</button>
  </div>
  )}
@@ -30135,7 +40045,11 @@ onClick={async ()=>{
  style={{...inputStyle, minHeight:'70px', resize:'none' }}
  />
  )}
- <button style={btnGreen} onClick={submitCashAdvanceRequest}>SUBMIT REQUEST</button>
+ <button
+ style={{...btnGreen, opacity:submittingCashAdvanceRequest?0.65:1, cursor:submittingCashAdvanceRequest?'not-allowed':'pointer' }}
+ disabled={submittingCashAdvanceRequest}
+ onClick={submitCashAdvanceRequest}
+ >{submittingCashAdvanceRequest?'SUBMITTING...':'SUBMIT REQUEST'}</button>
  </div>
  )}
 
@@ -30148,7 +40062,12 @@ onClick={async ()=>{
  {myActiveCAs.length > 0 && (
  <div style={{ background:'#fff8dc', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginBottom:'12px' }}>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 10px' }}> Outstanding Cash Advance Balance</p>
- {myActiveCAs.map(ca => (
+ {myActiveCAs.map(ca => {
+ const effectiveBalance = getCashAdvanceEffectiveBalance(ca)
+ const effectivePaid = getCashAdvancePaidAmount(ca)
+ const effectiveInstallments = getCashAdvanceRemainingInstallments(ca)
+ const paidPct = Math.min(100, (effectivePaid / Math.max(1, safeNum(ca.amount, 1))) * 100)
+ return (
  <div key={ca.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'8px', border:'1px solid #eee' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'6px' }}>
  <div>
@@ -30158,31 +40077,32 @@ onClick={async ()=>{
  <p style={cps}>Date: {ca.advance_date} | Reason: {ca.notes||' '}</p>
  </div>
  <div style={{ textAlign:'right' }}>
- <p style={{ margin:0, fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{php(ca.balance)}</p>
+ <p style={{ margin:0, fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{php(effectiveBalance)}</p>
  <p style={{ margin:0, fontSize:'11px', color:'#888' }}>remaining</p>
  </div>
  </div>
  {/* Progress bar */}
  <div style={{ marginTop:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
- <span style={{ fontSize:'11px', color:'#888' }}>Paid: {php(ca.amount_paid||0)}</span>
- <span style={{ fontSize:'11px', color:'#888' }}>Remaining: {php(ca.balance)}</span>
+ <span style={{ fontSize:'11px', color:'#888' }}>Paid: {php(effectivePaid)}</span>
+ <span style={{ fontSize:'11px', color:'#888' }}>Remaining: {php(effectiveBalance)}</span>
  </div>
  <div style={{ background:'#eee', borderRadius:'999px', height:'8px', overflow:'hidden' }}>
- <div style={{ background:'#2d8a4e', height:'100%', borderRadius:'999px', width:`${Math.min(100, ((Number(ca.amount_paid)||0)/Number(ca.amount||1))*100).toFixed(0)}%`, transition:'width 0.3s' }} />
+ <div style={{ background:'#2d8a4e', height:'100%', borderRadius:'999px', width:`${paidPct.toFixed(0)}%`, transition:'width 0.3s' }} />
  </div>
  <p style={{ fontSize:'11px', color:'#888', margin:'4px 0 0', textAlign:'center' }}>
- {Math.min(100,((Number(ca.amount_paid)||0)/Number(ca.amount||1))*100).toFixed(0)}% paid 
- {ca.installments_remaining} installment(s) left 
+ {paidPct.toFixed(0)}% paid 
+ {effectiveInstallments} installment(s) left 
  {php(ca.per_payroll_deduction)} per cutoff
  </p>
  </div>
  </div>
- ))}
+ )
+})}
  {/* Total outstanding */}
  <div style={{ background:'#ca1b1b', color:'white', borderRadius:'8px', padding:'10px 14px', display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'8px' }}>
  <span style={{ fontWeight:'bold', fontSize:'13px' }}>TOTAL OUTSTANDING</span>
- <span style={{ fontWeight:'bold', fontSize:'16px' }}>{php(myActiveCAs.reduce((s,c)=>s+Number(c.balance||0),0))}</span>
+ <span style={{ fontWeight:'bold', fontSize:'16px' }}>{php(myActiveCAs.reduce((s,c)=>s+getCashAdvanceEffectiveBalance(c),0))}</span>
  </div>
  </div>
  )}
@@ -30266,17 +40186,22 @@ onClick={async ()=>{
  <div style={{ marginTop:'10px' }}>
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'10px' }} onClick={()=>setShowMyAttendance(false)}> BACK</button>
  {myAttendance.length===0&&<p style={{ color:'#888', fontSize:'13px' }}>No attendance records found.</p>}
- {myAttendance.map(log=>(
- <div key={log.id} style={{...cardS, borderLeft:`4px solid ${log.status==='Absent'?'#ca1b1b':log.status==='Late'?'#f5a623':'#2d8a4e'}` }}>
+ {myAttendance.map(log=>{
+ const statusInfo = getDTRStatusInfo(log)
+ return (
+ <div key={log.id} style={{...cardS, borderLeft:`4px solid ${statusInfo.color==='red'?'#ca1b1b':statusInfo.color==='orange'?'#f5a623':statusInfo.color==='blue'?'#4a90d9':'#2d8a4e'}` }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
  <strong style={{ fontSize:'13px' }}>{log.attendance_date}</strong>
- <Badge label={log.status||' '} color={log.status==='Absent'?'red':log.status==='Late'?'orange':'green'} />
+ <Badge label={statusInfo.label||'REVIEW'} color={statusInfo.color} />
  </div>
- {log.time_in&&<p style={cps}>In: {log.time_in} | Out: {log.time_out||' '} | Break: {log.total_break_minutes||0}min</p>}
+ {log.time_in&&<p style={cps}>In: {log.time_in} | Out: {log.time_out||' '} | Break Deducted: {getDTRBreakMinutes(log)}min | Duty: {formatDutyHours(getDTRDutyMinutes(log))}</p>}
  {log.late_minutes>0&&<p style={{...cps, color:'#f5a623' }}>Late: {log.late_minutes} min</p>}
- {log.overtime_minutes>0&&<p style={{...cps, color:'#2d8a4e' }}>OT: {log.overtime_minutes} min {log.overtime_approved?' Approved':' Pending'}</p>}
+ {getDTROverbreakMinutes(log)>0&&<p style={{...cps, color:'#ca1b1b', fontWeight:'700' }}>Overbreak: {getDTROverbreakMinutes(log)} min — already included in actual worked-time shortage</p>}
+ {getDTRUndertimeMinutes(log)>0&&<p style={{...cps, color:'#ca1b1b' }}>Automatic UT: {getDTRUndertimeMinutes(log)} min</p>}
+ {getDTRActualOvertimeMinutes(log)>0&&<p style={{...cps, color:'#2d8a4e' }}>Actual OT: {getDTRActualOvertimeMinutes(log)} min {getDTRApprovedOvertimeMinutes(log)>0?' Approved':' Pending filing/approval'}</p>}
  </div>
- ))}
+ )
+ })}
  </div>
  )}
 
@@ -30507,6 +40432,7 @@ onClick={async ()=>{
  return (
  <div style={{ minHeight:'100vh', background:'#f6f6f6', fontFamily:'Arial, sans-serif' }}>
  {toast && <div style={{ position:'fixed', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 24px', borderRadius:'12px', fontWeight:'bold', boxShadow:'0 6px 18px rgba(0,0,0,0.25)' }}>{toast.msg}</div>}
+ {renderAppUpdateBanner()}
 
  <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', color:'white', padding:isMobile?'18px 14px':'20px 28px', boxShadow:'0 4px 18px rgba(0,0,0,0.18)' }}>
  <div style={{ maxWidth:'1180px', margin:'0 auto', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
@@ -30660,6 +40586,11 @@ onClick={async ()=>{
  {resellerPortalView==='orders' && (
  <div>
  <h2 style={h2s}> Order Requests</h2>
+ {lastSubmittedOrderNotice && (
+ <div style={{...portalCard, border:'2px solid #2d8a4e', background:'#f0fff4', color:'#155724', fontSize:'13px', fontWeight:'800', lineHeight:1.5 }}>
+  {lastSubmittedOrderNotice}
+ </div>
+ )}
  {resellerOrders.length===0? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No orders yet. Place your first order.</p>: resellerOrders.map(ord=>(
  <div key={ord.id} style={{...portalCard, marginBottom:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
@@ -30686,6 +40617,11 @@ onClick={async ()=>{
  {resellerPortalView==='place_order' && (
  <div>
  <h2 style={h2s}>{editingResellerOrderId?' Edit Pending Order':' Place Order'}</h2>
+ {lastSubmittedOrderNotice && (
+ <div style={{...portalCard, border:'2px solid #2d8a4e', background:'#f0fff4', color:'#155724', fontSize:'13px', fontWeight:'800', lineHeight:1.5 }}>
+  {lastSubmittedOrderNotice}
+ </div>
+ )}
  {(()=>{
  const selectedOrderCutoff = resellerOrderDeliveryDate? getOrderCutoffStatus(resellerOrderDeliveryDate): { locked:false, message:'' }
  return (
@@ -30760,7 +40696,7 @@ onClick={async ()=>{
  <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>{resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0),0)} pieces</span>
  <span style={{ fontSize:'14px', color:'#ca1b1b', fontWeight:'bold' }}>Estimated: {php(resellerOrderItems.reduce((s,i)=>s+safeNum(i.quantity,0)*safeNum(i.reseller_price,0),0))}</span>
  </div>
- <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' ORDER SUBMITTED - PROCESSING...':' SUBMIT ORDER REQUEST')}</button>
+ <button style={{...btnRed, background:selectedOrderCutoff.locked?'#999':submittingOrder?'#2d8a4e':'#ca1b1b', opacity:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?0.75:1, cursor:(submittingOrder||updatingResellerOrder||selectedOrderCutoff.locked)?'not-allowed':'pointer' }} disabled={submittingOrder || updatingResellerOrder || selectedOrderCutoff.locked} onClick={editingResellerOrderId?updateResellerOrder:submitResellerOrder}>{selectedOrderCutoff.locked?' CHANGE DELIVERY DATE TO CONTINUE':editingResellerOrderId?(updatingResellerOrder?' ORDER SUBMITTED - SAVING...':' SAVE ORDER CHANGES'):(submittingOrder?' SAVING ORDER - PLEASE WAIT...':' SUBMIT ORDER REQUEST')}</button>
  {editingResellerOrderId && <button style={{...btnGray, marginTop:'8px' }} disabled={updatingResellerOrder} onClick={cancelResellerOrderEdit}>CANCEL EDIT</button>}
  </div>
  </>
@@ -30800,16 +40736,6 @@ onClick={async ()=>{
  </>
  )}
  </div>
-
-
-  "${i}: $($lines[$i-1])"
-}
-
-  "${i}: $($lines[$i-1])"
-}
-
-  "${i}: $($lines[$i-1])"
-}
 
  <div style={{...portalCard, marginTop:'14px' }}>
  <h3 style={{ color:'#333', margin:'0 0 10px', fontSize:'14px' }}>Submitted Reports</h3>
@@ -30870,6 +40796,7 @@ onClick={async ()=>{
  {toast && (
  <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
  )}
+ {renderAppUpdateBanner()}
  <div style={{ background:'white', borderRadius:'24px', boxShadow:'0 20px 60px rgba(0,0,0,0.25)', width:'100%', maxWidth:'440px', padding:'36px 32px', boxSizing:'border-box' }}>
  <div style={{ textAlign:'center', marginBottom:'24px' }}>
  <img src="/logo.png" alt="Logo" style={{ width:'90px', height:'90px', objectFit:'contain', display:'block', margin:'0 auto 10px' }} />
