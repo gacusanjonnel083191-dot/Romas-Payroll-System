@@ -5352,12 +5352,42 @@ export default function App() {
  const [costingView, setCostingView] = useState('dashboard')
  const [costingLoadErrors, setCostingLoadErrors] = useState([])
  const [costSettings, setCostSettings] = useState({
- daily_labor_cost: 8000, waste_percentage: 10,
- monthly_rent: 8000, monthly_electricity: 20000, monthly_other_fixed: 73000,
- fryer_cost: 55000, fryer_lifespan_years: 6,
- mixer_cost: 100000, mixer_lifespan_years: 6,
- sheeter_cost: 200000, sheeter_lifespan_years: 5,
- production_days_per_month: 26, target_margin_percentage: 30, total_daily_pieces: 4740,
+ // Production basis
+ daily_labor_cost:8000,
+ total_daily_pieces:4740,
+ production_days_per_month:26,
+ packaging_cost_per_piece:0,
+ waste_percentage:10,
+ expected_return_percentage:0,
+ target_margin_percentage:30,
+ reseller_margin_percentage:20,
+ price_rounding_step:1,
+ // Production utilities
+ monthly_electricity:20000,
+ monthly_water:0,
+ monthly_lpg_fuel:0,
+ // Factory overhead
+ monthly_rent:8000,
+ monthly_factory_supplies:0,
+ monthly_repairs_maintenance:0,
+ // Distribution
+ monthly_delivery_fuel:0,
+ monthly_driver_helper_cost:0,
+ monthly_vehicle_maintenance:0,
+ vehicle_cost:0,
+ vehicle_lifespan_years:7,
+ // Administrative OPEX
+ monthly_admin_opex:0,
+ monthly_marketing:0,
+ monthly_software_communications:0,
+ monthly_other_fixed:73000,
+ // Production equipment depreciation
+ fryer_cost:55000,
+ fryer_lifespan_years:6,
+ mixer_cost:100000,
+ mixer_lifespan_years:6,
+ sheeter_cost:200000,
+ sheeter_lifespan_years:5,
  })
  const [savingCostSettings, setSavingCostSettings] = useState(false)
  const [donutVariants, setDonutVariants] = useState([])
@@ -5378,6 +5408,7 @@ export default function App() {
  const [prodNotes, setProdNotes] = useState('')
  const [savingProduction, setSavingProduction] = useState(false)
  const [editingVariantId, setEditingVariantId] = useState(null)
+ const [expandedRecipeVariantId, setExpandedRecipeVariantId] = useState(null)
  const [editVariantFields, setEditVariantFields] = useState({})
  const DONUT_VARIANTS_DEFAULT = [
  { name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
@@ -9213,52 +9244,124 @@ Cancel = create batch record only for existing stock.`)
  }
 
  // Phase 2: Costing Functions 
+ const COST_SETTINGS_LOCAL_KEY = 'romas_professional_cost_settings_v2'
+ const COST_SETTINGS_LEGACY_KEYS = [
+  'daily_labor_cost','waste_percentage','monthly_rent','monthly_electricity','monthly_other_fixed',
+  'fryer_cost','fryer_lifespan_years','mixer_cost','mixer_lifespan_years','sheeter_cost','sheeter_lifespan_years',
+  'production_days_per_month','target_margin_percentage','total_daily_pieces'
+ ]
+ function readCostSettingsLocalBackup() {
+  if (typeof window === 'undefined') return {}
+  try {
+   const parsed = JSON.parse(window.localStorage.getItem(COST_SETTINGS_LOCAL_KEY) || '{}')
+   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch (error) {
+   console.warn('Cost settings local backup could not be read:', error)
+   return {}
+  }
+ }
+ function saveCostSettingsLocalBackup(settings = {}) {
+  if (typeof window === 'undefined') return
+  try { window.localStorage.setItem(COST_SETTINGS_LOCAL_KEY, JSON.stringify(settings || {})) }
+  catch (error) { console.warn('Cost settings local backup could not be saved:', error) }
+ }
+ function isMissingCostSettingsColumnError(error) {
+  const message = String(error?.message || error || '').toLowerCase()
+  return message.includes('cost_settings') && (
+   message.includes('schema cache') || message.includes('could not find') ||
+   message.includes('column') || message.includes('pgrst204') || message.includes('42703')
+  )
+ }
+ function normalizeCostSettingsForSave(settings = {}) {
+  return {
+   daily_labor_cost:Math.max(0, safeNum(settings.daily_labor_cost)),
+   total_daily_pieces:positiveNum(settings.total_daily_pieces),
+   production_days_per_month:positiveNum(settings.production_days_per_month),
+   packaging_cost_per_piece:Math.max(0, safeNum(settings.packaging_cost_per_piece)),
+   waste_percentage:Math.min(95, Math.max(0, safeNum(settings.waste_percentage))),
+   expected_return_percentage:Math.min(95, Math.max(0, safeNum(settings.expected_return_percentage))),
+   target_margin_percentage:Math.min(95, Math.max(0, safeNum(settings.target_margin_percentage))),
+   reseller_margin_percentage:Math.min(95, Math.max(0, safeNum(settings.reseller_margin_percentage, 20))),
+   price_rounding_step:positiveNum(settings.price_rounding_step, 1),
+   monthly_electricity:Math.max(0, safeNum(settings.monthly_electricity)),
+   monthly_water:Math.max(0, safeNum(settings.monthly_water)),
+   monthly_lpg_fuel:Math.max(0, safeNum(settings.monthly_lpg_fuel)),
+   monthly_rent:Math.max(0, safeNum(settings.monthly_rent)),
+   monthly_factory_supplies:Math.max(0, safeNum(settings.monthly_factory_supplies)),
+   monthly_repairs_maintenance:Math.max(0, safeNum(settings.monthly_repairs_maintenance)),
+   monthly_delivery_fuel:Math.max(0, safeNum(settings.monthly_delivery_fuel)),
+   monthly_driver_helper_cost:Math.max(0, safeNum(settings.monthly_driver_helper_cost)),
+   monthly_vehicle_maintenance:Math.max(0, safeNum(settings.monthly_vehicle_maintenance)),
+   vehicle_cost:Math.max(0, safeNum(settings.vehicle_cost)),
+   vehicle_lifespan_years:positiveNum(settings.vehicle_lifespan_years, 7),
+   monthly_admin_opex:Math.max(0, safeNum(settings.monthly_admin_opex)),
+   monthly_marketing:Math.max(0, safeNum(settings.monthly_marketing)),
+   monthly_software_communications:Math.max(0, safeNum(settings.monthly_software_communications)),
+   monthly_other_fixed:Math.max(0, safeNum(settings.monthly_other_fixed)),
+   fryer_cost:Math.max(0, safeNum(settings.fryer_cost)),
+   fryer_lifespan_years:positiveNum(settings.fryer_lifespan_years),
+   mixer_cost:Math.max(0, safeNum(settings.mixer_cost)),
+   mixer_lifespan_years:positiveNum(settings.mixer_lifespan_years),
+   sheeter_cost:Math.max(0, safeNum(settings.sheeter_cost)),
+   sheeter_lifespan_years:positiveNum(settings.sheeter_lifespan_years),
+  }
+ }
  async function loadCostSettings() {
- try {
- const { data, error } = await supabase.from('cost_settings').select('*').maybeSingle()
- if (error) {
- console.warn('Cost settings could not be loaded:', error)
- setCostingLoadErrors(p => [...p.filter(x=>!x.includes('cost_settings')), `cost_settings: ${error.message}`])
- return
- }
- if (data) setCostSettings(p=>({...p,...data }))
- } catch (err) {
- console.warn('Cost settings load failed:', err)
- setCostingLoadErrors(p => [...p.filter(x=>!x.includes('cost_settings')), `cost_settings: ${err.message || err}`])
- }
+  const localSettings = readCostSettingsLocalBackup()
+  if (Object.keys(localSettings).length > 0) setCostSettings(p => ({...p,...localSettings}))
+  try {
+   const { data, error } = await supabase.from('cost_settings').select('*').maybeSingle()
+   if (error) {
+    console.warn('Cost settings could not be loaded:', error)
+    setCostingLoadErrors(p => [...p.filter(x=>!x.includes('cost_settings')), `cost_settings: ${error.message}`])
+    return
+   }
+   if (data) {
+    const merged = {...localSettings,...data}
+    setCostSettings(p=>({...p,...merged }))
+    saveCostSettingsLocalBackup({...localSettings,...data})
+   }
+  } catch (err) {
+   console.warn('Cost settings load failed:', err)
+   setCostingLoadErrors(p => [...p.filter(x=>!x.includes('cost_settings')), `cost_settings: ${err.message || err}`])
+  }
  }
  async function saveCostSettings() {
- setSavingCostSettings(true)
- try {
- const cleanSettings = {
- daily_labor_cost: safeNum(costSettings.daily_labor_cost),
- waste_percentage: safeNum(costSettings.waste_percentage),
- monthly_rent: safeNum(costSettings.monthly_rent),
- monthly_electricity: safeNum(costSettings.monthly_electricity),
- monthly_other_fixed: safeNum(costSettings.monthly_other_fixed),
- fryer_cost: safeNum(costSettings.fryer_cost),
- fryer_lifespan_years: positiveNum(costSettings.fryer_lifespan_years),
- mixer_cost: safeNum(costSettings.mixer_cost),
- mixer_lifespan_years: positiveNum(costSettings.mixer_lifespan_years),
- sheeter_cost: safeNum(costSettings.sheeter_cost),
- sheeter_lifespan_years: positiveNum(costSettings.sheeter_lifespan_years),
- production_days_per_month: positiveNum(costSettings.production_days_per_month),
- target_margin_percentage: safeNum(costSettings.target_margin_percentage),
- total_daily_pieces: positiveNum(costSettings.total_daily_pieces),
- }
- const { data: existing, error: findErr } = await supabase.from('cost_settings').select('id').maybeSingle()
- if (findErr) throw findErr
- const result = existing
-? await supabase.from('cost_settings').update({...cleanSettings, updated_at: new Date().toISOString() }).eq('id', existing.id)
-: await supabase.from('cost_settings').insert({...cleanSettings })
- if (result.error) throw result.error
- await logAudit('COST SETTINGS UPDATED','Owner','System','Cost settings saved')
- setCostSettings(p => ({...p,...cleanSettings }))
- showToast(' Cost settings saved! All computations updated.')
- } catch (err) {
- showToast(' Cost settings failed: ' + (err.message || err), 'red')
- }
- setSavingCostSettings(false)
+  setSavingCostSettings(true)
+  const cleanSettings = normalizeCostSettingsForSave(costSettings)
+  saveCostSettingsLocalBackup(cleanSettings)
+  try {
+   const { data: existing, error: findErr } = await supabase.from('cost_settings').select('id').maybeSingle()
+   if (findErr) throw findErr
+   let result = existing
+    ? await supabase.from('cost_settings').update({...cleanSettings, updated_at:new Date().toISOString() }).eq('id', existing.id)
+    : await supabase.from('cost_settings').insert({...cleanSettings })
+
+   let usedLegacyFallback = false
+   if (result.error && isMissingCostSettingsColumnError(result.error)) {
+    const legacySettings = Object.fromEntries(COST_SETTINGS_LEGACY_KEYS.map(key => [key, cleanSettings[key]]))
+    result = existing
+     ? await supabase.from('cost_settings').update({...legacySettings, updated_at:new Date().toISOString() }).eq('id', existing.id)
+     : await supabase.from('cost_settings').insert({...legacySettings })
+    usedLegacyFallback = !result.error
+   }
+   if (result.error) throw result.error
+   await logAudit('COST SETTINGS UPDATED','Owner','System','Professional costing settings saved')
+   setCostSettings(p => ({...p,...cleanSettings }))
+   if (usedLegacyFallback) {
+    setCostingLoadErrors(p => [
+     ...p.filter(x=>!x.includes('professional costing columns')),
+     'cost_settings professional costing columns are not installed yet. New OPEX fields are saved in this browser only until the supplied SQL migration is run in Supabase.'
+    ])
+    showToast('Settings saved. Run the supplied Supabase migration so the new OPEX fields sync across devices.', 'orange')
+   } else {
+    setCostingLoadErrors(p => p.filter(x=>!x.includes('professional costing columns')))
+    showToast(' Professional cost settings saved. All product prices were recalculated.')
+   }
+  } catch (err) {
+   showToast(' Cost settings failed: ' + (err.message || err), 'red')
+  }
+  setSavingCostSettings(false)
  }
  async function loadDonutVariants() {
  setVariantsLoading(true)
@@ -9294,13 +9397,22 @@ Cancel = create batch record only for existing stock.`)
  }
  }
  async function updateVariant(id, fields) {
- if (String(id).startsWith('local-')) {
- showToast(' This is a local preview variant. Create the donut_variants table and load variants first.', 'red')
- return
- }
- const { error } = await supabase.from('donut_variants').update(fields).eq('id', id)
- if (error) { showToast(' Failed: '+error.message,'red'); return }
- showToast(' Variant updated!'); setEditingVariantId(null); loadDonutVariants()
+  if (String(id).startsWith('local-')) {
+   showToast('This is a local preview product. Create the donut_variants table and load products first.', 'red')
+   return
+  }
+  const cleanFields = {...fields}
+  const { error } = await supabase.from('donut_variants').update(cleanFields).eq('id', id)
+  if (error) {
+   const message = String(error?.message || error)
+   if (['packaging_cost_per_piece','labor_cost_per_batch','delivery_cost_per_piece'].some(column=>message.includes(column))) {
+    showToast('Run the supplied professional costing SQL migration in Supabase before saving product-specific packaging, labor, and delivery costs.', 'red')
+   } else showToast('Product update failed: '+message,'red')
+   return
+  }
+  showToast('Product pricing setup updated.')
+  setEditingVariantId(null)
+  loadDonutVariants()
  }
 
  function isPowderBaseTableMissingError(error) {
@@ -9386,82 +9498,115 @@ Cancel = create batch record only for existing stock.`)
  setCostingLoadErrors(p => [...p.filter(x=>!x.includes('variant_recipes')), `variant_recipes: ${err.message || err}`])
  }
  }
- async function saveBaseDough() {
- setSavingRecipe(true)
- try {
- // Delete existing and re-insert
- await supabase.from('base_dough_recipe').delete().neq('id', '00000000-0000-0000-0000-000000000000')
- const validRows = editingBaseDough.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
- if (validRows.length > 0) {
- const { error } = await supabase.from('base_dough_recipe').insert(validRows.map(r => ({
- inventory_item_id: r.inventory_item_id || null,
- item_name: r.item_name.trim(),
- quantity_per_batch: productionRecipeQuantityGrams(r),
- unit: 'g',
- notes: r.notes || null
- })))
- if (error) throw error
- }
- showToast(' Base dough recipe saved!'); loadRecipes()
- } catch(err) { showToast(' Failed: '+err.message,'red') }
- setSavingRecipe(false)
- }
- async function savePowderBase() {
- setSavingRecipe(true)
- const validRows = editingPowderBase.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
- const payloadRows = validRows.map(r => ({
- inventory_item_id: r.inventory_item_id || null,
- item_name: r.item_name.trim(),
- quantity_per_batch: productionRecipeQuantityGrams(r),
- unit: 'g',
- notes: r.notes || null
- }))
- try {
- // Delete existing and re-insert. Powder base is a shared production recipe like base dough.
- const { error: deleteError } = await supabase.from('powder_base_recipe').delete().neq('id', '00000000-0000-0000-0000-000000000000')
- if (deleteError) throw deleteError
- if (payloadRows.length > 0) {
- const { error } = await supabase.from('powder_base_recipe').insert(payloadRows)
- if (error) throw error
- }
- savePowderBaseLocalBackupRows(payloadRows)
- showToast(' Powder base recipe saved!'); setSelectedRecipeVariantId(null); loadRecipes()
- } catch(err) {
-  if (isPowderBaseTableMissingError(err) || isOptionalSupabaseObjectMissing(err)) {
-   savePowderBaseLocalBackupRows(payloadRows)
-   setPowderBaseIngredients(payloadRows.map((r, i) => ({...r, id:`local-powder-${i}`, is_local_powder_backup:true })))
-   setCostingLoadErrors(p => [
-    ...p.filter(x=>!x.includes('powder_base_recipe')),
-    'powder_base_recipe table is missing in Supabase. Powder Base was saved only as a browser backup. Create the Supabase table so this recipe is permanent and visible to other devices.'
-   ])
-   showToast(' Powder base saved as browser backup. Create the Supabase powder_base_recipe table for permanent shared saving.', 'orange')
-   setSelectedRecipeVariantId(null)
-  } else {
-   showToast(' Failed: '+err.message,'red')
+ function recipeRowPayload(row = {}, extra = {}) {
+  return {
+   ...extra,
+   inventory_item_id:row.inventory_item_id || null,
+   item_name:String(row.item_name || '').trim(),
+   quantity_per_batch:productionRecipeQuantityGrams(row),
+   unit:'g',
+   ...(Object.prototype.hasOwnProperty.call(row,'ingredient_type') ? { ingredient_type:row.ingredient_type || 'other' } : {}),
+   notes:row.notes || null,
   }
  }
- setSavingRecipe(false)
+ function validateSharedRecipeRows(rows = [], recipeLabel = 'Recipe') {
+  const validRows = (rows || []).filter(row=>String(row.item_name || '').trim() && productionRecipeQuantityGrams(row)>0)
+  if (!validRows.length) return { validRows, errors:[] }
+  const errors = []
+  const seen = new Set()
+  validRows.forEach(row=>{
+   const key = String(row.inventory_item_id || '')
+   if (!key) errors.push(`${row.item_name}: link the ingredient to Inventory so cost and stock deduction are auditable.`)
+   else if (seen.has(key)) errors.push(`${row.item_name}: duplicate ingredient row.`)
+   else seen.add(key)
+   const item = inventoryItems.find(inv=>String(inv.id)===key)
+   if (key && !item) errors.push(`${row.item_name}: linked inventory item was not found.`)
+   const warning = item ? productionRecipeCostWarning(item) : ''
+   if (warning) errors.push(`${row.item_name}: ${warning}`)
+  })
+  return { validRows, errors }
+ }
+ async function replaceRecipeRowsWithRollback(tableName, deleteQueryBuilder, payloadRows = [], oldRows = []) {
+  const deleteResult = await deleteQueryBuilder(supabase.from(tableName).delete())
+  if (deleteResult.error) throw deleteResult.error
+  if (!payloadRows.length) return
+  const insertResult = await supabase.from(tableName).insert(payloadRows)
+  if (!insertResult.error) return
+  // Best-effort restoration prevents a failed insert from silently erasing the previous recipe.
+  const restorePayload = (oldRows || []).map(row=>recipeRowPayload(row, tableName==='variant_recipes'?{ variant_id:row.variant_id }:{}))
+  if (restorePayload.length) await supabase.from(tableName).insert(restorePayload)
+  throw insertResult.error
+ }
+ async function saveBaseDough() {
+  const { validRows, errors } = validateSharedRecipeRows(editingBaseDough, 'Base Dough')
+  if (errors.length) { showToast(`Base Dough not saved: ${errors[0]}`, 'red'); return }
+  if (!validRows.length && !window.confirm('Clear the complete Base Dough recipe?')) return
+  setSavingRecipe(true)
+  try {
+   const payloadRows = validRows.map(row=>recipeRowPayload(row))
+   await replaceRecipeRowsWithRollback('base_dough_recipe', query=>query.neq('id','00000000-0000-0000-0000-000000000000'), payloadRows, baseDoughIngredients)
+   showToast('Base Dough recipe saved and recalculated.')
+   setSelectedRecipeVariantId(null)
+   await loadRecipes()
+  } catch(err) { showToast('Base Dough save failed: '+(err.message || err),'red') }
+  setSavingRecipe(false)
+ }
+ async function savePowderBase() {
+  const { validRows, errors } = validateSharedRecipeRows(editingPowderBase, 'Powder Base')
+  if (errors.length) { showToast(`Powder Base not saved: ${errors[0]}`, 'red'); return }
+  if (!validRows.length && !window.confirm('Clear the complete Powder Base recipe?')) return
+  const payloadRows = validRows.map(row=>recipeRowPayload(row))
+  setSavingRecipe(true)
+  try {
+   await replaceRecipeRowsWithRollback('powder_base_recipe', query=>query.neq('id','00000000-0000-0000-0000-000000000000'), payloadRows, powderBaseIngredients)
+   savePowderBaseLocalBackupRows(payloadRows)
+   showToast('Powder Base recipe saved and recalculated.')
+   setSelectedRecipeVariantId(null)
+   await loadRecipes()
+  } catch(err) {
+   if (isPowderBaseTableMissingError(err) || isOptionalSupabaseObjectMissing(err)) {
+    savePowderBaseLocalBackupRows(payloadRows)
+    setPowderBaseIngredients(payloadRows.map((row,index)=>({...row,id:`local-powder-${index}`,is_local_powder_backup:true})))
+    setCostingLoadErrors(p=>[...p.filter(x=>!x.includes('powder_base_recipe')),'powder_base_recipe is missing in Supabase. Powder Base is stored only in this browser until the table is created.'])
+    showToast('Powder Base saved in this browser only. Create the Supabase table for permanent multi-device saving.','orange')
+    setSelectedRecipeVariantId(null)
+   } else showToast('Powder Base save failed: '+(err.message || err),'red')
+  }
+  setSavingRecipe(false)
  }
  async function saveVariantRecipe(variantId) {
- setSavingRecipe(true)
- try {
- await supabase.from('variant_recipes').delete().eq('variant_id', variantId)
- const validRows = editingVariantRecipe.filter(r => r.item_name?.trim() && Number(r.quantity_per_batch) > 0)
- if (validRows.length > 0) {
- const { error } = await supabase.from('variant_recipes').insert(validRows.map(r => ({
- variant_id: variantId,
- inventory_item_id: r.inventory_item_id || null,
- item_name: r.item_name.trim(),
- quantity_per_batch: productionRecipeQuantityGrams(r),
- unit: 'g',
- ingredient_type: r.ingredient_type || 'topping',
- notes: r.notes || null
- })))
- if (error) throw error
- }
- showToast(' Variant recipe saved!'); setSelectedRecipeVariantId(null); loadRecipes()
- } catch(err) { showToast(' Failed: '+err.message,'red') }
- setSavingRecipe(false)
+  const validRows = (editingVariantRecipe || []).filter(row=>String(row.item_name || '').trim() && productionRecipeQuantityGrams(row)>0)
+  const errors = []
+  const seen = new Set()
+  validRows.forEach(row=>{
+   const key = String(row.inventory_item_id || '')
+   if (!key) errors.push(`${row.item_name}: select a linked recipe component or inventory item.`)
+   else if (seen.has(key)) errors.push(`${row.item_name}: this component is already included. Combine the quantity into one row.`)
+   else seen.add(key)
+   if (key===BASE_DOUGH_RECIPE_LINK_ID && computeBaseDoughTotals().totalGrams<=0) errors.push('Base Dough Recipe is linked but the shared Base Dough formula is empty or invalid.')
+   else if (key===POWDER_BASE_RECIPE_LINK_ID && computePowderBaseTotals().totalGrams<=0) errors.push('Powder Base Recipe is linked but the shared Powder Base formula is empty or invalid.')
+   else if (key && key!==BASE_DOUGH_RECIPE_LINK_ID && key!==POWDER_BASE_RECIPE_LINK_ID) {
+    const item = inventoryItems.find(inv=>String(inv.id)===key)
+    if (!item) errors.push(`${row.item_name}: linked inventory item was not found.`)
+    else {
+     const warning = productionRecipeCostWarning(item)
+     if (warning) errors.push(`${row.item_name}: ${warning}`)
+    }
+   }
+  })
+  if (errors.length) { showToast(`Product recipe not saved: ${errors[0]}`, 'red'); return }
+  if (!validRows.length && !window.confirm('Clear this product recipe? The product will become INCOMPLETE.')) return
+  setSavingRecipe(true)
+  try {
+   const oldRows = variantRecipes[variantId] || []
+   const payloadRows = validRows.map(row=>recipeRowPayload(row,{ variant_id:variantId }))
+   await replaceRecipeRowsWithRollback('variant_recipes', query=>query.eq('variant_id',variantId), payloadRows, oldRows)
+   showToast('Product recipe saved. Full unit cost and price were recalculated.')
+   setSelectedRecipeVariantId(null)
+   setExpandedRecipeVariantId(variantId)
+   await loadRecipes()
+  } catch(err) { showToast('Product recipe save failed: '+(err.message || err),'red') }
+  setSavingRecipe(false)
  }
  function normalizeProductionRecipeUnit(unit) {
  const u = String(unit || 'g').trim().toLowerCase()
@@ -9480,52 +9625,57 @@ Cancel = create batch record only for existing stock.`)
  return qty
  }
  function productionRecipeCostPerGram(item = null) {
- // Costing recipes are entered in grams. For raw materials, always prefer
- // professional purchase-unit setup (ex: 1 bottle = 250g at ₱250) so the
- // recipe uses true cost per gram instead of accidentally treating the full
- // bottle/pack price as ₱/g.
- const purchaseSize = safeNum(item?.purchase_unit_size, 0)
- const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
- if (purchaseSize > 0 && purchaseCost > 0) return purchaseCost / purchaseSize
- const cost = safeNum(item?.cost_per_unit, 0)
- const unit = normalizeProductionRecipeUnit(item?.base_unit || item?.unit)
- if (unit === 'kg') return cost / 1000
- if (unit === 'l') return cost / 1000
- return cost
- }
- function isProductionRecipeCostSetupSuspicious(item = null) {
- if (!item) return false
- const unit = normalizeProductionRecipeUnit(item?.base_unit || item?.unit)
- const purchaseSize = safeNum(item?.purchase_unit_size, 0)
- const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
- const cost = safeNum(item?.cost_per_unit, 0)
- // If a raw ingredient is stored as grams but the ₱/g value is extremely high
- // and no purchase-unit conversion exists, it is usually a package/bottle price
- // accidentally saved as cost per gram. Do not let it silently inflate recipe cost.
- return isRawMaterialItem(item) && ['g','ml'].includes(unit) && purchaseSize <= 0 && purchaseCost <= 0 && cost > 50
+  // Recipes are costed in grams. A package, bottle, sack, or piece can only be
+  // converted when purchase_unit_size and purchase_unit_cost are configured.
+  const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+  const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+  if (purchaseSize > 0 && purchaseCost > 0) return purchaseCost / purchaseSize
+  const cost = safeNum(item?.cost_per_unit, 0)
+  const unit = normalizeProductionRecipeUnit(item?.base_unit || item?.unit)
+  if (unit === 'kg' || unit === 'l') return cost / 1000
+  if (unit === 'g' || unit === 'ml') return cost
+  // Never interpret a pack, bottle, sack, piece, tray, or undefined unit as ₱/g.
+  return 0
  }
  function productionRecipeCostWarning(item = null) {
- if (!isProductionRecipeCostSetupSuspicious(item)) return ''
- return 'Cost setup needs review: this item looks like a package/bottle price saved as cost per gram. Edit the inventory item and set purchase unit size + purchase unit cost.'
+  if (!item) return 'Inventory link is missing.'
+  const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+  const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+  const rawCost = safeNum(item?.cost_per_unit, 0)
+  const unit = normalizeProductionRecipeUnit(item?.base_unit || item?.unit)
+  const hasPurchaseConversion = purchaseSize > 0 && purchaseCost > 0
+  if (!hasPurchaseConversion && !['g','kg','ml','l'].includes(unit)) {
+   return `Cannot convert ${item?.unit || 'this purchase unit'} to grams. Set purchase unit size and purchase unit cost in Inventory.`
+  }
+  if (!hasPurchaseConversion && rawCost <= 0) return 'Ingredient has no usable purchase cost.'
+  const costPerGram = productionRecipeCostPerGram(item)
+  if (!hasPurchaseConversion && ['g','ml'].includes(unit) && costPerGram > 5) {
+   return `Unusually high ${php(costPerGram)}/g. This looks like a pack or bottle price saved as cost per gram. Set purchase unit size and cost.`
+  }
+  return ''
+ }
+ function isProductionRecipeCostSetupSuspicious(item = null) {
+  return !!productionRecipeCostWarning(item)
  }
  function productionRecipeStockQtyFromGrams(qtyGrams, item = null) {
- const qty = safeNum(qtyGrams, 0)
- const unit = normalizeProductionRecipeUnit(item?.unit)
- if (unit === 'kg') return qty / 1000
- if (unit === 'l') return qty / 1000
- return qty
+  const qty = safeNum(qtyGrams, 0)
+  const unit = normalizeProductionRecipeUnit(item?.unit)
+  if (unit === 'kg' || unit === 'l') return qty / 1000
+  if (unit === 'g' || unit === 'ml') return qty
+  const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+  return purchaseSize > 0 ? qty / purchaseSize : 0
  }
  function productionRecipeInventoryOptionLabel(item = {}) {
- if (isProductionRecipeCostSetupSuspicious(item)) return 'NEEDS COST SETUP - add purchase size + cost'
- const costPerGram = productionRecipeCostPerGram(item)
- const originalUnit = item?.unit || 'unit'
- const purchaseSize = safeNum(item?.purchase_unit_size, 0)
- const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
- const originalCost = purchaseSize > 0 && purchaseCost > 0
-  ? `${php(purchaseCost)}/${item?.purchase_unit || 'purchase unit'} (${purchaseSize.toLocaleString('en-PH')}g)`
-  : `${php(item?.cost_per_unit || 0)}/${originalUnit}`
- const gramCost = `${php(costPerGram)}/g`
- return normalizeProductionRecipeUnit(originalUnit) === 'g' && !(purchaseSize > 0 && purchaseCost > 0) ? gramCost : `${gramCost} from ${originalCost}`
+  const warning = productionRecipeCostWarning(item)
+  if (warning) return `REVIEW COST SETUP - ${warning}`
+  const costPerGram = productionRecipeCostPerGram(item)
+  const originalUnit = item?.unit || 'unit'
+  const purchaseSize = safeNum(item?.purchase_unit_size, 0)
+  const purchaseCost = safeNum(item?.purchase_unit_cost, 0)
+  const originalCost = purchaseSize > 0 && purchaseCost > 0
+   ? `${php(purchaseCost)}/${item?.purchase_unit || 'purchase unit'} (${purchaseSize.toLocaleString('en-PH')}g)`
+   : `${php(item?.cost_per_unit || 0)}/${originalUnit}`
+  return `${php(costPerGram)}/g from ${originalCost}`
  }
  // Well-known sentinel IDs letting a per-variant ingredient row reference the
  // computed Base Dough / Powder Base recipes themselves, instead of a raw
@@ -9563,58 +9713,198 @@ Cancel = create batch record only for existing stock.`)
  if (isProductionRecipeCostSetupSuspicious(invItem)) return 0
  return moneyRound(productionRecipeQuantityGrams(row) * productionRecipeCostPerGram(invItem))
  }
+ function clampCostingPercentage(value, fallback = 0) {
+  return Math.min(95, Math.max(0, safeNum(value, fallback)))
+ }
+ function roundCostingPriceUp(value, step = 1) {
+  const safeStep = positiveNum(step, 1)
+  return moneyRound(Math.ceil(Math.max(0, safeNum(value, 0)) / safeStep) * safeStep)
+ }
+ function computeCostAllocationSummary() {
+  const productionDays = positiveNum(costSettings.production_days_per_month, 26)
+  const totalDailyPieces = positiveNum(costSettings.total_daily_pieces, 1)
+  const dailyLabor = Math.max(0, safeNum(costSettings.daily_labor_cost))
+  const equipmentDepreciationMonthly =
+   (safeNum(costSettings.fryer_cost) / (positiveNum(costSettings.fryer_lifespan_years) * 12)) +
+   (safeNum(costSettings.mixer_cost) / (positiveNum(costSettings.mixer_lifespan_years) * 12)) +
+   (safeNum(costSettings.sheeter_cost) / (positiveNum(costSettings.sheeter_lifespan_years) * 12))
+  const vehicleDepreciationMonthly = safeNum(costSettings.vehicle_cost) /
+   (positiveNum(costSettings.vehicle_lifespan_years, 7) * 12)
+  const utilitiesMonthly = safeNum(costSettings.monthly_electricity) + safeNum(costSettings.monthly_water) + safeNum(costSettings.monthly_lpg_fuel)
+  const factoryOverheadMonthly = safeNum(costSettings.monthly_rent) + safeNum(costSettings.monthly_factory_supplies) + safeNum(costSettings.monthly_repairs_maintenance)
+  const deliveryMonthly = safeNum(costSettings.monthly_delivery_fuel) + safeNum(costSettings.monthly_driver_helper_cost) + safeNum(costSettings.monthly_vehicle_maintenance) + vehicleDepreciationMonthly
+  const adminOpexMonthly = safeNum(costSettings.monthly_admin_opex) + safeNum(costSettings.monthly_marketing) + safeNum(costSettings.monthly_software_communications) + safeNum(costSettings.monthly_other_fixed)
+  const monthlyOperatingCost = utilitiesMonthly + factoryOverheadMonthly + deliveryMonthly + adminOpexMonthly + equipmentDepreciationMonthly
+  const dailyOperatingCost = monthlyOperatingCost / productionDays
+  const perPiece = amount => amount / productionDays / totalDailyPieces
+  return {
+   productionDays,
+   totalDailyPieces,
+   dailyLabor,
+   laborPerPiece:dailyLabor / totalDailyPieces,
+   utilitiesMonthly,
+   utilitiesPerPiece:perPiece(utilitiesMonthly),
+   factoryOverheadMonthly,
+   factoryOverheadPerPiece:perPiece(factoryOverheadMonthly),
+   deliveryMonthly,
+   deliveryPerPiece:perPiece(deliveryMonthly),
+   adminOpexMonthly,
+   adminOpexPerPiece:perPiece(adminOpexMonthly),
+   equipmentDepreciationMonthly,
+   equipmentDepreciationPerPiece:perPiece(equipmentDepreciationMonthly),
+   vehicleDepreciationMonthly,
+   monthlyOperatingCost,
+   dailyOperatingCost,
+   operatingCostPerPiece:dailyOperatingCost / totalDailyPieces,
+  }
+ }
  function computeVariantCost(variantId, piecesPerBatch) {
- const safePiecesPerBatch = positiveNum(piecesPerBatch)
- const variantIngs = variantRecipes[variantId] || []
- // Base Dough and Powder Base are no longer automatically included for
- // every variant. They only count when explicitly added as an ingredient
- // here (via the "Base Dough Recipe" / "Powder Base Recipe" dropdown
- // options), exactly like any other raw material. This sums variantIngs
- // exactly once, so double-counting is impossible by construction — there
- // is no separate automatic total to accidentally add on top.
- const ingredientCost = variantIngs.reduce((sum, ing) => {
- return sum + (productionRecipeIngredientCost(ing) / safePiecesPerBatch)
- }, 0)
- const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
- const laborPerPiece = safeNum(costSettings.daily_labor_cost) / totalDailyPieces
- const monthlyDepreciation =
- (safeNum(costSettings.fryer_cost) / (positiveNum(costSettings.fryer_lifespan_years) * 12)) +
- (safeNum(costSettings.mixer_cost) / (positiveNum(costSettings.mixer_lifespan_years) * 12)) +
- (safeNum(costSettings.sheeter_cost) / (positiveNum(costSettings.sheeter_lifespan_years) * 12))
- const monthlyFixed = safeNum(costSettings.monthly_rent) + safeNum(costSettings.monthly_electricity) +
- safeNum(costSettings.monthly_other_fixed) + monthlyDepreciation
- const dailyFixed = monthlyFixed / positiveNum(costSettings.production_days_per_month)
- const fixedPerPiece = dailyFixed / totalDailyPieces
- const wasteFactor = 1 + (safeNum(costSettings.waste_percentage) / 100)
- const totalCost = (ingredientCost + laborPerPiece + fixedPerPiece) * wasteFactor
- return { ingredientCost, laborPerPiece, fixedPerPiece, totalCost, wasteFactor }
+  const variant = donutVariants.find(v => String(v.id) === String(variantId)) || {}
+  const safePiecesPerBatch = positiveNum(piecesPerBatch || variant?.pieces_per_batch, 1)
+  const variantIngs = variantRecipes[variantId] || []
+  const rowDetails = variantIngs.map((row, index) => {
+   const isBaseDoughLink = String(row.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID
+   const isPowderBaseLink = String(row.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID
+   const inventoryItem = (isBaseDoughLink || isPowderBaseLink)
+    ? null
+    : inventoryItems.find(i => String(i.id) === String(row.inventory_item_id))
+   let warning = ''
+   if (!isBaseDoughLink && !isPowderBaseLink) {
+    if (!row.inventory_item_id || !inventoryItem) warning = 'Ingredient is not linked to an inventory item.'
+    else warning = productionRecipeCostWarning(inventoryItem)
+   }
+   if ((isBaseDoughLink && computeBaseDoughTotals().totalGrams <= 0) || (isPowderBaseLink && computePowderBaseTotals().totalGrams <= 0)) {
+    warning = `${isBaseDoughLink ? 'Base Dough' : 'Powder Base'} recipe is empty or has no valid cost.`
+   }
+   const batchCost = warning ? 0 : productionRecipeIngredientCost(row)
+   const costPerPiece = batchCost / safePiecesPerBatch
+   const currentRetailPrice = Math.max(0, safeNum(variant.selling_price))
+   if (!warning && currentRetailPrice > 0 && costPerPiece > currentRetailPrice * 2) {
+    warning = `Calculated cost is ${php(costPerPiece)} per piece, more than twice the current retail price. Verify the purchase-unit size, purchase cost, quantity used, and batch yield.`
+   }
+   return {
+    ...row,
+    index,
+    isBaseDoughLink,
+    isPowderBaseLink,
+    componentType:isBaseDoughLink?'Base Dough':isPowderBaseLink?'Powder Base':(row.ingredient_type || 'Ingredient'),
+    batchCost,
+    costPerPiece,
+    warning,
+   }
+  })
+  const ingredientBatchCost = rowDetails.reduce((sum, row) => sum + safeNum(row.batchCost), 0)
+  const ingredientCost = ingredientBatchCost / safePiecesPerBatch
+  const allocation = computeCostAllocationSummary()
+  const packagingPerPiece = safeNum(variant.packaging_cost_per_piece) > 0
+   ? safeNum(variant.packaging_cost_per_piece)
+   : Math.max(0, safeNum(costSettings.packaging_cost_per_piece))
+  const laborPerPiece = safeNum(variant.labor_cost_per_batch) > 0
+   ? safeNum(variant.labor_cost_per_batch) / safePiecesPerBatch
+   : allocation.laborPerPiece
+  const deliveryPerPiece = safeNum(variant.delivery_cost_per_piece) > 0
+   ? safeNum(variant.delivery_cost_per_piece)
+   : allocation.deliveryPerPiece
+  const utilitiesPerPiece = allocation.utilitiesPerPiece
+  const factoryOverheadPerPiece = allocation.factoryOverheadPerPiece
+  const adminOpexPerPiece = allocation.adminOpexPerPiece
+  const depreciationPerPiece = allocation.equipmentDepreciationPerPiece
+  const directMaterialCostPerPiece = ingredientCost + packagingPerPiece
+  const subtotalBeforeLoss = directMaterialCostPerPiece + laborPerPiece + utilitiesPerPiece + factoryOverheadPerPiece + deliveryPerPiece + adminOpexPerPiece + depreciationPerPiece
+  const wastePct = clampCostingPercentage(costSettings.waste_percentage)
+  const returnPct = clampCostingPercentage(costSettings.expected_return_percentage)
+  const sellableYieldFactor = Math.max(0.01, (1 - wastePct / 100) * (1 - returnPct / 100))
+  const totalCost = subtotalBeforeLoss / sellableYieldFactor
+  const lossAllowancePerPiece = Math.max(0, totalCost - subtotalBeforeLoss)
+  const targetMarginPct = clampCostingPercentage(costSettings.target_margin_percentage, 30)
+  const resellerMarginPct = clampCostingPercentage(costSettings.reseller_margin_percentage, 20)
+  const targetMarginFactor = Math.max(0.05, 1 - targetMarginPct / 100)
+  const resellerMarginFactor = Math.max(0.05, 1 - resellerMarginPct / 100)
+  const roundingStep = positiveNum(costSettings.price_rounding_step, 1)
+  const recommendedDirectPrice = roundCostingPriceUp(totalCost / targetMarginFactor, roundingStep)
+  const recommendedCompanyPrice = recommendedDirectPrice
+  const recommendedRetailPrice = roundCostingPriceUp(recommendedCompanyPrice / resellerMarginFactor, roundingStep)
+  const currentRetailPrice = Math.max(0, safeNum(variant.selling_price))
+  const currentResellerPrice = moneyRound(currentRetailPrice * resellerMarginFactor)
+  const directProfit = currentRetailPrice - totalCost
+  const directMarginPct = currentRetailPrice > 0 ? directProfit / currentRetailPrice * 100 : 0
+  const resellerChannelProfit = currentResellerPrice - totalCost
+  const resellerChannelMarginPct = currentResellerPrice > 0 ? resellerChannelProfit / currentResellerPrice * 100 : 0
+  const warnings = rowDetails.filter(row => row.warning).map(row => `${row.item_name || row.componentType}: ${row.warning}`)
+  if (!variantIngs.length) warnings.unshift('No product recipe is linked. Add the exact Base Dough, Powder Base, topping, filling, glaze, or frying-fat quantity used by one product batch.')
+  const isCostReady = variantIngs.length > 0 && warnings.length === 0 && ingredientBatchCost > 0
+  let statusCode = 'healthy'
+  let statusLabel = 'READY'
+  if (!variantIngs.length) { statusCode = 'incomplete'; statusLabel = 'INCOMPLETE' }
+  else if (warnings.length > 0) { statusCode = 'review'; statusLabel = 'REVIEW COST' }
+  else if (currentResellerPrice < totalCost) { statusCode = 'loss'; statusLabel = 'SELLING AT LOSS' }
+  else if (resellerChannelMarginPct < targetMarginPct) { statusCode = 'below_target'; statusLabel = 'BELOW TARGET' }
+  return {
+   variant,
+   variantIngs,
+   rowDetails,
+   ingredientBatchCost,
+   ingredientCost,
+   packagingPerPiece,
+   directMaterialCostPerPiece,
+   laborPerPiece,
+   utilitiesPerPiece,
+   factoryOverheadPerPiece,
+   deliveryPerPiece,
+   adminOpexPerPiece,
+   depreciationPerPiece,
+   fixedPerPiece:utilitiesPerPiece + factoryOverheadPerPiece + deliveryPerPiece + adminOpexPerPiece + depreciationPerPiece,
+   subtotalBeforeLoss,
+   wastePct,
+   returnPct,
+   sellableYieldFactor,
+   lossAllowancePerPiece,
+   totalCost,
+   targetMarginPct,
+   resellerMarginPct,
+   recommendedDirectPrice,
+   recommendedCompanyPrice,
+   recommendedRetailPrice,
+   currentRetailPrice,
+   currentResellerPrice,
+   directProfit,
+   directMarginPct,
+   resellerChannelProfit,
+   resellerChannelMarginPct,
+   warnings,
+   isCostReady,
+   isEstimate:!isCostReady,
+   statusCode,
+   statusLabel,
+   belowTarget:statusCode !== 'healthy',
+   grossMargin:resellerChannelProfit,
+   grossMarginPct:resellerChannelMarginPct,
+  }
  }
  function computeFinancials() {
- const monthlyDepreciation =
- (safeNum(costSettings.fryer_cost) / (positiveNum(costSettings.fryer_lifespan_years) * 12)) +
- (safeNum(costSettings.mixer_cost) / (positiveNum(costSettings.mixer_lifespan_years) * 12)) +
- (safeNum(costSettings.sheeter_cost) / (positiveNum(costSettings.sheeter_lifespan_years) * 12))
- const monthlyFixed = safeNum(costSettings.monthly_rent) + safeNum(costSettings.monthly_electricity) +
- safeNum(costSettings.monthly_other_fixed) + monthlyDepreciation
- const dailyFixed = monthlyFixed / positiveNum(costSettings.production_days_per_month)
- const dailyLabor = safeNum(costSettings.daily_labor_cost)
- const totalDailyPieces = positiveNum(costSettings.total_daily_pieces)
- const fixedPerPiece = dailyFixed / totalDailyPieces
- const laborPerPiece = dailyLabor / totalDailyPieces
- const wasteFactor = 1 + (safeNum(costSettings.waste_percentage) / 100)
- const variantData = donutVariants.map(v => {
- const sellPrice = safeNum(v.selling_price)
- const cost = computeVariantCost(v.id, v.pieces_per_batch)
- const totalCost = cost? cost.totalCost: laborPerPiece + fixedPerPiece
- const grossMargin = sellPrice - totalCost
- const grossMarginPct = sellPrice > 0? (grossMargin / sellPrice) * 100: 0
- const belowTarget = grossMarginPct < safeNum(costSettings.target_margin_percentage)
- return {...v,...(cost || {}), selling_price:sellPrice, totalCost, grossMargin, grossMarginPct, belowTarget, isEstimate:!cost || (cost.ingredientCost === 0) }
- })
- const avgGrossMargin = variantData.length > 0? variantData.reduce((s,v) => s + safeNum(v.grossMargin), 0) / variantData.length: fixedPerPiece
- const dailyBEP = avgGrossMargin > 0? Math.ceil(dailyFixed / avgGrossMargin): 0
- const monthlyBEP = dailyBEP * positiveNum(costSettings.production_days_per_month)
- return { variantData, monthlyFixed, dailyFixed, dailyLabor, fixedPerPiece, laborPerPiece, wasteFactor, dailyBEP, monthlyBEP, monthlyDepreciation }
+  const allocation = computeCostAllocationSummary()
+  const variantData = donutVariants.map(v => ({...v,...computeVariantCost(v.id, v.pieces_per_batch)}))
+  const costReadyVariants = variantData.filter(v => v.isCostReady)
+  const avgContribution = costReadyVariants.length > 0
+   ? costReadyVariants.reduce((sum, v) => sum + Math.max(0, v.currentResellerPrice - v.directMaterialCostPerPiece), 0) / costReadyVariants.length
+   : 0
+  const dailyFixedRequirement = allocation.dailyOperatingCost + allocation.dailyLabor
+  const dailyBEP = avgContribution > 0 ? Math.ceil(dailyFixedRequirement / avgContribution) : 0
+  const monthlyBEP = dailyBEP * allocation.productionDays
+  return {
+   variantData,
+   ...allocation,
+   monthlyFixed:allocation.monthlyOperatingCost,
+   dailyFixed:allocation.dailyOperatingCost,
+   dailyLabor:allocation.dailyLabor,
+   fixedPerPiece:allocation.operatingCostPerPiece,
+   laborPerPiece:allocation.laborPerPiece,
+   wasteFactor:1 / Math.max(0.01, (1 - clampCostingPercentage(costSettings.waste_percentage) / 100) * (1 - clampCostingPercentage(costSettings.expected_return_percentage) / 100)),
+   dailyBEP,
+   monthlyBEP,
+   monthlyDepreciation:allocation.equipmentDepreciationMonthly + allocation.vehicleDepreciationMonthly,
+   avgContribution,
+  }
  }
  async function loadProductionLogs() {
  setProductionLoading(true)
@@ -9636,129 +9926,138 @@ Cancel = create batch record only for existing stock.`)
  }
  setProductionLoading(false)
  }
+ async function deductCostingInventoryRow(row = {}, requiredGrams = 0) {
+  const qtyGrams = Math.max(0, safeNum(requiredGrams, 0))
+  if (!row?.inventory_item_id || qtyGrams <= 0) return
+  const { data:inv, error:loadError } = await supabase
+   .from('inventory_items')
+   .select('id,current_stock,name,min_stock,unit,purchase_unit_size,purchase_unit_cost,cost_per_unit,base_unit')
+   .eq('id', row.inventory_item_id)
+   .single()
+  if (loadError) throw loadError
+  if (!inv) return
+  const deductQty = productionRecipeStockQtyFromGrams(qtyGrams, inv)
+  if (deductQty <= 0) throw new Error(`${inv.name} cannot be converted from grams to ${inv.unit || 'its stock unit'}. Complete its purchase-unit setup first.`)
+  const stockBefore = safeNum(inv.current_stock, 0)
+  const newStock = Math.max(0, moneyRound(stockBefore - deductQty))
+  const { error:updateError } = await supabase.from('inventory_items').update({ current_stock:newStock }).eq('id', inv.id)
+  if (updateError) throw updateError
+  if (newStock <= safeNum(inv.min_stock, 0)) {
+   await createNotification(null, 'System', 'inventory', 'Low Stock Alert', `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit || ''}`)
+  }
+ }
+ async function deductVariantRecipeInventory(variantId, producedPieces, piecesPerBatch) {
+  const batchEquivalent = safeNum(producedPieces, 0) / positiveNum(piecesPerBatch, 1)
+  const rows = variantRecipes[variantId] || []
+  const baseTotals = computeBaseDoughTotals()
+  const powderTotals = computePowderBaseTotals()
+  for (const row of rows) {
+   const requiredComponentGrams = productionRecipeQuantityGrams(row) * batchEquivalent
+   if (requiredComponentGrams <= 0) continue
+   if (String(row.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID) {
+    if (baseTotals.totalGrams <= 0) throw new Error('Base Dough is linked but its shared recipe is empty.')
+    const useRatio = requiredComponentGrams / baseTotals.totalGrams
+    for (const baseRow of baseDoughIngredients || []) {
+     await deductCostingInventoryRow(baseRow, productionRecipeQuantityGrams(baseRow) * useRatio)
+    }
+    continue
+   }
+   if (String(row.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID) {
+    if (powderTotals.totalGrams <= 0) throw new Error('Powder Base is linked but its shared recipe is empty.')
+    const useRatio = requiredComponentGrams / powderTotals.totalGrams
+    for (const powderRow of powderBaseIngredients || []) {
+     await deductCostingInventoryRow(powderRow, productionRecipeQuantityGrams(powderRow) * useRatio)
+    }
+    continue
+   }
+   await deductCostingInventoryRow(row, requiredComponentGrams)
+  }
+ }
  async function logProduction() {
- if (!prodDate) { showToast(' Please select a date.','red'); return }
- const validEntries = prodEntries.filter(e => e.variant_id && Number(e.pieces) > 0)
- if (validEntries.length === 0) { showToast(' Please add at least one production entry.','red'); return }
- setSavingProduction(true)
- try {
- const totalPieces = validEntries.reduce((s,e) => s + Number(e.pieces), 0)
- const monthlyDepreciation =
- (Number(costSettings.fryer_cost) / (Number(costSettings.fryer_lifespan_years) * 12)) +
- (Number(costSettings.mixer_cost) / (Number(costSettings.mixer_lifespan_years) * 12)) +
- (Number(costSettings.sheeter_cost) / (Number(costSettings.sheeter_lifespan_years) * 12))
- const monthlyFixed = Number(costSettings.monthly_rent) + Number(costSettings.monthly_electricity) +
- Number(costSettings.monthly_other_fixed) + monthlyDepreciation
- const overheadCost = monthlyFixed / Math.max(1, Number(costSettings.production_days_per_month))
- const laborCost = Number(costSettings.daily_labor_cost)
- let totalIngredientCost = 0
- // Compute ingredient costs per entry
- const entryDetails = validEntries.map(e => {
- const variant = donutVariants.find(v => v.id === e.variant_id)
- const piecesPerBatch = Number(variant?.pieces_per_batch || 12)
- const pieces = Number(e.pieces)
- const cost = computeVariantCost(e.variant_id, piecesPerBatch)
- const ingCost = cost? cost.ingredientCost * pieces: 0
- totalIngredientCost += ingCost
- return { variant, pieces, piecesPerBatch, ingCost }
- })
- const totalCost = totalIngredientCost + laborCost + overheadCost
- // Insert log
- const { data: logData, error: logErr } = await supabase.from('production_logs').insert({
- production_date: prodDate, total_pieces: totalPieces,
- ingredient_cost: totalIngredientCost, labor_cost: laborCost,
- overhead_cost: overheadCost, total_cost: totalCost,
- notes: prodNotes || null, logged_by: `${adminRole}`
- }).select().single()
- if (logErr) throw logErr
- // Insert line items
- for (let i = 0; i < validEntries.length; i++) {
- const e = validEntries[i]; const d = entryDetails[i]
- await supabase.from('production_log_items').insert({
- log_id: logData.id, variant_id: e.variant_id,
- variant_name: d.variant?.name || '', pieces_produced: d.pieces, ingredient_cost: d.ingCost
- })
- // Deduct stock for shared recipes: base dough + powder base
- const batchEquiv = d.pieces / d.piecesPerBatch
- for (const ing of [...baseDoughIngredients, ...powderBaseIngredients]) {
- if (!ing.inventory_item_id) continue
- const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
- if (deductQtyGrams <= 0) continue
- const { data: inv } = await supabase.from('inventory_items').select('current_stock,name,min_stock,unit').eq('id', ing.inventory_item_id).single()
- if (inv) {
- const deductQty = productionRecipeStockQtyFromGrams(deductQtyGrams, inv)
- const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
- await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
- if (newStock <= Number(inv.min_stock||0)) {
- await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit}`)
- }
- }
- }
- // Deduct variant-specific ingredients
- for (const ing of (variantRecipes[e.variant_id] || [])) {
- if (!ing.inventory_item_id) continue
- const deductQtyGrams = productionRecipeQuantityGrams(ing) * batchEquiv
- if (deductQtyGrams <= 0) continue
- const { data: inv } = await supabase.from('inventory_items').select('current_stock,name,min_stock,unit').eq('id', ing.inventory_item_id).single()
- if (inv) {
- const deductQty = productionRecipeStockQtyFromGrams(deductQtyGrams, inv)
- const newStock = Math.max(0, Number(inv.current_stock) - deductQty)
- await supabase.from('inventory_items').update({ current_stock: newStock }).eq('id', ing.inventory_item_id)
- if (newStock <= Number(inv.min_stock||0)) {
- await createNotification(null, 'System', 'inventory', ` Low Stock Alert`, `${inv.name} is below minimum. Remaining: ${newStock.toFixed(2)} ${inv.unit}`)
- }
- }
- }
- } // end for validEntries
- await logAudit('PRODUCTION LOGGED', adminRole, 'Production', `${totalPieces} pcs on ${prodDate} Cost: ${php(totalCost)}`)
- showToast(` Production logged ${totalPieces} pieces | Cost: ${php(totalCost)}`)
- setShowProductionForm(false); setProdEntries([{ variant_id:'', pieces:'' }]); setProdNotes('')
- loadProductionLogs(); loadInventoryItems()
- } catch(err) { showToast(' Failed: '+err.message,'red') }
- setSavingProduction(false)
+  if (!prodDate) { showToast('Please select a date.','red'); return }
+  const validEntries = prodEntries.filter(e => e.variant_id && Number(e.pieces) > 0)
+  if (validEntries.length === 0) { showToast('Please add at least one production entry.','red'); return }
+  const previewEntries = validEntries.map(e => {
+   const variant = donutVariants.find(v => String(v.id) === String(e.variant_id))
+   const piecesPerBatch = positiveNum(variant?.pieces_per_batch, 1)
+   return { e, variant, piecesPerBatch, cost:computeVariantCost(e.variant_id, piecesPerBatch) }
+  })
+  const incomplete = previewEntries.filter(entry => !entry.cost?.isCostReady)
+  if (incomplete.length > 0) {
+   showToast(`Production blocked: finish the costing recipe for ${incomplete.map(x=>x.variant?.name || 'Unknown variant').join(', ')} before logging and deducting inventory.`, 'red')
+   return
+  }
+  setSavingProduction(true)
+  try {
+   const totalPieces = validEntries.reduce((s,e) => s + Number(e.pieces), 0)
+   const allocation = computeCostAllocationSummary()
+   const laborCost = allocation.dailyLabor
+   const overheadCost = allocation.dailyOperatingCost
+   let totalDirectMaterialCost = 0
+   const entryDetails = previewEntries.map(({ e, variant, piecesPerBatch, cost }) => {
+    const pieces = Number(e.pieces)
+    const directMaterialCost = cost.directMaterialCostPerPiece * pieces
+    totalDirectMaterialCost += directMaterialCost
+    return { variant, pieces, piecesPerBatch, cost, directMaterialCost }
+   })
+   const totalCost = totalDirectMaterialCost + laborCost + overheadCost
+   const { data:logData, error:logErr } = await supabase.from('production_logs').insert({
+    production_date:prodDate,
+    total_pieces:totalPieces,
+    ingredient_cost:moneyRound(totalDirectMaterialCost),
+    labor_cost:moneyRound(laborCost),
+    overhead_cost:moneyRound(overheadCost),
+    total_cost:moneyRound(totalCost),
+    notes:[prodNotes, 'Ingredient cost includes product packaging. Overhead includes utilities, factory overhead, delivery, administration, and depreciation.'].filter(Boolean).join(' | '),
+    logged_by:`${adminRole}`
+   }).select().single()
+   if (logErr) throw logErr
+   for (let i = 0; i < validEntries.length; i++) {
+    const e = validEntries[i]
+    const d = entryDetails[i]
+    const { error:itemError } = await supabase.from('production_log_items').insert({
+     log_id:logData.id,
+     variant_id:e.variant_id,
+     variant_name:d.variant?.name || '',
+     pieces_produced:d.pieces,
+     ingredient_cost:moneyRound(d.directMaterialCost)
+    })
+    if (itemError) throw itemError
+    await deductVariantRecipeInventory(e.variant_id, d.pieces, d.piecesPerBatch)
+   }
+   await logAudit('PRODUCTION LOGGED', adminRole, 'Production', `${totalPieces} pcs on ${prodDate} | Direct materials ${php(totalDirectMaterialCost)} | Labor ${php(laborCost)} | OPEX ${php(overheadCost)} | Total ${php(totalCost)}`)
+   showToast(`Production logged: ${totalPieces} pieces | Full daily cost: ${php(totalCost)}`)
+   setShowProductionForm(false)
+   setProdEntries([{ variant_id:'', pieces:'' }])
+   setProdNotes('')
+   loadProductionLogs()
+   loadInventoryItems()
+  } catch(err) {
+   showToast('Failed: '+(err.message || err),'red')
+  }
+  setSavingProduction(false)
  }
  function printCostingReport() {
- const fin = computeFinancials()
- const pw = window.open('','_blank','width=420,height=660')
- const catColors = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }
- pw.document.write(`<!DOCTYPE html><html><head><title>Costing Report</title>
- <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:10px;}
- @media print{@page{size:A4;margin:12mm;}.no-print{display:none;}}
- h1{font-size:18px;color:#ca1b1b;}table{width:100%;border-collapse:collapse;margin-bottom:12px;}
- th{background:#ca1b1b;color:white;padding:5px 6px;font-size:9px;}
- td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
-.ok{color:#2d8a4e;font-weight:bold;}.warn{color:#ca1b1b;font-weight:bold;}
- </style></head><body>
- <div style="text-align:center;border-bottom:2px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px;">
- <h1>Roma's Donuts</h1><div style="font-size:12px;font-weight:bold;">PRODUCTION COSTING REPORT</div>
- <div style="font-size:10px;color:#666;">Generated: ${new Date().toLocaleDateString('en-PH',{year:'numeric',month:'long',day:'numeric'})} | Target Margin: ${costSettings.target_margin_percentage}%</div>
- </div>
- <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;">
- ${[['Daily Labor',php(fin.dailyLabor)],['Daily Fixed',php(fin.dailyFixed)],['Daily BEP',`${fin.dailyBEP} pcs`],['Waste Buffer',`${costSettings.waste_percentage}%`]].map(([l,v])=>`
- <div style="background:#f9f9f9;padding:8px;border-radius:4px;border:1px solid #eee;">
- <div style="color:#888;font-size:9px;">${l}</div><div style="font-weight:bold;color:#ca1b1b;font-size:13px;">${v}</div>
- </div>`).join('')}
- </div>
- <table>
- <tr><th>Variant</th><th>Category</th><th>Sell Price</th><th>Ingredient/pc</th><th>Labor/pc</th><th>Fixed/pc</th><th>Total Cost/pc</th><th>Margin </th><th>Margin %</th><th>Status</th></tr>
- ${fin.variantData.map(v=>`<tr>
- <td>${v.name}</td><td>${v.category}</td>
- <td style="text-align:right;">${php(v.selling_price)}</td>
- <td style="text-align:right;">${v.isEstimate?' ':php(v.ingredientCost||0)}</td>
- <td style="text-align:right;">${php(v.laborPerPiece||fin.laborPerPiece)}</td>
- <td style="text-align:right;">${php(v.fixedPerPiece||fin.fixedPerPiece)}</td>
- <td style="text-align:right;font-weight:bold;">${php(v.totalCost||0)}</td>
- <td style="text-align:right;" class="${v.grossMargin>=0?'ok':'warn'}">${php(v.grossMargin||0)}</td>
- <td style="text-align:right;" class="${v.grossMarginPct>=(costSettings.target_margin_percentage||30)?'ok':'warn'}">${(v.grossMarginPct||0).toFixed(1)}%</td>
- <td class="${v.belowTarget?'warn':'ok'}">${v.belowTarget?' LOW':' OK'}${v.isEstimate?' *':''}</td>
- </tr>`).join('')}
- </table>
- <p style="font-size:9px;color:#888;margin-top:8px;">* No recipe set ingredient cost not included. Set up recipes for accurate costing.</p>
- <div class="no-print" style="text-align:center;margin-top:20px;">
- <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;"> PRINT</button>
- </div>
- </body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+  const fin = computeFinancials()
+  const pw = window.open('','_blank','width=1200,height=760')
+  if (!pw) { showToast('Allow pop-ups to print the costing report.','red'); return }
+  const readyCount = fin.variantData.filter(v=>v.isCostReady).length
+  pw.document.write(`<!DOCTYPE html><html><head><title>Professional Costing Report</title>
+  <style>*{box-sizing:border-box}body{font-family:Arial,sans-serif;padding:12mm;color:#222;font-size:9px}@media print{@page{size:A4 landscape;margin:8mm}.no-print{display:none}}h1{font-size:18px;color:#ca1b1b;margin:0}.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin:10px 0}.card{border:1px solid #ddd;border-radius:6px;padding:7px}.label{color:#777;font-size:8px}.value{font-weight:bold;font-size:12px;margin-top:2px}table{width:100%;border-collapse:collapse}th{background:#1a1a2e;color:white;padding:5px;font-size:8px}td{padding:4px 5px;border-bottom:1px solid #eee;font-size:8px}.right{text-align:right}.ok{color:#2d8a4e;font-weight:bold}.warn{color:#ca1b1b;font-weight:bold}.muted{color:#999}</style></head><body>
+  <div style="text-align:center;border-bottom:2px solid #ca1b1b;padding-bottom:8px"><h1>Roma's Donuts</h1><div style="font-size:12px;font-weight:bold">PROFESSIONAL PRODUCT COSTING & PRICING REPORT</div><div style="color:#777;margin-top:3px">Generated ${new Date().toLocaleString('en-PH')} | Company target margin ${safeNum(costSettings.target_margin_percentage)}% | Reseller margin ${safeNum(costSettings.reseller_margin_percentage)}%</div></div>
+  <div class="cards">
+   ${[
+    ['Cost-ready products',`${readyCount}/${fin.variantData.length}`],['Daily labor',php(fin.dailyLabor)],['Daily operating OPEX',php(fin.dailyOperatingCost)],['Labor / normal piece',php(fin.laborPerPiece)],['Operating OPEX / normal piece',php(fin.operatingCostPerPiece)],['Estimated daily BEP',fin.dailyBEP?`${fin.dailyBEP.toLocaleString('en-PH')} pcs`:'Incomplete recipes']
+   ].map(([label,value])=>`<div class="card"><div class="label">${label}</div><div class="value">${value}</div></div>`).join('')}
+  </div>
+  <table><thead><tr><th>Product</th><th>Category</th><th>Materials</th><th>Labor</th><th>Operating OPEX</th><th>Loss Recovery</th><th>Full Cost</th><th>Company Price Now</th><th>Current SRP</th><th>Company Margin</th><th>Required Company Price</th><th>Suggested SRP</th><th>Status</th></tr></thead><tbody>
+  ${fin.variantData.map(v=>`<tr><td><strong>${v.name}</strong><div class="muted">${safeNum(v.pieces_per_batch)} pcs/batch</div></td><td>${v.category||''}</td><td class="right">${v.isCostReady?php(v.directMaterialCostPerPiece):'—'}</td><td class="right">${php(v.laborPerPiece)}</td><td class="right">${php(v.fixedPerPiece)}</td><td class="right">${php(v.lossAllowancePerPiece)}</td><td class="right"><strong>${v.isCostReady?php(v.totalCost):'—'}</strong></td><td class="right">${php(v.currentResellerPrice)}</td><td class="right">${php(v.currentRetailPrice)}</td><td class="right ${v.isCostReady&&v.resellerChannelMarginPct>=v.targetMarginPct?'ok':'warn'}">${v.isCostReady?`${v.resellerChannelMarginPct.toFixed(1)}%`:'—'}</td><td class="right">${v.isCostReady?php(v.recommendedCompanyPrice):'—'}</td><td class="right ok">${v.isCostReady?php(v.recommendedRetailPrice):'—'}</td><td class="${v.statusCode==='healthy'?'ok':'warn'}">${v.statusLabel}</td></tr>`).join('')}
+  </tbody></table>
+  <p style="margin-top:8px;color:#666;line-height:1.5"><strong>Formula:</strong> exact linked recipe cost + packaging + direct labor + utilities + factory overhead + delivery + administrative OPEX + depreciation, divided by the sellable yield after configured waste and returns. Suggested SRP protects the company target margin and the reseller margin.</p>
+  <div class="no-print" style="text-align:center;margin-top:14px"><button onclick="window.print()" style="padding:9px 22px;background:#ca1b1b;color:white;border:none;border-radius:7px;font-weight:bold;cursor:pointer">PRINT REPORT</button></div>
+  </body></html>`)
+  pw.document.close()
+  setTimeout(()=>{ pw.focus(); pw.print() },600)
  }
  async function loadAnnouncementViews(annId) {
  const { data:all } = await supabase.from('employees').select('id,full_name,employee_code').eq('is_active', true)
@@ -34295,119 +34594,75 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {/* DASHBOARD VIEW */}
  {costingView==='dashboard' && (() => {
  const fin = computeFinancials()
+ const readyVariants = fin.variantData.filter(v=>v.isCostReady)
+ const reviewVariants = fin.variantData.filter(v=>!v.isCostReady || v.statusCode!=='healthy')
+ const avgCompanyMargin = readyVariants.length > 0 ? readyVariants.reduce((sum,v)=>sum+safeNum(v.resellerChannelMarginPct),0)/readyVariants.length : 0
  const dynamicCategories = Array.from(new Set([...(VARIANT_CATEGORIES || []),...fin.variantData.map(v => v.category || 'Uncategorized')]))
- const byCategory = dynamicCategories.map(cat => ({
- cat, variants: fin.variantData.filter(v => (v.category || 'Uncategorized') === cat)
- })).filter(g => g.variants.length > 0)
+ const byCategory = dynamicCategories.map(cat => ({ cat, variants:fin.variantData.filter(v => (v.category || 'Uncategorized') === cat) })).filter(g=>g.variants.length>0)
  const catColors = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }
- const belowTarget = fin.variantData.filter(v => v.belowTarget)
- const avgMarginPct = fin.variantData.length > 0? fin.variantData.reduce((s,v) => s + (v.grossMarginPct||0), 0) / fin.variantData.length: 0
+ const statusColor = code => code==='healthy'?'green':code==='below_target'?'orange':'red'
  return (
  <div>
- {/* Hero BEP Card */}
- <div style={{ background:'linear-gradient(135deg,#ca1b1b,#8b0000)', borderRadius:'16px', padding:'20px', marginBottom:'16px', color:'white' }}>
- <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'11px', fontWeight:'bold', letterSpacing:'1px', margin:'0 0 8px' }}>BREAK-EVEN POINT</p>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'12px' }}>
- <div>
- <p style={{ fontSize:'36px', fontWeight:'bold', margin:'0 0 2px' }}>{fin.dailyBEP.toLocaleString()}</p>
- <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'12px', margin:0 }}>pieces per day to break even</p>
- </div>
- <div style={{ textAlign:'right' }}>
- <p style={{ fontSize:'22px', fontWeight:'bold', margin:'0 0 2px' }}>{fin.monthlyBEP.toLocaleString()}</p>
- <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'12px', margin:0 }}>pieces per month</p>
- </div>
- </div>
- <div style={{ background:'rgba(255,255,255,0.2)', borderRadius:'20px', height:'8px', marginTop:'14px', overflow:'hidden' }}>
- <div style={{ background:'#a8e6a3', width:`${Math.min(100,(fin.dailyBEP/Math.max(1,Number(costSettings.total_daily_pieces)))*100)}%`, height:'100%', borderRadius:'20px' }} />
- </div>
- <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', margin:'6px 0 0' }}>
- BEP is {((fin.dailyBEP/Math.max(1,Number(costSettings.total_daily_pieces)))*100).toFixed(1)}% of your {Number(costSettings.total_daily_pieces).toLocaleString()} daily production
- </p>
- </div>
+  <div style={{ background:'linear-gradient(135deg,#1a1a2e,#2d1515)', borderRadius:'16px', padding:'18px', marginBottom:'14px', color:'white' }}>
+   <div style={{ display:'flex', justifyContent:'space-between', gap:'14px', flexWrap:'wrap', alignItems:'flex-start' }}>
+    <div>
+     <p style={{ color:'#fdd412', fontSize:'10px', fontWeight:'900', letterSpacing:'1px', margin:'0 0 6px' }}>PROFESSIONAL FULL-COST MODEL</p>
+     <h3 style={{ margin:'0 0 6px', fontSize:'21px' }}>Materials + labor + utilities + overhead + delivery + OPEX + losses</h3>
+     <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', lineHeight:1.55, margin:0, maxWidth:'760px' }}>Current company margin uses the retail price less the configured reseller margin. Suggested SRP protects both Roma's target company margin and the reseller's margin.</p>
+    </div>
+    <div style={{ textAlign:'right', minWidth:'180px' }}>
+     <p style={{ color:'rgba(255,255,255,0.55)', fontSize:'10px', margin:'0 0 2px' }}>ESTIMATED BREAK-EVEN</p>
+     <p style={{ color:'#fdd412', fontSize:'28px', fontWeight:'900', margin:'0 0 2px' }}>{fin.dailyBEP > 0 ? fin.dailyBEP.toLocaleString('en-PH') : '—'}</p>
+     <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', margin:0 }}>sellable pieces/day</p>
+    </div>
+   </div>
+  </div>
 
- {/* Stat Cards */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
- {[
- { label:'Daily Fixed Cost', value:php(fin.dailyFixed), color:'#4a90d9', sub:'Rent + Electricity + Loans + Depreciation' },
- { label:'Daily Labor Cost', value:php(fin.dailyLabor), color:'#7b4f9e', sub:` ${(fin.laborPerPiece).toFixed(2)}/piece` },
- { label:'Avg Gross Margin', value:`${avgMarginPct.toFixed(1)}%`, color:avgMarginPct>=30?'#2d8a4e':'#ca1b1b', sub:`Target: ${costSettings.target_margin_percentage}%` },
- { label:'Below Target', value:belowTarget.length, color:belowTarget.length>0?'#ca1b1b':'#2d8a4e', sub:belowTarget.length>0?'variants need attention':'All variants healthy' },
- ].map(c=>(
- <div key={c.label} style={{ background:'white', border:`2px solid ${c.color}22`, borderRadius:'12px', padding:'14px' }}>
- <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>{c.label}</p>
- <p style={{ fontWeight:'bold', fontSize:'20px', color:c.color, margin:'0 0 2px' }}>{c.value}</p>
- <p style={{ color:'#aaa', fontSize:'10px', margin:0 }}>{c.sub}</p>
- </div>
- ))}
- </div>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'9px', marginBottom:'14px' }}>
+   {[
+    ['Daily Labor',php(fin.dailyLabor),'#7b4f9e',`${php(fin.laborPerPiece)}/normal piece`],
+    ['Daily Operating OPEX',php(fin.dailyOperatingCost),'#4a90d9',`${php(fin.operatingCostPerPiece)}/normal piece`],
+    ['Average Company Margin',`${avgCompanyMargin.toFixed(1)}%`,avgCompanyMargin>=safeNum(costSettings.target_margin_percentage)?'#2d8a4e':'#ca1b1b',`Target ${safeNum(costSettings.target_margin_percentage)}%`],
+    ['Cost-Ready Products',`${readyVariants.length}/${fin.variantData.length}`,'#2d8a4e','Complete and auditable'],
+    ['Needs Review',reviewVariants.length,reviewVariants.length?'#ca1b1b':'#2d8a4e',reviewVariants.length?'Fix recipe or price':'All healthy'],
+   ].map(([label,value,color,sub])=><div key={label} style={{ background:'white', border:'1px solid #eee', borderTop:`3px solid ${color}`, borderRadius:'11px', padding:'12px' }}><p style={{ color:'#777', fontSize:'10px', margin:'0 0 4px' }}>{label}</p><p style={{ color, fontSize:'18px', fontWeight:'900', margin:'0 0 2px' }}>{value}</p><p style={{ color:'#aaa', fontSize:'9px', margin:0 }}>{sub}</p></div>)}
+  </div>
 
- {/* Cost Breakdown */}
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px', marginBottom:'14px' }}>
- <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 14px' }}> Daily Cost Breakdown per Piece</p>
- <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px', marginBottom:'12px' }}>
- {[[' Ingredients','varies per variant','#ca1b1b'],[' Labor',`${php(fin.laborPerPiece)}/pc`,'#7b4f9e'],[' Fixed+Overhead',`${php(fin.fixedPerPiece)}/pc`,'#4a90d9']].map(([l,v,c])=>(
- <div key={l} style={{ background:`${c}11`, borderRadius:'8px', padding:'10px', textAlign:'center', border:`1px solid ${c}33` }}>
- <p style={{ fontSize:'11px', color:'#555', margin:'0 0 4px' }}>{l}</p>
- <p style={{ fontWeight:'bold', color:c, fontSize:'13px', margin:0 }}>{v}</p>
- </div>
- ))}
- </div>
- <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'10px', border:'1px solid #f5c518', fontSize:'12px', color:'#555' }}>
- <strong>Waste buffer: {costSettings.waste_percentage}%</strong> added to all costs meaning every 10 of cost becomes {(10*(1+Number(costSettings.waste_percentage)/100)).toFixed(2)} effective cost.
- </div>
- </div>
+  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'13px', padding:'14px', marginBottom:'14px' }}>
+   <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'10px' }}>
+    <div><p style={{ fontWeight:'900', color:'#333', fontSize:'13px', margin:'0 0 3px' }}>Per-piece allocation at normal production volume</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{safeNum(costSettings.total_daily_pieces).toLocaleString('en-PH')} pieces/day × {safeNum(costSettings.production_days_per_month)} production days/month</p></div>
+    <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 12px', fontSize:'10px' }} onClick={()=>setCostingView('settings')}>EDIT COST DRIVERS</button>
+   </div>
+   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'7px' }}>
+    {[
+     ['Labor',fin.laborPerPiece],['Utilities',fin.utilitiesPerPiece],['Factory overhead',fin.factoryOverheadPerPiece],['Delivery',fin.deliveryPerPiece],['Admin OPEX',fin.adminOpexPerPiece],['Depreciation',fin.equipmentDepreciationPerPiece]
+    ].map(([label,value])=><div key={label} style={{ background:'#f8f9fb', borderRadius:'8px', padding:'8px', textAlign:'center' }}><p style={{ color:'#888', fontSize:'9px', margin:'0 0 2px' }}>{label}</p><p style={{ color:'#333', fontWeight:'900', fontSize:'12px', margin:0 }}>{php(value)}/pc</p></div>)}
+   </div>
+   <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'9px', marginTop:'9px', color:'#665500', fontSize:'10px', lineHeight:1.5 }}><strong>Loss recovery:</strong> production waste {safeNum(costSettings.waste_percentage)}% and expected unsold returns {safeNum(costSettings.expected_return_percentage)}%. The engine divides by the remaining sellable yield instead of simply adding the percentages.</div>
+  </div>
 
- {/* Below Target Alert */}
- {belowTarget.length > 0 && (
- <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
- <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 10px' }}> {belowTarget.length} Variant(s) Below {costSettings.target_margin_percentage}% Target Margin</p>
- {belowTarget.map(v=>(
- <div key={v.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:'1px solid #fee', flexWrap:'wrap', gap:'8px' }}>
- <span style={{ fontWeight:'bold', fontSize:'13px' }}>{v.name}</span>
- <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
- <span style={{ fontSize:'12px', color:'#888' }}>Sell: {php(v.selling_price)} | Cost: {php(v.totalCost||0)}</span>
- <Badge label={`${(v.grossMarginPct||0).toFixed(1)}%`} color="red" />
- </div>
- </div>
- ))}
- </div>
- )}
+  {reviewVariants.length>0 && <div style={{ background:'#fff5f5', border:'1px solid #ffc9c9', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}><p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'12px', margin:'0 0 6px' }}>Products requiring attention</p><p style={{ color:'#666', fontSize:'10px', margin:'0 0 8px', lineHeight:1.5 }}>INCOMPLETE or REVIEW COST means the app will not present that product as fully costed. SELLING AT LOSS and BELOW TARGET compare full cost against the company price after reseller margin.</p><div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>{reviewVariants.slice(0,20).map(v=><button key={v.id} onClick={()=>{setCostingView('recipes');setExpandedRecipeVariantId(v.id)}} style={{ border:'1px solid #f1b5b5', background:'white', color:'#ca1b1b', borderRadius:'20px', padding:'5px 9px', fontSize:'10px', fontWeight:'800', cursor:'pointer' }}>{v.name}: {v.statusLabel}</button>)}</div></div>}
 
- {/* Variant Profitability Table by Category */}
- {byCategory.map(g=>(
- <div key={g.cat} style={{ marginBottom:'16px' }}>
- <div style={{ background:catColors[g.cat]||'#333', color:'white', padding:'8px 14px', borderRadius:'10px 10px 0 0', fontWeight:'bold', fontSize:'13px', display:'flex', justifyContent:'space-between' }}>
- <span> {g.cat}</span>
- <span style={{ opacity:0.8, fontSize:'11px', fontWeight:'normal' }}>{g.variants.length} variant(s)</span>
- </div>
- <div style={{ border:`1px solid ${catColors[g.cat]||'#333'}33`, borderTop:'none', borderRadius:'0 0 10px 10px', overflow:'hidden' }}>
- {/* Header */}
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', background:'#f9f9f9', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#888' }}>
- <span>Variant</span><span style={{ textAlign:'right' }}>Sell Price</span><span style={{ textAlign:'right' }}>Total Cost</span><span style={{ textAlign:'right' }}>Margin </span><span style={{ textAlign:'right' }}>Margin %</span><span style={{ textAlign:'center' }}>Status</span>
- </div>
- {g.variants.map((v,i)=>(
- <div key={v.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr 1fr 1fr', padding:'8px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', alignItems:'center' }}>
- <span style={{ fontSize:'12px', fontWeight:'bold', color:'#333' }}>{v.name}{v.isEstimate?<span style={{ color:'#aaa', fontSize:'10px', fontWeight:'normal' }}> *</span>:null}{v.isLocalFallback?<span style={{ color:'#f5a623', fontSize:'10px', fontWeight:'normal' }}> preview</span>:null}</span>
- <span style={{ textAlign:'right', fontSize:'12px' }}>{php(v.selling_price)}</span>
- <span style={{ textAlign:'right', fontSize:'12px', color:'#888' }}>{php(v.totalCost||0)}</span>
- <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:(v.grossMargin||0)>=0?'#2d8a4e':'#ca1b1b' }}>{php(v.grossMargin||0)}</span>
- <span style={{ textAlign:'right', fontSize:'12px', fontWeight:'bold', color:(v.grossMarginPct||0)>=Number(costSettings.target_margin_percentage)?'#2d8a4e':'#ca1b1b' }}>{(v.grossMarginPct||0).toFixed(1)}%</span>
- <span style={{ textAlign:'center' }}>
- <Badge label={v.belowTarget?' LOW':' OK'} color={v.belowTarget?'red':'green'} />
- </span>
- </div>
- ))}
- </div>
- </div>
- ))}
- {donutVariants.length === 0 && (
- <div style={{ background:'white', border:'2px dashed #ddd', borderRadius:'14px', padding:'30px', textAlign:'center' }}>
- <p style={{ fontSize:'28px', margin:'0 0 10px' }}> </p>
- <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333' }}>No variants loaded yet</p>
- <p style={{ fontSize:'12px', color:'#888', margin:'6px 0 14px' }}>Go to Recipes tab and click "Load All Variants" to get started.</p>
- <button style={{...btnRed, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setCostingView('recipes')}> GO TO RECIPES</button>
- </div>
- )}
+  {byCategory.map(group=><div key={group.cat} style={{ marginBottom:'14px' }}>
+   <div style={{ background:catColors[group.cat]||'#333', color:'white', padding:'8px 12px', borderRadius:'9px 9px 0 0', display:'flex', justifyContent:'space-between', fontWeight:'900', fontSize:'12px' }}><span>{group.cat}</span><span style={{ opacity:0.8, fontWeight:'500' }}>{group.variants.length} product(s)</span></div>
+   <div style={{ overflowX:'auto', border:`1px solid ${(catColors[group.cat]||'#333')}33`, borderTop:'none', borderRadius:'0 0 9px 9px' }}>
+    <div style={{ minWidth:'1160px' }}>
+     <div style={{ display:'grid', gridTemplateColumns:'1.8fr repeat(8,1fr) 1.15fr', gap:'6px', background:'#f6f7f9', padding:'7px 9px', color:'#777', fontSize:'9px', fontWeight:'900' }}><span>PRODUCT</span><span style={{textAlign:'right'}}>MATERIALS</span><span style={{textAlign:'right'}}>LABOR</span><span style={{textAlign:'right'}}>OPEX</span><span style={{textAlign:'right'}}>FULL COST</span><span style={{textAlign:'right'}}>COMPANY PRICE</span><span style={{textAlign:'right'}}>CURRENT SRP</span><span style={{textAlign:'right'}}>MARGIN</span><span style={{textAlign:'right'}}>SUGGESTED SRP</span><span style={{textAlign:'center'}}>STATUS</span></div>
+     {group.variants.map((v,index)=><div key={v.id} style={{ display:'grid', gridTemplateColumns:'1.8fr repeat(8,1fr) 1.15fr', gap:'6px', padding:'8px 9px', alignItems:'center', borderTop:'1px solid #eee', background:index%2===0?'white':'#fcfcfc' }}>
+      <button onClick={()=>{setCostingView('recipes');setExpandedRecipeVariantId(v.id)}} style={{ border:'none', background:'transparent', padding:0, textAlign:'left', cursor:'pointer' }}><strong style={{ color:'#333', fontSize:'11px' }}>{v.name}</strong><div style={{ color:'#999', fontSize:'8px' }}>{safeNum(v.pieces_per_batch)} pcs/batch</div></button>
+      <span style={{ textAlign:'right', fontSize:'10px' }}>{v.isCostReady?php(v.directMaterialCostPerPiece):'—'}</span>
+      <span style={{ textAlign:'right', fontSize:'10px' }}>{php(v.laborPerPiece)}</span>
+      <span style={{ textAlign:'right', fontSize:'10px' }}>{php(v.fixedPerPiece)}</span>
+      <span style={{ textAlign:'right', fontSize:'10px', fontWeight:'900', color:'#ca1b1b' }}>{v.isCostReady?php(v.totalCost):'—'}</span>
+      <span style={{ textAlign:'right', fontSize:'10px' }}>{php(v.currentResellerPrice)}</span>
+      <span style={{ textAlign:'right', fontSize:'10px' }}>{php(v.currentRetailPrice)}</span>
+      <span style={{ textAlign:'right', fontSize:'10px', fontWeight:'900', color:v.resellerChannelMarginPct>=v.targetMarginPct?'#2d8a4e':'#ca1b1b' }}>{v.isCostReady?`${v.resellerChannelMarginPct.toFixed(1)}%`:'—'}</span>
+      <span style={{ textAlign:'right', fontSize:'10px', fontWeight:'900', color:'#2d8a4e' }}>{v.isCostReady?php(v.recommendedRetailPrice):'—'}</span>
+      <span style={{ textAlign:'center' }}><Badge label={v.statusLabel} color={statusColor(v.statusCode)} /></span>
+     </div>)}
+    </div>
+   </div>
+  </div>)}
  </div>
  )
  })()}
@@ -34417,13 +34672,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'12px' }}>
  <strong style={{ color:'#ca1b1b' }}> Required Supabase Tables:</strong>
- <p style={{ color:'#555', margin:'6px 0 2px' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> id (uuid PK), name, category, selling_price (numeric), pieces_per_batch (numeric), is_active (bool default true), created_at</p>
+ <p style={{ color:'#555', margin:'6px 0 2px' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> includes selling_price, pieces_per_batch, packaging_cost_per_piece, labor_cost_per_batch, and delivery_cost_per_piece. Run the supplied migration before using product-specific overrides.</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>base_dough_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>powder_base_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at <strong style={{ color:'#ca1b1b' }}>required for permanent Powder Base saving</strong></p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>variant_recipes</code> id (uuid PK), variant_id (uuid), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), ingredient_type (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_logs</code> id (uuid PK), production_date (date), total_pieces (numeric), ingredient_cost (numeric), labor_cost (numeric), overhead_cost (numeric), total_cost (numeric), notes (text), logged_by (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>production_log_items</code> id (uuid PK), log_id (uuid), variant_id (uuid), variant_name (text), pieces_produced (numeric), ingredient_cost (numeric), created_at</p>
- <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>cost_settings</code> id (uuid PK), daily_labor_cost (numeric), waste_percentage (numeric), monthly_rent (numeric), monthly_electricity (numeric), monthly_other_fixed (numeric), fryer_cost (numeric), fryer_lifespan_years (numeric), mixer_cost (numeric), mixer_lifespan_years (numeric), sheeter_cost (numeric), sheeter_lifespan_years (numeric), production_days_per_month (numeric), target_margin_percentage (numeric), total_daily_pieces (numeric), updated_at (timestamptz)</p>
+ <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>cost_settings</code> stores labor, normal output, packaging, waste, returns, utilities, factory overhead, delivery, administrative OPEX, depreciation, target company margin, reseller margin, and price rounding. Run the supplied professional costing migration for permanent multi-device saving.</p>
  </div>
 
  {/* Load variants button */}
@@ -34441,7 +34696,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Base Dough Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Shared across ALL variants. Enter all production recipe quantities in grams (g) per batch.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Reusable shared formula. Products must explicitly link the exact grams used; this recipe is never auto-counted. Enter all quantities in grams (g) per batch.</p>
  {baseDoughIngredients.length > 0 && (() => {
  const { totalCost, totalGrams, costPerGram } = computeBaseDoughTotals()
  return (
@@ -34518,7 +34773,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <h3 style={{ color:'#7b4f9e', margin:'0 0 4px', fontSize:'15px' }}> Powder Base Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Shared across variants like Base Dough. Enter all powder base quantities in grams (g) per batch.</p>
+ <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Reusable shared formula. Products must explicitly link the exact grams used; this recipe is never auto-counted. Enter all quantities in grams (g) per batch.</p>
  {powderBaseIngredients.length > 0 && (() => {
  const { totalCost, totalGrams, costPerGram } = computePowderBaseTotals()
  return (
@@ -34590,174 +34845,96 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* VARIANT RECIPES */}
- <h3 style={{ color:'#ca1b1b', margin:'0 0 12px', fontSize:'14px' }}> Per-Variant Topping / Filling Recipes</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 14px' }}>Define toppings, fillings, and glazes in grams (g) only. Costing uses converted cost per gram.</p>
- {variantsLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading variants...</p>}
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'flex-end', margin:'4px 0 12px' }}>
+  <div><h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'14px' }}>Product Recipe & Unit Cost</h3><p style={{ color:'#888', fontSize:'11px', margin:0, lineHeight:1.5 }}>Each product must explicitly link the exact grams of Base Dough, Powder Base, filling, topping, glaze, and frying fat used by one product batch. Shared recipes are reference formulas; they are never auto-counted.</p></div>
+  <button style={{...btnGray, width:'auto', padding:'7px 12px', marginTop:0, fontSize:'10px' }} onClick={()=>setExpandedRecipeVariantId(null)}>COLLAPSE ALL</button>
+ </div>
+ {variantsLoading && <p style={{ color:'#888', fontSize:'12px' }}>Loading products...</p>}
  {VARIANT_CATEGORIES.map(cat => {
- const catVariants = donutVariants.filter(v => v.category === cat)
- if (catVariants.length === 0) return null
- const catColor = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }[cat] || '#333'
- return (
- <div key={cat} style={{ marginBottom:'16px' }}>
- <div style={{ background:catColor, color:'white', padding:'8px 14px', borderRadius:'10px 10px 0 0', fontWeight:'bold', fontSize:'13px' }}> {cat}</div>
- {catVariants.map((v,i)=>{
- const variantExtraRows = variantRecipes[v.id] || []
- const hasVariantRecipe = variantExtraRows.length > 0
- const hasBaseRecipe = (baseDoughIngredients || []).length > 0
- const hasPowderBaseRecipe = (powderBaseIngredients || []).length > 0
- const hasAnyRecipeIngredients = hasBaseRecipe || hasPowderBaseRecipe || hasVariantRecipe
- const totalIngredientRows = (baseDoughIngredients || []).length + (powderBaseIngredients || []).length + variantExtraRows.length
- const isEditing = selectedRecipeVariantId === v.id && selectedRecipeVariantId!== 'base' && selectedRecipeVariantId!== 'powder_base'
- return (
- <div key={v.id} style={{ border:`1px solid ${catColor}33`, borderTop:'none', background:i%2===0?'white':'#fafafa', padding:'10px 14px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px' }}>
- <div style={{ flex:1 }}>
- <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
- <span style={{ fontWeight:'bold', fontSize:'13px', color:'#333' }}>{v.name}</span>
- <Badge label={` ${v.selling_price}`} color="gray" />
- {!editingVariantId || editingVariantId!== v.id? (
- <span style={{ fontSize:'11px', color:'#888' }}>{v.pieces_per_batch} pcs/batch</span>
- ): null}
- {hasAnyRecipeIngredients &&!isEditing && <Badge label={`${totalIngredientRows} ingredient(s) incl. shared base`} color="green" />}
- {!hasAnyRecipeIngredients &&!isEditing && <span style={{ fontSize:'11px', color:'#aaa', fontStyle:'italic' }}>No recipe set</span>}
- {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && !isEditing && <span style={{ fontSize:'11px', color:'#2d8a4e', fontWeight:'700' }}>Shared base recipes auto-included. Add topping/filling only if needed.</span>}
- </div>
- {editingVariantId === v.id && (
- <div style={{ display:'flex', gap:'8px', marginTop:'8px', alignItems:'center', flexWrap:'wrap' }}>
- <label style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Pieces/batch:</label>
- <input type="number" value={editVariantFields.pieces_per_batch??v.pieces_per_batch} onChange={e=>setEditVariantFields(p=>({...p,pieces_per_batch:e.target.value}))} style={{...inputStyle, marginBottom:0, width:'80px', fontSize:'12px' }} min="1" />
- <label style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Sell Price:</label>
- <input type="number" value={editVariantFields.selling_price??v.selling_price} onChange={e=>setEditVariantFields(p=>({...p,selling_price:e.target.value}))} style={{...inputStyle, marginBottom:0, width:'80px', fontSize:'12px' }} min="0" step="0.5" />
- <button style={{...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>updateVariant(v.id,{ pieces_per_batch:Number(editVariantFields.pieces_per_batch||v.pieces_per_batch), selling_price:Number(editVariantFields.selling_price||v.selling_price) })}>SAVE</button>
- <button style={{...btnGray, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>setEditingVariantId(null)}> </button>
- </div>
- )}
- </div>
- <div style={{ display:'flex', gap:'6px' }}>
- {editingVariantId!== v.id && <button style={{...btnYellow, padding:'5px 10px', fontSize:'11px' }} onClick={()=>{ setEditingVariantId(v.id); setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price }) }}> EDIT</button>}
- {!isEditing? (
- <button style={{...btnBlack, background:catColor, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setSelectedRecipeVariantId(v.id); setEditingVariantRecipe(hasVariantRecipe?variantExtraRows.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }]) }}> {hasVariantRecipe?'EDIT':'ADD'} RECIPE</button>
- ): (
- <div style={{ display:'flex', gap:'6px' }}>
- <button style={{...btnGreen, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?' ':' SAVE'}</button>
- <button style={{...btnGray, width:'auto', padding:'5px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>setSelectedRecipeVariantId(null)}> </button>
- </div>
- )}
- </div>
- </div>
- {isEditing && (
- <div style={{ marginTop:'10px', background:'#f9f9f9', padding:'12px', borderRadius:'8px', border:'1px solid #eee' }}>
- <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'8px 10px', marginBottom:'10px', fontSize:'11px', color:'#555', lineHeight:1.45 }}>
- <strong style={{ color:'#ca1b1b' }}>Base dough and powder base are NOT automatic anymore.</strong> If this variant uses them, select "Base Dough Recipe" or "Powder Base Recipe" from the dropdown below and enter the gram amount, the same way you'd add any other ingredient. Leave them out only if this variant genuinely doesn't need them.
- </div>
- {editingVariantRecipe.map((row,ri)=>(
- <div key={ri} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr auto', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
- <div>
- <select value={row.inventory_item_id||''} onChange={e=>{
- const val = e.target.value
- const upd=[...editingVariantRecipe]
- if (val === BASE_DOUGH_RECIPE_LINK_ID) {
- upd[ri]={...upd[ri],inventory_item_id:val,item_name:'Base Dough Recipe',unit:'g'}
- } else if (val === POWDER_BASE_RECIPE_LINK_ID) {
- upd[ri]={...upd[ri],inventory_item_id:val,item_name:'Powder Base Recipe',unit:'g'}
- } else {
- const inv=inventoryItems.find(it=>it.id===val)
- upd[ri]={...upd[ri],inventory_item_id:val,item_name:inv?.name||upd[ri].item_name,unit:'g'}
- }
- setEditingVariantRecipe(upd)
- }} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
- <option value=""> Link inventory item </option>
- <option value={BASE_DOUGH_RECIPE_LINK_ID}> Base Dough Recipe ({php(computeBaseDoughTotals().costPerGram)}/g computed)</option>
- <option value={POWDER_BASE_RECIPE_LINK_ID}> Powder Base Recipe ({php(computePowderBaseTotals().costPerGram)}/g computed)</option>
- {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} ({productionRecipeInventoryOptionLabel(it)})</option>)}
- </select>
- <input placeholder="Ingredient name" value={row.item_name||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],item_name:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px', marginTop:'3px' }} />
- </div>
- <input type="number" placeholder="Qty/batch" value={row.quantity_per_batch||''} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],quantity_per_batch:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }} min="0" step="0.01" />
- <select value={row.unit||'g'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],unit:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
- {['g'].map(u=><option key={u} value={u}>{u}</option>)}
- </select>
- <select value={row.ingredient_type||'topping'} onChange={e=>{const upd=[...editingVariantRecipe];upd[ri]={...upd[ri],ingredient_type:e.target.value};setEditingVariantRecipe(upd)}} style={{...inputStyle, marginBottom:0, fontSize:'11px' }}>
- <option value="topping">Topping</option>
- <option value="filling">Filling</option>
- <option value="glaze">Glaze</option>
- <option value="coating">Coating</option>
- </select>
- <button onClick={()=>setEditingVariantRecipe(editingVariantRecipe.filter((_,j)=>j!==ri))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'8px 10px', cursor:'pointer', fontWeight:'bold' }}> </button>
- </div>
- ))}
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:'6px', fontSize:'11px' }} onClick={()=>setEditingVariantRecipe([...editingVariantRecipe, { item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', ingredient_type:'topping', notes:'' }])}>+ ADD INGREDIENT</button>
- </div>
- )}
- {/* Show existing recipe (read mode) */}
- {!isEditing && hasAnyRecipeIngredients && (
- <div style={{ marginTop:'8px' }}>
- {(() => {
- const pieces = Math.max(1, Number(v.pieces_per_batch) || 1)
- const baseDoughLinkRow = variantExtraRows.find(r => String(r.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID)
- const powderBaseLinkRow = variantExtraRows.find(r => String(r.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID)
- const baseDoughStatus = !baseDoughLinkRow ? 'Not added' : (safeNum(baseDoughLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
- const powderBaseStatus = !powderBaseLinkRow ? 'Not added' : (safeNum(powderBaseLinkRow.quantity_per_batch,0) > 0 ? 'Manual' : 'Excluded')
- const basePerPc = baseDoughLinkRow ? (productionRecipeIngredientCost(baseDoughLinkRow) / pieces) : 0
- const powderPerPc = powderBaseLinkRow ? (productionRecipeIngredientCost(powderBaseLinkRow) / pieces) : 0
- const otherRows = variantExtraRows.filter(r => String(r.inventory_item_id) !== BASE_DOUGH_RECIPE_LINK_ID && String(r.inventory_item_id) !== POWDER_BASE_RECIPE_LINK_ID)
- const variantPerPc = otherRows.reduce((sum, r) => sum + (productionRecipeIngredientCost(r) / pieces), 0)
- return (
- <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'7px 9px', marginBottom:'7px', fontSize:'11px', color:'#555', display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center' }}>
- <strong style={{ color:'#ca1b1b' }}>Total ingredients/pc: {php(basePerPc + powderPerPc + variantPerPc)}</strong>
- <span>Base dough: {php(basePerPc)} <span style={{ color:'#888', fontSize:'9px' }}>({baseDoughStatus})</span></span>
- <span>Powder base: {php(powderPerPc)} <span style={{ color:'#888', fontSize:'9px' }}>({powderBaseStatus})</span></span>
- <span>Other ingredients: {php(variantPerPc)}</span>
- </div>
- )
- })()}
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- {(baseDoughIngredients || []).map((r,ri)=>{
- const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const qtyGrams = productionRecipeQuantityGrams(r)
- const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
- return (
- <div key={`base-${ri}`} style={{ background:'#e8f5e9', border:'1px solid #c8e6c9', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#2d8a4e', fontSize:'10px' }}>(base dough)</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
- </div>
- )
- }) }
- {(powderBaseIngredients || []).map((r,ri)=>{
- const inv = inventoryItems.find(it=>it.id===r.inventory_item_id)
- const qtyGrams = productionRecipeQuantityGrams(r)
- const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
- const warning = inv? productionRecipeCostWarning(inv): ''
- return (
- <div key={`powder-${ri}`} style={{ background:'#f3e8ff', border:'1px solid #e4d0ff', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>(powder base)</span> {inv?<span style={{ color:warning?'#f57c00':'#ca1b1b', fontSize:'10px', fontWeight:'800' }}>= {warning?'COST SETUP NEEDED':`${php(cost)}/pc`}</span>:null}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ excluded from costing until purchase size/cost is fixed</div>:null}
- </div>
- )
- }) }
- {variantExtraRows.map((r,ri)=>{
- const isBaseDoughLink = String(r.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID
- const isPowderBaseLink = String(r.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID
- const inv = (isBaseDoughLink || isPowderBaseLink) ? true : inventoryItems.find(it=>it.id===r.inventory_item_id)
- const qtyGrams = productionRecipeQuantityGrams(r)
- const cost = inv? productionRecipeIngredientCost(r)/Math.max(1,Number(v.pieces_per_batch)): 0
- const typeLabel = isBaseDoughLink ? 'linked: base dough' : isPowderBaseLink ? 'linked: powder base' : r.ingredient_type
- return (
- <div key={`variant-${ri}`} style={{ background:(isBaseDoughLink||isPowderBaseLink)?'#fff8dc':'#f5f5f5', borderRadius:'6px', padding:'4px 8px', fontSize:'11px' }}>
- <strong>{r.item_name}</strong>: {qtyGrams}g <span style={{ color:'#7b4f9e', fontSize:'10px' }}>({typeLabel})</span> {inv?<span style={{ color:'#ca1b1b', fontSize:'10px' }}>= {php(cost)}/pc</span>:null}
- </div>
- )
- }) }
- {(hasBaseRecipe || hasPowderBaseRecipe) && !hasVariantRecipe && (
- <div style={{ background:'#fff3cd', border:'1px solid #f5c518', borderRadius:'6px', padding:'4px 8px', fontSize:'11px', color:'#856404' }}>⚠ No ingredients added for this variant yet — ingredient cost is currently ₱0. Add Base Dough, Powder Base, and/or toppings from the dropdown above if this variant should be costed.</div>
- )}
- </div>
- </div>
- )}
- </div>
- )
- }) }
- </div>
- )
- }) }
+  const catVariants = donutVariants.filter(v => v.category === cat)
+  if (catVariants.length === 0) return null
+  const catColor = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }[cat] || '#333'
+  return <div key={cat} style={{ marginBottom:'14px' }}>
+   <div style={{ background:catColor, color:'white', padding:'8px 12px', borderRadius:'9px 9px 0 0', display:'flex', justifyContent:'space-between', fontWeight:'900', fontSize:'12px' }}><span>{cat}</span><span style={{ opacity:0.8, fontWeight:'500' }}>{catVariants.length} product(s)</span></div>
+   <div style={{ border:`1px solid ${catColor}33`, borderTop:'none', borderRadius:'0 0 9px 9px', overflow:'hidden' }}>
+   {catVariants.map((v,index)=>{
+    const recipeRows = variantRecipes[v.id] || []
+    const cost = computeVariantCost(v.id, v.pieces_per_batch)
+    const isEditingRecipe = selectedRecipeVariantId === v.id && selectedRecipeVariantId!=='base' && selectedRecipeVariantId!=='powder_base'
+    const isEditingProduct = editingVariantId === v.id
+    const isExpanded = String(expandedRecipeVariantId) === String(v.id)
+    const hasBaseLink = recipeRows.some(r=>String(r.inventory_item_id)===BASE_DOUGH_RECIPE_LINK_ID)
+    const hasPowderLink = recipeRows.some(r=>String(r.inventory_item_id)===POWDER_BASE_RECIPE_LINK_ID)
+    const statusColor = cost.statusCode==='healthy'?'green':cost.statusCode==='below_target'?'orange':'red'
+    return <div key={v.id} style={{ background:index%2===0?'white':'#fcfcfc', borderTop:index===0?'none':'1px solid #eee', padding:'10px 12px' }}>
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(220px,1.5fr) repeat(5,minmax(82px,0.7fr)) auto', gap:'8px', alignItems:'center' }}>
+      <div>
+       <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}><strong style={{ color:'#333', fontSize:'12px' }}>{v.name}</strong><Badge label={cost.statusLabel} color={statusColor}/>{hasBaseLink&&<Badge label="BASE" color="green"/>}{hasPowderLink&&<Badge label="POWDER" color="blue"/>}</div>
+       <p style={{ color:'#999', fontSize:'9px', margin:'3px 0 0' }}>{safeNum(v.pieces_per_batch)} pcs/batch · {recipeRows.length} linked component(s)</p>
+      </div>
+      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>MATERIALS/PC</p><strong style={{ color:'#333', fontSize:'11px' }}>{cost.isCostReady?php(cost.directMaterialCostPerPiece):'—'}</strong></div>
+      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>FULL COST/PC</p><strong style={{ color:'#ca1b1b', fontSize:'11px' }}>{cost.isCostReady?php(cost.totalCost):'—'}</strong></div>
+      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>COMPANY PRICE</p><strong style={{ color:'#555', fontSize:'11px' }}>{php(cost.currentResellerPrice)}</strong></div>
+      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>CURRENT SRP</p><strong style={{ color:'#555', fontSize:'11px' }}>{php(cost.currentRetailPrice)}</strong></div>
+      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>SUGGESTED SRP</p><strong style={{ color:'#2d8a4e', fontSize:'11px' }}>{cost.isCostReady?php(cost.recommendedRetailPrice):'—'}</strong></div>
+      <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end' }}>
+       <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>setExpandedRecipeVariantId(isExpanded?null:v.id)}>{isExpanded?'HIDE':'DETAILS'}</button>
+       <button style={{...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setEditingVariantId(v.id);setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price, packaging_cost_per_piece:v.packaging_cost_per_piece || '', labor_cost_per_batch:v.labor_cost_per_batch || '', delivery_cost_per_piece:v.delivery_cost_per_piece || '' })}}>PRICE SETUP</button>
+       <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setSelectedRecipeVariantId(v.id);setExpandedRecipeVariantId(v.id);setEditingVariantRecipe(recipeRows.length?recipeRows.map(r=>({...r,quantity_per_batch:productionRecipeQuantityGrams(r),unit:'g'})):[{item_name:'',inventory_item_id:'',quantity_per_batch:'',unit:'g',ingredient_type:'topping',notes:''}])}}>{recipeRows.length?'EDIT RECIPE':'ADD RECIPE'}</button>
+      </div>
+     </div>
+
+     {isEditingProduct && <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'9px', padding:'10px', marginTop:'9px' }}>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'8px' }}>
+       <div><label style={lblS}>Good pieces / batch</label><input type="number" min="1" value={editVariantFields.pieces_per_batch??v.pieces_per_batch} onChange={e=>setEditVariantFields(p=>({...p,pieces_per_batch:e.target.value}))} style={{...inputStyle,marginBottom:0}}/></div>
+       <div><label style={lblS}>Current retail price</label><input type="number" min="0" step="0.01" value={editVariantFields.selling_price??v.selling_price} onChange={e=>setEditVariantFields(p=>({...p,selling_price:e.target.value}))} style={{...inputStyle,marginBottom:0}}/></div>
+       <div><label style={lblS}>Packaging / piece</label><input type="number" min="0" step="0.01" value={editVariantFields.packaging_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,packaging_cost_per_piece:e.target.value}))} placeholder={`Default ${php(costSettings.packaging_cost_per_piece)}`} style={{...inputStyle,marginBottom:0}}/></div>
+       <div><label style={lblS}>Labor / batch override</label><input type="number" min="0" step="0.01" value={editVariantFields.labor_cost_per_batch??''} onChange={e=>setEditVariantFields(p=>({...p,labor_cost_per_batch:e.target.value}))} placeholder="Blank = allocated average" style={{...inputStyle,marginBottom:0}}/></div>
+       <div><label style={lblS}>Delivery / piece override</label><input type="number" min="0" step="0.01" value={editVariantFields.delivery_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,delivery_cost_per_piece:e.target.value}))} placeholder="Blank = allocated average" style={{...inputStyle,marginBottom:0}}/></div>
+      </div>
+      <p style={{ color:'#806600', fontSize:'9px', margin:'7px 0' }}>Use overrides only when this product genuinely has different packaging, labor handling, or route cost. Blank/zero uses the company-wide allocation.</p>
+      <div style={{ display:'flex', gap:'7px' }}><button style={{...btnGreen,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>updateVariant(v.id,{ pieces_per_batch:positiveNum(editVariantFields.pieces_per_batch||v.pieces_per_batch), selling_price:Math.max(0,safeNum(editVariantFields.selling_price??v.selling_price)), packaging_cost_per_piece:Math.max(0,safeNum(editVariantFields.packaging_cost_per_piece)), labor_cost_per_batch:Math.max(0,safeNum(editVariantFields.labor_cost_per_batch)), delivery_cost_per_piece:Math.max(0,safeNum(editVariantFields.delivery_cost_per_piece)) })}>SAVE PRODUCT SETUP</button><button style={{...btnGray,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>setEditingVariantId(null)}>CANCEL</button></div>
+     </div>}
+
+     {isEditingRecipe && <div style={{ background:'#f8f9fb', border:'1px solid #dde2e8', borderRadius:'9px', padding:'10px', marginTop:'9px' }}>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2.2fr 0.8fr 0.9fr 1.4fr auto', gap:'6px', color:'#888', fontSize:'8px', fontWeight:'900', marginBottom:'5px' }}><span>COMPONENT</span><span>GRAMS/BATCH</span><span>TYPE</span><span>NOTES</span><span></span></div>
+      {editingVariantRecipe.map((row,rowIndex)=><div key={rowIndex} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2.2fr 0.8fr 0.9fr 1.4fr auto', gap:'6px', marginBottom:'7px', alignItems:'center' }}>
+       <select value={row.inventory_item_id||''} onChange={e=>{const value=e.target.value;const inv=inventoryItems.find(it=>String(it.id)===String(value));const isBase=value===BASE_DOUGH_RECIPE_LINK_ID;const isPowder=value===POWDER_BASE_RECIPE_LINK_ID;const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],inventory_item_id:value,item_name:isBase?'Base Dough Recipe':isPowder?'Powder Base Recipe':(inv?.name||updated[rowIndex].item_name),ingredient_type:isBase?'base_dough':isPowder?'powder_base':(updated[rowIndex].ingredient_type||'topping'),unit:'g'};setEditingVariantRecipe(updated)}} style={{...inputStyle,marginBottom:0,fontSize:'10px'}}>
+        <option value="">Select recipe component</option>
+        <option value={BASE_DOUGH_RECIPE_LINK_ID}>Base Dough Recipe — {computeBaseDoughTotals().costPerGram.toFixed(4)}/g</option>
+        <option value={POWDER_BASE_RECIPE_LINK_ID}>Powder Base Recipe — {computePowderBaseTotals().costPerGram.toFixed(4)}/g</option>
+        {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} — {productionRecipeInventoryOptionLabel(it)}</option>)}
+       </select>
+       <input type="number" min="0" step="0.01" value={row.quantity_per_batch||''} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],quantity_per_batch:e.target.value,unit:'g'};setEditingVariantRecipe(updated)}} placeholder="g" style={{...inputStyle,marginBottom:0,fontSize:'10px'}}/>
+       <select value={row.ingredient_type||'topping'} disabled={[BASE_DOUGH_RECIPE_LINK_ID,POWDER_BASE_RECIPE_LINK_ID].includes(String(row.inventory_item_id))} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],ingredient_type:e.target.value};setEditingVariantRecipe(updated)}} style={{...inputStyle,marginBottom:0,fontSize:'10px'}}>{['topping','filling','glaze','frying fat','packaging ingredient','other'].map(type=><option key={type} value={type}>{type}</option>)}</select>
+       <input value={row.notes||''} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],notes:e.target.value};setEditingVariantRecipe(updated)}} placeholder="Optional production note" style={{...inputStyle,marginBottom:0,fontSize:'10px'}}/>
+       <button onClick={()=>setEditingVariantRecipe(editingVariantRecipe.filter((_,j)=>j!==rowIndex))} style={{ background:'#ca1b1b',color:'white',border:'none',borderRadius:'6px',padding:'8px 10px',cursor:'pointer',fontWeight:'900' }}>×</button>
+      </div>)}
+      <div style={{ display:'flex',gap:'7px',flexWrap:'wrap' }}><button style={{...btnBlack,background:'#4a90d9',width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px'}} onClick={()=>setEditingVariantRecipe([...editingVariantRecipe,{item_name:'',inventory_item_id:'',quantity_per_batch:'',unit:'g',ingredient_type:'topping',notes:''}])}>+ ADD COMPONENT</button><button style={{...btnGreen,width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px',opacity:savingRecipe?0.6:1}} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?'SAVING...':'SAVE RECIPE'}</button><button style={{...btnGray,width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px'}} onClick={()=>setSelectedRecipeVariantId(null)}>CANCEL</button></div>
+     </div>}
+
+     {isExpanded && !isEditingRecipe && <div style={{ marginTop:'9px' }}>
+      {cost.warnings.length>0 && <div style={{ background:'#fff5f5',border:'1px solid #ffc9c9',borderRadius:'8px',padding:'9px',marginBottom:'8px' }}><strong style={{ color:'#ca1b1b',fontSize:'10px' }}>Costing cannot be finalized:</strong>{cost.warnings.map((warning,wi)=><p key={wi} style={{ color:'#8b0000',fontSize:'9px',margin:'3px 0' }}>• {warning}</p>)}</div>}
+      <div style={{ display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(8,1fr)',gap:'6px',marginBottom:'8px' }}>
+       {[
+        ['Ingredients',cost.ingredientCost],['Packaging',cost.packagingPerPiece],['Labor',cost.laborPerPiece],['Utilities',cost.utilitiesPerPiece],['Factory OH',cost.factoryOverheadPerPiece],['Delivery',cost.deliveryPerPiece],['Admin + Dep.',cost.adminOpexPerPiece+cost.depreciationPerPiece],['Loss recovery',cost.lossAllowancePerPiece]
+       ].map(([label,value])=><div key={label} style={{ background:'#f7f8fa',borderRadius:'7px',padding:'7px',textAlign:'center' }}><p style={{ color:'#888',fontSize:'8px',margin:'0 0 2px' }}>{label}</p><strong style={{ color:'#333',fontSize:'10px' }}>{php(value)}/pc</strong></div>)}
+      </div>
+      <div style={{ overflowX:'auto',border:'1px solid #e4e7eb',borderRadius:'8px' }}><div style={{ minWidth:'720px' }}>
+       <div style={{ display:'grid',gridTemplateColumns:'1.8fr 0.8fr 0.8fr 0.8fr 1.5fr',gap:'6px',background:'#f0f2f5',padding:'6px 8px',fontSize:'8px',fontWeight:'900',color:'#777' }}><span>LINKED COMPONENT</span><span style={{textAlign:'right'}}>GRAMS/BATCH</span><span style={{textAlign:'right'}}>COST/BATCH</span><span style={{textAlign:'right'}}>COST/PC</span><span>VALIDATION</span></div>
+       {cost.rowDetails.length===0?<div style={{ padding:'12px',color:'#999',fontSize:'10px' }}>No recipe components linked. Add the actual Base Dough/Powder Base grams and finishing ingredients used by this product batch.</div>:cost.rowDetails.map((row,ri)=><div key={ri} style={{ display:'grid',gridTemplateColumns:'1.8fr 0.8fr 0.8fr 0.8fr 1.5fr',gap:'6px',padding:'7px 8px',borderTop:'1px solid #eee',fontSize:'9px',alignItems:'center',background:row.warning?'#fff5f5':'white' }}><span><strong>{row.item_name}</strong><div style={{color:'#999',fontSize:'8px'}}>{row.componentType}</div></span><span style={{textAlign:'right'}}>{productionRecipeQuantityGrams(row).toLocaleString('en-PH')}g</span><span style={{textAlign:'right'}}>{row.warning?'—':php(row.batchCost)}</span><span style={{textAlign:'right',fontWeight:'900'}}>{row.warning?'—':php(row.costPerPiece)}</span><span style={{color:row.warning?'#ca1b1b':'#2d8a4e',fontWeight:'800'}}>{row.warning||'Valid and counted once'}</span></div>)}
+      </div></div>
+      <div style={{ background:'#eef8f0',border:'1px solid #c8e6c9',borderRadius:'8px',padding:'9px',marginTop:'8px',display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)',gap:'7px' }}>
+       {[
+        ['Full cost',cost.isCostReady?php(cost.totalCost):'Not ready'],['Company price now',php(cost.currentResellerPrice)],['Company margin',cost.isCostReady?`${cost.resellerChannelMarginPct.toFixed(1)}%`:'—'],['Required company price',cost.isCostReady?php(cost.recommendedCompanyPrice):'—'],['Suggested retail price',cost.isCostReady?php(cost.recommendedRetailPrice):'—']
+       ].map(([label,value])=><div key={label}><p style={{color:'#777',fontSize:'8px',margin:'0 0 2px'}}>{label}</p><strong style={{color:label==='Full cost'?'#ca1b1b':'#2d8a4e',fontSize:'11px'}}>{value}</strong></div>)}
+      </div>
+     </div>}
+    </div>
+   })}
+   </div>
+  </div>
+ })}
  </div>
  )}
 
@@ -34795,30 +34972,29 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {/* Production cost preview */}
  {prodEntries.some(e=>e.variant_id&&Number(e.pieces)>0) && (()=>{
- const validEntries = prodEntries.filter(e=>e.variant_id&&Number(e.pieces)>0)
- const totalPieces = validEntries.reduce((s,e)=>s+Number(e.pieces),0)
- const monthlyDepreciation = (Number(costSettings.fryer_cost)/(Number(costSettings.fryer_lifespan_years)*12))+(Number(costSettings.mixer_cost)/(Number(costSettings.mixer_lifespan_years)*12))+(Number(costSettings.sheeter_cost)/(Number(costSettings.sheeter_lifespan_years)*12))
- const monthlyFixed = Number(costSettings.monthly_rent)+Number(costSettings.monthly_electricity)+Number(costSettings.monthly_other_fixed)+monthlyDepreciation
- const overhead = monthlyFixed/Math.max(1,Number(costSettings.production_days_per_month))
- const labor = Number(costSettings.daily_labor_cost)
- let totalIngCost = 0
- validEntries.forEach(e=>{ const v=donutVariants.find(dv=>dv.id===e.variant_id); const cost=computeVariantCost(e.variant_id,v?.pieces_per_batch||12); totalIngCost += cost? cost.ingredientCost*Number(e.pieces): 0 })
- return (
- <div style={{ background:'#e8f5e9', border:'1px solid #2d8a4e', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
- <p style={{ fontWeight:'bold', fontSize:'13px', color:'#2d8a4e', margin:'0 0 8px' }}> Production Cost Preview</p>
- <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'6px', fontSize:'12px' }}>
- <p style={cps}>Total pieces: <strong>{totalPieces.toLocaleString()}</strong></p>
- <p style={cps}>Ingredient cost: <strong>{php(totalIngCost)}</strong></p>
- <p style={cps}>Labor cost: <strong>{php(labor)}</strong></p>
- <p style={cps}>Overhead: <strong>{php(overhead)}</strong></p>
- </div>
- <div style={{ borderTop:'1px solid #c8e6c9', marginTop:'8px', paddingTop:'8px', display:'flex', justifyContent:'space-between' }}>
- <span style={{ fontWeight:'bold', color:'#2d8a4e' }}>Total Production Cost:</span>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>{php(totalIngCost+labor+overhead)}</span>
- </div>
- <p style={{ color:'#888', fontSize:'11px', margin:'4px 0 0' }}>Cost per piece: {php((totalIngCost+labor+overhead)/Math.max(1,totalPieces))}</p>
- </div>
- )
+  const validEntries = prodEntries.filter(e=>e.variant_id&&Number(e.pieces)>0)
+  const totalPieces = validEntries.reduce((sum,e)=>sum+safeNum(e.pieces),0)
+  const allocation = computeCostAllocationSummary()
+  const details = validEntries.map(e=>{
+   const variant = donutVariants.find(v=>String(v.id)===String(e.variant_id))
+   const cost = computeVariantCost(e.variant_id, variant?.pieces_per_batch || 1)
+   return { variant, pieces:safeNum(e.pieces), cost }
+  })
+  const incomplete = details.filter(d=>!d.cost?.isCostReady)
+  const totalDirectMaterials = details.reduce((sum,d)=>sum + safeNum(d.cost?.directMaterialCostPerPiece)*d.pieces,0)
+  const labor = allocation.dailyLabor
+  const operating = allocation.dailyOperatingCost
+  const totalCost = totalDirectMaterials + labor + operating
+  return <div style={{ background:incomplete.length?'#fff5f5':'#e8f5e9', border:`1px solid ${incomplete.length?'#ca1b1b':'#2d8a4e'}`, borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+   <div style={{ display:'flex',justifyContent:'space-between',gap:'10px',flexWrap:'wrap',alignItems:'center',marginBottom:'8px' }}><p style={{ fontWeight:'900',fontSize:'12px',color:incomplete.length?'#ca1b1b':'#2d8a4e',margin:0 }}>Production Cost Preview</p><Badge label={incomplete.length?'BLOCKED — INCOMPLETE COSTING':'READY TO LOG'} color={incomplete.length?'red':'green'}/></div>
+   {incomplete.length>0 && <p style={{ color:'#8b0000',fontSize:'10px',lineHeight:1.5,margin:'0 0 8px' }}>Complete the recipe/cost setup for: <strong>{incomplete.map(d=>d.variant?.name||'Unknown').join(', ')}</strong>. Logging is blocked because inventory deduction and cost would be unreliable.</p>}
+   <div style={{ display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)',gap:'7px' }}>
+    {[
+     ['Total pieces',totalPieces.toLocaleString('en-PH')],['Direct materials + packaging',php(totalDirectMaterials)],['Daily labor',php(labor)],['Daily operating OPEX',php(operating)],['Total daily cost',php(totalCost)]
+    ].map(([label,value])=><div key={label} style={{ background:'white',borderRadius:'7px',padding:'8px' }}><p style={{color:'#888',fontSize:'8px',margin:'0 0 2px'}}>{label}</p><strong style={{color:label==='Total daily cost'?'#ca1b1b':'#333',fontSize:'11px'}}>{value}</strong></div>)}
+   </div>
+   <p style={{ color:'#777',fontSize:'9px',margin:'7px 0 0' }}>Actual log cost per produced piece: <strong>{php(totalCost/Math.max(1,totalPieces))}</strong>. Pricing cost per sellable piece remains higher when waste and returns are configured.</p>
+  </div>
  })()}
 
  <label style={lblS}>Notes (optional):</label>
@@ -34848,7 +35024,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'6px', marginBottom:'8px' }}>
- {[[' Ingredients',log.ingredient_cost],[' Labor',log.labor_cost],[' Overhead',log.overhead_cost]].map(([l,v])=>(
+ {[[' Materials + Packaging',log.ingredient_cost],[' Direct Labor',log.labor_cost],[' Operating OPEX',log.overhead_cost]].map(([l,v])=>(
  <div key={l} style={{ background:'white', borderRadius:'6px', padding:'6px 8px', textAlign:'center' }}>
  <p style={{ fontSize:'10px', color:'#888', margin:'0 0 2px' }}>{l}</p>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:0 }}>{php(v||0)}</p>
@@ -34875,89 +35051,89 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
 
  {/* SETTINGS VIEW */}
- {costingView==='settings' && (
- <div>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'16px', flexWrap:'wrap', gap:'8px' }}>
- <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}> Cost Settings</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:0 }}>All computations update instantly when you save.</p>
- </div>
+ {costingView==='settings' && (()=>{
+  const fin = computeFinancials()
+  const allocation = computeCostAllocationSummary()
+  const inputField = (key,label,help='',step='0.01') => <div key={key}><label style={lblS}>{label}</label><input type="number" min="0" step={step} value={costSettings[key] ?? 0} onChange={e=>setCostSettings(p=>({...p,[key]:e.target.value}))} style={{...inputStyle,marginBottom:help?'4px':'12px'}}/>{help&&<p style={{color:'#999',fontSize:'8px',lineHeight:1.4,margin:'0 0 8px'}}>{help}</p>}</div>
+  const sectionStyle = { background:'white',border:'1px solid #e5e7eb',borderRadius:'12px',padding:'14px',marginBottom:'10px' }
+  return <div>
+   <div style={{ display:'flex',justifyContent:'space-between',gap:'10px',flexWrap:'wrap',alignItems:'center',marginBottom:'12px' }}><div><h3 style={{color:'#ca1b1b',margin:'0 0 3px',fontSize:'14px'}}>Professional Cost Drivers</h3><p style={{color:'#777',fontSize:'10px',lineHeight:1.45,margin:0}}>Enter normal recurring costs, not unusual one-time spending. Amounts are allocated over normal sellable output.</p></div><button style={{...btnGreen,width:'auto',padding:'8px 14px',marginTop:0,opacity:savingCostSettings?0.6:1}} disabled={savingCostSettings} onClick={saveCostSettings}>{savingCostSettings?'SAVING...':'SAVE ALL SETTINGS'}</button></div>
 
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginBottom:'14px' }}>
- <h4 style={{ color:'#7b4f9e', margin:'0 0 12px', fontSize:'13px' }}> Labor & Production</h4>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
- <div><label style={lblS}>Daily Labor Cost ( ):</label><input type="number" value={costSettings.daily_labor_cost} onChange={e=>setCostSettings(p=>({...p,daily_labor_cost:Number(e.target.value)}))} style={inputStyle} min="0" /></div>
- <div><label style={lblS}>Total Daily Pieces (all variants):</label><input type="number" value={costSettings.total_daily_pieces} onChange={e=>setCostSettings(p=>({...p,total_daily_pieces:Number(e.target.value)}))} style={inputStyle} min="1" /></div>
- <div><label style={lblS}>Production Days per Month:</label><input type="number" value={costSettings.production_days_per_month} onChange={e=>setCostSettings(p=>({...p,production_days_per_month:Number(e.target.value)}))} style={inputStyle} min="1" max="31" /></div>
- <div><label style={lblS}>Waste / Loss Buffer (%):</label><input type="number" value={costSettings.waste_percentage} onChange={e=>setCostSettings(p=>({...p,waste_percentage:Number(e.target.value)}))} style={inputStyle} min="0" max="50" /></div>
- <div><label style={lblS}>Target Gross Margin (%):</label><input type="number" value={costSettings.target_margin_percentage} onChange={e=>setCostSettings(p=>({...p,target_margin_percentage:Number(e.target.value)}))} style={inputStyle} min="0" max="100" /></div>
- </div>
- </div>
+   <div style={sectionStyle}>
+    <h4 style={{color:'#7b4f9e',margin:'0 0 9px',fontSize:'12px'}}>1. Production, Loss and Pricing Basis</h4>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'8px'}}>
+     {inputField('daily_labor_cost','Daily direct production labor','Include production wages, OT/ND, employer share, and regular production benefits. Exclude admin and delivery labor.')}
+     {inputField('total_daily_pieces','Normal good pieces per day','Use normal good output, not your highest possible output.','1')}
+     {inputField('production_days_per_month','Production days per month','Used to allocate monthly expenses.','1')}
+     {inputField('packaging_cost_per_piece','Default packaging cost / piece','Products can override this under PRICE SETUP.')}
+     {inputField('waste_percentage','Production waste / reject %','Covers damaged, malformed, or discarded pieces.')}
+     {inputField('expected_return_percentage','Expected unsold return %','Use actual average returns from recent sales history.')}
+     {inputField('target_margin_percentage','Target company gross margin %','Applied to Roma’s company selling price.')}
+     {inputField('reseller_margin_percentage','Reseller margin %','Current program standard is 20%.')}
+     {inputField('price_rounding_step','Price rounding step','Example: 1 rounds up to whole pesos; 0.50 rounds to fifty centavos.')}
+    </div>
+   </div>
 
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginBottom:'14px' }}>
- <h4 style={{ color:'#4a90d9', margin:'0 0 12px', fontSize:'13px' }}> Monthly Fixed Overhead</h4>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
- <div><label style={lblS}>Monthly Rent ( ):</label><input type="number" value={costSettings.monthly_rent} onChange={e=>setCostSettings(p=>({...p,monthly_rent:Number(e.target.value)}))} style={inputStyle} min="0" /></div>
- <div><label style={lblS}>Monthly Electricity ( ):</label><input type="number" value={costSettings.monthly_electricity} onChange={e=>setCostSettings(p=>({...p,monthly_electricity:Number(e.target.value)}))} style={inputStyle} min="0" /></div>
- <div><label style={lblS}>Other Fixed Expenses / Loans ( ):</label><input type="number" value={costSettings.monthly_other_fixed} onChange={e=>setCostSettings(p=>({...p,monthly_other_fixed:Number(e.target.value)}))} style={inputStyle} min="0" /></div>
- </div>
- </div>
+   <div style={sectionStyle}>
+    <h4 style={{color:'#4a90d9',margin:'0 0 9px',fontSize:'12px'}}>2. Production Utilities</h4>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'8px'}}>
+     {inputField('monthly_electricity','Monthly electricity','Production share only when the bill also covers office/store use.')}
+     {inputField('monthly_water','Monthly water / hydro','Water used in production, washing, and sanitation.')}
+     {inputField('monthly_lpg_fuel','Monthly LPG / production fuel','Fryer gas, generator fuel, or other production fuel.')}
+    </div>
+   </div>
 
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginBottom:'14px' }}>
- <h4 style={{ color:'#2d8a4e', margin:'0 0 12px', fontSize:'13px' }}> Equipment Depreciation</h4>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px' }}>
- <div style={{ background:'#f9f9f9', borderRadius:'8px', padding:'12px' }}>
- <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 8px' }}> Fryer</p>
- <label style={lblS}>Cost ( ):</label><input type="number" value={costSettings.fryer_cost} onChange={e=>setCostSettings(p=>({...p,fryer_cost:Number(e.target.value)}))} style={inputStyle} min="0" />
- <label style={lblS}>Lifespan (years):</label><input type="number" value={costSettings.fryer_lifespan_years} onChange={e=>setCostSettings(p=>({...p,fryer_lifespan_years:Number(e.target.value)}))} style={inputStyle} min="1" />
- <p style={{ color:'#ca1b1b', fontSize:'11px', margin:0 }}>= {php((Number(costSettings.fryer_cost)/(Number(costSettings.fryer_lifespan_years)*12)))}/month</p>
- </div>
- <div style={{ background:'#f9f9f9', borderRadius:'8px', padding:'12px' }}>
- <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 8px' }}> Mixer</p>
- <label style={lblS}>Cost ( ):</label><input type="number" value={costSettings.mixer_cost} onChange={e=>setCostSettings(p=>({...p,mixer_cost:Number(e.target.value)}))} style={inputStyle} min="0" />
- <label style={lblS}>Lifespan (years):</label><input type="number" value={costSettings.mixer_lifespan_years} onChange={e=>setCostSettings(p=>({...p,mixer_lifespan_years:Number(e.target.value)}))} style={inputStyle} min="1" />
- <p style={{ color:'#ca1b1b', fontSize:'11px', margin:0 }}>= {php((Number(costSettings.mixer_cost)/(Number(costSettings.mixer_lifespan_years)*12)))}/month</p>
- </div>
- <div style={{ background:'#f9f9f9', borderRadius:'8px', padding:'12px' }}>
- <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 8px' }}> Dough Sheeter</p>
- <label style={lblS}>Cost ( ):</label><input type="number" value={costSettings.sheeter_cost} onChange={e=>setCostSettings(p=>({...p,sheeter_cost:Number(e.target.value)}))} style={inputStyle} min="0" />
- <label style={lblS}>Lifespan (years):</label><input type="number" value={costSettings.sheeter_lifespan_years} onChange={e=>setCostSettings(p=>({...p,sheeter_lifespan_years:Number(e.target.value)}))} style={inputStyle} min="1" />
- <p style={{ color:'#ca1b1b', fontSize:'11px', margin:0 }}>= {php((Number(costSettings.sheeter_cost)/(Number(costSettings.sheeter_lifespan_years)*12)))}/month</p>
- </div>
- </div>
- <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'10px', marginTop:'12px', border:'1px solid #f5c518' }}>
- <p style={{ fontWeight:'bold', color:'#333', fontSize:'12px', margin:'0 0 4px' }}>Total Monthly Depreciation:</p>
- <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:0 }}>{php((Number(costSettings.fryer_cost)/(Number(costSettings.fryer_lifespan_years)*12))+(Number(costSettings.mixer_cost)/(Number(costSettings.mixer_lifespan_years)*12))+(Number(costSettings.sheeter_cost)/(Number(costSettings.sheeter_lifespan_years)*12)))}/month</p>
- </div>
- </div>
+   <div style={sectionStyle}>
+    <h4 style={{color:'#f57c00',margin:'0 0 9px',fontSize:'12px'}}>3. Factory Overhead</h4>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'8px'}}>
+     {inputField('monthly_rent','Monthly production rent','Use the production-area share when rent covers multiple functions.')}
+     {inputField('monthly_factory_supplies','Cleaning, sanitation and factory supplies','Hairnets, gloves, detergents, pest control, small tools, and similar recurring supplies.')}
+     {inputField('monthly_repairs_maintenance','Repairs and maintenance','Normal recurring equipment and facility maintenance.')}
+    </div>
+   </div>
 
- {/* Live BEP Preview */}
- {(()=>{
- const fin = computeFinancials()
- return (
- <div style={{ background:'linear-gradient(135deg,#1a1a2e,#16213e)', borderRadius:'14px', padding:'18px', marginBottom:'14px' }}>
- <p style={{ color:'rgba(255,255,255,0.7)', fontSize:'11px', fontWeight:'bold', letterSpacing:'1px', margin:'0 0 10px' }}>LIVE PREVIEW UPDATES AS YOU TYPE</p>
- <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'10px' }}>
- {[
- ['Monthly Fixed Costs', php(fin.monthlyFixed)],
- ['Monthly Depreciation', php(fin.monthlyDepreciation)],
- ['Daily Fixed Cost', php(fin.dailyFixed)],
- ['Labor Per Piece', php(fin.laborPerPiece)],
- ['Fixed Per Piece', php(fin.fixedPerPiece)],
- ['Daily BEP', `${fin.dailyBEP} pieces`],
- ].map(([l,v])=>(
- <div key={l}>
- <p style={{ color:'rgba(255,255,255,0.5)', fontSize:'10px', margin:'0 0 2px' }}>{l}</p>
- <p style={{ color:'white', fontWeight:'bold', fontSize:'14px', margin:0 }}>{v}</p>
- </div>
- ))}
- </div>
- </div>
- )
+   <div style={sectionStyle}>
+    <h4 style={{color:'#2d8a4e',margin:'0 0 9px',fontSize:'12px'}}>4. Delivery and Distribution</h4>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'8px'}}>
+     {inputField('monthly_delivery_fuel','Monthly delivery fuel','Fuel used for reseller and outlet routes.')}
+     {inputField('monthly_driver_helper_cost','Driver and helper monthly cost','Delivery wages and route-related benefits.')}
+     {inputField('monthly_vehicle_maintenance','Vehicle maintenance','Repairs, tires, registration, insurance, and recurring vehicle expenses.')}
+     {inputField('vehicle_cost','Delivery vehicle acquisition cost','Used for straight-line depreciation.')}
+     {inputField('vehicle_lifespan_years','Vehicle useful life in years','Professional estimate commonly uses several years, subject to your actual policy.','1')}
+    </div>
+   </div>
+
+   <div style={sectionStyle}>
+    <h4 style={{color:'#ca1b1b',margin:'0 0 9px',fontSize:'12px'}}>5. Administrative OPEX</h4>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)',gap:'8px'}}>
+     {inputField('monthly_admin_opex','Monthly administrative OPEX','Office payroll, accounting, permits, professional fees, and office supplies.')}
+     {inputField('monthly_marketing','Monthly marketing and advertising','Boosted posts, content production, promotions, and related costs.')}
+     {inputField('monthly_software_communications','Software, internet and communications','Apps, subscriptions, internet, phone, and load.')}
+     {inputField('monthly_other_fixed','Other recurring OPEX','Do not include loan principal. Only finance interest/charges and true operating expenses belong in product cost.')}
+    </div>
+   </div>
+
+   <div style={sectionStyle}>
+    <h4 style={{color:'#555',margin:'0 0 9px',fontSize:'12px'}}>6. Production Equipment Depreciation</h4>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'8px'}}>
+     {[
+      ['Fryer','fryer_cost','fryer_lifespan_years'],['Mixer','mixer_cost','mixer_lifespan_years'],['Dough Sheeter','sheeter_cost','sheeter_lifespan_years']
+     ].map(([label,costKey,lifeKey])=><div key={label} style={{background:'#f8f9fb',borderRadius:'8px',padding:'10px'}}><strong style={{fontSize:'10px',color:'#333'}}>{label}</strong><label style={{...lblS,marginTop:'7px'}}>Acquisition cost</label><input type="number" min="0" step="0.01" value={costSettings[costKey]??0} onChange={e=>setCostSettings(p=>({...p,[costKey]:e.target.value}))} style={{...inputStyle,marginBottom:'7px'}}/><label style={lblS}>Useful life / years</label><input type="number" min="1" step="1" value={costSettings[lifeKey]??1} onChange={e=>setCostSettings(p=>({...p,[lifeKey]:e.target.value}))} style={{...inputStyle,marginBottom:'5px'}}/><p style={{color:'#ca1b1b',fontSize:'9px',fontWeight:'800',margin:0}}>{php(safeNum(costSettings[costKey])/(positiveNum(costSettings[lifeKey])*12))}/month</p></div>)}
+    </div>
+   </div>
+
+   <div style={{background:'linear-gradient(135deg,#1a1a2e,#16213e)',borderRadius:'12px',padding:'14px',marginBottom:'10px',color:'white'}}>
+    <p style={{color:'#fdd412',fontSize:'9px',fontWeight:'900',letterSpacing:'1px',margin:'0 0 8px'}}>LIVE ALLOCATION PREVIEW</p>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)',gap:'8px'}}>
+     {[
+      ['Monthly operating OPEX',php(allocation.monthlyOperatingCost)],['Daily operating OPEX',php(allocation.dailyOperatingCost)],['Labor / piece',php(allocation.laborPerPiece)],['Operating OPEX / piece',php(allocation.operatingCostPerPiece)],['Estimated daily BEP',fin.dailyBEP?`${fin.dailyBEP.toLocaleString('en-PH')} pcs`:'Complete recipes']
+     ].map(([label,value])=><div key={label}><p style={{color:'rgba(255,255,255,0.55)',fontSize:'8px',margin:'0 0 2px'}}>{label}</p><strong style={{fontSize:'12px'}}>{value}</strong></div>)}
+    </div>
+   </div>
+   <div style={{background:'#fff8dc',border:'1px solid #f5c518',borderRadius:'8px',padding:'9px',fontSize:'9px',lineHeight:1.5,color:'#665500',marginBottom:'10px'}}><strong>Database note:</strong> the supplied SQL migration adds the professional OPEX fields to <code>cost_settings</code> and product-specific packaging/labor/delivery fields to <code>donut_variants</code>. Until it is run, the app keeps the new values in this browser as a safety fallback.</div>
+   <button style={{...btnGreen,opacity:savingCostSettings?0.6:1}} disabled={savingCostSettings} onClick={saveCostSettings}>{savingCostSettings?'SAVING...':'SAVE ALL PROFESSIONAL COST SETTINGS'}</button>
+  </div>
  })()}
-
- <button style={{...btnGreen, opacity:savingCostSettings?0.6:1 }} disabled={savingCostSettings} onClick={saveCostSettings}>{savingCostSettings?' Saving...':' SAVE ALL COST SETTINGS'}</button>
- </div>
- )}
  </div>
  )}
 
