@@ -390,10 +390,127 @@ function getCombinedAttendanceSpanMinutes(logs = []) {
  return Math.max(0, Math.round(total + (currentEnd - currentStart)))
 }
 
+function getScheduleAnchoredAttendanceMetrics(dayLogs = []) {
+ const completedLogs = (dayLogs || []).filter(log => log?.time_in && log?.time_out && log?.status !== 'Absent')
+ if (!completedLogs.length) {
+  return {
+   hasSchedule:false,
+   shiftStart:'',
+   shiftEnd:'',
+   actualFirstTimeIn:'',
+   actualLastTimeOut:'',
+   lateMinutes:0,
+   earlyOutMinutes:0,
+   scheduleBoundaryShortageMinutes:0,
+   preShiftMinutes:0,
+   postShiftMinutes:0
+  }
+ }
+
+ const scheduleSource = completedLogs.find(log => normalizeTimeInputValue(log?.shift_start) && normalizeTimeInputValue(log?.shift_end)) || null
+ const savedLateMinutes = Math.max(0, Math.round(completedLogs.reduce((sum, log) => {
+  // Normalize legacy exact-minute late values to the company penalty brackets.
+  // Example: a historical saved value of 11 minutes becomes 30 minutes.
+  return sum + roundPenaltyMinutes(log?.late_minutes)
+ }, 0)))
+ const hasSavedLateValue = completedLogs.some(log => log?.late_minutes !== undefined && log?.late_minutes !== null)
+ if (!scheduleSource) {
+  return {
+   hasSchedule:false,
+   shiftStart:'',
+   shiftEnd:'',
+   actualFirstTimeIn:normalizeTimeInputValue(completedLogs[0]?.time_in || ''),
+   actualLastTimeOut:normalizeTimeInputValue(completedLogs[completedLogs.length - 1]?.time_out || ''),
+   lateMinutes:savedLateMinutes,
+   earlyOutMinutes:0,
+   scheduleBoundaryShortageMinutes:savedLateMinutes,
+   preShiftMinutes:0,
+   postShiftMinutes:0
+  }
+ }
+
+ const shiftStartValue = normalizeTimeInputValue(scheduleSource.shift_start)
+ const shiftEndValue = normalizeTimeInputValue(scheduleSource.shift_end)
+ const shiftStartMinute = minutesFromTime(shiftStartValue)
+ let shiftEndMinute = minutesFromTime(shiftEndValue)
+ if (shiftEndMinute <= shiftStartMinute) shiftEndMinute += 24 * 60
+
+ const intervals = completedLogs.map(log => {
+  const timeInValue = normalizeTimeInputValue(log.time_in)
+  const timeOutValue = normalizeTimeInputValue(log.time_out)
+  let timeInMinute = getClockMinuteNearestTimeline(timeInValue, shiftStartMinute)
+  if (timeInMinute === null) timeInMinute = minutesFromTime(timeInValue)
+  let timeOutMinute = getClockMinuteNearestTimeline(timeOutValue, Math.max(shiftEndMinute, timeInMinute))
+  if (timeOutMinute === null) timeOutMinute = minutesFromTime(timeOutValue)
+  while (timeOutMinute <= timeInMinute) timeOutMinute += 24 * 60
+  return { timeInValue, timeOutValue, timeInMinute, timeOutMinute }
+ }).filter(item => Number.isFinite(item.timeInMinute) && Number.isFinite(item.timeOutMinute))
+
+ if (!intervals.length) {
+  return {
+   hasSchedule:true,
+   shiftStart:shiftStartValue,
+   shiftEnd:shiftEndValue,
+   actualFirstTimeIn:'',
+   actualLastTimeOut:'',
+   lateMinutes:savedLateMinutes,
+   earlyOutMinutes:0,
+   scheduleBoundaryShortageMinutes:savedLateMinutes,
+   preShiftMinutes:0,
+   postShiftMinutes:0
+  }
+ }
+
+ const firstInterval = [...intervals].sort((a, b) => a.timeInMinute - b.timeInMinute)[0]
+ const lastInterval = [...intervals].sort((a, b) => b.timeOutMinute - a.timeOutMinute)[0]
+ const rawLateMinutes = Math.max(0, Math.round(firstInterval.timeInMinute - shiftStartMinute))
+ const recalculatedPolicyLateMinutes = roundPenaltyMinutes(rawLateMinutes)
+ // Protect the company penalty even for historical rows that saved exact minutes
+ // or an incorrect zero. Staying after shift end must never reduce this value.
+ const lateMinutes = hasSavedLateValue
+  ? Math.max(savedLateMinutes, recalculatedPolicyLateMinutes)
+  : recalculatedPolicyLateMinutes
+ const earlyOutMinutes = Math.max(0, Math.round(shiftEndMinute - lastInterval.timeOutMinute))
+ const preShiftMinutes = Math.max(0, Math.round(shiftStartMinute - firstInterval.timeInMinute))
+ const postShiftMinutes = Math.max(0, Math.round(lastInterval.timeOutMinute - shiftEndMinute))
+ return {
+  hasSchedule:true,
+  shiftStart:shiftStartValue,
+  shiftEnd:shiftEndValue,
+  actualFirstTimeIn:firstInterval.timeInValue,
+  actualLastTimeOut:lastInterval.timeOutValue,
+  lateMinutes,
+  earlyOutMinutes,
+  scheduleBoundaryShortageMinutes:Math.max(0, Math.round(lateMinutes + earlyOutMinutes)),
+  preShiftMinutes,
+  postShiftMinutes
+ }
+}
+
 function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explicitApprovedUnpaidBreakMinutes = undefined) {
  const completedLogs = (dayLogs || []).filter(log => log?.time_in && log?.time_out && log?.status !== 'Absent')
  if (!completedLogs.length) {
-  return { rawSpanMinutes:0, recordedBreakMinutes:0, defaultDeductedBreakMinutes:0, deductedBreakMinutes:0, approvedUnpaidBreakMinutes:null, breakOverrideApplied:false, overbreakMinutes:0, paidWorkedMinutes:0, undertimeMinutes:0 }
+  return {
+   rawSpanMinutes:0,
+   recordedBreakMinutes:0,
+   defaultDeductedBreakMinutes:0,
+   deductedBreakMinutes:0,
+   approvedUnpaidBreakMinutes:null,
+   breakOverrideApplied:false,
+   overbreakMinutes:0,
+   paidWorkedMinutes:0,
+   paidWorkShortageMinutes:0,
+   lateMinutes:0,
+   earlyOutMinutes:0,
+   scheduleBoundaryShortageMinutes:0,
+   preShiftMinutes:0,
+   postShiftMinutes:0,
+   hasSchedule:false,
+   shiftStart:'',
+   shiftEnd:'',
+   undertimeBasis:'none',
+   undertimeMinutes:0
+  }
  }
 
  const rawSpanMinutes = getCombinedAttendanceSpanMinutes(completedLogs)
@@ -428,7 +545,22 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
   : 0
  const overbreakMinutes = Math.max(0, Math.round(recordedBreakMinutes - ALLOWED_BREAK_MINUTES))
  const paidWorkedMinutes = Math.max(0, Math.round(rawSpanMinutes - deductedBreakMinutes))
- const undertimeMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - paidWorkedMinutes)
+ const paidWorkShortageMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - paidWorkedMinutes)
+ const scheduleMetrics = getScheduleAnchoredAttendanceMetrics(completedLogs)
+
+ // Professional attendance rule: arriving early or staying after the scheduled
+ // shift cannot erase a late arrival or an early Time Out. Keep the paid-hours
+ // shortage calculation for missed work and excess breaks, then compare it with
+ // the independent schedule-boundary shortage and use the larger verified value.
+ const scheduleBoundaryShortageMinutes = Math.max(0, Math.round(scheduleMetrics.scheduleBoundaryShortageMinutes || 0))
+ const undertimeMinutes = Math.max(paidWorkShortageMinutes, scheduleBoundaryShortageMinutes)
+ let undertimeBasis = 'none'
+ if (undertimeMinutes > 0) {
+  if (scheduleBoundaryShortageMinutes > paidWorkShortageMinutes) undertimeBasis = 'schedule_boundaries'
+  else if (paidWorkShortageMinutes > scheduleBoundaryShortageMinutes) undertimeBasis = 'paid_work_shortage'
+  else undertimeBasis = 'both'
+ }
+
  return {
   rawSpanMinutes,
   recordedBreakMinutes,
@@ -438,6 +570,16 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
   breakOverrideApplied,
   overbreakMinutes,
   paidWorkedMinutes,
+  paidWorkShortageMinutes,
+  lateMinutes:scheduleMetrics.lateMinutes,
+  earlyOutMinutes:scheduleMetrics.earlyOutMinutes,
+  scheduleBoundaryShortageMinutes,
+  preShiftMinutes:scheduleMetrics.preShiftMinutes,
+  postShiftMinutes:scheduleMetrics.postShiftMinutes,
+  hasSchedule:scheduleMetrics.hasSchedule,
+  shiftStart:scheduleMetrics.shiftStart,
+  shiftEnd:scheduleMetrics.shiftEnd,
+  undertimeBasis,
   undertimeMinutes
  }
 }
@@ -757,6 +899,9 @@ function getDTRStatusInfo(log = {}) {
  const undertime = dayMetrics.undertimeMinutes
  const overbreak = dayMetrics.overbreakMinutes
  const noMealBreakApproved = dayMetrics.breakOverrideApplied === true && safeNum(dayMetrics.approvedUnpaidBreakMinutes, ALLOWED_BREAK_MINUTES) === 0
+ if (approvedOT > 0 && undertime > 0 && overbreak > 0) return { label:'OT + UT + OB', color:'orange', code:'overtime_undertime_overbreak' }
+ if (approvedOT > 0 && undertime > 0 && noMealBreakApproved) return { label:'OT + UT + NMB', color:'orange', code:'overtime_undertime_no_meal_break' }
+ if (approvedOT > 0 && undertime > 0) return { label:'OT + UT', color:'orange', code:'overtime_undertime' }
  if (undertime > 0 && overbreak > 0) return { label:'UT + OB', color:'orange', code:'undertime_overbreak' }
  if (approvedOT > 0 && overbreak > 0) return { label:'OT + OB', color:'orange', code:'overtime_overbreak' }
  if (approvedOT > 0 && noMealBreakApproved) return { label:'OT + NMB', color:'blue', code:'overtime_no_meal_break' }
@@ -1230,7 +1375,15 @@ function getDateOffsetString(days) {
  d.setMinutes(d.getMinutes() - d.getTimezoneOffset())
  return d.toISOString().slice(0, 10)
 }
-function roundPenaltyMinutes(min) { if (!min || min <= 10) return 0; return Math.ceil(min / 30) * 30 }
+function roundPenaltyMinutes(min) {
+ const rawMinutes = Math.max(0, Math.round(safeNum(min, 0)))
+ // Roma's Donuts late policy:
+ // 0-10 minutes = grace period; 11-30 minutes = 30-minute penalty;
+ // 31 minutes or more = 60-minute penalty.
+ if (rawMinutes <= 10) return 0
+ if (rawMinutes <= 30) return 30
+ return 60
+}
 function safeNum(value, fallback = 0) {
  const n = Number(value)
  return Number.isFinite(n)? n: fallback
@@ -16214,7 +16367,7 @@ function buildDeliveryInvoicePrintCSS() {
   let lateMinutes = 0, status = 'No Assigned Shift'
   if (todaySchedule?.shift_start) {
    const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
-   const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
+   const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod ? roundPenaltyMinutes(raw) : 0
    status = lateMinutes > 0? 'Late': 'On Time'
   }
   const offlineLog = { employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:null }
@@ -16247,7 +16400,7 @@ function buildDeliveryInvoicePrintCSS() {
  let lateMinutes = 0, status = 'No Assigned Shift'
  if (todaySchedule?.shift_start) {
   const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
-  const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod? raw: 0
+  const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod ? roundPenaltyMinutes(raw) : 0
   status = lateMinutes > 0? 'Late': 'On Time'
  }
  const { data, error } = await supabase.from('attendance_logs').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:selfieUrl }).select().single()
@@ -16280,8 +16433,9 @@ function buildDeliveryInvoicePrintCSS() {
  rawUndertimeMinutes = attendanceMetrics.undertimeMinutes
  undertimeMinutes = undertimeDeductionApplicable ? rawUndertimeMinutes : 0
 
- // OT is based only on actual attendance after the mandatory break. The
- // saved schedule and any employee-entered duration do not change the minutes.
+ // OT remains based on actual paid attendance after the meal-break rule.
+ // UT is schedule-anchored separately, so staying after shift end cannot erase
+ // a late arrival and arriving early cannot erase an early Time Out.
  overtimeMinutes = Math.max(0, attendanceMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES)
  if (undertimeMinutes>0) status='Undertime - Pending Approval'
  else if (overtimeMinutes>0) status='Overtime - Pending Filing'
@@ -16300,6 +16454,8 @@ function buildDeliveryInvoicePrintCSS() {
  try { selfieUrl = await uploadSelfie(capturedPhoto, `timeout_${employee.id}_${activeAttendanceDate}.jpg`) } catch(e){}
  const { data, error } = await supabase.from('attendance_logs').update({
  time_out: timeOut,
+ // Persist the policy-normalized late penalty so DTR, approval and payroll agree.
+ late_minutes: attendanceMetrics.lateMinutes,
  undertime_minutes: undertimeMinutes,
  overtime_minutes: overtimeMinutes,
  status,
@@ -16337,7 +16493,7 @@ function buildDeliveryInvoicePrintCSS() {
      attendance_date:activeAttendanceDate,
      request_type:'undertime',
      minutes:undertimeMinutes,
-     employee_reason:'System auto-filed for admin review: actual paid work was below 8 hours after the automatic 60-minute break. Payroll will count only the attendance-verified minutes after approval.',
+     employee_reason:'System auto-filed for admin review: attendance has a verified schedule shortage after the meal-break rule. Late arrival and early Time Out are schedule-anchored and cannot be offset by extra minutes outside the scheduled shift. Payroll will count only the attendance-verified minutes after approval.',
      status:'pending'
     })
     if (autoUTError) throw autoUTError
@@ -16419,7 +16575,7 @@ function buildDeliveryInvoicePrintCSS() {
    const alreadyApplied = validation.metrics.breakOverrideApplied === true
    const revisedMetrics = getAttendanceDayWorkMetrics(validation.integrity.completedLogs, validation.breakRowsByLogId, 0)
    const revisedOTMinutes = Math.max(0, revisedMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES)
-   const revisedUTMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - revisedMetrics.paidWorkedMinutes)
+   const revisedUTMinutes = Math.max(0, Math.round(safeNum(revisedMetrics.undertimeMinutes, 0)))
    mealBreakImpact = {
     recordedBreakMinutes,
     currentDeductedBreakMinutes:validation.metrics.deductedBreakMinutes,
@@ -21405,7 +21561,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
    const recordedBreakMinutes = Math.max(0, Math.round(safeNum(validation.metrics.recordedBreakMinutes, 0)))
    const revisedMetrics = getAttendanceDayWorkMetrics(validation.integrity.completedLogs, validation.breakRowsByLogId, 0)
    const revisedOvertimeMinutes = Math.max(0, revisedMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES)
-   const revisedUndertimeMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - revisedMetrics.paidWorkedMinutes)
+   const revisedUndertimeMinutes = Math.max(0, Math.round(safeNum(revisedMetrics.undertimeMinutes, 0)))
    const { data:approvedTimeRows, error:approvedTimeError } = await supabase
     .from('time_adjustment_requests')
     .select('id,request_type,minutes,attendance_date,reviewed_by,reviewed_at')
@@ -21492,7 +21648,9 @@ This recovery button creates one approved expense record using GROSS payroll ear
   const breakText = validation.metrics.breakOverrideApplied
    ? `${validation.metrics.deductedBreakMinutes} approved unpaid break minute(s)`
    : `${validation.metrics.deductedBreakMinutes} break minute(s)`
-  const calculationMessage = `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s).`
+  const calculationMessage = requestType === 'undertime'
+   ? `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). Schedule check: ${validation.metrics.lateMinutes || 0} late minute(s) + ${validation.metrics.earlyOutMinutes || 0} early-out minute(s). Extra minutes before or after the scheduled shift do not offset those schedule shortages.`
+   : `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s).`
 
   return {
    loading:false,
@@ -21658,7 +21816,7 @@ This only fills the missing legacy From/To audit data. It does not approve the r
 
  const revisedMetrics = getAttendanceDayWorkMetrics(validation.integrity.completedLogs, validation.breakRowsByLogId, 0)
  const revisedOTMinutes = Math.max(0, revisedMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES)
- const revisedUTMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - revisedMetrics.paidWorkedMinutes)
+ const revisedUTMinutes = Math.max(0, Math.round(safeNum(revisedMetrics.undertimeMinutes, 0)))
  const parsedMealReason = parseMealBreakExceptionEmployeeReason(req.employee_reason || '')
  const approvalTimestamp = new Date().toISOString()
  const approvalNote = `${reviewNote} | NO MEAL BREAK APPROVED: Raw attendance ${revisedMetrics.rawSpanMinutes} min; recorded break 0 min; standard deduction ${validation.metrics.deductedBreakMinutes} min overridden to 0 unpaid minute(s); revised paid work ${revisedMetrics.paidWorkedMinutes} min; revised OT ${revisedOTMinutes} min; revised UT ${revisedUTMinutes} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
@@ -22094,7 +22252,10 @@ This only fills the missing legacy From/To audit data. It does not approve the r
  const savedRangeText = requestType === 'overtime' && parsedReason.hasOvertimeRange
   ? `${parsedReason.overtimeRange?.filedFrom || ''}-${parsedReason.overtimeRange?.filedTo || ''}`
   : requestType === 'overtime' ? 'legacy/no saved range' : 'not applicable'
- const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; raw span ${validation.metrics.rawSpanMinutes} min; break deducted ${validation.metrics.deductedBreakMinutes} min; paid work ${validation.metrics.paidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min.`
+ const scheduleShortageText = requestType === 'undertime'
+  ? `; schedule ${validation.metrics.shiftStart || 'not saved'}-${validation.metrics.shiftEnd || 'not saved'}; late ${validation.metrics.lateMinutes || 0} min; early out ${validation.metrics.earlyOutMinutes || 0} min; paid-work shortage ${validation.metrics.paidWorkShortageMinutes || 0} min; final schedule-protected UT ${validation.metrics.undertimeMinutes || 0} min`
+  : ''
+ const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; raw span ${validation.metrics.rawSpanMinutes} min; break deducted ${validation.metrics.deductedBreakMinutes} min; paid work ${validation.metrics.paidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min${scheduleShortageText}.`
  const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}${zeroMinuteApproval ? 'REVIEWED AND CLOSED AT ZERO FROM ACTUAL ATTENDANCE' : 'APPROVED FROM ACTUAL ATTENDANCE'}: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}` : ''}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
 
  const { error } = await supabase.from('time_adjustment_requests').update({
@@ -22205,6 +22366,8 @@ This only fills the missing legacy From/To audit data. It does not approve the r
   if (exactMinutes > 0) {
    const { error:attendanceUTError } = await supabase.from('attendance_logs').update({
     undertime_minutes:exactMinutes,
+    // Normalize legacy exact-minute values (for example 11 -> 30) when approved.
+    late_minutes:Math.max(0, Math.round(safeNum(validation.metrics.lateMinutes, 0))),
     status:'Undertime - Approved'
    }).eq('id', primaryAttendanceLog.id)
    if (attendanceUTError) {
@@ -23186,7 +23349,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     ...day,
     deductionAmount:undertimeDeductionApplicable ? moneyRound(safeNum(day.undertimeMinutes, 0) * safeNum(rateInfo.hourlyRate, 0) / 60) : 0,
     deductionType:safeNum(day.undertimeMinutes, 0) > 0
-     ? (safeNum(day.lateMinutes, 0) > 0 ? 'Automatic undertime deduction (includes shortage caused by late arrival)' : 'Automatic undertime deduction')
+     ? (safeNum(day.lateMinutes, 0) > 0 ? 'Schedule-protected undertime deduction (late arrival cannot be offset by staying late)' : 'Automatic undertime deduction')
      : (safeNum(day.lateMinutes, 0) > 0 ? 'Late recorded — no deduction because 8 paid hours were completed' : 'No attendance deduction')
    }))
    const correctDeduction = undertimeDeductionApplicable ? moneyRound(correctUndertimeMinutes * safeNum(rateInfo.hourlyRate, 0) / 60) : 0
@@ -24726,6 +24889,11 @@ async function computePayroll() {
     deductedBreakMins:dayMetrics.deductedBreakMinutes,
     overbreakMins:dayMetrics.overbreakMinutes,
     undertimeMins:dayMetrics.undertimeMinutes,
+    paidWorkShortageMins:dayMetrics.paidWorkShortageMinutes,
+    lateMins:dayMetrics.lateMinutes,
+    earlyOutMins:dayMetrics.earlyOutMinutes,
+    postShiftMins:dayMetrics.postShiftMinutes,
+    undertimeBasis:dayMetrics.undertimeBasis,
     actualOvertimeMins:actualDayOvertimeMinutes,
     paidRegularMins:REQUIRED_PAID_WORK_MINUTES,
     regularPay:dailyRate,
@@ -24784,8 +24952,9 @@ async function computePayroll() {
   })
 
   // OT and UT are approval-driven, but the approved request can never override
-  // actual attendance. Each date is recalculated from Time In to Time Out, less
-  // the mandatory break, then capped to its real OT or UT capacity.
+  // actual attendance. OT uses paid attendance after the break rule. UT uses the
+  // larger of paid-work shortage or schedule-boundary shortage, so late arrival
+  // and early Time Out cannot be offset by extra minutes outside the shift.
   const overtimeMinutes = overtimePayEligible
    ? Object.entries(approvedOvertimeByDate).reduce((sum, [dateKey, approvedMinutes]) => {
       const actualMinutes = Math.max(0, safeNum(actualOvertimeCapacityByDate[dateKey], 0))
@@ -31052,6 +31221,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    <div><span style={lblS}>Raw Attendance Span</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.rawSpanMinutes,0)} min` : 'Not available'}</strong></div>
    <div><span style={lblS}>Break Deducted</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.deductedBreakMinutes,0)} min${attendanceMetrics.breakOverrideApplied?' (approved exception)':''}` : 'Not available'}</strong></div>
    <div><span style={lblS}>Net Paid Work</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.paidWorkedMinutes,0)} min` : 'Not available'}</strong></div>
+   {!isOvertimeRequest && <div><span style={lblS}>Scheduled Shift</span><strong>{attendanceValid && attendanceMetrics.hasSchedule ? `${formatClockTimeForDisplay(attendanceMetrics.shiftStart)} – ${formatClockTimeForDisplay(attendanceMetrics.shiftEnd)}` : 'Not saved'}</strong></div>}
+   {!isOvertimeRequest && <div><span style={lblS}>Late (Protected)</span><strong style={{ color:safeNum(attendanceMetrics.lateMinutes,0)>0?'#ca1b1b':'#2d8a4e' }}>{attendanceValid ? `${safeNum(attendanceMetrics.lateMinutes,0)} min` : 'Not available'}</strong></div>}
+   {!isOvertimeRequest && <div><span style={lblS}>Early Out</span><strong style={{ color:safeNum(attendanceMetrics.earlyOutMinutes,0)>0?'#ca1b1b':'#2d8a4e' }}>{attendanceValid ? `${safeNum(attendanceMetrics.earlyOutMinutes,0)} min` : 'Not available'}</strong></div>}
    <div><span style={lblS}>Saved Request</span><strong>{savedMinutes} min</strong></div>
    <div><span style={lblS}>Actual {isOvertimeRequest?'OT':'UT'} to Approve</span><strong style={{ color:actualMinutes>0?'#2d8a4e':'#ca1b1b' }}>{attendanceValid ? `${actualMinutes} min` : 'Cannot calculate'}</strong></div>
    <div><span style={lblS}>Automatic Correction</span><strong style={{ color:discrepancyMinutes===0?'#2d8a4e':'#ca1b1b' }}>{discrepancyMinutes===null ? 'Pending DTR' : discrepancyMinutes===0 ? 'No correction' : `${savedMinutes} → ${actualMinutes} min`}</strong></div>
