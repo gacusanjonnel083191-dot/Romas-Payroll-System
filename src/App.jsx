@@ -21768,6 +21768,204 @@ This only fills the missing legacy From/To audit data. It does not approve the r
  showToast(`No Meal Break approved. Break deduction: ${validation.metrics.deductedBreakMinutes} → 0 min. Revised paid work: ${revisedMetrics.paidWorkedMinutes} min; OT: ${revisedOTMinutes} min; UT: ${revisedUTMinutes} min.${autoVoidedDuplicateIds.length ? ` ${autoVoidedDuplicateIds.length} duplicate request(s) auto-voided.` : ''}`)
  }
 
+
+ async function confirmNoMealBreakFromExistingTimeAdj(req) {
+ if (timeAdjApprovalLockRef.current) {
+  showToast('Another attendance approval is already being processed. Please wait for it to finish.', 'orange')
+  return
+ }
+ timeAdjApprovalLockRef.current = true
+ try {
+  const requestType = String(req?.request_type || '').toLowerCase()
+  const currentStatus = String(req?.status || '').toLowerCase()
+  const reviewNote = String(adjAdminReason[req?.id] || '').trim()
+  if (!['overtime','undertime'].includes(requestType)) {
+   showToast('This action is available only for an existing OT or UT request.', 'red')
+   return
+  }
+  if (!['pending','approved'].includes(currentStatus)) {
+   showToast(`This ${getTimeAdjustmentRequestLabel(requestType)} request is already ${currentStatus || 'processed'}. Refresh the list.`, 'red')
+   return
+  }
+  if (!reviewNote) {
+   showToast('Enter an admin response confirming who verified the employee worked continuously without a meal break and why.', 'red')
+   return
+  }
+
+  const requestedAttendanceDate = String(req.attendance_date || '').slice(0,10)
+  let validation
+  try {
+   validation = await fetchAttendanceDayValidation(req.employee_id, requestedAttendanceDate, { employeeCode:req.employee_code, employeeName:req.employee_name })
+  } catch(error) {
+   showToast('No-break recalculation failed: attendance could not be validated — ' + (error?.message || error), 'red')
+   return
+  }
+  const targetDate = String(validation.resolvedAttendanceDate || requestedAttendanceDate).slice(0,10)
+  if (!validation.integrity.isValidCompleted) {
+   showToast(`No-break recalculation blocked: ${validation.integrity.message} Correct the DTR first.`, 'red')
+   return
+  }
+
+  const recordedBreakMinutes = Math.max(0, Math.round(safeNum(validation.metrics.recordedBreakMinutes, 0)))
+  if (recordedBreakMinutes > 0) {
+   showToast(`No-break confirmation blocked: attendance contains ${recordedBreakMinutes} recorded break minute(s). Correct the DTR first if that record is wrong.`, 'red')
+   return
+  }
+
+  const payrollCheck = await checkTimeAdjPayrollStatus({ ...req, attendance_date:targetDate })
+  if (payrollCheck.error) {
+   showToast('Could not verify payroll status: ' + payrollCheck.error, 'red')
+   return
+  }
+  if (payrollCheck.released) {
+   showToast('Blocked: this attendance date is already inside released payroll. Use Payroll Adjustment in the next cutoff instead of rewriting released payroll history.', 'red')
+   return
+  }
+  if (payrollCheck.computed) {
+   showToast('Blocked: payroll for this date is already computed. Undo the draft/review payroll first, apply the No Meal Break correction, then recompute.', 'red')
+   return
+  }
+
+  const guardDates = Array.from(new Set([requestedAttendanceDate, targetDate].filter(Boolean)))
+  const { data:otherApprovedTimeRows, error:otherApprovedTimeError } = await supabase
+   .from('time_adjustment_requests')
+   .select('id,request_type,minutes,attendance_date')
+   .eq('employee_id', req.employee_id)
+   .in('attendance_date', guardDates)
+   .in('request_type', ['overtime','undertime'])
+   .eq('status', 'approved')
+   .neq('id', req.id)
+   .limit(10)
+  if (otherApprovedTimeError) {
+   showToast('Failed checking approved OT/UT conflicts: ' + otherApprovedTimeError.message, 'red')
+   return
+  }
+  if (otherApprovedTimeRows?.length) {
+   const conflict = otherApprovedTimeRows[0]
+   showToast(`Blocked: another approved ${getTimeAdjustmentRequestLabel(conflict.request_type)} record already covers ${targetDate}. Undo it first so the break decision can recalculate the full attendance day safely.`, 'red')
+   return
+  }
+
+  const sourceAttendanceLogIds = (validation.logs || []).map(row => row?.id).filter(Boolean)
+  if (currentStatus === 'approved') {
+   const confirmReopen = window.confirm(
+    `Reopen this approved ${getTimeAdjustmentRequestLabel(requestType)} request and recalculate it as NO MEAL BREAK?\n\n` +
+    `Employee: ${req.employee_name}\nAttendance date: ${targetDate}\nCurrent approved minutes: ${safeNum(req.minutes,0)}\n\n` +
+    `The existing approval will be returned to Pending, the old attendance OT/UT synchronization will be cleared, and the same request will be reused after the no-break decision. The employee will not file again.`
+   )
+   if (!confirmReopen) return
+
+   const reopenTimestamp = new Date().toISOString()
+   const reopenNote = `REOPENED FOR NO MEAL BREAK RECALCULATION by ${currentAdminLabel}: ${reviewNote}${req.admin_reason ? ` | Previous approval note: ${req.admin_reason}` : ''}`
+   const { error:reopenError } = await supabase.from('time_adjustment_requests').update({
+    status:'pending',
+    reviewed_by:currentAdminLabel,
+    reviewed_at:reopenTimestamp,
+    admin_reason:reopenNote
+   }).eq('id', req.id).eq('status', 'approved')
+   if (reopenError) {
+    showToast('Failed to reopen the approved request: ' + reopenError.message, 'red')
+    return
+   }
+
+   let resetAttendanceQuery
+   if (requestType === 'overtime') {
+    resetAttendanceQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false, status:'Completed' })
+   } else {
+    resetAttendanceQuery = supabase.from('attendance_logs').update({ undertime_minutes:0, status:'Completed' })
+   }
+   resetAttendanceQuery = sourceAttendanceLogIds.length > 0
+    ? resetAttendanceQuery.in('id', sourceAttendanceLogIds)
+    : resetAttendanceQuery.eq('employee_id', req.employee_id).eq('attendance_date', targetDate)
+   const { error:resetAttendanceError } = await resetAttendanceQuery
+   if (resetAttendanceError) {
+    await supabase.from('time_adjustment_requests').update({
+     status:'approved',
+     admin_reason:`REOPEN ROLLED BACK: attendance reset failed — ${resetAttendanceError.message}${req.admin_reason ? ` | Previous note: ${req.admin_reason}` : ''}`
+    }).eq('id', req.id)
+    showToast('Reopen was rolled back because attendance synchronization failed: ' + resetAttendanceError.message, 'red')
+    return
+   }
+   await logAudit(`${requestType.toUpperCase()} REOPENED FOR NO MEAL BREAK`, currentAdminLabel, req.employee_name, `${targetDate} | Previous approved minutes ${safeNum(req.minutes,0)} | Reason: ${reviewNote}`)
+  }
+
+  const { data:activeMealBreakRows, error:activeMealBreakError } = await supabase
+   .from('time_adjustment_requests')
+   .select('*')
+   .eq('employee_id', req.employee_id)
+   .in('attendance_date', guardDates)
+   .eq('request_type', 'meal_break')
+   .in('status', ['pending','approved'])
+   .order('created_at', { ascending:true })
+   .limit(10)
+  if (activeMealBreakError) {
+   showToast('Failed checking existing No Meal Break records: ' + activeMealBreakError.message, 'red')
+   return
+  }
+
+  const approvedMealBreak = (activeMealBreakRows || []).find(row => String(row.status || '').toLowerCase() === 'approved')
+  if (approvedMealBreak) {
+   await loadTimeAdjRequests(timeAdjView)
+   showToast(`No Meal Break is already approved for ${targetDate}. The existing ${getTimeAdjustmentRequestLabel(requestType)} request was preserved and recalculated; review the new actual minutes before approval.`)
+   return
+  }
+
+  let mealBreakRequest = (activeMealBreakRows || []).find(row => String(row.status || '').toLowerCase() === 'pending') || null
+  if (!mealBreakRequest) {
+   const adminCreatedReason = buildMealBreakExceptionEmployeeReason(
+    `Admin-confirmed continuous work with no meal break, linked to existing ${getTimeAdjustmentRequestLabel(requestType)} request. ${reviewNote}`,
+    {
+     adminCreatedFromExistingTimeAdjustment:true,
+     sourceTimeAdjustmentRequestId:String(req.id || ''),
+     sourceRequestType:requestType,
+     requestedAttendanceDate,
+     attendanceSourceDate:targetDate,
+     recordedBreakMinutes:0,
+     attendanceLogIds:sourceAttendanceLogIds
+    }
+   )
+   const { data:createdMealBreak, error:createMealBreakError } = await supabase.from('time_adjustment_requests').insert({
+    employee_id:req.employee_id,
+    employee_code:req.employee_code || null,
+    employee_name:req.employee_name,
+    attendance_date:targetDate,
+    request_type:'meal_break',
+    minutes:0,
+    employee_reason:adminCreatedReason,
+    status:'pending'
+   }).select().single()
+   if (createMealBreakError) {
+    const duplicateMessage = String(createMealBreakError.message || '').toLowerCase().includes('duplicate')
+    showToast(duplicateMessage ? 'An active No Meal Break record already covers this attendance shift. Refresh the list.' : 'Failed to create the owner-confirmed No Meal Break record: ' + createMealBreakError.message, 'red')
+    return
+   }
+   mealBreakRequest = createdMealBreak
+   await logAudit('ADMIN-CREATED NO MEAL BREAK FROM EXISTING OT/UT', currentAdminLabel, req.employee_name, `${targetDate} | Source ${requestType.toUpperCase()} request ${req.id} | Reason: ${reviewNote}`)
+  }
+
+  await approveMealBreakExceptionRequest(
+   { ...mealBreakRequest, employee_id:req.employee_id, employee_code:req.employee_code, employee_name:req.employee_name },
+   validation,
+   { targetDate, requestedAttendanceDate, duplicateDates:guardDates, reviewNote:`ADMIN VERIFICATION FROM EXISTING ${requestType.toUpperCase()} REQUEST ${req.id}: ${reviewNote}` }
+  )
+
+  const { data:updatedAttendanceRows, error:updatedAttendanceError } = await supabase
+   .from('attendance_logs')
+   .select('id,meal_break_exception_approved,approved_unpaid_break_minutes')
+   .in('id', sourceAttendanceLogIds.length > 0 ? sourceAttendanceLogIds : [''])
+  if (updatedAttendanceError) console.warn('Post no-break verification failed:', updatedAttendanceError)
+  const breakApplied = sourceAttendanceLogIds.length === 0 || (updatedAttendanceRows || []).some(row => row?.meal_break_exception_approved === true && safeNum(row?.approved_unpaid_break_minutes, -1) === 0)
+
+  await loadTimeAdjRequests(timeAdjView)
+  if (breakApplied) {
+   setAdjAdminReason(prev => ({ ...prev, [req.id]:reviewNote }))
+   showToast(`No Meal Break was applied to the existing ${getTimeAdjustmentRequestLabel(requestType)} request for ${targetDate}. The staff does not need to file again. Review the recalculated actual minutes, then approve the same request.`)
+  }
+ } finally {
+  timeAdjApprovalLockRef.current = false
+ }
+ }
+
  async function approveTimeAdj(req) {
  if (timeAdjApprovalLockRef.current) {
   showToast('Another attendance approval is already being processed. Please wait for it to finish before approving another request.', 'orange')
@@ -21834,6 +22032,16 @@ This only fills the missing legacy From/To audit data. It does not approve the r
   }
   await logAudit('OT/UT APPROVAL BLOCKED BY PAYROLL GUARD', currentAdminLabel, req.employee_name, `${requestType} ${req.minutes} min on ${targetDate} | Payroll: ${periodText}`)
   return
+ }
+
+ if (requestType !== 'meal_break' && safeNum(validation.metrics.recordedBreakMinutes, 0) === 0 && !validation.metrics.breakOverrideApplied) {
+  const keepStandardBreak = window.confirm(
+   `NO BREAK RECORD FOUND\n\nEmployee: ${req.employee_name}\nAttendance date: ${targetDate}\n\nThe current calculation still deducts the standard 60-minute meal break.\n\nOK = approve using the 60-minute deduction.\nCancel = do not approve yet; use CONFIRM NO BREAK & RECALCULATE after verifying the employee worked continuously.`
+  )
+  if (!keepStandardBreak) {
+   showToast('Approval paused. Verify the no-break claim and use CONFIRM NO BREAK & RECALCULATE before approving OT/UT.', 'orange')
+   return
+  }
  }
 
  const duplicateDates = Array.from(new Set([requestedAttendanceDate, targetDate].filter(Boolean)))
@@ -30810,6 +31018,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const cardBackground = isMealBreakRequest ? '#f7f3ff' : isOvertimeRequest ? '#f0fff0' : '#fffbf0'
  const typeLabel = isMealBreakRequest ? 'NO MEAL BREAK' : isOvertimeRequest ? 'OVERTIME' : 'UNDERTIME'
  const typeBadgeColor = isMealBreakRequest ? 'blue' : isOvertimeRequest ? 'green' : 'orange'
+ const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && safeNum(attendanceMetrics.recordedBreakMinutes,0) === 0 && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
  return (
  <div key={req.id} style={{...cardS, border:`2px solid ${cardColor}`, background:cardBackground }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -30849,6 +31058,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    {isOvertimeRequest && <div><span style={lblS}>Actual OT Window</span><strong>{attendanceValid && verifiedWindow?.valid ? `${formatClockTimeForDisplay(verifiedWindow.verifiedFrom)} – ${formatClockTimeForDisplay(verifiedWindow.verifiedTo)}` : 'No actual OT window'}</strong></div>}
   </div>
  )}
+ {!isMealBreakRequest && attendanceValid && safeNum(attendanceMetrics.recordedBreakMinutes,0) === 0 && !attendanceMetrics.breakOverrideApplied && (
+  <div style={{ marginTop:'10px', padding:'9px 10px', border:'1px solid #d8c6ff', background:'#f7f3ff', borderRadius:'9px', color:'#6542a6', fontSize:'11px', lineHeight:1.45, fontWeight:'800' }}>
+   No break punch is recorded. The calculation above is still using the standard 60-minute deduction. After verifying that the employee actually worked continuously, use <strong>CONFIRM NO BREAK &amp; RECALCULATE</strong>. Otherwise, keep the standard deduction.
+  </div>
+ )}
   <p style={{ margin:'10px 0 0', color:approvalBlocked?'#ca1b1b':'#2d8a4e', fontWeight:'800', fontSize:'12px', lineHeight:1.5 }}>{adminValidation?.message || 'Attendance calculation is loading. The system will revalidate before saving.'}</p>
   <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', marginTop:'8px' }}><button style={{...btnGray, width:'auto', padding:'7px 11px', marginTop:0, fontSize:'11px' }} onClick={()=>refreshTimeAdjAdminValidation(req)}>RECALCULATE ATTENDANCE</button></div>
  </div>
@@ -30859,6 +31073,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <label style={lblS}>Admin Response / Reason {isMealBreakRequest && req.status==='pending' ? '(required for approval)' : req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
  <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
+ {canConfirmNoBreakFromExistingRequest && <button style={{...btnBase, background:'#8b5cf6', color:'white', width:'auto', padding:'8px 14px', marginTop:0, boxShadow:'0 2px 8px rgba(139,92,246,0.28)' }} onClick={async(e)=>{ const btn=e.currentTarget; const original=btn.textContent; btn.disabled=true; btn.textContent=req.status==='approved'?'Reopening and applying no break...':'Applying no break...'; await confirmNoMealBreakFromExistingTimeAdj(req); btn.disabled=false; btn.textContent=original }}>{req.status==='approved'?'REOPEN + APPLY NO BREAK':'CONFIRM NO BREAK & RECALCULATE'}</button>}
  {req.status==='pending' && <button disabled={adminValidation?.loading || approvalBlocked} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked)?'not-allowed':'pointer' }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Revalidating attendance...'; await approveTimeAdj(req); btn.disabled=!!(adminValidation?.loading || approvalBlocked); btn.textContent=approveButtonLabel }}>{approveButtonLabel}</button>}
  {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent='REJECT' }}>REJECT</button>}
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL' }}>{req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL'}</button>
