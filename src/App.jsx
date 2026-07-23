@@ -24896,64 +24896,64 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  function exportPayrollToCSV(records, start, end) {
  if (!records.length) { showToast('No records to export.', 'red'); return }
- const headers = [
- 'Employee Code','Employee Name','Period Start','Period End','Worked Days',
- 'Basic Pay','Overtime Pay','Night Differential','Holiday Pay','Other Earnings','Total Earnings',
- 'Late Deduction','Undertime Deduction','Excess Break','Cash Advance','SSS','Pag-IBIG','PhilHealth',
- 'Other Deductions','Total Deductions','Net Pay','Status','Serial No'
- ]
- const rows = records.map(r => [
- r.employee_code, r.employee_name, r.payroll_start||start, r.payroll_end||end, r.worked_days||0,
- Number(r.basic_pay||r.basicPay||0).toFixed(2),
- Number(r.overtime_pay||r.overtimePay||0).toFixed(2),
- Number(r.night_diff_pay||r.nightDiffPay||0).toFixed(2),
- Number(r.holiday_pay||r.holidayPay||0).toFixed(2),
- Number(r.other_earnings||r.adjustmentEarnings||0).toFixed(2),
- Number(r.total_earnings||r.totalEarnings||0).toFixed(2),
- Number(r.late_deduction||r.lateDeduction||0).toFixed(2),
- Number(r.undertime_deduction||r.undertimeDeduction||0).toFixed(2),
- Number(r.other_deductions||r.excessBreakDeduction||0).toFixed(2),
- Number(r.cash_advance_deduction||r.cashAdvanceDeduction||0).toFixed(2),
- Number(r.sss_deduction||r.sssDeduction||0).toFixed(2),
- Number(r.pagibig_deduction||r.pagibigDeduction||0).toFixed(2),
- Number(r.philhealth_deduction||r.philhealthDeduction||0).toFixed(2),
- Number(r.other_deductions||r.adjustmentDeductions||0).toFixed(2),
- Number(r.total_deductions||r.totalDeductions||0).toFixed(2),
- Number(r.net_pay||r.netPay||0).toFixed(2),
- r.employee_acknowledgement||'pending',
- r.payslip_serial||r.payslipSerial||''
- ])
- // Add totals row
- rows.push([])
- rows.push([
- '','TOTALS','','','',
- records.reduce((s,r)=>s+Number(r.basic_pay||r.basicPay||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.overtime_pay||r.overtimePay||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.night_diff_pay||r.nightDiffPay||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.holiday_pay||r.holidayPay||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.other_earnings||r.adjustmentEarnings||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.total_earnings||r.totalEarnings||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.late_deduction||r.lateDeduction||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.undertime_deduction||r.undertimeDeduction||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.other_deductions||r.excessBreakDeduction||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.cash_advance_deduction||r.cashAdvanceDeduction||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.sss_deduction||r.sssDeduction||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.pagibig_deduction||r.pagibigDeduction||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.philhealth_deduction||r.philhealthDeduction||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.other_deductions||r.adjustmentDeductions||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.total_deductions||r.totalDeductions||0),0).toFixed(2),
- records.reduce((s,r)=>s+Number(r.net_pay||r.netPay||0),0).toFixed(2),
- '','',''
- ])
- const csvContent = [headers,...rows].map(row => row.map(cell => '"' + String(cell).replace(/"/g, '""') + '"').join(',')).join('\n')
- const blob = new Blob([' '+csvContent], { type:'text/csv;charset=utf-8;' })
+
+ // Bank-upload CSV contract:
+ // 1. The file contains exactly three columns.
+ // 2. Column order is Account number, Amount, Name.
+ // 3. No totals row is added.
+ // 4. No payroll-period columns are added.
+ // 5. No earnings or deduction breakdown is added.
+ // 6. Account numbers are exported as quoted text.
+ // 7. Quoting preserves leading zeroes in raw CSV data.
+ // 8. Amount always uses two decimal places.
+ // 9. Amount is based on final net pay.
+ // 10. Name prefers the saved bank account name.
+ // 11. Employee name is used only as a fallback.
+ // 12. Missing account numbers remain blank for review.
+ // 13. Every cell is escaped using standard CSV quoting.
+ // 14. Windows-compatible CRLF line endings are used.
+ // 15. The file has no blank separator rows.
+ // 16. The file has no summary or metadata rows.
+ const headers = ['Account number','Amount','Name']
+
+ const rows = records.map(record => {
+  const accountNumber = String(
+   record.bankAccount ||
+   record.bank_account_number ||
+   ''
+  ).trim()
+
+  const amount = Number(
+   record.net_pay ??
+   record.netPay ??
+   0
+  ).toFixed(2)
+
+  const accountName = String(
+   record.bankAccountName ||
+   record.bank_account_name ||
+   record.employee_name ||
+   record.employeeName ||
+   ''
+  ).trim()
+
+  return [accountNumber, amount, accountName]
+ })
+
+ const csvContent = [headers, ...rows]
+  .map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+  .join('\r\n')
+
+ const blob = new Blob([csvContent], { type:'text/csv;charset=utf-8;' })
  const url = URL.createObjectURL(blob)
  const a = document.createElement('a')
  a.href = url
  a.download = `Payroll_${start}_to_${end}.csv`
+ document.body.appendChild(a)
  a.click()
+ a.remove()
  URL.revokeObjectURL(url)
- showToast(' Payroll exported to CSV!')
+ showToast('Payroll CSV exported: Account number, Amount, and Name only.')
  }
 
  async function sendPayslipSmsNotifications(start = payrollStart, end = payrollEnd, options = {}) {
