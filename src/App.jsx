@@ -16699,9 +16699,59 @@ function buildDeliveryInvoicePrintCSS() {
  if (totalBreakMins===0) msg += `\n\n No meal break was recorded. The standard 60-minute deduction was applied. If you genuinely worked continuously without a meal break, file a No Meal Break exception for admin review before OT/UT approval.`
   alert(msg)
  }
+ async function toggleTimeAdjustmentFilingPanel() {
+ const opening = !showOTRequest
+ closeAllPanels()
+ setShowOTRequest(opening)
+ if (!opening) return
+
+ setOtRequestReason('')
+ setOtRequestReasonPreset('')
+ setOtRequestMinutes('')
+ setOtRequestFrom('')
+ setOtRequestTo('')
+ setMealBreakAttestation(false)
+ setTimeAdjPreview({ loading:true, canSubmit:false, minutes:0, message:'Finding your latest completed attendance date...', code:'loading' })
+
+ let defaultDate = today
+ try {
+  // Filing access must not depend on today's attendance. Find the latest completed
+  // non-absent attendance row so employees can file one or more days later.
+  const { data:recentAttendanceRows, error:recentAttendanceError } = await supabase
+   .from('attendance_logs')
+   .select('attendance_date,time_in,time_out,status,created_at')
+   .eq('employee_id', employee.id)
+   .not('time_in', 'is', null)
+   .not('time_out', 'is', null)
+   .lte('attendance_date', today)
+   .order('attendance_date', { ascending:false })
+   .order('created_at', { ascending:false })
+   .limit(30)
+
+  if (recentAttendanceError) throw recentAttendanceError
+  const latestCompletedRow = (recentAttendanceRows || []).find(row => !isAbsentAttendanceLog(row))
+  if (latestCompletedRow?.attendance_date) {
+   defaultDate = String(latestCompletedRow.attendance_date).slice(0, 10)
+  }
+ } catch(error) {
+  console.warn('Latest attendance date lookup failed; using today as the filing date:', error)
+ }
+
+ setOtRequestDate(defaultDate)
+ await refreshTimeAdjustmentPreview(defaultDate, otRequestType, '', '')
+}
+
  async function refreshTimeAdjustmentPreview(dateValue = otRequestDate, typeValue = otRequestType, fromValue = otRequestFrom, toValue = otRequestTo) {
  const targetDate = String(dateValue || '').slice(0, 10)
  const requestType = String(typeValue || 'overtime').toLowerCase()
+ if (targetDate && targetDate > today) {
+  const futurePreview = { loading:false, canSubmit:false, minutes:0, message:'Future attendance dates cannot be filed. Select today or a completed past attendance date.', code:'future_date' }
+  setTimeAdjPreview(futurePreview)
+  setOtRequestMinutes('')
+  setOtRequestFrom('')
+  setOtRequestTo('')
+  return futurePreview
+ }
  if (!employee?.id || !targetDate) {
   const emptyPreview = { loading:false, canSubmit:false, minutes:0, message:'Select an attendance date to validate the time record.', code:'idle' }
   setTimeAdjPreview(emptyPreview)
@@ -41329,18 +41379,7 @@ onClick={async ()=>{
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Quick Actions</p>
  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px' }}>
  {[
- { label:'OT / UT / Break', icon:' ', action:()=>{
-  const opening = !showOTRequest
-  closeAllPanels()
-  setShowOTRequest(opening)
-  if (opening) {
-   const defaultDate = String(todayLog?.attendance_date || today).slice(0,10)
-   setOtRequestDate(defaultDate)
-   setOtRequestFrom('')
-   setOtRequestTo('')
-   setTimeout(()=>refreshTimeAdjustmentPreview(defaultDate, otRequestType, '', ''), 0)
-  }
- }, disabled:!todayLog||!todayLog?.time_out },
+ { label:'OT / UT / Break', icon:' ', action:toggleTimeAdjustmentFilingPanel, disabled:false },
  { label:getEmployeeLeaveInfo(employee).buttonLabel, icon:' ', action:()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }, disabled:false },
  { label:'Cash Advance', icon:' ', action:()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }, disabled:false },
  { label:'My Payslips', icon:' ', action:()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }, disabled:false },
@@ -41437,9 +41476,9 @@ onClick={async ()=>{
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}> BACK</button>
  <h3 style={{ color:'#8b5cf6', margin:'0 0 10px', fontSize:'14px' }}>File OT / Undertime / No Meal Break</h3>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'9px 10px', marginBottom:'10px' }}>
-  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>The standard 60-minute meal-break deduction remains the default. A No Meal Break filing changes nothing while pending and is allowed only when the attendance record contains zero break minutes.</p>
+  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>Select the exact attendance date being filed. Late filing is allowed for a completed past attendance date, including filings submitted one or more days later. The standard 60-minute meal-break deduction remains active unless a No Meal Break request is approved.</p>
  </div>
- <label style={lblS}>Attendance Date:</label>
+ <label style={lblS}>Attendance Date Being Filed:</label>
  <input
   type="date"
   value={otRequestDate}
@@ -41454,6 +41493,7 @@ onClick={async ()=>{
   }}
   style={inputStyle}
  />
+ <p style={{ margin:'-7px 0 10px', color:'#666', fontSize:'10px', lineHeight:1.45 }}>You may select any completed past attendance date. Future dates and dates without a valid Time In and Time Out are automatically blocked.</p>
  <label style={lblS}>Request Type:</label>
  <select
   value={otRequestType}
