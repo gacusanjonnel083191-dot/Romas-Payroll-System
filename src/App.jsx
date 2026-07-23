@@ -1535,6 +1535,11 @@ function isAbsentAttendanceLog(log = {}) {
  return String(log?.status || '').trim().toLowerCase() === 'absent'
 }
 
+function isAttendanceLogEligibleForActiveShift(log = {}) {
+ const logId = String(log?.id || '')
+ return !!logId && !logId.startsWith('offline_') && !!log?.time_in && !log?.time_out && !isAbsentAttendanceLog(log)
+}
+
 function isPaidLeaveCoveringDate(leaves = [], dateStr = '') {
  if (!dateStr) return false
  return (leaves || []).some(leave => {
@@ -6539,8 +6544,32 @@ export default function App() {
  synced++
  }
  } else if (item.type === 'timeout') {
- await supabase.from('attendance_logs').update(item.data).eq('id', item.log_id)
- synced++
+ const { data:targetLog, error:targetError } = await supabase
+  .from('attendance_logs')
+  .select('id,employee_id,time_in,time_out,status')
+  .eq('id', item.log_id)
+  .maybeSingle()
+ if (targetError) throw targetError
+ if (!isAttendanceLogEligibleForActiveShift(targetLog) || (item.employee_id && String(targetLog?.employee_id || '') !== String(item.employee_id))) {
+  console.warn('Discarded stale or invalid offline Time Out:', item.log_id)
+  synced++
+  continue
+ }
+ const { data:updatedLog, error:updateError } = await supabase
+  .from('attendance_logs')
+  .update(item.data)
+  .eq('id', targetLog.id)
+  .eq('employee_id', targetLog.employee_id)
+  .not('time_in', 'is', null)
+  .is('time_out', null)
+  .select('id')
+  .maybeSingle()
+ if (updateError) throw updateError
+ if (!updatedLog) {
+  console.warn('Offline Time Out was not saved because the attendance row changed:', item.log_id)
+ } else {
+  synced++
+ }
  }
  } catch(e) { console.error('Sync error:', e) }
  }
@@ -16078,16 +16107,18 @@ function buildDeliveryInvoicePrintCSS() {
 
  // Night shift protection: always restore any open attendance log from today OR yesterday.
  // This prevents the employee portal from resetting at 12:00 AM while a night shift is still active.
- const { data: openLogs } = await supabase.from('attendance_logs')
+ const { data: openLogs, error:openLogsError } = await supabase.from('attendance_logs')
 .select('*')
 .eq('employee_id', emp.id)
 .is('time_out', null)
 .gte('attendance_date', yesterdayStr)
 .order('attendance_date', { ascending:false })
-.limit(1)
+.order('created_at', { ascending:false })
+.limit(10)
 
- if (openLogs && openLogs.length > 0) {
- const activeLog = openLogs[0]
+ if (openLogsError) console.warn('Open attendance lookup failed:', openLogsError)
+ const activeLog = (openLogs || []).find(log => isAttendanceLogEligibleForActiveShift(log))
+ if (activeLog) {
  setTodayLog(activeLog)
  loadTodayBreaks(activeLog.id)
  if (activeLog.attendance_date!== today) {
@@ -16345,13 +16376,25 @@ function buildDeliveryInvoicePrintCSS() {
  }
  async function initiateTimeOut() {
  if (!todayLog) { alert('You need to Time In first.'); return }
+ if (isAbsentAttendanceLog(todayLog)) {
+  alert('Time Out blocked: this attendance date is marked Absent. Ask the admin to correct the attendance status if this is wrong.')
+  return
+ }
+ if (!todayLog.time_in) {
+  alert('Time Out blocked: this attendance record has no valid Time In. Reload the portal or ask the admin to review the record.')
+  return
+ }
+ if (String(todayLog.id || '').startsWith('offline_')) {
+  alert('Your offline Time In has not synced yet. Connect to the internet, wait for synchronization, then reload before timing out.')
+  return
+ }
  if (todayLog.time_out) { alert('You already timed out today.'); return }
  const openBreak = todayBreaks.find(b=>!b.break_in)
  if (openBreak) { alert('Please Break In first before timing out.'); return }
  setCapturedPhoto(null); setCameraMode('timeout')
  }
  async function initiateBreakOut() {
- if (!todayLog || todayLog.time_out) { alert('You must be timed in to take a break.'); return }
+ if (!isAttendanceLogEligibleForActiveShift(todayLog)) { alert('You must have a valid Time In before taking a break. Absent or incomplete attendance records cannot use Break Out.'); return }
  // Only 1 break per attendance log/shift
  if (todayBreaks.length > 0) { showToast(' You have already taken your break for this shift. Only 1 break is allowed per shift.','red'); return }
  const openBreak = todayBreaks.find(b=>!b.break_in)
@@ -16428,11 +16471,22 @@ function buildDeliveryInvoicePrintCSS() {
  }
  const { data:existing } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', today).maybeSingle()
  if (existing) { setLoading(false); setTodayLog(existing); alert('Already timed in today.'); setCameraMode(null); return }
- // Night shift check prevent timing in if still has open shift from yesterday
- const yest2 = new Date(); yest2.setDate(yest2.getDate()-1)
- const yestStr2 = yest2.toISOString().slice(0,10)
- const { data:openShift } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', yestStr2).is('time_out', null).maybeSingle()
- if (openShift) { setLoading(false); setTodayLog(openShift); alert('You still have an open shift from yesterday. Please Time Out first.'); setCameraMode(null); return }
+ // Night shift guard: block only a genuine prior-day shift with a valid Time In.
+ // Absent rows and malformed rows with no Time In are never active shifts.
+ const yestStr2 = getDateOffsetString(-1)
+ const { data:openShiftRows, error:openShiftError } = await supabase
+  .from('attendance_logs')
+  .select('*')
+  .eq('employee_id', employee.id)
+  .gte('attendance_date', yestStr2)
+  .lt('attendance_date', today)
+  .is('time_out', null)
+  .order('attendance_date', { ascending:false })
+  .order('created_at', { ascending:false })
+  .limit(10)
+ if (openShiftError) console.warn('Previous-day shift check failed:', openShiftError)
+ const openShift = (openShiftRows || []).find(log => isAttendanceLogEligibleForActiveShift(log))
+ if (openShift) { setLoading(false); setTodayLog(openShift); alert('You still have a valid open shift from yesterday. Please Time Out first.'); setCameraMode(null); return }
  let selfieUrl = null
  try {
   const strictSuffix = strictTimeIn? `_${Date.now()}`: ''
@@ -16461,19 +16515,56 @@ function buildDeliveryInvoicePrintCSS() {
  }
  async function confirmTimeOut() {
  if (!capturedPhoto) { alert('Please take a selfie first.'); return }
- if (!todayLog) { alert('No active attendance log found. Please reload and try again.'); return }
+ if (!todayLog?.id) { alert('No active attendance log found. Please reload and try again.'); return }
  setLoading(true)
 
- const timeIn = todayLog.time_in || nowTime()
+ // Re-read the attendance row immediately before Time Out. A stale browser tab
+ // must never overwrite an Absent, deleted, malformed, or completed record.
+ const { data:verifiedLog, error:verifyLogError } = await supabase
+  .from('attendance_logs')
+  .select('*')
+  .eq('id', todayLog.id)
+  .eq('employee_id', employee.id)
+  .maybeSingle()
+ if (verifyLogError || !isAttendanceLogEligibleForActiveShift(verifiedLog)) {
+  setLoading(false)
+  setCameraMode(null)
+  setCapturedPhoto(null)
+  await loadTodayLog(employee)
+  const reason = isAbsentAttendanceLog(verifiedLog)
+   ? 'This attendance date is marked Absent.'
+   : verifiedLog?.time_out
+    ? 'This attendance record already has a Time Out.'
+    : !verifiedLog?.time_in
+     ? 'This attendance record has no valid Time In.'
+     : 'The active attendance record could not be verified.'
+  alert(`Time Out blocked: ${reason} Please reload or ask the admin to review the attendance record.`)
+  return
+ }
+
+ const { data:verifiedBreakRows, error:verifiedBreakError } = await supabase
+  .from('break_logs')
+  .select('*')
+  .eq('attendance_log_id', verifiedLog.id)
+  .order('created_at')
+ const effectiveBreakRows = verifiedBreakError ? todayBreaks : (verifiedBreakRows || [])
+ const openVerifiedBreak = effectiveBreakRows.find(row => !row?.break_in)
+ if (openVerifiedBreak) {
+  setLoading(false)
+  alert('Please Break In first before timing out.')
+  return
+ }
+
+ const timeIn = verifiedLog.time_in
  const timeOut = nowTime()
- const activeAttendanceDate = todayLog.attendance_date || today
+ const activeAttendanceDate = verifiedLog.attendance_date || today
  const undertimeDeductionApplicable = employeeRuleEnabled(employee.undertime_deduction_applicable, true)
 
- let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, status=todayLog.late_minutes>0?'Late':'Completed'
- const totalBreakMins = todayBreaks.reduce((s,b)=>s+Number(b.break_minutes||0),0)
+ let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, status=verifiedLog.late_minutes>0?'Late':'Completed'
+ const totalBreakMins = effectiveBreakRows.reduce((s,b)=>s+Number(b.break_minutes||0),0)
  const excessBreakMins = Math.max(0, totalBreakMins-ALLOWED_BREAK_MINUTES)
  const attendanceMetrics = getAttendanceDayWorkMetrics([{
-  ...todayLog,
+  ...verifiedLog,
   time_in:timeIn,
   time_out:timeOut,
   total_break_minutes:totalBreakMins,
@@ -16513,9 +16604,20 @@ function buildDeliveryInvoicePrintCSS() {
  excess_break_minutes: excessBreakMins,
  overtime_approved: null,
  night_diff_minutes: nsdMinutes
- }).eq('id', todayLog.id).select().single()
+ })
+ .eq('id', verifiedLog.id)
+ .eq('employee_id', employee.id)
+ .not('time_in', 'is', null)
+ .is('time_out', null)
+ .select()
+ .maybeSingle()
  setLoading(false)
  if (error) { alert('Time Out failed: '+error.message); return }
+ if (!data) {
+  await loadTodayLog(employee)
+  alert('Time Out was not saved because the attendance record changed or is no longer active. Please reload and try again.')
+  return
+ }
 
  let autoUTRequestCreated = false
  let autoUTRequestSkipped = false
@@ -21414,11 +21516,52 @@ This recovery button creates one approved expense record using GROSS payroll ear
  async function markAbsent() {
  if (!absentEmployeeId||!absentDate) { showToast('Please select employee and date.','red'); return }
  const emp = employees.find(e=>e.id===absentEmployeeId)
- const { data:existing } = await supabase.from('attendance_logs').select('id').eq('employee_id', absentEmployeeId).eq('attendance_date', absentDate).maybeSingle()
- if (existing) { showToast('This employee already has a record for this date.','red'); return }
- const { error } = await supabase.from('attendance_logs').insert({ employee_id:absentEmployeeId, employee_code:emp?.employee_code||'', employee_name:emp?.full_name||'', attendance_date:absentDate, status:'Absent' })
+ const { data:existing, error:existingError } = await supabase.from('attendance_logs').select('*').eq('employee_id', absentEmployeeId).eq('attendance_date', absentDate).maybeSingle()
+ if (existingError) { showToast('Failed to inspect attendance: '+existingError.message,'red'); return }
+
+ if (existing && isAbsentAttendanceLog(existing)) {
+  showToast(`${emp?.full_name || 'Employee'} is already marked Absent on ${absentDate}.`)
+  return
+ }
+ if (existing?.time_in && existing?.time_out) {
+  showToast('A completed Time In and Time Out already exists. Use Attendance Correction instead of overwriting verified work.','red')
+  return
+ }
+
+ let error = null
+ if (existing) {
+  const originalPunch = `Original incomplete punch — In: ${existing.time_in || 'none'}, Out: ${existing.time_out || 'none'}, Status: ${existing.status || 'none'}`
+  const result = await supabase.from('attendance_logs').update({
+   status:'Absent',
+   time_in:null,
+   time_out:null,
+   late_minutes:0,
+   undertime_minutes:0,
+   overtime_minutes:0,
+   overtime_approved:false,
+   night_diff_minutes:0,
+   total_break_minutes:0,
+   excess_break_minutes:0,
+   selfie_in_url:null,
+   selfie_out_url:null
+  }).eq('id', existing.id)
+  error = result.error
+  if (!error) {
+   await supabase.from('break_logs').delete().eq('attendance_log_id', existing.id)
+   await supabase.from('time_adjustment_requests').update({
+    status:'voided',
+    admin_reason:`Voided because the employee was marked Absent on ${absentDate}.`,
+    reviewed_by:admin?.full_name || 'Admin',
+    reviewed_at:new Date().toISOString()
+   }).eq('employee_id', absentEmployeeId).eq('attendance_date', absentDate).in('status',['pending','approved'])
+   await logAudit('CONVERT INCOMPLETE ATTENDANCE TO ABSENT',admin?.full_name||'Admin',emp?.full_name||'',`${absentDate} | ${originalPunch}`)
+  }
+ } else {
+  const result = await supabase.from('attendance_logs').insert({ employee_id:absentEmployeeId, employee_code:emp?.employee_code||'', employee_name:emp?.full_name||'', attendance_date:absentDate, status:'Absent' })
+  error = result.error
+ }
  if (error) { showToast(' Failed: '+error.message,'red'); return }
- await logAudit('MARK ABSENT','Admin',emp?.full_name||'',`Marked absent on ${absentDate}`)
+ await logAudit('MARK ABSENT',admin?.full_name||'Admin',emp?.full_name||'',`Marked absent on ${absentDate}`)
  showToast(` ${emp?.full_name} marked Absent on ${absentDate}`)
  setAbsentEmployeeId('')
  loadAdminLogs()
@@ -40868,13 +41011,14 @@ onClick={async ()=>{
  const needsCompanyDevice = DEVICE_RESTRICTED_DEPTS.includes(employee?.department)
  const deviceOk =!needsCompanyDevice || isCompanyDevice
  const timeInLockedByMedicalCert = !!medicalCertLock?.locked
+ const hasValidOpenAttendance = isAttendanceLogEligibleForActiveShift(todayLog)
  const canTimeInNow = !todayLog && deviceOk && !timeInLockedByMedicalCert
  return (
  <div>
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
  <button style={{ background:!canTimeInNow?'#f0f0f0':'#ca1b1b', color:!canTimeInNow?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:!canTimeInNow?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={timeInLockedByMedicalCert?()=>showToast(' Upload medical certificate first to unlock Time In.','red'):deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog||timeInLockedByMedicalCert||!deviceOk}> TIME IN</button>
- <button style={{ background:(!todayLog||!!todayLog?.time_out)?'#f0f0f0':deviceOk?'#1a1a2e':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out)?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeOut:()=>showToast(' Production staff must time out on the company tablet.','red')} disabled={loading||!todayLog||!!todayLog?.time_out}> TIME OUT</button>
- <button style={{ background:(!todayLog||!!todayLog?.time_out||onBreak)?'#f0f0f0':deviceOk?'#4a90d9':'#e0e0e0', color:(!todayLog||!!todayLog?.time_out||onBreak)?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!todayLog||!!todayLog?.time_out||onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakOut:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!todayLog||!!todayLog?.time_out||onBreak}> BREAK OUT</button>
+ <button style={{ background:!hasValidOpenAttendance?'#f0f0f0':deviceOk?'#1a1a2e':'#e0e0e0', color:!hasValidOpenAttendance?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(!hasValidOpenAttendance||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeOut:()=>showToast(' Production staff must time out on the company tablet.','red')} disabled={loading||!hasValidOpenAttendance||!deviceOk}> TIME OUT</button>
+ <button style={{ background:(!hasValidOpenAttendance||onBreak)?'#f0f0f0':deviceOk?'#4a90d9':'#e0e0e0', color:(!hasValidOpenAttendance||onBreak)?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!hasValidOpenAttendance||onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakOut:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!hasValidOpenAttendance||onBreak||!deviceOk}> BREAK OUT</button>
  <button style={{ background:!onBreak?'#f0f0f0':deviceOk?'#2d8a4e':'#e0e0e0', color:!onBreak?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakIn:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!onBreak}> BREAK IN</button>
  </div>
 
