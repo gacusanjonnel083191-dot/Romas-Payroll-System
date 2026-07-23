@@ -721,6 +721,31 @@ function getAttendanceDayIntegrity(dayLogs = []) {
  }
 }
 
+function buildPayrollAttendanceException(employee = {}, attendanceDate = '', dayLogs = [], integrityInput = null) {
+ const integrity = integrityInput || getAttendanceDayIntegrity(dayLogs)
+ const sourceLog = (dayLogs || []).find(log => log?.time_in || log?.time_out) || (dayLogs || [])[0] || {}
+ const durationSeconds = Math.max(0, Math.round(safeNum(integrity?.rawSpanSeconds, 0)))
+ return {
+  key:`${employee?.id || employee?.employee_id || employee?.employee_code || employee?.full_name || 'employee'}|${attendanceDate}|${integrity?.code || 'review'}`,
+  employeeId:employee?.id || employee?.employee_id || '',
+  employeeCode:employee?.employee_code || employee?.employeeCode || '',
+  employeeName:employee?.full_name || employee?.employee_name || employee?.employeeName || 'Employee',
+  position:employee?.position || '',
+  attendanceDate:String(attendanceDate || sourceLog?.attendance_date || '').slice(0, 10),
+  code:integrity?.code || 'review',
+  message:integrity?.message || 'Attendance requires correction.',
+  timeIn:sourceLog?.time_in || '',
+  timeOut:sourceLog?.time_out || '',
+  status:sourceLog?.status || '',
+  durationSeconds,
+  durationLabel:durationSeconds > 0
+   ? (durationSeconds < 60 ? `${durationSeconds} sec` : `${Math.floor(durationSeconds / 60)} min ${durationSeconds % 60} sec`)
+   : 'Not computable',
+  logIds:(dayLogs || []).map(log => log?.id).filter(Boolean),
+  logCount:(dayLogs || []).length
+ }
+}
+
 function getAttendanceDayActualOvertimeMinutes(dayLogs = [], breakRowsByLogId = {}) {
  const integrity = getAttendanceDayIntegrity(dayLogs)
  if (!integrity.isValidCompleted) return 0
@@ -6282,6 +6307,8 @@ export default function App() {
  const [payrollCutoff, setPayrollCutoff] = useState('11-25')
  const [payrollResults, setPayrollResults] = useState([])
  const [payrollSummary, setPayrollSummary] = useState(null)
+ const [payrollReadiness, setPayrollReadiness] = useState(null)
+ const [payrollReadinessLoading, setPayrollReadinessLoading] = useState(false)
  const [payrollComputing, setPayrollComputing] = useState(false)
  const [payslipSmsSending, setPayslipSmsSending] = useState(false)
  const [payrollHistory, setPayrollHistory] = useState([])
@@ -18555,6 +18582,14 @@ function buildDeliveryInvoicePrintCSS() {
   return
  }
 
+ const readiness = await inspectPayrollReadiness(start, end, { silent:true })
+ if (!readiness.ready) {
+  const message = getPayrollReadinessBlockMessage(readiness)
+  showToast(`Final release blocked. ${message} Correct attendance, then rebuild the draft.`, 'red')
+  await logAudit('PAYROLL RELEASE BLOCKED - READINESS', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | ${message}`)
+  return
+ }
+
  const draftCount = records.filter(isDraftPayrollRecord).length
  if (draftCount > 0) {
   showToast(`Release blocked: ${draftCount} payslip(s) are still draft/admin-only. Click SEND PAYSLIPS TO EMPLOYEES FOR REVIEW first.`, 'red')
@@ -18821,6 +18856,9 @@ function buildDeliveryInvoicePrintCSS() {
 
  async function handleManualPayrollExpensePost(start, end) {
  if (!start ||!end) { showToast('Please select a payroll period.', 'red'); return }
+
+ const readiness = await inspectPayrollReadiness(start, end, { silent:true })
+ if (!readiness.ready) { showToast(`Expense posting blocked. ${getPayrollReadinessBlockMessage(readiness)}`, 'red'); return }
 
  const releasedCheck = await payrollPeriodHasReleasedRecords(start, end)
  if (releasedCheck.error) { showToast('Failed to verify payroll release status: ' + releasedCheck.error, 'red'); return }
@@ -24428,6 +24466,189 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
  }
 
+ function getPayrollReadinessBlockMessage(readiness = payrollReadiness) {
+  if (!readiness) return 'Payroll readiness has not been checked.'
+  const parts = []
+  if ((readiness.attendanceExceptions || []).length > 0) parts.push(`${readiness.attendanceExceptions.length} unresolved attendance exception(s)`)
+  if ((readiness.missingEmployees || []).length > 0) parts.push(`${readiness.missingEmployees.length} active employee(s) missing a payroll row`)
+  if ((readiness.duplicateEmployees || []).length > 0) parts.push(`${readiness.duplicateEmployees.length} duplicate employee payroll row(s)`)
+  return parts.length > 0 ? `Payroll is not ready: ${parts.join(', ')}.` : 'Payroll is ready.'
+ }
+
+ async function inspectPayrollReadiness(start = payrollStart, end = payrollEnd, options = {}) {
+  const updateState = options.updateState !== false
+  if (!start || !end || parseLocalDate(end) < parseLocalDate(start)) {
+   const invalid = { ready:false, attendanceExceptions:[], missingEmployees:[], duplicateEmployees:[], activeEmployeeCount:0, payrollRecordCount:0, error:'Invalid payroll period.' }
+   if (updateState) setPayrollReadiness(invalid)
+   return invalid
+  }
+
+  if (updateState) setPayrollReadinessLoading(true)
+  try {
+   const { data:activeEmployees, error:employeeError } = await supabase
+    .from('employees')
+    .select('id,employee_code,full_name,position,is_active')
+    .eq('is_active', true)
+    .order('full_name')
+   if (employeeError) throw employeeError
+
+   const activeList = activeEmployees || []
+   const employeeIds = activeList.map(emp => emp.id).filter(Boolean)
+   let attendanceRows = []
+   if (employeeIds.length > 0) {
+    const { data, error } = await supabase
+     .from('attendance_logs')
+     .select('*')
+     .in('employee_id', employeeIds)
+     .gte('attendance_date', start)
+     .lte('attendance_date', end)
+     .order('attendance_date')
+     .limit(5000)
+    if (error) throw error
+    attendanceRows = data || []
+   }
+
+   const { data:payrollRows, error:payrollError } = await supabase
+    .from('payroll_records')
+    .select('id,employee_id,employee_code,employee_name,payroll_approved,approved_at,employee_acknowledgement,payroll_status')
+    .eq('payroll_start', start)
+    .eq('payroll_end', end)
+    .limit(5000)
+   if (payrollError) throw payrollError
+
+   const logsByEmployee = {}
+   ;(attendanceRows || []).forEach(log => {
+    const key = String(log?.employee_id || '')
+    if (!key) return
+    if (!logsByEmployee[key]) logsByEmployee[key] = []
+    logsByEmployee[key].push(log)
+   })
+
+   const attendanceExceptions = []
+   activeList.forEach(emp => {
+    const grouped = groupDTRLogsByDate(logsByEmployee[String(emp.id)] || [])
+    Object.entries(grouped).forEach(([dateKey, dayLogs]) => {
+     const integrity = getAttendanceDayIntegrity(dayLogs)
+     if (integrity.isIncomplete || integrity.isInvalidShortPunch) {
+      attendanceExceptions.push(buildPayrollAttendanceException(emp, dateKey, dayLogs, integrity))
+     }
+    })
+   })
+
+   const payrollRowsByEmployee = {}
+   ;(payrollRows || []).forEach(row => {
+    const key = String(row?.employee_id || '')
+    if (!key) return
+    if (!payrollRowsByEmployee[key]) payrollRowsByEmployee[key] = []
+    payrollRowsByEmployee[key].push(row)
+   })
+
+   const missingEmployees = activeList
+    .filter(emp => !(payrollRowsByEmployee[String(emp.id)] || []).length)
+    .map(emp => ({ employeeId:emp.id, employeeCode:emp.employee_code || '', employeeName:emp.full_name || 'Employee', position:emp.position || '' }))
+   const duplicateEmployees = activeList
+    .map(emp => ({ employeeId:emp.id, employeeCode:emp.employee_code || '', employeeName:emp.full_name || 'Employee', count:(payrollRowsByEmployee[String(emp.id)] || []).length }))
+    .filter(item => item.count > 1)
+
+   const heldEmployeeIds = Array.from(new Set(attendanceExceptions.map(item => String(item.employeeId || '')).filter(Boolean)))
+   const readiness = {
+    start,
+    end,
+    checkedAt:new Date().toISOString(),
+    activeEmployeeCount:activeList.length,
+    payrollRecordCount:(payrollRows || []).length,
+    readyPayrollEmployeeCount:activeList.length - missingEmployees.length,
+    attendanceExceptions,
+    heldEmployeeIds,
+    missingEmployees,
+    duplicateEmployees,
+    ready:attendanceExceptions.length === 0 && missingEmployees.length === 0 && duplicateEmployees.length === 0 && (payrollRows || []).length > 0
+   }
+   if (updateState) setPayrollReadiness(readiness)
+   if (!options.silent) showToast(getPayrollReadinessBlockMessage(readiness), readiness.ready ? 'green':'red')
+   return readiness
+  } catch(error) {
+   console.error('Payroll readiness check failed:', error)
+   const failed = { ready:false, attendanceExceptions:[], missingEmployees:[], duplicateEmployees:[], activeEmployeeCount:0, payrollRecordCount:0, error:error?.message || String(error) }
+   if (updateState) setPayrollReadiness(failed)
+   if (!options.silent) showToast('Payroll readiness check failed: ' + failed.error, 'red')
+   return failed
+  } finally {
+   if (updateState) setPayrollReadinessLoading(false)
+  }
+ }
+
+ async function openPayrollAttendanceExceptionDTR(issue = {}) {
+  if (!issue?.employeeId || !issue?.attendanceDate) { showToast('Attendance exception details are incomplete.', 'red'); return }
+  await openAttendanceReconciliationSourceDTR({
+   employeeId:issue.employeeId,
+   employeeName:issue.employeeName,
+   sourceStart:payrollStart,
+   sourceEnd:payrollEnd,
+   dayDetails:[{ date:issue.attendanceDate, undertimeMinutes:1 }]
+  }, issue.attendanceDate)
+ }
+
+ async function rebuildPayrollDraftAfterAttendanceCorrections() {
+  if (!requireOwnerOrPayrollAction('rebuild payroll after attendance corrections')) return
+  const readiness = await inspectPayrollReadiness(payrollStart, payrollEnd, { silent:true })
+  if ((readiness.attendanceExceptions || []).length > 0) {
+   showToast(`Rebuild blocked: ${readiness.attendanceExceptions.length} attendance exception(s) still require correction.`, 'red')
+   return
+  }
+  if ((readiness.duplicateEmployees || []).length > 0) {
+   showToast(`Rebuild blocked: ${readiness.duplicateEmployees.length} duplicate employee payroll row(s) must be corrected first.`, 'red')
+   return
+  }
+  if ((readiness.missingEmployees || []).length === 0) {
+   showToast('No employees are missing from this payroll draft. Refresh readiness or continue the payroll workflow.', 'green')
+   return
+  }
+
+  const { data:records, error } = await supabase
+   .from('payroll_records')
+   .select('id,employee_name,employee_acknowledgement,payroll_approved,approved_at')
+   .eq('payroll_start', payrollStart)
+   .eq('payroll_end', payrollEnd)
+   .limit(5000)
+  if (error) { showToast('Failed to inspect the existing draft: ' + error.message, 'red'); return }
+  if ((records || []).some(isReleasedPayrollRecord)) {
+   showToast('Rebuild blocked: this payroll has already been released.', 'red')
+   return
+  }
+
+  const reviewSentCount = (records || []).filter(isPayrollSentForEmployeeReview).length
+  const warning = [
+   `Rebuild payroll for ${payrollStart} to ${payrollEnd}?`,
+   `${readiness.missingEmployees.length} corrected employee(s) are currently missing from the draft.`,
+   'The existing unreleased draft will be deleted and every active employee will be recomputed using the corrected attendance.',
+   reviewSentCount > 0 ? `${reviewSentCount} payslip(s) were already sent for review and will need to be sent again.` : ''
+  ].filter(Boolean).join('\n')
+  if (!window.confirm(warning)) return
+
+  try {
+   await supabase.from('payslip_disputes')
+    .update({ status:'voided', admin_reason:`Payroll draft rebuilt after attendance correction by ${currentAdminLabel}`, reviewed_by:currentAdminLabel, reviewed_at:new Date().toISOString() })
+    .eq('payroll_start', payrollStart)
+    .eq('payroll_end', payrollEnd)
+    .neq('status','resolved')
+  } catch(error) { console.warn('Dispute voiding skipped during rebuild:', error) }
+
+  const { error:deleteError } = await supabase.from('payroll_records')
+   .delete()
+   .eq('payroll_start', payrollStart)
+   .eq('payroll_end', payrollEnd)
+  if (deleteError) { showToast('Rebuild failed while removing the old draft: ' + deleteError.message, 'red'); return }
+  try { await supabase.from('payroll_periods').delete().eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd) } catch(error) {}
+
+  setPayrollResults([])
+  setPayrollSummary(null)
+  setPayrollReadiness(null)
+  setPayrollApproved(false)
+  await logAudit('PAYROLL DRAFT REBUILD STARTED', currentAdminLabel, 'Payroll', `Period: ${payrollStart} to ${payrollEnd} | Corrected missing employees: ${readiness.missingEmployees.length}`)
+  await computePayroll()
+ }
+
  function mapSavedPayrollRecordToResult(record = {}, employeeLookup = {}) {
  const emp = employeeLookup[String(record.employee_id || '')] || {}
  const dailyRate = safeNum(emp.daily_rate, 0)
@@ -24530,6 +24751,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   setPayrollResults(results)
   setPayrollSummary(buildPayrollSummaryFromResults(results))
   setPayrollApproved(results.some(r=>r.payrollApproved || !!r.approvedAt))
+  await inspectPayrollReadiness(start, end, { silent:true })
 
   if (!options.silent) {
    showToast(`Saved payroll loaded: ${results.length} payslip${results.length === 1? '': 's'} for ${start} to ${end}.${duplicateCount > 0? ' Warning: duplicate employee payslips detected.': ''}`, duplicateCount > 0? 'red':'green')
@@ -24539,6 +24761,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   console.error('Saved payroll load failed:', err)
   setPayrollResults([])
   setPayrollSummary(null)
+  setPayrollReadiness(null)
   showToast('Failed to load saved payroll: ' + (err?.message || err), 'red')
   return []
  } finally {
@@ -24738,6 +24961,12 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  if (!start ||!end) { if (!options.silent) showToast('Please select payroll start and end dates.', 'red'); return null }
  if (!navigator.onLine) { if (!options.silent) showToast('Internet connection is required to send SMS notifications.', 'red'); return null }
  if (payslipSmsSending) return null
+ const readiness = await inspectPayrollReadiness(start, end, { silent:true })
+ if (!readiness.ready) {
+  const message = `SMS sending blocked. ${getPayrollReadinessBlockMessage(readiness)} Correct attendance and rebuild the draft first.`
+  if (!options.silent) showToast(message, 'red')
+  return { ok:false, error:message }
+ }
 
  setPayslipSmsSending(true)
  try {
@@ -24778,6 +25007,13 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  async function sendPayslipsForEmployeeReview(start = payrollStart, end = payrollEnd) {
  if (!requireOwnerOrPayrollAction('send payslips for review')) return
  if (!start ||!end) { showToast('Please select payroll start and end dates.', 'red'); return }
+ const readiness = await inspectPayrollReadiness(start, end, { silent:true })
+ if (!readiness.ready) {
+  const message = getPayrollReadinessBlockMessage(readiness)
+  showToast(`Employee review sending blocked. ${message} Correct attendance and rebuild the draft first.`, 'red')
+  await logAudit('PAYSLIP REVIEW SEND BLOCKED - READINESS', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | ${message}`)
+  return
+ }
  const { data:records, error } = await supabase
  .from('payroll_records')
  .select('id,employee_id,employee_name,employee_acknowledgement,payroll_approved,approved_at')
@@ -24890,6 +25126,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  try { await supabase.from('payroll_periods').delete().eq('payroll_start', start).eq('payroll_end', end) } catch(e) {}
  setPayrollResults([])
  setPayrollSummary(null)
+ setPayrollReadiness(null)
  setPayrollApproved(false)
  await logAudit('DRAFT PAYROLL UNDONE', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Deleted records: ${records.length}`)
  loadPayrollHistory()
@@ -24901,6 +25138,7 @@ async function computePayroll() {
  if (!payrollStart ||!payrollEnd) { showToast('Please select payroll start and end dates.', 'red'); return }
  if (parseLocalDate(payrollEnd) < parseLocalDate(payrollStart)) { showToast('Payroll end date must be after start date.', 'red'); return }
 
+ setPayrollReadiness(null)
  setPayrollComputing(true)
  try {
  const { data:existing, error:existingError } = await supabase
@@ -24983,15 +25221,13 @@ async function computePayroll() {
   const attendanceIntegrityIssues = Object.entries(payrollLogsByDate).map(([dateKey, dayLogs]) => {
    const integrity = getAttendanceDayIntegrity(dayLogs)
    return integrity.isIncomplete || integrity.isInvalidShortPunch
-    ? { dateKey, message:integrity.message }
+    ? buildPayrollAttendanceException(emp, dateKey, dayLogs, integrity)
     : null
   }).filter(Boolean)
   if (attendanceIntegrityIssues.length > 0) {
-   const issueText = attendanceIntegrityIssues
-    .slice(0, 5)
-    .map(issue => `${issue.dateKey}: ${issue.message}`)
-    .join(' | ')
-   throw new Error(`Payroll blocked for ${emp.full_name}: attendance correction required. ${issueText}`)
+   // Employee-level hold: do not create a zero-pay or incomplete payslip.
+   // Continue computing all unaffected employees; final review/release remains blocked.
+   continue
   }
 
   const workedLogs=logs?.filter(l=>l.time_in&&l.time_out&&!isAbsentAttendanceLog(l))||[]
@@ -25302,8 +25538,15 @@ async function computePayroll() {
  setPayrollResults(results)
  setPayrollSummary(s)
  setPayrollApproved(false)
- await logAudit('DRAFT PAYROLL COMPUTED',currentAdminLabel,'Payroll',`${payrollStart} to ${payrollEnd} ${results.length} employees | Status: draft/admin review only`)
- showToast('Draft payroll computed. Review it first, then click SEND PAYSLIPS TO EMPLOYEES FOR REVIEW.')
+ const readiness = await inspectPayrollReadiness(payrollStart, payrollEnd, { silent:true })
+ const holdCount = (readiness.attendanceExceptions || []).length
+ const missingCount = (readiness.missingEmployees || []).length
+ await logAudit('DRAFT PAYROLL COMPUTED',currentAdminLabel,'Payroll',`${payrollStart} to ${payrollEnd} ${results.length} ready employees | Attendance exceptions: ${holdCount} | Missing payroll rows: ${missingCount} | Status: draft/admin review only`)
+ if (holdCount > 0 || missingCount > 0 || (readiness.duplicateEmployees || []).length > 0) {
+  showToast(`Partial draft computed for ${results.length} ready employee(s). ${holdCount} attendance exception(s) are on hold. Correct them, then use REBUILD DRAFT AFTER CORRECTIONS.`, 'red')
+ } else {
+  showToast('Draft payroll computed. Review it first, then click SEND PAYSLIPS TO EMPLOYEES FOR REVIEW.')
+ }
  try { await supabase.from('payroll_periods').upsert({
   payroll_start: payrollStart, payroll_end: payrollEnd,
   computed_at: new Date().toISOString(),
@@ -31771,7 +32014,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
  </div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'20px' }}>
- <button style={{...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?' LOADING...':' COMPUTE DRAFT PAYROLL'}</button>
+ <button style={{...btnBlack, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={computePayroll} disabled={payrollComputing}>{payrollComputing?' CHECKING & COMPUTING...':' RUN PRE-CHECK & COMPUTE READY EMPLOYEES'}</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollComputing?0.5:1 }} onClick={()=>loadSavedPayrollForPeriod(payrollStart, payrollEnd)} disabled={payrollComputing}> LOAD SAVED PAYROLL</button>
  <button style={{ background:'#0ea5e9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>sendPayslipsForEmployeeReview(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> SEND PAYSLIPS TO EMPLOYEES FOR REVIEW</button>
  <button style={{ background:'#16a34a', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:payslipSmsSending?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || payslipSmsSending)?0.5:1 }} onClick={()=>sendPayslipSmsNotifications(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || payslipSmsSending}>{payslipSmsSending?' SENDING SMS...':' SEND / RETRY SMS NOTIFICATION'}</button>
@@ -31784,6 +32027,47 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
+ {(payrollReadinessLoading || payrollReadiness) && (
+ <div style={{ background:payrollReadiness?.ready?'#f0fff4':'#fff8e1', border:`2px solid ${payrollReadiness?.ready?'#2d8a4e':'#f5a623'}`, borderRadius:'14px', padding:'16px', marginBottom:'18px' }}>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'10px' }}>
+ <div>
+ <h3 style={{ margin:'0 0 4px', color:payrollReadiness?.ready?'#2d8a4e':'#ca1b1b' }}>Payroll Readiness & Attendance Holds</h3>
+ <p style={{ margin:0, fontSize:'12px', color:'#666' }}>{payrollReadinessLoading?'Checking active employees, attendance integrity, and payroll completeness...':getPayrollReadinessBlockMessage(payrollReadiness)}</p>
+ </div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnGray, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'11px' }} onClick={()=>inspectPayrollReadiness(payrollStart, payrollEnd)} disabled={payrollReadinessLoading}>{payrollReadinessLoading?'CHECKING...':'REFRESH READINESS'}</button>
+ {payrollReadiness && !payrollReadiness.ready && (payrollReadiness.missingEmployees || []).length > 0 && (
+ <button style={{...btnBlack, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'11px' }} onClick={rebuildPayrollDraftAfterAttendanceCorrections} disabled={payrollReadinessLoading}>REBUILD DRAFT AFTER CORRECTIONS</button>
+ )}
+ </div>
+ </div>
+ {payrollReadiness && (
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px', marginBottom:(payrollReadiness.attendanceExceptions || []).length>0?'12px':'0' }}>
+ {[['Active Employees',payrollReadiness.activeEmployeeCount||0],['Payroll Rows',payrollReadiness.payrollRecordCount||0],['Ready Employees',payrollReadiness.readyPayrollEmployeeCount||0],['Attendance Holds',(payrollReadiness.attendanceExceptions||[]).length],['Missing Rows',(payrollReadiness.missingEmployees||[]).length]].map(([label,value])=>(
+ <div key={label} style={{ background:'white', border:'1px solid #eee', borderRadius:'9px', padding:'9px' }}><div style={{ fontSize:'10px', color:'#888' }}>{label}</div><div style={{ fontWeight:'900', color:value>0&&['Attendance Holds','Missing Rows'].includes(label)?'#ca1b1b':'#1a1a2e' }}>{value}</div></div>
+ ))}
+ </div>
+ )}
+ {(payrollReadiness?.attendanceExceptions || []).length > 0 && (
+ <div style={{ display:'grid', gap:'8px', maxHeight:'340px', overflowY:'auto' }}>
+ {(payrollReadiness.attendanceExceptions || []).map(issue=>(
+ <div key={issue.key} style={{ background:'white', border:'1px solid #ffd0d0', borderRadius:'10px', padding:'11px', display:'grid', gridTemplateColumns:isMobile?'1fr':'1.4fr .8fr 1fr 1.5fr auto', gap:'8px', alignItems:'center' }}>
+ <div><div style={{ fontWeight:'900', color:'#ca1b1b' }}>{issue.employeeName}</div><div style={{ fontSize:'10px', color:'#888' }}>{issue.employeeCode} {issue.position?`| ${issue.position}`:''}</div></div>
+ <div><div style={{ fontSize:'10px', color:'#888' }}>Date</div><div style={{ fontWeight:'700' }}>{formatDateForDisplay(issue.attendanceDate)}</div></div>
+ <div><div style={{ fontSize:'10px', color:'#888' }}>Punch / Duration</div><div style={{ fontSize:'12px' }}>{issue.timeIn||'No Time In'} → {issue.timeOut||'No Time Out'}<br/><strong>{issue.durationLabel}</strong></div></div>
+ <div><div style={{ fontSize:'10px', color:'#888' }}>Issue</div><div style={{ fontSize:'12px', color:'#ca1b1b', fontWeight:'700' }}>{issue.message}</div></div>
+ <button style={{...btnBlack, width:'auto', padding:'8px 11px', marginTop:0, fontSize:'10px' }} onClick={()=>openPayrollAttendanceExceptionDTR(issue)}>OPEN DTR</button>
+ </div>
+ ))}
+ </div>
+ )}
+ {payrollReadiness && (payrollReadiness.attendanceExceptions || []).length === 0 && (payrollReadiness.missingEmployees || []).length > 0 && (
+ <div style={{ background:'white', border:'1px solid #f5c518', borderRadius:'10px', padding:'11px', color:'#7a5200', fontSize:'12px' }}>
+ Attendance corrections are clear, but the current saved draft is still missing: {(payrollReadiness.missingEmployees || []).slice(0,8).map(item=>item.employeeName).join(', ')}{(payrollReadiness.missingEmployees || []).length>8?'...':''}. Click <strong>REBUILD DRAFT AFTER CORRECTIONS</strong> before sending or releasing payroll.
+ </div>
+ )}
+ </div>
+ )}
  {payrollSummary && (
  <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'22px' }}>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 12px' }}> Summary {payrollStart} to {payrollEnd}</h3>
