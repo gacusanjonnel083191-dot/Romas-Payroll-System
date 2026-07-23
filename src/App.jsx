@@ -16972,10 +16972,10 @@ function buildDeliveryInvoicePrintCSS() {
  if (role === 'owner') return true
  if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
  if (role === 'admin' || role === 'pos_admin') return ['posMonitor'].includes(tab)
- if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops'].includes(tab)
- if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement'].includes(tab)
- if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops'].includes(tab)
- if (role === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops'].includes(tab)
+ if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops','posMonitor'].includes(tab)
+ if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement','posMonitor'].includes(tab)
+ if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
+ if (role === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
  return false
  }
 
@@ -25445,10 +25445,12 @@ async function computePayroll() {
 function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }) {
  const POS_INVENTORY_EDIT_ROLES = ['owner','manager','admin','pos_admin','hr']
  const POS_CREDENTIAL_MANAGER_ROLES = ['owner','manager','admin','pos_admin']
+ const POS_SHIFT_CLOSING_ROLES = ['owner','manager','admin','pos_admin','hr']
  const normalizedPosAdminRole = String(adminRole || '').trim().toLowerCase()
  const canEditOutletInventory = POS_INVENTORY_EDIT_ROLES.includes(normalizedPosAdminRole)
  const canManagePosCredentials = POS_CREDENTIAL_MANAGER_ROLES.includes(normalizedPosAdminRole)
  const canManagePosOwnerAccounts = isOwnerRole === true || normalizedPosAdminRole === 'owner'
+ const canClosePosShift = POS_SHIFT_CLOSING_ROLES.includes(normalizedPosAdminRole)
  const posInventoryEditRoleLabel = 'Owner, Manager, Admin, SAGS POS Admin, or HR Admin'
  const POS_OUTLET_ID = 'OUTLET-MALUED'
  const SAGS_POS_DRAFT_KEY = 'romas_sags_pos_working_draft_v1'
@@ -25553,7 +25555,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [shiftClosingLoading, setShiftClosingLoading] = useState(false)
  const [shiftClosingSaving, setShiftClosingSaving] = useState(false)
  const [shiftClosingError, setShiftClosingError] = useState('')
+ const [shiftClosingSuccess, setShiftClosingSuccess] = useState('')
  const [shiftClosingLoadedDate, setShiftClosingLoadedDate] = useState('')
+ const shiftClosingSaveLockRef = useRef(false)
  const lastKnownPosBusinessDateRef = useRef(initialPosBusinessDate)
  const [inventorySearch, setInventorySearch] = useState('')
  const [showDisabledOutletItems, setShowDisabledOutletItems] = useState(false)
@@ -26590,7 +26594,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     const draft = readSagsShiftDraft(dateKey, {})
     setClosingOpeningCash(draft.openingCash ?? '')
     setClosingActualCash(draft.actualCash ?? '')
-    setClosingClosedBy(draft.closedBy ?? '')
+    setClosingClosedBy(draft.closedBy ?? currentAdminLabel ?? '')
     setClosingRemarks(draft.remarks ?? '')
    }
    setShiftClosingLoadedDate(dateKey)
@@ -26612,7 +26616,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const todayDate = getPHDateTimeParts().date || getTodayDate()
    const startDate = addDaysToDateString(todayDate, -POS_SHIFT_MONITOR_DAYS)
    const [salesRes, closingsRes, dailySalesRes] = await Promise.all([
-    supabase.from('pos_sales').select('*').gte('business_date', startDate).lte('business_date', todayDate).order('business_date', { ascending:false }),
+    supabase.from('pos_sales').select('*').eq('outlet_id', POS_OUTLET_ID).gte('business_date', startDate).lte('business_date', todayDate).order('business_date', { ascending:false }),
     supabase.from('pos_shift_closings').select('*').eq('outlet_id', POS_OUTLET_ID).gte('business_date', startDate).lte('business_date', todayDate).order('created_at', { ascending:false }),
     supabase.from('daily_sales').select('*').gte('sale_date', startDate).lte('sale_date', todayDate).order('created_at', { ascending:false })
    ])
@@ -26721,6 +26725,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const nextDate = String(dateKey || '').slice(0, 10)
   if (!nextDate) return
   saveCurrentShiftDraftBeforeDateChange()
+  setShiftClosingError('')
+  setShiftClosingSuccess('')
   setPosDate(nextDate)
   setTimeout(() => {
    const target = document.getElementById('sags-shift-closing')
@@ -26769,7 +26775,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const end = posDate + 'T23:59:59'
 
    const [salesRes, itemsRes, movementsRes, productsRes] = await Promise.all([
-    supabase.from('pos_sales').select('*').order('created_at', { ascending:false }).limit(300),
+    supabase.from('pos_sales').select('*').eq('outlet_id', POS_OUTLET_ID).eq('business_date', posDate).order('created_at', { ascending:false }),
     supabase.from('pos_sale_items').select('*').order('created_at', { ascending:false }).limit(500),
     supabase.from('pos_inventory_movements').select('*').order('created_at', { ascending:false }).limit(1000),
     supabase.from('pos_products').select('*').order('product_name', { ascending:true })
@@ -27840,112 +27846,115 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
  async function saveShiftClosing() {
+  if (!canClosePosShift) {
+   const message = 'Shift closing is read-only for this role. Only Owner, Manager, Admin, SAGS POS Admin, or HR Admin can finalize a POS shift.'
+   setShiftClosingError(message)
+   alert(message)
+   return
+  }
+  if (shiftClosingSaveLockRef.current || shiftClosingSaving) return
+
   const openingText = String(closingOpeningCash ?? '').trim()
   const actualText = String(closingActualCash ?? '').trim()
   const openingCash = safeNum(openingText, 0)
   const actualCash = safeNum(actualText, 0)
-  const summary = summarizeActivePosSales(posSales)
-  const expectedCash = moneyRound(openingCash + summary.cashSales)
-  const variance = moneyRound(actualCash - expectedCash)
+  const closedBy = String(closingClosedBy || currentAdminLabel || '').trim()
 
+  setShiftClosingError('')
+  setShiftClosingSuccess('')
+
+  if (!posDate || !/^\d{4}-\d{2}-\d{2}$/.test(posDate)) {
+   const message = 'Select a valid POS business date before closing the shift.'
+   setShiftClosingError(message)
+   alert(message)
+   return
+  }
+  if (shiftClosingLoadedDate !== posDate) {
+   const message = 'The selected shift is still loading. Wait for the date to finish loading, then save again.'
+   setShiftClosingError(message)
+   alert(message)
+   return
+  }
   if (!openingText) {
-   alert('Please enter the opening cash. Enter 0 when there was no opening cash fund.')
+   const message = 'Please enter the opening cash. Enter 0 when there was no opening cash fund.'
+   setShiftClosingError(message)
+   alert(message)
    return
   }
   if (!actualText) {
-   alert('Please count and enter the actual cash before saving the shift closing.')
+   const message = 'Please count and enter the actual cash before saving the shift closing.'
+   setShiftClosingError(message)
+   alert(message)
    return
   }
-  if (!closingClosedBy.trim()) {
-   alert('Please enter who closed the shift.')
+  if (!closedBy) {
+   const message = 'Please enter who physically closed or verified the shift.'
+   setShiftClosingError(message)
+   alert(message)
    return
   }
-  if (summary.transactionCount === 0 && !confirm(`No active POS transaction was found for ${posDate}. Save a zero-sales shift closing?`)) return
 
+  shiftClosingSaveLockRef.current = true
   setShiftClosingSaving(true)
   try {
-   const { data:existingRows, error:existingError } = await supabase
+   // The database function re-reads the live POS transactions, calculates the
+   // payment totals, upserts one closing per outlet/date, posts one linked Daily
+   // Sales row, and commits everything in one transaction. Browser cache, stale
+   // component state, and device speed can no longer create a partial closing.
+   const { data:rpcResult, error:rpcError } = await supabase.rpc('pos_finalize_shift_closing', {
+    p_outlet_id:POS_OUTLET_ID,
+    p_business_date:posDate,
+    p_opening_cash:openingCash,
+    p_actual_cash:actualCash,
+    p_closed_by:closedBy,
+    p_verified_by:currentAdminLabel || closedBy,
+    p_verified_by_role:normalizedPosAdminRole || 'admin',
+    p_remarks:String(closingRemarks || '').trim() || null
+   })
+   if (rpcError) throw rpcError
+
+   const result = Array.isArray(rpcResult) ? rpcResult[0] : rpcResult
+   const savedClosing = result?.closing || null
+   const savedDailySales = result?.daily_sales || null
+   if (!savedClosing?.id) throw new Error('The database did not return a verified shift-closing record.')
+   if (!savedDailySales?.id) throw new Error('The database did not return a verified linked Daily Sales record.')
+
+   const { data:verifiedClosing, error:verifyError } = await supabase
     .from('pos_shift_closings')
     .select('*')
+    .eq('id', savedClosing.id)
     .eq('outlet_id', POS_OUTLET_ID)
     .eq('business_date', posDate)
-    .order('created_at', { ascending:false })
-   if (existingError) throw existingError
-   const existing = (existingRows || [])[0] || null
-   if (existing && !confirm(`A saved shift closing already exists for ${posDate}. Update the existing closing and synchronize Daily Sales?`)) return
+    .maybeSingle()
+   if (verifyError) throw verifyError
+   if (!verifiedClosing) throw new Error('The shift closing could not be verified after saving. No success was recorded.')
 
-   const closingPayload = {
-    outlet_id:POS_OUTLET_ID,
-    business_date:posDate,
-    opening_cash:openingCash,
-    cash_sales:summary.cashSales,
-    gcash_sales:summary.gcashSales,
-    online_sales:summary.onlineSales,
-    total_sales:summary.totalSales,
-    expected_cash:expectedCash,
-    actual_cash:actualCash,
-    cash_variance:variance,
-    transaction_count:summary.transactionCount,
-    closed_by:closingClosedBy.trim(),
-    remarks:String(closingRemarks || '').trim() || null
-   }
-
-   let savedClosing = null
-   if (existing) {
-    const { data, error } = await supabase
-     .from('pos_shift_closings')
-     .update(closingPayload)
-     .eq('id', existing.id)
-     .select()
-     .single()
-    if (error) throw error
-    savedClosing = data
-   } else {
-    const { data, error } = await supabase
-     .from('pos_shift_closings')
-     .insert([closingPayload])
-     .select()
-     .single()
-    if (error) throw error
-    savedClosing = data
-   }
-
-   setExistingShiftClosing(savedClosing || closingPayload)
+   setExistingShiftClosing(verifiedClosing)
+   setClosingOpeningCash(String(safeNum(verifiedClosing.opening_cash, 0)))
+   setClosingActualCash(String(safeNum(verifiedClosing.actual_cash, 0)))
+   setClosingClosedBy(verifiedClosing.closed_by || closedBy)
+   setClosingRemarks(verifiedClosing.remarks || '')
    clearSagsShiftDraft(posDate)
 
-   let dailySalesPosted = false
-   let dailySalesError = null
-   try {
-    await postShiftClosingToDailySales(savedClosing || closingPayload)
-    dailySalesPosted = true
-   } catch (postError) {
-    dailySalesError = postError
-    console.error('Shift closing saved but Daily Sales posting failed:', postError)
-   }
-
-   if (logAudit) {
-    await logAudit(
-     existing ? 'POS SHIFT CLOSING UPDATED' : 'POS SHIFT CLOSED',
-     currentAdminLabel || closingClosedBy.trim() || 'Admin',
-     `${POS_OUTLET_ID} ${posDate}`,
-     `${php(summary.totalSales)} | ${summary.transactionCount} transaction(s) | Cash variance ${php(variance)} | Daily Sales ${dailySalesPosted ? 'posted' : 'posting failed'}`
-    )
-   }
-
    await Promise.all([
+    loadPosMonitor({ silent:true, manual:true, forceProducts:true }),
     loadShiftClosingForDate(posDate),
     loadShiftClosingMonitor({ silent:true })
    ])
 
-   if (dailySalesPosted) {
-    alert(`Shift closing saved and ${php(summary.totalSales)} was automatically posted to Daily Sales as Walk-in revenue.`)
-   } else {
-    alert(`Shift closing was saved, but Daily Sales was not posted: ${dailySalesError?.message || dailySalesError}. Use Repair Daily Sales Posting after reviewing the warning.`)
-   }
+   const message = `Shift closing permanently saved for ${formatDateForDisplay(posDate)}. ${php(verifiedClosing.total_sales)} was synchronized to Daily Sales in the same database transaction.`
+   setShiftClosingSuccess(message)
+   alert(message)
   } catch (err) {
-   console.error('Shift closing failed:', err)
-   alert('Shift closing failed: ' + (err?.message || String(err)))
+   console.error('Atomic shift closing failed:', err)
+   const rawMessage = err?.message || String(err)
+   const message = rawMessage.includes('pos_finalize_shift_closing')
+    ? 'The professional shift-closing database migration is missing or unavailable. Run the supplied Supabase migration before trying again.'
+    : `Shift closing was not saved: ${rawMessage}`
+   setShiftClosingError(message)
+   alert(message)
   } finally {
+   shiftClosingSaveLockRef.current = false
    setShiftClosingSaving(false)
   }
  }
@@ -28279,7 +28288,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      </div>
     </div>
 
-    {shiftClosingError && <div style={{ background:'#fff5f5', border:'1px solid #fecaca', color:'#b91c1c', borderRadius:'10px', padding:'9px 10px', marginBottom:'9px', fontSize:'11px', fontWeight:'750' }}>Shift monitor error: {shiftClosingError}</div>}
+    {shiftClosingError && <div style={{ background:'#fff5f5', border:'1px solid #fecaca', color:'#b91c1c', borderRadius:'10px', padding:'9px 10px', marginBottom:'9px', fontSize:'11px', fontWeight:'750' }}>Shift closing error: {shiftClosingError}</div>}
+    {shiftClosingSuccess && <div style={{ background:'#ecfdf5', border:'1px solid #bbf7d0', color:'#166534', borderRadius:'10px', padding:'9px 10px', marginBottom:'9px', fontSize:'11px', fontWeight:'800' }}>{shiftClosingSuccess}</div>}
 
     {actionableShiftClosingRows.length === 0 ? (
      <div style={{ background:'#ecfdf5', border:'1px solid #bbf7d0', color:'#166534', borderRadius:'10px', padding:'10px 12px', fontSize:'12px', fontWeight:'850' }}>No previous unclosed or unsynchronized POS shift was found in the last {POS_SHIFT_MONITOR_DAYS} days.</div>
@@ -28597,7 +28607,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginBottom:'8px' }}>
      <div>
       <h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'16px' }}>Shift Closing Report — {formatDateForDisplay(posDate)}</h3>
-      <p style={{ margin:0, color:'#6b7280', fontSize:'10.5px', fontWeight:'750' }}>Saving finalizes the cash reconciliation and automatically creates or updates one linked Walk-in record in Daily Sales.</p>
+      <p style={{ margin:0, color:'#6b7280', fontSize:'10.5px', fontWeight:'750' }}>Saving rechecks the live POS database and atomically finalizes both Shift Closing and its linked Walk-in record in Daily Sales.</p>
+      <p style={{ margin:'3px 0 0', color:canClosePosShift ? '#166534' : '#b91c1c', fontSize:'10px', fontWeight:'850' }}>{canClosePosShift ? `Authorized closer: ${currentAdminLabel || 'Admin'} (${normalizedPosAdminRole || 'admin'})` : 'Read-only access: your role cannot finalize a POS shift.'}</p>
      </div>
      <span style={{ background:selectedShiftStatus.background, border:`1px solid ${selectedShiftStatus.border}`, color:selectedShiftStatus.color, borderRadius:'999px', padding:'6px 10px', fontSize:'10px', fontWeight:'950' }}>{selectedShiftStatus.label}</span>
     </div>
@@ -28651,8 +28662,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
 
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center', marginTop:'12px' }}>
-     <button onClick={saveShiftClosing} disabled={shiftClosingSaving} style={{...btnGreen, width:'auto', marginTop:0, opacity:shiftClosingSaving ? 0.65 : 1}}>
-      {shiftClosingSaving ? 'Saving & Syncing...' : existingShiftClosing ? 'Update Closing & Sync Daily Sales' : 'Save Closing & Post to Daily Sales'}
+     <button onClick={saveShiftClosing} disabled={shiftClosingSaving || !canClosePosShift || shiftClosingLoadedDate !== posDate} style={{...btnGreen, width:'auto', marginTop:0, opacity:(shiftClosingSaving || !canClosePosShift || shiftClosingLoadedDate !== posDate) ? 0.55 : 1, cursor:(shiftClosingSaving || !canClosePosShift || shiftClosingLoadedDate !== posDate) ? 'not-allowed' : 'pointer'}}>
+      {shiftClosingSaving ? 'Saving Atomically...' : !canClosePosShift ? 'Read-Only — Closing Not Authorized' : shiftClosingLoadedDate !== posDate ? 'Loading Selected Shift...' : existingShiftClosing ? 'Update Closing & Sync Daily Sales' : 'Save Closing & Post to Daily Sales'}
      </button>
      {selectedShiftClosingRow?.closing && selectedShiftClosingRow.closingMatchesSales && selectedShiftClosingRow.statusCode !== 'closed' && selectedShiftClosingRow.possibleLegacyCount === 0 && (
       <button onClick={()=>repairShiftClosingDailySales(selectedShiftClosingRow)} disabled={shiftClosingSaving} style={{...btnYellow, width:'auto', marginTop:0}}>Repair Daily Sales Posting</button>
