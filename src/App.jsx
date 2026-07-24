@@ -82,6 +82,47 @@ const btnBlack = {...btnBase, background:'#1a1a2e', color:'white', boxShadow:'0 
 const btnGray = {...btnBase, background:'#f0f0f0', color:'#333', boxShadow:'none' }
 const btnYellow = {...btnBase, background:'#FDD412', color:'#1a1a2e', width:'auto', padding:'10px 20px', marginTop:0, boxShadow:'0 2px 8px rgba(253,212,18,0.35)' }
 
+const brandPanelGrid = {
+ display:'grid',
+ gridTemplateColumns:'repeat(auto-fit, minmax(min(100%, 520px), 1fr))',
+ gap:'16px',
+ alignItems:'start',
+ width:'100%',
+ maxWidth:'1540px',
+ margin:'0 auto'
+}
+const brandCompactGrid = {
+ display:'grid',
+ gridTemplateColumns:'repeat(auto-fit, minmax(min(100%, 430px), 1fr))',
+ gap:'14px',
+ alignItems:'start',
+ width:'100%',
+ maxWidth:'1480px',
+ margin:'0 auto'
+}
+const brandCard = {
+ background:'linear-gradient(180deg,#fffdf3 0%,#ffffff 38%)',
+ border:'1.5px solid rgba(202,27,27,0.28)',
+ borderTop:'5px solid #ca1b1b',
+ borderRadius:'16px',
+ boxShadow:'0 5px 18px rgba(26,26,46,0.08)',
+ padding:'16px',
+ minWidth:0,
+ boxSizing:'border-box'
+}
+const brandCardGold = {
+ ...brandCard,
+ borderTop:'5px solid #FDD412',
+ boxShadow:'0 5px 18px rgba(253,212,18,0.13)'
+}
+const brandSectionShell = {
+ width:'100%',
+ maxWidth:'1580px',
+ margin:'0 auto',
+ padding:'0 12px 18px',
+ boxSizing:'border-box'
+}
+
 class SectionErrorBoundary extends Component {
  constructor(props) {
  super(props)
@@ -39231,7 +39272,7 @@ onClick={async ()=>{
  ))}
  </div>
 
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ margin:'0 0 10px', fontWeight:'bold', color:'#333', fontSize:'13px' }}> Ratio Health Check</p>
  {foundationData.healthChecks.map(c=>(
  <div key={c.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39278,7 +39319,7 @@ onClick={async ()=>{
  </div>
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Owner Salary Ratio Action Plan</p>
  {(foundationData.salaryRatioActionPlan || []).map((action,i)=>(
  <p key={i} style={{ margin:'6px 0', color:'#555', fontSize:'12px', lineHeight:1.45 }}> {action}</p>
@@ -39293,7 +39334,7 @@ onClick={async ()=>{
  </div>
  </div>
 
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> 6-Month Salary Ratio Trend</p>
  {(foundationData.salaryRatioTrend || []).map(row=>(
  <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39376,7 +39417,7 @@ onClick={async ()=>{
  </div>
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Owner Food Cost Action Plan</p>
  {(foundationData.foodCostActionPlan || []).map((action,i)=>(
  <p key={i} style={{ margin:'6px 0', color:'#555', fontSize:'12px', lineHeight:1.45 }}> {action}</p>
@@ -39391,7 +39432,7 @@ onClick={async ()=>{
  </div>
  </div>
 
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> 6-Month Food Cost Trend</p>
  {(foundationData.foodCostTrend || []).map(row=>(
  <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39490,7 +39531,7 @@ onClick={async ()=>{
  </div>
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> 6-Month Returns Trend</p>
  {(foundationData.returnsTrend || []).map(row=>(
  <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39506,7 +39547,7 @@ onClick={async ()=>{
  ))}
  </div>
 
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> High-Return Invoice Watchlist</p>
  {(foundationData.highReturnInvoices || []).length===0? (
  <p style={{ color:'#aaa', fontSize:'12px' }}>No high-return invoices detected this month.</p>
@@ -39692,7 +39733,7 @@ onClick={async ()=>{
  {(foundationData.receivableActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}> {r}</p>)}
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Aging Buckets</p>
  {(foundationData.arAging || []).map(row=>(
  <div key={row.label} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39701,7 +39742,7 @@ onClick={async ()=>{
  </div>
  ))}
  </div>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Collection Priority List</p>
  {(foundationData.receivablePriorityRows || []).length===0? <p style={{ color:'#aaa', fontSize:'12px' }}>No open receivables detected.</p>: foundationData.receivablePriorityRows.slice(0,8).map(row=>(
  <div key={`${row.invoiceNumber}-${row.reseller}`} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39741,7 +39782,7 @@ onClick={async ()=>{
  {(foundationData.cashFlowActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}> {r}</p>)}
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> 6-Month Cash Flow Trend</p>
  {(foundationData.cashFlowTrend || []).map(row=>(
  <div key={row.month} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39750,7 +39791,7 @@ onClick={async ()=>{
  </div>
  ))}
  </div>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Daily Closing Snapshot</p>
  {(foundationData.dailyClosingRows || []).slice(0,8).map(row=>(
  <div key={row.date} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39789,7 +39830,7 @@ onClick={async ()=>{
  {(foundationData.productionForecastActionPlan || []).map((r,i)=><p key={i} style={{ margin:'5px 0', color:'#555', fontSize:'12px' }}> {r}</p>)}
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px' }}>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Product Forecast</p>
  {(foundationData.productionForecastRows || []).length===0? <p style={{ color:'#aaa', fontSize:'12px' }}>No product-level forecast yet.</p>: foundationData.productionForecastRows.slice(0,8).map(row=>(
  <div key={row.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39798,7 +39839,7 @@ onClick={async ()=>{
  </div>
  ))}
  </div>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Outlet Forecast</p>
  {(foundationData.outletForecastRows || []).length===0? <p style={{ color:'#aaa', fontSize:'12px' }}>No outlet forecast yet.</p>: foundationData.outletForecastRows.slice(0,8).map(row=>(
  <div key={row.name} style={{ borderBottom:'1px solid #e8e8e8', padding:'7px 0' }}>
@@ -39925,7 +39966,7 @@ onClick={async ()=>{
  </div>
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Delivery Route Monitoring</p>
  {(foundationData.deliveryRouteRows || []).length===0? (
  <p style={{ color:'#aaa', fontSize:'12px' }}>No delivery invoices found for this month.</p>
@@ -39943,7 +39984,7 @@ onClick={async ()=>{
  ))}
  </div>
 
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Inventory Reorder Alerts</p>
  {(foundationData.inventoryReorderRows || []).length===0? (
  <p style={{ color:'#aaa', fontSize:'12px' }}>No inventory items found.</p>
@@ -40077,7 +40118,7 @@ onClick={async ()=>{
  </div>
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Wastage by Item</p>
  {(foundationData.wastageItemRows || []).length===0? (
  <p style={{ color:'#aaa', fontSize:'12px' }}>No wastage records found for this month.</p>
@@ -40094,7 +40135,7 @@ onClick={async ()=>{
  ))}
  </div>
 
- <div style={{ background:'#fafafa', border:'1px solid #eee', borderRadius:'14px', padding:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.16)', borderRadius:'14px', padding:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 10px' }}> Wastage by Reason</p>
  {(foundationData.wastageReasonRows || []).length===0? (
  <p style={{ color:'#aaa', fontSize:'12px' }}>No wastage reasons recorded.</p>
