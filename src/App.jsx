@@ -29628,6 +29628,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
  const visibleSubTabs = currentSection.tabs.filter(t => t.key === 'documents' || canAccess(t.key))
+ const adminDataDenseTabs = new Set(['posMonitor','attendance','payroll','payrollHistory','remittance','dtr','bankDisbursement','inventory','sales','analytics','payablesMain'])
+ const adminMediumWidthTabs = new Set(['dashboard','overtime','employees','schedule','performance','contracts','cashAdvanceCoverage','adjustment','thirteenth','finalpay','cashRequests','disputes'])
+ const adminContentMaxWidth = isMobile
+  ? '100%'
+  : adminDataDenseTabs.has(activeTab)
+   ? '1580px'
+   : adminMediumWidthTabs.has(activeTab)
+    ? '1240px'
+    : '1120px'
  const canManageSopLibrary = ['owner','manager'].includes(normalizeAdminRole(adminRole))
  const filteredSops = (sops || []).filter(sop => {
  if (!canViewSop(sop)) return false
@@ -30483,6 +30492,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {/* Content Area */}
  <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'24px', background:'#f8f7f5' }}>
  <SectionErrorBoundary resetKey={activeTab}>
+ <div style={{ width:'100%', maxWidth:adminContentMaxWidth, margin:'0 auto', minWidth:0, boxSizing:'border-box' }}>
 
  {/* POS MONITOR */}
  {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
@@ -30845,7 +30855,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <h2 style={h2s}>Employees</h2>
  <input placeholder="Search name, code, or position..." value={employeeSearch} onChange={e=>setEmployeeSearch(e.target.value)} style={inputStyle} />
  {employeeSearch.trim() && employees.filter(emp=>`${emp.full_name} ${emp.employee_code} ${emp.position}`.toLowerCase().includes(employeeSearch.toLowerCase())).map(emp=>(
- <div key={emp.id} style={{...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
+ <div key={emp.id} style={{...cardS, border:'1px solid #efcaca', borderTop:'4px solid #ca1b1b', background:'white', maxWidth:'760px', margin:'0 auto 12px', boxShadow:'0 5px 18px rgba(35,20,20,0.08)' }}>
  <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
  {emp.profile_photo_url?<img src={emp.profile_photo_url} alt="" style={{ width:'44px', height:'44px', borderRadius:'50%', objectFit:'cover', border:'2px solid #ca1b1b' }} />:<div style={{ width:'44px', height:'44px', borderRadius:'50%', background:'#ddd', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px' }}> </div>}
  <div>
@@ -30902,7 +30912,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  <h3 style={{ color:'#ca1b1b', marginTop:'16px', marginBottom:'10px' }}> Add New Employee</h3>
- <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
+ <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', margin:'0 auto 16px', maxWidth:'960px', border:'1px solid #eee', boxSizing:'border-box' }}>
  {[[' Basic Information'],[['Employee Code *','code'],['Full Name *','name'],['Position *','position'],['PIN *','pin'],['Department','department']]].length && null}
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px', borderBottom:'1px solid #eee', paddingBottom:'6px' }}> Basic Information</p>
  {[['Employee Code *','code'],['Full Name *','name'],['Position / Job Title *','position'],['PIN *','pin']].map(([pl,f])=>(
@@ -31002,9 +31012,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <button style={btnGreen} onClick={addEmployee}> ADD EMPLOYEE</button>
 
  <h3 style={{ color:'#ca1b1b', marginTop:'24px', marginBottom:'10px' }}> Employee List ({employees.length})</h3>
- <div style={{ border:'2px solid #ca1b1b', borderRadius:'12px', overflow:'hidden', background:'white' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'14px', alignItems:'start' }}>
  {employees.map((emp,i)=>(
- <div key={emp.id} style={{ borderBottom:i<employees.length-1?'1px solid #eee':'none', padding:'12px 14px' }}>
+ <div key={emp.id} style={{ gridColumn:editingEmployeeId===emp.id?'1 / -1':'auto', background:'white', border:'1px solid #eadede', borderTop:'4px solid #ca1b1b', borderRadius:'15px', padding:'14px', boxShadow:'0 5px 18px rgba(35,20,20,0.07)', minWidth:0, alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px' }}>
  <div style={{ display:'flex', gap:'10px', alignItems:'center', flex:1, minWidth:0 }}>
  {emp.profile_photo_url?<img src={emp.profile_photo_url} alt="" style={{ width:'38px', height:'38px', borderRadius:'50%', objectFit:'cover', flexShrink:0 }} />:<div style={{ width:'38px', height:'38px', borderRadius:'50%', background:'#f0f0f0', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'14px', flexShrink:0 }}> </div>}
@@ -31021,8 +31031,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <p style={cps}>Holiday Pay: <Badge label={emp.regular_holiday_pay_eligible !== false ? "Regular Eligible" : "No Regular Holiday Pay"} color={emp.regular_holiday_pay_eligible !== false ? "green" : "red"} /> <Badge label={emp.special_holiday_pay_eligible !== false ? "Special Eligible" : "No Special Holiday Pay"} color={emp.special_holiday_pay_eligible !== false ? "green" : "red"} /></p>
  </div>
  </div>
- <div style={{ display:'flex', gap:'5px', flexShrink:0, flexWrap:'wrap' }}>
- <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
+ <div style={{ display:'flex', gap:'6px', flexShrink:0, flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end', paddingTop:'2px' }}>
+ <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
  <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
@@ -31546,12 +31556,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {activeTab==='overtime' && (
  <div>
  <h2 style={h2s}>Overtime / Undertime / Meal-Break Exceptions</h2>
- <div style={{ background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+ <div style={{ background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px', padding:'14px', margin:'0 auto 14px', maxWidth:'1120px', boxSizing:'border-box' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>Attendance Adjustment Control Center</strong>
  <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The standard 60-minute meal-break deduction remains active unless a verified No Meal Break filing is approved. Meal-break review must be completed before OT/UT approval because the break decision changes paid-work minutes. Use <strong>Void / Undo</strong> before payroll release; use Payroll Adjustment after release.</p>
  </div>
 
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.04)' }}>
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', margin:'0 auto 16px', maxWidth:'1120px', boxShadow:'0 4px 16px rgba(0,0,0,0.06)', boxSizing:'border-box' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>OT / UT Analytics</h3>
@@ -31687,7 +31697,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const typeBadgeColor = isMealBreakRequest ? 'blue' : isOvertimeRequest ? 'green' : 'orange'
  const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && safeNum(attendanceMetrics.recordedBreakMinutes,0) === 0 && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
  return (
- <div key={req.id} style={{...cardS, border:`2px solid ${cardColor}`, background:cardBackground }}>
+ <div key={req.id} style={{...cardS, border:`2px solid ${cardColor}`, background:cardBackground, width:'100%', maxWidth:'1040px', margin:'0 auto 14px', padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 6px 20px rgba(25,25,45,0.08)', boxSizing:'border-box' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', justifyContent:'flex-end' }}>
@@ -41183,6 +41193,7 @@ onClick={async ()=>{
  </div>
  )}
 
+ </div>
  </SectionErrorBoundary>
  </div>
  </div>
