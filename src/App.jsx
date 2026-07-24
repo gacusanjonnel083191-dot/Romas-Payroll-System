@@ -5778,6 +5778,7 @@ export default function App() {
  const [editingVariantId, setEditingVariantId] = useState(null)
  const [expandedRecipeVariantId, setExpandedRecipeVariantId] = useState(null)
  const [editVariantFields, setEditVariantFields] = useState({})
+ const [savingVariantSetupId, setSavingVariantSetupId] = useState(null)
  const DONUT_VARIANTS_DEFAULT = [
  { name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Bavarian Bites', category:'Bites', selling_price:7, pieces_per_batch:30 },
@@ -10000,20 +10001,107 @@ Cancel = create batch record only for existing stock.`)
  async function updateVariant(id, fields) {
   if (String(id).startsWith('local-')) {
    showToast('This is a local preview product. Create the donut_variants table and load products first.', 'red')
-   return
+   return null
   }
-  const cleanFields = {...fields}
-  const { error } = await supabase.from('donut_variants').update(cleanFields).eq('id', id)
-  if (error) {
-   const message = String(error?.message || error)
-   if (['packaging_cost_per_piece','labor_cost_per_batch','delivery_cost_per_piece','packaging_profile_id','labor_profile_id','delivery_profile_id','cost_override_notes'].some(column=>message.includes(column))) {
-    showToast('Run the centralized costing profiles migration in Supabase before saving product profiles or advanced overrides.', 'red')
-   } else showToast('Product update failed: '+message,'red')
-   return
+  if (String(savingVariantSetupId || '') === String(id)) return null
+
+  const requested = {
+   pieces_per_batch:positiveNum(fields?.pieces_per_batch, 1),
+   selling_price:Math.max(0, safeNum(fields?.selling_price, 0)),
+   packaging_profile_id:fields?.packaging_profile_id || null,
+   labor_profile_id:fields?.labor_profile_id || null,
+   delivery_profile_id:fields?.delivery_profile_id || null,
+   packaging_cost_per_piece:Math.max(0, safeNum(fields?.packaging_cost_per_piece, 0)),
+   labor_cost_per_batch:Math.max(0, safeNum(fields?.labor_cost_per_batch, 0)),
+   delivery_cost_per_piece:Math.max(0, safeNum(fields?.delivery_cost_per_piece, 0)),
+   cost_override_notes:String(fields?.cost_override_notes || '').trim() || null
   }
-  showToast('Product pricing setup updated.')
-  setEditingVariantId(null)
-  loadDonutVariants()
+
+  setSavingVariantSetupId(id)
+  try {
+   // Primary path: one atomic database operation that validates all selected
+   // profiles, saves the complete product setup, and returns the stored row.
+   let savedRow = null
+   const rpcResult = await supabase.rpc('save_variant_cost_setup', {
+    p_variant_id:id,
+    p_pieces_per_batch:requested.pieces_per_batch,
+    p_selling_price:requested.selling_price,
+    p_packaging_profile_id:requested.packaging_profile_id,
+    p_labor_profile_id:requested.labor_profile_id,
+    p_delivery_profile_id:requested.delivery_profile_id,
+    p_packaging_cost_per_piece:requested.packaging_cost_per_piece,
+    p_labor_cost_per_batch:requested.labor_cost_per_batch,
+    p_delivery_cost_per_piece:requested.delivery_cost_per_piece,
+    p_cost_override_notes:requested.cost_override_notes
+   })
+
+   if (!rpcResult.error) {
+    savedRow = Array.isArray(rpcResult.data) ? rpcResult.data[0] : rpcResult.data
+   } else {
+    const rpcMessage = String(rpcResult.error?.message || rpcResult.error || '')
+    const rpcUnavailable = rpcMessage.toLowerCase().includes('save_variant_cost_setup')
+     && (rpcMessage.toLowerCase().includes('schema cache')
+      || rpcMessage.toLowerCase().includes('could not find')
+      || rpcMessage.toLowerCase().includes('function'))
+
+    if (!rpcUnavailable) throw rpcResult.error
+
+    // Safe fallback for a device that reaches the new frontend before PostgREST
+    // finishes refreshing the RPC schema. This path still requires Supabase to
+    // return the updated row; a silent zero-row update is treated as failure.
+    const fallbackResult = await supabase
+     .from('donut_variants')
+     .update(requested)
+     .eq('id', id)
+     .select('*')
+     .single()
+    if (fallbackResult.error) throw fallbackResult.error
+    savedRow = fallbackResult.data
+   }
+
+   if (!savedRow?.id) {
+    throw new Error('Supabase did not return the saved product row. The setup was not confirmed.')
+   }
+
+   const sameId = (a, b) => String(a || '') === String(b || '')
+   const verificationErrors = []
+   if (!sameId(savedRow.packaging_profile_id, requested.packaging_profile_id)) verificationErrors.push('packaging profile')
+   if (!sameId(savedRow.labor_profile_id, requested.labor_profile_id)) verificationErrors.push('labor profile')
+   if (!sameId(savedRow.delivery_profile_id, requested.delivery_profile_id)) verificationErrors.push('delivery profile')
+   if (Math.abs(safeNum(savedRow.pieces_per_batch, 0) - requested.pieces_per_batch) > 0.0001) verificationErrors.push('good pieces per batch')
+   if (Math.abs(safeNum(savedRow.selling_price, 0) - requested.selling_price) > 0.0001) verificationErrors.push('retail price')
+
+   if (verificationErrors.length > 0) {
+    throw new Error(`Save verification failed for: ${verificationErrors.join(', ')}.`)
+   }
+
+   // Update the current screen immediately from the exact row returned by
+   // Supabase, then perform a full reload as a second verification layer.
+   setDonutVariants(current => sortDonutVariantsByGuide(
+    current.map(row => String(row.id) === String(id) ? {...row, ...savedRow} : row)
+   ))
+   await logAudit(
+    'PRODUCT COST SETUP UPDATED',
+    currentAdminLabel,
+    savedRow.name || 'Product',
+    `Pieces/batch ${requested.pieces_per_batch} | Retail ${php(requested.selling_price)} | Packaging profile ${requested.packaging_profile_id || 'DEFAULT'} | Labor profile ${requested.labor_profile_id || 'DEFAULT'} | Delivery profile ${requested.delivery_profile_id || 'DEFAULT'}`
+   )
+   await loadDonutVariants()
+   setEditingVariantId(null)
+   setAdvancedCostOverrideVariantId(null)
+   showToast('Product cost setup saved and verified.')
+   return savedRow
+  } catch(error) {
+   const message = String(error?.message || error || 'Unknown save error')
+   if (['packaging_profile_id','labor_profile_id','delivery_profile_id','save_variant_cost_setup'].some(column=>message.includes(column))) {
+    showToast('Product setup could not be saved. Refresh once, then retry. The costing profile migration and save function must be active in Supabase. Details: '+message, 'red')
+   } else {
+    showToast('Product setup save failed: '+message, 'red')
+   }
+   return null
+  } finally {
+   setSavingVariantSetupId(null)
+  }
  }
 
  function isPowderBaseTableMissingError(error) {
@@ -36616,6 +36704,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         <div><label style={lblS}>Labor profile</label><select value={editVariantFields.labor_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,labor_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Standard company labor</option>{costLaborProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_allocation!==false?`×${positiveNum(row.allocation_multiplier,1).toFixed(2)}`:`${php(row.fixed_cost_per_piece)}/pc`}</option>)}</select></div>
         <div><label style={lblS}>Delivery profile</label><select value={editVariantFields.delivery_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,delivery_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Standard company delivery</option>{costDeliveryProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_allocation!==false?`×${positiveNum(row.allocation_multiplier,1).toFixed(2)}`:`${php(row.fixed_cost_per_piece)}/pc`}</option>)}</select></div>
        </div>
+       <p style={{margin:'7px 0 0',color:'#806600',fontSize:'9px',fontWeight:'700',lineHeight:1.45}}>The three selected profile IDs are saved directly to this product. The editor now stays protected until Supabase returns and verifies the stored row.</p>
 
        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'7px', marginTop:'10px' }}>
         {[
@@ -36643,7 +36732,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         </div>
         <label style={{...lblS,marginTop:'8px'}}>Override justification</label><input value={editVariantFields.cost_override_notes || ''} onChange={e=>setEditVariantFields(p=>({...p,cost_override_notes:e.target.value}))} placeholder="Example: premium box, heavy manual finishing, special far-route delivery" style={{...inputStyle,marginBottom:0}}/>
        </div>}
-       <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', marginTop:'10px' }}><button style={{...btnGreen,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>updateVariant(v.id,{ pieces_per_batch:previewVariant.pieces_per_batch, selling_price:previewVariant.selling_price, packaging_profile_id:previewVariant.packaging_profile_id || null, labor_profile_id:previewVariant.labor_profile_id || null, delivery_profile_id:previewVariant.delivery_profile_id || null, packaging_cost_per_piece:previewVariant.packaging_cost_per_piece, labor_cost_per_batch:previewVariant.labor_cost_per_batch, delivery_cost_per_piece:previewVariant.delivery_cost_per_piece, cost_override_notes:String(previewVariant.cost_override_notes || '').trim() || null })}>SAVE PRODUCT SETUP</button><button style={{...btnGray,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>{setEditingVariantId(null);setAdvancedCostOverrideVariantId(null)}}>CANCEL</button></div>
+       <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', marginTop:'10px' }}><button
+        style={{...btnGreen,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px',opacity:String(savingVariantSetupId||'')===String(v.id)?0.65:1}}
+        disabled={String(savingVariantSetupId||'')===String(v.id)}
+        onClick={async()=>{await updateVariant(v.id,{ pieces_per_batch:previewVariant.pieces_per_batch, selling_price:previewVariant.selling_price, packaging_profile_id:previewVariant.packaging_profile_id || null, labor_profile_id:previewVariant.labor_profile_id || null, delivery_profile_id:previewVariant.delivery_profile_id || null, packaging_cost_per_piece:previewVariant.packaging_cost_per_piece, labor_cost_per_batch:previewVariant.labor_cost_per_batch, delivery_cost_per_piece:previewVariant.delivery_cost_per_piece, cost_override_notes:String(previewVariant.cost_override_notes || '').trim() || null })}}
+       >{String(savingVariantSetupId||'')===String(v.id)?'SAVING & VERIFYING...':'SAVE PRODUCT SETUP'}</button><button style={{...btnGray,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>{setEditingVariantId(null);setAdvancedCostOverrideVariantId(null)}}>CANCEL</button></div>
       </div>
      })()}
 
