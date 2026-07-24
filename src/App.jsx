@@ -69,15 +69,15 @@ const HOLIDAY_ABSENCE_GUARD_DAY_OFFSETS = [-1, 0, 1]
 const pageStyle = { position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(150deg,#1a1a2e 0%,#2d1515 50%,#ca1b1b 100%)', display:'flex', justifyContent:'center', alignItems:'center', padding:'20px', boxSizing:'border-box', overflowY:'auto' }
 const cardStyle = { background:'white', padding:'28px', borderRadius:'20px', boxShadow:'0 8px 32px rgba(0,0,0,0.13)', width:'100%', boxSizing:'border-box' }
 const logoStyle = { width:'90px', height:'90px', objectFit:'contain', display:'block', margin:'0 auto 10px' }
-const inputStyle = { width:'100%', padding:'11px 14px', marginBottom:'12px', borderRadius:'10px', border:'1.5px solid #e8e8e8', boxSizing:'border-box', fontSize:'13px', background:'white', color:'#222', outline:'none', fontFamily:'inherit' }
-const cardS = { border:'1px solid #f0f0f0', padding:'14px', borderRadius:'14px', marginBottom:'10px', background:'white', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }
+const inputStyle = { width:'100%', padding:'11px 14px', marginBottom:'12px', borderRadius:'10px', border:'1.5px solid rgba(202,27,27,0.22)', boxSizing:'border-box', fontSize:'13px', background:'#fffefa', color:'#222', outline:'none', fontFamily:'inherit', boxShadow:'inset 0 0 0 1px rgba(253,212,18,0.08)' }
+const cardS = { border:'1px solid rgba(202,27,27,0.20)', padding:'14px', borderRadius:'14px', marginBottom:'10px', background:'linear-gradient(180deg,#fffdf4 0%,#ffffff 46%)', boxShadow:'0 4px 14px rgba(26,26,46,0.07)' }
 const cps = { margin:'3px 0', color:'#555', fontSize:'13px' }
 const h2s = { color:'#ca1b1b', marginTop:0, marginBottom:'16px', fontWeight:'800', letterSpacing:'-0.3px' }
 const lblS = { display:'block', marginBottom:'5px', fontWeight:'700', color:'#555', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px' }
 // Buttons
 const btnBase = { display:'inline-flex', alignItems:'center', justifyContent:'center', width:'100%', padding:'12px 18px', borderRadius:'10px', border:'none', fontWeight:'700', cursor:'pointer', marginTop:'8px', fontSize:'13px', letterSpacing:'0.3px', transition:'opacity 0.15s', fontFamily:'inherit' }
 const btnRed = {...btnBase, background:'#ca1b1b', color:'white', boxShadow:'0 2px 8px rgba(202,27,27,0.25)' }
-const btnGreen = {...btnBase, background:'#2d8a4e', color:'white', boxShadow:'0 2px 8px rgba(45,138,78,0.25)' }
+const btnGreen = {...btnBase, background:'#FDD412', color:'#1a1a2e', boxShadow:'0 2px 8px rgba(253,212,18,0.38)' }
 const btnBlack = {...btnBase, background:'#1a1a2e', color:'white', boxShadow:'0 2px 8px rgba(0,0,0,0.18)' }
 const btnGray = {...btnBase, background:'#f0f0f0', color:'#333', boxShadow:'none' }
 const btnYellow = {...btnBase, background:'#FDD412', color:'#1a1a2e', width:'auto', padding:'10px 20px', marginTop:0, boxShadow:'0 2px 8px rgba(253,212,18,0.35)' }
@@ -29671,13 +29671,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const visibleSubTabs = currentSection.tabs.filter(t => t.key === 'documents' || canAccess(t.key))
  const adminDataDenseTabs = new Set(['posMonitor','attendance','payroll','payrollHistory','remittance','dtr','bankDisbursement','inventory','sales','analytics','payablesMain'])
  const adminMediumWidthTabs = new Set(['dashboard','overtime','employees','schedule','performance','contracts','cashAdvanceCoverage','adjustment','thirteenth','finalpay','cashRequests','disputes'])
- const adminContentMaxWidth = isMobile
-  ? '100%'
-  : adminDataDenseTabs.has(activeTab)
-   ? '1580px'
-   : adminMediumWidthTabs.has(activeTab)
-    ? '1240px'
-    : '1120px'
+ const adminContentMaxWidth = '100%'
  const canManageSopLibrary = ['owner','manager'].includes(normalizeAdminRole(adminRole))
  const filteredSops = (sops || []).filter(sop => {
  if (!canViewSop(sop)) return false
@@ -30521,7 +30515,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden', background:'#f0f2f5' }}>
  {/* Sub-tab Navigation Bar */}
  {visibleSubTabs.length > 1 && (
- <div style={{ background:'white', borderBottom:'1px solid #f0f0f0', padding:'10px 20px', display:'flex', gap:'6px', overflowX:'auto', flexShrink:0 }}>
+ <div style={{ background:'white', borderBottom:'3px solid #FDD412', padding:'10px 20px', display:'flex', gap:'6px', overflowX:'auto', flexShrink:0, boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
  {visibleSubTabs.map(tab => (
  <button key={tab.key} onClick={()=>handleTabClick(tab.key)} style={{ padding:'8px 16px', border:'none', borderRadius:'20px', background:activeTab===tab.key?'#ca1b1b':'#f4f4f4', color:activeTab===tab.key?'white':'#555', cursor:'pointer', fontWeight:activeTab===tab.key?'700':'500', fontSize:'12px', whiteSpace:'nowrap', transition:'all 0.15s', letterSpacing:'0.2px', boxShadow:activeTab===tab.key?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>
  {tab.label}
@@ -30531,7 +30525,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
 
  {/* Content Area */}
- <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'24px', background:'#f8f7f5' }}>
+ <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'22px', background:'linear-gradient(135deg,#fffdf2 0%,#f8f7f5 54%,#fff6f6 100%)' }}>
  <SectionErrorBoundary resetKey={activeTab}>
  <div style={{ width:'100%', maxWidth:adminContentMaxWidth, margin:'0 auto', minWidth:0, boxSizing:'border-box' }}>
 
@@ -30896,7 +30890,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <h2 style={h2s}>Employees</h2>
  <input placeholder="Search name, code, or position..." value={employeeSearch} onChange={e=>setEmployeeSearch(e.target.value)} style={inputStyle} />
  {employeeSearch.trim() && employees.filter(emp=>`${emp.full_name} ${emp.employee_code} ${emp.position}`.toLowerCase().includes(employeeSearch.toLowerCase())).map(emp=>(
- <div key={emp.id} style={{...cardS, border:'1px solid #efcaca', borderTop:'4px solid #ca1b1b', background:'white', maxWidth:'760px', margin:'0 auto 12px', boxShadow:'0 5px 18px rgba(35,20,20,0.08)' }}>
+ <div key={emp.id} style={{...cardS, border:'1px solid rgba(202,27,27,0.24)', borderTop:'5px solid #ca1b1b', background:'linear-gradient(180deg,#fffdf4,#ffffff)', width:'100%', margin:'0 0 12px', boxShadow:'0 5px 18px rgba(35,20,20,0.08)' }}>
  <div style={{ display:'flex', gap:'10px', alignItems:'center' }}>
  {emp.profile_photo_url?<img src={emp.profile_photo_url} alt="" style={{ width:'44px', height:'44px', borderRadius:'50%', objectFit:'cover', border:'2px solid #ca1b1b' }} />:<div style={{ width:'44px', height:'44px', borderRadius:'50%', background:'#ddd', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'18px' }}> </div>}
  <div>
@@ -31055,7 +31049,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <h3 style={{ color:'#ca1b1b', marginTop:'24px', marginBottom:'10px' }}> Employee List ({employees.length})</h3>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'14px', alignItems:'start' }}>
  {employees.map((emp,i)=>(
- <div key={emp.id} style={{ gridColumn:editingEmployeeId===emp.id?'1 / -1':'auto', background:'white', border:'1px solid #eadede', borderTop:'4px solid #ca1b1b', borderRadius:'15px', padding:'14px', boxShadow:'0 5px 18px rgba(35,20,20,0.07)', minWidth:0, alignSelf:'start' }}>
+ <div key={emp.id} style={{ gridColumn:editingEmployeeId===emp.id?'1 / -1':'auto', background:'linear-gradient(180deg,#fffdf4 0%,#ffffff 42%)', border:'1px solid rgba(202,27,27,0.23)', borderTop:'5px solid #ca1b1b', borderRadius:'15px', padding:'14px', boxShadow:'0 6px 18px rgba(35,20,20,0.07)', minWidth:0, alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px' }}>
  <div style={{ display:'flex', gap:'10px', alignItems:'center', flex:1, minWidth:0 }}>
  {emp.profile_photo_url?<img src={emp.profile_photo_url} alt="" style={{ width:'38px', height:'38px', borderRadius:'50%', objectFit:'cover', flexShrink:0 }} />:<div style={{ width:'38px', height:'38px', borderRadius:'50%', background:'#f0f0f0', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'14px', flexShrink:0 }}> </div>}
@@ -31597,12 +31591,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {activeTab==='overtime' && (
  <div>
  <h2 style={h2s}>Overtime / Undertime / Meal-Break Exceptions</h2>
- <div style={{ background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px', padding:'14px', margin:'0 auto 14px', maxWidth:'1120px', boxSizing:'border-box' }}>
+ <div style={{ background:'linear-gradient(135deg,#fff8dc,#fffdf4)', border:'2px solid #FDD412', borderLeft:'6px solid #ca1b1b', borderRadius:'14px', padding:'14px', margin:'0 0 14px', width:'100%', boxSizing:'border-box', boxShadow:'0 4px 14px rgba(253,212,18,0.12)' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>Attendance Adjustment Control Center</strong>
  <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The standard 60-minute meal-break deduction remains active unless a verified No Meal Break filing is approved. Meal-break review must be completed before OT/UT approval because the break decision changes paid-work minutes. Use <strong>Void / Undo</strong> before payroll release; use Payroll Adjustment after release.</p>
  </div>
 
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'16px', padding:'16px', margin:'0 auto 16px', maxWidth:'1120px', boxShadow:'0 4px 16px rgba(0,0,0,0.06)', boxSizing:'border-box' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.20)', borderTop:'5px solid #ca1b1b', borderRadius:'16px', padding:'16px', margin:'0 0 16px', width:'100%', boxShadow:'0 5px 18px rgba(26,26,46,0.07)', boxSizing:'border-box' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>OT / UT Analytics</h3>
@@ -31693,6 +31687,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <button style={{...btnGreen, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'12px' }} onClick={async()=>{ await loadTimeAdjRequests(timeAdjView); showToast(' Attendance adjustment requests refreshed!') }}>REFRESH</button>
  </div>
  {timeAdjRequests.length===0 && <p style={{ color:'#888' }}>No attendance adjustment records found in this view.</p>}
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'16px', alignItems:'start', width:'100%' }}>
  {timeAdjRequests.map(req=>{
  const requestType = String(req.request_type || '').toLowerCase()
  const isOvertimeRequest = requestType === 'overtime'
@@ -31732,13 +31727,17 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   : isMealBreakRequest
    ? 'APPROVE NO MEAL BREAK'
    : attendanceValid && actualMinutes <= 0 ? 'APPROVE 0 MIN & CLOSE' : 'APPROVE ACTUAL MINUTES'
- const cardColor = isMealBreakRequest ? '#8b5cf6' : isOvertimeRequest ? '#2d8a4e' : '#f5a623'
- const cardBackground = isMealBreakRequest ? '#f7f3ff' : isOvertimeRequest ? '#f0fff0' : '#fffbf0'
+ const cardColor = isMealBreakRequest ? '#1a1a2e' : isOvertimeRequest ? '#ca1b1b' : '#FDD412'
+ const cardBackground = isMealBreakRequest
+  ? 'linear-gradient(180deg,#f7f7fb 0%,#ffffff 42%)'
+  : isOvertimeRequest
+   ? 'linear-gradient(180deg,#fff4f4 0%,#ffffff 42%)'
+   : 'linear-gradient(180deg,#fff8dc 0%,#ffffff 42%)'
  const typeLabel = isMealBreakRequest ? 'NO MEAL BREAK' : isOvertimeRequest ? 'OVERTIME' : 'UNDERTIME'
  const typeBadgeColor = isMealBreakRequest ? 'blue' : isOvertimeRequest ? 'green' : 'orange'
  const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && safeNum(attendanceMetrics.recordedBreakMinutes,0) === 0 && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
  return (
- <div key={req.id} style={{...cardS, border:`2px solid ${cardColor}`, background:cardBackground, width:'100%', maxWidth:'1040px', margin:'0 auto 14px', padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 6px 20px rgba(25,25,45,0.08)', boxSizing:'border-box' }}>
+ <div key={req.id} style={{...cardS, border:`1.5px solid ${cardColor}`, borderTop:`6px solid ${cardColor}`, background:cardBackground, width:'100%', minWidth:0, margin:0, padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 7px 22px rgba(25,25,45,0.09)', boxSizing:'border-box', alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'15px' }}>{req.employee_name}</strong>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', justifyContent:'flex-end' }}>
@@ -31758,7 +31757,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    <div><span style={lblS}>Raw Attendance</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.rawSpanMinutes,0)} min` : 'Not available'}</strong></div>
    <div><span style={lblS}>Recorded Break</span><strong style={{ color:safeNum(adminValidation?.recordedBreakMinutes,0)>0?'#ca1b1b':'#2d8a4e' }}>{attendanceValid ? `${safeNum(adminValidation?.recordedBreakMinutes,0)} min` : 'Not available'}</strong></div>
    <div><span style={lblS}>Current Deduction</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.deductedBreakMinutes,0)} min` : 'Not available'}</strong></div>
-   <div><span style={lblS}>Approved Deduction</span><strong style={{ color:'#8b5cf6' }}>0 min</strong></div>
+   <div><span style={lblS}>Approved Deduction</span><strong style={{ color:'#1a1a2e' }}>0 min</strong></div>
    <div><span style={lblS}>Revised Paid Work</span><strong>{attendanceValid ? `${safeNum(adminValidation?.revisedMetrics?.paidWorkedMinutes,0)} min` : 'Not available'}</strong></div>
    <div><span style={lblS}>Revised OT</span><strong style={{ color:'#2d8a4e' }}>{attendanceValid ? `${safeNum(adminValidation?.revisedOvertimeMinutes,0)} min` : 'Not available'}</strong></div>
    <div><span style={lblS}>Revised UT</span><strong style={{ color:'#f5a623' }}>{attendanceValid ? `${safeNum(adminValidation?.revisedUndertimeMinutes,0)} min` : 'Not available'}</strong></div>
@@ -31780,7 +31779,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   </div>
  )}
  {!isMealBreakRequest && attendanceValid && safeNum(attendanceMetrics.recordedBreakMinutes,0) === 0 && !attendanceMetrics.breakOverrideApplied && (
-  <div style={{ marginTop:'10px', padding:'9px 10px', border:'1px solid #d8c6ff', background:'#f7f3ff', borderRadius:'9px', color:'#6542a6', fontSize:'11px', lineHeight:1.45, fontWeight:'800' }}>
+  <div style={{ marginTop:'10px', padding:'9px 10px', border:'1px solid #FDD412', background:'#fff8dc', borderRadius:'9px', color:'#1a1a2e', fontSize:'11px', lineHeight:1.45, fontWeight:'800' }}>
    No break punch is recorded. The calculation above is still using the standard 60-minute deduction. After verifying that the employee actually worked continuously, use <strong>CONFIRM NO BREAK &amp; RECALCULATE</strong>. Otherwise, keep the standard deduction.
   </div>
  )}
@@ -31794,7 +31793,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <label style={lblS}>Admin Response / Reason {isMealBreakRequest && req.status==='pending' ? '(required for approval)' : req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
  <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
- {canConfirmNoBreakFromExistingRequest && <button style={{...btnBase, background:'#8b5cf6', color:'white', width:'auto', padding:'8px 14px', marginTop:0, boxShadow:'0 2px 8px rgba(139,92,246,0.28)' }} onClick={async(e)=>{ const btn=e.currentTarget; const original=btn.textContent; btn.disabled=true; btn.textContent=req.status==='approved'?'Reopening and applying no break...':'Applying no break...'; await confirmNoMealBreakFromExistingTimeAdj(req); btn.disabled=false; btn.textContent=original }}>{req.status==='approved'?'REOPEN + APPLY NO BREAK':'CONFIRM NO BREAK & RECALCULATE'}</button>}
+ {canConfirmNoBreakFromExistingRequest && <button style={{...btnBase, background:'#1a1a2e', color:'white', width:'auto', padding:'8px 14px', marginTop:0, boxShadow:'0 2px 8px rgba(26,26,46,0.24)' }} onClick={async(e)=>{ const btn=e.currentTarget; const original=btn.textContent; btn.disabled=true; btn.textContent=req.status==='approved'?'Reopening and applying no break...':'Applying no break...'; await confirmNoMealBreakFromExistingTimeAdj(req); btn.disabled=false; btn.textContent=original }}>{req.status==='approved'?'REOPEN + APPLY NO BREAK':'CONFIRM NO BREAK & RECALCULATE'}</button>}
  {req.status==='pending' && <button disabled={adminValidation?.loading || approvalBlocked} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked)?'not-allowed':'pointer' }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Revalidating attendance...'; await approveTimeAdj(req); btn.disabled=!!(adminValidation?.loading || approvalBlocked); btn.textContent=approveButtonLabel }}>{approveButtonLabel}</button>}
  {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent='REJECT' }}>REJECT</button>}
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL' }}>{req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL'}</button>
@@ -31803,7 +31802,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
  </div>
  )
- })} </div>
+ })}
+ </div>
+ </div>
  )}
 
  {/* ADJUSTMENT */}
@@ -32125,7 +32126,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
  <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT CSV</button>
- <button style={{ background:'#8b5cf6', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
+ <button style={{ background:'#1a1a2e', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
  {(payrollReadinessLoading || payrollReadiness) && (
@@ -32495,7 +32496,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  REOPEN RELEASED PAYROLL
  </button>
  )}
- <button style={{ background:'#8b5cf6', color:'white', padding:'10px 18px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }}
+ <button style={{ background:'#1a1a2e', color:'white', padding:'10px 18px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }}
  onClick={async()=>{
  const empId = prompt('Enter Employee ID or code for DTR:')
  if(!empId) return
@@ -33613,7 +33614,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {/* COMPANY DOCUMENTS & FORMS CENTER */}
  {activeTab==='documents' && (
- <div>
+ <div style={{ width:'100%', minWidth:0 }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'14px' }}>
  <div>
  <h2 style={h2s}> Company Documents & Forms Center</h2>
@@ -33624,7 +33625,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Documents Center Sub-Navigation */}
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'16px', background:'white', padding:'10px', borderRadius:'14px', border:'1px solid #eee', boxShadow:'0 1px 6px rgba(0,0,0,0.05)' }}>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'16px', background:'linear-gradient(90deg,#fff8dc,#ffffff)', padding:'10px', borderRadius:'14px', border:'1px solid rgba(202,27,27,0.22)', borderTop:'4px solid #ca1b1b', boxShadow:'0 4px 14px rgba(26,26,46,0.06)' }}>
   <button
    onClick={()=>setDocumentCenterView('forms')}
    style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='forms'?'#ca1b1b':'#f4f4f4', color:documentCenterView==='forms'?'white':'#555', boxShadow:documentCenterView==='forms'?'0 2px 8px rgba(202,27,27,0.25)':'none' }}
@@ -33861,7 +33862,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ background:'#f7f9fc', border:'1px solid #d9e2ec', borderRadius:'14px', padding:'14px' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Batch 1 Forms</p><p style={{ margin:0, color:'#1a1a2e', fontSize:'24px', fontWeight:'900' }}>{batch1Count}</p></div>
  </div>
 
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+ <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.18)', borderTop:'4px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px', boxShadow:'0 4px 14px rgba(26,26,46,0.05)' }}>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr', gap:'10px' }}>
  <div>
  <label style={lblS}>Search document</label>
@@ -33885,7 +33886,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'8px', marginBottom:'14px' }}>
  {categoriesWithCount.map(row => (
- <button key={row.category} onClick={()=>setDocumentCenterCategory(row.category)} style={{ background:documentCenterCategory===row.category?'#ca1b1b':'white', color:documentCenterCategory===row.category?'white':'#333', border:'1px solid #eee', borderRadius:'12px', padding:'9px 10px', textAlign:'left', cursor:'pointer', fontWeight:'800', fontSize:'11px' }}>
+ <button key={row.category} onClick={()=>setDocumentCenterCategory(row.category)} style={{ background:documentCenterCategory===row.category?'#ca1b1b':'linear-gradient(180deg,#fffdf4,#ffffff)', color:documentCenterCategory===row.category?'white':'#1a1a2e', border:`1px solid ${documentCenterCategory===row.category?'#ca1b1b':'rgba(202,27,27,0.18)'}`, borderBottom:`3px solid ${documentCenterCategory===row.category?'#FDD412':'rgba(253,212,18,0.65)'}`, borderRadius:'12px', padding:'9px 10px', textAlign:'left', cursor:'pointer', fontWeight:'800', fontSize:'11px', boxShadow:'0 3px 10px rgba(26,26,46,0.04)' }}>
  <span>{row.category}</span><br/><span style={{ opacity:0.75, fontWeight:'700' }}>{row.count} document type(s)</span>
  </button>
  ))}
@@ -33900,7 +33901,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   ['Batch 3','Inventory, delivery, reseller','Receiving, issuance, crates, reseller agreement, returns, outlet slips'],
   ['Batch 4','Finance and compliance','Petty cash, vouchers, permit trackers, closing checklist']
  ].map(([batch,title,desc]) => (
- <div key={batch} style={{ border:'1px solid #eee', borderRadius:'12px', padding:'12px', background:documentCenterBatch===batch?'#fff8dc':'#fafafa' }}>
+ <div key={batch} style={{ border:`1px solid ${documentCenterBatch===batch?'#ca1b1b':'rgba(202,27,27,0.18)'}`, borderTop:`4px solid ${documentCenterBatch===batch?'#ca1b1b':'#FDD412'}`, borderRadius:'12px', padding:'12px', background:documentCenterBatch===batch?'linear-gradient(180deg,#fff8dc,#ffffff)':'linear-gradient(180deg,#fffdf4,#ffffff)', boxShadow:'0 3px 10px rgba(26,26,46,0.04)' }}>
  <p style={{ margin:'0 0 4px', color:'#ca1b1b', fontWeight:'900', fontSize:'12px' }}>{batch}</p>
  <p style={{ margin:'0 0 5px', color:'#333', fontWeight:'900', fontSize:'12px' }}>{title}</p>
  <p style={{ margin:0, color:'#777', fontSize:'11px', lineHeight:1.4 }}>{desc}</p>
@@ -33909,7 +33910,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'10px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'16px', alignItems:'stretch', width:'100%' }}>
  {filteredDocs.map(doc => {
  const activeForm = findBatch1DocumentForm(doc.code)
  const effectiveStatus = activeForm ? 'Existing Module' : doc.status
@@ -33917,11 +33918,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const canOpenContracts = activeForm?.externalTab === 'contracts'
  const canOpenBatch1AForm = !!activeForm && !activeForm.externalTab
  return (
- <div key={doc.code} style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.04)' }}>
+ <div key={doc.code} style={{ background:'linear-gradient(180deg,#fffdf3 0%,#ffffff 42%)', border:'1px solid rgba(202,27,27,0.22)', borderTop:`5px solid ${doc.priority === 'High'?'#ca1b1b':'#FDD412'}`, borderRadius:'15px', padding:'16px', boxShadow:'0 6px 18px rgba(26,26,46,0.07)', minWidth:0, height:'100%', boxSizing:'border-box' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px', flexWrap:'wrap', marginBottom:'8px' }}>
  <div>
  <p style={{ color:'#999', fontSize:'10px', margin:'0 0 3px', fontWeight:'900', letterSpacing:'0.5px' }}>{doc.code}</p>
- <h3 style={{ color:'#333', fontSize:'14px', margin:'0 0 4px' }}>{doc.name}</h3>
+ <h3 style={{ color:'#1a1a2e', fontSize:'14px', margin:'0 0 4px' }}>{doc.name}</h3>
  <p style={{ color:'#777', fontSize:'11px', margin:0 }}>{doc.category}</p>
  </div>
  <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:'flex-end' }}>
@@ -41526,7 +41527,7 @@ onClick={async ()=>{
  {showOTRequest && (
  <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginBottom:'8px' }}>
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}> BACK</button>
- <h3 style={{ color:'#8b5cf6', margin:'0 0 10px', fontSize:'14px' }}>File OT / Undertime / No Meal Break</h3>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'14px' }}>File OT / Undertime / No Meal Break</h3>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'9px 10px', marginBottom:'10px' }}>
   <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>Select the exact attendance date being filed. Late filing is allowed for a completed past attendance date, including filings submitted one or more days later. The standard 60-minute meal-break deduction remains active unless a No Meal Break request is approved.</p>
  </div>
@@ -41587,12 +41588,12 @@ onClick={async ()=>{
  </div>
  </>
  ) : (
- <div style={{ background:'white', border:`1.5px solid ${timeAdjPreview.canSubmit?'#8b5cf6':'#ffd0d0'}`, borderRadius:'12px', padding:'12px', marginBottom:'8px' }}>
+ <div style={{ background:'white', border:`1.5px solid ${timeAdjPreview.canSubmit?'#1a1a2e':'#ffd0d0'}`, borderRadius:'12px', padding:'12px', marginBottom:'8px' }}>
   <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'8px' }}>
    <div><span style={lblS}>Raw Attendance</span><strong>{safeNum(timeAdjPreview?.validation?.metrics?.rawSpanMinutes,0)} min</strong></div>
    <div><span style={lblS}>Recorded Break</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.recordedBreakMinutes,0)} min</strong></div>
    <div><span style={lblS}>Current Break Deduction</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.currentDeductedBreakMinutes,0)} min</strong></div>
-   <div><span style={lblS}>Requested Deduction</span><strong style={{ color:'#8b5cf6' }}>0 min</strong></div>
+   <div><span style={lblS}>Requested Deduction</span><strong style={{ color:'#1a1a2e' }}>0 min</strong></div>
    <div><span style={lblS}>Revised Paid Work</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.revisedPaidWorkedMinutes,0)} min</strong></div>
    <div><span style={lblS}>Revised OT / UT</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.revisedOTMinutes,0)} OT / {safeNum(timeAdjPreview?.mealBreakImpact?.revisedUTMinutes,0)} UT</strong></div>
   </div>
@@ -41649,7 +41650,7 @@ onClick={async ()=>{
  )}
  <button
   disabled={timeAdjPreview.loading || !timeAdjPreview.canSubmit || submittingTimeAdjRequest || (otRequestType==='meal_break' && !mealBreakAttestation)}
-  style={{ background:timeAdjPreview.canSubmit && !submittingTimeAdjRequest && (otRequestType!=='meal_break' || mealBreakAttestation)?'#8b5cf6':'#bbb', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', cursor:timeAdjPreview.canSubmit && !submittingTimeAdjRequest && (otRequestType!=='meal_break' || mealBreakAttestation)?'pointer':'not-allowed', fontWeight:'bold', fontSize:'14px' }}
+  style={{ background:timeAdjPreview.canSubmit && !submittingTimeAdjRequest && (otRequestType!=='meal_break' || mealBreakAttestation)?'#1a1a2e':'#bbb', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', cursor:timeAdjPreview.canSubmit && !submittingTimeAdjRequest && (otRequestType!=='meal_break' || mealBreakAttestation)?'pointer':'not-allowed', fontWeight:'bold', fontSize:'14px' }}
   onClick={submitTimeAdjRequest}
  >
   {submittingTimeAdjRequest?'SUBMITTING REQUEST...':timeAdjPreview.loading?'VALIDATING ATTENDANCE...':otRequestType==='meal_break'?'SUBMIT NO MEAL BREAK EXCEPTION':'SUBMIT SYSTEM-LOCKED OT / UT REQUEST'}
