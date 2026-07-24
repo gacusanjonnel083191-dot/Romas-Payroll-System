@@ -10133,10 +10133,14 @@ Cancel = create batch record only for existing stock.`)
    operatingCostPerPiece:dailyOperatingCost / totalDailyPieces,
   }
  }
- function computeVariantCost(variantId, piecesPerBatch) {
+ function computeVariantCost(variantId, piecesPerBatch, recipeRowsOverride = null) {
   const variant = donutVariants.find(v => String(v.id) === String(variantId)) || {}
   const safePiecesPerBatch = positiveNum(piecesPerBatch || variant?.pieces_per_batch, 1)
-  const variantIngs = variantRecipes[variantId] || []
+  // When editing, use the current unsaved rows so costs react immediately while
+  // grams and components are being entered. Saved rows remain the default.
+  const variantIngs = Array.isArray(recipeRowsOverride)
+   ? recipeRowsOverride
+   : (variantRecipes[variantId] || [])
   const rowDetails = variantIngs.map((row, index) => {
    const isBaseDoughLink = String(row.inventory_item_id) === BASE_DOUGH_RECIPE_LINK_ID
    const isPowderBaseLink = String(row.inventory_item_id) === POWDER_BASE_RECIPE_LINK_ID
@@ -36301,8 +36305,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    <div style={{ border:`1px solid ${catColor}33`, borderTop:'none', borderRadius:'0 0 9px 9px', overflow:'hidden' }}>
    {catVariants.map((v,index)=>{
     const recipeRows = variantRecipes[v.id] || []
-    const cost = computeVariantCost(v.id, v.pieces_per_batch)
     const isEditingRecipe = selectedRecipeVariantId === v.id && selectedRecipeVariantId!=='base' && selectedRecipeVariantId!=='powder_base'
+    const cost = computeVariantCost(v.id, v.pieces_per_batch)
+    const liveRecipeCost = isEditingRecipe
+     ? computeVariantCost(v.id, v.pieces_per_batch, editingVariantRecipe)
+     : cost
+    const displayedRecipeCost = isEditingRecipe ? liveRecipeCost : cost
     const isEditingProduct = editingVariantId === v.id
     const isExpanded = String(expandedRecipeVariantId) === String(v.id)
     const hasBaseLink = recipeRows.some(r=>String(r.inventory_item_id)===BASE_DOUGH_RECIPE_LINK_ID)
@@ -36314,11 +36322,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}><strong style={{ color:'#333', fontSize:'12px' }}>{v.name}</strong><Badge label={cost.statusLabel} color={statusColor}/>{hasBaseLink&&<Badge label="BASE" color="green"/>}{hasPowderLink&&<Badge label="POWDER" color="blue"/>}</div>
        <p style={{ color:'#999', fontSize:'9px', margin:'3px 0 0' }}>{safeNum(v.pieces_per_batch)} pcs/batch · {recipeRows.length} linked component(s)</p>
       </div>
-      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>MATERIALS/PC</p><strong style={{ color:'#333', fontSize:'11px' }}>{cost.isCostReady?php(cost.directMaterialCostPerPiece):'—'}</strong></div>
-      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>FULL COST/PC</p><strong style={{ color:'#ca1b1b', fontSize:'11px' }}>{cost.isCostReady?php(cost.totalCost):'—'}</strong></div>
+      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>MATERIALS/PC</p><strong style={{ color:'#333', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.directMaterialCostPerPiece):'—'}</strong></div>
+      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>FULL COST/PC</p><strong style={{ color:'#ca1b1b', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.totalCost):'—'}</strong></div>
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>COMPANY PRICE</p><strong style={{ color:'#555', fontSize:'11px' }}>{php(cost.currentResellerPrice)}</strong></div>
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>CURRENT SRP</p><strong style={{ color:'#555', fontSize:'11px' }}>{php(cost.currentRetailPrice)}</strong></div>
-      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>SUGGESTED SRP</p><strong style={{ color:'#2d8a4e', fontSize:'11px' }}>{cost.isCostReady?php(cost.recommendedRetailPrice):'—'}</strong></div>
+      <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>SUGGESTED SRP</p><strong style={{ color:'#2d8a4e', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.recommendedRetailPrice):'—'}</strong></div>
       <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end' }}>
        <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>setExpandedRecipeVariantId(isExpanded?null:v.id)}>{isExpanded?'HIDE':'DETAILS'}</button>
        <button style={{...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setEditingVariantId(v.id);setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price, packaging_cost_per_piece:v.packaging_cost_per_piece || '', labor_cost_per_batch:v.labor_cost_per_batch || '', delivery_cost_per_piece:v.delivery_cost_per_piece || '' })}}>PRICE SETUP</button>
@@ -36338,21 +36346,45 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <div style={{ display:'flex', gap:'7px' }}><button style={{...btnGreen,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>updateVariant(v.id,{ pieces_per_batch:positiveNum(editVariantFields.pieces_per_batch||v.pieces_per_batch), selling_price:Math.max(0,safeNum(editVariantFields.selling_price??v.selling_price)), packaging_cost_per_piece:Math.max(0,safeNum(editVariantFields.packaging_cost_per_piece)), labor_cost_per_batch:Math.max(0,safeNum(editVariantFields.labor_cost_per_batch)), delivery_cost_per_piece:Math.max(0,safeNum(editVariantFields.delivery_cost_per_piece)) })}>SAVE PRODUCT SETUP</button><button style={{...btnGray,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>setEditingVariantId(null)}>CANCEL</button></div>
      </div>}
 
-     {isEditingRecipe && <div style={{ background:'#f8f9fb', border:'1px solid #dde2e8', borderRadius:'9px', padding:'10px', marginTop:'9px' }}>
-      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2.2fr 0.8fr 0.9fr 1.4fr auto', gap:'6px', color:'#888', fontSize:'8px', fontWeight:'900', marginBottom:'5px' }}><span>COMPONENT</span><span>GRAMS/BATCH</span><span>TYPE</span><span>NOTES</span><span></span></div>
-      {editingVariantRecipe.map((row,rowIndex)=><div key={rowIndex} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2.2fr 0.8fr 0.9fr 1.4fr auto', gap:'6px', marginBottom:'7px', alignItems:'center' }}>
-       <select value={row.inventory_item_id||''} onChange={e=>{const value=e.target.value;const inv=inventoryItems.find(it=>String(it.id)===String(value));const isBase=value===BASE_DOUGH_RECIPE_LINK_ID;const isPowder=value===POWDER_BASE_RECIPE_LINK_ID;const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],inventory_item_id:value,item_name:isBase?'Base Dough Recipe':isPowder?'Powder Base Recipe':(inv?.name||updated[rowIndex].item_name),ingredient_type:isBase?'base_dough':isPowder?'powder_base':(updated[rowIndex].ingredient_type||'topping'),unit:'g'};setEditingVariantRecipe(updated)}} style={{...inputStyle,marginBottom:0,fontSize:'10px'}}>
-        <option value="">Select recipe component</option>
-        <option value={BASE_DOUGH_RECIPE_LINK_ID}>Base Dough Recipe — {computeBaseDoughTotals().costPerGram.toFixed(4)}/g</option>
-        <option value={POWDER_BASE_RECIPE_LINK_ID}>Powder Base Recipe — {computePowderBaseTotals().costPerGram.toFixed(4)}/g</option>
-        {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} — {productionRecipeInventoryOptionLabel(it)}</option>)}
-       </select>
-       <input type="number" min="0" step="0.01" value={row.quantity_per_batch||''} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],quantity_per_batch:e.target.value,unit:'g'};setEditingVariantRecipe(updated)}} placeholder="g" style={{...inputStyle,marginBottom:0,fontSize:'10px'}}/>
-       <select value={row.ingredient_type||'topping'} disabled={[BASE_DOUGH_RECIPE_LINK_ID,POWDER_BASE_RECIPE_LINK_ID].includes(String(row.inventory_item_id))} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],ingredient_type:e.target.value};setEditingVariantRecipe(updated)}} style={{...inputStyle,marginBottom:0,fontSize:'10px'}}>{['topping','filling','glaze','frying fat','packaging ingredient','other'].map(type=><option key={type} value={type}>{type}</option>)}</select>
-       <input value={row.notes||''} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],notes:e.target.value};setEditingVariantRecipe(updated)}} placeholder="Optional production note" style={{...inputStyle,marginBottom:0,fontSize:'10px'}}/>
-       <button onClick={()=>setEditingVariantRecipe(editingVariantRecipe.filter((_,j)=>j!==rowIndex))} style={{ background:'#ca1b1b',color:'white',border:'none',borderRadius:'6px',padding:'8px 10px',cursor:'pointer',fontWeight:'900' }}>×</button>
-      </div>)}
-      <div style={{ display:'flex',gap:'7px',flexWrap:'wrap' }}><button style={{...btnBlack,background:'#4a90d9',width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px'}} onClick={()=>setEditingVariantRecipe([...editingVariantRecipe,{item_name:'',inventory_item_id:'',quantity_per_batch:'',unit:'g',ingredient_type:'topping',notes:''}])}>+ ADD COMPONENT</button><button style={{...btnGreen,width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px',opacity:savingRecipe?0.6:1}} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?'SAVING...':'SAVE RECIPE'}</button><button style={{...btnGray,width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px'}} onClick={()=>setSelectedRecipeVariantId(null)}>CANCEL</button></div>
+     {isEditingRecipe && <div style={{ background:'linear-gradient(180deg,#fffdf4,#f8f9fb)', border:'1px solid rgba(202,27,27,0.24)', borderTop:'5px solid #FDD412', borderRadius:'11px', padding:'11px', marginTop:'9px' }}>
+      <div style={{ background:'white', border:'1px solid rgba(202,27,27,0.18)', borderRadius:'9px', padding:'9px', marginBottom:'9px', display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'7px' }}>
+       {[
+        ['LIVE INGREDIENTS / BATCH', php(liveRecipeCost.ingredientBatchCost)],
+        ['LIVE INGREDIENTS / PIECE', php(liveRecipeCost.ingredientCost)],
+        ['LIVE MATERIALS / PIECE', php(liveRecipeCost.directMaterialCostPerPiece)],
+        ['PROJECTED FULL COST / PIECE', php(liveRecipeCost.totalCost)]
+       ].map(([label,value])=><div key={label} style={{ background:'#fff8dc', border:'1px solid rgba(253,212,18,0.75)', borderRadius:'8px', padding:'8px', textAlign:'center' }}><p style={{ color:'#806600', fontSize:'8px', fontWeight:'900', margin:'0 0 3px' }}>{label}</p><strong style={{ color:label.includes('FULL COST')?'#ca1b1b':'#1a1a2e', fontSize:'12px' }}>{value}</strong></div>)}
+      </div>
+      <p style={{ color:'#666', fontSize:'9px', margin:'0 0 8px', lineHeight:1.45 }}>Costs update instantly as you select an ingredient or type its grams. Cost per piece uses the current product yield of <strong>{positiveNum(v.pieces_per_batch,1)} pieces per batch</strong>.</p>
+      <div style={{ overflowX:'auto' }}>
+       <div style={{ minWidth:isMobile?'0':'980px' }}>
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 0.68fr 0.72fr 0.72fr 0.78fr 1.15fr auto', gap:'6px', color:'#666', fontSize:'8px', fontWeight:'900', marginBottom:'5px', padding:'0 2px' }}><span>COMPONENT</span><span>GRAMS/BATCH</span><span>COST/BATCH</span><span>COST/PIECE</span><span>TYPE</span><span>NOTES</span><span></span></div>
+        {editingVariantRecipe.map((row,rowIndex)=>{
+         const liveRow = liveRecipeCost.rowDetails[rowIndex] || {}
+         const hasComponent = !!String(row.inventory_item_id || '').trim()
+         const hasQuantity = safeNum(row.quantity_per_batch,0) > 0
+         const liveWarning = liveRow.warning || (!hasComponent?'Select a component.':!hasQuantity?'Enter grams used per batch.':'')
+         return <div key={rowIndex} style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 0.68fr 0.72fr 0.72fr 0.78fr 1.15fr auto', gap:'6px', marginBottom:'7px', alignItems:'center', background:liveWarning?'#fffaf0':'white', border:`1px solid ${liveWarning?'rgba(253,212,18,0.75)':'rgba(45,138,78,0.22)'}`, borderRadius:'8px', padding:'7px' }}>
+          <div>
+           <select value={row.inventory_item_id||''} onChange={e=>{const value=e.target.value;const inv=inventoryItems.find(it=>String(it.id)===String(value));const isBase=value===BASE_DOUGH_RECIPE_LINK_ID;const isPowder=value===POWDER_BASE_RECIPE_LINK_ID;const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],inventory_item_id:value,item_name:isBase?'Base Dough Recipe':isPowder?'Powder Base Recipe':(inv?.name||updated[rowIndex].item_name),ingredient_type:isBase?'base_dough':isPowder?'powder_base':(updated[rowIndex].ingredient_type||'topping'),unit:'g'};setEditingVariantRecipe(updated)}} style={{...inputStyle,marginBottom:0,fontSize:'10px'}}>
+            <option value="">Select recipe component</option>
+            <option value={BASE_DOUGH_RECIPE_LINK_ID}>Base Dough Recipe — {computeBaseDoughTotals().costPerGram.toFixed(4)}/g</option>
+            <option value={POWDER_BASE_RECIPE_LINK_ID}>Powder Base Recipe — {computePowderBaseTotals().costPerGram.toFixed(4)}/g</option>
+            {inventoryItems.filter(it=>getInventoryCategoryLabel(it)==='Raw Ingredients').map(it=><option key={it.id} value={it.id}>{it.name} — {productionRecipeInventoryOptionLabel(it)}</option>)}
+           </select>
+           {liveWarning && <p style={{ color:liveRow.warning?'#ca1b1b':'#806600', fontSize:'8px', fontWeight:'800', margin:'4px 2px 0', lineHeight:1.35 }}>{liveWarning}</p>}
+          </div>
+          <input type="number" min="0" step="0.01" value={row.quantity_per_batch||''} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],quantity_per_batch:e.target.value,unit:'g'};setEditingVariantRecipe(updated)}} placeholder="g" style={{...inputStyle,marginBottom:0,fontSize:'10px'}}/>
+          <div style={{ background:'#f7f7fb', borderRadius:'7px', padding:'9px 6px', textAlign:'right', minHeight:'34px', boxSizing:'border-box' }}><strong style={{ color:'#555', fontSize:'10px' }}>{hasComponent&&hasQuantity?php(liveRow.batchCost):'—'}</strong></div>
+          <div style={{ background:'#fff8dc', border:'1px solid rgba(253,212,18,0.65)', borderRadius:'7px', padding:'9px 6px', textAlign:'right', minHeight:'34px', boxSizing:'border-box' }}><strong style={{ color:'#ca1b1b', fontSize:'11px' }}>{hasComponent&&hasQuantity?php(liveRow.costPerPiece):'—'}</strong></div>
+          <select value={row.ingredient_type||'topping'} disabled={[BASE_DOUGH_RECIPE_LINK_ID,POWDER_BASE_RECIPE_LINK_ID].includes(String(row.inventory_item_id))} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],ingredient_type:e.target.value};setEditingVariantRecipe(updated)}} style={{...inputStyle,marginBottom:0,fontSize:'10px'}}>{['topping','filling','glaze','frying fat','packaging ingredient','other'].map(type=><option key={type} value={type}>{type}</option>)}</select>
+          <input value={row.notes||''} onChange={e=>{const updated=[...editingVariantRecipe];updated[rowIndex]={...updated[rowIndex],notes:e.target.value};setEditingVariantRecipe(updated)}} placeholder="Optional production note" style={{...inputStyle,marginBottom:0,fontSize:'10px'}}/>
+          <button onClick={()=>setEditingVariantRecipe(editingVariantRecipe.filter((_,j)=>j!==rowIndex))} style={{ background:'#ca1b1b',color:'white',border:'none',borderRadius:'6px',padding:'8px 10px',cursor:'pointer',fontWeight:'900' }}>×</button>
+         </div>
+        })}
+       </div>
+      </div>
+      <div style={{ display:'flex',gap:'7px',flexWrap:'wrap' }}><button style={{...btnBlack,background:'#1a1a2e',width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px'}} onClick={()=>setEditingVariantRecipe([...editingVariantRecipe,{item_name:'',inventory_item_id:'',quantity_per_batch:'',unit:'g',ingredient_type:'topping',notes:''}])}>+ ADD COMPONENT</button><button style={{...btnGreen,width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px',opacity:savingRecipe?0.6:1}} disabled={savingRecipe} onClick={()=>saveVariantRecipe(v.id)}>{savingRecipe?'SAVING...':'SAVE RECIPE'}</button><button style={{...btnGray,width:'auto',padding:'7px 11px',marginTop:0,fontSize:'10px'}} onClick={()=>setSelectedRecipeVariantId(null)}>CANCEL</button></div>
      </div>}
 
      {isExpanded && !isEditingRecipe && <div style={{ marginTop:'9px' }}>
