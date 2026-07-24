@@ -5739,6 +5739,25 @@ export default function App() {
  sheeter_lifespan_years:5,
  })
  const [savingCostSettings, setSavingCostSettings] = useState(false)
+ const [costPackagingProfiles, setCostPackagingProfiles] = useState([])
+ const [costLaborProfiles, setCostLaborProfiles] = useState([])
+ const [costDeliveryProfiles, setCostDeliveryProfiles] = useState([])
+ const [costProfilesLoading, setCostProfilesLoading] = useState(false)
+ const [costProfileSaving, setCostProfileSaving] = useState(false)
+ const [costProfileEditorType, setCostProfileEditorType] = useState('')
+ const [costProfileForm, setCostProfileForm] = useState({
+  id:null,
+  profile_name:'',
+  description:'',
+  cost_per_piece:'',
+  uses_company_default:false,
+  uses_company_allocation:true,
+  allocation_multiplier:'1',
+  fixed_cost_per_piece:'',
+  is_default:false,
+  is_active:true
+ })
+ const [advancedCostOverrideVariantId, setAdvancedCostOverrideVariantId] = useState(null)
  const [donutVariants, setDonutVariants] = useState([])
  const [variantsLoading, setVariantsLoading] = useState(false)
  const [baseDoughIngredients, setBaseDoughIngredients] = useState([])
@@ -9738,6 +9757,213 @@ Cancel = create batch record only for existing stock.`)
   }
   setSavingCostSettings(false)
  }
+
+ function getCostProfileTable(type = '') {
+  if (type === 'packaging') return 'cost_packaging_profiles'
+  if (type === 'labor') return 'cost_labor_profiles'
+  if (type === 'delivery') return 'cost_delivery_profiles'
+  return ''
+ }
+ function getCostProfileCollection(type = '') {
+  if (type === 'packaging') return costPackagingProfiles
+  if (type === 'labor') return costLaborProfiles
+  if (type === 'delivery') return costDeliveryProfiles
+  return []
+ }
+ function getDefaultCostProfile(type = '') {
+  const rows = getCostProfileCollection(type)
+  return rows.find(row => row?.is_default && row?.is_active !== false)
+   || rows.find(row => row?.is_active !== false)
+   || null
+ }
+ function getCostProfileById(type = '', profileId = '') {
+  if (!profileId) return null
+  return getCostProfileCollection(type).find(row => String(row?.id || '') === String(profileId)) || null
+ }
+ function resolveVariantCostProfile(variant = {}, type = '') {
+  const field = type === 'packaging'
+   ? 'packaging_profile_id'
+   : type === 'labor'
+    ? 'labor_profile_id'
+    : 'delivery_profile_id'
+  return getCostProfileById(type, variant?.[field]) || getDefaultCostProfile(type)
+ }
+ function getPackagingProfileCost(profile = null) {
+  if (!profile) return Math.max(0, safeNum(costSettings.packaging_cost_per_piece))
+  return profile?.uses_company_default
+   ? Math.max(0, safeNum(costSettings.packaging_cost_per_piece))
+   : Math.max(0, safeNum(profile?.cost_per_piece))
+ }
+ function getAllocatedProfileCost(profile = null, companyCostPerPiece = 0) {
+  if (!profile) return Math.max(0, safeNum(companyCostPerPiece))
+  if (profile?.uses_company_allocation !== false) {
+   return Math.max(0, safeNum(companyCostPerPiece)) * positiveNum(profile?.allocation_multiplier, 1)
+  }
+  return Math.max(0, safeNum(profile?.fixed_cost_per_piece))
+ }
+ function getCostProfileDisplay(type = '', profile = null) {
+  if (!profile) return 'Company default'
+  if (type === 'packaging') {
+   return profile.uses_company_default
+    ? `${profile.profile_name} · company default`
+    : `${profile.profile_name} · ${php(profile.cost_per_piece)}/pc`
+  }
+  return profile.uses_company_allocation !== false
+   ? `${profile.profile_name} · company allocation × ${positiveNum(profile.allocation_multiplier, 1).toFixed(2)}`
+   : `${profile.profile_name} · ${php(profile.fixed_cost_per_piece)}/pc fixed`
+ }
+ function resetCostProfileEditor(type = '') {
+  setCostProfileEditorType(type)
+  setCostProfileForm({
+   id:null,
+   profile_name:'',
+   description:'',
+   cost_per_piece:'',
+   uses_company_default:type === 'packaging',
+   uses_company_allocation:type !== 'packaging',
+   allocation_multiplier:'1',
+   fixed_cost_per_piece:'',
+   is_default:false,
+   is_active:true
+  })
+ }
+ function openCostProfileEditor(type = '', profile = null) {
+  setCostProfileEditorType(type)
+  setCostProfileForm({
+   id:profile?.id || null,
+   profile_name:profile?.profile_name || '',
+   description:profile?.description || '',
+   cost_per_piece:profile?.cost_per_piece ?? '',
+   uses_company_default:profile?.uses_company_default === true,
+   uses_company_allocation:profile?.uses_company_allocation !== false,
+   allocation_multiplier:profile?.allocation_multiplier ?? '1',
+   fixed_cost_per_piece:profile?.fixed_cost_per_piece ?? '',
+   is_default:profile?.is_default === true,
+   is_active:profile?.is_active !== false
+  })
+ }
+ async function loadCostProfiles(options = {}) {
+  if (!options?.silent) setCostProfilesLoading(true)
+  try {
+   const [packagingRes, laborRes, deliveryRes] = await Promise.all([
+    supabase.from('cost_packaging_profiles').select('*').order('is_default', { ascending:false }).order('profile_name'),
+    supabase.from('cost_labor_profiles').select('*').order('is_default', { ascending:false }).order('profile_name'),
+    supabase.from('cost_delivery_profiles').select('*').order('is_default', { ascending:false }).order('profile_name')
+   ])
+   const firstError = packagingRes.error || laborRes.error || deliveryRes.error
+   if (firstError) throw firstError
+   setCostPackagingProfiles(packagingRes.data || [])
+   setCostLaborProfiles(laborRes.data || [])
+   setCostDeliveryProfiles(deliveryRes.data || [])
+   setCostingLoadErrors(p => p.filter(x => !x.includes('cost profiles')))
+  } catch(error) {
+   console.warn('Cost profiles could not be loaded:', error)
+   setCostingLoadErrors(p => [...p.filter(x => !x.includes('cost profiles')), `cost profiles: ${error.message || error}`])
+  } finally {
+   if (!options?.silent) setCostProfilesLoading(false)
+  }
+ }
+ async function saveCostProfile() {
+  const type = costProfileEditorType
+  const table = getCostProfileTable(type)
+  const name = String(costProfileForm.profile_name || '').trim()
+  if (!table || !name) { showToast('Enter a profile name.', 'red'); return }
+  setCostProfileSaving(true)
+  try {
+   const basePayload = {
+    profile_name:name,
+    description:String(costProfileForm.description || '').trim() || null,
+    is_default:costProfileForm.is_default === true,
+    is_active:costProfileForm.is_active !== false,
+    updated_by:currentAdminLabel
+   }
+   const payload = type === 'packaging'
+    ? {
+       ...basePayload,
+       uses_company_default:costProfileForm.uses_company_default === true,
+       cost_per_piece:costProfileForm.uses_company_default ? 0 : Math.max(0, safeNum(costProfileForm.cost_per_piece))
+      }
+    : {
+       ...basePayload,
+       uses_company_allocation:costProfileForm.uses_company_allocation !== false,
+       allocation_multiplier:positiveNum(costProfileForm.allocation_multiplier, 1),
+       fixed_cost_per_piece:costProfileForm.uses_company_allocation !== false ? 0 : Math.max(0, safeNum(costProfileForm.fixed_cost_per_piece))
+      }
+   const result = costProfileForm.id
+    ? await supabase.from(table).update(payload).eq('id', costProfileForm.id).select('id').single()
+    : await supabase.from(table).insert(payload).select('id').single()
+   if (result.error) throw result.error
+   const savedProfileId = result.data?.id || costProfileForm.id
+   if (costProfileForm.is_default && savedProfileId) {
+    const { error:resetError } = await supabase.from(table).update({ is_default:false, updated_by:currentAdminLabel }).neq('id', savedProfileId)
+    if (resetError) throw resetError
+    const { error:confirmDefaultError } = await supabase.from(table).update({ is_default:true, updated_by:currentAdminLabel }).eq('id', savedProfileId)
+    if (confirmDefaultError) throw confirmDefaultError
+   }
+   await logAudit(
+    costProfileForm.id ? 'COST PROFILE UPDATED' : 'COST PROFILE CREATED',
+    currentAdminLabel,
+    'Costing',
+    `${type.toUpperCase()} | ${name}`
+   )
+   resetCostProfileEditor('')
+   await loadCostProfiles({ silent:true })
+   showToast(`${name} saved. Product costs were recalculated.`)
+  } catch(error) {
+   showToast(`Profile save failed: ${error.message || error}`, 'red')
+  } finally {
+   setCostProfileSaving(false)
+  }
+ }
+ async function toggleCostProfileActive(type = '', profile = null) {
+  const table = getCostProfileTable(type)
+  if (!table || !profile?.id) return
+  const nextActive = profile.is_active === false
+  const action = nextActive ? 'reactivate' : 'deactivate'
+  if (!window.confirm(`${action.charAt(0).toUpperCase()+action.slice(1)} ${profile.profile_name}? Assigned products retain their saved profile reference.`)) return
+  const { error } = await supabase.from(table).update({
+   is_active:nextActive,
+   is_default:nextActive ? profile.is_default : false,
+   updated_by:currentAdminLabel
+  }).eq('id', profile.id)
+  if (error) { showToast(`Profile update failed: ${error.message}`, 'red'); return }
+  await logAudit('COST PROFILE STATUS CHANGED', currentAdminLabel, 'Costing', `${type.toUpperCase()} | ${profile.profile_name} | ${nextActive?'ACTIVE':'INACTIVE'}`)
+  await loadCostProfiles({ silent:true })
+  showToast(`${profile.profile_name} ${nextActive?'reactivated':'deactivated'}.`)
+ }
+ function exportCostAnalysisCSV() {
+  const fin = computeFinancials()
+  const rows = fin.variantData.map(v => ({
+   Product:v.name,
+   Category:v.category || '',
+   'Pieces Per Batch':safeNum(v.pieces_per_batch),
+   'Ingredients Per Piece':moneyRound(v.ingredientCost),
+   'Packaging Per Piece':moneyRound(v.packagingPerPiece),
+   'Direct Materials Per Piece':moneyRound(v.directMaterialCostPerPiece),
+   'Labor Per Piece':moneyRound(v.laborPerPiece),
+   'Utilities Per Piece':moneyRound(v.utilitiesPerPiece),
+   'Factory Overhead Per Piece':moneyRound(v.factoryOverheadPerPiece),
+   'Equipment Depreciation Per Piece':moneyRound(v.depreciationPerPiece),
+   'Manufacturing Cost Per Piece':moneyRound(v.manufacturingCostPerPiece),
+   'Delivery Per Piece':moneyRound(v.deliveryPerPiece),
+   'Delivered Cost Per Piece':moneyRound(v.deliveredCostPerPiece),
+   'Admin OPEX Per Piece':moneyRound(v.adminOpexPerPiece),
+   'Loss Allowance Per Piece':moneyRound(v.lossAllowancePerPiece),
+   'Fully Loaded Cost Per Piece':moneyRound(v.totalCost),
+   'Company Price Now':moneyRound(v.currentResellerPrice),
+   'Current SRP':moneyRound(v.currentRetailPrice),
+   'Company Margin %':moneyRound(v.resellerChannelMarginPct),
+   'Required Company Price':moneyRound(v.recommendedCompanyPrice),
+   'Suggested SRP':moneyRound(v.recommendedRetailPrice),
+   'Packaging Profile':v.packagingProfile?.profile_name || 'Company default',
+   'Labor Profile':v.laborProfile?.profile_name || 'Company default',
+   'Delivery Profile':v.deliveryProfile?.profile_name || 'Company default',
+   Status:v.statusLabel
+  }))
+  downloadTextFile(`product-cost-analysis-${today}.csv`, rowsToCSV(rows), 'text/csv')
+  showToast('Product cost analysis CSV exported.')
+ }
+
  async function loadDonutVariants() {
  setVariantsLoading(true)
  try {
@@ -9780,8 +10006,8 @@ Cancel = create batch record only for existing stock.`)
   const { error } = await supabase.from('donut_variants').update(cleanFields).eq('id', id)
   if (error) {
    const message = String(error?.message || error)
-   if (['packaging_cost_per_piece','labor_cost_per_batch','delivery_cost_per_piece'].some(column=>message.includes(column))) {
-    showToast('Run the supplied professional costing SQL migration in Supabase before saving product-specific packaging, labor, and delivery costs.', 'red')
+   if (['packaging_cost_per_piece','labor_cost_per_batch','delivery_cost_per_piece','packaging_profile_id','labor_profile_id','delivery_profile_id','cost_override_notes'].some(column=>message.includes(column))) {
+    showToast('Run the centralized costing profiles migration in Supabase before saving product profiles or advanced overrides.', 'red')
    } else showToast('Product update failed: '+message,'red')
    return
   }
@@ -10133,8 +10359,9 @@ Cancel = create batch record only for existing stock.`)
    operatingCostPerPiece:dailyOperatingCost / totalDailyPieces,
   }
  }
- function computeVariantCost(variantId, piecesPerBatch, recipeRowsOverride = null) {
-  const variant = donutVariants.find(v => String(v.id) === String(variantId)) || {}
+ function computeVariantCost(variantId, piecesPerBatch, recipeRowsOverride = null, variantOverride = null) {
+  const savedVariant = donutVariants.find(v => String(v.id) === String(variantId)) || {}
+  const variant = variantOverride ? {...savedVariant,...variantOverride} : savedVariant
   const safePiecesPerBatch = positiveNum(piecesPerBatch || variant?.pieces_per_batch, 1)
   // When editing, use the current unsaved rows so costs react immediately while
   // grams and components are being entered. Saved rows remain the default.
@@ -10175,21 +10402,38 @@ Cancel = create batch record only for existing stock.`)
   const ingredientBatchCost = rowDetails.reduce((sum, row) => sum + safeNum(row.batchCost), 0)
   const ingredientCost = ingredientBatchCost / safePiecesPerBatch
   const allocation = computeCostAllocationSummary()
-  const packagingPerPiece = safeNum(variant.packaging_cost_per_piece) > 0
-   ? safeNum(variant.packaging_cost_per_piece)
-   : Math.max(0, safeNum(costSettings.packaging_cost_per_piece))
-  const laborPerPiece = safeNum(variant.labor_cost_per_batch) > 0
-   ? safeNum(variant.labor_cost_per_batch) / safePiecesPerBatch
-   : allocation.laborPerPiece
-  const deliveryPerPiece = safeNum(variant.delivery_cost_per_piece) > 0
-   ? safeNum(variant.delivery_cost_per_piece)
-   : allocation.deliveryPerPiece
+  const packagingProfile = resolveVariantCostProfile(variant, 'packaging')
+  const laborProfile = resolveVariantCostProfile(variant, 'labor')
+  const deliveryProfile = resolveVariantCostProfile(variant, 'delivery')
+  const packagingOverridePerPiece = Math.max(0, safeNum(variant.packaging_cost_per_piece))
+  const laborOverridePerBatch = Math.max(0, safeNum(variant.labor_cost_per_batch))
+  const deliveryOverridePerPiece = Math.max(0, safeNum(variant.delivery_cost_per_piece))
+  const packagingPerPiece = packagingOverridePerPiece > 0
+   ? packagingOverridePerPiece
+   : getPackagingProfileCost(packagingProfile)
+  const laborPerPiece = laborOverridePerBatch > 0
+   ? laborOverridePerBatch / safePiecesPerBatch
+   : getAllocatedProfileCost(laborProfile, allocation.laborPerPiece)
+  const deliveryPerPiece = deliveryOverridePerPiece > 0
+   ? deliveryOverridePerPiece
+   : getAllocatedProfileCost(deliveryProfile, allocation.deliveryPerPiece)
   const utilitiesPerPiece = allocation.utilitiesPerPiece
   const factoryOverheadPerPiece = allocation.factoryOverheadPerPiece
   const adminOpexPerPiece = allocation.adminOpexPerPiece
   const depreciationPerPiece = allocation.equipmentDepreciationPerPiece
   const directMaterialCostPerPiece = ingredientCost + packagingPerPiece
-  const subtotalBeforeLoss = directMaterialCostPerPiece + laborPerPiece + utilitiesPerPiece + factoryOverheadPerPiece + deliveryPerPiece + adminOpexPerPiece + depreciationPerPiece
+  const manufacturingCostPerPiece = directMaterialCostPerPiece + laborPerPiece + utilitiesPerPiece + factoryOverheadPerPiece + depreciationPerPiece
+  const deliveredCostPerPiece = manufacturingCostPerPiece + deliveryPerPiece
+  const subtotalBeforeLoss = deliveredCostPerPiece + adminOpexPerPiece
+  const packagingCostSource = packagingOverridePerPiece > 0
+   ? 'Product override'
+   : getCostProfileDisplay('packaging', packagingProfile)
+  const laborCostSource = laborOverridePerBatch > 0
+   ? `Product override · ${php(laborOverridePerBatch)}/batch`
+   : getCostProfileDisplay('labor', laborProfile)
+  const deliveryCostSource = deliveryOverridePerPiece > 0
+   ? 'Product override'
+   : getCostProfileDisplay('delivery', deliveryProfile)
   const wastePct = clampCostingPercentage(costSettings.waste_percentage)
   const returnPct = clampCostingPercentage(costSettings.expected_return_percentage)
   const sellableYieldFactor = Math.max(0.01, (1 - wastePct / 100) * (1 - returnPct / 100))
@@ -10224,6 +10468,15 @@ Cancel = create batch record only for existing stock.`)
    rowDetails,
    ingredientBatchCost,
    ingredientCost,
+   packagingProfile,
+   laborProfile,
+   deliveryProfile,
+   packagingCostSource,
+   laborCostSource,
+   deliveryCostSource,
+   packagingOverridePerPiece,
+   laborOverridePerBatch,
+   deliveryOverridePerPiece,
    packagingPerPiece,
    directMaterialCostPerPiece,
    laborPerPiece,
@@ -10232,6 +10485,8 @@ Cancel = create batch record only for existing stock.`)
    deliveryPerPiece,
    adminOpexPerPiece,
    depreciationPerPiece,
+   manufacturingCostPerPiece,
+   deliveredCostPerPiece,
    fixedPerPiece:utilitiesPerPiece + factoryOverheadPerPiece + deliveryPerPiece + adminOpexPerPiece + depreciationPerPiece,
    subtotalBeforeLoss,
    wastePct,
@@ -30343,7 +30598,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='contracts') { loadContracts(); loadEmployees(); setTimeout(()=>autoGenerateMissingContracts({ silent:true }), 800) }
  if(key==='documents') { loadEmployees(); loadCompanyDocumentRecords() }
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
- if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadProductionLogs(); loadInventoryItems() }
+ if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadCostProfiles(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
  if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
@@ -36023,8 +36278,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Sub-navigation */}
- <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'8px', marginBottom:'20px' }}>
- {[['dashboard','\uD83D\uDCCA Dashboard'],['recipes',' Recipes'],['production',' Production'],['settings',' Settings']].map(([v,l])=>(
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(6,1fr)', gap:'8px', marginBottom:'20px' }}>
+ {[['dashboard','Dashboard'],['recipes','Product Cost'],['settings','Cost Allocation'],['profiles','Cost Profiles'],['analysis','Cost Analysis'],['production','Production']].map(([v,l])=>(
  <button key={v} onClick={()=>setCostingView(v)} style={{ padding:'10px', borderRadius:'10px', border:`2px solid ${costingView===v?'#ca1b1b':'#ddd'}`, background:costingView===v?'#ca1b1b':'white', color:costingView===v?'white':'#555', fontWeight:'bold', fontSize:'12px', cursor:'pointer' }}>{l}</button>
  ))}
  </div>
@@ -36329,22 +36584,68 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>SUGGESTED SRP</p><strong style={{ color:'#2d8a4e', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.recommendedRetailPrice):'—'}</strong></div>
       <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end' }}>
        <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>setExpandedRecipeVariantId(isExpanded?null:v.id)}>{isExpanded?'HIDE':'DETAILS'}</button>
-       <button style={{...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setEditingVariantId(v.id);setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price, packaging_cost_per_piece:v.packaging_cost_per_piece || '', labor_cost_per_batch:v.labor_cost_per_batch || '', delivery_cost_per_piece:v.delivery_cost_per_piece || '' })}}>PRICE SETUP</button>
+       <button style={{...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setEditingVariantId(v.id);setAdvancedCostOverrideVariantId(null);setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price, packaging_profile_id:v.packaging_profile_id || getDefaultCostProfile('packaging')?.id || '', labor_profile_id:v.labor_profile_id || getDefaultCostProfile('labor')?.id || '', delivery_profile_id:v.delivery_profile_id || getDefaultCostProfile('delivery')?.id || '', packaging_cost_per_piece:v.packaging_cost_per_piece || '', labor_cost_per_batch:v.labor_cost_per_batch || '', delivery_cost_per_piece:v.delivery_cost_per_piece || '', cost_override_notes:v.cost_override_notes || '' })}}>PRODUCT SETUP</button>
        <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setSelectedRecipeVariantId(v.id);setExpandedRecipeVariantId(v.id);setEditingVariantRecipe(recipeRows.length?recipeRows.map(r=>({...r,quantity_per_batch:productionRecipeQuantityGrams(r),unit:'g'})):[{item_name:'',inventory_item_id:'',quantity_per_batch:'',unit:'g',ingredient_type:'topping',notes:''}])}}>{recipeRows.length?'EDIT RECIPE':'ADD RECIPE'}</button>
       </div>
      </div>
 
-     {isEditingProduct && <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'9px', padding:'10px', marginTop:'9px' }}>
-      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'8px' }}>
-       <div><label style={lblS}>Good pieces / batch</label><input type="number" min="1" value={editVariantFields.pieces_per_batch??v.pieces_per_batch} onChange={e=>setEditVariantFields(p=>({...p,pieces_per_batch:e.target.value}))} style={{...inputStyle,marginBottom:0}}/></div>
-       <div><label style={lblS}>Current retail price</label><input type="number" min="0" step="0.01" value={editVariantFields.selling_price??v.selling_price} onChange={e=>setEditVariantFields(p=>({...p,selling_price:e.target.value}))} style={{...inputStyle,marginBottom:0}}/></div>
-       <div><label style={lblS}>Packaging / piece</label><input type="number" min="0" step="0.01" value={editVariantFields.packaging_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,packaging_cost_per_piece:e.target.value}))} placeholder={`Default ${php(costSettings.packaging_cost_per_piece)}`} style={{...inputStyle,marginBottom:0}}/></div>
-       <div><label style={lblS}>Labor / batch override</label><input type="number" min="0" step="0.01" value={editVariantFields.labor_cost_per_batch??''} onChange={e=>setEditVariantFields(p=>({...p,labor_cost_per_batch:e.target.value}))} placeholder="Blank = allocated average" style={{...inputStyle,marginBottom:0}}/></div>
-       <div><label style={lblS}>Delivery / piece override</label><input type="number" min="0" step="0.01" value={editVariantFields.delivery_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,delivery_cost_per_piece:e.target.value}))} placeholder="Blank = allocated average" style={{...inputStyle,marginBottom:0}}/></div>
+     {isEditingProduct && (()=>{
+      const previewVariant = {
+       ...v,
+       pieces_per_batch:positiveNum(editVariantFields.pieces_per_batch || v.pieces_per_batch),
+       selling_price:Math.max(0, safeNum(editVariantFields.selling_price ?? v.selling_price)),
+       packaging_profile_id:editVariantFields.packaging_profile_id || null,
+       labor_profile_id:editVariantFields.labor_profile_id || null,
+       delivery_profile_id:editVariantFields.delivery_profile_id || null,
+       packaging_cost_per_piece:Math.max(0, safeNum(editVariantFields.packaging_cost_per_piece)),
+       labor_cost_per_batch:Math.max(0, safeNum(editVariantFields.labor_cost_per_batch)),
+       delivery_cost_per_piece:Math.max(0, safeNum(editVariantFields.delivery_cost_per_piece)),
+       cost_override_notes:editVariantFields.cost_override_notes || ''
+      }
+      const previewCost = computeVariantCost(v.id, previewVariant.pieces_per_batch, null, previewVariant)
+      const advancedOpen = String(advancedCostOverrideVariantId || '') === String(v.id)
+      return <div style={{ background:'linear-gradient(180deg,#fff8dc,#fffdf4)', border:'1px solid #f5c518', borderTop:'5px solid #ca1b1b', borderRadius:'11px', padding:'12px', marginTop:'9px' }}>
+       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+        <div><strong style={{color:'#ca1b1b',fontSize:'12px'}}>Product Cost Assignment</strong><p style={{color:'#806600',fontSize:'9px',margin:'3px 0 0',lineHeight:1.45}}>Assign reusable profiles. Every product automatically pulls the current company allocation; advanced overrides are reserved for genuine product exceptions.</p></div>
+        <button style={{...btnGray,width:'auto',padding:'6px 10px',marginTop:0,fontSize:'9px'}} onClick={()=>setCostingView('profiles')}>MANAGE PROFILES</button>
+       </div>
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))', gap:'8px' }}>
+        <div><label style={lblS}>Good pieces / batch</label><input type="number" min="1" value={editVariantFields.pieces_per_batch??v.pieces_per_batch} onChange={e=>setEditVariantFields(p=>({...p,pieces_per_batch:e.target.value}))} style={{...inputStyle,marginBottom:0}}/></div>
+        <div><label style={lblS}>Current retail price</label><input type="number" min="0" step="0.01" value={editVariantFields.selling_price??v.selling_price} onChange={e=>setEditVariantFields(p=>({...p,selling_price:e.target.value}))} style={{...inputStyle,marginBottom:0}}/></div>
+        <div><label style={lblS}>Packaging profile</label><select value={editVariantFields.packaging_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,packaging_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Company default profile</option>{costPackagingProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_default?'company default':`${php(row.cost_per_piece)}/pc`}</option>)}</select></div>
+        <div><label style={lblS}>Labor profile</label><select value={editVariantFields.labor_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,labor_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Standard company labor</option>{costLaborProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_allocation!==false?`×${positiveNum(row.allocation_multiplier,1).toFixed(2)}`:`${php(row.fixed_cost_per_piece)}/pc`}</option>)}</select></div>
+        <div><label style={lblS}>Delivery profile</label><select value={editVariantFields.delivery_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,delivery_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Standard company delivery</option>{costDeliveryProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_allocation!==false?`×${positiveNum(row.allocation_multiplier,1).toFixed(2)}`:`${php(row.fixed_cost_per_piece)}/pc`}</option>)}</select></div>
+       </div>
+
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'7px', marginTop:'10px' }}>
+        {[
+         ['Ingredients',previewCost.ingredientCost],
+         ['Packaging',previewCost.packagingPerPiece],
+         ['Labor',previewCost.laborPerPiece],
+         ['Production O/H',previewCost.utilitiesPerPiece+previewCost.factoryOverheadPerPiece+previewCost.depreciationPerPiece],
+         ['Delivery',previewCost.deliveryPerPiece],
+         ['Full cost',previewCost.totalCost]
+        ].map(([label,value])=><div key={label} style={{background:'white',border:'1px solid rgba(202,27,27,0.15)',borderRadius:'8px',padding:'8px',textAlign:'center'}}><p style={{color:'#888',fontSize:'8px',margin:'0 0 2px'}}>{label}</p><strong style={{color:label==='Full cost'?'#ca1b1b':'#1a1a2e',fontSize:'11px'}}>{php(value)}/pc</strong></div>)}
+       </div>
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'7px', marginTop:'8px' }}>
+        {[['Packaging source',previewCost.packagingCostSource],['Labor source',previewCost.laborCostSource],['Delivery source',previewCost.deliveryCostSource]].map(([label,value])=><div key={label} style={{background:'#fff',borderRadius:'8px',padding:'7px 9px'}}><p style={{color:'#999',fontSize:'8px',margin:'0 0 2px'}}>{label}</p><strong style={{color:'#555',fontSize:'9px'}}>{value}</strong></div>)}
+       </div>
+
+       <div style={{ marginTop:'9px' }}>
+        <button style={{...btnBlack,width:'auto',padding:'7px 11px',marginTop:0,fontSize:'9px'}} onClick={()=>setAdvancedCostOverrideVariantId(advancedOpen?null:v.id)}>{advancedOpen?'HIDE ADVANCED OVERRIDES':'ADVANCED COST OVERRIDES'}</button>
+       </div>
+       {advancedOpen && <div style={{background:'#fff5f5',border:'1px solid rgba(202,27,27,0.24)',borderRadius:'9px',padding:'10px',marginTop:'8px'}}>
+        <p style={{color:'#ca1b1b',fontSize:'9px',fontWeight:'900',margin:'0 0 7px'}}>Use only when this product cannot reasonably use its assigned profile. Blank or zero returns to the profile calculation.</p>
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'8px'}}>
+         <div><label style={lblS}>Packaging / piece override</label><input type="number" min="0" step="0.01" value={editVariantFields.packaging_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,packaging_cost_per_piece:e.target.value}))} placeholder="Blank = packaging profile" style={{...inputStyle,marginBottom:0}}/></div>
+         <div><label style={lblS}>Labor / batch override</label><input type="number" min="0" step="0.01" value={editVariantFields.labor_cost_per_batch??''} onChange={e=>setEditVariantFields(p=>({...p,labor_cost_per_batch:e.target.value}))} placeholder="Blank = labor profile" style={{...inputStyle,marginBottom:0}}/></div>
+         <div><label style={lblS}>Delivery / piece override</label><input type="number" min="0" step="0.01" value={editVariantFields.delivery_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,delivery_cost_per_piece:e.target.value}))} placeholder="Blank = delivery profile" style={{...inputStyle,marginBottom:0}}/></div>
+        </div>
+        <label style={{...lblS,marginTop:'8px'}}>Override justification</label><input value={editVariantFields.cost_override_notes || ''} onChange={e=>setEditVariantFields(p=>({...p,cost_override_notes:e.target.value}))} placeholder="Example: premium box, heavy manual finishing, special far-route delivery" style={{...inputStyle,marginBottom:0}}/>
+       </div>}
+       <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', marginTop:'10px' }}><button style={{...btnGreen,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>updateVariant(v.id,{ pieces_per_batch:previewVariant.pieces_per_batch, selling_price:previewVariant.selling_price, packaging_profile_id:previewVariant.packaging_profile_id || null, labor_profile_id:previewVariant.labor_profile_id || null, delivery_profile_id:previewVariant.delivery_profile_id || null, packaging_cost_per_piece:previewVariant.packaging_cost_per_piece, labor_cost_per_batch:previewVariant.labor_cost_per_batch, delivery_cost_per_piece:previewVariant.delivery_cost_per_piece, cost_override_notes:String(previewVariant.cost_override_notes || '').trim() || null })}>SAVE PRODUCT SETUP</button><button style={{...btnGray,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>{setEditingVariantId(null);setAdvancedCostOverrideVariantId(null)}}>CANCEL</button></div>
       </div>
-      <p style={{ color:'#806600', fontSize:'9px', margin:'7px 0' }}>Use overrides only when this product genuinely has different packaging, labor handling, or route cost. Blank/zero uses the company-wide allocation.</p>
-      <div style={{ display:'flex', gap:'7px' }}><button style={{...btnGreen,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>updateVariant(v.id,{ pieces_per_batch:positiveNum(editVariantFields.pieces_per_batch||v.pieces_per_batch), selling_price:Math.max(0,safeNum(editVariantFields.selling_price??v.selling_price)), packaging_cost_per_piece:Math.max(0,safeNum(editVariantFields.packaging_cost_per_piece)), labor_cost_per_batch:Math.max(0,safeNum(editVariantFields.labor_cost_per_batch)), delivery_cost_per_piece:Math.max(0,safeNum(editVariantFields.delivery_cost_per_piece)) })}>SAVE PRODUCT SETUP</button><button style={{...btnGray,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>setEditingVariantId(null)}>CANCEL</button></div>
-     </div>}
+     })()}
 
      {isEditingRecipe && <div style={{ background:'linear-gradient(180deg,#fffdf4,#f8f9fb)', border:'1px solid rgba(202,27,27,0.24)', borderTop:'5px solid #FDD412', borderRadius:'11px', padding:'11px', marginTop:'9px' }}>
       <div style={{ background:'white', border:'1px solid rgba(202,27,27,0.18)', borderRadius:'9px', padding:'9px', marginBottom:'9px', display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'7px' }}>
@@ -36411,6 +36712,125 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  })}
  </div>
  )}
+
+
+ {/* COST PROFILES VIEW */}
+ {costingView==='profiles' && (()=>{
+  const allocation = computeCostAllocationSummary()
+  const profileSections = [
+   {
+    type:'packaging',
+    title:'Packaging Profiles',
+    description:'Reusable packaging cost per piece. Use Company Default when products share the standard packaging allocation.',
+    rows:costPackagingProfiles,
+    baseCost:safeNum(costSettings.packaging_cost_per_piece),
+    color:'#ca1b1b'
+   },
+   {
+    type:'labor',
+    title:'Labor Profiles',
+    description:'Adjust the company labor allocation using a multiplier, or use a fixed labor cost per piece.',
+    rows:costLaborProfiles,
+    baseCost:allocation.laborPerPiece,
+    color:'#FDD412'
+   },
+   {
+    type:'delivery',
+    title:'Delivery Profiles',
+    description:'Assign standard, pickup, local, or far-route delivery behavior without repeating costs on every product.',
+    rows:costDeliveryProfiles,
+    baseCost:allocation.deliveryPerPiece,
+    color:'#1a1a2e'
+   }
+  ]
+  const editorType = costProfileEditorType
+  return <div>
+   <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'12px',flexWrap:'wrap',marginBottom:'14px'}}>
+    <div><h3 style={{color:'#ca1b1b',fontSize:'15px',margin:'0 0 4px'}}>Reusable Product Cost Profiles</h3><p style={{color:'#666',fontSize:'10px',lineHeight:1.5,margin:0,maxWidth:'880px'}}>Define shared packaging, labor-handling, and delivery profiles once. Product variants select a profile and automatically recalculate whenever the company allocation or profile changes.</p></div>
+    <button style={{...btnGray,width:'auto',padding:'8px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>{loadCostProfiles();loadDonutVariants()}}>REFRESH PROFILES</button>
+   </div>
+
+   <div style={{background:'linear-gradient(135deg,#1a1a2e,#2d1515)',borderRadius:'14px',padding:'14px',color:'white',marginBottom:'14px'}}>
+    <p style={{color:'#FDD412',fontSize:'9px',fontWeight:'900',letterSpacing:'1px',margin:'0 0 8px'}}>CURRENT COMPANY ALLOCATION</p>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)',gap:'8px'}}>
+     {[['Default packaging',safeNum(costSettings.packaging_cost_per_piece)],['Standard labor',allocation.laborPerPiece],['Standard delivery',allocation.deliveryPerPiece],['Operating OPEX',allocation.operatingCostPerPiece]].map(([label,value])=><div key={label}><p style={{color:'rgba(255,255,255,.6)',fontSize:'8px',margin:'0 0 2px'}}>{label}</p><strong style={{fontSize:'13px'}}>{php(value)}/pc</strong></div>)}
+    </div>
+   </div>
+
+   {editorType && <div style={{background:'linear-gradient(180deg,#fff8dc,#ffffff)',border:'2px solid #FDD412',borderTop:'6px solid #ca1b1b',borderRadius:'14px',padding:'14px',marginBottom:'14px'}}>
+    <div style={{display:'flex',justifyContent:'space-between',gap:'8px',alignItems:'center',marginBottom:'10px'}}><div><h4 style={{color:'#ca1b1b',fontSize:'13px',margin:'0 0 3px'}}>{costProfileForm.id?'Edit':'New'} {editorType.charAt(0).toUpperCase()+editorType.slice(1)} Profile</h4><p style={{color:'#777',fontSize:'9px',margin:0}}>Profile changes automatically flow to every assigned product.</p></div><button style={{...btnGray,width:'auto',padding:'6px 10px',marginTop:0,fontSize:'9px'}} onClick={()=>resetCostProfileEditor('')}>CLOSE</button></div>
+    <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1.2fr 1.8fr',gap:'9px'}}>
+     <div><label style={lblS}>Profile name</label><input value={costProfileForm.profile_name} onChange={e=>setCostProfileForm(p=>({...p,profile_name:e.target.value}))} placeholder="Example: 12-pc Box" style={inputStyle}/></div>
+     <div><label style={lblS}>Description</label><input value={costProfileForm.description} onChange={e=>setCostProfileForm(p=>({...p,description:e.target.value}))} placeholder="When should this profile be used?" style={inputStyle}/></div>
+    </div>
+    {editorType==='packaging' ? <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr',gap:'9px'}}>
+     <div><label style={lblS}>Cost method</label><select value={costProfileForm.uses_company_default?'company':'fixed'} onChange={e=>setCostProfileForm(p=>({...p,uses_company_default:e.target.value==='company'}))} style={inputStyle}><option value="company">Use company default packaging</option><option value="fixed">Use fixed packaging cost per piece</option></select></div>
+     <div><label style={lblS}>Fixed packaging cost / piece</label><input type="number" min="0" step="0.01" disabled={costProfileForm.uses_company_default} value={costProfileForm.cost_per_piece} onChange={e=>setCostProfileForm(p=>({...p,cost_per_piece:e.target.value}))} placeholder={php(costSettings.packaging_cost_per_piece)} style={{...inputStyle,opacity:costProfileForm.uses_company_default ? 0.55 : 1}}/></div>
+    </div> : <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'9px'}}>
+     <div><label style={lblS}>Cost method</label><select value={costProfileForm.uses_company_allocation?'company':'fixed'} onChange={e=>setCostProfileForm(p=>({...p,uses_company_allocation:e.target.value==='company'}))} style={inputStyle}><option value="company">Use company allocation</option><option value="fixed">Use fixed cost per piece</option></select></div>
+     <div><label style={lblS}>Company allocation multiplier</label><input type="number" min="0.01" step="0.05" disabled={!costProfileForm.uses_company_allocation} value={costProfileForm.allocation_multiplier} onChange={e=>setCostProfileForm(p=>({...p,allocation_multiplier:e.target.value}))} style={{...inputStyle,opacity:costProfileForm.uses_company_allocation?1:.55}}/></div>
+     <div><label style={lblS}>Fixed cost / piece</label><input type="number" min="0" step="0.01" disabled={costProfileForm.uses_company_allocation} value={costProfileForm.fixed_cost_per_piece} onChange={e=>setCostProfileForm(p=>({...p,fixed_cost_per_piece:e.target.value}))} style={{...inputStyle,opacity:costProfileForm.uses_company_allocation ? 0.55 : 1}}/></div>
+    </div>}
+    <div style={{display:'flex',gap:'14px',flexWrap:'wrap',alignItems:'center',marginBottom:'10px'}}>
+     <label style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'10px',fontWeight:'800',color:'#555'}}><input type="checkbox" checked={costProfileForm.is_default} onChange={e=>setCostProfileForm(p=>({...p,is_default:e.target.checked}))}/> Default profile for unassigned products</label>
+     <label style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'10px',fontWeight:'800',color:'#555'}}><input type="checkbox" checked={costProfileForm.is_active} onChange={e=>setCostProfileForm(p=>({...p,is_active:e.target.checked}))}/> Active</label>
+    </div>
+    <button style={{...btnGreen,width:'auto',padding:'8px 16px',marginTop:0,opacity:costProfileSaving?.6:1}} disabled={costProfileSaving} onClick={saveCostProfile}>{costProfileSaving?'SAVING PROFILE...':'SAVE PROFILE'}</button>
+   </div>}
+
+   {costProfilesLoading && <p style={{color:'#888',fontSize:'11px'}}>Loading cost profiles...</p>}
+   <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,minmax(0,1fr))',gap:'14px',alignItems:'start'}}>
+    {profileSections.map(section=><div key={section.type} style={{background:'white',border:'1px solid rgba(202,27,27,.18)',borderTop:`6px solid ${section.color}`,borderRadius:'14px',padding:'12px',boxShadow:'0 5px 16px rgba(26,26,46,.06)'}}>
+     <div style={{display:'flex',justifyContent:'space-between',gap:'8px',alignItems:'flex-start',marginBottom:'9px'}}><div><h4 style={{color:'#1a1a2e',fontSize:'12px',margin:'0 0 3px'}}>{section.title}</h4><p style={{color:'#888',fontSize:'8px',lineHeight:1.45,margin:0}}>{section.description}</p></div><button style={{...btnYellow,width:'auto',padding:'6px 9px',marginTop:0,fontSize:'8px'}} onClick={()=>resetCostProfileEditor(section.type)}>+ ADD</button></div>
+     {(section.rows||[]).length===0 && <p style={{color:'#aaa',fontSize:'10px'}}>No profiles yet.</p>}
+     {(section.rows||[]).map(profile=>{
+      const resolvedCost = section.type==='packaging'
+       ? getPackagingProfileCost(profile)
+       : getAllocatedProfileCost(profile, section.baseCost)
+      return <div key={profile.id} style={{background:profile.is_active===false?'#f3f3f3':'linear-gradient(180deg,#fffdf4,#ffffff)',border:`1px solid ${profile.is_default?'#FDD412':'#eee'}`,borderRadius:'10px',padding:'9px',marginBottom:'7px',opacity:profile.is_active===false ? 0.62 : 1}}>
+       <div style={{display:'flex',justifyContent:'space-between',gap:'7px',alignItems:'flex-start'}}><div><div style={{display:'flex',gap:'5px',flexWrap:'wrap',alignItems:'center'}}><strong style={{color:'#333',fontSize:'10px'}}>{profile.profile_name}</strong>{profile.is_default&&<Badge label="DEFAULT" color="orange"/>}{profile.is_active===false&&<Badge label="INACTIVE" color="gray"/>}</div><p style={{color:'#888',fontSize:'8px',lineHeight:1.4,margin:'3px 0 0'}}>{profile.description || 'No description'}</p></div><strong style={{color:'#ca1b1b',fontSize:'11px',whiteSpace:'nowrap'}}>{php(resolvedCost)}/pc</strong></div>
+       <p style={{color:'#666',fontSize:'8px',margin:'5px 0'}}>{getCostProfileDisplay(section.type, profile)}</p>
+       <div style={{display:'flex',gap:'5px',flexWrap:'wrap'}}><button style={{...btnGray,width:'auto',padding:'5px 8px',marginTop:0,fontSize:'8px'}} onClick={()=>openCostProfileEditor(section.type,profile)}>EDIT</button><button style={{...btnBlack,width:'auto',padding:'5px 8px',marginTop:0,fontSize:'8px'}} onClick={()=>toggleCostProfileActive(section.type,profile)}>{profile.is_active===false?'REACTIVATE':'DEACTIVATE'}</button></div>
+      </div>
+     })}
+    </div>)}
+   </div>
+  </div>
+ })()}
+
+ {/* COST ANALYSIS VIEW */}
+ {costingView==='analysis' && (()=>{
+  const fin = computeFinancials()
+  const ready = fin.variantData.filter(row=>row.isCostReady)
+  const weightedAverage = key => ready.length ? ready.reduce((sum,row)=>sum+safeNum(row[key]),0)/ready.length : 0
+  return <div>
+   <div style={{display:'flex',justifyContent:'space-between',gap:'10px',alignItems:'flex-start',flexWrap:'wrap',marginBottom:'14px'}}><div><h3 style={{color:'#ca1b1b',fontSize:'15px',margin:'0 0 4px'}}>Product Cost Analysis</h3><p style={{color:'#666',fontSize:'10px',lineHeight:1.5,margin:0}}>Separate direct materials, manufacturing cost, delivered cost, and fully loaded cost before evaluating company and retail pricing.</p></div><div style={{display:'flex',gap:'7px',flexWrap:'wrap'}}><button style={{...btnBlack,width:'auto',padding:'8px 12px',marginTop:0,fontSize:'10px'}} onClick={exportCostAnalysisCSV}>EXPORT COST CSV</button><button style={{...btnGray,width:'auto',padding:'8px 12px',marginTop:0,fontSize:'10px'}} onClick={printCostingReport}>PRINT REPORT</button></div></div>
+   <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)',gap:'8px',marginBottom:'14px'}}>
+    {[
+     ['Avg ingredients',weightedAverage('ingredientCost')],
+     ['Avg direct materials',weightedAverage('directMaterialCostPerPiece')],
+     ['Avg manufacturing',weightedAverage('manufacturingCostPerPiece')],
+     ['Avg delivered cost',weightedAverage('deliveredCostPerPiece')],
+     ['Avg fully loaded',weightedAverage('totalCost')],
+     ['Cost-ready products',`${ready.length}/${fin.variantData.length}`]
+    ].map(([label,value])=><div key={label} style={{background:'white',border:'1px solid rgba(202,27,27,.18)',borderTop:'4px solid #FDD412',borderRadius:'10px',padding:'10px'}}><p style={{color:'#888',fontSize:'8px',margin:'0 0 3px'}}>{label}</p><strong style={{color:label.includes('fully')?'#ca1b1b':'#1a1a2e',fontSize:'13px'}}>{typeof value==='number'?`${php(value)}/pc`:value}</strong></div>)}
+   </div>
+   <div style={{overflowX:'auto',border:'1px solid rgba(202,27,27,.18)',borderRadius:'12px',background:'white'}}>
+    <table style={{width:'100%',borderCollapse:'collapse',minWidth:'1780px'}}>
+     <thead><tr style={{background:'#1a1a2e',color:'white'}}>{['Product','Ingredients','Packaging','Direct Materials','Labor','Production O/H','Manufacturing','Delivery','Delivered Cost','Admin OPEX','Loss Allowance','Fully Loaded','Company Price','Current SRP','Margin','Suggested SRP','Profiles','Status'].map(label=><th key={label} style={{padding:'8px 7px',fontSize:'8px',textAlign:label==='Product'||label==='Profiles'?'left':'right'}}>{label}</th>)}</tr></thead>
+     <tbody>{fin.variantData.map((row,index)=><tr key={row.id} style={{borderTop:'1px solid #eee',background:index%2?'#fffdf4':'white'}}>
+      <td style={{padding:'8px 7px',fontSize:'10px',fontWeight:'900',color:'#333'}}>{row.name}<div style={{color:'#999',fontSize:'8px'}}>{row.category} · {safeNum(row.pieces_per_batch)} pcs/batch</div></td>
+      {[row.ingredientCost,row.packagingPerPiece,row.directMaterialCostPerPiece,row.laborPerPiece,row.utilitiesPerPiece+row.factoryOverheadPerPiece+row.depreciationPerPiece,row.manufacturingCostPerPiece,row.deliveryPerPiece,row.deliveredCostPerPiece,row.adminOpexPerPiece,row.lossAllowancePerPiece,row.totalCost,row.currentResellerPrice,row.currentRetailPrice].map((value,i)=><td key={i} style={{padding:'8px 7px',fontSize:'9px',textAlign:'right',fontWeight:i===10?'900':'500',color:i===10?'#ca1b1b':'#555'}}>{row.isCostReady||i>10?php(value):'—'}</td>)}
+      <td style={{padding:'8px 7px',fontSize:'9px',textAlign:'right',fontWeight:'900',color:row.resellerChannelMarginPct>=row.targetMarginPct?'#2d8a4e':'#ca1b1b'}}>{row.isCostReady?`${row.resellerChannelMarginPct.toFixed(1)}%`:'—'}</td>
+      <td style={{padding:'8px 7px',fontSize:'9px',textAlign:'right',fontWeight:'900',color:'#2d8a4e'}}>{row.isCostReady?php(row.recommendedRetailPrice):'—'}</td>
+      <td style={{padding:'8px 7px',fontSize:'8px',color:'#666',lineHeight:1.45}}><div>P: {row.packagingProfile?.profile_name || 'Default'}</div><div>L: {row.laborProfile?.profile_name || 'Default'}</div><div>D: {row.deliveryProfile?.profile_name || 'Default'}</div></td>
+      <td style={{padding:'8px 7px',textAlign:'right'}}><Badge label={row.statusLabel} color={row.statusCode==='healthy'?'green':row.statusCode==='below_target'?'orange':'red'}/></td>
+     </tr>)}</tbody>
+    </table>
+   </div>
+   <div style={{background:'#fff8dc',border:'1px solid #FDD412',borderRadius:'10px',padding:'10px',marginTop:'10px',fontSize:'9px',lineHeight:1.55,color:'#665500'}}><strong>Cost levels:</strong> Direct Materials = ingredients + packaging. Manufacturing = direct materials + labor + production utilities + factory overhead + production equipment depreciation. Delivered Cost adds distribution. Fully Loaded Cost adds administrative OPEX and loss/return recovery.</div>
+  </div>
+ })()}
 
  {/* PRODUCTION VIEW */}
  {costingView==='production' && (
@@ -36531,7 +36951,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const inputField = (key,label,help='',step='0.01') => <div key={key}><label style={lblS}>{label}</label><input type="number" min="0" step={step} value={costSettings[key] ?? 0} onChange={e=>setCostSettings(p=>({...p,[key]:e.target.value}))} style={{...inputStyle,marginBottom:help?'4px':'12px'}}/>{help&&<p style={{color:'#999',fontSize:'8px',lineHeight:1.4,margin:'0 0 8px'}}>{help}</p>}</div>
   const sectionStyle = { background:'white',border:'1px solid #e5e7eb',borderRadius:'12px',padding:'14px',marginBottom:'10px' }
   return <div>
-   <div style={{ display:'flex',justifyContent:'space-between',gap:'10px',flexWrap:'wrap',alignItems:'center',marginBottom:'12px' }}><div><h3 style={{color:'#ca1b1b',margin:'0 0 3px',fontSize:'14px'}}>Professional Cost Drivers</h3><p style={{color:'#777',fontSize:'10px',lineHeight:1.45,margin:0}}>Enter normal recurring costs, not unusual one-time spending. Amounts are allocated over normal sellable output.</p></div><button style={{...btnGreen,width:'auto',padding:'8px 14px',marginTop:0,opacity:savingCostSettings?0.6:1}} disabled={savingCostSettings} onClick={saveCostSettings}>{savingCostSettings?'SAVING...':'SAVE ALL SETTINGS'}</button></div>
+   <div style={{ display:'flex',justifyContent:'space-between',gap:'10px',flexWrap:'wrap',alignItems:'center',marginBottom:'12px' }}><div><h3 style={{color:'#ca1b1b',margin:'0 0 3px',fontSize:'14px'}}>Cost Allocation Setup</h3><p style={{color:'#777',fontSize:'10px',lineHeight:1.45,margin:0}}>Enter normal recurring costs, not unusual one-time spending. Amounts are allocated over normal sellable output.</p></div><button style={{...btnGreen,width:'auto',padding:'8px 14px',marginTop:0,opacity:savingCostSettings?0.6:1}} disabled={savingCostSettings} onClick={saveCostSettings}>{savingCostSettings?'SAVING...':'SAVE ALL SETTINGS'}</button></div>
 
    <div style={sectionStyle}>
     <h4 style={{color:'#7b4f9e',margin:'0 0 9px',fontSize:'12px'}}>1. Production, Loss and Pricing Basis</h4>
@@ -36604,7 +37024,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      ].map(([label,value])=><div key={label}><p style={{color:'rgba(255,255,255,0.55)',fontSize:'8px',margin:'0 0 2px'}}>{label}</p><strong style={{fontSize:'12px'}}>{value}</strong></div>)}
     </div>
    </div>
-   <div style={{background:'#fff8dc',border:'1px solid #f5c518',borderRadius:'8px',padding:'9px',fontSize:'9px',lineHeight:1.5,color:'#665500',marginBottom:'10px'}}><strong>Database note:</strong> the supplied SQL migration adds the professional OPEX fields to <code>cost_settings</code> and product-specific packaging/labor/delivery fields to <code>donut_variants</code>. Until it is run, the app keeps the new values in this browser as a safety fallback.</div>
+   <div style={{background:'#fff8dc',border:'1px solid #f5c518',borderRadius:'8px',padding:'9px',fontSize:'9px',lineHeight:1.5,color:'#665500',marginBottom:'10px'}}><strong>Allocation rule:</strong> these company-wide costs are divided over normal good output. Product variants inherit them automatically through their assigned labor and delivery profiles. Use product overrides only for documented exceptions.</div>
    <button style={{...btnGreen,opacity:savingCostSettings?0.6:1}} disabled={savingCostSettings} onClick={saveCostSettings}>{savingCostSettings?'SAVING...':'SAVE ALL PROFESSIONAL COST SETTINGS'}</button>
   </div>
  })()}
