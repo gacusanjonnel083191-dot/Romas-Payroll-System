@@ -408,6 +408,73 @@ function getRecordedBreakMinutes(log = {}, breakRows = []) {
  }, 0)))
 }
 
+
+function getAttendanceBreakPunchEvidence(validation = {}) {
+ const rowsByLogId = validation?.breakRowsByLogId && typeof validation.breakRowsByLogId === 'object'
+  ? validation.breakRowsByLogId
+  : {}
+ const rawRows = Object.values(rowsByLogId).flat().filter(Boolean)
+ const seen = new Set()
+ const rows = rawRows.filter(row => {
+  const key = row?.id !== undefined && row?.id !== null
+   ? `id:${row.id}`
+   : `${row?.attendance_log_id || ''}|${row?.break_out || ''}|${row?.break_in || ''}|${row?.created_at || ''}`
+  if (seen.has(key)) return false
+  seen.add(key)
+  return true
+ })
+ const punchRows = rows.filter(row => !!row?.break_out || !!row?.break_in)
+ const completedPunchRows = punchRows.filter(row => !!row?.break_out && !!row?.break_in)
+ const incompletePunchRows = punchRows.filter(row => !row?.break_out || !row?.break_in)
+ const recordedBreakMinutes = Math.max(0, Math.round(safeNum(validation?.metrics?.recordedBreakMinutes, 0)))
+ const hasAnyBreakPunch = punchRows.length > 0
+ const hasCompletedBreakPunch = completedPunchRows.length > 0
+ const hasIncompleteBreakPunch = incompletePunchRows.length > 0
+ const hasBreakEvidence = hasAnyBreakPunch || recordedBreakMinutes > 0
+ const firstPunch = punchRows[0] || null
+ const firstPunchLabel = firstPunch
+  ? `${firstPunch.break_out ? formatClockTimeForDisplay(firstPunch.break_out) : 'No Break Out'} → ${firstPunch.break_in ? formatClockTimeForDisplay(firstPunch.break_in) : 'No Break In'}`
+  : ''
+ return {
+  rows,
+  punchRows,
+  completedPunchRows,
+  incompletePunchRows,
+  punchCount:punchRows.length,
+  completedPunchCount:completedPunchRows.length,
+  incompletePunchCount:incompletePunchRows.length,
+  recordedBreakMinutes,
+  hasAnyBreakPunch,
+  hasCompletedBreakPunch,
+  hasIncompleteBreakPunch,
+  hasBreakEvidence,
+  firstPunch,
+  firstPunchLabel
+ }
+}
+
+function getNoMealBreakBreakConflictMessage(evidence = {}, actionLabel = 'No Meal Break') {
+ const punchCount = Math.max(0, Math.round(safeNum(evidence?.punchCount, 0)))
+ const recordedMinutes = Math.max(0, Math.round(safeNum(evidence?.recordedBreakMinutes, 0)))
+ if (evidence?.hasCompletedBreakPunch) {
+  return `${actionLabel} blocked: ${punchCount} Break Out/Break In punch record(s) exist${evidence.firstPunchLabel ? `, including ${evidence.firstPunchLabel}` : ''}. A completed break punch blocks No Meal Break even when the calculated whole-minute duration is 0. Correct the DTR first if the punch is wrong.`
+ }
+ if (evidence?.hasIncompleteBreakPunch) {
+  return `${actionLabel} blocked: an incomplete break punch exists${evidence.firstPunchLabel ? ` (${evidence.firstPunchLabel})` : ''}. Complete or correct the break record before filing or approving No Meal Break.`
+ }
+ if (recordedMinutes > 0) {
+  return `${actionLabel} blocked: attendance contains ${recordedMinutes} recorded break minute(s). Correct the DTR first if the break entry is wrong.`
+ }
+ return `${actionLabel} blocked because break activity exists for this attendance shift. Correct the DTR first.`
+}
+
+function isNoMealBreakBreakGuardError(error) {
+ const message = String(error?.message || error || '').toUpperCase()
+ return message.includes('NO_MEAL_BREAK_BLOCKED_BY_BREAK_PUNCH')
+  || message.includes('NO_MEAL_BREAK_APPROVAL_BLOCKED_BY_BREAK_PUNCH')
+  || message.includes('BREAK_PUNCH_BLOCKED_BY_NO_MEAL_BREAK')
+}
+
 function getCombinedAttendanceSpanMinutes(logs = []) {
  const intervals = []
  ;(logs || []).forEach(log => {
@@ -16855,8 +16922,27 @@ function buildDeliveryInvoicePrintCSS() {
  const openBreak = todayBreaks.find(b=>!b.break_in)
  if (openBreak) { alert('You are already on break. Please Break In first.'); return }
  const activeAttendanceDate = todayLog.attendance_date || today
+ const { data:activeNoMealBreakRows, error:activeNoMealBreakError } = await supabase
+  .from('time_adjustment_requests')
+  .select('id,status')
+  .eq('employee_id', employee.id)
+  .eq('attendance_date', String(activeAttendanceDate).slice(0,10))
+  .eq('request_type', 'meal_break')
+  .in('status', ['pending','approved'])
+  .limit(1)
+ if (activeNoMealBreakError) { showToast('Break Out verification failed: '+activeNoMealBreakError.message,'red'); return }
+ if (activeNoMealBreakRows?.length) {
+  const activeStatus = String(activeNoMealBreakRows[0]?.status || 'active').toLowerCase()
+  showToast(`Break Out blocked: a ${activeStatus} No Meal Break exception already covers this attendance shift. Ask the admin to void or undo it first.`, 'red')
+  return
+ }
  const { error } = await supabase.from('break_logs').insert({ attendance_log_id:todayLog.id, employee_id:employee.id, employee_name:employee.full_name, attendance_date:activeAttendanceDate, break_out:nowTime() })
- if (error) { showToast('Failed: '+error.message,'red'); return }
+ if (error) {
+  showToast(isNoMealBreakBreakGuardError(error)
+   ? 'Break Out blocked because a pending or approved No Meal Break exception already covers this shift. Ask the admin to void or undo it first.'
+   : 'Failed: '+error.message,'red')
+  return
+ }
  loadTodayBreaks(todayLog.id); showToast(' Break started!')
  }
  async function initiateBreakIn() {
@@ -16865,7 +16951,12 @@ function buildDeliveryInvoicePrintCSS() {
  const breakInTime = nowTime()
  const duration = diffMinutesAcrossMidnight(openBreak.break_out, breakInTime)
  const { error } = await supabase.from('break_logs').update({ break_in:breakInTime, break_minutes:duration }).eq('id', openBreak.id)
- if (error) { showToast('Failed: '+error.message,'red'); return }
+ if (error) {
+  showToast(isNoMealBreakBreakGuardError(error)
+   ? 'Break In blocked because a No Meal Break exception is active for this shift. Ask the admin to review the conflicting record immediately.'
+   : 'Failed: '+error.message,'red')
+  return
+ }
 
  // Save the running break totals immediately, instead of waiting for Time Out.
  const completedBreakMinutes = todayBreaks
@@ -17046,104 +17137,34 @@ function buildDeliveryInvoicePrintCSS() {
  const nsdMinutes = oe > os? Math.round(oe - os): 0
  // 
 
- // Attendance completion is the critical transaction. Save the exact Time Out
- // first, before the non-critical selfie upload, so a slow or failed storage
- // upload can never leave a valid shift permanently INCOMPLETE.
- const attendanceTimeOutPayload = {
-  time_out: timeOut,
-  // Persist the policy-normalized late penalty so DTR, approval and payroll agree.
-  late_minutes: attendanceMetrics.lateMinutes,
-  undertime_minutes: undertimeMinutes,
-  overtime_minutes: overtimeMinutes,
-  status,
-  total_break_minutes: totalBreakMins,
-  excess_break_minutes: excessBreakMins,
-  overtime_approved: null,
-  night_diff_minutes: nsdMinutes
- }
-
- let data = null
- let timeOutSaveError = null
- for (let attempt = 1; attempt <= 3 && !data; attempt++) {
-  const { data:updatedAttendance, error:updateError } = await supabase
-   .from('attendance_logs')
-   .update(attendanceTimeOutPayload)
-   .eq('id', verifiedLog.id)
-   .eq('employee_id', employee.id)
-   .not('time_in', 'is', null)
-   .is('time_out', null)
-   .select()
-   .maybeSingle()
-
-  if (updatedAttendance) {
-   data = updatedAttendance
-   break
-  }
-  if (updateError) timeOutSaveError = updateError
-
-  // An interrupted response can occur after the database already committed.
-  // Re-read the row before retrying so the app never reports a false failure.
-  const { data:committedAttendance, error:readBackError } = await supabase
-   .from('attendance_logs')
-   .select('*')
-   .eq('id', verifiedLog.id)
-   .eq('employee_id', employee.id)
-   .maybeSingle()
-  if (committedAttendance?.time_out) {
-   data = committedAttendance
-   break
-  }
-  if (!timeOutSaveError && readBackError) timeOutSaveError = readBackError
-  if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 700))
- }
-
- // The offline queue already supports Time Out updates. Use it as the final
- // fallback when connectivity drops after the employee has captured the selfie.
- if (!data && (!navigator.onLine || !isOnline)) {
-  queueOfflineAction('timeout', {
-   log_id:verifiedLog.id,
-   employee_id:employee.id,
-   data:attendanceTimeOutPayload
-  })
-  data = { ...verifiedLog, ...attendanceTimeOutPayload, _pendingOfflineSync:true }
-  setTodayLog(data)
-  setLoading(false)
-  setCameraMode(null)
-  setCapturedPhoto(null)
-  alert(`Time Out at ${timeOut} was saved on this device and is pending synchronization. Keep the app open or reconnect to the internet so the attendance record can sync.`)
-  return
- }
-
- if (!data) {
-  setLoading(false)
-  await loadTodayLog(employee)
-  alert('Time Out failed after three protected save attempts: ' + (timeOutSaveError?.message || 'the attendance record could not be updated. Please reload and try again.'))
-  return
- }
-
- // Upload the selfie only after the attendance row is safely completed.
- // If storage fails, the Time Out remains valid and the admin can review the
- // missing photo without losing the employee's attendance.
  let selfieUrl = null
- try {
-  selfieUrl = await uploadSelfie(capturedPhoto, `timeout_${employee.id}_${activeAttendanceDate}.jpg`)
-  if (selfieUrl) {
-   const { data:photoUpdatedAttendance, error:photoUpdateError } = await supabase
-    .from('attendance_logs')
-    .update({ selfie_out_url:selfieUrl })
-    .eq('id', verifiedLog.id)
-    .eq('employee_id', employee.id)
-    .select()
-    .maybeSingle()
-   if (photoUpdateError) console.warn('Time Out selfie link update failed:', photoUpdateError)
-   if (photoUpdatedAttendance) data = photoUpdatedAttendance
-   else data = { ...data, selfie_out_url:selfieUrl }
-  }
- } catch(e) {
-  console.warn('Time Out selfie upload failed after attendance was saved:', e)
- }
-
+ try { selfieUrl = await uploadSelfie(capturedPhoto, `timeout_${employee.id}_${activeAttendanceDate}.jpg`) } catch(e){}
+ const { data, error } = await supabase.from('attendance_logs').update({
+ time_out: timeOut,
+ // Persist the policy-normalized late penalty so DTR, approval and payroll agree.
+ late_minutes: attendanceMetrics.lateMinutes,
+ undertime_minutes: undertimeMinutes,
+ overtime_minutes: overtimeMinutes,
+ status,
+ selfie_out_url: selfieUrl,
+ total_break_minutes: totalBreakMins,
+ excess_break_minutes: excessBreakMins,
+ overtime_approved: null,
+ night_diff_minutes: nsdMinutes
+ })
+ .eq('id', verifiedLog.id)
+ .eq('employee_id', employee.id)
+ .not('time_in', 'is', null)
+ .is('time_out', null)
+ .select()
+ .maybeSingle()
  setLoading(false)
+ if (error) { alert('Time Out failed: '+error.message); return }
+ if (!data) {
+  await loadTodayLog(employee)
+  alert('Time Out was not saved because the attendance record changed or is no longer active. Please reload and try again.')
+  return
+ }
 
  let autoUTRequestCreated = false
  let autoUTRequestSkipped = false
@@ -17299,12 +17320,17 @@ function buildDeliveryInvoicePrintCSS() {
    setOtRequestTo('')
    const activeMealBreak = activeMealBreakRequests[0]
    const recordedBreakMinutes = Math.max(0, Math.round(safeNum(validation.metrics.recordedBreakMinutes, 0)))
+   const breakPunchEvidence = getAttendanceBreakPunchEvidence(validation)
    const alreadyApplied = validation.metrics.breakOverrideApplied === true
    const revisedMetrics = getAttendanceDayWorkMetrics(validation.integrity.completedLogs, validation.breakRowsByLogId, 0)
    const revisedOTMinutes = roundPayableOvertimeMinutes(Math.max(0, revisedMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
    const revisedUTMinutes = Math.max(0, Math.round(safeNum(revisedMetrics.undertimeMinutes, 0)))
    mealBreakImpact = {
     recordedBreakMinutes,
+    breakPunchEvidence,
+    breakPunchCount:breakPunchEvidence.punchCount,
+    completedBreakPunchCount:breakPunchEvidence.completedPunchCount,
+    incompleteBreakPunchCount:breakPunchEvidence.incompletePunchCount,
     currentDeductedBreakMinutes:validation.metrics.deductedBreakMinutes,
     proposedDeductedBreakMinutes:0,
     revisedPaidWorkedMinutes:revisedMetrics.paidWorkedMinutes,
@@ -17318,8 +17344,8 @@ function buildDeliveryInvoicePrintCSS() {
      : `A No Meal Break filing is already pending for this attendance shift (${activeMealBreak.attendance_date}). Please wait for admin review instead of filing another request.`
    } else if (alreadyApplied) {
     message = 'A No Meal Break exception is already applied to this attendance record. Another filing is not allowed.'
-   } else if (recordedBreakMinutes > 0) {
-    message = `No Meal Break filing is blocked because the attendance record already contains ${recordedBreakMinutes} recorded break minute(s). Use DTR correction if the break punch is wrong.`
+   } else if (breakPunchEvidence.hasBreakEvidence) {
+    message = getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'No Meal Break filing')
    } else {
     const { data:approvedTimeRows, error:approvedTimeError } = await supabase
      .from('time_adjustment_requests')
@@ -17472,6 +17498,9 @@ function buildDeliveryInvoicePrintCSS() {
     attendanceDate:canonicalAttendanceDate,
     employeeSelectedDate:otRequestDate,
     recordedBreakMinutes:safeNum(impact.recordedBreakMinutes, 0),
+    breakPunchCount:safeNum(impact.breakPunchCount, 0),
+    completedBreakPunchCount:safeNum(impact.completedBreakPunchCount, 0),
+    incompleteBreakPunchCount:safeNum(impact.incompleteBreakPunchCount, 0),
     defaultDeductedBreakMinutes:safeNum(impact.currentDeductedBreakMinutes, ALLOWED_BREAK_MINUTES),
     requestedUnpaidBreakMinutes:0,
     rawSpanMinutes:safeNum(preview?.validation?.metrics?.rawSpanMinutes, 0),
@@ -17495,7 +17524,11 @@ function buildDeliveryInvoicePrintCSS() {
   })
   if (error) {
    const duplicateMessage = String(error.message || '').toLowerCase().includes('duplicate')
-   alert(duplicateMessage ? 'An active request already exists for this employee and attendance shift. Refresh and wait for admin review.' : 'Failed: '+error.message)
+   if (isNoMealBreakBreakGuardError(error)) {
+    alert('No Meal Break filing blocked: a Break Out or Break In punch exists for this attendance shift. This remains blocked even when the saved break duration is 0 minutes. Correct the DTR first if the punch is wrong.')
+   } else {
+    alert(duplicateMessage ? 'An active request already exists for this employee and attendance shift. Refresh and wait for admin review.' : 'Failed: '+error.message)
+   }
    return
   }
   alert(otRequestType === 'overtime'
@@ -22341,6 +22374,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
   if (requestType === 'meal_break') {
    const recordedBreakMinutes = Math.max(0, Math.round(safeNum(validation.metrics.recordedBreakMinutes, 0)))
+   const breakPunchEvidence = getAttendanceBreakPunchEvidence(validation)
    const revisedMetrics = getAttendanceDayWorkMetrics(validation.integrity.completedLogs, validation.breakRowsByLogId, 0)
    const revisedOvertimeMinutes = roundPayableOvertimeMinutes(Math.max(0, revisedMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
    const revisedUndertimeMinutes = Math.max(0, Math.round(safeNum(revisedMetrics.undertimeMinutes, 0)))
@@ -22354,10 +22388,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
     .limit(10)
    if (approvedTimeError) throw approvedTimeError
    const approvedTimeConflict = approvedTimeRows?.[0] || null
-   const canApprove = recordedBreakMinutes === 0 && !approvedTimeConflict
+   const canApprove = !breakPunchEvidence.hasBreakEvidence && !approvedTimeConflict
    let message = `Current rule: ${validation.metrics.rawSpanMinutes} raw minute(s) less ${validation.metrics.deductedBreakMinutes} unpaid break minute(s) = ${validation.metrics.paidWorkedMinutes} paid minute(s). `
-   if (recordedBreakMinutes > 0) {
-    message += `Approval blocked because ${recordedBreakMinutes} break minute(s) are recorded. Correct the DTR first if that break record is wrong.`
+   if (breakPunchEvidence.hasBreakEvidence) {
+    message += getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval')
    } else if (approvedTimeConflict) {
     message += `Approval blocked because ${getTimeAdjustmentRequestLabel(approvedTimeConflict.request_type)} is already approved for this shift. Undo that approval first, approve the break exception, then recalculate and approve OT/UT.`
    } else {
@@ -22374,6 +22408,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
     resolvedAttendanceDate,
     resolvedFromPreviousDay:validation.resolvedFromPreviousDay,
     recordedBreakMinutes,
+    breakPunchEvidence,
     currentMetrics:validation.metrics,
     revisedMetrics,
     revisedOvertimeMinutes,
@@ -22581,9 +22616,29 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   showToast('Admin response is required before approving a No Meal Break exception.', 'red')
   return
  }
- const recordedBreakMinutes = Math.max(0, Math.round(safeNum(validation?.metrics?.recordedBreakMinutes, 0)))
- if (recordedBreakMinutes > 0) {
-  showToast(`Approval blocked: attendance already contains ${recordedBreakMinutes} recorded break minute(s). Correct the DTR first if the break entry is wrong.`, 'red')
+
+ // Re-read the attendance and break rows immediately before approval. The
+ // preview may be stale if another device recorded Break Out/Break In.
+ try {
+  const liveValidation = await fetchAttendanceDayValidation(
+   req.employee_id,
+   targetDate,
+   { employeeCode:req.employee_code, employeeName:req.employee_name }
+  )
+  if (!liveValidation.integrity.isValidCompleted) {
+   showToast(`Approval blocked: ${liveValidation.integrity.message} Correct the DTR first.`, 'red')
+   return
+  }
+  validation = liveValidation
+ } catch(error) {
+  showToast('Approval blocked: the live attendance and break records could not be revalidated — '+(error?.message || error), 'red')
+  return
+ }
+
+ const breakPunchEvidence = getAttendanceBreakPunchEvidence(validation)
+ const recordedBreakMinutes = breakPunchEvidence.recordedBreakMinutes
+ if (breakPunchEvidence.hasBreakEvidence) {
+  showToast(getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval'), 'red')
   return
  }
 
@@ -22619,7 +22674,11 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  }).eq('id', req.id)
  if (requestUpdateError) {
   const duplicateMessage = String(requestUpdateError.message || '').toLowerCase().includes('duplicate')
-  showToast(duplicateMessage ? 'Approval blocked: an active No Meal Break request already covers this shift.' : 'Failed: '+requestUpdateError.message, 'red')
+  if (isNoMealBreakBreakGuardError(requestUpdateError)) {
+   showToast('Approval blocked by the database: a Break Out or Break In punch was recorded for this shift. Refresh the card and correct the DTR first.', 'red')
+  } else {
+   showToast(duplicateMessage ? 'Approval blocked: an active No Meal Break request already covers this shift.' : 'Failed: '+requestUpdateError.message, 'red')
+  }
   return
  }
 
@@ -22668,9 +22727,11 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    reviewed_at:approvalTimestamp,
    admin_reason:`APPROVAL ROLLED BACK: attendance meal-break synchronization failed — ${attendanceUpdateError.message}`
   }).eq('id', req.id)
-  showToast(isMissingMealBreakExceptionColumnError(attendanceUpdateError)
-   ? 'Approval rolled back: run the supplied No Meal Break Supabase migration first, then retry.'
-   : 'Approval rolled back because attendance synchronization failed: '+attendanceUpdateError.message, 'red')
+  showToast(isNoMealBreakBreakGuardError(attendanceUpdateError)
+   ? 'Approval rolled back: the database found a Break Out or Break In punch for this shift. Correct the DTR before approving No Meal Break.'
+   : isMissingMealBreakExceptionColumnError(attendanceUpdateError)
+    ? 'Approval rolled back: run the supplied No Meal Break Supabase migration first, then retry.'
+    : 'Approval rolled back because attendance synchronization failed: '+attendanceUpdateError.message, 'red')
   return
  }
 
@@ -22752,9 +22813,10 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    return
   }
 
-  const recordedBreakMinutes = Math.max(0, Math.round(safeNum(validation.metrics.recordedBreakMinutes, 0)))
-  if (recordedBreakMinutes > 0) {
-   showToast(`No-break confirmation blocked: attendance contains ${recordedBreakMinutes} recorded break minute(s). Correct the DTR first if that record is wrong.`, 'red')
+  const breakPunchEvidence = getAttendanceBreakPunchEvidence(validation)
+  const recordedBreakMinutes = breakPunchEvidence.recordedBreakMinutes
+  if (breakPunchEvidence.hasBreakEvidence) {
+   showToast(getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'No-break confirmation'), 'red')
    return
   }
 
@@ -32169,6 +32231,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const adminValidation = timeAdjValidationById[req.id]
  const verifiedWindow = adminValidation?.window || adminValidation?.validation?.overtimeWindow || {}
  const attendanceMetrics = adminValidation?.validation?.metrics || {}
+ const breakPunchEvidence = getAttendanceBreakPunchEvidence(adminValidation?.validation || {})
  const attendanceValid = !!adminValidation?.validation?.integrity?.isValidCompleted
  const savedMinutes = Math.max(0, Math.round(safeNum(req.minutes, 0)))
  const actualMinutes = isMealBreakRequest ? 0 : Math.max(0, Math.round(safeNum(adminValidation?.actualMinutes, isOvertimeRequest ? adminValidation?.validation?.actualOvertimeMinutes : adminValidation?.validation?.actualUndertimeMinutes)))
@@ -32204,7 +32267,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    : 'linear-gradient(180deg,#fff8dc 0%,#ffffff 42%)'
  const typeLabel = isMealBreakRequest ? 'NO MEAL BREAK' : isOvertimeRequest ? 'OVERTIME' : 'UNDERTIME'
  const typeBadgeColor = isMealBreakRequest ? 'blue' : isOvertimeRequest ? 'green' : 'orange'
- const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && safeNum(attendanceMetrics.recordedBreakMinutes,0) === 0 && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
+ const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
  return (
  <div key={req.id} style={{...cardS, border:`1.5px solid ${cardColor}`, borderTop:`6px solid ${cardColor}`, background:cardBackground, width:'100%', minWidth:0, margin:0, padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 7px 22px rgba(25,25,45,0.09)', boxSizing:'border-box', alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -32224,7 +32287,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    <div><span style={lblS}>Actual Time In</span><strong>{formatClockTimeForDisplay(actualTimeIn)}</strong></div>
    <div><span style={lblS}>Actual Time Out</span><strong>{formatClockTimeForDisplay(actualTimeOut)}</strong></div>
    <div><span style={lblS}>Raw Attendance</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.rawSpanMinutes,0)} min` : 'Not available'}</strong></div>
-   <div><span style={lblS}>Recorded Break</span><strong style={{ color:safeNum(adminValidation?.recordedBreakMinutes,0)>0?'#ca1b1b':'#2d8a4e' }}>{attendanceValid ? `${safeNum(adminValidation?.recordedBreakMinutes,0)} min` : 'Not available'}</strong></div>
+   <div><span style={lblS}>Recorded Break</span><strong style={{ color:breakPunchEvidence.hasBreakEvidence?'#ca1b1b':'#2d8a4e' }}>{attendanceValid ? `${safeNum(adminValidation?.recordedBreakMinutes,0)} min` : 'Not available'}</strong></div>
+   <div><span style={lblS}>Break Punch Records</span><strong style={{ color:breakPunchEvidence.hasAnyBreakPunch?'#ca1b1b':'#2d8a4e' }}>{attendanceValid ? `${breakPunchEvidence.punchCount} punch row(s)` : 'Not available'}</strong></div>
+   <div><span style={lblS}>Punch Status</span><strong style={{ color:breakPunchEvidence.hasBreakEvidence?'#ca1b1b':'#2d8a4e' }}>{attendanceValid ? (breakPunchEvidence.hasCompletedBreakPunch?'Completed break punch exists':breakPunchEvidence.hasIncompleteBreakPunch?'Incomplete break punch exists':'No break punch') : 'Not available'}</strong></div>
    <div><span style={lblS}>Current Deduction</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.deductedBreakMinutes,0)} min` : 'Not available'}</strong></div>
    <div><span style={lblS}>Approved Deduction</span><strong style={{ color:'#1a1a2e' }}>0 min</strong></div>
    <div><span style={lblS}>Revised Paid Work</span><strong>{attendanceValid ? `${safeNum(adminValidation?.revisedMetrics?.paidWorkedMinutes,0)} min` : 'Not available'}</strong></div>
@@ -32249,7 +32314,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    {isOvertimeRequest && <div><span style={lblS}>Actual OT Window</span><strong>{attendanceValid && verifiedWindow?.valid ? `${formatClockTimeForDisplay(verifiedWindow.verifiedFrom)} – ${formatClockTimeForDisplay(verifiedWindow.verifiedTo)} (${safeNum(verifiedWindow.rawMinutes,0)} raw → ${safeNum(verifiedWindow.payableMinutes ?? verifiedWindow.minutes,0)} payable)` : 'No payable OT window'}</strong></div>}
   </div>
  )}
- {!isMealBreakRequest && attendanceValid && safeNum(attendanceMetrics.recordedBreakMinutes,0) === 0 && !attendanceMetrics.breakOverrideApplied && (
+ {!isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && (
   <div style={{ marginTop:'10px', padding:'9px 10px', border:'1px solid #FDD412', background:'#fff8dc', borderRadius:'9px', color:'#1a1a2e', fontSize:'11px', lineHeight:1.45, fontWeight:'800' }}>
    No break punch is recorded. The calculation above is still using the standard 60-minute deduction. After verifying that the employee actually worked continuously, use <strong>CONFIRM NO BREAK &amp; RECALCULATE</strong>. Otherwise, keep the standard deduction.
   </div>
@@ -42261,6 +42326,8 @@ onClick={async ()=>{
   <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'8px' }}>
    <div><span style={lblS}>Raw Attendance</span><strong>{safeNum(timeAdjPreview?.validation?.metrics?.rawSpanMinutes,0)} min</strong></div>
    <div><span style={lblS}>Recorded Break</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.recordedBreakMinutes,0)} min</strong></div>
+   <div><span style={lblS}>Break Punch Records</span><strong style={{ color:timeAdjPreview?.mealBreakImpact?.breakPunchEvidence?.hasAnyBreakPunch?'#ca1b1b':'#2d8a4e' }}>{safeNum(timeAdjPreview?.mealBreakImpact?.breakPunchCount,0)} row(s)</strong></div>
+   <div><span style={lblS}>Punch Status</span><strong style={{ color:timeAdjPreview?.mealBreakImpact?.breakPunchEvidence?.hasBreakEvidence?'#ca1b1b':'#2d8a4e' }}>{timeAdjPreview?.mealBreakImpact?.breakPunchEvidence?.hasCompletedBreakPunch?'Completed break punch exists':timeAdjPreview?.mealBreakImpact?.breakPunchEvidence?.hasIncompleteBreakPunch?'Incomplete break punch exists':'No break punch'}</strong></div>
    <div><span style={lblS}>Current Break Deduction</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.currentDeductedBreakMinutes,0)} min</strong></div>
    <div><span style={lblS}>Requested Deduction</span><strong style={{ color:'#1a1a2e' }}>0 min</strong></div>
    <div><span style={lblS}>Revised Paid Work</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.revisedPaidWorkedMinutes,0)} min</strong></div>
