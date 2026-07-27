@@ -17046,34 +17046,104 @@ function buildDeliveryInvoicePrintCSS() {
  const nsdMinutes = oe > os? Math.round(oe - os): 0
  // 
 
- let selfieUrl = null
- try { selfieUrl = await uploadSelfie(capturedPhoto, `timeout_${employee.id}_${activeAttendanceDate}.jpg`) } catch(e){}
- const { data, error } = await supabase.from('attendance_logs').update({
- time_out: timeOut,
- // Persist the policy-normalized late penalty so DTR, approval and payroll agree.
- late_minutes: attendanceMetrics.lateMinutes,
- undertime_minutes: undertimeMinutes,
- overtime_minutes: overtimeMinutes,
- status,
- selfie_out_url: selfieUrl,
- total_break_minutes: totalBreakMins,
- excess_break_minutes: excessBreakMins,
- overtime_approved: null,
- night_diff_minutes: nsdMinutes
- })
- .eq('id', verifiedLog.id)
- .eq('employee_id', employee.id)
- .not('time_in', 'is', null)
- .is('time_out', null)
- .select()
- .maybeSingle()
- setLoading(false)
- if (error) { alert('Time Out failed: '+error.message); return }
- if (!data) {
-  await loadTodayLog(employee)
-  alert('Time Out was not saved because the attendance record changed or is no longer active. Please reload and try again.')
+ // Attendance completion is the critical transaction. Save the exact Time Out
+ // first, before the non-critical selfie upload, so a slow or failed storage
+ // upload can never leave a valid shift permanently INCOMPLETE.
+ const attendanceTimeOutPayload = {
+  time_out: timeOut,
+  // Persist the policy-normalized late penalty so DTR, approval and payroll agree.
+  late_minutes: attendanceMetrics.lateMinutes,
+  undertime_minutes: undertimeMinutes,
+  overtime_minutes: overtimeMinutes,
+  status,
+  total_break_minutes: totalBreakMins,
+  excess_break_minutes: excessBreakMins,
+  overtime_approved: null,
+  night_diff_minutes: nsdMinutes
+ }
+
+ let data = null
+ let timeOutSaveError = null
+ for (let attempt = 1; attempt <= 3 && !data; attempt++) {
+  const { data:updatedAttendance, error:updateError } = await supabase
+   .from('attendance_logs')
+   .update(attendanceTimeOutPayload)
+   .eq('id', verifiedLog.id)
+   .eq('employee_id', employee.id)
+   .not('time_in', 'is', null)
+   .is('time_out', null)
+   .select()
+   .maybeSingle()
+
+  if (updatedAttendance) {
+   data = updatedAttendance
+   break
+  }
+  if (updateError) timeOutSaveError = updateError
+
+  // An interrupted response can occur after the database already committed.
+  // Re-read the row before retrying so the app never reports a false failure.
+  const { data:committedAttendance, error:readBackError } = await supabase
+   .from('attendance_logs')
+   .select('*')
+   .eq('id', verifiedLog.id)
+   .eq('employee_id', employee.id)
+   .maybeSingle()
+  if (committedAttendance?.time_out) {
+   data = committedAttendance
+   break
+  }
+  if (!timeOutSaveError && readBackError) timeOutSaveError = readBackError
+  if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 700))
+ }
+
+ // The offline queue already supports Time Out updates. Use it as the final
+ // fallback when connectivity drops after the employee has captured the selfie.
+ if (!data && (!navigator.onLine || !isOnline)) {
+  queueOfflineAction('timeout', {
+   log_id:verifiedLog.id,
+   employee_id:employee.id,
+   data:attendanceTimeOutPayload
+  })
+  data = { ...verifiedLog, ...attendanceTimeOutPayload, _pendingOfflineSync:true }
+  setTodayLog(data)
+  setLoading(false)
+  setCameraMode(null)
+  setCapturedPhoto(null)
+  alert(`Time Out at ${timeOut} was saved on this device and is pending synchronization. Keep the app open or reconnect to the internet so the attendance record can sync.`)
   return
  }
+
+ if (!data) {
+  setLoading(false)
+  await loadTodayLog(employee)
+  alert('Time Out failed after three protected save attempts: ' + (timeOutSaveError?.message || 'the attendance record could not be updated. Please reload and try again.'))
+  return
+ }
+
+ // Upload the selfie only after the attendance row is safely completed.
+ // If storage fails, the Time Out remains valid and the admin can review the
+ // missing photo without losing the employee's attendance.
+ let selfieUrl = null
+ try {
+  selfieUrl = await uploadSelfie(capturedPhoto, `timeout_${employee.id}_${activeAttendanceDate}.jpg`)
+  if (selfieUrl) {
+   const { data:photoUpdatedAttendance, error:photoUpdateError } = await supabase
+    .from('attendance_logs')
+    .update({ selfie_out_url:selfieUrl })
+    .eq('id', verifiedLog.id)
+    .eq('employee_id', employee.id)
+    .select()
+    .maybeSingle()
+   if (photoUpdateError) console.warn('Time Out selfie link update failed:', photoUpdateError)
+   if (photoUpdatedAttendance) data = photoUpdatedAttendance
+   else data = { ...data, selfie_out_url:selfieUrl }
+  }
+ } catch(e) {
+  console.warn('Time Out selfie upload failed after attendance was saved:', e)
+ }
+
+ setLoading(false)
 
  let autoUTRequestCreated = false
  let autoUTRequestSkipped = false
