@@ -4455,7 +4455,71 @@ const DOCUMENT_BATCH1A_FORMS = [
    "Payroll / HR Review",
    "Management Approval"
   ]
+ },
+ {
+  key:'RES-KIOSK',
+  aliases:['RES-AGREEMENT'],
+  title:'Kiosk Reseller Agreement',
+  category:'Delivery / Reseller / Outlet',
+  refPrefix:'RES-KIOSK',
+  purpose:'Creates a simple fixed-kiosk reseller agreement linked to the official reseller record.',
+  employeeMode:'none',
+  fields:[
+   { key:'resellerId', label:'Linked Reseller Record', type:'reseller_select', required:true, span:'full', help:'Select the official reseller or outlet record. Contact and location fields will be filled automatically and may still be corrected before saving.' },
+   { key:'resellerName', label:'Reseller Full Legal Name', type:'text', required:true },
+   { key:'resellerPhone', label:'Contact Number', type:'text', required:true },
+   { key:'validIdNumber', label:'Valid ID Type and Number', type:'text', required:true },
+   { key:'resellerAddress', label:'Complete Address', type:'textarea', required:true, span:2 },
+   { key:'emergencyContact', label:'Emergency Contact', type:'text' },
+   { key:'territory', label:'Assigned Municipality / Territory', type:'text', required:true },
+   { key:'effectiveDate', label:'Effective Date', type:'date', required:true },
+   { key:'agreementEndDate', label:'End Date (Optional)', type:'date' },
+   { key:'paymentSchedule', label:'Payment Schedule', type:'select', required:true, options:['Daily','Weekly'] },
+   { key:'minimumDailyOrder', label:'Minimum Daily Order (pieces)', type:'number', required:true, min:0, step:1, defaultValue:'2000' },
+   { key:'approvedKioskLocation', label:'Approved Kiosk Location', type:'text', required:true, span:2 },
+   { key:'kioskOwnership', label:'Kiosk Ownership', type:'select', required:true, options:['Reseller-Owned','Company-Owned','Installment Purchase'], defaultValue:'Reseller-Owned' },
+   { key:'siteRentalResponsibility', label:'Site Rental Responsibility', type:'select', options:['Reseller','Company','Not Applicable'] },
+   { key:'utilitiesResponsibility', label:'Electricity and Water', type:'select', required:true, options:['Reseller','Company'], defaultValue:'Reseller' },
+   { key:'permitResponsibility', label:'Business Permits', type:'select', required:true, options:['Reseller','Company'], defaultValue:'Reseller' },
+   { key:'equipmentIssued', label:'Equipment / Assets Issued', type:'textarea', defaultValue:'Glass display showcase; white display trays; one pair of tongs; tarpaulins, signage, or Sintra board.', span:'full' },
+   { key:'additionalTerms', label:'Additional Kiosk Terms', type:'textarea', span:'full' }
+  ],
+  reminder:'Owner approval and an uploaded signed copy are required before the agreement can be activated in the Documents Center.',
+  signatureLabels:['Reseller Signature over Printed Name','Authorized Company Representative']
+ },
+ {
+  key:'RES-CART',
+  title:'Rolling / Mobile Cart Reseller Agreement',
+  category:'Delivery / Reseller / Outlet',
+  refPrefix:'RES-CART',
+  purpose:'Creates a simple rolling or mobile cart reseller agreement linked to the official reseller record.',
+  employeeMode:'none',
+  fields:[
+   { key:'resellerId', label:'Linked Reseller Record', type:'reseller_select', required:true, span:'full', help:'Select the official reseller or outlet record. Contact and territory fields will be filled automatically and may still be corrected before saving.' },
+   { key:'resellerName', label:'Reseller Full Legal Name', type:'text', required:true },
+   { key:'resellerPhone', label:'Contact Number', type:'text', required:true },
+   { key:'validIdNumber', label:'Valid ID Type and Number', type:'text', required:true },
+   { key:'resellerAddress', label:'Complete Address', type:'textarea', required:true, span:2 },
+   { key:'emergencyContact', label:'Emergency Contact', type:'text' },
+   { key:'territory', label:'Approved Municipality / Territory', type:'text', required:true },
+   { key:'approvedRoute', label:'Approved Route / Barangays', type:'text' },
+   { key:'overnightStorage', label:'Overnight Storage Location', type:'text' },
+   { key:'effectiveDate', label:'Effective Date', type:'date', required:true },
+   { key:'agreementEndDate', label:'End Date (Optional)', type:'date' },
+   { key:'paymentSchedule', label:'Product Payment Schedule', type:'select', required:true, options:['Daily','Weekly'] },
+   { key:'minimumDailyOrder', label:'Minimum Daily Order (pieces)', type:'number', required:true, min:0, step:1, defaultValue:'2000' },
+   { key:'cartOwnership', label:'Cart Ownership', type:'select', required:true, options:['Reseller-Owned','Company-Owned','Installment Purchase'], defaultValue:'Reseller-Owned' },
+   { key:'cartValue', label:'Cart Value', type:'number', required:true, min:0, step:'0.01', format:'currency', defaultValue:'36500' },
+   { key:'cartDownPayment', label:'Down Payment', type:'number', required:true, min:0, step:'0.01', format:'currency', defaultValue:'18250' },
+   { key:'cartPaymentCount', label:'Number of Payments', type:'number', required:true, min:1, step:1, defaultValue:'2' },
+   { key:'cartPaymentTerms', label:'Cart Payment Terms', type:'textarea', required:true, defaultValue:'Two payments: PHP 18,250 before cart fabrication and PHP 18,250 after fabrication. The cart must be fully paid before release.', span:'full' },
+   { key:'cartRefundTerms', label:'Refund / Depreciation Terms', type:'textarea', defaultValue:'The PHP 36,500 cart value is refundable subject to 8% depreciation per month, based on the approved final inspection and account clearance.', span:'full' },
+   { key:'additionalTerms', label:'Additional Cart Terms', type:'textarea', span:'full' }
+  ],
+  reminder:'Owner approval and an uploaded signed copy are required before the agreement can be activated in the Documents Center.',
+  signatureLabels:['Reseller Signature over Printed Name','Authorized Company Representative']
  }
+
 ]
 
 const DOCUMENT_FORM_CORE_FIELD_KEYS = ['documentNo','formKey','employeeId','documentDate','incidentDate','effectiveDate','amount','deductionPerCutoff','subject','details','items','remarks','preparedBy','approvedBy']
@@ -4468,6 +4532,20 @@ function findBatch1DocumentForm(formKey) {
   String(form.key || '').toUpperCase() === normalized ||
   (form.aliases || []).some(alias => String(alias || '').toUpperCase() === normalized)
  ) || null
+}
+
+const RESELLER_AGREEMENT_FORM_KEYS = ['RES-KIOSK','RES-CART']
+
+function isResellerAgreementFormKey(formKey = '') {
+ const form = findBatch1DocumentForm(formKey)
+ return !!form && RESELLER_AGREEMENT_FORM_KEYS.includes(String(form.key || '').toUpperCase())
+}
+
+function getResellerAgreementModel(formKey = '') {
+ const key = String(findBatch1DocumentForm(formKey)?.key || formKey || '').toUpperCase()
+ if (key === 'RES-KIOSK') return 'kiosk'
+ if (key === 'RES-CART') return 'rolling_cart'
+ return ''
 }
 
 function createDocumentFormDraft(formKey, todayDate = '', preparedBy = '', previous = {}) {
@@ -4615,8 +4693,8 @@ const DOCUMENT_CENTER_CATALOG = [
  { code:'DEL-CRATES-ISSUE', name:'Crates Issuance Slip', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record crates and covers issued to outlet, driver, or reseller.' },
  { code:'DEL-CRATES-RETURN', name:'Crates Return Slip', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Record returned crates, covers, and remaining balances.' },
  { code:'DEL-CRATES-DAMAGE', name:'Lost / Damaged Crates Charge Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document damaged or missing crates and charge approval.' },
- { code:'RES-AGREEMENT', name:'Reseller Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document reseller terms, area, pricing, delivery, returns, and payment rules.' },
- { code:'RES-CART', name:'Rolling Cart Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Template Listed', purpose:'Document rolling cart deposit, ownership, renewal, and operating rules.' },
+ { code:'RES-KIOSK', name:'Kiosk Reseller Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Create, save, print, download, sign, approve, and track a reseller agreement for a fixed kiosk.' },
+ { code:'RES-CART', name:'Rolling / Mobile Cart Reseller Agreement', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Create, save, print, download, sign, approve, and track a reseller agreement for a rolling or mobile cart.' },
  { code:'OUT-COUNT', name:'Outlet Inventory Count Sheet', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Record beginning, delivered, wastage, ending, and estimated sold items.' },
  { code:'OUT-REMIT', name:'Outlet Weekly Remittance Form', category:'Delivery / Reseller / Outlet', batch:'Batch 3', priority:'High', status:'Existing Module', purpose:'Compute outlet sales, remittance, shortage, and posting status.' },
  { code:'FIN-CHARGE-SLIP', name:'Charge Slip', category:'Finance & Cash Control', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document employee accountability for loss, damage, shortage, wastage, company-paid expense, or another approved charge, including payment or payroll-deduction terms.' },
@@ -5646,6 +5724,8 @@ export default function App() {
  })
  const [companyDocumentRecords, setCompanyDocumentRecords] = useState([])
  const [companyDocumentRecordsLoading, setCompanyDocumentRecordsLoading] = useState(false)
+ const [editingCompanyDocumentRecordId, setEditingCompanyDocumentRecordId] = useState(null)
+ const [signedAgreementUploadingId, setSignedAgreementUploadingId] = useState(null)
 
  const [viewingContract, setViewingContract] = useState(null)
  const [contractStorageType, setContractStorageType] = useState('digital')
@@ -30381,8 +30461,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
 
   setDocumentCenterView('forms')
+  setEditingCompanyDocumentRecordId(null)
   setDocumentFormDraft(prev => createDocumentFormDraft(form.key, today, currentAdminLabel || 'Admin', prev))
   if (!employees.length && form.employeeMode !== 'none') loadEmployees()
+  if (isResellerAgreementFormKey(form.key) && !(resellers || []).length) loadResellers()
 
   if (options.showToast !== false) showToast(form.title + ' form opened.')
   if (options.scroll !== false) {
@@ -30398,8 +30480,71 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  const clearCurrentDocumentForm = () => {
   const form = getSelectedDocumentBatch1AForm()
+  setEditingCompanyDocumentRecordId(null)
   setDocumentFormDraft(prev => createDocumentFormDraft(form.key, today, currentAdminLabel || 'Admin', prev))
   showToast(form.title + ' fields cleared.')
+ }
+
+
+ const applyResellerToDocumentDraft = resellerId => {
+  const reseller = (resellers || []).find(row => String(row.id) === String(resellerId)) || null
+  setDocumentFormDraft(prev => ({
+   ...prev,
+   customFields:{
+    ...(prev.customFields || {}),
+    resellerId:resellerId || '',
+    resellerName:reseller?.contact_person || reseller?.name || '',
+    resellerBusinessName:reseller?.name || '',
+    resellerPhone:reseller?.phone || '',
+    resellerAddress:reseller?.address || '',
+    territory:reseller?.area || ''
+   }
+  }))
+ }
+
+ const getResellerAgreementPartyName = (values = documentFormDraft, record = null) =>
+  String(values?.customFields?.resellerName || record?.reseller_name || values?.customFields?.resellerBusinessName || '').trim()
+
+ const getResellerAgreementRecordValues = record => {
+  const values = getSavedDocumentValues(record)
+  return {
+   ...values,
+   formKey:record?.form_key || values.formKey,
+   customFields:{
+    ...(values.customFields || {}),
+    resellerId:record?.reseller_id || values?.customFields?.resellerId || '',
+    resellerName:record?.reseller_name || values?.customFields?.resellerName || '',
+    agreementEndDate:record?.agreement_end_date || values?.customFields?.agreementEndDate || '',
+    signedFileUrl:record?.signed_file_url || values?.customFields?.signedFileUrl || '',
+    signedFileName:record?.signed_file_name || values?.customFields?.signedFileName || ''
+   }
+  }
+ }
+
+ const editCompanyDocumentRecord = record => {
+  if (!record?.id) return
+  const form = findBatch1DocumentForm(record.form_key)
+  if (!form || !isResellerAgreementFormKey(form.key)) {
+   showToast('Editing is currently enabled for the reseller agreements.', 'red')
+   return
+  }
+  const values = getResellerAgreementRecordValues(record)
+  setDocumentFormDraft({
+   ...createDocumentFormDraft(form.key, record.document_date || today, record.prepared_by || currentAdminLabel || 'Admin'),
+   ...values,
+   documentNo:record.document_no || values.documentNo || '',
+   formKey:form.key,
+   documentDate:record.document_date || values.documentDate || today,
+   effectiveDate:record.effective_date || values.effectiveDate || today,
+   preparedBy:record.prepared_by || values.preparedBy || currentAdminLabel || 'Admin',
+   approvedBy:record.approved_by || values.approvedBy || '',
+   customFields:{ ...(values.customFields || {}) }
+  })
+  setEditingCompanyDocumentRecordId(record.id)
+  setDocumentCenterView('forms')
+  if (!(resellers || []).length) loadResellers()
+  setTimeout(()=>document.getElementById('document-batch1a-form-builder')?.scrollIntoView({ behavior:'smooth', block:'start' }),100)
+  showToast('Agreement draft opened for editing.')
  }
 
  const renderDocumentFormField = (field) => {
@@ -30411,7 +30556,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return (
    <div key={field.key} style={{ gridColumn }}>
     <label style={lblS}>{field.label}{field.required ? ' *' : ''}</label>
-    {field.type === 'textarea' ? (
+    {field.type === 'reseller_select' ? (
+     <select
+      value={value}
+      onChange={e=>applyResellerToDocumentDraft(e.target.value)}
+      style={commonStyle}
+     >
+      <option value="">Select active reseller / outlet</option>
+      {(resellers || []).map(row => <option key={row.id} value={row.id}>{row.name}{row.area ? ` — ${row.area}` : ''}{row.contact_person ? ` — ${row.contact_person}` : ''}</option>)}
+     </select>
+    ) : field.type === 'textarea' ? (
      <textarea
       value={value}
       onChange={e=>updateDocumentFormDraft(field.key, e.target.value)}
@@ -30462,6 +30616,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  function getCompanyDocumentRecordStatusColor(status) {
   const s = String(status || '').toLowerCase()
   if (s === 'draft') return 'yellow'
+  if (s === 'active') return 'green'
+  if (s === 'suspended') return 'orange'
+  if (s === 'expired' || s === 'terminated') return 'red'
   if (s === 'served' || s === 'issued') return 'blue'
   if (s === 'closed' || s === 'completed') return 'green'
   if (s === 'voided') return 'red'
@@ -30471,6 +30628,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  function getCompanyDocumentRecordStatusLabel(status) {
   const s = String(status || 'draft').toLowerCase()
   if (s === 'draft') return 'Draft'
+  if (s === 'active') return 'Active'
+  if (s === 'suspended') return 'Suspended'
+  if (s === 'expired') return 'Expired'
+  if (s === 'terminated') return 'Terminated'
   if (s === 'served') return 'Served'
   if (s === 'issued') return 'Issued'
   if (s === 'closed') return 'Closed'
@@ -30553,25 +30714,40 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  async function saveCurrentDocumentRecord(status = 'draft', options = {}) {
   const form = getSelectedDocumentBatch1AForm()
   if (!form || form.externalTab) {
-   showToast('Select a fillable Batch 1 form.', 'red')
+   showToast('Select a fillable document form.', 'red')
    return null
   }
   if (!validateCurrentDocumentForm(form)) return null
 
   const emp = getDocumentFormEmployee()
   const docNo = getDocumentReferenceNumber(form)
-  const summary = getDocumentRecordSummary(form, documentFormDraft)
+  const isResellerAgreement = isResellerAgreementFormKey(form.key)
+  const agreementModel = getResellerAgreementModel(form.key)
+  const selectedResellerId = isResellerAgreement ? String(documentFormDraft?.customFields?.resellerId || '').trim() : ''
+  const selectedReseller = isResellerAgreement ? (resellers || []).find(row => String(row.id) === selectedResellerId) : null
+  const resellerName = isResellerAgreement
+   ? String(documentFormDraft?.customFields?.resellerName || selectedReseller?.contact_person || selectedReseller?.name || '').trim()
+   : ''
+  const summary = isResellerAgreement ? {
+   subject:`${resellerName || 'Reseller'} — ${form.title}`,
+   details:String(documentFormDraft?.customFields?.territory || '').trim(),
+   items:String(documentFormDraft?.customFields?.equipmentIssued || '').trim()
+  } : getDocumentRecordSummary(form, documentFormDraft)
   const structuredRemarks = encodeCompanyDocumentFormData(form.key, { ...documentFormDraft, documentNo:docNo })
 
   const payload = {
    document_no:docNo,
    form_key:form.key,
    document_type:form.title,
-   employee_id:emp?.id || documentFormDraft.employeeId || null,
-   employee_name:emp?.full_name || null,
-   employee_code:emp?.employee_code || null,
-   position:emp?.position || null,
-   department:emp?.department || null,
+   employee_id:isResellerAgreement ? null : (emp?.id || documentFormDraft.employeeId || null),
+   employee_name:isResellerAgreement ? null : (emp?.full_name || null),
+   employee_code:isResellerAgreement ? null : (emp?.employee_code || null),
+   position:isResellerAgreement ? null : (emp?.position || null),
+   department:isResellerAgreement ? null : (emp?.department || null),
+   reseller_id:isResellerAgreement ? (selectedResellerId || null) : null,
+   reseller_name:isResellerAgreement ? (resellerName || selectedReseller?.name || null) : null,
+   agreement_model:isResellerAgreement ? agreementModel : null,
+   agreement_end_date:isResellerAgreement ? (documentFormDraft?.customFields?.agreementEndDate || null) : null,
    document_date:documentFormDraft.documentDate || today,
    incident_date:documentFormDraft.incidentDate || null,
    effective_date:documentFormDraft.effectiveDate || null,
@@ -30588,22 +30764,30 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
 
   try {
-   const { data, error } = await supabase
-    .from('company_document_records')
-    .insert(payload)
-    .select()
-    .single()
-
+   const wasEditing = !!editingCompanyDocumentRecordId
+   const updatePayload = wasEditing ? (() => { const { created_by, ...rest } = payload; return rest })() : payload
+   const result = wasEditing
+    ? await supabase.from('company_document_records').update(updatePayload).eq('id', editingCompanyDocumentRecordId).select().single()
+    : await supabase.from('company_document_records').insert(updatePayload).select().single()
+   const { data, error } = result
    if (error) throw error
 
    setDocumentFormDraft(prev => ({ ...prev, documentNo:docNo }))
-   showToast(options.printAfter ? 'Document saved. Preparing print...' : 'Document saved to Document Records.')
+   setEditingCompanyDocumentRecordId(null)
+   showToast(options.printAfter
+    ? (isResellerAgreement ? 'Agreement saved. Preparing preview...' : 'Document saved. Preparing print...')
+    : (isResellerAgreement ? 'Reseller agreement draft saved to Document Records.' : 'Document saved to Document Records.'))
+   if (isResellerAgreement) {
+    await logAudit(
+     wasEditing ? 'RESELLER AGREEMENT UPDATED' : 'RESELLER AGREEMENT CREATED',
+     currentAdminLabel || 'Admin',
+     resellerName || form.title,
+     `${form.title} | ${docNo} | ${String(documentFormDraft?.customFields?.territory || '').trim() || 'No territory'}`
+    )
+   }
    await loadCompanyDocumentRecords()
 
-   if (options.printAfter) {
-    setTimeout(() => printBatch1ADocumentForm(docNo), 150)
-   }
-
+   if (options.printAfter) setTimeout(() => printBatch1ADocumentForm(docNo), 150)
    return data
   } catch (err) {
    console.warn('saveCurrentDocumentRecord:', err)
@@ -30668,7 +30852,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    remarks:structured ? (structuredValues.remarks || '') : (record.remarks || ''),
    preparedBy:record.prepared_by || structuredValues.preparedBy || '',
    approvedBy:record.approved_by || structuredValues.approvedBy || '',
-   customFields:structuredValues.customFields || {}
+   customFields:{
+    ...(structuredValues.customFields || {}),
+    agreementEndDate:record.agreement_end_date || structuredValues?.customFields?.agreementEndDate || '',
+    resellerId:record.reseller_id || structuredValues?.customFields?.resellerId || '',
+    resellerName:record.reseller_name || structuredValues?.customFields?.resellerName || '',
+    signedFileUrl:record.signed_file_url || structuredValues?.customFields?.signedFileUrl || '',
+    signedFileName:record.signed_file_name || structuredValues?.customFields?.signedFileName || ''
+   }
   }
  }
 
@@ -30698,6 +30889,105 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   rows.push(['Prepared By', values.preparedBy || currentAdminLabel || 'Admin'])
   rows.push(['Approved By', values.approvedBy || '____________________________'])
   return rows
+ }
+
+ 
+ const escapeAgreementHtml = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch] || ch))
+ const cleanAgreementFileName = value => String(value || '').trim().replace(/[^a-z0-9]+/gi,'-').replace(/^-+|-+$/g,'').slice(0,70)
+
+ const buildResellerAgreementHtml = ({ form, values = documentFormDraft, record = null, wordMode = false }) => {
+  const cf = values?.customFields || {}
+  const model = getResellerAgreementModel(form?.key || values?.formKey || record?.form_key)
+  const isKiosk = model === 'kiosk'
+  const resellerName = String(cf.resellerName || record?.reseller_name || cf.resellerBusinessName || '____________________________').trim()
+  const resellerAddress = String(cf.resellerAddress || '____________________________').trim()
+  const resellerPhone = String(cf.resellerPhone || '________________').trim()
+  const validIdNumber = String(cf.validIdNumber || '____________________________').trim()
+  const territory = String(cf.territory || '____________________________').trim()
+  const effectiveDate = values?.effectiveDate || record?.effective_date || values?.documentDate || record?.document_date || today
+  const endDate = cf.agreementEndDate || record?.agreement_end_date || ''
+  const paymentSchedule = String(cf.paymentSchedule || 'Daily or Weekly, as selected in the approved record').trim()
+  const minimumDailyOrder = Math.max(0, safeNum(cf.minimumDailyOrder, 2000))
+  const documentNo = record?.document_no || values?.documentNo || getDocumentReferenceNumber(form)
+  const status = getCompanyDocumentRecordStatusLabel(record?.status || 'draft')
+  const companyRepresentative = String(record?.owner_approved_by || values?.approvedBy || '____________________________').trim()
+  const generatedDate = new Date().toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric' })
+  const commonClauses = [
+   ['1. RESELLER RELATIONSHIP', `The Reseller is authorized to sell Roma's Donuts products within the approved territory. This is a reseller/dealer arrangement and not a franchise. No franchise or royalty fee is charged. The standard reseller margin is twenty percent (20%), subject to the approved company price list and promotions.`],
+   ['2. TERRITORY AND LOCATION', `The assigned territory is ${territory}. The one-reseller-per-municipality policy remains subject to company approval. The Reseller shall not transfer the agreement, kiosk, cart, or approved selling location without written approval from the Company.`],
+   ['3. ORDERS, DELIVERY, AND PAYMENT', `The minimum daily order is ${minimumDailyOrder.toLocaleString('en-US')} pieces unless management approves a written adjustment. Fresh products are delivered daily. The Reseller shall verify the delivered quantity and invoice upon receipt. Product payments are due ${paymentSchedule.toLowerCase()} through cash, GCash, or bank transfer. Delivery may be suspended when an unpaid balance remains outstanding for eight (8) days. All balances must be fully settled upon termination.`],
+   ['4. PRODUCT HANDLING AND BRAND STANDARDS', `The Reseller shall follow approved pricing and promotions, wear the company shirt and hairnet, wear pants and not shorts, avoid smoking while selling, keep crates off the floor, protect products from direct sunlight, maintain cleanliness, greet customers with a smile, and provide proper customer service. Competing or unauthorized donut products are prohibited. The Company may inspect the products, kiosk or cart, and related records. Company logos, packaging, product names, and signage shall not be altered.`]
+  ]
+  const kioskClauses = [
+   ['5. KIOSK TERMS', `The kiosk ownership is ${String(cf.kioskOwnership || 'Reseller-Owned')}. The approved kiosk location is ${String(cf.approvedKioskLocation || '____________________________')}. The location requires Company approval and cannot be relocated or transferred without written approval. ${String(cf.utilitiesResponsibility || 'Reseller')} is responsible for electricity and water. ${String(cf.permitResponsibility || 'Reseller')} is responsible for permits. Site rental responsibility: ${String(cf.siteRentalResponsibility || 'as separately agreed in writing')}.`],
+   ['6. KIOSK EQUIPMENT AND ACCOUNTABILITY', `Equipment or assets issued: ${String(cf.equipmentIssued || 'Glass display showcase; white display trays; one pair of tongs; tarpaulins, signage, or Sintra board.')}. The Reseller is responsible for loss or damage caused by negligence. Any Company-owned kiosk or equipment issued must be returned upon termination or written demand.`]
+  ]
+  const cartClauses = [
+   ['5. CART OWNERSHIP AND PAYMENT', `The cart ownership arrangement is ${String(cf.cartOwnership || 'Reseller-Owned')}. The cart value is ${php(safeNum(cf.cartValue,36500))}, with a down payment of ${php(safeNum(cf.cartDownPayment,18250))} and ${Math.max(1,safeNum(cf.cartPaymentCount,2))} payment(s). ${String(cf.cartPaymentTerms || 'The first payment is due before fabrication and the remaining balance is due after fabrication. The cart must be fully paid before release.')} Ownership transfers only after full payment.`],
+   ['6. CART TERRITORY, STORAGE, AND CARE', `The cart may operate only within ${territory}${cf.approvedRoute ? `, including the approved route or barangays: ${String(cf.approvedRoute)}` : ''}. Overnight storage: ${String(cf.overnightStorage || 'as approved by the Company')}. The Reseller shall handle daily cleaning and minor repairs and is responsible for cart security and theft prevention. Refund/depreciation terms: ${String(cf.cartRefundTerms || 'The cart value is refundable subject to 8% depreciation per month, final inspection, and account clearance.')}`]
+  ]
+  const closingClauses = [
+   ['7. VIOLATIONS AND TERMINATION', `A first minor violation may result in a written warning. A second violation may result in temporary suspension. Unauthorized transfer of the kiosk or cart is grounds for immediate termination. Either party may terminate the agreement with thirty (30) days written notice, subject to final account clearance. Upon termination, all Roma's Donuts branding must be removed.`],
+   ['8. CONFIDENTIALITY', `The Reseller shall not disclose or misuse confidential recipes, prices, supplier information, internal company records, or other confidential business information.`],
+   ['9. EFFECTIVITY AND APPROVAL', `This agreement takes effect on ${formatDateForDisplay(effectiveDate)}${endDate ? ` and ends on ${formatDateForDisplay(endDate)}` : ''}. The system record remains a draft until a signed copy is uploaded and the Owner activates it. A copy of the Reseller's valid ID shall be attached.`]
+  ]
+  const clauseHtml = [...commonClauses, ...(isKiosk ? kioskClauses : cartClauses), ...closingClauses]
+   .map(([heading,body]) => `<h3>${escapeAgreementHtml(heading)}</h3><p>${escapeAgreementHtml(body)}</p>`).join('')
+  const additionalTerms = String(cf.additionalTerms || '').trim()
+  const extraHtml = additionalTerms ? `<h3>10. ADDITIONAL TERMS</h3><p>${escapeAgreementHtml(additionalTerms)}</p>` : ''
+  const officeNamespace = wordMode ? ' xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"' : ''
+  const pageClass = wordMode ? 'WordSection1' : 'page'
+  return `<!DOCTYPE html><html${officeNamespace}><head><meta charset="utf-8"><title>${escapeAgreementHtml(form.title)} - ${escapeAgreementHtml(resellerName)}</title><style>
+  @page WordSection1{size:8.5in 11in;margin:.65in .7in}.WordSection1{page:WordSection1}
+  *{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#111;font-size:10.5pt;line-height:1.42;margin:0;background:${wordMode?'white':'#e8e8e8'};padding:${wordMode?'0':'12px'}}
+  .${pageClass}{width:${wordMode?'auto':'210mm'};min-height:${wordMode?'auto':'297mm'};margin:0 auto;background:white;padding:${wordMode?'0':'13mm 15mm'};box-shadow:${wordMode?'none':'0 2px 12px rgba(0,0,0,.18)'}}
+  .brand{display:flex;justify-content:space-between;gap:15px;border-bottom:3px solid #ca1b1b;padding-bottom:8px;margin-bottom:12px}.brand h1{color:#ca1b1b;margin:0;font-size:19pt}.brand p{margin:2px 0;color:#555;font-size:8.5pt}.head{text-align:right}.head h2{margin:0;color:#1a1a2e;font-size:13pt;text-transform:uppercase}.meta{font-size:8.5pt;color:#666;margin-top:4px}.status{display:inline-block;border:1px solid #FDD412;background:#fff8dc;border-radius:999px;padding:3px 8px;font-weight:bold;margin-top:4px}
+  .intro{text-align:justify;margin:10px 0}.info{width:100%;border-collapse:collapse;margin:10px 0 13px}.info td{border:1px solid #d8d8d8;padding:5px 7px;vertical-align:top}.info td:first-child{width:31%;background:#fff8dc;font-weight:bold}
+  h3{font-size:10.5pt;color:#ca1b1b;margin:13px 0 4px;text-transform:uppercase;border-bottom:1px solid #FDD412;padding-bottom:2px}p{margin:4px 0;text-align:justify}
+  .note{border:1px solid #FDD412;background:#fff8dc;padding:8px 10px;margin:12px 0;font-size:9pt}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:35px;margin-top:35px}.sig{text-align:center;font-size:9pt}.line{border-top:1px solid #111;margin-top:35px;padding-top:5px}.footer{text-align:center;color:#777;font-size:8pt;border-top:1px solid #ddd;margin-top:22px;padding-top:6px}.no-print{text-align:center;margin-bottom:10px}.no-print button{background:#ca1b1b;color:white;border:0;border-radius:8px;padding:9px 20px;font-weight:bold;cursor:pointer}
+  @media print{@page{size:A4;margin:0}body{background:white;padding:0}.page{box-shadow:none;margin:0}.no-print{display:none}}
+  </style></head><body>${wordMode?'':'<div class="no-print"><button onclick="window.print()">Print / Save</button></div>'}<div class="${pageClass}">
+  <div class="brand"><div><h1>Roma's Donuts</h1><p>Malued District, Dagupan City</p><p>Every bite is a little piece of heaven.</p></div><div class="head"><h2>${escapeAgreementHtml(form.title)}</h2><div class="meta">${escapeAgreementHtml(documentNo)}</div><span class="status">${escapeAgreementHtml(status)}</span></div></div>
+  <p class="intro">This Agreement is entered into by and between <strong>Roma's Donuts</strong> (the <strong>Company</strong>) and <strong>${escapeAgreementHtml(resellerName)}</strong> (the <strong>Reseller</strong>).</p>
+  <table class="info"><tr><td>Reseller</td><td>${escapeAgreementHtml(resellerName)}</td></tr><tr><td>Address</td><td>${escapeAgreementHtml(resellerAddress)}</td></tr><tr><td>Contact Number</td><td>${escapeAgreementHtml(resellerPhone)}</td></tr><tr><td>Valid ID</td><td>${escapeAgreementHtml(validIdNumber)}</td></tr><tr><td>Assigned Territory</td><td>${escapeAgreementHtml(territory)}</td></tr><tr><td>Company Representative</td><td>${escapeAgreementHtml(companyRepresentative)}</td></tr></table>
+  ${clauseHtml}${extraHtml}
+  <div class="note"><strong>Document Control:</strong> Owner approval and an uploaded signed copy are required before this agreement is marked Active in the Documents Center.</div>
+  <p>By signing below, both parties confirm that the terms were read, explained, understood, and accepted.</p>
+  <div class="signatures"><div class="sig"><div class="line">${escapeAgreementHtml(resellerName)}<br/>Reseller Signature over Printed Name</div><p>Date: ____________________</p></div><div class="sig"><div class="line">${escapeAgreementHtml(companyRepresentative)}<br/>Authorized Company Representative</div><p>Date: ____________________</p></div></div>
+  <div class="footer">Roma's Donuts | ${escapeAgreementHtml(form.title)} | Generated ${escapeAgreementHtml(generatedDate)}</div></div></body></html>`
+ }
+
+ const openResellerAgreementPreview = ({ form, values = documentFormDraft, record = null, autoPrint = false }) => {
+  const html = buildResellerAgreementHtml({ form, values, record, wordMode:false })
+  const pw = window.open('', '_blank', 'width=980,height=780')
+  if (!pw) { showToast('Popup blocked. Please allow popups to preview the agreement.', 'red'); return }
+  pw.document.write(html)
+  pw.document.close()
+  pw.focus()
+  if (autoPrint) setTimeout(()=>pw.print(),350)
+ }
+
+ const downloadResellerAgreementWord = ({ form = getSelectedDocumentBatch1AForm(), values = documentFormDraft, record = null } = {}) => {
+  if (!form || !isResellerAgreementFormKey(form.key)) { showToast('Select a reseller agreement first.', 'red'); return }
+  if (!record && !validateCurrentDocumentForm(form)) return
+  const party = getResellerAgreementPartyName(values, record) || 'Reseller'
+  const documentNo = record?.document_no || values?.documentNo || getDocumentReferenceNumber(form)
+  const html = buildResellerAgreementHtml({ form, values:{...values,documentNo}, record, wordMode:true })
+  const fileName = [form.key, cleanAgreementFileName(party), cleanAgreementFileName(documentNo)].filter(Boolean).join('_') + '.doc'
+  try {
+   const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' })
+   const url = URL.createObjectURL(blob)
+   const link = document.createElement('a')
+   link.href = url
+   link.download = fileName
+   document.body.appendChild(link)
+   link.click()
+   link.remove()
+   setTimeout(()=>URL.revokeObjectURL(url),1000)
+   showToast('Reseller agreement Word file downloaded.')
+  } catch(error) {
+   showToast('Failed to download Word agreement: '+(error?.message || error), 'red')
+  }
  }
 
  const openDocumentPrintWindow = ({ form, rows, documentNo, status = '', autoPrint = false }) => {
@@ -30759,6 +31049,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const emp = getDocumentFormEmployee()
   const docNo = getDocumentReferenceNumber(form, forcedDocumentNo)
   if (!documentFormDraft.documentNo) setDocumentFormDraft(prev => ({ ...prev, documentNo:docNo }))
+  if (isResellerAgreementFormKey(form.key)) {
+   if (!validateCurrentDocumentForm(form)) return
+   openResellerAgreementPreview({ form, values:{ ...documentFormDraft, documentNo:docNo } })
+   return
+  }
   const rows = buildPrintableDocumentRows(form, emp, { ...documentFormDraft, documentNo:docNo }, { documentNo:docNo, blankRequired:true, includeBlankOptional:false })
   openDocumentPrintWindow({ form, rows, documentNo:docNo })
  }
@@ -30787,6 +31082,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
 
   const values = getSavedDocumentValues(record)
+  if (isResellerAgreementFormKey(form.key)) {
+   openResellerAgreementPreview({ form, values:getResellerAgreementRecordValues(record), record, autoPrint:true })
+   return
+  }
   const employeeInfo = {
    full_name:record.employee_name || '',
    employee_code:record.employee_code || '',
@@ -30825,6 +31124,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    ]
   }
   const values = getSavedDocumentValues(record)
+  if (isResellerAgreementFormKey(form.key)) {
+   openResellerAgreementPreview({ form, values:getResellerAgreementRecordValues(record), record, autoPrint:false })
+   return
+  }
   const employeeInfo = {
    full_name:record.employee_name || '',
    employee_code:record.employee_code || '',
@@ -30839,6 +31142,85 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }).filter(([,value]) => String(value || '').trim())
 
   window.alert(rows.map(([label,value]) => label + ': ' + value).join('\n\n'))
+ }
+
+
+ async function uploadSignedResellerAgreement(record, file) {
+  if (!record?.id || !file) return
+  const form = findBatch1DocumentForm(record.form_key)
+  if (!form || !isResellerAgreementFormKey(form.key)) { showToast('Signed upload is available only for reseller agreements.', 'red'); return }
+  const allowed = ['application/pdf','image/jpeg','image/png']
+  if (file.type && !allowed.includes(file.type)) { showToast('Upload a PDF, JPG, or PNG signed agreement.', 'red'); return }
+  if (file.size > 12 * 1024 * 1024) { showToast('Signed agreement must be 12 MB or smaller.', 'red'); return }
+  setSignedAgreementUploadingId(record.id)
+  try {
+   const safeName = String(file.name || 'signed-agreement.pdf').replace(/[^a-z0-9._-]+/gi,'-')
+   const storagePath = `${record.id}/${Date.now()}-${safeName}`
+   const { error:uploadError } = await supabase.storage.from('reseller-agreements').upload(storagePath, file, { upsert:false, contentType:file.type || 'application/pdf' })
+   if (uploadError) throw uploadError
+   const { error:updateError } = await supabase.from('company_document_records').update({
+    signed_file_path:storagePath,
+    signed_file_url:null,
+    signed_file_name:safeName,
+    signed_uploaded_at:new Date().toISOString(),
+    signed_uploaded_by:currentAdminLabel || 'Admin'
+   }).eq('id',record.id)
+   if (updateError) throw updateError
+   await logAudit('SIGNED RESELLER AGREEMENT UPLOADED', currentAdminLabel || 'Admin', record.reseller_name || record.document_no, `${record.document_type} | ${record.document_no}`)
+   showToast('Signed reseller agreement uploaded.')
+   await loadCompanyDocumentRecords()
+  } catch(error) {
+   showToast('Signed agreement upload failed: '+(error?.message || error), 'red')
+  } finally {
+   setSignedAgreementUploadingId(null)
+  }
+ }
+
+ async function openSignedResellerAgreement(record) {
+  if (!record?.signed_file_path && !record?.signed_file_url) {
+   showToast('No signed agreement has been uploaded yet.', 'red')
+   return
+  }
+  try {
+   if (record.signed_file_path) {
+    const { data, error } = await supabase.storage.from('reseller-agreements').createSignedUrl(record.signed_file_path, 300)
+    if (error) throw error
+    if (!data?.signedUrl) throw new Error('Temporary signed link was not returned.')
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer')
+    return
+   }
+   // Backward compatibility for any older record uploaded before private storage.
+   window.open(record.signed_file_url, '_blank', 'noopener,noreferrer')
+  } catch(error) {
+   showToast('Signed agreement could not be opened: '+(error?.message || error), 'red')
+  }
+ }
+
+ async function updateResellerAgreementStatus(record, nextStatus) {
+  if (!record?.id) return
+  if (!requireOwnerAction(`${String(nextStatus || '').toUpperCase()} reseller agreement`)) return
+  if (nextStatus === 'active' && !record.signed_file_path && !record.signed_file_url) {
+   showToast('Activation blocked: upload the signed agreement first.', 'red')
+   return
+  }
+  const actionLabel = getCompanyDocumentRecordStatusLabel(nextStatus)
+  if (!window.confirm(`${actionLabel} ${record.document_no} for ${record.reseller_name || 'this reseller'}?`)) return
+  const updates = { status:nextStatus }
+  if (nextStatus === 'active') {
+   updates.owner_approved_by = currentAdminLabel || 'Owner'
+   updates.owner_approved_at = new Date().toISOString()
+   updates.approved_by = currentAdminLabel || 'Owner'
+  }
+  if (nextStatus === 'expired' || nextStatus === 'terminated') updates.closed_date = today
+  try {
+   const { error } = await supabase.from('company_document_records').update(updates).eq('id',record.id)
+   if (error) throw error
+   await logAudit(`RESELLER AGREEMENT ${String(nextStatus).toUpperCase()}`, currentAdminLabel || 'Owner', record.reseller_name || record.document_no, `${record.document_type} | ${record.document_no}`)
+   showToast(`Agreement marked ${actionLabel}.`)
+   await loadCompanyDocumentRecords()
+  } catch(error) {
+   showToast('Agreement status update failed: '+(error?.message || error), 'red')
+  }
  }
 
  const handleTabClick = (key) => {
@@ -30876,7 +31258,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='remittance') loadPayrollHistory()
  if(key==='dtr') loadEmployees()
  if(key==='contracts') { loadContracts(); loadEmployees(); setTimeout(()=>autoGenerateMissingContracts({ silent:true }), 800) }
- if(key==='documents') { loadEmployees(); loadCompanyDocumentRecords() }
+ if(key==='documents') { loadEmployees(); loadResellers(); loadCompanyDocumentRecords() }
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadCostProfiles(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
@@ -34185,11 +34567,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div id="document-batch1a-form-builder" style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px', scrollMarginTop:'18px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Full Batch 1 Documents Builder</h3>
- <p style={{ color:'#666', fontSize:'12px', margin:0 }}>All 31 Batch 1 documents are active: 30 fillable, savable, and printable forms plus the dedicated Employment Contracts module.</p>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Company Documents Builder</h3>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Batch 1 forms remain active, with integrated Kiosk and Rolling/Mobile Cart Reseller Agreements from Batch 3.</p>
  </div>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-  <Badge label="31 / 31 ACTIVE" color="green" />
+  <Badge label={DOCUMENT_BATCH1A_FORMS.length + ' ACTIVE FORMS'} color="green" />
   <Badge label={activeBatch1FillableForms.length + ' FILLABLE FORMS'} color="blue" />
  </div>
  </div>
@@ -34215,7 +34597,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   ) : (
    <div style={{ background:'#f7f9fc', border:'1px solid #d9e2ec', borderRadius:'10px', padding:'10px 12px' }}>
     <p style={{ margin:'0 0 3px', color:'#555', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Document Scope</p>
-    <p style={{ margin:0, color:'#1a1a2e', fontSize:'12px', fontWeight:'800' }}>Company / Payroll-Level Record</p>
+    <p style={{ margin:0, color:'#1a1a2e', fontSize:'12px', fontWeight:'800' }}>{isResellerAgreementFormKey(selectedBatch1DocumentForm.key) ? 'Reseller Agreement Record' : 'Company / Payroll-Level Record'}</p>
    </div>
   )}
   <div>
@@ -34243,11 +34625,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   </div>
  </div>
 
+ {editingCompanyDocumentRecordId && <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderLeft:'5px solid #ca1b1b', borderRadius:'10px', padding:'9px 11px', marginBottom:'10px', color:'#1a1a2e', fontSize:'11px', fontWeight:'800' }}>Editing a saved reseller agreement. Saving will update the existing Document Records entry.</div>}
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
-  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>SAVE AS DRAFT</button>
+  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>{editingCompanyDocumentRecordId?'UPDATE DRAFT':'SAVE AS DRAFT'}</button>
   <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
-  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>printBatch1ADocumentForm()}>PRINT ONLY</button>
-  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={clearCurrentDocumentForm}>CLEAR FORM</button>
+  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>printBatch1ADocumentForm()}>{isResellerAgreementFormKey(selectedBatch1DocumentForm.key)?'PREVIEW / PRINT':'PRINT ONLY'}</button>
+  {isResellerAgreementFormKey(selectedBatch1DocumentForm.key) && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadResellerAgreementWord()}>DOWNLOAD WORD</button>}
+  <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={clearCurrentDocumentForm}>{editingCompanyDocumentRecordId?'CANCEL EDIT':'CLEAR FORM'}</button>
   <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Required fields are marked with <strong>*</strong>. Saved records remain in the Document Records & NTE Archive tab.</p>
  </div>
  </div>
@@ -34259,7 +34643,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const documentRecordTypes = Array.from(new Set(companyDocumentRecords.map(record => String(record.document_type || '').trim()).filter(Boolean))).sort((a,b)=>a.localeCompare(b))
   const filteredDocumentRecords = companyDocumentRecords.filter(record => {
    const status = String(record.status || 'draft').toLowerCase()
-   const matchesSearch = !recordQuery || [record.document_no, record.document_type, record.employee_name, record.employee_code, record.document_date, record.subject, record.items, record.details, record.remarks]
+   const matchesSearch = !recordQuery || [record.document_no, record.document_type, record.employee_name, record.employee_code, record.reseller_name, record.document_date, record.subject, record.items, record.details, record.remarks]
     .some(value => String(value || '').toLowerCase().includes(recordQuery))
    const matchesStatus = documentRecordStatusFilter === 'all' || status === documentRecordStatusFilter || (documentRecordStatusFilter === 'served' && status === 'issued') || (documentRecordStatusFilter === 'closed' && status === 'completed')
    const matchesType = documentRecordTypeFilter === 'all' || String(record.document_type || '') === documentRecordTypeFilter
@@ -34285,12 +34669,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    </div>
   </div>
 
-  <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)', gap:'8px', marginBottom:'12px' }}>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(auto-fit,minmax(115px,1fr))', gap:'8px', marginBottom:'12px' }}>
    {[
     ['all','All Records','#1a1a2e'],
     ['draft','Draft','#f5a623'],
+    ['active','Active','#2d8a4e'],
+    ['suspended','Suspended','#f57c00'],
+    ['expired','Expired','#7f5539'],
     ['served','Served / Issued','#4a90d9'],
     ['closed','Closed','#2d8a4e'],
+    ['terminated','Terminated','#8b1e1e'],
     ['voided','Voided','#ca1b1b']
    ].map(([key,label,color]) => (
     <button key={key} onClick={()=>setDocumentRecordStatusFilter(key)} style={{ background:documentRecordStatusFilter===key?color:'white', color:documentRecordStatusFilter===key?'white':'#444', border:`1px solid ${documentRecordStatusFilter===key?color:'#e5e5e5'}`, borderRadius:'12px', padding:'10px', cursor:'pointer', textAlign:'left' }}>
@@ -34317,8 +34705,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <select value={documentRecordStatusFilter} onChange={e=>setDocumentRecordStatusFilter(e.target.value)} style={{...inputStyle, marginBottom:0 }}>
      <option value="all">All statuses</option>
      <option value="draft">Draft</option>
+     <option value="active">Active</option>
+     <option value="suspended">Suspended</option>
      <option value="served">Served / Issued</option>
      <option value="closed">Closed / Completed</option>
+     <option value="expired">Expired</option>
+     <option value="terminated">Terminated</option>
      <option value="voided">Voided</option>
     </select>
    </div>
@@ -34347,7 +34739,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <tr style={{ background:'#f7f9fc', color:'#555' }}>
        <th style={{ padding:'10px', textAlign:'left' }}>Document No.</th>
        <th style={{ padding:'10px', textAlign:'left' }}>Type</th>
-       <th style={{ padding:'10px', textAlign:'left' }}>Employee</th>
+       <th style={{ padding:'10px', textAlign:'left' }}>Employee / Reseller</th>
        <th style={{ padding:'10px', textAlign:'left' }}>Date</th>
        <th style={{ padding:'10px', textAlign:'left' }}>Subject / Items</th>
        <th style={{ padding:'10px', textAlign:'left' }}>Status</th>
@@ -34359,17 +34751,40 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        <tr key={record.id} style={{ borderTop:'1px solid #eee', background:String(record.status || '').toLowerCase()==='voided'?'#fff8f8':'white' }}>
         <td style={{ padding:'10px', fontWeight:'bold', color:'#333' }}>{record.document_no}</td>
         <td style={{ padding:'10px' }}>{record.document_type}</td>
-        <td style={{ padding:'10px' }}>{record.employee_name || '—'}<br/><span style={{ color:'#888', fontSize:'10px' }}>{record.employee_code || ''}</span></td>
+        <td style={{ padding:'10px' }}>{record.reseller_name || record.employee_name || '—'}<br/><span style={{ color:'#888', fontSize:'10px' }}>{record.reseller_name ? (record.agreement_model === 'rolling_cart' ? 'Rolling / Mobile Cart' : 'Kiosk') : (record.employee_code || '')}</span></td>
         <td style={{ padding:'10px' }}>{formatDateForDisplay(record.document_date)}</td>
         <td style={{ padding:'10px', maxWidth:'360px' }}>{record.subject || record.items || '—'}</td>
-        <td style={{ padding:'10px' }}><Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} /></td>
+        <td style={{ padding:'10px' }}>
+         <Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} />
+         {isResellerAgreementFormKey(record.form_key) && <div style={{ marginTop:'5px', color:(record.signed_file_path || record.signed_file_url)?'#2d8a4e':'#888', fontSize:'9px', fontWeight:'800' }}>{(record.signed_file_path || record.signed_file_url)?'SIGNED COPY UPLOADED':'SIGNED COPY PENDING'}</div>}
+         {record.owner_approved_at && <div style={{ marginTop:'2px', color:'#1a1a2e', fontSize:'9px' }}>Owner: {record.owner_approved_by || 'Approved'}</div>}
+        </td>
         <td style={{ padding:'10px' }}>
          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
           <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>viewCompanyDocumentRecord(record)}>VIEW</button>
           <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
-          {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
-          {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
-          {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
+          {isResellerAgreementFormKey(record.form_key) ? (
+           <>
+            <button style={{...btnBlack, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadResellerAgreementWord({ form:findBatch1DocumentForm(record.form_key), values:getResellerAgreementRecordValues(record), record })}>WORD</button>
+            {['draft','suspended'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>editCompanyDocumentRecord(record)}>EDIT</button>}
+            <label style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px', cursor:'pointer', opacity:String(signedAgreementUploadingId||'')===String(record.id)?0.6:1 }}>
+             {String(signedAgreementUploadingId||'')===String(record.id)?'UPLOADING...':(record.signed_file_path || record.signed_file_url)?'REPLACE SIGNED':'UPLOAD SIGNED'}
+             <input type="file" accept=".pdf,image/jpeg,image/png" style={{ display:'none' }} disabled={String(signedAgreementUploadingId||'')===String(record.id)} onChange={e=>{ const file=e.target.files?.[0]; if(file) uploadSignedResellerAgreement(record,file); e.target.value='' }} />
+            </label>
+            {(record.signed_file_path || record.signed_file_url) && <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>openSignedResellerAgreement(record)}>SIGNED COPY</button>}
+            {['draft','suspended','expired'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateResellerAgreementStatus(record,'active')}>OWNER ACTIVATE</button>}
+            {String(record.status || '').toLowerCase() === 'active' && <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateResellerAgreementStatus(record,'suspended')}>SUSPEND</button>}
+            {['active','suspended'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateResellerAgreementStatus(record,'expired')}>MARK EXPIRED</button>}
+            {!['terminated','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateResellerAgreementStatus(record,'terminated')}>TERMINATE</button>}
+            {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
+           </>
+          ) : (
+           <>
+            {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
+            {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
+            {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
+           </>
+          )}
          </div>
         </td>
        </tr>
@@ -34442,7 +34857,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {[
   ['Batch 1','HR, Payroll, NTE essentials','Contracts, CA, deductions, NTE, incident, clearance, final pay'],
   ['Batch 2','Production and food safety','Batch records, hold/release, cleaning, temperature, oil, wastage'],
-  ['Batch 3','Inventory, delivery, reseller','Receiving, issuance, crates, reseller agreement, returns, outlet slips'],
+  ['Batch 3','Inventory, delivery, reseller','Kiosk and rolling cart agreements are active; receiving, issuance, crates, returns, and outlet slips remain listed.'],
   ['Batch 4','Finance and compliance','Petty cash, vouchers, permit trackers, closing checklist']
  ].map(([batch,title,desc]) => (
  <div key={batch} style={{ border:`1px solid ${documentCenterBatch===batch?'#ca1b1b':'rgba(202,27,27,0.18)'}`, borderTop:`4px solid ${documentCenterBatch===batch?'#ca1b1b':'#FDD412'}`, borderRadius:'12px', padding:'12px', background:documentCenterBatch===batch?'linear-gradient(180deg,#fff8dc,#ffffff)':'linear-gradient(180deg,#fffdf4,#ffffff)', boxShadow:'0 3px 10px rgba(26,26,46,0.04)' }}>
