@@ -25884,6 +25884,28 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   return [...duplicateNames]
  }
 
+
+ async function ensureXLSXLibrary() {
+  if (window['XLSX']) return window['XLSX']
+  await new Promise((resolve, reject) => {
+   const existing = document.querySelector('script[data-romas-xlsx-library="true"]')
+   if (existing) {
+    existing.addEventListener('load', resolve, { once:true })
+    existing.addEventListener('error', reject, { once:true })
+    return
+   }
+   const script = document.createElement('script')
+   script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+   script.async = true
+   script.dataset.romasXlsxLibrary = 'true'
+   script.onload = resolve
+   script.onerror = () => reject(new Error('Excel library failed to load. Check the internet connection and try again.'))
+   document.head.appendChild(script)
+  })
+  if (!window['XLSX']) throw new Error('Excel library failed to initialize.')
+  return window['XLSX']
+ }
+
  async function downloadRCBCExcelReview() {
   const { assignedRows, skippedRows, selectedRows } = getCompleteBankExportRows('RCBC')
   if (assignedRows.length === 0) {
@@ -25901,120 +25923,81 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    return
   }
 
-  const totalAmount = selectedRows.reduce((sum, row) => sum + safeNum(row.netPay, 0), 0)
-  const periodText = `${payrollStart} to ${payrollEnd}`
+  try {
+   const XLSX = await ensureXLSXLibrary()
+   const totalAmount = selectedRows.reduce((sum, row) => sum + safeNum(row.netPay, 0), 0)
+   const periodText = `${payrollStart} to ${payrollEnd}`
 
-  const worksheetRows = [
-   `<Row ss:StyleID="Header">
-      <Cell><Data ss:Type="String">Account Number</Data></Cell>
-      <Cell><Data ss:Type="String">Account Name</Data></Cell>
-      <Cell><Data ss:Type="String">Amount</Data></Cell>
-    </Row>`,
-   ...selectedRows.map(row => {
-    const account = normalizeBankAccountForExport(row.bankAccount)
-    const accountName = row.bankAccountName || row.employeeName
-    const amount = safeNum(row.netPay, 0).toFixed(2)
-    return `<Row>
-      <Cell ss:StyleID="AccountText"><Data ss:Type="String">${escapeSpreadsheetXml(account)}</Data></Cell>
-      <Cell ss:StyleID="Text"><Data ss:Type="String">${escapeSpreadsheetXml(accountName)}</Data></Cell>
-      <Cell ss:StyleID="Amount"><Data ss:Type="Number">${amount}</Data></Cell>
-    </Row>`
-   }),
-   `<Row ss:StyleID="Total">
-      <Cell><Data ss:Type="String"></Data></Cell>
-      <Cell><Data ss:Type="String">TOTAL</Data></Cell>
-      <Cell ss:StyleID="Amount"><Data ss:Type="Number">${totalAmount.toFixed(2)}</Data></Cell>
-    </Row>`
-  ].join('')
+   const worksheetData = [
+    ['Account Number', 'Account Name', 'Amount'],
+    ...selectedRows.map(row => [
+     normalizeBankAccountForExport(row.bankAccount),
+     row.bankAccountName || row.employeeName,
+     Number(safeNum(row.netPay, 0).toFixed(2))
+    ]),
+    ['', 'TOTAL', Number(totalAmount.toFixed(2))]
+   ]
 
-  const workbookXml = `<?xml version="1.0"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook
- xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:html="http://www.w3.org/TR/REC-html40">
- <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
-  <Title>RCBC Payroll Review ${escapeSpreadsheetXml(periodText)}</Title>
-  <Author>Roma's Donuts</Author>
-  <Company>Roma's Donuts</Company>
- </DocumentProperties>
- <ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel">
-  <ProtectStructure>False</ProtectStructure>
-  <ProtectWindows>False</ProtectWindows>
- </ExcelWorkbook>
- <Styles>
-  <Style ss:ID="Default" ss:Name="Normal">
-   <Alignment ss:Vertical="Center"/>
-   <Font ss:FontName="Calibri" x:Family="Swiss" ss:Size="11"/>
-  </Style>
-  <Style ss:ID="Header">
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/>
-   <Interior ss:Color="#6C1D45" ss:Pattern="Solid"/>
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>
-   </Borders>
-  </Style>
-  <Style ss:ID="Text">
-   <NumberFormat ss:Format="@"/>
-  </Style>
-  <Style ss:ID="AccountText">
-   <NumberFormat ss:Format="@"/>
-   <Font ss:FontName="Consolas" ss:Size="11"/>
-  </Style>
-  <Style ss:ID="Amount">
-   <NumberFormat ss:Format="#,##0.00"/>
-  </Style>
-  <Style ss:ID="Total">
-   <Font ss:Bold="1"/>
-   <Interior ss:Color="#FFF8DC" ss:Pattern="Solid"/>
-  </Style>
- </Styles>
- <Worksheet ss:Name="RCBC Payroll">
-  <Table>
-   <Column ss:StyleID="AccountText" ss:AutoFitWidth="0" ss:Width="130"/>
-   <Column ss:StyleID="Text" ss:AutoFitWidth="0" ss:Width="220"/>
-   <Column ss:StyleID="Amount" ss:AutoFitWidth="0" ss:Width="95"/>
-   ${worksheetRows}
-  </Table>
-  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
-   <FreezePanes/>
-   <FrozenNoSplit/>
-   <SplitHorizontal>1</SplitHorizontal>
-   <TopRowBottomPane>1</TopRowBottomPane>
-   <ActivePane>2</ActivePane>
-   <ProtectObjects>False</ProtectObjects>
-   <ProtectScenarios>False</ProtectScenarios>
-  </WorksheetOptions>
- </Worksheet>
-</Workbook>`
+   const worksheet = XLSX.utils.aoa_to_sheet(worksheetData)
 
-  const blob = new Blob([workbookXml], { type:'application/vnd.ms-excel;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `RCBC_Payroll_Excel_Review_${payrollStart}_to_${payrollEnd}.xls`
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
+   // Force every account number cell to a true text/string cell.
+   // This is what permanently preserves leading zeroes in Excel.
+   for (let rowIndex = 2; rowIndex <= selectedRows.length + 1; rowIndex += 1) {
+    const cellAddress = `A${rowIndex}`
+    const accountValue = normalizeBankAccountForExport(selectedRows[rowIndex - 2].bankAccount)
+    worksheet[cellAddress] = {
+     t:'s',
+     v:accountValue,
+     z:'@'
+    }
+   }
 
-  const skippedNames = skippedRows.map(row => row.employeeName).filter(Boolean)
-  await logAudit(
-   'RCBC EXCEL REVIEW EXPORTED',
-   currentAdminLabel,
-   'RCBC',
-   `Period: ${periodText} | Exported: ${selectedRows.length} | Skipped incomplete: ${skippedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`
-  )
-  showToast(
-   `RCBC Excel review downloaded with account numbers preserved as text.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
-   skippedRows.length ? 'orange' : 'green'
-  )
+   // Keep amount cells numeric with two decimal places.
+   for (let rowIndex = 2; rowIndex <= selectedRows.length + 2; rowIndex += 1) {
+    const cellAddress = `C${rowIndex}`
+    if (worksheet[cellAddress]) worksheet[cellAddress].z = '#,##0.00'
+   }
+
+   worksheet['!cols'] = [
+    { wch:22 },
+    { wch:34 },
+    { wch:16 }
+   ]
+   worksheet['!autofilter'] = { ref:`A1:C${selectedRows.length + 1}` }
+   worksheet['!freeze'] = { xSplit:0, ySplit:1, topLeftCell:'A2', activePane:'bottomLeft', state:'frozen' }
+
+   const workbook = XLSX.utils.book_new()
+   workbook.Props = {
+    Title:`RCBC Payroll Review ${periodText}`,
+    Subject:'Payroll bank review with account numbers stored as text',
+    Author:"Roma's Donuts",
+    Company:"Roma's Donuts",
+    CreatedDate:new Date()
+   }
+   XLSX.utils.book_append_sheet(workbook, worksheet, 'RCBC Payroll')
+
+   const filename = `RCBC_Payroll_Excel_Review_${payrollStart}_to_${payrollEnd}.xlsx`
+   XLSX.writeFile(workbook, filename, {
+    bookType:'xlsx',
+    compression:true,
+    cellStyles:true
+   })
+
+   const skippedNames = skippedRows.map(row => row.employeeName).filter(Boolean)
+   await logAudit(
+    'RCBC EXCEL REVIEW EXPORTED',
+    currentAdminLabel,
+    'RCBC',
+    `Period: ${periodText} | Format: genuine XLSX | Exported: ${selectedRows.length} | Skipped incomplete: ${skippedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`
+   )
+   showToast(
+    `Genuine RCBC Excel workbook downloaded. Account numbers are stored as text and leading zeroes are preserved.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
+    skippedRows.length ? 'orange' : 'green'
+   )
+  } catch(error) {
+   console.error('RCBC Excel review export failed:', error)
+   showToast(`RCBC Excel review failed: ${error?.message || error}`, 'red')
+  }
  }
 
  async function printDTR(empId, empName, empCode, startOrMonth, endDateArg = null, periodLabelArg = '') {
@@ -34901,7 +34884,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   </div>
   <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', marginTop:'16px', border:'1px solid #f5c518' }}>
    <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 6px' }}>Before the First Live Upload</p>
-   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}><strong>RCBC Upload CSV:</strong> upload this file directly to the RCBC portal. Do not open and re-save it in Excel because Excel converts account numbers into numeric values and removes leading zeroes. <strong>Excel Review:</strong> use this separate file for checking; its Account Number column is permanently formatted as text, so all leading zeroes remain visible. Do not upload the Excel Review file to RCBC unless the bank specifically requests an Excel workbook.</p>
+   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}><strong>RCBC Upload CSV:</strong> upload this file directly to the RCBC portal and avoid opening/re-saving it in Excel. <strong>Excel Review (.xlsx):</strong> this is now a genuine Excel workbook, so Excel will open it without a file-format warning. Its Account Number column is stored as text, preserving every leading zero. Do not upload the Excel Review workbook unless RCBC specifically requests an Excel file.</p>
   </div>
  </div>
  )}
