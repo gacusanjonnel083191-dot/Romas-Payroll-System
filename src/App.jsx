@@ -25844,6 +25844,179 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   )
  }
 
+
+ function escapeSpreadsheetXml(value = '') {
+  return String(value ?? '')
+   .replace(/&/g, '&amp;')
+   .replace(/</g, '&lt;')
+   .replace(/>/g, '&gt;')
+   .replace(/"/g, '&quot;')
+   .replace(/'/g, '&apos;')
+ }
+
+ function getCompleteBankExportRows(bank = '') {
+  const normalizedBank = normalizePayrollBankName(bank)
+  const assignedRows = getPayrollRowsForBank(normalizedBank)
+  const skippedRows = assignedRows.filter(row => {
+   if (normalizedBank === 'GCash') return !normalizeBankAccountForExport(row.mobileNumber || row.bankAccount)
+   return !normalizeBankAccountForExport(row.bankAccount)
+  })
+  const selectedRows = assignedRows.filter(row => !skippedRows.includes(row))
+  return { normalizedBank, assignedRows, skippedRows, selectedRows }
+ }
+
+ function getDuplicateBankAccountNames(rows = [], bank = '') {
+  const normalizedBank = normalizePayrollBankName(bank)
+  const accountOwners = {}
+  const duplicateNames = new Set()
+  ;(rows || []).forEach(row => {
+   const account = normalizeBankAccountForExport(
+    normalizedBank === 'GCash' ? (row.mobileNumber || row.bankAccount) : row.bankAccount
+   )
+   if (!account) return
+   if (accountOwners[account] && String(accountOwners[account].employeeId) !== String(row.employeeId)) {
+    duplicateNames.add(accountOwners[account].employeeName)
+    duplicateNames.add(row.employeeName)
+   } else {
+    accountOwners[account] = row
+   }
+  })
+  return [...duplicateNames]
+ }
+
+ async function downloadRCBCExcelReview() {
+  const { assignedRows, skippedRows, selectedRows } = getCompleteBankExportRows('RCBC')
+  if (assignedRows.length === 0) {
+   showToast('No positive-net-pay employee is assigned to RCBC.', 'red')
+   return
+  }
+  if (selectedRows.length === 0) {
+   showToast(`RCBC Excel review not created: all ${assignedRows.length} assigned employee(s) have incomplete account details.`, 'red')
+   return
+  }
+
+  const duplicateNames = getDuplicateBankAccountNames(selectedRows, 'RCBC')
+  if (duplicateNames.length > 0) {
+   showToast(`RCBC Excel review blocked: duplicate account number detected for ${duplicateNames.join(', ')}.`, 'red')
+   return
+  }
+
+  const totalAmount = selectedRows.reduce((sum, row) => sum + safeNum(row.netPay, 0), 0)
+  const periodText = `${payrollStart} to ${payrollEnd}`
+
+  const worksheetRows = [
+   `<Row ss:StyleID="Header">
+      <Cell><Data ss:Type="String">Account Number</Data></Cell>
+      <Cell><Data ss:Type="String">Account Name</Data></Cell>
+      <Cell><Data ss:Type="String">Amount</Data></Cell>
+    </Row>`,
+   ...selectedRows.map(row => {
+    const account = normalizeBankAccountForExport(row.bankAccount)
+    const accountName = row.bankAccountName || row.employeeName
+    const amount = safeNum(row.netPay, 0).toFixed(2)
+    return `<Row>
+      <Cell ss:StyleID="AccountText"><Data ss:Type="String">${escapeSpreadsheetXml(account)}</Data></Cell>
+      <Cell ss:StyleID="Text"><Data ss:Type="String">${escapeSpreadsheetXml(accountName)}</Data></Cell>
+      <Cell ss:StyleID="Amount"><Data ss:Type="Number">${amount}</Data></Cell>
+    </Row>`
+   }),
+   `<Row ss:StyleID="Total">
+      <Cell><Data ss:Type="String"></Data></Cell>
+      <Cell><Data ss:Type="String">TOTAL</Data></Cell>
+      <Cell ss:StyleID="Amount"><Data ss:Type="Number">${totalAmount.toFixed(2)}</Data></Cell>
+    </Row>`
+  ].join('')
+
+  const workbookXml = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook
+ xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:html="http://www.w3.org/TR/REC-html40">
+ <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
+  <Title>RCBC Payroll Review ${escapeSpreadsheetXml(periodText)}</Title>
+  <Author>Roma's Donuts</Author>
+  <Company>Roma's Donuts</Company>
+ </DocumentProperties>
+ <ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel">
+  <ProtectStructure>False</ProtectStructure>
+  <ProtectWindows>False</ProtectWindows>
+ </ExcelWorkbook>
+ <Styles>
+  <Style ss:ID="Default" ss:Name="Normal">
+   <Alignment ss:Vertical="Center"/>
+   <Font ss:FontName="Calibri" x:Family="Swiss" ss:Size="11"/>
+  </Style>
+  <Style ss:ID="Header">
+   <Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/>
+   <Interior ss:Color="#6C1D45" ss:Pattern="Solid"/>
+   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
+   <Borders>
+    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/>
+    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/>
+    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/>
+    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/>
+   </Borders>
+  </Style>
+  <Style ss:ID="Text">
+   <NumberFormat ss:Format="@"/>
+  </Style>
+  <Style ss:ID="AccountText">
+   <NumberFormat ss:Format="@"/>
+   <Font ss:FontName="Consolas" ss:Size="11"/>
+  </Style>
+  <Style ss:ID="Amount">
+   <NumberFormat ss:Format="#,##0.00"/>
+  </Style>
+  <Style ss:ID="Total">
+   <Font ss:Bold="1"/>
+   <Interior ss:Color="#FFF8DC" ss:Pattern="Solid"/>
+  </Style>
+ </Styles>
+ <Worksheet ss:Name="RCBC Payroll">
+  <Table>
+   <Column ss:StyleID="AccountText" ss:AutoFitWidth="0" ss:Width="130"/>
+   <Column ss:StyleID="Text" ss:AutoFitWidth="0" ss:Width="220"/>
+   <Column ss:StyleID="Amount" ss:AutoFitWidth="0" ss:Width="95"/>
+   ${worksheetRows}
+  </Table>
+  <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
+   <FreezePanes/>
+   <FrozenNoSplit/>
+   <SplitHorizontal>1</SplitHorizontal>
+   <TopRowBottomPane>1</TopRowBottomPane>
+   <ActivePane>2</ActivePane>
+   <ProtectObjects>False</ProtectObjects>
+   <ProtectScenarios>False</ProtectScenarios>
+  </WorksheetOptions>
+ </Worksheet>
+</Workbook>`
+
+  const blob = new Blob([workbookXml], { type:'application/vnd.ms-excel;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `RCBC_Payroll_Excel_Review_${payrollStart}_to_${payrollEnd}.xls`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
+
+  const skippedNames = skippedRows.map(row => row.employeeName).filter(Boolean)
+  await logAudit(
+   'RCBC EXCEL REVIEW EXPORTED',
+   currentAdminLabel,
+   'RCBC',
+   `Period: ${periodText} | Exported: ${selectedRows.length} | Skipped incomplete: ${skippedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`
+  )
+  showToast(
+   `RCBC Excel review downloaded with account numbers preserved as text.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
+   skippedRows.length ? 'orange' : 'green'
+  )
+ }
+
  async function printDTR(empId, empName, empCode, startOrMonth, endDateArg = null, periodLabelArg = '') {
  let startDate = startOrMonth
  let endDate = endDateArg
@@ -34689,7 +34862,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>Choose Bank Format & Generate</h3>
   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
    {[
-    { bank:'RCBC', color:'#6c1d45', desc:'RCBC payroll working CSV', fields:'Account Number,Account Name,Amount' },
+    { bank:'RCBC', color:'#6c1d45', desc:'RCBC upload CSV plus Excel review file', fields:'Account Number,Account Name,Amount' },
     { bank:'BDO', color:'#003087', desc:'BDO payroll CSV', fields:'AccountNo,BeneficiaryName,Amount,Currency,Remarks' },
     { bank:'BPI', color:'#cc0000', desc:'BPI direct payroll CSV', fields:'Account Number,Name,Amount,Remarks' },
     { bank:'UnionBank', color:'#e65100', desc:'UnionBank online payroll CSV', fields:'AccountNo,BeneficiaryName,Amount,Particulars' },
@@ -34714,14 +34887,21 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        <span style={{ color:skippedRows.length?'#b45309':'#2d8a4e' }}>Skipped: <strong>{skippedRows.length}</strong></span>
        <span>Export Total: <strong>{php(total)}</strong></span>
       </div>
-      <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD {bank} FILE</button>
+      {bank==='RCBC' ? (
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px', marginTop:'4px' }}>
+        <button style={{...btnRed, background:color, marginTop:0, fontSize:'11px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD RCBC UPLOAD CSV</button>
+        <button style={{...btnBlack, marginTop:0, fontSize:'11px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={downloadRCBCExcelReview}>DOWNLOAD EXCEL REVIEW</button>
+       </div>
+      ) : (
+       <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD {bank} FILE</button>
+      )}
      </div>
     )
    })}
   </div>
   <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', marginTop:'16px', border:'1px solid #f5c518' }}>
    <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 6px' }}>Before the First Live Upload</p>
-   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}>The RCBC file uses Account Number, Account Name, and Amount. Employees with incomplete account details are skipped automatically and remain payable through your manual cash or other approved process. Always reconcile the exported employee count and total before uploading the file.</p>
+   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}><strong>RCBC Upload CSV:</strong> upload this file directly to the RCBC portal. Do not open and re-save it in Excel because Excel converts account numbers into numeric values and removes leading zeroes. <strong>Excel Review:</strong> use this separate file for checking; its Account Number column is permanently formatted as text, so all leading zeroes remain visible. Do not upload the Excel Review file to RCBC unless the bank specifically requests an Excel workbook.</p>
   </div>
  </div>
  )}
