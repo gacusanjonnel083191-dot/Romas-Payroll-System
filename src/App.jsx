@@ -1537,7 +1537,7 @@ function downloadEmployeePayslip(pay = {}) {
 
  addSectionTitle('DEDUCTIONS')
  addRow('Late Deduction', printablePay.lateDeduction, `${printablePay.lateMinutes} late minute(s)`)
- addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} approved attendance-verified undertime minute(s)`)
+ addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} automatic attendance-detected undertime minute(s)`)
  addRow('Excess Break Deduction', printablePay.excessBreakDeduction)
  addRow('Cash Advance Deduction', printablePay.cashAdvanceDeduction)
  addRow('Deferred CA Deduction', printablePay.deferredCADeduction, 'Not deducted this cutoff; remains in CA balance.')
@@ -5250,7 +5250,7 @@ function EmployeePortalPayslipBreakdown({ pay }) {
    <div style={{ padding:'12px 14px', borderBottom:'1px solid #f5f5f5' }}>
     <h4 style={{ margin:'0 0 8px', color:'#ca1b1b', fontSize:'13px' }}>Deductions</h4>
     <SectionRow label="Late Deduction" amount={value('late_deduction')} note={`${value('late_minutes')} late minute(s)`} />
-    <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} approved attendance-verified undertime minute(s)`} />
+    <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} automatic attendance-detected undertime minute(s)`} />
     <SectionRow label="Cash Advance Deduction" amount={value('cash_advance_deduction')} />
     <SectionRow label="Requested CA Deduction" amount={value('requested_cash_advance_deduction')} note="Original CA amount requested for this cutoff before payroll safety cap." />
     <SectionRow label="Deferred CA Deduction" amount={value('deferred_cash_advance_deduction')} note="Not deducted this cutoff; remains in CA balance." highlight="#f5a623" />
@@ -22764,7 +22764,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   req.employee_name,
   'attendance',
   'No Meal Break Approved',
-  `Your No Meal Break filing for ${targetDate} was approved. The standard meal-break deduction was changed to 0 minute(s). Your attendance now supports ${revisedMetrics.paidWorkedMinutes} paid minute(s), ${revisedOTMinutes} OT minute(s), and ${revisedUTMinutes} UT minute(s). OT/UT still requires its normal approval workflow.`
+  `Your No Meal Break filing for ${targetDate} was approved. The standard meal-break deduction was changed to 0 minute(s). Your attendance now supports ${revisedMetrics.paidWorkedMinutes} paid minute(s), ${revisedOTMinutes} OT minute(s), and ${revisedUTMinutes} UT minute(s). OT still requires its normal approval workflow. UT payroll deduction recalculates automatically from the revised attendance.`
  )
  setTimeAdjRequests(prev => prev.map(row => {
   if (row.id === req.id) return { ...row, attendance_date:targetDate, minutes:0, status:'approved', reviewed_by:currentAdminLabel, reviewed_at:approvalTimestamp, admin_reason:approvalNote }
@@ -25828,11 +25828,12 @@ async function computePayroll() {
   if (caError) throw caError
   const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
   if (adjsError) throw adjsError
-  const { data:approvedTimeAdjs, error:timeAdjError } = await supabase
+  const { data:approvedOvertimeRequests, error:timeAdjError } = await supabase
   .from('time_adjustment_requests')
   .select('*')
   .eq('employee_id', emp.id)
   .eq('status', 'approved')
+  .eq('request_type', 'overtime')
   .gte('attendance_date', payrollStart)
   .lte('attendance_date', payrollEnd)
   if (timeAdjError) throw timeAdjError
@@ -25991,22 +25992,20 @@ async function computePayroll() {
   }
 
   const approvedOvertimeByDate = {}
-  const approvedUndertimeByDate = {}
-  ;(approvedTimeAdjs || []).forEach(r => {
-   const requestType = String(r.request_type || '').toLowerCase()
+  ;(approvedOvertimeRequests || []).forEach(r => {
    const dateKey = String(r.attendance_date || '').slice(0,10)
    if (!dateKey) return
-   if (requestType === 'overtime') {
-    approvedOvertimeByDate[dateKey] = (approvedOvertimeByDate[dateKey] || 0) + roundPayableOvertimeMinutes(r.minutes)
-   } else if (requestType === 'undertime') {
-    approvedUndertimeByDate[dateKey] = (approvedUndertimeByDate[dateKey] || 0) + roundChargeableUndertimeMinutes(r.minutes)
-   }
+   approvedOvertimeByDate[dateKey] = (approvedOvertimeByDate[dateKey] || 0) + roundPayableOvertimeMinutes(r.minutes)
   })
 
-  // OT and UT are approval-driven, but the approved request can never override
-  // actual attendance. OT uses paid attendance after the break rule. UT uses the
-  // larger of paid-work shortage or schedule-boundary shortage, so late arrival
-  // and early Time Out cannot be offset by extra minutes outside the shift.
+  // Final payroll policy:
+  // - OT remains approval-driven and can never exceed attendance-supported OT.
+  // - UT is attendance-driven. Once a valid Time In and Time Out exist, every
+  //   chargeable shortage below 8 paid hours is deducted automatically even
+  //   when no UT request was filed, approved, or reviewed.
+  // - UT filing remains a review/documentation workflow only; it does not create
+  //   or remove the payroll deduction. Attendance correction, approved No Meal
+  //   Break, grace rules, or an employee exemption are the only valid changes.
   const overtimeMinutes = overtimePayEligible
    ? Object.entries(approvedOvertimeByDate).reduce((sum, [dateKey, approvedMinutes]) => {
       const actualMinutes = Math.max(0, safeNum(actualOvertimeCapacityByDate[dateKey], 0))
@@ -26015,13 +26014,20 @@ async function computePayroll() {
    : 0
   const overtimePay=overtimePayEligible ? overtimeMinutes*minuteRate*1.25 : 0
 
-  const undertimeMinutesApproved = undertimeDeductionApplicable
-   ? Object.entries(approvedUndertimeByDate).reduce((sum, [dateKey, approvedMinutes]) => {
-      const actualMinutes = Math.max(0, safeNum(actualUndertimeCapacityByDate[dateKey], 0))
-      return sum + Math.min(Math.max(0, approvedMinutes), actualMinutes)
-     }, 0)
+  const automaticUndertimeByDate = undertimeDeductionApplicable
+   ? Object.fromEntries(
+      Object.entries(actualUndertimeCapacityByDate)
+       .map(([dateKey, detectedMinutes]) => [
+        dateKey,
+        roundChargeableUndertimeMinutes(Math.max(0, safeNum(detectedMinutes, 0)))
+       ])
+       .filter(([, detectedMinutes]) => detectedMinutes > 0)
+     )
+   : {}
+  const automaticUndertimeMinutes = undertimeDeductionApplicable
+   ? Object.values(automaticUndertimeByDate).reduce((sum, minutes) => sum + Math.max(0, safeNum(minutes, 0)), 0)
    : 0
-  const undertimeDeduction=undertimeDeductionApplicable ? undertimeMinutesApproved*minuteRate : 0
+  const undertimeDeduction=undertimeDeductionApplicable ? automaticUndertimeMinutes*minuteRate : 0
 
   // Night differential premium: break time inside 10PM-6AM is excluded.
   // Employees marked night_differential_pay_eligible = false still keep worked hours,
@@ -26081,10 +26087,11 @@ async function computePayroll() {
   const totalDeductions=moneyRound(nonCADeductionOverflow>0?nonCADeductions:nonCADeductions+caDeduction)
   const netPay=moneyRound(Math.max(0,totalEarnings-totalDeductions))
   const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
-  const undertimeMinutesInfo=undertimeMinutesApproved
+  const undertimeMinutesInfo=automaticUndertimeMinutes
+  const automaticUndertimeTrace = Object.entries(automaticUndertimeByDate).map(([date, minutes]) => ({ date, minutes }))
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, automaticUndertimeTrace, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -26163,7 +26170,8 @@ async function computePayroll() {
  const readiness = await inspectPayrollReadiness(payrollStart, payrollEnd, { silent:true })
  const holdCount = (readiness.attendanceExceptions || []).length
  const missingCount = (readiness.missingEmployees || []).length
- await logAudit('DRAFT PAYROLL COMPUTED',currentAdminLabel,'Payroll',`${payrollStart} to ${payrollEnd} ${results.length} ready employees | Attendance exceptions: ${holdCount} | Missing payroll rows: ${missingCount} | Status: draft/admin review only`)
+ const automaticUTTotal = results.reduce((sum, row) => sum + safeNum(row.undertimeMinutes, 0), 0)
+ await logAudit('DRAFT PAYROLL COMPUTED',currentAdminLabel,'Payroll',`${payrollStart} to ${payrollEnd} ${results.length} ready employees | Automatic attendance-detected UT: ${automaticUTTotal} min | Attendance exceptions: ${holdCount} | Missing payroll rows: ${missingCount} | Status: draft/admin review only`)
  if (holdCount > 0 || missingCount > 0 || (readiness.duplicateEmployees || []).length > 0) {
   showToast(`Partial draft computed for ${results.length} ready employee(s). ${holdCount} attendance exception(s) are on hold. Correct them, then use REBUILD DRAFT AFTER CORRECTIONS.`, 'red')
  } else {
@@ -32124,14 +32132,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <h2 style={h2s}>Overtime / Undertime / Meal-Break Exceptions</h2>
  <div style={{ background:'linear-gradient(135deg,#fff8dc,#fffdf4)', border:'2px solid #FDD412', borderLeft:'6px solid #ca1b1b', borderRadius:'14px', padding:'14px', margin:'0 0 14px', width:'100%', boxSizing:'border-box', boxShadow:'0 4px 14px rgba(253,212,18,0.12)' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>Attendance Adjustment Control Center</strong>
- <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The standard 60-minute meal-break deduction remains active unless a verified No Meal Break filing is approved. Meal-break review must be completed before OT/UT approval because the break decision changes paid-work minutes. Use <strong>Void / Undo</strong> before payroll release; use Payroll Adjustment after release.</p>
+ <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The standard 60-minute meal-break deduction remains active unless a verified No Meal Break filing is approved. Meal-break review must be completed before OT approval or final UT review because the break decision changes paid-work minutes. Payroll UT itself is always recalculated from verified attendance. Use <strong>Void / Undo</strong> before payroll release; use Payroll Adjustment after release.</p>
  </div>
 
  <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.20)', borderTop:'5px solid #ca1b1b', borderRadius:'16px', padding:'16px', margin:'0 0 16px', width:'100%', boxShadow:'0 5px 18px rgba(26,26,46,0.07)', boxSizing:'border-box' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>OT / UT Analytics</h3>
- <p style={{ margin:0, color:'#666', fontSize:'12px', lineHeight:1.5 }}>Based on the currently loaded OT/UT view. Official payroll totals count approved OT/UT only. Percent basis = approved minutes ÷ affected approved attendance days × 480 minutes.</p>
+ <p style={{ margin:0, color:'#666', fontSize:'12px', lineHeight:1.5 }}>Based on the currently loaded OT/UT view. Official payroll totals count approved OT and automatic attendance-detected UT. The analytics below summarize the OT/UT request-review records currently loaded.</p>
  </div>
  <Badge label={getOtUtWarningInfo(otUtAnalytics.totalOTPct).label} color={getOtUtWarningInfo(otUtAnalytics.totalOTPct).color} />
  </div>
@@ -32168,11 +32176,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  <div style={{ border:'1px solid #fff0cf', borderRadius:'12px', overflow:'hidden' }}>
  <div style={{ background:'#fff8dc', color:'#b36b00', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Top 5 Employees With Most UT</div>
- {otUtAnalytics.topUT.length===0? <p style={{ margin:'12px', color:'#888', fontSize:'12px' }}>No approved undertime in this view.</p>:
+ {otUtAnalytics.topUT.length===0? <p style={{ margin:'12px', color:'#888', fontSize:'12px' }}>No approved UT review records in this view.</p>:
   otUtAnalytics.topUT.map((row,idx)=>(
    <div key={`toput-${row.employeeId}`} style={{ display:'grid', gridTemplateColumns:'32px 1fr auto', gap:'8px', alignItems:'center', padding:'9px 12px', borderTop:idx?'1px solid #eee':'none' }}>
    <strong style={{ color:'#f5a623' }}>#{idx+1}</strong>
-   <div><strong style={{ color:'#333', fontSize:'12px' }}>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · {row.utCount} approved UT request(s)</p></div>
+   <div><strong style={{ color:'#333', fontSize:'12px' }}>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · {row.utCount} approved UT review request(s)</p></div>
    <div style={{ textAlign:'right' }}><strong style={{ color:'#f5a623' }}>{Math.round((row.utMinutes/60)*10)/10}h</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.utPct}%</p></div>
    </div>
   ))}
@@ -32640,7 +32648,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div>
  <h2 style={h2s}>Payroll Computation</h2>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'15px', fontSize:'13px', color:'#666' }}>
- <strong style={{ color:'#ca1b1b' }}>Rules:</strong> Cutoffs: 26th–10th next month and 11th–25th same month. Daily-rate basic pay = completed workdays × daily rate. Birthday pay = no work, no pay. OT/UT are minute-based only when approved. Night differential excludes break time inside 10PM-6AM. Workflow: Compute Draft → Send Payslips for Review → Release Payroll.
+ <strong style={{ color:'#ca1b1b' }}>Rules:</strong> Cutoffs: 26th–10th next month and 11th–25th same month. Daily-rate basic pay = completed workdays × daily rate. Birthday pay = no work, no pay. OT is paid only when approved. UT is automatically deducted from valid attendance whenever paid work is below 8 hours. Night differential excludes break time inside 10PM-6AM. Workflow: Compute Draft → Send Payslips for Review → Release Payroll.
  </div>
  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', marginBottom:'10px', alignItems:'flex-end' }}>
  <input type="month" value={payrollMonth} onChange={e=>setPayrollMonth(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} />
