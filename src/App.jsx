@@ -5614,6 +5614,13 @@ export default function App() {
  const breakWarningStageRef = useRef(0)
  const [editFields, setEditFields] = useState({})
  const [newEmpFields, setNewEmpFields] = useState({ code:'', name:'', position:'', pin:'', rate:'', hire_date:today, sick:0, vacation:0, sil:0, hasSss:false, hasPagibig:false, hasPhilhealth:false, regularHolidayEligible:true, specialHolidayEligible:true, payType:'daily', hourlyRate:0, gracePeriod:10, dob:'', gender:'', civil_status:'', address:'', contact:'', emergency_name:'', emergency_contact:'', employment_type:'probationary', department:'', sss_no:'', pagibig_no:'', philhealth_no:'', tin_no:'', work_location:'', location_lat:'', location_lng:'', location_radius:'', bank_name:'', bank_account_number:'', bank_account_name:'', payroll_cost_type:'auto' })
+ const [employeeBankRows, setEmployeeBankRows] = useState([])
+ const [employeeBankDrafts, setEmployeeBankDrafts] = useState({})
+ const [employeeBankLoading, setEmployeeBankLoading] = useState(false)
+ const [employeeBankSavingIds, setEmployeeBankSavingIds] = useState({})
+ const [employeeBankSavingAll, setEmployeeBankSavingAll] = useState(false)
+ const [employeeBankSearch, setEmployeeBankSearch] = useState('')
+ const [showEmployeeBankMaster, setShowEmployeeBankMaster] = useState(true)
  const [finalPayEmployeeId, setFinalPayEmployeeId] = useState('')
  const [finalPayReason, setFinalPayReason] = useState('resigned')
  const [finalPayLastDate, setFinalPayLastDate] = useState(today)
@@ -23530,6 +23537,9 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  employment_type:editFields.employment_type||'regular',
  payroll_cost_type:editFields.payroll_cost_type||'auto',
  department:editFields.department||'',
+ bank_name:normalizePayrollBankName(editFields.bank_name||''),
+ bank_account_number:String(editFields.bank_account_number||'').trim(),
+ bank_account_name:String(editFields.bank_account_name||editFields.name||'').trim(),
  admin_role:editFields.admin_role||null,
  extra_roles:editFields.extra_roles||null,
  strict_camera_timein:editFields.strictCameraTimeIn === true
@@ -25467,6 +25477,358 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  } finally {
   setPayrollComputing(false)
  }
+ }
+
+
+ function normalizePayrollBankName(value = '') {
+  const raw = String(value || '').trim()
+  const key = raw.toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (!key) return ''
+  if (key === 'rcbc' || key.includes('rizalcommercialbank')) return 'RCBC'
+  if (key === 'bdo' || key.includes('bancodeoro')) return 'BDO'
+  if (key === 'bpi' || key.includes('bankofthephilippineislands')) return 'BPI'
+  if (key.includes('unionbank')) return 'UnionBank'
+  if (key.includes('landbank')) return 'Landbank'
+  if (key.includes('gcash')) return 'GCash'
+  if (key.includes('metrobank')) return 'Metrobank'
+  if (key === 'pnb' || key.includes('philippinenationalbank')) return 'PNB'
+  if (key.includes('securitybank')) return 'Security Bank'
+  if (key.includes('maya')) return 'Maya'
+  return raw
+ }
+
+ function normalizeBankAccountForExport(value = '') {
+  return String(value || '').trim().replace(/[\s-]+/g, '')
+ }
+
+ function buildEmployeeBankDraft(row = {}) {
+  return {
+   bankName:normalizePayrollBankName(row.bank_name || ''),
+   accountName:String(row.bank_account_name || row.full_name || '').trim(),
+   accountNumber:String(row.bank_account_number || '').trim()
+  }
+ }
+
+ function getEmployeeBankDraft(row = {}) {
+  return employeeBankDrafts[String(row?.id || '')] || buildEmployeeBankDraft(row)
+ }
+
+ function updateEmployeeBankDraft(employeeId = '', field = '', value = '') {
+  setEmployeeBankDrafts(prev => ({
+   ...prev,
+   [String(employeeId)]:{
+    ...(prev[String(employeeId)] || buildEmployeeBankDraft(employeeBankRows.find(row => String(row.id) === String(employeeId)) || {})),
+    [field]:value
+   }
+  }))
+ }
+
+ function isEmployeeBankDraftChanged(row = {}) {
+  const draft = getEmployeeBankDraft(row)
+  const saved = buildEmployeeBankDraft(row)
+  return normalizePayrollBankName(draft.bankName) !== normalizePayrollBankName(saved.bankName)
+   || String(draft.accountName || '').trim() !== String(saved.accountName || '').trim()
+   || String(draft.accountNumber || '').trim() !== String(saved.accountNumber || '').trim()
+ }
+
+ function getEmployeeBankDraftValidation(rows = employeeBankRows) {
+  const accountOwnerByKey = {}
+  const duplicateRows = []
+  ;(rows || []).forEach(row => {
+   const draft = getEmployeeBankDraft(row)
+   const bankName = normalizePayrollBankName(draft.bankName)
+   const accountNumber = normalizeBankAccountForExport(draft.accountNumber)
+   if (!bankName || !accountNumber) return
+   const key = `${bankName.toLowerCase()}|${accountNumber}`
+   if (accountOwnerByKey[key] && String(accountOwnerByKey[key].id) !== String(row.id)) {
+    duplicateRows.push(accountOwnerByKey[key], row)
+   } else {
+    accountOwnerByKey[key] = row
+   }
+  })
+  const uniqueDuplicateRows = [...new Map(duplicateRows.map(row => [String(row.id), row])).values()]
+  return { duplicateRows:uniqueDuplicateRows, valid:uniqueDuplicateRows.length === 0 }
+ }
+
+ async function loadEmployeeBankAccounts(options = {}) {
+  setEmployeeBankLoading(true)
+  try {
+   const { data, error } = await supabase
+    .from('employees')
+    .select('id,employee_code,full_name,position,department,contact_number,bank_name,bank_account_name,bank_account_number')
+    .eq('is_active', true)
+    .order('full_name', { ascending:true })
+   if (error) throw error
+   const rows = data || []
+   setEmployeeBankRows(rows)
+   setEmployeeBankDrafts(Object.fromEntries(rows.map(row => [String(row.id), buildEmployeeBankDraft(row)])))
+   if (!options.silent) showToast(`Loaded ${rows.length} active employee bank profile(s).`)
+   return rows
+  } catch(error) {
+   console.error('Employee bank-account load failed:', error)
+   if (!options.silent) showToast('Failed to load employee bank accounts: ' + (error?.message || error), 'red')
+   return []
+  } finally {
+   setEmployeeBankLoading(false)
+  }
+ }
+
+ async function saveEmployeeBankAccount(row = {}, options = {}) {
+  if (!row?.id) return false
+  if (!requireOwnerOrPayrollAction('save employee payroll bank details')) return false
+
+  const validation = getEmployeeBankDraftValidation()
+  if (!validation.valid) {
+   showToast(`Duplicate bank account blocked. Check: ${validation.duplicateRows.map(item => item.full_name).join(', ')}`, 'red')
+   return false
+  }
+
+  const draft = getEmployeeBankDraft(row)
+  const payload = {
+   bank_name:normalizePayrollBankName(draft.bankName),
+   bank_account_name:String(draft.accountName || row.full_name || '').trim(),
+   bank_account_number:String(draft.accountNumber || '').trim()
+  }
+
+  if (!options.skipLoading) setEmployeeBankSavingIds(prev => ({ ...prev, [row.id]:true }))
+  try {
+   const { data, error } = await supabase
+    .from('employees')
+    .update(payload)
+    .eq('id', row.id)
+    .select('id,employee_code,full_name,position,department,contact_number,bank_name,bank_account_name,bank_account_number')
+    .single()
+   if (error) throw error
+
+   setEmployeeBankRows(prev => prev.map(item => String(item.id) === String(row.id) ? { ...item, ...data } : item))
+   setEmployeeBankDrafts(prev => ({ ...prev, [String(row.id)]:buildEmployeeBankDraft({ ...row, ...data }) }))
+   setPayrollResults(prev => prev.map(item => String(item.employeeId) === String(row.id) ? {
+    ...item,
+    bankName:data.bank_name || '',
+    bankAccount:data.bank_account_number || '',
+    bankAccountName:data.bank_account_name || data.full_name || item.employeeName || ''
+   } : item))
+
+   if (!options.silent) {
+    await logAudit('EMPLOYEE PAYROLL BANK UPDATED', currentAdminLabel, row.full_name || row.employee_code || 'Employee', `Bank: ${payload.bank_name || 'Not assigned'} | Account details ${payload.bank_account_number ? 'saved' : 'cleared'}`)
+    showToast(`${row.full_name} bank details saved.`)
+   }
+   return true
+  } catch(error) {
+   console.error('Employee bank-account save failed:', error)
+   if (!options.silent) showToast(`Failed to save ${row.full_name}: ${error?.message || error}`, 'red')
+   return false
+  } finally {
+   if (!options.skipLoading) setEmployeeBankSavingIds(prev => ({ ...prev, [row.id]:false }))
+  }
+ }
+
+ async function saveAllEmployeeBankAccounts() {
+  if (!requireOwnerOrPayrollAction('save all employee payroll bank details')) return
+  const validation = getEmployeeBankDraftValidation()
+  if (!validation.valid) {
+   showToast(`Duplicate bank account blocked. Check: ${validation.duplicateRows.map(item => item.full_name).join(', ')}`, 'red')
+   return
+  }
+
+  const changedRows = employeeBankRows.filter(isEmployeeBankDraftChanged)
+  if (changedRows.length === 0) {
+   showToast('No bank-account changes to save.', 'orange')
+   return
+  }
+
+  setEmployeeBankSavingAll(true)
+  const failed = []
+  try {
+   for (const row of changedRows) {
+    const ok = await saveEmployeeBankAccount(row, { silent:true, skipLoading:true })
+    if (!ok) failed.push(row.full_name || row.employee_code || 'Employee')
+   }
+   await logAudit('EMPLOYEE PAYROLL BANK MASTER UPDATED', currentAdminLabel, 'Payroll Bank Accounts', `Changed profiles: ${changedRows.length} | Failed: ${failed.length}`)
+   if (failed.length > 0) showToast(`Saved ${changedRows.length - failed.length}; failed: ${failed.join(', ')}`, 'red')
+   else showToast(`${changedRows.length} employee bank profile(s) saved.`)
+  } finally {
+   setEmployeeBankSavingAll(false)
+  }
+ }
+
+ async function loadBankDisbursementPeriod() {
+  if (!payrollStart || !payrollEnd) { showToast('Select a payroll From and To date.', 'red'); return }
+  if (parseLocalDate(payrollEnd) < parseLocalDate(payrollStart)) { showToast('Payroll end date must be after the start date.', 'red'); return }
+
+  try {
+   const { data:records, error } = await supabase
+    .from('payroll_records')
+    .select('id,employee_id,employee_name,employee_code,position,worked_days,net_pay,basic_pay,birthday_pay,overtime_pay,total_earnings,total_deductions,payroll_approved,approved_at')
+    .eq('payroll_start', payrollStart)
+    .eq('payroll_end', payrollEnd)
+    .order('employee_name', { ascending:true })
+   if (error) throw error
+   if (!(records || []).length) {
+    setPayrollResults([])
+    showToast('No payroll records found for this period. Compute payroll first.', 'red')
+    return
+   }
+
+   const employeeIds = [...new Set((records || []).map(row => row.employee_id).filter(Boolean))]
+   let employeeLookup = {}
+   if (employeeIds.length > 0) {
+    const { data:employeeRows, error:employeeError } = await supabase
+     .from('employees')
+     .select('id,employee_code,full_name,contact_number,bank_name,bank_account_name,bank_account_number')
+     .in('id', employeeIds)
+    if (employeeError) throw employeeError
+    employeeLookup = Object.fromEntries((employeeRows || []).map(row => [String(row.id), row]))
+   }
+
+   const results = (records || []).map(record => {
+    const emp = employeeLookup[String(record.employee_id || '')] || {}
+    return {
+     employeeId:record.employee_id,
+     employeeName:record.employee_name || emp.full_name || '',
+     employeeCode:record.employee_code || emp.employee_code || '',
+     position:record.position || '',
+     workedDays:safeNum(record.worked_days, 0),
+     netPay:safeNum(record.net_pay, 0),
+     basicPay:safeNum(record.basic_pay, 0),
+     birthdayPay:safeNum(record.birthday_pay, 0),
+     overtimePay:safeNum(record.overtime_pay, 0),
+     totalEarnings:safeNum(record.total_earnings, 0),
+     totalDeductions:safeNum(record.total_deductions, 0),
+     bankName:normalizePayrollBankName(emp.bank_name || ''),
+     bankAccount:String(emp.bank_account_number || '').trim(),
+     bankAccountName:String(emp.bank_account_name || emp.full_name || record.employee_name || '').trim(),
+     mobileNumber:String(emp.contact_number || '').trim(),
+     payrollApproved:record.payroll_approved === true || !!record.approved_at
+    }
+   })
+
+   setPayrollResults(results)
+   const missingCount = results.filter(row => safeNum(row.netPay, 0) > 0 && !normalizeBankAccountForExport(row.bankAccount)).length
+   showToast(`Loaded ${results.length} payroll row(s). ${missingCount} positive-pay employee(s) still have no bank account number.`, missingCount > 0 ? 'orange' : 'green')
+  } catch(error) {
+   console.error('Bank disbursement payroll load failed:', error)
+   setPayrollResults([])
+   showToast('Failed to load bank disbursement payroll: ' + (error?.message || error), 'red')
+  }
+ }
+
+ function getPayrollRowsForBank(bank = '') {
+  const normalizedBank = normalizePayrollBankName(bank)
+  const positiveRows = (payrollResults || []).filter(row => safeNum(row.netPay, 0) > 0)
+  if (normalizedBank === 'Generic') return positiveRows
+  return positiveRows.filter(row => normalizePayrollBankName(row.bankName) === normalizedBank)
+ }
+
+ async function downloadPayrollBankCSV(bank = '') {
+  const normalizedBank = normalizePayrollBankName(bank)
+  const selectedRows = getPayrollRowsForBank(normalizedBank)
+  if (selectedRows.length === 0) {
+   showToast(`No positive-net-pay employee is assigned to ${normalizedBank}. Save employee bank assignments first.`, 'red')
+   return
+  }
+
+  const missing = selectedRows.filter(row => {
+   if (normalizedBank === 'GCash') return !normalizeBankAccountForExport(row.mobileNumber || row.bankAccount)
+   return !normalizeBankAccountForExport(row.bankAccount)
+  })
+  if (missing.length > 0) {
+   showToast(`${normalizedBank} download blocked: missing account details for ${missing.map(row => row.employeeName).join(', ')}.`, 'red')
+   return
+  }
+
+  const accountOwners = {}
+  const duplicateNames = new Set()
+  selectedRows.forEach(row => {
+   const account = normalizeBankAccountForExport(normalizedBank === 'GCash' ? (row.mobileNumber || row.bankAccount) : row.bankAccount)
+   if (!account) return
+   if (accountOwners[account] && String(accountOwners[account].employeeId) !== String(row.employeeId)) {
+    duplicateNames.add(accountOwners[account].employeeName)
+    duplicateNames.add(row.employeeName)
+   } else {
+    accountOwners[account] = row
+   }
+  })
+  if (duplicateNames.size > 0) {
+   showToast(`${normalizedBank} download blocked: duplicate account number detected for ${[...duplicateNames].join(', ')}.`, 'red')
+   return
+  }
+
+  const periodText = `${payrollStart} to ${payrollEnd}`
+  const rows = []
+  if (normalizedBank === 'RCBC') {
+   rows.push(['Account Number','Account Name','Amount'])
+   selectedRows.forEach(row => rows.push([
+    normalizeBankAccountForExport(row.bankAccount),
+    row.bankAccountName || row.employeeName,
+    safeNum(row.netPay, 0).toFixed(2)
+   ]))
+  } else if (normalizedBank === 'BDO') {
+   rows.push(['AccountNo','BeneficiaryName','Amount','Currency','Remarks'])
+   selectedRows.forEach(row => rows.push([
+    normalizeBankAccountForExport(row.bankAccount),
+    row.bankAccountName || row.employeeName,
+    safeNum(row.netPay, 0).toFixed(2),
+    'PHP',
+    `Payroll ${periodText}`
+   ]))
+  } else if (normalizedBank === 'BPI') {
+   rows.push(['Account Number','Name','Amount','Remarks'])
+   selectedRows.forEach(row => rows.push([
+    normalizeBankAccountForExport(row.bankAccount),
+    row.bankAccountName || row.employeeName,
+    safeNum(row.netPay, 0).toFixed(2),
+    `Payroll ${periodText}`
+   ]))
+  } else if (normalizedBank === 'UnionBank') {
+   rows.push(['AccountNo','BeneficiaryName','Amount','Particulars'])
+   selectedRows.forEach(row => rows.push([
+    normalizeBankAccountForExport(row.bankAccount),
+    row.bankAccountName || row.employeeName,
+    safeNum(row.netPay, 0).toFixed(2),
+    `Salary ${payrollEnd}`
+   ]))
+  } else if (normalizedBank === 'Landbank') {
+   rows.push(['Account','Name','Amount','Description'])
+   selectedRows.forEach(row => rows.push([
+    normalizeBankAccountForExport(row.bankAccount),
+    row.bankAccountName || row.employeeName,
+    safeNum(row.netPay, 0).toFixed(2),
+    `Payroll ${payrollStart}-${payrollEnd}`
+   ]))
+  } else if (normalizedBank === 'GCash') {
+   rows.push(['Mobile Number','Name','Amount','Reference'])
+   selectedRows.forEach(row => rows.push([
+    normalizeBankAccountForExport(row.mobileNumber || row.bankAccount),
+    row.bankAccountName || row.employeeName,
+    safeNum(row.netPay, 0).toFixed(2),
+    `${row.employeeCode}-${payrollEnd}`
+   ]))
+  } else {
+   rows.push(['Employee Code','Name','Bank','Account No','Net Pay'])
+   selectedRows.forEach(row => rows.push([
+    row.employeeCode,
+    row.bankAccountName || row.employeeName,
+    row.bankName || '',
+    normalizeBankAccountForExport(row.bankAccount),
+    safeNum(row.netPay, 0).toFixed(2)
+   ]))
+  }
+
+  const csv = rows.map(row => row.map(value => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n')
+  const blob = new Blob(['\uFEFF' + csv], { type:'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${normalizedBank}_Payroll_${payrollStart}_to_${payrollEnd}.csv`
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
+
+  const totalAmount = selectedRows.reduce((sum, row) => sum + safeNum(row.netPay, 0), 0)
+  await logAudit('BANK PAYROLL CSV EXPORTED', currentAdminLabel, normalizedBank, `Period: ${periodText} | Employees: ${selectedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`)
+  showToast(`${normalizedBank} payroll CSV downloaded: ${selectedRows.length} employee(s), ${php(totalAmount)}.`)
  }
 
  async function printDTR(empId, empName, empCode, startOrMonth, endDateArg = null, periodLabelArg = '') {
@@ -31257,6 +31619,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
  if(key==='remittance') loadPayrollHistory()
  if(key==='dtr') loadEmployees()
+ if(key==='bankDisbursement') loadEmployeeBankAccounts({ silent:true })
  if(key==='contracts') { loadContracts(); loadEmployees(); setTimeout(()=>autoGenerateMissingContracts({ silent:true }), 800) }
  if(key==='documents') { loadEmployees(); loadResellers(); loadCompanyDocumentRecords() }
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
@@ -31990,7 +32353,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ display:'flex', gap:'6px', flexShrink:0, flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end', paddingTop:'2px' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', bank_name:emp.bank_name||'', bank_account_number:emp.bank_account_number||'', bank_account_name:emp.bank_account_name||emp.full_name||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
@@ -32097,6 +32460,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {editFields.hasPhilhealth && <input placeholder="PhilHealth ID Number" value={editFields.philhealth_no||''} onChange={e=>setEditFields(p=>({...p,philhealth_no:e.target.value}))} style={{...inputStyle, marginBottom:'8px' }} />}
  <label style={lblS}>TIN Number (BIR):</label>
  <input placeholder="Tax Identification Number" value={editFields.tin_no||''} onChange={e=>setEditFields(p=>({...p,tin_no:e.target.value}))} style={inputStyle} />
+ </div>
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'12px' }}>
+ <p style={{ fontWeight:'bold', color:'#6c1d45', margin:'0 0 8px', fontSize:'13px' }}>Payroll Bank Account</p>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'8px' }}>
+  <input list="employee-edit-bank-options" placeholder="Bank (e.g. RCBC)" value={editFields.bank_name||''} onChange={e=>setEditFields(p=>({...p,bank_name:e.target.value}))} style={inputStyle} />
+  <input placeholder="Account Name" value={editFields.bank_account_name||''} onChange={e=>setEditFields(p=>({...p,bank_account_name:e.target.value}))} style={inputStyle} />
+  <input type="text" inputMode="numeric" placeholder="Account Number" value={editFields.bank_account_number||''} onChange={e=>setEditFields(p=>({...p,bank_account_number:e.target.value}))} style={{...inputStyle, fontFamily:'monospace'}} />
+ </div>
+ <datalist id="employee-edit-bank-options">{['RCBC','BDO','BPI','UnionBank','Landbank','GCash','Metrobank','PNB','Security Bank','Maya'].map(bank=><option key={bank} value={bank} />)}</datalist>
  </div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'12px 0 6px' }}> Work Location (Geofencing)</p>
  <p style={{ color:'#888', fontSize:'12px', marginBottom:'8px' }}>Leave blank to use default store location. Set for employees at different sites.</p>
@@ -34182,92 +34554,160 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {/* BANK DISBURSEMENT */}
  {activeTab==='bankDisbursement' && (
  <div>
- <h2 style={h2s}> Bank Disbursement</h2>
- <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>Generate a payroll disbursement file to upload to your bank's online payroll portal (BDO, BPI, UnionBank, Landbank, GCash Business).</p>
- <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'14px', marginBottom:'20px', fontSize:'13px' }}>
- <strong style={{ color:'#ca1b1b' }}> How it works:</strong>
- <ol style={{ margin:'8px 0 0 16px', color:'#555', lineHeight:'1.8' }}>
- <li>Select the payroll period you want to disburse</li>
- <li>Choose your bank format</li>
- <li>Click Generate a CSV file will download</li>
- <li>Upload the CSV to your bank's online payroll system</li>
- <li>Bank will process and credit employees' accounts</li>
- </ol>
- <p style={{ color:'#888', fontSize:'12px', marginTop:'10px' }}> Make sure each employee has a bank account number saved in their profile.</p>
+ <h2 style={h2s}>Bank Disbursement</h2>
+ <p style={{ color:'#888', fontSize:'13px', marginBottom:'16px' }}>Save employee payroll accounts once, then generate bank CSV files containing the employee account name, account number, and current payroll net pay automatically.</p>
+
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'14px', marginBottom:'16px', fontSize:'13px' }}>
+  <strong style={{ color:'#ca1b1b' }}>Professional workflow:</strong>
+  <ol style={{ margin:'8px 0 0 16px', color:'#555', lineHeight:'1.8' }}>
+   <li>Enter and save each employee's payroll bank details below.</li>
+   <li>Load the exact payroll period.</li>
+   <li>Download the CSV for the employee's assigned bank.</li>
+   <li>The app blocks missing or duplicate account numbers before download.</li>
+  </ol>
  </div>
- {/* Period Selector */}
+
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'18px', marginBottom:'16px' }}>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}> Select Payroll Period</h3>
- <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end', marginBottom:'12px' }}>
- <div><label style={lblS}>From:</label><input type="date" value={payrollStart} onChange={e=>setPayrollStart(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
- <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
- <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={async()=>{
- const { data } = await supabase.from('payroll_records').select('*').eq('payroll_start', payrollStart).eq('payroll_end', payrollEnd)
- if (!data?.length) { showToast('No payroll records found for this period. Please compute payroll first.','red'); return }
- setPayrollResults(data.map(r=>({ employeeId:r.employee_id, employeeName:r.employee_name, employeeCode:r.employee_code, position:r.position, workedDays:r.worked_days, netPay:Number(r.net_pay||0), basicPay:Number(r.basic_pay||0), birthdayPay:Number(r.birthday_pay||0), overtimePay:Number(r.overtime_pay||0), totalEarnings:Number(r.total_earnings||0), totalDeductions:Number(r.total_deductions||0) })))
- showToast(` Loaded ${data.length} employee records`)
- }}> LOAD PERIOD</button>
+  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
+   <div>
+    <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'14px' }}>Employee Bank Account Master</h3>
+    <p style={{ color:'#888', fontSize:'12px', margin:0 }}>Account numbers are stored as text so leading zeroes are preserved.</p>
+   </div>
+   <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+    <button style={{...btnGray, width:'auto', padding:'9px 14px', marginTop:0 }} onClick={()=>setShowEmployeeBankMaster(value=>!value)}>{showEmployeeBankMaster?'HIDE':'SHOW'} ACCOUNTS</button>
+    <button style={{...btnBlack, width:'auto', padding:'9px 14px', marginTop:0 }} disabled={employeeBankLoading} onClick={()=>loadEmployeeBankAccounts()}>{employeeBankLoading?'LOADING...':'REFRESH ACCOUNTS'}</button>
+    <button style={{...btnGreen, width:'auto', padding:'9px 14px', marginTop:0, opacity:employeeBankSavingAll?0.65:1 }} disabled={employeeBankSavingAll || employeeBankLoading} onClick={saveAllEmployeeBankAccounts}>{employeeBankSavingAll?'SAVING...':'SAVE ALL CHANGES'}</button>
+   </div>
+  </div>
+
+  {(()=>{
+   const completeCount = employeeBankRows.filter(row => {
+    const draft = getEmployeeBankDraft(row)
+    return !!normalizePayrollBankName(draft.bankName) && !!normalizeBankAccountForExport(draft.accountNumber)
+   }).length
+   const rcbcCount = employeeBankRows.filter(row => normalizePayrollBankName(getEmployeeBankDraft(row).bankName) === 'RCBC').length
+   const missingCount = Math.max(0, employeeBankRows.length - completeCount)
+   const changedCount = employeeBankRows.filter(isEmployeeBankDraftChanged).length
+   return (
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginBottom:showEmployeeBankMaster?'12px':0 }}>
+     {[
+      ['Active Employees', employeeBankRows.length, '#1a1a2e'],
+      ['Complete Accounts', completeCount, '#2d8a4e'],
+      ['Missing Details', missingCount, missingCount>0?'#ca1b1b':'#2d8a4e'],
+      ['Unsaved Changes', changedCount, changedCount>0?'#b45309':'#555']
+     ].map(([label,value,color])=>(
+      <div key={label} style={{ background:'#fffdf4', border:'1px solid #eee', borderRadius:'9px', padding:'10px', textAlign:'center' }}>
+       <p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', fontWeight:'bold', textTransform:'uppercase' }}>{label}</p>
+       <p style={{ margin:0, color, fontWeight:'bold', fontSize:'16px' }}>{value}</p>
+      </div>
+     ))}
+     {rcbcCount > 0 && <p style={{ gridColumn:'1 / -1', color:'#6c1d45', fontWeight:'bold', fontSize:'12px', margin:'2px 0 0' }}>RCBC assigned employees: {rcbcCount}</p>}
+    </div>
+   )
+  })()}
+
+  {showEmployeeBankMaster && (
+   <>
+    <input value={employeeBankSearch} onChange={e=>setEmployeeBankSearch(e.target.value)} placeholder="Search employee, code, bank, or account name..." style={{...inputStyle, marginBottom:'10px' }} />
+    <datalist id="payroll-bank-options">
+     {['RCBC','BDO','BPI','UnionBank','Landbank','GCash','Metrobank','PNB','Security Bank','Maya'].map(bank=><option key={bank} value={bank} />)}
+    </datalist>
+    <div style={{ overflowX:'auto', border:'1px solid #eee', borderRadius:'10px' }}>
+     <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'980px', fontSize:'12px' }}>
+      <thead>
+       <tr style={{ background:'#1a1a2e', color:'white' }}>
+        {['Employee','Bank','Account Name','Account Number','Status','Action'].map(header=><th key={header} style={{ padding:'10px', textAlign:'left' }}>{header}</th>)}
+       </tr>
+      </thead>
+      <tbody>
+       {employeeBankLoading && <tr><td colSpan="6" style={{ padding:'18px', textAlign:'center', color:'#888' }}>Loading employee bank profiles...</td></tr>}
+       {!employeeBankLoading && employeeBankRows
+        .filter(row => {
+         const draft = getEmployeeBankDraft(row)
+         const search = employeeBankSearch.trim().toLowerCase()
+         if (!search) return true
+         return [row.employee_code,row.full_name,draft.bankName,draft.accountName,draft.accountNumber].some(value => String(value || '').toLowerCase().includes(search))
+        })
+        .map(row => {
+         const draft = getEmployeeBankDraft(row)
+         const complete = !!normalizePayrollBankName(draft.bankName) && !!normalizeBankAccountForExport(draft.accountNumber)
+         const changed = isEmployeeBankDraftChanged(row)
+         return (
+          <tr key={row.id} style={{ borderBottom:'1px solid #eee', background:changed?'#fff8dc':'white' }}>
+           <td style={{ padding:'9px', minWidth:'190px' }}><strong>{row.full_name}</strong><br/><span style={{ color:'#888', fontSize:'10px' }}>{row.employee_code} | {row.position || row.department || '-'}</span></td>
+           <td style={{ padding:'7px', minWidth:'150px' }}><input list="payroll-bank-options" value={draft.bankName || ''} onChange={e=>updateEmployeeBankDraft(row.id,'bankName',e.target.value)} placeholder="RCBC" style={{...inputStyle, margin:0, padding:'8px' }} /></td>
+           <td style={{ padding:'7px', minWidth:'220px' }}><input value={draft.accountName || ''} onChange={e=>updateEmployeeBankDraft(row.id,'accountName',e.target.value)} placeholder={row.full_name} style={{...inputStyle, margin:0, padding:'8px' }} /></td>
+           <td style={{ padding:'7px', minWidth:'190px' }}><input type="text" inputMode="numeric" autoComplete="off" value={draft.accountNumber || ''} onChange={e=>updateEmployeeBankDraft(row.id,'accountNumber',e.target.value)} placeholder="Account number" style={{...inputStyle, margin:0, padding:'8px', fontFamily:'monospace' }} /></td>
+           <td style={{ padding:'9px' }}><Badge label={complete?'READY':'INCOMPLETE'} color={complete?'green':'orange'} />{changed && <div style={{ color:'#b45309', fontSize:'10px', fontWeight:'bold', marginTop:'4px' }}>UNSAVED</div>}</td>
+           <td style={{ padding:'7px' }}><button style={{...btnBlack, width:'auto', padding:'8px 12px', marginTop:0, opacity:employeeBankSavingIds[row.id]?0.65:1 }} disabled={employeeBankSavingIds[row.id]} onClick={()=>saveEmployeeBankAccount(row)}>{employeeBankSavingIds[row.id]?'SAVING...':'SAVE'}</button></td>
+          </tr>
+         )
+        })}
+       {!employeeBankLoading && employeeBankRows.length===0 && <tr><td colSpan="6" style={{ padding:'18px', textAlign:'center', color:'#888' }}>No active employees found.</td></tr>}
+      </tbody>
+     </table>
+    </div>
+   </>
+  )}
  </div>
- {payrollResults.length>0 && (
- <div style={{ background:'#f0fff0', borderRadius:'8px', padding:'12px', border:'1px solid #c8e6c9' }}>
- <p style={{ fontWeight:'bold', color:'#2d8a4e', margin:'0 0 6px' }}> {payrollResults.length} employees loaded</p>
- <p style={cps}>Total Net Pay: <strong>{php(payrollResults.reduce((s,p)=>s+Number(p.netPay||0),0))}</strong></p>
+
+ <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'18px', marginBottom:'16px' }}>
+  <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>Select Payroll Period</h3>
+  <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'flex-end', marginBottom:'12px' }}>
+   <div><label style={lblS}>From:</label><input type="date" value={payrollStart} onChange={e=>setPayrollStart(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
+   <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
+   <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0 }} onClick={loadBankDisbursementPeriod}>LOAD PERIOD</button>
+  </div>
+  {payrollResults.length>0 && (()=>{
+   const positiveRows = payrollResults.filter(row => safeNum(row.netPay,0)>0)
+   const missingRows = positiveRows.filter(row => !normalizeBankAccountForExport(row.bankAccount))
+   return (
+    <div style={{ background:missingRows.length?'#fff8dc':'#f0fff0', borderRadius:'8px', padding:'12px', border:`1px solid ${missingRows.length?'#f5c518':'#c8e6c9'}` }}>
+     <p style={{ fontWeight:'bold', color:missingRows.length?'#b45309':'#2d8a4e', margin:'0 0 6px' }}>{payrollResults.length} employees loaded | {positiveRows.length} positive-net-pay rows</p>
+     <p style={cps}>Total Net Pay: <strong>{php(positiveRows.reduce((sum,row)=>sum+safeNum(row.netPay,0),0))}</strong></p>
+     <p style={{...cps, color:missingRows.length?'#ca1b1b':'#2d8a4e' }}>Missing account number: <strong>{missingRows.length}</strong>{missingRows.length?` — ${missingRows.slice(0,5).map(row=>row.employeeName).join(', ')}${missingRows.length>5?'…':''}`:''}</p>
+    </div>
+   )
+  })()}
  </div>
- )}
- </div>
- {/* Bank Format Selector */}
+
  {payrollResults.length>0 && (
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'18px', marginBottom:'16px' }}>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}> Choose Bank Format & Generate</h3>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
- {[
- { bank:'BDO', color:'#003087', desc:'BDO PayRoll CSV format', fields:'Account No,Name,Amount,Currency,Remarks' },
- { bank:'BPI', color:'#cc0000', desc:'BPI Direct Payroll format', fields:'Account Number,Name,Amount,Remarks' },
- { bank:'UnionBank', color:'#e65100', desc:'UnionBank Online Payroll', fields:'AccountNo,BeneficiaryName,Amount,Particulars' },
- { bank:'Landbank', color:'#1a5276', desc:'Landbank iAccess Payroll', fields:'Account,Name,Amount,Description' },
- { bank:'GCash', color:'#0072bc', desc:'GCash Business Disbursement', fields:'Mobile Number,Name,Amount,Reference' },
- { bank:'Generic', color:'#555', desc:'Generic / Other Banks', fields:'Employee Code,Name,Bank,Account No,Amount,Net Pay' },
- ].map(({bank,color,desc,fields})=>(
- <div key={bank} style={{ border:`2px solid ${color}`, borderRadius:'10px', padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
- <p style={{ fontWeight:'bold', color, fontSize:'14px', margin:0 }}> {bank}</p>
- <p style={{ fontSize:'12px', color:'#888', margin:0 }}>{desc}</p>
- <p style={{ fontSize:'11px', color:'#aaa', margin:0, fontFamily:'monospace' }}>{fields}</p>
- <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px' }} onClick={()=>{
- const rows = []
- if (bank==='BDO') {
- rows.push(['AccountNo','BeneficiaryName','Amount','Currency','Remarks'])
- payrollResults.forEach(p=>rows.push([p.bankAccount||'','`'+p.employeeName,p.netPay.toFixed(2),'PHP',`Payroll ${payrollStart} to ${payrollEnd}`]))
- } else if (bank==='BPI') {
- rows.push(['Account Number','Name','Amount','Remarks'])
- payrollResults.forEach(p=>rows.push([p.bankAccount||'',p.employeeName,p.netPay.toFixed(2),`Payroll ${payrollStart} to ${payrollEnd}`]))
- } else if (bank==='UnionBank') {
- rows.push(['AccountNo','BeneficiaryName','Amount','Particulars'])
- payrollResults.forEach(p=>rows.push([p.bankAccount||'',p.employeeName,p.netPay.toFixed(2),`Salary ${payrollEnd}`]))
- } else if (bank==='Landbank') {
- rows.push(['Account','Name','Amount','Description'])
- payrollResults.forEach(p=>rows.push([p.bankAccount||'',p.employeeName,p.netPay.toFixed(2),`Payroll ${payrollStart}-${payrollEnd}`]))
- } else if (bank==='GCash') {
- rows.push(['Mobile Number','Name','Amount','Reference'])
- payrollResults.forEach(p=>rows.push([p.mobileNumber||p.bankAccount||'',p.employeeName,p.netPay.toFixed(2),`${p.employeeCode}-${payrollEnd}`]))
- } else {
- rows.push(['Employee Code','Name','Bank','Account No','Net Pay'])
- payrollResults.forEach(p=>rows.push([p.employeeCode,p.employeeName,p.bankName||'',p.bankAccount||'',p.netPay.toFixed(2)]))
- }
- const csv = rows.map(r=>r.map(c=>'"'+String(c).replace(/"/g,'""')+'"').join(',')).join('\n')
- const blob = new Blob([' '+csv],{type:'text/csv;charset=utf-8;'})
- const url = URL.createObjectURL(blob)
- const a = document.createElement('a')
- a.href=url; a.download=`${bank}_Payroll_${payrollStart}_to_${payrollEnd}.csv`; a.click()
- URL.revokeObjectURL(url)
- showToast(` ${bank} disbursement file downloaded!`)
- }}> DOWNLOAD {bank} FILE</button>
- </div>
- ))}
- </div>
- <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', marginTop:'16px', border:'1px solid #f5c518' }}>
- <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 6px' }}> Next Steps After Download</p>
- <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.8' }}>1. Log in to your bank's online payroll portal<br/>2. Go to "Payroll Disbursement" or "Batch Transfer"<br/>3. Upload the downloaded CSV file<br/>4. Review the entries and total amount<br/>5. Submit for processing (may need 2FA approval)<br/>6. Bank processes within 1 3 banking days</p>
- </div>
+  <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>Choose Bank Format & Generate</h3>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+   {[
+    { bank:'RCBC', color:'#6c1d45', desc:'RCBC payroll working CSV', fields:'Account Number,Account Name,Amount' },
+    { bank:'BDO', color:'#003087', desc:'BDO payroll CSV', fields:'AccountNo,BeneficiaryName,Amount,Currency,Remarks' },
+    { bank:'BPI', color:'#cc0000', desc:'BPI direct payroll CSV', fields:'Account Number,Name,Amount,Remarks' },
+    { bank:'UnionBank', color:'#e65100', desc:'UnionBank online payroll CSV', fields:'AccountNo,BeneficiaryName,Amount,Particulars' },
+    { bank:'Landbank', color:'#1a5276', desc:'Landbank payroll CSV', fields:'Account,Name,Amount,Description' },
+    { bank:'GCash', color:'#0072bc', desc:'GCash business disbursement CSV', fields:'Mobile Number,Name,Amount,Reference' },
+    { bank:'Generic', color:'#555', desc:'All positive-pay employees / reconciliation file', fields:'Employee Code,Name,Bank,Account No,Net Pay' }
+   ].map(({bank,color,desc,fields})=>{
+    const assignedRows = getPayrollRowsForBank(bank)
+    const total = assignedRows.reduce((sum,row)=>sum+safeNum(row.netPay,0),0)
+    const missing = assignedRows.filter(row => bank==='GCash'
+     ? !normalizeBankAccountForExport(row.mobileNumber || row.bankAccount)
+     : !normalizeBankAccountForExport(row.bankAccount)).length
+    return (
+     <div key={bank} style={{ border:`2px solid ${color}`, borderRadius:'10px', padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
+      <p style={{ fontWeight:'bold', color, fontSize:'14px', margin:0 }}>{bank}</p>
+      <p style={{ fontSize:'12px', color:'#888', margin:0 }}>{desc}</p>
+      <p style={{ fontSize:'11px', color:'#aaa', margin:0, fontFamily:'monospace' }}>{fields}</p>
+      <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', color:'#555', fontSize:'11px' }}>
+       <span>Employees: <strong>{assignedRows.length}</strong></span>
+       <span>Total: <strong>{php(total)}</strong></span>
+       <span style={{ color:missing?'#ca1b1b':'#2d8a4e' }}>Missing: <strong>{missing}</strong></span>
+      </div>
+      <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px' }} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD {bank} FILE</button>
+     </div>
+    )
+   })}
+  </div>
+  <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', marginTop:'16px', border:'1px solid #f5c518' }}>
+   <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 6px' }}>Before the First Live Upload</p>
+   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}>The RCBC file uses the requested three columns: Account Number, Account Name, and Amount. Compare the downloaded file with the template provided in your RCBC corporate payroll portal or by your branch before submitting the first live payroll.</p>
+  </div>
  </div>
  )}
  </div>
