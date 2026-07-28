@@ -25659,7 +25659,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   try {
    const { data:records, error } = await supabase
     .from('payroll_records')
-    .select('id,employee_id,employee_name,employee_code,position,worked_days,net_pay,basic_pay,birthday_pay,overtime_pay,total_earnings,total_deductions,payroll_approved,approved_at')
+    .select('id,employee_id,employee_name,employee_code,worked_days,net_pay,basic_pay,birthday_pay,overtime_pay,total_earnings,total_deductions,payroll_approved,approved_at')
     .eq('payroll_start', payrollStart)
     .eq('payroll_end', payrollEnd)
     .order('employee_name', { ascending:true })
@@ -25675,7 +25675,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    if (employeeIds.length > 0) {
     const { data:employeeRows, error:employeeError } = await supabase
      .from('employees')
-     .select('id,employee_code,full_name,contact_number,bank_name,bank_account_name,bank_account_number')
+     .select('id,employee_code,full_name,position,department,contact_number,bank_name,bank_account_name,bank_account_number')
      .in('id', employeeIds)
     if (employeeError) throw employeeError
     employeeLookup = Object.fromEntries((employeeRows || []).map(row => [String(row.id), row]))
@@ -25687,7 +25687,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
      employeeId:record.employee_id,
      employeeName:record.employee_name || emp.full_name || '',
      employeeCode:record.employee_code || emp.employee_code || '',
-     position:record.position || '',
+     position:emp.position || emp.department || '',
      workedDays:safeNum(record.worked_days, 0),
      netPay:safeNum(record.net_pay, 0),
      basicPay:safeNum(record.basic_pay, 0),
