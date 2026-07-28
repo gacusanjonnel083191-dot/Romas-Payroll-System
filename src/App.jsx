@@ -25722,18 +25722,22 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  async function downloadPayrollBankCSV(bank = '') {
   const normalizedBank = normalizePayrollBankName(bank)
-  const selectedRows = getPayrollRowsForBank(normalizedBank)
-  if (selectedRows.length === 0) {
+  const assignedRows = getPayrollRowsForBank(normalizedBank)
+  if (assignedRows.length === 0) {
    showToast(`No positive-net-pay employee is assigned to ${normalizedBank}. Save employee bank assignments first.`, 'red')
    return
   }
 
-  const missing = selectedRows.filter(row => {
+  // Incomplete account details no longer block the whole payroll file.
+  // Export only complete employees and report the skipped names afterward.
+  const skippedRows = assignedRows.filter(row => {
    if (normalizedBank === 'GCash') return !normalizeBankAccountForExport(row.mobileNumber || row.bankAccount)
    return !normalizeBankAccountForExport(row.bankAccount)
   })
-  if (missing.length > 0) {
-   showToast(`${normalizedBank} download blocked: missing account details for ${missing.map(row => row.employeeName).join(', ')}.`, 'red')
+  const selectedRows = assignedRows.filter(row => !skippedRows.includes(row))
+
+  if (selectedRows.length === 0) {
+   showToast(`${normalizedBank} file not created: all ${assignedRows.length} assigned employee(s) have incomplete account details.`, 'red')
    return
   }
 
@@ -25827,8 +25831,17 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   URL.revokeObjectURL(url)
 
   const totalAmount = selectedRows.reduce((sum, row) => sum + safeNum(row.netPay, 0), 0)
-  await logAudit('BANK PAYROLL CSV EXPORTED', currentAdminLabel, normalizedBank, `Period: ${periodText} | Employees: ${selectedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`)
-  showToast(`${normalizedBank} payroll CSV downloaded: ${selectedRows.length} employee(s), ${php(totalAmount)}.`)
+  const skippedNames = skippedRows.map(row => row.employeeName).filter(Boolean)
+  await logAudit(
+   'BANK PAYROLL CSV EXPORTED',
+   currentAdminLabel,
+   normalizedBank,
+   `Period: ${periodText} | Exported: ${selectedRows.length} | Skipped incomplete: ${skippedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}${skippedNames.length ? ` | Skipped names: ${skippedNames.join(', ')}` : ''}`
+  )
+  showToast(
+   `${normalizedBank} payroll CSV downloaded: ${selectedRows.length} employee(s), ${php(totalAmount)}.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
+   skippedRows.length ? 'orange' : 'green'
+  )
  }
 
  async function printDTR(empId, empName, empCode, startOrMonth, endDateArg = null, periodLabelArg = '') {
@@ -34563,7 +34576,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    <li>Enter and save each employee's payroll bank details below.</li>
    <li>Load the exact payroll period.</li>
    <li>Download the CSV for the employee's assigned bank.</li>
-   <li>The app blocks missing or duplicate account numbers before download.</li>
+   <li>Incomplete accounts are skipped automatically. Duplicate account numbers still block the file for safety.</li>
   </ol>
  </div>
 
@@ -34665,7 +34678,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <div style={{ background:missingRows.length?'#fff8dc':'#f0fff0', borderRadius:'8px', padding:'12px', border:`1px solid ${missingRows.length?'#f5c518':'#c8e6c9'}` }}>
      <p style={{ fontWeight:'bold', color:missingRows.length?'#b45309':'#2d8a4e', margin:'0 0 6px' }}>{payrollResults.length} employees loaded | {positiveRows.length} positive-net-pay rows</p>
      <p style={cps}>Total Net Pay: <strong>{php(positiveRows.reduce((sum,row)=>sum+safeNum(row.netPay,0),0))}</strong></p>
-     <p style={{...cps, color:missingRows.length?'#ca1b1b':'#2d8a4e' }}>Missing account number: <strong>{missingRows.length}</strong>{missingRows.length?` — ${missingRows.slice(0,5).map(row=>row.employeeName).join(', ')}${missingRows.length>5?'…':''}`:''}</p>
+     <p style={{...cps, color:missingRows.length?'#b45309':'#2d8a4e' }}>Will be skipped due to incomplete account details: <strong>{missingRows.length}</strong>{missingRows.length?` — ${missingRows.slice(0,5).map(row=>row.employeeName).join(', ')}${missingRows.length>5?'…':''}`:''}</p>
     </div>
    )
   })()}
@@ -34685,28 +34698,30 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     { bank:'Generic', color:'#555', desc:'All positive-pay employees / reconciliation file', fields:'Employee Code,Name,Bank,Account No,Net Pay' }
    ].map(({bank,color,desc,fields})=>{
     const assignedRows = getPayrollRowsForBank(bank)
-    const total = assignedRows.reduce((sum,row)=>sum+safeNum(row.netPay,0),0)
-    const missing = assignedRows.filter(row => bank==='GCash'
+    const skippedRows = assignedRows.filter(row => bank==='GCash'
      ? !normalizeBankAccountForExport(row.mobileNumber || row.bankAccount)
-     : !normalizeBankAccountForExport(row.bankAccount)).length
+     : !normalizeBankAccountForExport(row.bankAccount))
+    const readyRows = assignedRows.filter(row => !skippedRows.includes(row))
+    const total = readyRows.reduce((sum,row)=>sum+safeNum(row.netPay,0),0)
     return (
      <div key={bank} style={{ border:`2px solid ${color}`, borderRadius:'10px', padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
       <p style={{ fontWeight:'bold', color, fontSize:'14px', margin:0 }}>{bank}</p>
       <p style={{ fontSize:'12px', color:'#888', margin:0 }}>{desc}</p>
       <p style={{ fontSize:'11px', color:'#aaa', margin:0, fontFamily:'monospace' }}>{fields}</p>
-      <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', color:'#555', fontSize:'11px' }}>
-       <span>Employees: <strong>{assignedRows.length}</strong></span>
-       <span>Total: <strong>{php(total)}</strong></span>
-       <span style={{ color:missing?'#ca1b1b':'#2d8a4e' }}>Missing: <strong>{missing}</strong></span>
+      <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', color:'#555', fontSize:'11px', flexWrap:'wrap' }}>
+       <span>Assigned: <strong>{assignedRows.length}</strong></span>
+       <span style={{ color:'#2d8a4e' }}>Ready: <strong>{readyRows.length}</strong></span>
+       <span style={{ color:skippedRows.length?'#b45309':'#2d8a4e' }}>Skipped: <strong>{skippedRows.length}</strong></span>
+       <span>Export Total: <strong>{php(total)}</strong></span>
       </div>
-      <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px' }} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD {bank} FILE</button>
+      <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD {bank} FILE</button>
      </div>
     )
    })}
   </div>
   <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', marginTop:'16px', border:'1px solid #f5c518' }}>
    <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 6px' }}>Before the First Live Upload</p>
-   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}>The RCBC file uses the requested three columns: Account Number, Account Name, and Amount. Compare the downloaded file with the template provided in your RCBC corporate payroll portal or by your branch before submitting the first live payroll.</p>
+   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}>The RCBC file uses Account Number, Account Name, and Amount. Employees with incomplete account details are skipped automatically and remain payable through your manual cash or other approved process. Always reconcile the exported employee count and total before uploading the file.</p>
   </div>
  </div>
  )}
