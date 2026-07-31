@@ -1046,6 +1046,13 @@ function getDTRDayMetrics(log = {}) {
  return getAttendanceDayWorkMetrics(dayLogs, breakRowsByLogId)
 }
 
+function getDTRLateMinutes(log = {}) {
+ if (!log) return 0
+ const integrity = getAttendanceDayIntegrity(getDTRDayLogs(log))
+ if (!integrity.isValidCompleted) return 0
+ return Math.max(0, Math.round(safeNum(getDTRDayMetrics(log).lateMinutes, 0)))
+}
+
 function getDTRBreakMinutes(log = {}) {
  if (!log) return 0
  return getDTRDayMetrics(log).deductedBreakMinutes
@@ -1087,6 +1094,86 @@ async function enrichAttendanceLogsWithBreakRows(logs = []) {
   console.warn('Break detail load failed; using attendance break totals:', error)
   return sourceLogs.map(log => ({ ...log, _breakRows:[] }))
  }
+}
+
+async function hydrateAttendanceLogsWithScheduleFallback(logs = [], employeeSource = null, periodStart = '', periodEnd = '') {
+ const sourceLogs = (logs || []).filter(Boolean)
+ if (!sourceLogs.length) return []
+
+ const suppliedEmployees = Array.isArray(employeeSource)
+  ? employeeSource.filter(Boolean)
+  : employeeSource
+   ? [employeeSource]
+   : []
+ const employeeById = {}
+ const employeeByCode = {}
+ const employeeByName = {}
+ suppliedEmployees.forEach(emp => {
+  if (emp?.id) employeeById[String(emp.id)] = emp
+  if (emp?.employee_code) employeeByCode[String(emp.employee_code).trim().toLowerCase()] = emp
+  if (emp?.full_name) employeeByName[String(emp.full_name).trim().toLowerCase()] = emp
+ })
+
+ const logEmployeeIds = Array.from(new Set(sourceLogs.map(log => String(log?.employee_id || '')).filter(Boolean)))
+ const missingEmployeeIds = logEmployeeIds.filter(id => !employeeById[id])
+ if (missingEmployeeIds.length > 0) {
+  const { data:employeeRows, error:employeeError } = await supabase
+   .from('employees')
+   .select('id,employee_code,full_name,shift_start,shift_end,grace_period_minutes')
+   .in('id', missingEmployeeIds)
+  if (employeeError) throw employeeError
+  ;(employeeRows || []).forEach(emp => {
+   if (emp?.id) employeeById[String(emp.id)] = emp
+   if (emp?.employee_code) employeeByCode[String(emp.employee_code).trim().toLowerCase()] = emp
+   if (emp?.full_name) employeeByName[String(emp.full_name).trim().toLowerCase()] = emp
+  })
+ }
+
+ const dateKeys = sourceLogs.map(log => String(log?.attendance_date || '').slice(0, 10)).filter(Boolean).sort()
+ const startDate = String(periodStart || dateKeys[0] || '').slice(0, 10)
+ const endDate = String(periodEnd || dateKeys[dateKeys.length - 1] || '').slice(0, 10)
+ const scheduleByEmployeeDate = {}
+ const needsScheduleFallback = sourceLogs.some(log =>
+  !normalizeTimeInputValue(log?.shift_start) || !normalizeTimeInputValue(log?.shift_end)
+ )
+
+ if (needsScheduleFallback && logEmployeeIds.length > 0 && startDate && endDate) {
+  const { data:scheduleRows, error:scheduleError } = await supabase
+   .from('daily_schedules')
+   .select('employee_id,schedule_date,shift_start,shift_end')
+   .in('employee_id', logEmployeeIds)
+   .gte('schedule_date', startDate)
+   .lte('schedule_date', endDate)
+  if (scheduleError) throw scheduleError
+  ;(scheduleRows || []).forEach(schedule => {
+   const key = `${String(schedule?.employee_id || '')}|${String(schedule?.schedule_date || '').slice(0, 10)}`
+   scheduleByEmployeeDate[key] = schedule
+  })
+ }
+
+ return sourceLogs.map(log => {
+  const employeeId = String(log?.employee_id || '')
+  const employeeCode = String(log?.employee_code || '').trim().toLowerCase()
+  const employeeName = String(log?.employee_name || '').trim().toLowerCase()
+  const employee = employeeById[employeeId] || employeeByCode[employeeCode] || employeeByName[employeeName] || null
+  const attendanceDate = String(log?.attendance_date || '').slice(0, 10)
+  const datedSchedule = scheduleByEmployeeDate[`${employeeId}|${attendanceDate}`] || null
+  const shiftStart = normalizeTimeInputValue(log?.shift_start)
+   || normalizeTimeInputValue(datedSchedule?.shift_start)
+   || normalizeTimeInputValue(employee?.shift_start)
+  const shiftEnd = normalizeTimeInputValue(log?.shift_end)
+   || normalizeTimeInputValue(datedSchedule?.shift_end)
+   || normalizeTimeInputValue(employee?.shift_end)
+  const gracePeriodMinutes = log?.grace_period_minutes !== undefined && log?.grace_period_minutes !== null
+   ? Math.max(0, Math.round(safeNum(log.grace_period_minutes, DEFAULT_LATE_GRACE_MINUTES)))
+   : Math.max(0, Math.round(safeNum(employee?.grace_period_minutes, DEFAULT_LATE_GRACE_MINUTES)))
+  return {
+   ...log,
+   shift_start:shiftStart || null,
+   shift_end:shiftEnd || null,
+   grace_period_minutes:gracePeriodMinutes
+  }
+ })
 }
 
 function getDTRUndertimeMinutes(log = {}) {
@@ -1140,7 +1227,7 @@ function getDTRStatusInfo(log = {}) {
  if (overbreak > 0) return { label:'OVERBREAK', color:'orange', code:'overbreak' }
  if (approvedOT > 0) return { label:'OT', color:'blue', code:'overtime' }
  if (noMealBreakApproved) return { label:'NO BREAK', color:'blue', code:'no_meal_break' }
- if (safeNum(log?.late_minutes, 0) > 0) return { label:'LATE', color:'orange', code:'late' }
+ if (getDTRLateMinutes(log) > 0) return { label:'LATE', color:'orange', code:'late' }
  if (integrity.isValidCompleted) return { label:'PRESENT', color:'green', code:'present' }
  return { label:'REVIEW', color:'red', code:'review' }
 }
@@ -1229,27 +1316,14 @@ async function fetchAttendanceDayValidation(employeeId = '', attendanceDate = ''
   resolvedFromPreviousDay = true
  }
 
- // Historical attendance rows may predate shift fields. Hydrate missing
- // shift_start/shift_end from the daily schedule before validating overtime.
- if ((logs || []).some(log => !log?.shift_start || !log?.shift_end)) {
-  const scheduleEmployeeId = String((logs || []).find(log => log?.employee_id)?.employee_id || employeeId || '')
-  if (scheduleEmployeeId && resolvedAttendanceDate) {
-   const { data:savedSchedule, error:scheduleError } = await supabase
-    .from('daily_schedules')
-    .select('shift_start,shift_end')
-    .eq('employee_id', scheduleEmployeeId)
-    .eq('schedule_date', resolvedAttendanceDate)
-    .maybeSingle()
-   if (scheduleError) console.warn('Attendance OT schedule lookup:', scheduleError)
-   if (savedSchedule) {
-    logs = (logs || []).map(log => ({
-     ...log,
-     shift_start:log?.shift_start || savedSchedule.shift_start || null,
-     shift_end:log?.shift_end || savedSchedule.shift_end || null
-    }))
-   }
-  }
- }
+ // Historical rows may predate saved shift fields. Resolve the official shift
+ // in this order: attendance row, dated schedule, then employee profile.
+ logs = await hydrateAttendanceLogsWithScheduleFallback(
+  logs || [],
+  null,
+  resolvedAttendanceDate,
+  resolvedAttendanceDate
+ )
 
  const logIds = (logs || []).map(log => log?.id).filter(Boolean)
  const breakRowsByLogId = {}
@@ -17070,7 +17144,9 @@ function buildDeliveryInvoicePrintCSS() {
  }
  async function loadMyAttendanceHistory(emp) {
  const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
- setMyAttendance(data || [])
+ const scheduleAwareLogs = await hydrateAttendanceLogsWithScheduleFallback(data || [], emp)
+ const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduleAwareLogs)
+ setMyAttendance(enrichedLogs)
  }
 
  async function loadMedicalCertificateLock(emp) {
@@ -24478,6 +24554,12 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    if (error) throw error
    attendanceRows = data || []
   }
+  attendanceRows = await hydrateAttendanceLogsWithScheduleFallback(
+   attendanceRows,
+   employeeRows,
+   sourceStart,
+   sourceEnd
+  )
 
   const attendanceLogIds = (attendanceRows || []).map(row => row.id).filter(Boolean)
   let breakRows = []
@@ -24722,7 +24804,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    .lte('attendance_date', sourceEnd)
    .order('attendance_date')
   if (error) throw error
-  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(logs || [])
+  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, sourceStart, sourceEnd)
+  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
   const grouped = groupDTRLogsByDate(enrichedLogs)
   const allDays = buildDateRangeRows(sourceStart, sourceEnd, ({ dateStr, day, dayName }) => ({ dateStr, day, dayName, log:mergeDTRDayLogs(grouped[dateStr] || []) }))
   const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
@@ -24735,7 +24818,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    period:{ key:cutoffKey, start:sourceStart, end:sourceEnd, label:`${formatDateForDisplay(sourceStart)} – ${formatDateForDisplay(sourceEnd)}` },
    totalWorked:new Set(mergedLogs.filter(log => log.time_in && log.time_out).map(log => String(log.attendance_date || '').slice(0,10))).size,
    totalAbsent:new Set(mergedLogs.filter(log => log.status === 'Absent').map(log => String(log.attendance_date || '').slice(0,10))).size,
-   totalLate:mergedLogs.reduce((sum, log) => sum + safeNum(log.late_minutes, 0), 0),
+   totalLate:mergedLogs.reduce((sum, log) => sum + getDTRLateMinutes(log), 0),
    totalOT:mergedLogs.reduce((sum, log) => sum + getDTRApprovedOvertimeMinutes(log), 0),
    totalUT:mergedLogs.reduce((sum, log) => sum + getDTRUndertimeMinutes(log), 0),
    totalBreak:mergedLogs.reduce((sum, log) => sum + getDTRBreakMinutes(log), 0),
@@ -26308,12 +26391,13 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 .eq('employee_id', empId).gte('attendance_date', startDate).lte('attendance_date', endDate)
 .order('attendance_date')
  const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
- const enrichedLogs = await enrichAttendanceLogsWithBreakRows(logs || [])
+ const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, startDate, endDate)
+ const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
  const grouped = groupDTRLogsByDate(enrichedLogs)
  const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
  const totalDaysWorked = new Set(mergedLogs.filter(l=>getAttendanceDayIntegrity(getDTRDayLogs(l)).isValidCompleted).map(l=>String(l.attendance_date || '').slice(0,10))).size
  const totalAbsent = new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size
- const totalLate = mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0) || 0
+ const totalLate = mergedLogs.reduce((s,l)=>s+getDTRLateMinutes(l),0) || 0
  const totalOT = mergedLogs.reduce((s,l)=>s+getDTRApprovedOvertimeMinutes(l),0) || 0
  const totalUT = mergedLogs.reduce((s,l)=>s+getDTRUndertimeMinutes(l),0) || 0
  const totalBreak = mergedLogs.reduce((s,l)=>s+getDTRBreakMinutes(l),0) || 0
@@ -26331,7 +26415,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  <td style="padding:5px 8px;font-size:10px;text-align:center;">${log?getDTRBreakMinutes(log):0}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${getDTROverbreakMinutes(log)>0?'#ca1b1b':'#777'};font-weight:${getDTROverbreakMinutes(log)>0?'bold':'normal'};">${getDTROverbreakMinutes(log)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;font-weight:bold;color:${getDTRDutyMinutes(log)>0?'#1a1a2e':'#ccc'}">${log?formatDutyHours(getDTRDutyMinutes(log)):' '}</td>
- <td style="padding:5px 8px;font-size:10px;text-align:center;color:${log?.late_minutes>0?'#ca1b1b':'#000'}">${log?.late_minutes||0}</td>
+ <td style="padding:5px 8px;font-size:10px;text-align:center;color:${getDTRLateMinutes(log)>0?'#ca1b1b':'#000'}">${getDTRLateMinutes(log)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${getDTRUndertimeMinutes(log)>0?'#ca1b1b':'#000'}">${getDTRUndertimeMinutes(log)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;color:${getDTRApprovedOvertimeMinutes(log)>0?'#2d8a4e':'#000'}">${getDTRApprovedOvertimeMinutes(log)}</td>
  <td style="padding:5px 8px;font-size:10px;text-align:center;">
@@ -26708,8 +26792,14 @@ async function computePayroll() {
  for (const emp of empList||[]) {
   const holidayGuardStart = addDaysToDateString(payrollStart, -1) || payrollStart
   const holidayGuardEnd = addDaysToDateString(payrollEnd, 1) || payrollEnd
-  const { data:allLogs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', holidayGuardStart).lte('attendance_date', holidayGuardEnd)
+  const { data:rawAllLogs, error:logsError } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).gte('attendance_date', holidayGuardStart).lte('attendance_date', holidayGuardEnd)
   if (logsError) throw logsError
+  const allLogs = await hydrateAttendanceLogsWithScheduleFallback(
+   rawAllLogs || [],
+   emp,
+   holidayGuardStart,
+   holidayGuardEnd
+  )
   const logs = (allLogs || []).filter(log => {
    const dateKey = String(log.attendance_date || '').slice(0, 10)
    return dateKey >= payrollStart && dateKey <= payrollEnd
@@ -34638,7 +34728,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 .gte('attendance_date', period.start)
 .lte('attendance_date', period.end)
 .order('attendance_date')
- const enrichedLogs = await enrichAttendanceLogsWithBreakRows(logs || [])
+ const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, period.start, period.end)
+ const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
  const grouped = groupDTRLogsByDate(enrichedLogs)
  const allDays = buildDateRangeRows(period.start, period.end, ({ dateStr, day, dayName })=>{
  const log = mergeDTRDayLogs(grouped[dateStr] || [])
@@ -34651,7 +34742,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  period,
  totalWorked: new Set(mergedLogs.filter(l=>getAttendanceDayIntegrity(getDTRDayLogs(l)).isValidCompleted).map(l=>String(l.attendance_date || '').slice(0,10))).size,
  totalAbsent: new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size,
- totalLate: mergedLogs.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0,
+ totalLate: mergedLogs.reduce((s,l)=>s+getDTRLateMinutes(l),0)||0,
  totalOT: mergedLogs.reduce((s,l)=>s+getDTRApprovedOvertimeMinutes(l),0)||0,
  totalUT: mergedLogs.reduce((s,l)=>s+getDTRUndertimeMinutes(l),0)||0,
  totalBreak: mergedLogs.reduce((s,l)=>s+getDTRBreakMinutes(l),0)||0,
@@ -34747,7 +34838,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {log && getDTROverbreakMinutes(log)>0 ? <button type="button" onClick={()=>setDtrBreakTrace({ employeeName:dtrStats.emp.full_name, employeeCode:dtrStats.emp.employee_code, date:dateStr, rows:getDTRBreakRows(log), metrics:getDTRDayMetrics(log) })} style={{ border:'none', background:'#fff0f0', color:'#ca1b1b', fontWeight:'900', cursor:'pointer', borderRadius:'6px', padding:'4px 7px' }}>+{getDTROverbreakMinutes(log)}</button> : 0}
  </td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTRDutyMinutes(log)>0?'#1a1a2e':'#ccc', fontWeight:getDTRDutyMinutes(log)>0?'bold':'normal' }}>{log?formatDutyHours(getDTRDutyMinutes(log)):' '}</td>
- <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:Number(log?.late_minutes||0)>0?'#ca1b1b':'#888', fontWeight:Number(log?.late_minutes||0)>0?'bold':'normal' }}>{log?.late_minutes||0}</td>
+ <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTRLateMinutes(log)>0?'#ca1b1b':'#888', fontWeight:getDTRLateMinutes(log)>0?'bold':'normal' }}>{getDTRLateMinutes(log)}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTRUndertimeMinutes(log)>0?'#ca1b1b':'#888', fontWeight:getDTRUndertimeMinutes(log)>0?'bold':'normal' }}>{getDTRUndertimeMinutes(log)}</td>
  <td style={{ padding:'7px 10px', textAlign:'center', fontSize:'12px', color:getDTRApprovedOvertimeMinutes(log)>0?'#2d8a4e':'#888', fontWeight:getDTRApprovedOvertimeMinutes(log)>0?'bold':'normal' }}>{getDTRApprovedOvertimeMinutes(log)}</td>
  <td style={{ padding:'7px 10px', textAlign:'center' }}>
@@ -44034,7 +44125,7 @@ onClick={async ()=>{
  <Badge label={statusInfo.label||'REVIEW'} color={statusInfo.color} />
  </div>
  {log.time_in&&<p style={cps}>In: {log.time_in} | Out: {log.time_out||' '} | Break Deducted: {getDTRBreakMinutes(log)}min | Duty: {formatDutyHours(getDTRDutyMinutes(log))}</p>}
- {log.late_minutes>0&&<p style={{...cps, color:'#f5a623' }}>Late: {log.late_minutes} min</p>}
+ {getDTRLateMinutes(log)>0&&<p style={{...cps, color:'#f5a623' }}>Late: {getDTRLateMinutes(log)} min</p>}
  {getDTRGraceAppliedMinutes(log)>0&&getDTRUndertimeMinutes(log)===0&&<p style={{...cps, color:'#2d8a4e', fontWeight:'700' }}>Grace Applied: {getDTRGraceAppliedMinutes(log)} min — no undertime within the {DEFAULT_LATE_GRACE_MINUTES}-minute grace period</p>}
  {getDTROverbreakMinutes(log)>0&&<p style={{...cps, color:'#ca1b1b', fontWeight:'700' }}>Overbreak: {getDTROverbreakMinutes(log)} min — already included in actual worked-time shortage</p>}
  {getDTRUndertimeMinutes(log)>0&&<p style={{...cps, color:'#ca1b1b' }}>Automatic UT: {getDTRUndertimeMinutes(log)} min</p>}
