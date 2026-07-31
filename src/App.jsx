@@ -25722,6 +25722,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  async function downloadPayrollBankCSV(bank = '') {
   const normalizedBank = normalizePayrollBankName(bank)
+  if (normalizedBank === 'RCBC') {
+   await downloadRCBCExcelReview()
+   return
+  }
   const assignedRows = getPayrollRowsForBank(normalizedBank)
   if (assignedRows.length === 0) {
    showToast(`No positive-net-pay employee is assigned to ${normalizedBank}. Save employee bank assignments first.`, 'red')
@@ -25913,13 +25917,13 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    return
   }
   if (selectedRows.length === 0) {
-   showToast(`RCBC Excel review not created: all ${assignedRows.length} assigned employee(s) have incomplete account details.`, 'red')
+   showToast(`RCBC payroll Excel not created: all ${assignedRows.length} assigned employee(s) have incomplete account details.`, 'red')
    return
   }
 
   const duplicateNames = getDuplicateBankAccountNames(selectedRows, 'RCBC')
   if (duplicateNames.length > 0) {
-   showToast(`RCBC Excel review blocked: duplicate account number detected for ${duplicateNames.join(', ')}.`, 'red')
+   showToast(`RCBC payroll Excel blocked: duplicate account number detected for ${duplicateNames.join(', ')}.`, 'red')
    return
   }
 
@@ -25929,13 +25933,12 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    const periodText = `${payrollStart} to ${payrollEnd}`
 
    const worksheetData = [
-    ['Account Number', 'Account Name', 'Amount'],
+    ['Account Number', 'Amount', 'Name'],
     ...selectedRows.map(row => [
      normalizeBankAccountForExport(row.bankAccount),
-     row.bankAccountName || row.employeeName,
-     Number(safeNum(row.netPay, 0).toFixed(2))
-    ]),
-    ['', 'TOTAL', Number(totalAmount.toFixed(2))]
+     Number(safeNum(row.netPay, 0).toFixed(2)),
+     row.bankAccountName || row.employeeName
+    ])
    ]
 
    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData)
@@ -25953,30 +25956,30 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    }
 
    // Keep amount cells numeric with two decimal places.
-   for (let rowIndex = 2; rowIndex <= selectedRows.length + 2; rowIndex += 1) {
-    const cellAddress = `C${rowIndex}`
+   for (let rowIndex = 2; rowIndex <= selectedRows.length + 1; rowIndex += 1) {
+    const cellAddress = `B${rowIndex}`
     if (worksheet[cellAddress]) worksheet[cellAddress].z = '#,##0.00'
    }
 
    worksheet['!cols'] = [
     { wch:22 },
-    { wch:34 },
-    { wch:16 }
+    { wch:16 },
+    { wch:34 }
    ]
    worksheet['!autofilter'] = { ref:`A1:C${selectedRows.length + 1}` }
    worksheet['!freeze'] = { xSplit:0, ySplit:1, topLeftCell:'A2', activePane:'bottomLeft', state:'frozen' }
 
    const workbook = XLSX.utils.book_new()
    workbook.Props = {
-    Title:`RCBC Payroll Review ${periodText}`,
-    Subject:'Payroll bank review with account numbers stored as text',
+    Title:`RCBC Payroll ${periodText}`,
+    Subject:'RCBC payroll Excel file with Account Number, Amount, and Name',
     Author:"Roma's Donuts",
     Company:"Roma's Donuts",
     CreatedDate:new Date()
    }
    XLSX.utils.book_append_sheet(workbook, worksheet, 'RCBC Payroll')
 
-   const filename = `RCBC_Payroll_Excel_Review_${payrollStart}_to_${payrollEnd}.xlsx`
+   const filename = `RCBC_Payroll_${payrollStart}_to_${payrollEnd}.xlsx`
    XLSX.writeFile(workbook, filename, {
     bookType:'xlsx',
     compression:true,
@@ -25985,18 +25988,18 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
    const skippedNames = skippedRows.map(row => row.employeeName).filter(Boolean)
    await logAudit(
-    'RCBC EXCEL REVIEW EXPORTED',
+    'RCBC PAYROLL EXCEL EXPORTED',
     currentAdminLabel,
     'RCBC',
     `Period: ${periodText} | Format: genuine XLSX | Exported: ${selectedRows.length} | Skipped incomplete: ${skippedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`
    )
    showToast(
-    `Genuine RCBC Excel workbook downloaded. Account numbers are stored as text and leading zeroes are preserved.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
+    `RCBC payroll Excel downloaded with columns in this order: Account Number, Amount, Name. Account numbers are stored as text and leading zeroes are preserved.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
     skippedRows.length ? 'orange' : 'green'
    )
   } catch(error) {
-   console.error('RCBC Excel review export failed:', error)
-   showToast(`RCBC Excel review failed: ${error?.message || error}`, 'red')
+   console.error('RCBC payroll Excel export failed:', error)
+   showToast(`RCBC payroll Excel failed: ${error?.message || error}`, 'red')
   }
  }
 
@@ -34845,7 +34848,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>Choose Bank Format & Generate</h3>
   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
    {[
-    { bank:'RCBC', color:'#6c1d45', desc:'RCBC upload CSV plus Excel review file', fields:'Account Number,Account Name,Amount' },
+    { bank:'RCBC', color:'#6c1d45', desc:'RCBC payroll Excel file', fields:'Account Number,Amount,Name' },
     { bank:'BDO', color:'#003087', desc:'BDO payroll CSV', fields:'AccountNo,BeneficiaryName,Amount,Currency,Remarks' },
     { bank:'BPI', color:'#cc0000', desc:'BPI direct payroll CSV', fields:'Account Number,Name,Amount,Remarks' },
     { bank:'UnionBank', color:'#e65100', desc:'UnionBank online payroll CSV', fields:'AccountNo,BeneficiaryName,Amount,Particulars' },
@@ -34871,10 +34874,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        <span>Export Total: <strong>{php(total)}</strong></span>
       </div>
       {bank==='RCBC' ? (
-       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px', marginTop:'4px' }}>
-        <button style={{...btnRed, background:color, marginTop:0, fontSize:'11px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD RCBC UPLOAD CSV</button>
-        <button style={{...btnBlack, marginTop:0, fontSize:'11px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={downloadRCBCExcelReview}>DOWNLOAD EXCEL REVIEW</button>
-       </div>
+       <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={downloadRCBCExcelReview}>DOWNLOAD RCBC EXCEL</button>
       ) : (
        <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD {bank} FILE</button>
       )}
@@ -34884,7 +34884,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   </div>
   <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', marginTop:'16px', border:'1px solid #f5c518' }}>
    <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 6px' }}>Before the First Live Upload</p>
-   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}><strong>RCBC Upload CSV:</strong> upload this file directly to the RCBC portal and avoid opening/re-saving it in Excel. <strong>Excel Review (.xlsx):</strong> this is now a genuine Excel workbook, so Excel will open it without a file-format warning. Its Account Number column is stored as text, preserving every leading zero. Do not upload the Excel Review workbook unless RCBC specifically requests an Excel file.</p>
+   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}><strong>RCBC Excel (.xlsx):</strong> the file contains only three columns in this exact order: Account Number, Amount, Name. Account numbers are stored as text so leading zeroes are preserved.</p>
   </div>
  </div>
  )}
