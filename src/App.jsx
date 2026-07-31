@@ -634,6 +634,9 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
    gracePeriodMinutes:DEFAULT_LATE_GRACE_MINUTES,
    graceAppliedMinutes:0,
    paidWorkShortageMinutes:0,
+   utEligiblePaidWorkShortageMinutes:0,
+   lateShortageCoveredMinutes:0,
+   nonLatePaidWorkShortageMinutes:0,
    rawLateMinutes:0,
    lateMinutes:0,
    earlyOutMinutes:0,
@@ -687,19 +690,31 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
 
  // Apply the grace period to UT, not only to the Late label. Credit only the
  // verified within-grace arrival minutes, capped by the raw paid-work shortage.
- // This prevents 1-10 minute arrivals from becoming Automatic UT while still
- // preserving any early-out or overbreak shortage. Grace never creates OT.
+ // This prevents 1-10 minute arrivals from becoming Automatic UT. Grace never
+ // creates OT.
  const graceAppliedMinutes = Math.min(
   rawPaidWorkShortageMinutes,
   Math.max(0, Math.round(scheduleMetrics.graceAppliedMinutes || 0))
  )
  const paidWorkShortageMinutes = Math.max(0, rawPaidWorkShortageMinutes - graceAppliedMinutes)
 
- // Arriving early or staying after the scheduled shift cannot erase a chargeable
- // late penalty or an early Time Out. Compare the grace-adjusted paid-hours
- // shortage with the independent schedule-boundary shortage.
+ // Overbreak is already identified in its own DTR column and must not be
+ // relabeled or rounded again as a separate 30-minute UT. Remove only the
+ // verified excess-break portion from the paid-hours shortage used for UT.
+ const utEligiblePaidWorkShortageMinutes = Math.max(0, paidWorkShortageMinutes - overbreakMinutes)
+
+ // Late and UT are separate attendance classifications. Remove the verified
+ // late-arrival shortage from UT, while preserving an independent early Time
+ // Out. Extra minutes outside the scheduled boundaries cannot erase either.
  const scheduleBoundaryShortageMinutes = Math.max(0, Math.round(scheduleMetrics.scheduleBoundaryShortageMinutes || 0))
- const rawUndertimeMinutes = Math.max(paidWorkShortageMinutes, scheduleBoundaryShortageMinutes)
+ const lateShortageCoveredMinutes = scheduleMetrics.lateMinutes > 0
+  ? Math.min(utEligiblePaidWorkShortageMinutes, Math.max(0, Math.round(scheduleMetrics.rawLateMinutes || 0)))
+  : 0
+ const nonLatePaidWorkShortageMinutes = Math.max(0, utEligiblePaidWorkShortageMinutes - lateShortageCoveredMinutes)
+ const rawUndertimeMinutes = Math.max(
+  nonLatePaidWorkShortageMinutes,
+  Math.max(0, Math.round(scheduleMetrics.earlyOutMinutes || 0))
+ )
  // UT policy: charge in 30-minute payroll blocks. Any partial shortage block
  // rounds upward, so extra unscheduled minutes cannot reduce chargeable UT.
  // Example: 296 actual shortage minutes becomes 300 chargeable UT minutes.
@@ -707,11 +722,14 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  const undertimeRoundingMinutes = Math.max(0, undertimeMinutes - rawUndertimeMinutes)
  let undertimeBasis = 'none'
  if (rawUndertimeMinutes > 0) {
-  if (scheduleBoundaryShortageMinutes > paidWorkShortageMinutes) undertimeBasis = 'schedule_boundaries'
-  else if (paidWorkShortageMinutes > scheduleBoundaryShortageMinutes) undertimeBasis = 'paid_work_shortage'
+  const earlyOutMinutes = Math.max(0, Math.round(scheduleMetrics.earlyOutMinutes || 0))
+  if (earlyOutMinutes > nonLatePaidWorkShortageMinutes) undertimeBasis = 'early_time_out'
+  else if (nonLatePaidWorkShortageMinutes > earlyOutMinutes) undertimeBasis = 'non_break_paid_work_shortage'
   else undertimeBasis = 'both'
  } else if (graceAppliedMinutes > 0) {
   undertimeBasis = 'grace_period'
+ } else if (overbreakMinutes > 0) {
+  undertimeBasis = 'overbreak_only'
  }
 
  return {
@@ -727,6 +745,9 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
   gracePeriodMinutes:scheduleMetrics.gracePeriodMinutes,
   graceAppliedMinutes,
   paidWorkShortageMinutes,
+  utEligiblePaidWorkShortageMinutes,
+  lateShortageCoveredMinutes,
+  nonLatePaidWorkShortageMinutes,
   rawLateMinutes:scheduleMetrics.rawLateMinutes,
   lateMinutes:scheduleMetrics.lateMinutes,
   earlyOutMinutes:scheduleMetrics.earlyOutMinutes,
@@ -1771,10 +1792,14 @@ function roundPenaltyMinutes(min, gracePeriodMinutes = DEFAULT_LATE_GRACE_MINUTE
 function getPayrollAttendanceDeductionSplit(metrics = {}) {
  // Payroll must show late and undertime as separate deductions without charging
  // the same late-arrival shortage twice. Late uses the company penalty bracket,
- // while undertime covers only the remaining paid-work shortage, early Time Out,
- // overbreak, or other non-late shortage.
+ // while undertime covers only the remaining non-break paid-work shortage,
+ // early Time Out, or another genuine non-late shortage. Overbreak remains a
+ // separate DTR classification and is never rounded again into UT.
  const lateMinutes = Math.max(0, Math.round(safeNum(metrics?.lateMinutes, 0)))
- const paidWorkShortageMinutes = Math.max(0, Math.round(safeNum(metrics?.paidWorkShortageMinutes, 0)))
+ const paidWorkShortageMinutes = Math.max(0, Math.round(safeNum(
+  metrics?.utEligiblePaidWorkShortageMinutes,
+  metrics?.paidWorkShortageMinutes
+ )))
  const earlyOutMinutes = Math.max(0, Math.round(safeNum(metrics?.earlyOutMinutes, 0)))
  const rawLateArrivalMinutes = Math.max(0, Math.round(safeNum(metrics?.rawLateMinutes, 0)))
  const lateShortageCoveredMinutes = lateMinutes > 0
@@ -17450,8 +17475,8 @@ function buildDeliveryInvoicePrintCSS() {
  undertimeMinutes = undertimeDeductionApplicable ? attendanceMetrics.undertimeMinutes : 0
 
  // OT remains based on actual paid attendance after the meal-break rule.
- // UT is schedule-anchored separately, so staying after shift end cannot erase
- // a late arrival and arriving early cannot erase an early Time Out.
+ // UT is schedule-anchored separately from Late and Overbreak, so staying after
+ // shift end cannot erase an early Time Out and no shortage is double-classified.
  rawOvertimeMinutes = Math.max(0, Math.round(attendanceMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
  overtimeMinutes = roundPayableOvertimeMinutes(rawOvertimeMinutes)
  if (undertimeMinutes>0) status='Undertime - Pending Approval'
@@ -17545,7 +17570,7 @@ function buildDeliveryInvoicePrintCSS() {
   else msg += `\n\n ${undertimeMinutes} min undertime was detected, but the approval request could not be created${autoUTRequestError?': '+autoUTRequestError:''}. Ask the admin to review the attendance record before payroll.`
  }
  if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No UT request or deduction was created.`
- if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break is already included in the actual worked-time shortage.`
+ if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break was recorded separately as Overbreak and was not rounded again into UT.`
  if (totalBreakMins===0) msg += `\n\n No meal break was recorded. The standard 60-minute deduction was applied. If you genuinely worked continuously without a meal break, file a No Meal Break exception for admin review before OT/UT approval.`
   alert(msg)
  }
@@ -34767,7 +34792,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {[['Recorded Break', `${dtrBreakTrace.metrics?.recordedBreakMinutes || 0} min`, '#1a1a2e'], ['Break Deducted', `${dtrBreakTrace.metrics?.deductedBreakMinutes || 0} min`, '#555'], ['Overbreak', `${dtrBreakTrace.metrics?.overbreakMinutes || 0} min`, dtrBreakTrace.metrics?.overbreakMinutes>0?'#ca1b1b':'#2d8a4e']].map(([label,value,color])=><div key={label} style={{ background:'#f8f8f8', border:'1px solid #eee', borderRadius:'10px', padding:'10px', textAlign:'center' }}><p style={{ margin:'0 0 3px', color:'#888', fontSize:'10px', textTransform:'uppercase' }}>{label}</p><p style={{ margin:0, color, fontWeight:'900', fontSize:'16px' }}>{value}</p></div>)}
  </div>
  {dtrBreakTrace.rows?.length > 0 ? <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}><thead><tr style={{ background:'#ca1b1b', color:'white' }}><th style={{ padding:'8px' }}>Break #</th><th style={{ padding:'8px' }}>Break Out</th><th style={{ padding:'8px' }}>Break In</th><th style={{ padding:'8px' }}>Duration</th><th style={{ padding:'8px' }}>Result</th></tr></thead><tbody>{dtrBreakTrace.rows.map((row,index)=>{ const duration=Math.max(0, safeNum(row?.break_minutes, row?.break_out&&row?.break_in?diffMinutesAcrossMidnight(row.break_out,row.break_in):0)); return <tr key={row?.id || index} style={{ borderBottom:'1px solid #eee' }}><td style={{ padding:'8px', textAlign:'center', fontWeight:'800' }}>{index+1}</td><td style={{ padding:'8px', textAlign:'center' }}>{row?.break_out || '--'}</td><td style={{ padding:'8px', textAlign:'center' }}>{row?.break_in || 'ONGOING'}</td><td style={{ padding:'8px', textAlign:'center', fontWeight:'800' }}>{duration} min</td><td style={{ padding:'8px', textAlign:'center', color:duration>ALLOWED_BREAK_MINUTES?'#ca1b1b':'#2d8a4e', fontWeight:'800' }}>{duration>ALLOWED_BREAK_MINUTES?`${duration-ALLOWED_BREAK_MINUTES}m over limit`:'Within limit'}</td></tr>})}</tbody></table> : <div style={{ background:'#fff8dc', border:'1px solid #fdd412', borderRadius:'10px', padding:'12px', color:'#555', fontSize:'12px', lineHeight:1.5 }}>Detailed Break Out / Break In rows were not available for this historical record. The displayed total came from the attendance record saved at Time Out.</div>}
- <div style={{ background:'#f8fbff', border:'1px solid #4a90d9', borderRadius:'10px', padding:'10px 12px', marginTop:'12px', fontSize:'11px', color:'#444', lineHeight:1.5 }}><strong>Payroll rule:</strong> Overbreak is recorded for monitoring and is already included in the attendance calculation. OT and UT enter payroll only after approval, and approved minutes are capped to the actual Time In/Time Out calculation.</div>
+ <div style={{ background:'#f8fbff', border:'1px solid #4a90d9', borderRadius:'10px', padding:'10px 12px', marginTop:'12px', fontSize:'11px', color:'#444', lineHeight:1.5 }}><strong>Payroll rule:</strong> Overbreak is recorded and displayed separately. It is not relabeled or rounded again into a 30-minute UT. Late and genuine undertime remain separate attendance classifications based on the employee's schedule.</div>
  </div>
  </div>
  )}
