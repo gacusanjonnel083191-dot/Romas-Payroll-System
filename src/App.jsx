@@ -25723,7 +25723,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  async function downloadPayrollBankCSV(bank = '') {
   const normalizedBank = normalizePayrollBankName(bank)
   if (normalizedBank === 'RCBC') {
-   await downloadRCBCExcelReview()
+   await downloadRCBCPayrollText()
    return
   }
   const assignedRows = getPayrollRowsForBank(normalizedBank)
@@ -25910,96 +25910,67 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   return window['XLSX']
  }
 
- async function downloadRCBCExcelReview() {
+ async function downloadRCBCPayrollText() {
   const { assignedRows, skippedRows, selectedRows } = getCompleteBankExportRows('RCBC')
   if (assignedRows.length === 0) {
    showToast('No positive-net-pay employee is assigned to RCBC.', 'red')
    return
   }
   if (selectedRows.length === 0) {
-   showToast(`RCBC payroll Excel not created: all ${assignedRows.length} assigned employee(s) have incomplete account details.`, 'red')
+   showToast(`RCBC payroll text file not created: all ${assignedRows.length} assigned employee(s) have incomplete account details.`, 'red')
    return
   }
 
   const duplicateNames = getDuplicateBankAccountNames(selectedRows, 'RCBC')
   if (duplicateNames.length > 0) {
-   showToast(`RCBC payroll Excel blocked: duplicate account number detected for ${duplicateNames.join(', ')}.`, 'red')
+   showToast(`RCBC payroll text file blocked: duplicate account number detected for ${duplicateNames.join(', ')}.`, 'red')
    return
   }
 
   try {
-   const XLSX = await ensureXLSXLibrary()
    const totalAmount = selectedRows.reduce((sum, row) => sum + safeNum(row.netPay, 0), 0)
    const periodText = `${payrollStart} to ${payrollEnd}`
 
-   const worksheetData = [
-    ['Account Number', 'Amount', 'Name'],
-    ...selectedRows.map(row => [
-     normalizeBankAccountForExport(row.bankAccount),
-     Number(safeNum(row.netPay, 0).toFixed(2)),
-     row.bankAccountName || row.employeeName
-    ])
-   ]
+   // RCBC Online Corporate accepts a plain-text upload, not an XLSX workbook.
+   // Use tab-delimited fields so the file remains readable in Excel while the
+   // actual uploaded file is a genuine .TXT file. Do not add a header row,
+   // CSV quotes, commas, or a UTF-8 BOM because they become payroll data.
+   const sanitizeRCBCTextField = value => String(value ?? '')
+    .replace(/[\t\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 
-   const worksheet = XLSX.utils.aoa_to_sheet(worksheetData)
+   const textRows = selectedRows.map(row => [
+    normalizeBankAccountForExport(row.bankAccount),
+    safeNum(row.netPay, 0).toFixed(2),
+    sanitizeRCBCTextField(row.bankAccountName || row.employeeName)
+   ].join('\t'))
 
-   // Force every account number cell to a true text/string cell.
-   // This is what permanently preserves leading zeroes in Excel.
-   for (let rowIndex = 2; rowIndex <= selectedRows.length + 1; rowIndex += 1) {
-    const cellAddress = `A${rowIndex}`
-    const accountValue = normalizeBankAccountForExport(selectedRows[rowIndex - 2].bankAccount)
-    worksheet[cellAddress] = {
-     t:'s',
-     v:accountValue,
-     z:'@'
-    }
-   }
-
-   // Keep amount cells numeric with two decimal places.
-   for (let rowIndex = 2; rowIndex <= selectedRows.length + 1; rowIndex += 1) {
-    const cellAddress = `B${rowIndex}`
-    if (worksheet[cellAddress]) worksheet[cellAddress].z = '#,##0.00'
-   }
-
-   worksheet['!cols'] = [
-    { wch:22 },
-    { wch:16 },
-    { wch:34 }
-   ]
-   worksheet['!autofilter'] = { ref:`A1:C${selectedRows.length + 1}` }
-   worksheet['!freeze'] = { xSplit:0, ySplit:1, topLeftCell:'A2', activePane:'bottomLeft', state:'frozen' }
-
-   const workbook = XLSX.utils.book_new()
-   workbook.Props = {
-    Title:`RCBC Payroll ${periodText}`,
-    Subject:'RCBC payroll Excel file with Account Number, Amount, and Name',
-    Author:"Roma's Donuts",
-    Company:"Roma's Donuts",
-    CreatedDate:new Date()
-   }
-   XLSX.utils.book_append_sheet(workbook, worksheet, 'RCBC Payroll')
-
-   const filename = `RCBC_Payroll_${payrollStart}_to_${payrollEnd}.xlsx`
-   XLSX.writeFile(workbook, filename, {
-    bookType:'xlsx',
-    compression:true,
-    cellStyles:true
-   })
+   const fileContent = textRows.join('\r\n')
+   const blob = new Blob([fileContent], { type:'text/plain;charset=utf-8' })
+   const url = URL.createObjectURL(blob)
+   const anchor = document.createElement('a')
+   anchor.href = url
+   anchor.download = `RCBC_Payroll_${payrollStart}_to_${payrollEnd}.TXT`
+   document.body.appendChild(anchor)
+   anchor.click()
+   anchor.remove()
+   URL.revokeObjectURL(url)
 
    const skippedNames = skippedRows.map(row => row.employeeName).filter(Boolean)
    await logAudit(
-    'RCBC PAYROLL EXCEL EXPORTED',
+    'RCBC PAYROLL TEXT EXPORTED',
     currentAdminLabel,
     'RCBC',
-    `Period: ${periodText} | Format: genuine XLSX | Exported: ${selectedRows.length} | Skipped incomplete: ${skippedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`
+    `Period: ${periodText} | Format: tab-delimited plain text TXT | Fields: Account Number, Amount, Name | Exported: ${selectedRows.length} | Skipped incomplete: ${skippedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`
    )
    showToast(
-    `RCBC payroll Excel downloaded with columns in this order: Account Number, Amount, Name. Account numbers are stored as text and leading zeroes are preserved.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
+    `RCBC payroll TXT downloaded. Field order: Account Number, Amount, Name. The file is plain text and can also be opened in Excel for review.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
     skippedRows.length ? 'orange' : 'green'
    )
   } catch(error) {
-   console.error('RCBC payroll Excel export failed:', error)
-   showToast(`RCBC payroll Excel failed: ${error?.message || error}`, 'red')
+   console.error('RCBC payroll text export failed:', error)
+   showToast(`RCBC payroll text export failed: ${error?.message || error}`, 'red')
   }
  }
 
@@ -34848,7 +34819,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}>Choose Bank Format & Generate</h3>
   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
    {[
-    { bank:'RCBC', color:'#6c1d45', desc:'RCBC payroll Excel file', fields:'Account Number,Amount,Name' },
+    { bank:'RCBC', color:'#6c1d45', desc:'RCBC payroll plain-text upload', fields:'Account Number → Amount → Name' },
     { bank:'BDO', color:'#003087', desc:'BDO payroll CSV', fields:'AccountNo,BeneficiaryName,Amount,Currency,Remarks' },
     { bank:'BPI', color:'#cc0000', desc:'BPI direct payroll CSV', fields:'Account Number,Name,Amount,Remarks' },
     { bank:'UnionBank', color:'#e65100', desc:'UnionBank online payroll CSV', fields:'AccountNo,BeneficiaryName,Amount,Particulars' },
@@ -34874,7 +34845,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        <span>Export Total: <strong>{php(total)}</strong></span>
       </div>
       {bank==='RCBC' ? (
-       <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={downloadRCBCExcelReview}>DOWNLOAD RCBC EXCEL</button>
+       <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={downloadRCBCPayrollText}>DOWNLOAD RCBC TXT</button>
       ) : (
        <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD {bank} FILE</button>
       )}
@@ -34884,7 +34855,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   </div>
   <div style={{ background:'#fff8dc', borderRadius:'8px', padding:'12px', marginTop:'16px', border:'1px solid #f5c518' }}>
    <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 6px' }}>Before the First Live Upload</p>
-   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}><strong>RCBC Excel (.xlsx):</strong> the file contains only three columns in this exact order: Account Number, Amount, Name. Account numbers are stored as text so leading zeroes are preserved.</p>
+   <p style={{ fontSize:'12px', color:'#555', margin:0, lineHeight:'1.7' }}><strong>RCBC Upload (.TXT):</strong> plain-text, tab-delimited, and data-only with this exact field order: Account Number, Amount, Name. It has no header row, CSV quotes, commas, or Excel workbook formatting. Account numbers remain text so leading zeroes are preserved.</p>
   </div>
  </div>
  )}
