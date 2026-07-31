@@ -27257,6 +27257,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [posDate, setPosDate] = useState(initialPosBusinessDate)
  const [posLoading, setPosLoading] = useState(false)
  const [posSales, setPosSales] = useState([])
+ const [posSalePayments, setPosSalePayments] = useState([])
  const [posItems, setPosItems] = useState([])
  const [posMovements, setPosMovements] = useState([])
  const [posProducts, setPosProducts] = useState([])
@@ -28194,17 +28195,70 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return moneyRound(safeNum(sale?.net_total ?? sale?.total ?? sale?.total_amount, 0))
  }
 
- function summarizeActivePosSales(rows = []) {
+ async function fetchPosSalePaymentsForSales(sales = []) {
+  const saleIds = Array.from(new Set((sales || []).map(sale => String(sale?.id || sale?.sale_id || '').trim()).filter(Boolean)))
+  if (!saleIds.length) return []
+
+  const rows = []
+  const chunkSize = 100
+  for (let index = 0; index < saleIds.length; index += chunkSize) {
+   const idChunk = saleIds.slice(index, index + chunkSize)
+   const { data, error } = await supabase
+    .from('pos_sale_payments')
+    .select('id,sale_id,receipt_no,method,amount,created_at')
+    .in('sale_id', idChunk)
+   if (error) throw error
+   rows.push(...(data || []))
+  }
+  return rows
+ }
+
+ function summarizeActivePosSales(rows = [], paymentRows = []) {
   const activeRows = (rows || []).filter(row => !isVoidedOrCancelledPosSale(row))
-  const cashRows = activeRows.filter(row => String(row?.payment_method || '').trim().toLowerCase() === 'cash')
-  const gcashRows = activeRows.filter(row => String(row?.payment_method || '').trim().toLowerCase().includes('gcash'))
-  const onlineRows = activeRows.filter(row => String(row?.payment_method || '').trim().toLowerCase().includes('online'))
+  const paymentsBySaleId = {}
+  ;(paymentRows || []).forEach(payment => {
+   const saleId = String(payment?.sale_id || '').trim()
+   if (!saleId) return
+   if (!paymentsBySaleId[saleId]) paymentsBySaleId[saleId] = []
+   paymentsBySaleId[saleId].push(payment)
+  })
+
+  let cashSales = 0
+  let gcashSales = 0
+  let onlineSales = 0
+
+  activeRows.forEach(sale => {
+   const saleId = String(sale?.id || sale?.sale_id || '').trim()
+   const detailedPayments = paymentsBySaleId[saleId] || []
+
+   // Match the atomic Supabase closing function exactly. Split transactions
+   // must be classified from pos_sale_payments instead of the parent value
+   // "Split", otherwise valid cash payments disappear from Expected Cash and
+   // the already-saved closing is falsely marked REVIEW REQUIRED.
+   if (detailedPayments.length > 0) {
+    detailedPayments.forEach(payment => {
+     const method = String(payment?.method || '').trim().toLowerCase()
+     const amount = safeNum(payment?.amount, 0)
+     if (method === 'cash') cashSales += amount
+     else if (method.includes('gcash')) gcashSales += amount
+     else if (method.includes('online')) onlineSales += amount
+    })
+    return
+   }
+
+   const method = String(sale?.payment_method || '').trim().toLowerCase()
+   const amount = getPosSaleAmount(sale)
+   if (method === 'cash') cashSales += amount
+   else if (method.includes('gcash')) gcashSales += amount
+   else if (method.includes('online')) onlineSales += amount
+  })
+
   return {
    rows:activeRows,
    transactionCount:activeRows.length,
-   cashSales:moneyRound(cashRows.reduce((sum, row) => sum + getPosSaleAmount(row), 0)),
-   gcashSales:moneyRound(gcashRows.reduce((sum, row) => sum + getPosSaleAmount(row), 0)),
-   onlineSales:moneyRound(onlineRows.reduce((sum, row) => sum + getPosSaleAmount(row), 0)),
+   cashSales:moneyRound(cashSales),
+   gcashSales:moneyRound(gcashSales),
+   onlineSales:moneyRound(onlineSales),
    totalSales:moneyRound(activeRows.reduce((sum, row) => sum + getPosSaleAmount(row), 0))
   }
  }
@@ -28356,6 +28410,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    if (closingsRes.error) throw closingsRes.error
    if (dailySalesRes.error) throw dailySalesRes.error
 
+   const monitorPaymentRows = await fetchPosSalePaymentsForSales(salesRes.data || [])
+
    const salesByDate = {}
    ;(salesRes.data || []).forEach(sale => {
     const outletId = String(sale?.outlet_id || POS_OUTLET_ID)
@@ -28382,7 +28438,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
    const allDates = Array.from(new Set([...Object.keys(salesByDate), ...Object.keys(closingsByDate)])).sort().reverse()
    const rows = allDates.map(dateKey => {
-    const summary = summarizeActivePosSales(salesByDate[dateKey] || [])
+    const summary = summarizeActivePosSales(salesByDate[dateKey] || [], monitorPaymentRows)
     const closingRows = closingsByDate[dateKey] || []
     const closing = closingRows[0] || null
     const marker = getPosShiftDailySalesMarker(POS_OUTLET_ID, dateKey)
@@ -28520,6 +28576,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
    const salesData = salesRes.data || []
    const filteredSales = salesData.filter(row => String(row.business_date || '').slice(0,10) === posDate)
+   const filteredSalePayments = await fetchPosSalePaymentsForSales(filteredSales)
    const receiptSet = new Set(filteredSales.map(row => row.receipt_no))
 
    const filteredItems = (itemsRes.data || []).filter(row =>
@@ -28539,6 +28596,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    })
 
    setPosSales(filteredSales)
+   setPosSalePayments(filteredSalePayments)
    setPosItems(filteredItems)
    setPosMovements(filteredMovements)
    const nextProducts = productsRes.data || []
@@ -29765,7 +29823,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return () => clearInterval(intervalId)
  }, [posDate, shiftClosingLoadedDate, existingShiftClosing, closingOpeningCash, closingActualCash, closingClosedBy, closingRemarks])
 
- const currentPosSalesSummary = summarizeActivePosSales(posSales)
+ const currentPosSalesSummary = summarizeActivePosSales(posSales, posSalePayments)
  const activePosSales = currentPosSalesSummary.rows
  const totalSales = currentPosSalesSummary.totalSales
  const cashSales = currentPosSalesSummary.cashSales
