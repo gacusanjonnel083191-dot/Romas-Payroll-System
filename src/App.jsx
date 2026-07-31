@@ -8955,71 +8955,172 @@ Cancel = create batch record only for existing stock.`)
  printInventoryCategoryReport('all')
  }
 
+ function escapeInventorySheetSvgText(value = '') {
+  return String(value ?? '')
+   .replace(/&/g, '&amp;')
+   .replace(/</g, '&lt;')
+   .replace(/>/g, '&gt;')
+   .replace(/"/g, '&quot;')
+   .replace(/'/g, '&apos;')
+ }
+
+ function shortenInventorySheetText(value = '', maxLength = 48) {
+  const clean = String(value ?? '').replace(/\s+/g, ' ').trim()
+  if (clean.length <= maxLength) return clean
+  return clean.slice(0, Math.max(1, maxLength - 1)).trimEnd() + '…'
+ }
+
+ function downloadInventoryCountSheetImages(sourceItems = [], options = {}) {
+  const rows = (sourceItems || [])
+   .map(item => ({ name:String(item?.name || item?.product_name || '').trim() }))
+   .filter(item => item.name)
+
+  if (!rows.length) {
+   showToast(' No active inventory items are available to download.', 'red')
+   return
+  }
+
+  // A full inventory is intentionally capped at two image pages. Each page
+  // has two item/count sections, so no browser print scaling can crop a row.
+  const pageCount = rows.length > 72 ? 2 : 1
+  const itemsPerPage = Math.ceil(rows.length / pageCount)
+  const generatedAt = new Date().toLocaleString('en-PH', { dateStyle:'medium', timeStyle:'short' })
+  const title = String(options.title || 'PHYSICAL INVENTORY COUNT SHEET').toUpperCase()
+  const subtitle = String(options.subtitle || `${rows.length} active items`)
+  const filePrefix = String(options.filePrefix || 'romas-physical-inventory')
+   .toLowerCase()
+   .replace(/[^a-z0-9]+/g, '-')
+   .replace(/^-+|-+$/g, '') || 'romas-physical-inventory'
+  const dateStamp = getTodayDate()
+
+  const pageWidth = 1240
+  const pageHeight = 1754
+  const marginX = 46
+  const innerWidth = pageWidth - (marginX * 2)
+  const groupWidth = innerWidth / 2
+  const countWidth = 146
+  const nameWidth = groupWidth - countWidth
+  const tableTop = 218
+  const tableHeaderHeight = 48
+  const tableBottom = 1608
+  const bodyHeight = tableBottom - tableTop - tableHeaderHeight
+
+  const pageSvgs = Array.from({ length:pageCount }, (_, pageIndex) => {
+   const pageItems = rows.slice(pageIndex * itemsPerPage, (pageIndex + 1) * itemsPerPage)
+   const splitIndex = Math.ceil(pageItems.length / 2)
+   const leftItems = pageItems.slice(0, splitIndex)
+   const rightItems = pageItems.slice(splitIndex)
+   const rowCount = Math.max(1, splitIndex)
+   const rowHeight = bodyHeight / rowCount
+   const itemFontSize = Math.max(10, Math.min(18, rowHeight * 0.43))
+   const countFontSize = Math.max(9, Math.min(13, rowHeight * 0.31))
+   const maxNameChars = Math.max(20, Math.floor((nameWidth - 28) / (itemFontSize * 0.55)))
+
+   const columnHeader = (groupX) => `
+    <rect x="${groupX}" y="${tableTop}" width="${nameWidth}" height="${tableHeaderHeight}" fill="#fff6c7" stroke="#9ca3af" stroke-width="1.5"/>
+    <rect x="${groupX + nameWidth}" y="${tableTop}" width="${countWidth}" height="${tableHeaderHeight}" fill="#fff6c7" stroke="#9ca3af" stroke-width="1.5"/>
+    <text x="${groupX + 16}" y="${tableTop + (tableHeaderHeight / 2)}" dominant-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="800" fill="#1f2937">ITEM NAME</text>
+    <text x="${groupX + nameWidth + (countWidth / 2)}" y="${tableTop + (tableHeaderHeight / 2)}" text-anchor="middle" dominant-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="800" fill="#1f2937">ACTUAL COUNT</text>`
+
+   const renderColumnRows = (items, groupX) => Array.from({ length:rowCount }, (_, rowIndex) => {
+    const item = items[rowIndex]
+    const y = tableTop + tableHeaderHeight + (rowIndex * rowHeight)
+    const fill = rowIndex % 2 === 0 ? '#ffffff' : '#fffdf4'
+    const name = item ? escapeInventorySheetSvgText(shortenInventorySheetText(item.name, maxNameChars)) : ''
+    return `
+     <rect x="${groupX}" y="${y}" width="${nameWidth}" height="${rowHeight}" fill="${fill}" stroke="#b8b8b8" stroke-width="1.2"/>
+     <rect x="${groupX + nameWidth}" y="${y}" width="${countWidth}" height="${rowHeight}" fill="${fill}" stroke="#b8b8b8" stroke-width="1.2"/>
+     ${item ? `<text x="${groupX + 16}" y="${y + (rowHeight / 2)}" dominant-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="${itemFontSize.toFixed(1)}" font-weight="700" fill="#111827">${name}</text>
+     <text x="${groupX + nameWidth + 10}" y="${y + (rowHeight / 2) - 2}" dominant-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="${countFontSize.toFixed(1)}" font-weight="700" fill="#6b7280">COUNT</text>
+     <line x1="${groupX + nameWidth + 62}" y1="${y + (rowHeight / 2) + 7}" x2="${groupX + nameWidth + countWidth - 12}" y2="${y + (rowHeight / 2) + 7}" stroke="#111827" stroke-width="2"/>` : ''}`
+   }).join('')
+
+   const leftX = marginX
+   const rightX = marginX + groupWidth
+   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${pageWidth}" height="${pageHeight}" viewBox="0 0 ${pageWidth} ${pageHeight}">
+    <rect width="${pageWidth}" height="${pageHeight}" fill="#ffffff"/>
+    <rect x="0" y="0" width="${pageWidth}" height="18" fill="#ca1b1b"/>
+    <text x="${marginX}" y="72" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="900" fill="#ca1b1b">ROMA&apos;S DONUTS</text>
+    <text x="${marginX}" y="112" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="900" fill="#1a1a2e">${escapeInventorySheetSvgText(title)}</text>
+    <text x="${marginX}" y="146" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="700" fill="#4b5563">${escapeInventorySheetSvgText(subtitle)}</text>
+    <text x="${pageWidth - marginX}" y="82" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="700" fill="#4b5563">Generated: ${escapeInventorySheetSvgText(generatedAt)}</text>
+    <text x="${pageWidth - marginX}" y="112" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="800" fill="#ca1b1b">PAGE ${pageIndex + 1} OF ${pageCount}</text>
+    <line x1="${marginX}" y1="174" x2="${pageWidth - marginX}" y2="174" stroke="#ca1b1b" stroke-width="3"/>
+    <text x="${marginX}" y="202" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="600" fill="#374151">Write the verified physical quantity on the blank line beside each item.</text>
+    ${columnHeader(leftX)}
+    ${columnHeader(rightX)}
+    ${renderColumnRows(leftItems, leftX)}
+    ${renderColumnRows(rightItems, rightX)}
+    <line x1="${marginX}" y1="1650" x2="${pageWidth - marginX}" y2="1650" stroke="#d1d5db" stroke-width="1.5"/>
+    <text x="${marginX}" y="1690" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#374151">Counted by: ______________________________</text>
+    <text x="${pageWidth / 2}" y="1690" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#374151">Verified by: ______________________________</text>
+    <text x="${pageWidth - marginX}" y="1690" text-anchor="end" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" fill="#374151">Date/Time: __________________________</text>
+   </svg>`
+
+   return { svg, pageNumber:pageIndex + 1 }
+  })
+
+  const downloadPageAsPng = ({ svg, pageNumber }) => {
+   const svgUrl = URL.createObjectURL(new Blob([svg], { type:'image/svg+xml;charset=utf-8' }))
+   const image = new Image()
+   image.onload = () => {
+    try {
+     // 2480 x 3508 pixels: A4 portrait at 300 DPI.
+     const canvas = document.createElement('canvas')
+     canvas.width = pageWidth * 2
+     canvas.height = pageHeight * 2
+     const ctx = canvas.getContext('2d')
+     ctx.fillStyle = '#ffffff'
+     ctx.fillRect(0, 0, canvas.width, canvas.height)
+     ctx.drawImage(image, 0, 0, canvas.width, canvas.height)
+     canvas.toBlob(blob => {
+      URL.revokeObjectURL(svgUrl)
+      if (!blob) {
+       showToast(` Page ${pageNumber} could not be converted to PNG. Please try again.`, 'red')
+       return
+      }
+      const pngUrl = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = pngUrl
+      link.download = `${filePrefix}-${dateStamp}-page-${pageNumber}-of-${pageCount}.png`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.setTimeout(() => URL.revokeObjectURL(pngUrl), 1200)
+     }, 'image/png')
+    } catch(err) {
+     URL.revokeObjectURL(svgUrl)
+     showToast(` PNG download failed: ${err?.message || String(err)}`, 'red')
+    }
+   }
+   image.onerror = () => {
+    URL.revokeObjectURL(svgUrl)
+    showToast(` Page ${pageNumber} could not be prepared as an image.`, 'red')
+   }
+   image.src = svgUrl
+  }
+
+  pageSvgs.forEach((page, index) => {
+   window.setTimeout(() => downloadPageAsPng(page), index * 350)
+  })
+
+  showToast(` Downloading ${pageCount} high-resolution PNG ${pageCount === 1 ? 'image' : 'images'} — no print cropping.`)
+ }
+
  function printInventoryCategoryReport(categoryFilter = 'all') {
  const filtered = categoryFilter === 'all'
  ? inventoryItems
  : inventoryItems.filter(i => getInventoryCategoryLabel(i) === categoryFilter)
- if (filtered.length === 0) { showToast(' No items to print for this category.', 'red'); return }
- const byCategory = categoryFilter === 'all'
- ? getInventoryCategoryGroups(filtered)
- : [{ cat: categoryFilter, items: filtered }]
+ if (filtered.length === 0) { showToast(' No items to download for this category.', 'red'); return }
+ const orderedItems = categoryFilter === 'all'
+ ? getInventoryCategoryGroups(filtered).flatMap(group => group.items)
+ : filtered
  const reportTitle = categoryFilter === 'all' ? 'PHYSICAL INVENTORY COUNT SHEET' : `PHYSICAL INVENTORY COUNT — ${categoryFilter.toUpperCase()}`
- const reportDate = new Date().toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit' })
- const pw = window.open('','_blank','width=900,height=700')
- pw.document.write(`<!DOCTYPE html><html><head><title>${reportTitle}</title>
- <style>
- *{margin:0;padding:0;box-sizing:border-box;}
- body{font-family:Arial,sans-serif;padding:8mm;font-size:9px;color:#000;background:white;}
- @media print{@page{size:A4 portrait;margin:8mm;}.no-print{display:none!important;}body{padding:0;}}
- h1{font-size:17px;color:#ca1b1b;margin-bottom:1px;}
- .sub{font-size:9px;color:#666;}
- .cat-title{background:#ca1b1b;color:white;padding:5px 7px;font-size:9px;font-weight:bold;margin-top:7px;border-radius:4px 4px 0 0;letter-spacing:0.3px;break-after:avoid;page-break-after:avoid;}
- table{width:100%;border-collapse:collapse;table-layout:fixed;margin-bottom:8px;}
- thead{display:table-header-group;}
- tr{break-inside:avoid;page-break-inside:avoid;}
- th{background:#fff8dc;color:#333;border:1px solid #aaa;padding:4px 6px;text-align:left;font-size:8px;text-transform:uppercase;letter-spacing:0.2px;}
- td{border:1px solid #bbb;padding:3px 6px;font-size:9px;vertical-align:middle;height:22px;}
- .item-name{width:36%;font-weight:bold;}
- .actual-count{width:14%;padding:2px 5px;}
- .write-line{display:block;width:100%;height:12px;border-bottom:1px solid #555;}
- .no-print{text-align:center;margin-top:18px;}
- .print-btn{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:bold;cursor:pointer;margin-right:8px;}
- .close-btn{background:#eee;color:#333;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:bold;cursor:pointer;}
- </style></head><body>
- <div style="border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
- <div>
- <h1>Roma's Donuts</h1>
- <div style="font-size:10px;font-weight:bold;margin-top:1px;">${reportTitle}</div>
- <div class="sub">Printed: ${reportDate}</div>
- ${categoryFilter !== 'all' ? `<div style="margin-top:2px;display:inline-block;background:#fff8dc;border:1px solid #FDD412;border-radius:3px;padding:1px 6px;font-size:8px;font-weight:bold;color:#7a5c00;">Category: ${categoryFilter}</div>` : ''}
- </div>
- <div style="text-align:right;font-size:8px;color:#666;">Inventory Control<br/>Roma's Donuts</div>
- </div>
- ${byCategory.map(g => `
- <div class="cat-title"> ${g.cat}</div>
- <table>
- <thead><tr><th>Item Name</th><th>Actual Count</th><th>Item Name</th><th>Actual Count</th></tr></thead>
- <tbody>
- ${Array.from({ length: Math.ceil(g.items.length / 2) }, (_, idx) => {
- const secondIdx = idx + Math.ceil(g.items.length / 2)
- const leftItem = g.items[idx]
- const rightItem = g.items[secondIdx]
- return `<tr>
- <td class="item-name">${leftItem?.name || ''}</td>
- <td class="actual-count">${leftItem ? '<span class="write-line"></span>' : ''}</td>
- <td class="item-name">${rightItem?.name || ''}</td>
- <td class="actual-count">${rightItem ? '<span class="write-line"></span>' : ''}</td>
- </tr>`
- }).join('')}
- </tbody>
- </table>`).join('')}
- <div class="no-print">
- <button class="print-btn" onclick="window.print()"> PRINT COUNT SHEET</button>
- <button class="close-btn" onclick="window.close()"> CLOSE</button>
- </div>
- </body></html>`)
- pw.document.close()
- setTimeout(() => { pw.focus(); pw.print() }, 600)
+ downloadInventoryCountSheetImages(orderedItems, {
+  title:reportTitle,
+  subtitle:categoryFilter === 'all' ? `${orderedItems.length} inventory items` : `Category: ${categoryFilter} • ${orderedItems.length} items`,
+  filePrefix:categoryFilter === 'all' ? 'romas-inventory-count-sheet' : `romas-inventory-${categoryFilter}-count-sheet`
+ })
  }
 
  function getLowStockItems() {
@@ -28135,103 +28236,18 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    .filter(row => row && !row.disabled && !isOutletProductDeleted(row))
 
   if (!rows.length) {
-   alert('No active SAGS POS items are available to print.')
+   alert('No active SAGS POS items are available to download.')
    return
   }
 
-  const escapeHtml = value => String(value ?? '')
-   .replace(/&/g, '&amp;')
-   .replace(/</g, '&lt;')
-   .replace(/>/g, '&gt;')
-   .replace(/"/g, '&quot;')
-   .replace(/'/g, '&#039;')
-
-  // Clean physical-count sheet: product name plus one blank count line only.
-  // Up to 100 active items use one short coupon-bond sheet; larger lists use two.
-  const pageCount = rows.length <= 100 ? 1 : 2
-  const itemsPerPage = Math.ceil(rows.length / pageCount)
-  const pageGroups = Array.from({ length:pageCount }, (_, pageIndex) =>
-   rows.slice(pageIndex * itemsPerPage, (pageIndex + 1) * itemsPerPage)
+  downloadInventoryCountSheetImages(
+   rows.map(row => ({ name:row.product_name || row.name || 'Unnamed Product' })),
+   {
+    title:'SAGS POS — PHYSICAL INVENTORY COUNT SHEET',
+    subtitle:`${rows.length} active SAGS POS items`,
+    filePrefix:'romas-sags-pos-inventory-count-sheet'
+   }
   )
-  const printedAt = new Date().toLocaleString('en-PH', { dateStyle:'medium', timeStyle:'short' })
-
-  const pagesHtml = pageGroups.map((pageRows, pageIndex) => {
-   const columnCount = 4
-   const rowsPerColumn = Math.max(1, Math.ceil(pageRows.length / columnCount))
-   const rowHeightMm = Math.max(6.1, Math.min(7.1, 176 / rowsPerColumn))
-   const nameFontPt = rowsPerColumn > 28 ? 7.2 : 8.2
-
-   const columnsHtml = Array.from({ length:columnCount }, (_, columnIndex) => {
-    const columnRows = pageRows.slice(columnIndex * rowsPerColumn, (columnIndex + 1) * rowsPerColumn)
-    const itemsHtml = columnRows.map(row => {
-     const name = row.product_name || row.name || 'Unnamed Product'
-     return `<div class="inventory-item" style="--item-height:${rowHeightMm.toFixed(2)}mm;--name-font:${nameFontPt}pt">
-      <div class="item-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
-      <div class="count-field"><span>COUNT</span><b></b></div>
-     </div>`
-    }).join('')
-    return `<div class="inventory-column">${itemsHtml}</div>`
-   }).join('')
-
-   return `<section class="print-page">
-    <header class="page-header">
-     <div>
-      <div class="company">ROMA'S DONUTS</div>
-      <div class="title">SAGS POS — PHYSICAL INVENTORY COUNT SHEET</div>
-     </div>
-     <div class="header-meta">
-      <div>${rows.length} active items</div>
-      <div>Printed: ${escapeHtml(printedAt)}</div>
-      <div>Page ${pageIndex + 1} of ${pageCount}</div>
-     </div>
-    </header>
-    <div class="instructions">Write the verified physical quantity on the blank line beside each item.</div>
-    <div class="inventory-columns">${columnsHtml}</div>
-    <footer class="page-footer">
-     <span>Counted by: ______________________________</span>
-     <span>Verified by: ______________________________</span>
-     <span>Date/Time: ______________________________</span>
-    </footer>
-   </section>`
-  }).join('')
-
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Roma's Donuts SAGS POS Physical Count Sheet</title><style>
-   @page{size:Letter landscape;margin:6mm}
-   *{box-sizing:border-box}
-   html,body{margin:0;padding:0;background:#fff;color:#111827;font-family:Arial,Helvetica,sans-serif}
-   .print-toolbar{position:sticky;top:0;z-index:10;padding:9px;text-align:center;background:#fff7d6;border-bottom:1px solid #f4d35e}
-   .print-toolbar button{padding:9px 18px;border:0;border-radius:9px;background:#ca1b1b;color:#fff;font-weight:900;cursor:pointer}
-   .print-page{height:201mm;overflow:hidden;page-break-after:always;display:flex;flex-direction:column}
-   .print-page:last-child{page-break-after:auto}
-   .page-header{height:12mm;display:flex;align-items:center;justify-content:space-between;border-bottom:1.2px solid #ca1b1b;padding:0 1mm}
-   .company{font-size:10pt;font-weight:900;color:#ca1b1b;letter-spacing:.2px}
-   .title{font-size:8pt;font-weight:900;color:#1a1a2e;margin-top:.7mm}
-   .header-meta{text-align:right;font-size:6.2pt;line-height:1.35;font-weight:700;color:#374151}
-   .instructions{height:6mm;padding:1.4mm 1mm;font-size:6.3pt;line-height:1.2;color:#374151;border-bottom:1px solid #e5e7eb}
-   .inventory-columns{height:176mm;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:2mm;padding:1.2mm 0}
-   .inventory-column{border:1px solid #d8c35a;border-radius:1.5mm;overflow:hidden;align-self:start;background:#fff}
-   .inventory-item{height:var(--item-height);min-height:var(--item-height);padding:.7mm 1.1mm;border-bottom:.25mm solid #e7dfb6;display:grid;grid-template-columns:minmax(0,1fr) 21mm;align-items:center;gap:1.5mm;overflow:hidden;background:#fff}
-   .inventory-item:nth-child(even){background:#fffdf4}
-   .inventory-item:last-child{border-bottom:0}
-   .item-name{font-size:var(--name-font);font-weight:800;line-height:1.05;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#111827}
-   .count-field{display:flex;align-items:flex-end;gap:1.2mm;font-size:5.8pt;font-weight:800;color:#6b7280;white-space:nowrap}
-   .count-field b{display:block;flex:1;min-width:12mm;height:3mm;border-bottom:.35mm solid #111827}
-   .page-footer{height:7mm;border-top:1px solid #d1d5db;display:flex;align-items:center;justify-content:space-between;gap:3mm;padding:0 1mm;font-size:6pt;font-weight:700;color:#374151}
-   @media print{.print-toolbar{display:none}.print-page{break-after:page}.print-page:last-child{break-after:auto}}
-  </style></head><body>
-   <div class="print-toolbar"><button onclick="window.print()">Print Physical Count Sheet</button></div>
-   ${pagesHtml}
-  </body></html>`
-
-  const printWindow = window.open('', '_blank')
-  if (!printWindow) {
-   downloadTextAsFile(html, 'romas-sags-pos-physical-count-sheet.html', 'text/html;charset=utf-8')
-   alert('The browser blocked the print window, so an HTML print file was downloaded instead.')
-   return
-  }
-  printWindow.document.write(html)
-  printWindow.document.close()
-  printWindow.focus()
  }
 
  async function generateBarcodeForProduct(product, options = {}) {
@@ -30617,10 +30633,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       )}
       <button
        onClick={()=>printAllOutletInventoryItems(outletBalances.filter(row=>!row.disabled))}
-       title={`Print all ${outletBalances.filter(row=>!row.disabled).length} active SAGS POS items in a compact physical-count sheet designed for two short coupon-bond pages or less.`}
+       title={`Download all ${outletBalances.filter(row=>!row.disabled).length} active SAGS POS items as high-resolution physical-count PNG images.`}
        style={{...btnBlack, width:'auto', marginTop:0, whiteSpace:'nowrap', padding:'9px 12px', fontSize:'12px'}}
       >
-       Print All Items
+       Download Count Sheet PNG
       </button>
       {/* The former owner-only "Reset All Stock to 0" control was intentionally removed.
           Nightly automation must only reset the Donuts category. Non-donut balances
@@ -35788,7 +35804,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <h2 style={h2s}> Inventory Management</h2>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ loadInventoryItems(); loadInventoryTransactions(); loadInventoryBatches(); loadCrateMovements(); loadResellers(); loadDeliveryInvoices(); if(inventorySubView==='snacks_weekly') loadWeeklySnackData(); showToast(' Refreshed!') }}>REFRESH</button>
- <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printInventoryReport}> PRINT REPORT</button>
+ <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printInventoryReport}> DOWNLOAD COUNT SHEET PNG</button>
  </div>
  </div>
 
@@ -36721,7 +36737,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <button style={{ background:'#f0fff4', color:'#2d8a4e', border:'1.5px solid #2d8a4e', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={()=>{ setStockTxType('in'); setShowStockForm(true); setShowWastageForm(false) }}> Stock In</button>
  <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1.5px solid #ca1b1b', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={()=>{ setStockTxType('out'); setShowStockForm(true); setShowWastageForm(false) }}> Stock Out</button>
  <button style={{ background:'#fff8f0', color:'#e65100', border:'1.5px solid #e65100', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={()=>{ setShowWastageForm(!showWastageForm); setShowStockForm(false) }}> Log Wastage</button>
- <button style={{ background:'#f5f5f5', color:'#555', border:'1.5px solid #ddd', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={printPhysicalCountSheet}> Count Sheet</button>
+ <button style={{ background:'#f5f5f5', color:'#555', border:'1.5px solid #ddd', borderRadius:'8px', padding:'10px 8px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }} onClick={printPhysicalCountSheet}> Download Count Sheet</button>
  </div>
  </div>
 
@@ -37259,9 +37275,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <button
  style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'10px', padding:'10px 16px', cursor:'pointer', fontWeight:'700', fontSize:'12px', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:'6px', boxShadow:'0 2px 8px rgba(0,0,0,0.18)' }}
  onClick={() => printInventoryCategoryReport(inventoryCategoryFilter)}
- title={inventoryCategoryFilter === 'all' ? 'Print full inventory report' : `Print only: ${inventoryCategoryFilter}`}
+ title={inventoryCategoryFilter === 'all' ? 'Download the full physical inventory count sheet as PNG images' : `Download PNG count sheet for: ${inventoryCategoryFilter}`}
  >
-  PRINT {inventoryCategoryFilter === 'all' ? 'ALL' : inventoryCategoryFilter.split(' ')[0].toUpperCase()}
+  DOWNLOAD PNG {inventoryCategoryFilter === 'all' ? '— ALL' : `— ${inventoryCategoryFilter.split(' ')[0].toUpperCase()}`}
  </button>
  </div>
 
