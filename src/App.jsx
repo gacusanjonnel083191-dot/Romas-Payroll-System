@@ -1599,12 +1599,43 @@ function roundPenaltyMinutes(min, gracePeriodMinutes = DEFAULT_LATE_GRACE_MINUTE
  const rawMinutes = Math.max(0, Math.round(safeNum(min, 0)))
  const graceMinutes = Math.max(0, Math.round(safeNum(gracePeriodMinutes, DEFAULT_LATE_GRACE_MINUTES)))
  // Roma's Donuts late policy:
- // Within the employee's grace period = no late/UT penalty;
+ // Within the employee's grace period = no late penalty;
  // after grace through 30 minutes = 30-minute penalty;
  // 31 minutes or more = 60-minute penalty.
  if (rawMinutes <= graceMinutes) return 0
  if (rawMinutes <= 30) return 30
  return 60
+}
+
+function getPayrollAttendanceDeductionSplit(metrics = {}) {
+ // Payroll must show late and undertime as separate deductions without charging
+ // the same late-arrival shortage twice. Late uses the company penalty bracket,
+ // while undertime covers only the remaining paid-work shortage, early Time Out,
+ // overbreak, or other non-late shortage.
+ const lateMinutes = Math.max(0, Math.round(safeNum(metrics?.lateMinutes, 0)))
+ const paidWorkShortageMinutes = Math.max(0, Math.round(safeNum(metrics?.paidWorkShortageMinutes, 0)))
+ const earlyOutMinutes = Math.max(0, Math.round(safeNum(metrics?.earlyOutMinutes, 0)))
+ const rawLateArrivalMinutes = Math.max(0, Math.round(safeNum(metrics?.rawLateMinutes, 0)))
+ const lateShortageCoveredMinutes = lateMinutes > 0
+  ? Math.min(
+     paidWorkShortageMinutes,
+     metrics?.hasSchedule
+      ? rawLateArrivalMinutes
+      : Math.min(lateMinutes, paidWorkShortageMinutes)
+    )
+  : 0
+ const nonLatePaidWorkShortageMinutes = Math.max(0, paidWorkShortageMinutes - lateShortageCoveredMinutes)
+ const rawUndertimeMinutes = Math.max(nonLatePaidWorkShortageMinutes, earlyOutMinutes)
+ const undertimeMinutes = roundChargeableUndertimeMinutes(rawUndertimeMinutes)
+ return {
+  lateMinutes,
+  undertimeMinutes,
+  rawUndertimeMinutes,
+  paidWorkShortageMinutes,
+  lateShortageCoveredMinutes,
+  nonLatePaidWorkShortageMinutes,
+  earlyOutMinutes
+ }
 }
 function safeNum(value, fallback = 0) {
  const n = Number(value)
@@ -24254,6 +24285,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    const employee = employeeById[employeeId] || null
    const employeeAttendance = attendanceByEmployee[employeeId] || []
    const logsByDate = groupDTRLogsByDate(employeeAttendance)
+   let correctLateMinutes = 0
    let correctUndertimeMinutes = 0
    let completedWorkdays = 0
    const dayDetails = []
@@ -24262,16 +24294,18 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     const completedLogs = (dayLogs || []).filter(log => log?.time_in && log?.time_out && String(log?.status || '').toLowerCase() !== 'absent')
     if (!completedLogs.length) return
     const metrics = getAttendanceDayWorkMetrics(completedLogs, breakRowsByLogId)
+    const deductionSplit = getPayrollAttendanceDeductionSplit(metrics)
     const mergedDay = mergeDTRDayLogs(completedLogs)
-    const recordedLateMinutes = completedLogs.reduce((sum, log) => sum + safeNum(log?.late_minutes, 0), 0)
+    const recordedLateMinutes = deductionSplit.lateMinutes
     completedWorkdays += 1
-    correctUndertimeMinutes += metrics.undertimeMinutes
+    correctLateMinutes += deductionSplit.lateMinutes
+    correctUndertimeMinutes += deductionSplit.undertimeMinutes
     dayDetails.push({
      date:dateKey,
      timeIn:mergedDay?.time_in || '',
      timeOut:mergedDay?.time_out || '',
      paidWorkedMinutes:metrics.paidWorkedMinutes,
-     undertimeMinutes:metrics.undertimeMinutes,
+     undertimeMinutes:deductionSplit.undertimeMinutes,
      deductedBreakMinutes:metrics.deductedBreakMinutes,
      lateMinutes:recordedLateMinutes
     })
@@ -24287,12 +24321,16 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    const undertimeDeductionApplicable = employee ? employeeRuleEnabled(employee.undertime_deduction_applicable, true) : true
    const detailedDayDetails = dayDetails.map(day => ({
     ...day,
-    deductionAmount:undertimeDeductionApplicable ? moneyRound(safeNum(day.undertimeMinutes, 0) * safeNum(rateInfo.hourlyRate, 0) / 60) : 0,
-    deductionType:safeNum(day.undertimeMinutes, 0) > 0
-     ? (safeNum(day.lateMinutes, 0) > 0 ? 'Schedule-protected undertime deduction (late arrival cannot be offset by staying late)' : 'Automatic undertime deduction')
-     : (safeNum(day.lateMinutes, 0) > 0 ? 'Late recorded — no deduction because 8 paid hours were completed' : 'No attendance deduction')
+    deductionAmount:undertimeDeductionApplicable ? moneyRound((safeNum(day.lateMinutes, 0) + safeNum(day.undertimeMinutes, 0)) * safeNum(rateInfo.hourlyRate, 0) / 60) : 0,
+    deductionType:safeNum(day.lateMinutes, 0) > 0 && safeNum(day.undertimeMinutes, 0) > 0
+     ? 'Automatic late deduction + automatic undertime deduction'
+     : safeNum(day.lateMinutes, 0) > 0
+      ? 'Automatic late deduction'
+      : safeNum(day.undertimeMinutes, 0) > 0
+       ? 'Automatic undertime deduction'
+       : 'No attendance deduction'
    }))
-   const correctDeduction = undertimeDeductionApplicable ? moneyRound(correctUndertimeMinutes * safeNum(rateInfo.hourlyRate, 0) / 60) : 0
+   const correctDeduction = undertimeDeductionApplicable ? moneyRound((correctLateMinutes + correctUndertimeMinutes) * safeNum(rateInfo.hourlyRate, 0) / 60) : 0
    const marker = getPayrollAttendanceReconMarker(sourceStart, sourceEnd, employeeId)
    const priorReconRows = (existingReconRows || []).filter(adj => String(adj.notes || '').includes(marker))
    const existingReconAmount = moneyRound(priorReconRows.reduce((sum, adj) => sum + safeNum(adj.amount, 0), 0))
@@ -24316,7 +24354,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    } else if (!rateInfo.isConfigured || safeNum(rateInfo.hourlyRate, 0) <= 0) {
     status = 'blocked'; statusLabel = 'Blocked: hourly rate cannot be determined'; statusColor = '#ca1b1b'
    } else if (correctDeduction <= 0.01) {
-    status = 'none'; statusLabel = 'No actual work shortage found'; statusColor = '#2d8a4e'
+    status = 'none'; statusLabel = 'No chargeable late or undertime found'; statusColor = '#2d8a4e'
    } else if (overDeductedAmount > 0.01) {
     status = 'over'; statusLabel = `Review: attendance deduction exceeds corrected amount by ${php(overDeductedAmount)}`; statusColor = '#f57c00'
    } else if (missingAdjustment > 0.01) {
@@ -24336,9 +24374,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     completedWorkdays,
     incompleteLogs,
     dayDetails:detailedDayDetails,
-    attendanceDeductionDates:detailedDayDetails.filter(day => safeNum(day.undertimeMinutes, 0) > 0),
+    attendanceDeductionDates:detailedDayDetails.filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0),
     lateMinutesRecorded,
     savedUndertimeMinutes,
+    correctLateMinutes,
     correctUndertimeMinutes,
     hourlyRate:safeNum(rateInfo.hourlyRate, 0),
     rateFormula:rateInfo.formulaNote || '',
@@ -24543,7 +24582,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     adjustment_type:'deduction',
     category:PAYROLL_ATTENDANCE_RECON_CATEGORY,
     amount:remaining,
-    notes:`${row.marker} | SOURCE-PERIOD:${attendanceReconStart} TO ${attendanceReconEnd} | CORRECTION-APPLIED:${targetDate} | ${PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN}${serializedSourceDays}${PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE} | Source attendance dates and specific deductions: ${readableSourceDays || 'No date-level shortage details available'}. Correct automatic undertime: ${row.correctUndertimeMinutes} minute(s) / ${php(row.correctDeduction)}. Previously deducted in saved payroll: Late ${php(row.priorLateDeduction)} + UT ${php(row.priorUndertimeDeduction)} = ${php(row.priorAttendanceDeduction)}. Previously generated correction: ${php(alreadyCreated)}. New remaining correction applied on ${targetDate}: ${php(remaining)}. Late minutes are recorded for traceability but are not separately charged when already included in the automatic undertime shortage.`
+    notes:`${row.marker} | SOURCE-PERIOD:${attendanceReconStart} TO ${attendanceReconEnd} | CORRECTION-APPLIED:${targetDate} | ${PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN}${serializedSourceDays}${PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE} | Source attendance dates and specific deductions: ${readableSourceDays || 'No date-level shortage details available'}. Correct attendance deductions: Late ${row.correctLateMinutes || 0} minute(s) + UT ${row.correctUndertimeMinutes} minute(s) = ${php(row.correctDeduction)}. Previously deducted in saved payroll: Late ${php(row.priorLateDeduction)} + UT ${php(row.priorUndertimeDeduction)} = ${php(row.priorAttendanceDeduction)}. Previously generated correction: ${php(alreadyCreated)}. New remaining correction applied on ${targetDate}: ${php(remaining)}.`
    })
   })
 
@@ -25172,6 +25211,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   totalSSS: results.reduce((a,p)=>a+safeNum(p.sssDeduction,0),0),
   totalPagibig: results.reduce((a,p)=>a+safeNum(p.pagibigDeduction,0),0),
   totalPhilhealth: results.reduce((a,p)=>a+safeNum(p.philhealthDeduction,0),0),
+  totalLateDeduction: results.reduce((a,p)=>a+safeNum(p.lateDeduction,0),0),
+  totalUndertimeDeduction: results.reduce((a,p)=>a+safeNum(p.undertimeDeduction,0),0),
   totalCA: results.reduce((a,p)=>a+safeNum(p.cashAdvanceDeduction,0),0)
  }
  }
@@ -26527,6 +26568,7 @@ async function computePayroll() {
   let totalWorkedMinutes=0
   let nightDiffMinutes=0
   const actualOvertimeCapacityByDate={}
+  const actualLatePenaltyByDate={}
   const actualUndertimeCapacityByDate={}
   const workDetailByDate={}
   const workedLogsByDate={}
@@ -26546,7 +26588,9 @@ async function computePayroll() {
    }
    nightDiffMinutes+=computedNightDiffMinutes
    totalWorkedMinutes+=dayMetrics.paidWorkedMinutes
-   actualUndertimeCapacityByDate[logDateKey]=dayMetrics.undertimeMinutes
+   const attendanceDeductionSplit = getPayrollAttendanceDeductionSplit(dayMetrics)
+   actualLatePenaltyByDate[logDateKey]=attendanceDeductionSplit.lateMinutes
+   actualUndertimeCapacityByDate[logDateKey]=attendanceDeductionSplit.undertimeMinutes
    const actualDayOvertimeMinutes = getAttendanceDayActualOvertimeMinutes(dayLogs, breakRowsByLogId)
    actualOvertimeCapacityByDate[logDateKey]=actualDayOvertimeMinutes
    workDetailByDate[logDateKey]={
@@ -26554,8 +26598,9 @@ async function computePayroll() {
     actualMins:dayMetrics.paidWorkedMinutes,
     deductedBreakMins:dayMetrics.deductedBreakMinutes,
     overbreakMins:dayMetrics.overbreakMinutes,
-    undertimeMins:dayMetrics.undertimeMinutes,
-    rawUndertimeMins:dayMetrics.rawUndertimeMinutes,
+    undertimeMins:attendanceDeductionSplit.undertimeMinutes,
+    combinedAttendanceShortageMins:dayMetrics.undertimeMinutes,
+    rawUndertimeMins:attendanceDeductionSplit.rawUndertimeMinutes,
     undertimeRoundingMins:dayMetrics.undertimeRoundingMinutes,
     rawPaidWorkShortageMins:dayMetrics.rawPaidWorkShortageMinutes,
     graceAppliedMins:dayMetrics.graceAppliedMinutes,
@@ -26631,6 +26676,8 @@ async function computePayroll() {
    : 0
   const overtimePay=overtimePayEligible ? overtimeMinutes*minuteRate*1.25 : 0
 
+  const lateMinutesInfo = Object.values(actualLatePenaltyByDate).reduce((sum, minutes) => sum + Math.max(0, safeNum(minutes, 0)), 0)
+  const lateDeduction = undertimeDeductionApplicable ? lateMinutesInfo*minuteRate : 0
   const automaticUndertimeByDate = undertimeDeductionApplicable
    ? Object.fromEntries(
       Object.entries(actualUndertimeCapacityByDate)
@@ -26685,13 +26732,14 @@ async function computePayroll() {
   const pagibigDeduction=hasPayForCutoff&&emp.has_pagibig&&!isFirstCutoff?200:0
   const philhealthDeduction=hasPayForCutoff&&emp.has_philhealth&&!isFirstCutoff?250:0
   const totalEarnings=moneyRound(basicPay+birthdayPay+overtimePay+nightDiffPay+holidayPay+adjEarnings)
+  const lateDeductionRounded=moneyRound(lateDeduction)
   const undertimeDeductionRounded=moneyRound(undertimeDeduction)
   const absenceDeductionRounded=moneyRound(absenceDeduction)
   const sssDeductionRounded=moneyRound(sssDeduction)
   const pagibigDeductionRounded=moneyRound(pagibigDeduction)
   const philhealthDeductionRounded=moneyRound(philhealthDeduction)
   const adjDeductionsRounded=moneyRound(adjDeductions+absenceDeductionRounded)
-  const nonCADeductions=moneyRound(undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
+  const nonCADeductions=moneyRound(lateDeductionRounded+undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
 
   // Payroll safety rule: deductions must never create negative net pay.
   // Cash advance is flexible and is always applied last. Any unpaid CA stays in the CA balance.
@@ -26703,12 +26751,11 @@ async function computePayroll() {
   const deferredCADeduction=moneyRound(Math.max(0, rawCADeduction-caDeduction))
   const totalDeductions=moneyRound(nonCADeductionOverflow>0?nonCADeductions:nonCADeductions+caDeduction)
   const netPay=moneyRound(Math.max(0,totalEarnings-totalDeductions))
-  const lateMinutesInfo=logs?.reduce((s,l)=>s+Number(l.late_minutes||0),0)||0
   const undertimeMinutesInfo=automaticUndertimeMinutes
   const automaticUndertimeTrace = Object.entries(automaticUndertimeByDate).map(([date, minutes]) => ({ date, minutes }))
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:0, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, automaticUndertimeTrace, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:lateDeductionRounded, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, automaticUndertimeTrace, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -26736,7 +26783,7 @@ async function computePayroll() {
   total_earnings:moneyRound(pay.totalEarnings),
   late_minutes:pay.lateMinutes||0,
   undertime_minutes:pay.undertimeMinutes||0,
-  late_deduction:0,
+  late_deduction:moneyRound(pay.lateDeduction||0),
   undertime_deduction:moneyRound(pay.undertimeDeduction||0),
   cash_advance_deduction:moneyRound(pay.cashAdvanceDeduction),
   requested_cash_advance_deduction:moneyRound(pay.requestedCashAdvanceDeduction||0),
@@ -26780,15 +26827,16 @@ async function computePayroll() {
   if (insertError) throw insertError
  }
 
- const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
+ const s={ totalEmployees:results.length, totalBasicPay:results.reduce((a,p)=>a+p.basicPay,0), totalBirthdayPay:results.reduce((a,p)=>a+(p.birthdayPay||0),0), totalOvertimePay:results.reduce((a,p)=>a+p.overtimePay,0), totalNightDiff:results.reduce((a,p)=>a+p.nightDiffPay,0), totalHolidayPay:results.reduce((a,p)=>a+p.holidayPay,0), totalEarnings:results.reduce((a,p)=>a+p.totalEarnings,0), totalDeductions:results.reduce((a,p)=>a+p.totalDeductions,0), totalNetPay:results.reduce((a,p)=>a+p.netPay,0), totalSSS:results.reduce((a,p)=>a+p.sssDeduction,0), totalPagibig:results.reduce((a,p)=>a+p.pagibigDeduction,0), totalPhilhealth:results.reduce((a,p)=>a+p.philhealthDeduction,0), totalLateDeduction:results.reduce((a,p)=>a+(p.lateDeduction||0),0), totalUndertimeDeduction:results.reduce((a,p)=>a+(p.undertimeDeduction||0),0), totalCA:results.reduce((a,p)=>a+p.cashAdvanceDeduction,0) }
  setPayrollResults(results)
  setPayrollSummary(s)
  setPayrollApproved(false)
  const readiness = await inspectPayrollReadiness(payrollStart, payrollEnd, { silent:true })
  const holdCount = (readiness.attendanceExceptions || []).length
  const missingCount = (readiness.missingEmployees || []).length
+ const automaticLateTotal = results.reduce((sum, row) => sum + safeNum(row.lateMinutes, 0), 0)
  const automaticUTTotal = results.reduce((sum, row) => sum + safeNum(row.undertimeMinutes, 0), 0)
- await logAudit('DRAFT PAYROLL COMPUTED',currentAdminLabel,'Payroll',`${payrollStart} to ${payrollEnd} ${results.length} ready employees | Automatic attendance-detected UT: ${automaticUTTotal} min | Attendance exceptions: ${holdCount} | Missing payroll rows: ${missingCount} | Status: draft/admin review only`)
+ await logAudit('DRAFT PAYROLL COMPUTED',currentAdminLabel,'Payroll',`${payrollStart} to ${payrollEnd} ${results.length} ready employees | Automatic late: ${automaticLateTotal} min | Automatic non-late UT: ${automaticUTTotal} min | Attendance exceptions: ${holdCount} | Missing payroll rows: ${missingCount} | Status: draft/admin review only`)
  if (holdCount > 0 || missingCount > 0 || (readiness.duplicateEmployees || []).length > 0) {
   showToast(`Partial draft computed for ${results.length} ready employee(s). ${holdCount} attendance exception(s) are on hold. Correct them, then use REBUILD DRAFT AFTER CORRECTIONS.`, 'red')
  } else {
@@ -33342,7 +33390,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <th style={{ padding:'9px', textAlign:'left' }}>Employee</th>
  <th style={{ padding:'9px', textAlign:'right' }}>Attendance Trace</th>
  <th style={{ padding:'9px', textAlign:'left' }}>Source Dates / Specific Deduction</th>
- <th style={{ padding:'9px', textAlign:'right' }}>Correct UT</th>
+ <th style={{ padding:'9px', textAlign:'right' }}>Correct Late / UT</th>
  <th style={{ padding:'9px', textAlign:'right' }}>Correct Deduction</th>
  <th style={{ padding:'9px', textAlign:'right' }}>Saved Payroll Deducted</th>
  <th style={{ padding:'9px', textAlign:'right' }}>Prior Auto Correction</th>
@@ -33360,7 +33408,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).length>3 && <div style={{ color:'#888', fontSize:'10px' }}>+{(row.dayDetails || []).filter(day=>safeNum(day.undertimeMinutes,0)>0||safeNum(day.lateMinutes,0)>0).length-3} more date(s)</div>}
  <button style={{...btnGray, width:'auto', padding:'5px 8px', marginTop:'5px', fontSize:'10px' }} onClick={()=>openAttendanceReconciliationTrace(row)}>VIEW FULL TRACE</button>
  </td>
- <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee', fontWeight:'800' }}>{row.correctUndertimeMinutes} min</td>
+ <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee', fontWeight:'800' }}><div>Late {row.correctLateMinutes || 0} min</div><div>UT {row.correctUndertimeMinutes} min</div></td>
  <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><button onClick={()=>openAttendanceReconciliationTrace(row)} style={{ border:'none', background:'transparent', color:'#ca1b1b', fontWeight:'900', cursor:'pointer', padding:0 }}>{php(row.correctDeduction)}</button></td>
  <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><strong>{php(row.priorAttendanceDeduction)}</strong><div style={{ color:'#888', fontSize:'10px' }}>Late {php(row.priorLateDeduction)} + UT {php(row.priorUndertimeDeduction)}</div></td>
  <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}><button disabled={safeNum(row.existingReconAmount,0)<=0} onClick={()=>openAttendanceReconciliationTrace(row,{ correctionAmount:row.existingReconAmount, correctionAppliedDate:row.existingReconRows?.[0]?.adjustment_date || '', correctionCreatedAt:row.existingReconRows?.[0]?.created_at || '', adjustmentId:row.existingReconRows?.[0]?.id || '' })} style={{ border:'none', background:'transparent', color:safeNum(row.existingReconAmount,0)>0?'#4a90d9':'#777', cursor:safeNum(row.existingReconAmount,0)>0?'pointer':'default', padding:0, fontWeight:'800' }}>{php(row.existingReconAmount)}</button>{row.existingReconRows?.[0]?.adjustment_date && <div style={{ color:'#4a90d9', fontSize:'10px', marginTop:'2px' }}>Applied {formatDateForDisplay(row.existingReconRows[0].adjustment_date)}</div>}</td>
@@ -33397,7 +33445,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'8px', margin:'12px 0' }}>
- <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Correct Automatic UT</div><strong>{attendanceReconTrace.correctUndertimeMinutes || 0} min</strong></div>
+ <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Correct Late / UT</div><strong>Late {attendanceReconTrace.correctLateMinutes || 0} min | UT {attendanceReconTrace.correctUndertimeMinutes || 0} min</strong></div>
  <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Correct Deduction</div><strong>{php(attendanceReconTrace.correctDeduction)}</strong></div>
  <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Old Payroll Deducted</div><strong>{php(attendanceReconTrace.priorAttendanceDeduction)}</strong><div style={{ color:'#888', fontSize:'10px' }}>Late {php(attendanceReconTrace.priorLateDeduction)} + UT {php(attendanceReconTrace.priorUndertimeDeduction)}</div></div>
  <div style={{ background:'white', padding:'10px', borderRadius:'9px', border:'1px solid #e5eaf5' }}><div style={{ color:'#777', fontSize:'10px' }}>Still Missing / Corrected</div><strong style={{ color:'#ca1b1b' }}>{php(attendanceReconTrace.correctionAmount || attendanceReconTrace.missingAdjustment)}</strong></div>
@@ -33652,7 +33700,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <span>Draft payslips are hidden from employee portals until you click Send Payslips to Employees for Review.</span>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
- {[['Employees',payrollSummary.totalEmployees],['Basic Pay',php(payrollSummary.totalBasicPay)],[' Birthday Pay',php(payrollSummary.totalBirthdayPay||0)],['Overtime',php(payrollSummary.totalOvertimePay)],['Night Diff',php(payrollSummary.totalNightDiff)],['Holiday Pay',php(payrollSummary.totalHolidayPay)],['Total Earnings',php(payrollSummary.totalEarnings)],['SSS',php(payrollSummary.totalSSS)],['Pag-IBIG',php(payrollSummary.totalPagibig)],['PhilHealth',php(payrollSummary.totalPhilhealth)],['Cash Advance',php(payrollSummary.totalCA)],['Total Deductions',php(payrollSummary.totalDeductions)],['TOTAL NET PAY',php(payrollSummary.totalNetPay)]].map(([l,v])=>(
+ {[['Employees',payrollSummary.totalEmployees],['Basic Pay',php(payrollSummary.totalBasicPay)],[' Birthday Pay',php(payrollSummary.totalBirthdayPay||0)],['Overtime',php(payrollSummary.totalOvertimePay)],['Night Diff',php(payrollSummary.totalNightDiff)],['Holiday Pay',php(payrollSummary.totalHolidayPay)],['Total Earnings',php(payrollSummary.totalEarnings)],['Late Deduction',php(payrollSummary.totalLateDeduction||0)],['Undertime Deduction',php(payrollSummary.totalUndertimeDeduction||0)],['SSS',php(payrollSummary.totalSSS)],['Pag-IBIG',php(payrollSummary.totalPagibig)],['PhilHealth',php(payrollSummary.totalPhilhealth)],['Cash Advance',php(payrollSummary.totalCA)],['Total Deductions',php(payrollSummary.totalDeductions)],['TOTAL NET PAY',php(payrollSummary.totalNetPay)]].map(([l,v])=>(
  <div key={l} style={{ background:'white', borderRadius:'8px', padding:'10px', border:'1px solid #eee' }}>
  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 3px' }}>{l}</p>
  <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{v}</p>
@@ -33686,11 +33734,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {pay.nightDiffPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Night Differential</span><span>{php(pay.nightDiffPay)}</span></div>}
  {pay.holidayPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Holiday Pay</span><span>{php(pay.holidayPay)}</span></div>}
  {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Earnings <button style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #bfe5ca', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'addition')}>FIND SOURCE</button></span><span>{php(pay.adjustmentEarnings)}</span></div>}
- {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late recorded: {pay.lateMinutes}min (no separate deduction; actual work shortage is already covered by undertime)</span><span> </span></div>}
+ {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late penalty: {pay.lateMinutes}min</span><span> </span></div>}
  {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Automatic Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Earnings</span><span style={{ color:'#2d8a4e' }}>{php(pay.totalEarnings)}</span></div>
  <div style={{ color:'#ca1b1b', fontWeight:'bold', margin:'8px 0 4px' }}>DEDUCTIONS</div>
  {pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
+ {pay.lateDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Late Deduction ({pay.lateMinutes}min)</span><span>{php(pay.lateDeduction)}</span></div>}
  {(pay.deferredCADeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>CA not deducted this cutoff; remains in CA balance</span><span>{php(pay.deferredCADeduction)}</span></div>}
  {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Automatic Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
  {pay.sssDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>SSS</span><span>{php(pay.sssDeduction)}</span></div>}
