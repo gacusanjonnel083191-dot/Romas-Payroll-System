@@ -1375,9 +1375,148 @@ function stripUnsupportedEmployeeOptionalColumns(payload = {}, error = null) {
  return clean
 }
 
+function parsePayslipBreakdownArray(value) {
+ if (Array.isArray(value)) return value
+ if (!value) return []
+ if (typeof value === 'string') {
+  try {
+   const parsed = JSON.parse(value)
+   if (Array.isArray(parsed)) return parsed
+   if (Array.isArray(parsed?.items)) return parsed.items
+  } catch(error) { return [] }
+ }
+ if (Array.isArray(value?.items)) return value.items
+ return []
+}
+
+function normalizePayslipBreakdownItem(item = {}, fallbackType = '') {
+ const rawType = String(item?.type || item?.adjustment_type || fallbackType || '').trim().toLowerCase()
+ const type = rawType === 'addition' ? 'addition' : rawType === 'deduction' ? 'deduction' : rawType
+ return {
+  id:String(item?.id || item?.adjustment_id || item?.source_id || ''),
+  type,
+  category:String(item?.category || item?.label || item?.description || (type === 'addition' ? 'Payroll Addition' : 'Payroll Deduction')).trim(),
+  amount:moneyRound(Math.max(0, safeNum(item?.amount ?? item?.applied_amount, 0))),
+  date:String(item?.date || item?.adjustment_date || item?.advance_date || '').slice(0, 10),
+  notes:String(item?.notes || item?.note || item?.reason || '').trim(),
+  source:String(item?.source || '').trim(),
+  requestedAmount:moneyRound(Math.max(0, safeNum(item?.requestedAmount ?? item?.requested_amount ?? item?.scheduled_amount, 0))),
+  deferredAmount:moneyRound(Math.max(0, safeNum(item?.deferredAmount ?? item?.deferred_amount, 0)))
+ }
+}
+
+function getPayslipAdjustmentItems(pay = {}, type = '') {
+ const raw = pay?.adjustmentItems ?? pay?.adjustment_items ?? pay?.adjustment_breakdown
+ const normalized = parsePayslipBreakdownArray(raw)
+  .map(item => normalizePayslipBreakdownItem(item))
+  .filter(item => item.amount > 0)
+ if (!type) return normalized
+ return normalized.filter(item => item.type === String(type).toLowerCase())
+}
+
+function getPayslipCashAdvanceItems(pay = {}) {
+ const raw = pay?.cashAdvanceItems ?? pay?.cash_advance_items ?? pay?.cash_advance_breakdown
+ return parsePayslipBreakdownArray(raw)
+  .map(item => normalizePayslipBreakdownItem({ ...item, type:'deduction', category:item?.category || item?.label || 'Cash Advance Installment' }, 'deduction'))
+  .filter(item => item.amount > 0)
+}
+
+function sumPayslipBreakdownItems(items = []) {
+ return moneyRound((items || []).reduce((sum, item) => sum + Math.max(0, safeNum(item?.amount, 0)), 0))
+}
+
+function getPayslipUnitemizedAdjustmentAmount(pay = {}, type = 'deduction') {
+ const normalizedType = String(type || '').toLowerCase() === 'addition' ? 'addition' : 'deduction'
+ const aggregate = normalizedType === 'addition'
+  ? safeNum(pay?.adjustmentEarnings ?? pay?.other_earnings, 0)
+  : safeNum(pay?.adjustmentDeductions ?? pay?.other_deductions, 0)
+ const absence = normalizedType === 'deduction' ? safeNum(pay?.absenceDeduction ?? pay?.absence_deduction, 0) : 0
+ return moneyRound(Math.max(0, aggregate - absence - sumPayslipBreakdownItems(getPayslipAdjustmentItems(pay, normalizedType))))
+}
+
+function getPayslipBreakdownLabel(item = {}, prefix = 'Adjustment') {
+ const category = String(item?.category || '').trim() || prefix
+ const dateText = item?.date ? ` (${formatDateForDisplay(item.date)})` : ''
+ return `${prefix}: ${category}${dateText}`
+}
+
+function getPayslipBreakdownNote(item = {}) {
+ const notes = String(item?.notes || '').trim()
+ const source = String(item?.source || '').trim()
+ return [notes, source && source !== 'payroll_adjustments' && source !== 'cash_advances' ? `Source: ${source}` : ''].filter(Boolean).join(' | ')
+}
+
+function buildPayrollAdjustmentSnapshot(rows = []) {
+ return (rows || []).map(row => ({
+  id:row?.id || '',
+  type:String(row?.adjustment_type || '').trim().toLowerCase() === 'addition' ? 'addition' : 'deduction',
+  category:String(row?.category || '').trim() || (String(row?.adjustment_type || '').trim().toLowerCase() === 'addition' ? 'Payroll Addition' : 'Payroll Deduction'),
+  amount:moneyRound(Math.max(0, safeNum(row?.amount, 0))),
+  date:String(row?.adjustment_date || '').slice(0, 10),
+  notes:String(row?.notes || '').trim(),
+  source:'payroll_adjustments'
+ })).filter(item => item.amount > 0)
+}
+
+function getCashAdvancePayslipReason(notes = '') {
+ const parts = String(notes || '').split('|').map(part => part.trim()).filter(Boolean)
+ const meaningful = parts.filter(part => !/^AUTO-RECORDED FROM CA REQUEST/i.test(part) && !/^FILED /i.test(part) && !/^APPROVED BY /i.test(part))
+ return meaningful[meaningful.length - 1] || ''
+}
+
+function buildCashAdvanceDeductionSnapshot(rows = [], appliedTotal = 0) {
+ let remaining = moneyRound(Math.max(0, safeNum(appliedTotal, 0)))
+ if (remaining <= 0) return []
+ const candidates = (rows || [])
+  .filter(row => !['cancelled','canceled','void','voided'].includes(String(row?.status || '').trim().toLowerCase()) && getCashAdvanceEffectiveBalance(row) > 0.009)
+  .sort((a, b) => String(a?.advance_date || a?.created_at || '').localeCompare(String(b?.advance_date || b?.created_at || '')))
+ const items = []
+ for (const row of candidates) {
+  if (remaining <= 0.009) break
+  const balance = getCashAdvanceEffectiveBalance(row)
+  const scheduled = safeNum(row?.per_payroll_deduction, 0) > 0 ? safeNum(row?.per_payroll_deduction, 0) : balance
+  const requested = moneyRound(Math.min(balance, scheduled))
+  // Match the release routine exactly: the final capped CA amount is applied
+  // oldest-first against the actual remaining balances.
+  const applied = moneyRound(Math.min(balance, remaining))
+  if (applied <= 0) continue
+  items.push({
+   id:row?.id || '',
+   type:'deduction',
+   category:'Cash Advance Installment',
+   amount:applied,
+   requested_amount:requested,
+   deferred_amount:moneyRound(Math.max(0, requested - applied)),
+   date:String(row?.advance_date || '').slice(0, 10),
+   notes:getCashAdvancePayslipReason(row?.notes || ''),
+   source:'cash_advances'
+  })
+  remaining = moneyRound(Math.max(0, remaining - applied))
+ }
+ return items
+}
+
+function escapePayslipHtml(value = '') {
+ return String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;')
+}
+
 function normalizePayslipForPrint(pay = {}) {
  const start = pay.payroll_start || pay.payrollStart || ''
  const end = pay.payroll_end || pay.payrollEnd || ''
+ const adjustmentItems = getPayslipAdjustmentItems(pay)
+ const adjustmentAdditionItems = adjustmentItems.filter(item => item.type === 'addition')
+ const adjustmentDeductionItems = adjustmentItems.filter(item => item.type === 'deduction')
+ const cashAdvanceItems = getPayslipCashAdvanceItems(pay)
+ const adjustmentEarnings = safeNum(pay.adjustmentEarnings ?? pay.other_earnings, 0)
+ const adjustmentDeductions = safeNum(pay.adjustmentDeductions ?? pay.other_deductions, 0)
+ const absenceDeduction = safeNum(pay.absenceDeduction ?? pay.absence_deduction, 0)
+ const unitemizedAdjustmentEarnings = moneyRound(Math.max(0, adjustmentEarnings - sumPayslipBreakdownItems(adjustmentAdditionItems)))
+ const unitemizedAdjustmentDeductions = moneyRound(Math.max(0, adjustmentDeductions - absenceDeduction - sumPayslipBreakdownItems(adjustmentDeductionItems)))
  return {
   employeeName:pay.employeeName || pay.employee_name || 'Employee',
   employeeCode:pay.employeeCode || pay.employee_code || '',
@@ -1394,7 +1533,11 @@ function normalizePayslipForPrint(pay = {}) {
   nightDiffPay:safeNum(pay.nightDiffPay ?? pay.night_diff_pay, 0),
   nightDiffMinutes:safeNum(pay.nightDiffMinutes ?? pay.night_diff_minutes, 0),
   holidayPay:safeNum(pay.holidayPay ?? pay.holiday_pay, 0),
-  adjustmentEarnings:safeNum(pay.adjustmentEarnings ?? pay.other_earnings, 0),
+  adjustmentEarnings,
+  adjustmentItems,
+  adjustmentAdditionItems,
+  adjustmentDeductionItems,
+  unitemizedAdjustmentEarnings,
   totalEarnings:safeNum(pay.totalEarnings ?? pay.total_earnings, 0),
   lateDeduction:safeNum(pay.lateDeduction ?? pay.late_deduction, 0),
   lateMinutes:safeNum(pay.lateMinutes ?? pay.late_minutes, 0),
@@ -1402,12 +1545,15 @@ function normalizePayslipForPrint(pay = {}) {
   undertimeMinutes:safeNum(pay.undertimeMinutes ?? pay.undertime_minutes, 0),
   excessBreakDeduction:safeNum(pay.excessBreakDeduction ?? pay.excess_break_deduction, 0),
   cashAdvanceDeduction:safeNum(pay.cashAdvanceDeduction ?? pay.cash_advance_deduction, 0),
+  cashAdvanceItems,
   deferredCADeduction:safeNum(pay.deferredCADeduction ?? pay.deferred_cash_advance_deduction, 0),
   nonCADeductionOverflow:safeNum(pay.nonCADeductionOverflow ?? pay.non_ca_deduction_overflow, 0),
   sssDeduction:safeNum(pay.sssDeduction ?? pay.sss_deduction, 0),
   pagibigDeduction:safeNum(pay.pagibigDeduction ?? pay.pagibig_deduction, 0),
   philhealthDeduction:safeNum(pay.philhealthDeduction ?? pay.philhealth_deduction, 0),
-  adjustmentDeductions:safeNum(pay.adjustmentDeductions ?? pay.other_deductions, 0),
+  adjustmentDeductions,
+  absenceDeduction,
+  unitemizedAdjustmentDeductions,
   totalDeductions:safeNum(pay.totalDeductions ?? pay.total_deductions, 0),
   netPay:safeNum(pay.netPay ?? pay.net_pay, 0),
   payslipSerial:pay.payslipSerial || pay.payslip_serial || '',
@@ -1525,7 +1671,12 @@ function downloadEmployeePayslip(pay = {}) {
  addRow('Night Differential Pay', printablePay.nightDiffPay, `${printablePay.nightDiffMinutes} night differential minute(s)`)
  addRow('Holiday Pay', printablePay.holidayPay)
  addRow('Paid SIL Leave', printablePay.paidLeavePay, `${printablePay.paidLeaveDays} paid leave day(s)`)
- addRow('Other Earnings / Adjustments', printablePay.adjustmentEarnings)
+ if (printablePay.adjustmentAdditionItems.length > 0) {
+  printablePay.adjustmentAdditionItems.forEach(item => addRow(getPayslipBreakdownLabel(item, 'Payroll Addition'), item.amount, getPayslipBreakdownNote(item)))
+ }
+ if (printablePay.unitemizedAdjustmentEarnings > 0 || (printablePay.adjustmentEarnings > 0 && printablePay.adjustmentAdditionItems.length === 0)) {
+  addRow(printablePay.adjustmentAdditionItems.length > 0 ? 'Other Earnings (unitemized legacy amount)' : 'Other Earnings / Adjustments', printablePay.unitemizedAdjustmentEarnings || printablePay.adjustmentEarnings)
+ }
  doc.setFillColor(232, 245, 233)
  doc.rect(marginX, y - 2, pageWidth - marginX * 2, 8, 'F')
  doc.setFont('helvetica', 'bold')
@@ -1539,12 +1690,22 @@ function downloadEmployeePayslip(pay = {}) {
  addRow('Late Deduction', printablePay.lateDeduction, `${printablePay.lateMinutes} late minute(s)`)
  addRow('Undertime Deduction', printablePay.undertimeDeduction, `${printablePay.undertimeMinutes} automatic attendance-detected undertime minute(s)`)
  addRow('Excess Break Deduction', printablePay.excessBreakDeduction)
- addRow('Cash Advance Deduction', printablePay.cashAdvanceDeduction)
+ if (printablePay.cashAdvanceItems.length > 0) {
+  printablePay.cashAdvanceItems.forEach(item => addRow(getPayslipBreakdownLabel(item, 'Cash Advance'), item.amount, getPayslipBreakdownNote(item)))
+ } else {
+  addRow('Cash Advance Deduction', printablePay.cashAdvanceDeduction)
+ }
+ if (printablePay.absenceDeduction > 0) addRow('Absence / Unpaid Leave Deduction', printablePay.absenceDeduction)
  addRow('Deferred CA Deduction', printablePay.deferredCADeduction, 'Not deducted this cutoff; remains in CA balance.')
  addRow('SSS', printablePay.sssDeduction)
  addRow('Pag-IBIG', printablePay.pagibigDeduction)
  addRow('PhilHealth', printablePay.philhealthDeduction)
- addRow('Other Deductions / Adjustments', printablePay.adjustmentDeductions)
+ if (printablePay.adjustmentDeductionItems.length > 0) {
+  printablePay.adjustmentDeductionItems.forEach(item => addRow(getPayslipBreakdownLabel(item, 'Payroll Deduction'), item.amount, getPayslipBreakdownNote(item)))
+ }
+ if (printablePay.unitemizedAdjustmentDeductions > 0 || (printablePay.adjustmentDeductions > 0 && printablePay.adjustmentDeductionItems.length === 0 && printablePay.absenceDeduction <= 0)) {
+  addRow(printablePay.adjustmentDeductionItems.length > 0 || printablePay.absenceDeduction > 0 ? 'Other Deduction (unitemized legacy amount)' : 'Other Deductions / Adjustments', printablePay.unitemizedAdjustmentDeductions || printablePay.adjustmentDeductions)
+ }
  doc.setFillColor(255, 240, 240)
  doc.rect(marginX, y - 2, pageWidth - marginX * 2, 8, 'F')
  doc.setFont('helvetica', 'bold')
@@ -4857,7 +5018,7 @@ function dedupePayslipDisputes(rows = []) {
 
 function isMissingPayrollWorkflowColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
- return msg.includes('payroll_status') || msg.includes('employee_acknowledgement') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('payslip_serial') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes') || msg.includes('requested_cash_advance_deduction') || msg.includes('deferred_cash_advance_deduction') || msg.includes('non_ca_deduction_overflow') || (msg.includes('schema cache') && msg.includes('payroll_records')) || (msg.includes('could not find') && msg.includes('payroll_records'))
+ return msg.includes('absence_deduction') || msg.includes('adjustment_breakdown') || msg.includes('cash_advance_breakdown') || msg.includes('payroll_status') || msg.includes('employee_acknowledgement') || msg.includes('review_sent_at') || msg.includes('review_sent_by') || msg.includes('payslip_serial') || msg.includes('undertime_deduction') || msg.includes('late_deduction') || msg.includes('worked_basic_pay') || msg.includes('total_worked_minutes') || msg.includes('regular_paid_minutes') || msg.includes('paid_leave_pay') || msg.includes('paid_leave_days') || msg.includes('unpaid_leave_days') || msg.includes('absent_days') || msg.includes('night_diff_minutes') || msg.includes('overtime_minutes') || msg.includes('requested_cash_advance_deduction') || msg.includes('deferred_cash_advance_deduction') || msg.includes('non_ca_deduction_overflow') || (msg.includes('schema cache') && msg.includes('payroll_records')) || (msg.includes('could not find') && msg.includes('payroll_records'))
 }
 
 function isMissingCashAdvanceDetailColumnError(error) {
@@ -5292,6 +5453,12 @@ function EmployeePortalPayslipBreakdown({ pay }) {
  const regularPaidHours = value('regular_paid_minutes') > 0 ? moneyRound(value('regular_paid_minutes') / 60) : 0
  const hourlyRate = value('hourly_rate')
  const statusText = getPayrollReviewStatusText(pay)
+ const adjustmentAdditionItems = getPayslipAdjustmentItems(pay, 'addition')
+ const adjustmentDeductionItems = getPayslipAdjustmentItems(pay, 'deduction')
+ const cashAdvanceItems = getPayslipCashAdvanceItems(pay)
+ const absenceDeduction = safeNum(pay?.absence_deduction ?? pay?.absenceDeduction, 0)
+ const unitemizedAdjustmentEarnings = moneyRound(Math.max(0, value('other_earnings') - sumPayslipBreakdownItems(adjustmentAdditionItems)))
+ const unitemizedAdjustmentDeductions = moneyRound(Math.max(0, value('other_deductions') - absenceDeduction - sumPayslipBreakdownItems(adjustmentDeductionItems)))
  const rowStyle = { display:'flex', justifyContent:'space-between', gap:'10px', padding:'6px 0', borderBottom:'1px solid #f0f0f0', fontSize:'12px' }
  const mutedText = { color:'#777', fontSize:'11px', margin:'2px 0' }
  const SectionRow = ({ label, amount, note, highlight }) => (
@@ -5349,7 +5516,8 @@ function EmployeePortalPayslipBreakdown({ pay }) {
     <SectionRow label="Night Differential Pay" amount={value('night_diff_pay')} note={`${value('night_diff_minutes')} night differential minute(s)`} />
     <SectionRow label="Holiday Pay" amount={value('holiday_pay')} />
     <SectionRow label="Paid SIL Leave" amount={value('paid_leave_pay')} note={`${value('paid_leave_days')} paid leave day(s)`} />
-    <SectionRow label="Other Earnings / Adjustments" amount={value('other_earnings')} />
+    {adjustmentAdditionItems.map(item => <SectionRow key={`earn-adj-${item.id || item.category}-${item.date}`} label={getPayslipBreakdownLabel(item, 'Payroll Addition')} amount={item.amount} note={getPayslipBreakdownNote(item)} />)}
+    {(unitemizedAdjustmentEarnings > 0 || (value('other_earnings') > 0 && adjustmentAdditionItems.length === 0)) && <SectionRow label={adjustmentAdditionItems.length > 0 ? 'Other Earnings (unitemized legacy amount)' : 'Other Earnings / Adjustments'} amount={unitemizedAdjustmentEarnings || value('other_earnings')} />}
     <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0 0', fontWeight:'bold', fontSize:'13px' }}>
      <span>Total Earnings / Gross Pay</span>
      <span style={{ color:'#2d8a4e' }}>{php(value('total_earnings'))}</span>
@@ -5360,13 +5528,17 @@ function EmployeePortalPayslipBreakdown({ pay }) {
     <h4 style={{ margin:'0 0 8px', color:'#ca1b1b', fontSize:'13px' }}>Deductions</h4>
     <SectionRow label="Late Deduction" amount={value('late_deduction')} note={`${value('late_minutes')} late minute(s)`} />
     <SectionRow label="Undertime Deduction" amount={value('undertime_deduction')} note={`${value('undertime_minutes')} automatic attendance-detected undertime minute(s)`} />
-    <SectionRow label="Cash Advance Deduction" amount={value('cash_advance_deduction')} />
+    {cashAdvanceItems.length > 0
+     ? cashAdvanceItems.map(item => <SectionRow key={`ca-${item.id || item.date}`} label={getPayslipBreakdownLabel(item, 'Cash Advance')} amount={item.amount} note={getPayslipBreakdownNote(item)} />)
+     : <SectionRow label="Cash Advance Deduction" amount={value('cash_advance_deduction')} />}
+    {absenceDeduction > 0 && <SectionRow label="Absence / Unpaid Leave Deduction" amount={absenceDeduction} />}
     <SectionRow label="Requested CA Deduction" amount={value('requested_cash_advance_deduction')} note="Original CA amount requested for this cutoff before payroll safety cap." />
     <SectionRow label="Deferred CA Deduction" amount={value('deferred_cash_advance_deduction')} note="Not deducted this cutoff; remains in CA balance." highlight="#f5a623" />
     <SectionRow label="SSS" amount={value('sss_deduction')} />
     <SectionRow label="Pag-IBIG" amount={value('pagibig_deduction')} />
     <SectionRow label="PhilHealth" amount={value('philhealth_deduction')} />
-    <SectionRow label="Other Deductions / Adjustments" amount={value('other_deductions')} />
+    {adjustmentDeductionItems.map(item => <SectionRow key={`ded-adj-${item.id || item.category}-${item.date}`} label={getPayslipBreakdownLabel(item, 'Payroll Deduction')} amount={item.amount} note={getPayslipBreakdownNote(item)} />)}
+    {(unitemizedAdjustmentDeductions > 0 || (value('other_deductions') > 0 && adjustmentDeductionItems.length === 0 && absenceDeduction <= 0)) && <SectionRow label={adjustmentDeductionItems.length > 0 || absenceDeduction > 0 ? 'Other Deduction (unitemized legacy amount)' : 'Other Deductions / Adjustments'} amount={unitemizedAdjustmentDeductions || value('other_deductions')} />}
     <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0 0', fontWeight:'bold', fontSize:'13px' }}>
      <span>Total Deductions</span>
      <span style={{ color:'#ca1b1b' }}>{php(value('total_deductions'))}</span>
@@ -5389,6 +5561,18 @@ function EmployeePortalPayslipBreakdown({ pay }) {
 // Print helpers (outside App so they have no stale closure issues) 
 function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  const serialNo = pay?.payslipSerial || pay?.payslip_serial || genSerial(payrollStart, idx)
+ const adjustmentAdditionItems = getPayslipAdjustmentItems(pay, 'addition')
+ const adjustmentDeductionItems = getPayslipAdjustmentItems(pay, 'deduction')
+ const cashAdvanceItems = getPayslipCashAdvanceItems(pay)
+ const absenceDeduction = safeNum(pay?.absenceDeduction ?? pay?.absence_deduction, 0)
+ const adjustmentEarningsTotal = safeNum(pay?.adjustmentEarnings ?? pay?.other_earnings, 0)
+ const adjustmentDeductionsTotal = safeNum(pay?.adjustmentDeductions ?? pay?.other_deductions, 0)
+ const unitemizedEarnings = moneyRound(Math.max(0, adjustmentEarningsTotal - sumPayslipBreakdownItems(adjustmentAdditionItems)))
+ const unitemizedDeductions = moneyRound(Math.max(0, adjustmentDeductionsTotal - absenceDeduction - sumPayslipBreakdownItems(adjustmentDeductionItems)))
+ const itemRow = (label, amount, note = '') => `<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">${escapePayslipHtml(label)}${note ? `<div style="font-size:8px;color:#777;margin-top:1px;">${escapePayslipHtml(note)}</div>` : ''}</td><td style="padding:3px 8px;text-align:right;font-size:10px;">${php(amount)}</td></tr>`
+ const adjustmentEarningsHtml = adjustmentAdditionItems.map(item => itemRow(getPayslipBreakdownLabel(item, 'Payroll Addition'), item.amount, getPayslipBreakdownNote(item))).join('') + ((unitemizedEarnings > 0 || (adjustmentEarningsTotal > 0 && adjustmentAdditionItems.length === 0)) ? itemRow(adjustmentAdditionItems.length > 0 ? 'Other Earnings (unitemized legacy amount)' : 'Bonus / Other Earnings', unitemizedEarnings || adjustmentEarningsTotal) : '')
+ const cashAdvanceHtml = cashAdvanceItems.length > 0 ? cashAdvanceItems.map(item => itemRow(getPayslipBreakdownLabel(item, 'Cash Advance'), item.amount, getPayslipBreakdownNote(item))).join('') : (safeNum(pay?.cashAdvanceDeduction ?? pay?.cash_advance_deduction, 0) > 0 ? itemRow('Cash Advance', safeNum(pay?.cashAdvanceDeduction ?? pay?.cash_advance_deduction, 0)) : '')
+ const adjustmentDeductionsHtml = adjustmentDeductionItems.map(item => itemRow(getPayslipBreakdownLabel(item, 'Payroll Deduction'), item.amount, getPayslipBreakdownNote(item))).join('') + ((unitemizedDeductions > 0 || (adjustmentDeductionsTotal > 0 && adjustmentDeductionItems.length === 0 && absenceDeduction <= 0)) ? itemRow(adjustmentDeductionItems.length > 0 || absenceDeduction > 0 ? 'Other Deduction (unitemized legacy amount)' : 'Other Deductions', unitemizedDeductions || adjustmentDeductionsTotal) : '')
  return `
  <div class="payslip-wrap">
  <div style="width:145mm;min-height:210mm;padding:8mm;box-sizing:border-box;font-family:Arial,sans-serif;font-size:11px;color:#000;background:white;">
@@ -5416,18 +5600,19 @@ function buildPayslipHTML(pay, payrollStart, payrollEnd, idx) {
  ${pay.nightDiffPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Night Differential (10%)</td><td style="padding:3px 8px;text-align:right;">${php(pay.nightDiffPay)}</td></tr>`:''}
  ${pay.holidayPay>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Holiday Pay</td><td style="padding:3px 8px;text-align:right;">${php(pay.holidayPay)}</td></tr>`:''}
  ${(pay.paidLeaveDays||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Paid SIL Leave (${pay.paidLeaveDays} day(s))</td><td style="padding:3px 8px;text-align:right;">${php(pay.paidLeavePay||0)}</td></tr>`:''}
- ${pay.adjustmentEarnings>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Bonus / Other Earnings</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentEarnings)}</td></tr>`:''}
+ ${adjustmentEarningsHtml}
  <tr style="background:#e8f5e9;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Earnings</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalEarnings)}</td></tr>
  <tr style="background:#fff0f0;"><td colspan="2" style="padding:4px 8px;font-weight:bold;color:#ca1b1b;font-size:10px;">DEDUCTIONS</td></tr>
  ${pay.lateDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Late (${pay.lateMinutes} min)</td><td style="padding:3px 8px;text-align:right;">${php(pay.lateDeduction)}</td></tr>`:''}
  ${pay.undertimeDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Undertime (${pay.undertimeMinutes} min)</td><td style="padding:3px 8px;text-align:right;">${php(pay.undertimeDeduction)}</td></tr>`:''}
  ${(pay.excessBreakDeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Excess Break</td><td style="padding:3px 8px;text-align:right;">${php(pay.excessBreakDeduction)}</td></tr>`:''}
- ${pay.cashAdvanceDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Cash Advance</td><td style="padding:3px 8px;text-align:right;">${php(pay.cashAdvanceDeduction)}</td></tr>`:''}
+ ${cashAdvanceHtml}
+ ${absenceDeduction>0?itemRow('Absence / Unpaid Leave Deduction', absenceDeduction):''}
  ${(pay.deferredCADeduction||0)>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;color:#f5a623;">CA not deducted this cutoff; remains in CA balance</td><td style="padding:3px 8px;text-align:right;color:#f5a623;">${php(pay.deferredCADeduction)}</td></tr>`:''}
  ${pay.sssDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">SSS</td><td style="padding:3px 8px;text-align:right;">${php(pay.sssDeduction)}</td></tr>`:''}
  ${pay.pagibigDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Pag-IBIG</td><td style="padding:3px 8px;text-align:right;">${php(pay.pagibigDeduction)}</td></tr>`:''}
  ${pay.philhealthDeduction>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">PhilHealth</td><td style="padding:3px 8px;text-align:right;">${php(pay.philhealthDeduction)}</td></tr>`:''}
- ${pay.adjustmentDeductions>0?`<tr><td style="padding:3px 8px;font-size:10px;border-bottom:1px solid #eee;">Other Deductions</td><td style="padding:3px 8px;text-align:right;">${php(pay.adjustmentDeductions)}</td></tr>`:''}
+ ${adjustmentDeductionsHtml}
  <tr style="background:#ffe8e8;font-weight:bold;"><td style="padding:4px 8px;font-size:10px;">Total Deductions</td><td style="padding:4px 8px;text-align:right;">${php(pay.totalDeductions)}</td></tr>
  ${(pay.nonCADeductionOverflow||0)>0?`<tr><td colspan="2" style="padding:5px 8px;background:#fff5f5;color:#ca1b1b;font-weight:bold;font-size:10px;">WARNING: Deductions exceed earnings by ${php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until corrected.</td></tr>`:''}
  </table>
@@ -13824,9 +14009,13 @@ function buildDeliveryInvoicePrintCSS() {
    const otherEarningsForPrint =
      safeNum(data.adjustmentEarnings, 0) +
      safeNum(data.paidLeavePay, 0)
+   const adjustmentAdditionItems = data.adjustmentAdditionItems || []
+   const adjustmentDeductionItems = data.adjustmentDeductionItems || []
+   const cashAdvanceItems = data.cashAdvanceItems || []
 
    const rows = []
    const addAmountRow = (label, amount, options = {}) => {
+     const estimatedLines = Math.max(1, Math.ceil(String(label || '').length / 52))
      rows.push(wordRow([
        wordCell(label, {
          width:widths[0],
@@ -13845,7 +14034,7 @@ function buildDeliveryInvoicePrintCSS() {
          color:options.amountColor || options.color || '',
          padRight:150
        })
-     ], options.height || 275))
+     ], Math.max(options.height || 275, estimatedLines * 235)))
    }
 
    rows.push(wordRow([
@@ -13911,7 +14100,13 @@ function buildDeliveryInvoicePrintCSS() {
    addAmountRow(`Night Differential Pay (${data.nightDiffMinutes} min)`, data.nightDiffPay)
    addAmountRow('Holiday Pay', data.holidayPay)
    addAmountRow('Birthday Pay', data.birthdayPay)
-   addAmountRow('Other Earnings / Adjustments', otherEarningsForPrint)
+   if (adjustmentAdditionItems.length > 0) {
+     adjustmentAdditionItems.forEach(item => addAmountRow(`${getPayslipBreakdownLabel(item, 'Payroll Addition')}${getPayslipBreakdownNote(item) ? ` — ${getPayslipBreakdownNote(item)}` : ''}`, item.amount))
+     if (safeNum(data.unitemizedAdjustmentEarnings, 0) > 0) addAmountRow('Other Earnings (unitemized legacy amount)', data.unitemizedAdjustmentEarnings)
+     if (safeNum(data.paidLeavePay, 0) > 0) addAmountRow('Paid Leave Pay', data.paidLeavePay)
+   } else {
+     addAmountRow('Other Earnings / Adjustments', otherEarningsForPrint)
+   }
    addAmountRow('TOTAL EARNINGS / GROSS PAY', data.totalEarnings, {
      shade:LIGHT_GRAY, boldLabel:true, size:17, height:310, color:BLACK
    })
@@ -13925,12 +14120,15 @@ function buildDeliveryInvoicePrintCSS() {
    addAmountRow(`Late Deduction (${data.lateMinutes} min)`, data.lateDeduction)
    addAmountRow(`Undertime Deduction (${data.undertimeMinutes} min)`, data.undertimeDeduction)
    addAmountRow('Excess Break Deduction', data.excessBreakDeduction)
-   addAmountRow('Cash Advance Deduction', data.cashAdvanceDeduction)
+   if (cashAdvanceItems.length > 0) cashAdvanceItems.forEach(item => addAmountRow(`${getPayslipBreakdownLabel(item, 'Cash Advance')}${getPayslipBreakdownNote(item) ? ` — ${getPayslipBreakdownNote(item)}` : ''}`, item.amount))
+   else addAmountRow('Cash Advance Deduction', data.cashAdvanceDeduction)
+   addAmountRow('Absence / Unpaid Leave Deduction', data.absenceDeduction)
    addAmountRow('Deferred Cash Advance', data.deferredCADeduction)
    addAmountRow('SSS', data.sssDeduction)
    addAmountRow('Pag-IBIG', data.pagibigDeduction)
    addAmountRow('PhilHealth', data.philhealthDeduction)
-   addAmountRow('Other Deductions / Adjustments', data.adjustmentDeductions)
+   if (adjustmentDeductionItems.length > 0) adjustmentDeductionItems.forEach(item => addAmountRow(`${getPayslipBreakdownLabel(item, 'Payroll Deduction')}${getPayslipBreakdownNote(item) ? ` — ${getPayslipBreakdownNote(item)}` : ''}`, item.amount))
+   if (safeNum(data.unitemizedAdjustmentDeductions, 0) > 0 || (safeNum(data.adjustmentDeductions, 0) > 0 && adjustmentDeductionItems.length === 0 && safeNum(data.absenceDeduction, 0) <= 0)) addAmountRow(adjustmentDeductionItems.length > 0 || safeNum(data.absenceDeduction, 0) > 0 ? 'Other Deduction (unitemized legacy amount)' : 'Other Deductions / Adjustments', data.unitemizedAdjustmentDeductions || data.adjustmentDeductions)
    addAmountRow('TOTAL DEDUCTIONS', data.totalDeductions, {
      shade:LIGHT_GRAY, boldLabel:true, size:17, height:310, color:BLACK
    })
@@ -16787,6 +16985,76 @@ function buildDeliveryInvoicePrintCSS() {
  const { data } = await supabase.from('break_logs').select('*').eq('attendance_log_id', logId).order('created_at')
  setTodayBreaks(data || [])
  }
+ async function enrichPayrollRecordsWithPayslipBreakdowns(records = []) {
+ const sourceRows = (records || []).filter(Boolean)
+ if (sourceRows.length === 0) return []
+ const employeeIds = [...new Set(sourceRows.map(row => row?.employee_id || row?.employeeId).filter(Boolean))]
+ const starts = sourceRows.map(row => String(row?.payroll_start || row?.payrollStart || '')).filter(Boolean).sort()
+ const ends = sourceRows.map(row => String(row?.payroll_end || row?.payrollEnd || '')).filter(Boolean).sort()
+ const minStart = starts[0] || ''
+ const maxEnd = ends[ends.length - 1] || ''
+ const adjustmentRowsByEmployee = {}
+ const cashAdvanceRowsByEmployee = {}
+ if (employeeIds.length > 0 && minStart && maxEnd) {
+  const { data:adjustmentRows, error:adjustmentError } = await supabase
+   .from('payroll_adjustments')
+   .select('id,employee_id,employee_code,employee_name,adjustment_date,adjustment_type,category,amount,notes,created_at')
+   .in('employee_id', employeeIds)
+   .gte('adjustment_date', minStart)
+   .lte('adjustment_date', maxEnd)
+   .order('adjustment_date', { ascending:true })
+  if (adjustmentError) console.warn('Payslip adjustment-detail enrichment skipped:', adjustmentError)
+  ;(adjustmentRows || []).forEach(row => {
+   const key = String(row?.employee_id || '')
+   if (!adjustmentRowsByEmployee[key]) adjustmentRowsByEmployee[key] = []
+   adjustmentRowsByEmployee[key].push(row)
+  })
+  const { data:cashAdvanceRows, error:cashAdvanceError } = await supabase
+   .from('cash_advances')
+   .select('*')
+   .in('employee_id', employeeIds)
+   .lte('advance_date', maxEnd)
+   .order('advance_date', { ascending:true })
+  if (cashAdvanceError) console.warn('Payslip cash-advance detail enrichment skipped:', cashAdvanceError)
+  ;(cashAdvanceRows || []).forEach(row => {
+   const key = String(row?.employee_id || '')
+   if (!cashAdvanceRowsByEmployee[key]) cashAdvanceRowsByEmployee[key] = []
+   cashAdvanceRowsByEmployee[key].push(row)
+  })
+ }
+ return sourceRows.map(record => {
+  const start = String(record?.payroll_start || record?.payrollStart || '')
+  const end = String(record?.payroll_end || record?.payrollEnd || '')
+  const employeeId = String(record?.employee_id || record?.employeeId || '')
+  let adjustmentItems = getPayslipAdjustmentItems(record)
+  if (adjustmentItems.length === 0) {
+   const periodRows = (adjustmentRowsByEmployee[employeeId] || []).filter(row => {
+    const date = String(row?.adjustment_date || '').slice(0, 10)
+    return (!start || date >= start) && (!end || date <= end)
+   })
+   adjustmentItems = buildPayrollAdjustmentSnapshot(periodRows)
+  }
+  const deductionAdjustmentTotal = sumPayslipBreakdownItems(adjustmentItems.filter(item => item.type === 'deduction'))
+  const hasSavedAbsence = record?.absence_deduction !== undefined && record?.absence_deduction !== null
+  const absenceDeduction = hasSavedAbsence
+   ? moneyRound(Math.max(0, safeNum(record.absence_deduction, 0)))
+   : moneyRound(Math.max(0, safeNum(record?.other_deductions ?? record?.adjustmentDeductions, 0) - deductionAdjustmentTotal))
+  let cashAdvanceItems = getPayslipCashAdvanceItems(record)
+  if (cashAdvanceItems.length === 0 && !isReleasedPayrollRecord(record) && safeNum(record?.cash_advance_deduction ?? record?.cashAdvanceDeduction, 0) > 0) {
+   cashAdvanceItems = buildCashAdvanceDeductionSnapshot(cashAdvanceRowsByEmployee[employeeId] || [], safeNum(record?.cash_advance_deduction ?? record?.cashAdvanceDeduction, 0))
+  }
+  return {
+   ...record,
+   adjustment_breakdown:adjustmentItems,
+   adjustmentItems,
+   cash_advance_breakdown:cashAdvanceItems,
+   cashAdvanceItems,
+   absence_deduction:absenceDeduction,
+   absenceDeduction
+  }
+ })
+ }
+
  async function loadMyPayslips(emp) {
  const { data, error } = await supabase
  .from('payroll_records')
@@ -16798,7 +17066,8 @@ function buildDeliveryInvoicePrintCSS() {
   setMyPayslips([])
   return
  }
- const visiblePayslips = (data || []).filter(pay => !isDraftPayrollRecord(pay))
+ const enrichedPayslips = await enrichPayrollRecordsWithPayslipBreakdowns(data || [])
+ const visiblePayslips = enrichedPayslips.filter(pay => !isDraftPayrollRecord(pay))
  setMyPayslips(visiblePayslips)
  }
  async function loadMyCashAdvances(emp) {
@@ -25193,7 +25462,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 .eq('payroll_start', start)
 .eq('payroll_end', end)
 .order('employee_name')
- setHistoryRecords(data || [])
+ const enrichedRecords = await enrichPayrollRecordsWithPayslipBreakdowns(data || [])
+ setHistoryRecords(enrichedRecords)
  }
 
 
@@ -25429,8 +25699,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   nightDiffMinutes: safeNum(record.night_diff_minutes, 0),
   holidayPay: safeNum(record.holiday_pay, 0),
   adjustmentEarnings: safeNum(record.other_earnings, 0),
+  adjustmentItems:getPayslipAdjustmentItems(record),
   totalEarnings: safeNum(record.total_earnings, 0),
   cashAdvanceDeduction: safeNum(record.cash_advance_deduction, 0),
+  cashAdvanceItems:getPayslipCashAdvanceItems(record),
   requestedCashAdvanceDeduction: safeNum(record.requested_cash_advance_deduction, safeNum(record.cash_advance_deduction, 0)),
   deferredCADeduction: safeNum(record.deferred_cash_advance_deduction, 0),
   nonCADeductionOverflow: safeNum(record.non_ca_deduction_overflow, Math.max(0, safeNum(record.total_deductions,0)-safeNum(record.total_earnings,0))),
@@ -25440,6 +25712,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   lateDeduction: safeNum(record.late_deduction, 0),
   undertimeDeduction: safeNum(record.undertime_deduction, 0),
   adjustmentDeductions: safeNum(record.other_deductions, 0),
+  absenceDeduction:safeNum(record.absence_deduction, 0),
   totalDeductions: safeNum(record.total_deductions, 0),
   netPay: safeNum(record.net_pay, 0),
   lateMinutes: safeNum(record.late_minutes, 0),
@@ -25493,7 +25766,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    }
   }
 
-  const results = records.map(r => mapSavedPayrollRecordToResult(r, employeeLookup))
+  const enrichedRecords = await enrichPayrollRecordsWithPayslipBreakdowns(records)
+  const results = enrichedRecords.map(r => mapSavedPayrollRecordToResult(r, employeeLookup))
   const uniqueEmployees = new Set(results.map(r=>String(r.employeeId || r.employeeCode || r.employeeName))).size
   const duplicateCount = results.length - uniqueEmployees
 
@@ -26725,8 +26999,9 @@ async function computePayroll() {
    }
   }
 
+  const adjustmentBreakdown = buildPayrollAdjustmentSnapshot(adjs || [])
   let adjEarnings=0,adjDeductions=0
-  for (const adj of adjs||[]) { if (adj.adjustment_type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
+  for (const adj of adjustmentBreakdown) { if (adj.type==='addition') adjEarnings+=Number(adj.amount||0); else adjDeductions+=Number(adj.amount||0) }
   const hasPayForCutoff = moneyRound(basicPay + paidLeavePay + overtimePay + nightDiffPay + holidayPay + adjEarnings) > 0
   const sssDeduction=hasPayForCutoff&&emp.has_sss&&isFirstCutoff?375:0
   const pagibigDeduction=hasPayForCutoff&&emp.has_pagibig&&!isFirstCutoff?200:0
@@ -26749,13 +27024,14 @@ async function computePayroll() {
   const rawCADeduction=moneyRound((cas||[]).filter(isOutstandingCashAdvance).reduce((s,ca)=>s+getCashAdvancePayrollDeduction(ca),0))
   const caDeduction=moneyRound(Math.min(rawCADeduction, availableForCA))
   const deferredCADeduction=moneyRound(Math.max(0, rawCADeduction-caDeduction))
+  const cashAdvanceBreakdown=buildCashAdvanceDeductionSnapshot(cas || [], caDeduction)
   const totalDeductions=moneyRound(nonCADeductionOverflow>0?nonCADeductions:nonCADeductions+caDeduction)
   const netPay=moneyRound(Math.max(0,totalEarnings-totalDeductions))
   const undertimeMinutesInfo=automaticUndertimeMinutes
   const automaticUndertimeTrace = Object.entries(automaticUndertimeByDate).map(([date, minutes]) => ({ date, minutes }))
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, totalEarnings, cashAdvanceDeduction:caDeduction, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:lateDeductionRounded, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, automaticUndertimeTrace, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, adjustmentItems:adjustmentBreakdown, totalEarnings, cashAdvanceDeduction:caDeduction, cashAdvanceItems:cashAdvanceBreakdown, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:lateDeductionRounded, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, automaticUndertimeTrace, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -26780,12 +27056,14 @@ async function computePayroll() {
   night_diff_minutes:pay.nightDiffMinutes||0,
   holiday_pay:moneyRound(pay.holidayPay),
   other_earnings:moneyRound(pay.adjustmentEarnings),
+  adjustment_breakdown:pay.adjustmentItems || [],
   total_earnings:moneyRound(pay.totalEarnings),
   late_minutes:pay.lateMinutes||0,
   undertime_minutes:pay.undertimeMinutes||0,
   late_deduction:moneyRound(pay.lateDeduction||0),
   undertime_deduction:moneyRound(pay.undertimeDeduction||0),
   cash_advance_deduction:moneyRound(pay.cashAdvanceDeduction),
+  cash_advance_breakdown:pay.cashAdvanceItems || [],
   requested_cash_advance_deduction:moneyRound(pay.requestedCashAdvanceDeduction||0),
   deferred_cash_advance_deduction:moneyRound(pay.deferredCADeduction||0),
   non_ca_deduction_overflow:moneyRound(pay.nonCADeductionOverflow||0),
@@ -26793,6 +27071,7 @@ async function computePayroll() {
   pagibig_deduction:moneyRound(pay.pagibigDeduction),
   philhealth_deduction:moneyRound(pay.philhealthDeduction),
   other_deductions:moneyRound(pay.adjustmentDeductions),
+  absence_deduction:moneyRound(pay.absenceDeduction || 0),
   total_deductions:moneyRound(pay.totalDeductions),
   net_pay:moneyRound(pay.netPay),
   employee_acknowledgement:'draft',
@@ -26812,7 +27091,7 @@ async function computePayroll() {
   if (insertError && (isMissingPayrollCostColumnError(insertError) || isMissingPayrollWorkflowColumnError(insertError))) {
    const fallbackPayload = payrollPayload.map(row => {
     const {
-     payroll_cost_type, payroll_cost_label, payroll_status,
+     payroll_cost_type, payroll_cost_label, payroll_status, adjustment_breakdown, cash_advance_breakdown, absence_deduction,
      absent_days, paid_leave_days, unpaid_leave_days, paid_leave_pay, worked_basic_pay,
      total_worked_minutes, regular_paid_minutes, overtime_minutes, night_diff_minutes,
      late_deduction, undertime_deduction,
@@ -33791,19 +34070,26 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {pay.overtimePay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Overtime Pay ({pay.overtimeMinutes}min)</span><span>{php(pay.overtimePay)}</span></div>}
  {pay.nightDiffPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Night Differential</span><span>{php(pay.nightDiffPay)}</span></div>}
  {pay.holidayPay>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Holiday Pay</span><span>{php(pay.holidayPay)}</span></div>}
- {pay.adjustmentEarnings>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Earnings <button style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #bfe5ca', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'addition')}>FIND SOURCE</button></span><span>{php(pay.adjustmentEarnings)}</span></div>}
+ {getPayslipAdjustmentItems(pay, 'addition').map(item=><div key={`admin-earn-${item.id || item.category}-${item.date}`} style={{ display:'flex', justifyContent:'space-between', gap:'10px', padding:'2px 0' }}><span>{getPayslipBreakdownLabel(item, 'Payroll Addition')}{getPayslipBreakdownNote(item)&&<small style={{ display:'block', color:'#777' }}>{getPayslipBreakdownNote(item)}</small>}</span><span>{php(item.amount)}</span></div>)}
+ {getPayslipUnitemizedAdjustmentAmount(pay,'addition')>0&&getPayslipAdjustmentItems(pay,'addition').length>0&&<div style={{ display:'flex', justifyContent:'space-between', color:'#7a5200' }}><span>Other Earnings (unitemized legacy amount)</span><span>{php(getPayslipUnitemizedAdjustmentAmount(pay,'addition'))}</span></div>}
+ {pay.adjustmentEarnings>0&&getPayslipAdjustmentItems(pay,'addition').length===0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Earnings <button style={{ background:'#e8f5e9', color:'#2d8a4e', border:'1px solid #bfe5ca', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'addition')}>FIND SOURCE</button></span><span>{php(pay.adjustmentEarnings)}</span></div>}
  {(pay.lateMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Late penalty: {pay.lateMinutes}min</span><span> </span></div>}
  {(pay.undertimeMinutes||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span> Automatic Undertime: {pay.undertimeMinutes}min</span><span> </span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Earnings</span><span style={{ color:'#2d8a4e' }}>{php(pay.totalEarnings)}</span></div>
  <div style={{ color:'#ca1b1b', fontWeight:'bold', margin:'8px 0 4px' }}>DEDUCTIONS</div>
- {pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
+ {getPayslipCashAdvanceItems(pay).length>0
+ ? getPayslipCashAdvanceItems(pay).map(item=><div key={`admin-ca-${item.id || item.date}`} style={{ display:'flex', justifyContent:'space-between', gap:'10px', padding:'2px 0' }}><span>{getPayslipBreakdownLabel(item, 'Cash Advance')}{getPayslipBreakdownNote(item)&&<small style={{ display:'block', color:'#777' }}>{getPayslipBreakdownNote(item)}</small>}</span><span>{php(item.amount)}</span></div>)
+ : pay.cashAdvanceDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Cash Advance</span><span>{php(pay.cashAdvanceDeduction)}</span></div>}
+ {(pay.absenceDeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Absence / Unpaid Leave Deduction</span><span>{php(pay.absenceDeduction)}</span></div>}
  {pay.lateDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Late Deduction ({pay.lateMinutes}min)</span><span>{php(pay.lateDeduction)}</span></div>}
  {(pay.deferredCADeduction||0)>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:'12px', color:'#f5a623' }}><span>CA not deducted this cutoff; remains in CA balance</span><span>{php(pay.deferredCADeduction)}</span></div>}
  {pay.undertimeDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Automatic Undertime Deduction</span><span>{php(pay.undertimeDeduction)}</span></div>}
  {pay.sssDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>SSS</span><span>{php(pay.sssDeduction)}</span></div>}
  {pay.pagibigDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>Pag-IBIG</span><span>{php(pay.pagibigDeduction)}</span></div>}
  {pay.philhealthDeduction>0&&<div style={{ display:'flex', justifyContent:'space-between' }}><span>PhilHealth</span><span>{php(pay.philhealthDeduction)}</span></div>}
- {pay.adjustmentDeductions>0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Deductions <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ffd0d0', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'deduction')}>FIND SOURCE</button></span><span>{php(pay.adjustmentDeductions)}</span></div>}
+ {getPayslipAdjustmentItems(pay, 'deduction').map(item=><div key={`admin-ded-${item.id || item.category}-${item.date}`} style={{ display:'flex', justifyContent:'space-between', gap:'10px', padding:'2px 0' }}><span>{getPayslipBreakdownLabel(item, 'Payroll Deduction')}{getPayslipBreakdownNote(item)&&<small style={{ display:'block', color:'#777' }}>{getPayslipBreakdownNote(item)}</small>}</span><span>{php(item.amount)}</span></div>)}
+ {pay.adjustmentDeductions>0&&getPayslipAdjustmentItems(pay,'deduction').length===0&&(pay.absenceDeduction||0)<=0&&<div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}><span>Other Deductions <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ffd0d0', borderRadius:'8px', padding:'3px 8px', fontSize:'10px', fontWeight:'bold', cursor:'pointer', marginLeft:'6px' }} onClick={()=>openAdjustmentFinderForPayslip(pay, 'deduction')}>FIND SOURCE</button></span><span>{php(pay.adjustmentDeductions)}</span></div>}
+ {getPayslipUnitemizedAdjustmentAmount(pay,'deduction')>0&&<div style={{ display:'flex', justifyContent:'space-between', color:'#7a5200' }}><span>Other Deduction (unitemized legacy amount)</span><span>{php(getPayslipUnitemizedAdjustmentAmount(pay,'deduction'))}</span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Deductions</span><span style={{ color:'#ca1b1b' }}>{php(pay.totalDeductions)}</span></div>
  {(pay.nonCADeductionOverflow||0)>0&&<div style={{ marginTop:'6px', padding:'8px', border:'1px solid #ca1b1b', borderRadius:'8px', background:'#fff5f5', color:'#ca1b1b', fontWeight:'bold', fontSize:'12px' }}>⚠ Deductions exceed earnings by {php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until this is corrected.</div>}
  <div style={{ background:'#ca1b1b', color:'white', padding:'10px 14px', borderRadius:'8px', marginTop:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
@@ -34118,6 +34404,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <p style={{ margin:'2px 0', color:'#555' }}>Basic: PHP {Number(pay.basic_pay||0).toFixed(2)}</p>
  {Number(pay.overtime_pay||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>OT: PHP {Number(pay.overtime_pay).toFixed(2)}</p>}
  {Number(pay.holiday_pay||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Holiday: PHP {Number(pay.holiday_pay).toFixed(2)}</p>}
+ {getPayslipAdjustmentItems(pay,'addition').map(item=><p key={`hist-add-${item.id || item.category}-${item.date}`} style={{ margin:'2px 0', color:'#555' }}>{getPayslipBreakdownLabel(item,'Addition')}: {php(item.amount)}{getPayslipBreakdownNote(item)?` — ${getPayslipBreakdownNote(item)}`:''}</p>)}
+ {getPayslipUnitemizedAdjustmentAmount(pay,'addition')>0&&<p style={{ margin:'2px 0', color:'#7a5200' }}>Other Earnings: {php(getPayslipUnitemizedAdjustmentAmount(pay,'addition'))}</p>}
  {Number(pay.night_diff_pay||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Night Diff: PHP {Number(pay.night_diff_pay).toFixed(2)}</p>}
  <p style={{ margin:'4px 0 0', fontWeight:'bold', color:'#2d8a4e' }}>Total: PHP {Number(pay.total_earnings||0).toFixed(2)}</p>
  </div>
@@ -34128,7 +34416,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {Number(pay.sss_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>SSS: PHP {Number(pay.sss_deduction).toFixed(2)}</p>}
  {Number(pay.pagibig_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Pag-IBIG: PHP {Number(pay.pagibig_deduction).toFixed(2)}</p>}
  {Number(pay.philhealth_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>PhilHealth: PHP {Number(pay.philhealth_deduction).toFixed(2)}</p>}
- {Number(pay.cash_advance_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>CA: PHP {Number(pay.cash_advance_deduction).toFixed(2)}</p>}
+ {getPayslipCashAdvanceItems(pay).length>0
+ ? getPayslipCashAdvanceItems(pay).map(item=><p key={`hist-ca-${item.id || item.date}`} style={{ margin:'2px 0', color:'#555' }}>{getPayslipBreakdownLabel(item,'CA')}: {php(item.amount)}</p>)
+ : Number(pay.cash_advance_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>CA: PHP {Number(pay.cash_advance_deduction).toFixed(2)}</p>}
+ {Number(pay.absence_deduction||0)>0 && <p style={{ margin:'2px 0', color:'#555' }}>Absence / Unpaid Leave: {php(pay.absence_deduction)}</p>}
+ {getPayslipAdjustmentItems(pay,'deduction').map(item=><p key={`hist-ded-${item.id || item.category}-${item.date}`} style={{ margin:'2px 0', color:'#555' }}>{getPayslipBreakdownLabel(item,'Deduction')}: {php(item.amount)}{getPayslipBreakdownNote(item)?` — ${getPayslipBreakdownNote(item)}`:''}</p>)}
+ {getPayslipUnitemizedAdjustmentAmount(pay,'deduction')>0&&<p style={{ margin:'2px 0', color:'#7a5200' }}>Other Deduction: {php(getPayslipUnitemizedAdjustmentAmount(pay,'deduction'))}</p>}
  <p style={{ margin:'4px 0 0', fontWeight:'bold', color:'#ca1b1b' }}>Total: PHP {Number(pay.total_deductions||0).toFixed(2)}</p>
  </div>
  </div>
