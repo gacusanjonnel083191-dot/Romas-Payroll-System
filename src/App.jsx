@@ -8969,41 +8969,48 @@ Cancel = create batch record only for existing stock.`)
  pw.document.write(`<!DOCTYPE html><html><head><title>${reportTitle}</title>
  <style>
  *{margin:0;padding:0;box-sizing:border-box;}
- body{font-family:Arial,sans-serif;padding:12mm;font-size:11px;color:#000;background:white;}
- @media print{@page{size:A4;margin:12mm;}.no-print{display:none!important;}body{padding:0;}}
- h1{font-size:20px;color:#ca1b1b;margin-bottom:2px;}
- .sub{font-size:11px;color:#666;}
- .cat-title{background:#ca1b1b;color:white;padding:7px 10px;font-size:11px;font-weight:bold;margin-top:12px;border-radius:6px 6px 0 0;letter-spacing:0.5px;break-after:avoid;page-break-after:avoid;}
- table{width:100%;border-collapse:collapse;margin-bottom:14px;}
+ body{font-family:Arial,sans-serif;padding:8mm;font-size:9px;color:#000;background:white;}
+ @media print{@page{size:A4 portrait;margin:8mm;}.no-print{display:none!important;}body{padding:0;}}
+ h1{font-size:17px;color:#ca1b1b;margin-bottom:1px;}
+ .sub{font-size:9px;color:#666;}
+ .cat-title{background:#ca1b1b;color:white;padding:5px 7px;font-size:9px;font-weight:bold;margin-top:7px;border-radius:4px 4px 0 0;letter-spacing:0.3px;break-after:avoid;page-break-after:avoid;}
+ table{width:100%;border-collapse:collapse;table-layout:fixed;margin-bottom:8px;}
  thead{display:table-header-group;}
  tr{break-inside:avoid;page-break-inside:avoid;}
- th{background:#fff8dc;color:#333;border:1px solid #aaa;padding:7px 10px;text-align:left;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;}
- td{border:1px solid #bbb;padding:6px 10px;font-size:11px;vertical-align:middle;height:30px;}
- .item-name{width:68%;font-weight:bold;}
- .actual-count{width:32%;padding:5px 14px;}
- .write-line{display:block;width:100%;height:17px;border-bottom:1px solid #555;}
+ th{background:#fff8dc;color:#333;border:1px solid #aaa;padding:4px 6px;text-align:left;font-size:8px;text-transform:uppercase;letter-spacing:0.2px;}
+ td{border:1px solid #bbb;padding:3px 6px;font-size:9px;vertical-align:middle;height:22px;}
+ .item-name{width:36%;font-weight:bold;}
+ .actual-count{width:14%;padding:2px 5px;}
+ .write-line{display:block;width:100%;height:12px;border-bottom:1px solid #555;}
  .no-print{text-align:center;margin-top:18px;}
  .print-btn{background:#ca1b1b;color:white;border:none;border-radius:8px;padding:10px 24px;font-size:13px;font-weight:bold;cursor:pointer;margin-right:8px;}
  .close-btn{background:#eee;color:#333;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:bold;cursor:pointer;}
  </style></head><body>
- <div style="border-bottom:3px solid #ca1b1b;padding-bottom:12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+ <div style="border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
  <div>
  <h1>Roma's Donuts</h1>
- <div style="font-size:13px;font-weight:bold;margin-top:2px;">${reportTitle}</div>
+ <div style="font-size:10px;font-weight:bold;margin-top:1px;">${reportTitle}</div>
  <div class="sub">Printed: ${reportDate}</div>
- ${categoryFilter !== 'all' ? `<div style="margin-top:4px;display:inline-block;background:#fff8dc;border:1px solid #FDD412;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:bold;color:#7a5c00;">Category: ${categoryFilter}</div>` : ''}
+ ${categoryFilter !== 'all' ? `<div style="margin-top:2px;display:inline-block;background:#fff8dc;border:1px solid #FDD412;border-radius:3px;padding:1px 6px;font-size:8px;font-weight:bold;color:#7a5c00;">Category: ${categoryFilter}</div>` : ''}
  </div>
- <div style="text-align:right;font-size:10px;color:#666;">Inventory Control<br/>Roma's Donuts</div>
+ <div style="text-align:right;font-size:8px;color:#666;">Inventory Control<br/>Roma's Donuts</div>
  </div>
  ${byCategory.map(g => `
  <div class="cat-title"> ${g.cat}</div>
  <table>
- <thead><tr><th>Item Name</th><th>Actual Inventory Count</th></tr></thead>
+ <thead><tr><th>Item Name</th><th>Actual Count</th><th>Item Name</th><th>Actual Count</th></tr></thead>
  <tbody>
- ${g.items.map(i => `<tr>
- <td class="item-name">${i.name || ''}</td>
- <td class="actual-count"><span class="write-line"></span></td>
- </tr>`).join('')}
+ ${Array.from({ length: Math.ceil(g.items.length / 2) }, (_, idx) => {
+ const secondIdx = idx + Math.ceil(g.items.length / 2)
+ const leftItem = g.items[idx]
+ const rightItem = g.items[secondIdx]
+ return `<tr>
+ <td class="item-name">${leftItem?.name || ''}</td>
+ <td class="actual-count">${leftItem ? '<span class="write-line"></span>' : ''}</td>
+ <td class="item-name">${rightItem?.name || ''}</td>
+ <td class="actual-count">${rightItem ? '<span class="write-line"></span>' : ''}</td>
+ </tr>`
+ }).join('')}
  </tbody>
  </table>`).join('')}
  <div class="no-print">
@@ -9657,48 +9664,7 @@ Cancel = create batch record only for existing stock.`)
 
  // Physical Count Sheet Print 
  function printPhysicalCountSheet() {
- const byCategory = getInventoryCategoryGroups(inventoryItems)
- const pw = window.open('','_blank','width=420,height=660')
- pw.document.write(`<!DOCTYPE html><html><head><title>Physical Count Sheet</title>
- <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:12mm;font-size:10px;}
- @media print{@page{size:A4;margin:12mm;}.no-print{display:none;}}
- h1{font-size:18px;color:#ca1b1b;}
- table{width:100%;border-collapse:collapse;margin-bottom:14px;}
- th{background:#ca1b1b;color:white;padding:6px 6px;text-align:left;font-size:9px;}
- td{padding:6px 6px;border:1px solid #ddd;font-size:9px;}
-.cat{background:#f5f5f5;font-weight:bold;padding:6px 8px;margin:10px 0 4px;border-left:4px solid #ca1b1b;font-size:10px;}
-.blank{height:20px;}
- </style></head><body>
- <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:10px;margin-bottom:14px;">
- <div><h1>Roma's Donuts</h1><div style="font-size:11px;font-weight:bold;">PHYSICAL INVENTORY COUNT SHEET</div></div>
- <div style="text-align:right;font-size:10px;color:#555;">
- Date: ________________________<br/>
- Counted by: ________________________<br/>
- Verified by: ________________________
- </div>
- </div>
- ${byCategory.map(g=>`
- <div class="cat"> ${g.cat}</div>
- <table>
- <tr><th>#</th><th>Item Name</th><th>Unit</th><th>System Stock</th><th>Actual Count</th><th>Variance</th><th>Notes</th></tr>
- ${g.items.map((i,idx)=>`<tr>
- <td>${idx+1}</td>
- <td>${i.name}</td>
- <td>${i.unit}</td>
- <td style="font-weight:bold;">${Number(i.current_stock||0).toFixed(2)}</td>
- <td class="blank"></td>
- <td class="blank"></td>
- <td class="blank" style="width:120px;"></td>
- </tr>`).join('')}
- </table>`).join('')}
- <div style="margin-top:20px;font-size:9px;color:#888;font-style:italic;">
- Instructions: Fill in the "Actual Count" column. Variance = Actual Count System Stock. Report any discrepancies to your supervisor immediately.
- </div>
- <div class="no-print" style="text-align:center;margin-top:20px;">
- <button onclick="window.print()" style="padding:10px 24px;background:#ca1b1b;color:white;border:none;border-radius:8px;font-size:14px;font-weight:bold;cursor:pointer;"> PRINT</button>
- </div>
- </body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+ printInventoryCategoryReport('all')
  }
 
  // Supplier Functions 
