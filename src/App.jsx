@@ -17,6 +17,8 @@ const UNDERTIME_BLOCK_MINUTES = 30
 const DEFAULT_LATE_GRACE_MINUTES = 10
 const MIN_VALID_ATTENDANCE_SECONDS = 5 * 60
 const PAYROLL_ATTENDANCE_RECON_CATEGORY = 'Prior Payroll Attendance Correction'
+const POST_RELEASE_OT_CATEGORY = 'Prior-Period Overtime Adjustment'
+const POST_RELEASE_TIME_ADJ_SOURCE_TYPE = 'time_adjustment_request'
 const PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN = 'ATTENDANCE-SOURCE-DAYS['
 const PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE = ']END-ATTENDANCE-SOURCE-DAYS'
 const TIME_ADJ_OT_RANGE_OPEN = 'OT-TIME-RANGE['
@@ -1036,36 +1038,6 @@ function getDTRDayLogs(log = {}) {
  return Array.isArray(log._logs) && log._logs.length > 0 ? log._logs : [log]
 }
 
-function buildAttendanceEmployeePolicy(employee = {}) {
- return {
-  employeeId:String(employee?.id || employee?.employee_id || ''),
-  employeeCode:String(employee?.employee_code || employee?.employeeCode || ''),
-  employeeName:String(employee?.full_name || employee?.employee_name || employee?.employeeName || ''),
-  overtimePayEligible:employeeRuleEnabled(employee?.overtime_pay_eligible, true),
-  undertimeDeductionApplicable:employeeRuleEnabled(employee?.undertime_deduction_applicable, true),
-  nightDifferentialPayEligible:employeeRuleEnabled(employee?.night_differential_pay_eligible, true),
-  regularHolidayPayEligible:employee?.regular_holiday_pay_eligible !== false,
-  specialHolidayPayEligible:employee?.special_holiday_pay_eligible !== false
- }
-}
-
-function attachAttendanceEmployeePolicy(logs = [], employee = {}) {
- const policy = buildAttendanceEmployeePolicy(employee)
- return (logs || []).map(log => ({ ...log, _employeePolicy:policy }))
-}
-
-function getDTRAttendancePolicy(log = {}) {
- const dayLogs = getDTRDayLogs(log)
- const policy = log?._employeePolicy || dayLogs.find(row => row?._employeePolicy)?._employeePolicy || {}
- return {
-  overtimePayEligible:employeeRuleEnabled(policy?.overtimePayEligible, true),
-  undertimeDeductionApplicable:employeeRuleEnabled(policy?.undertimeDeductionApplicable, true),
-  nightDifferentialPayEligible:employeeRuleEnabled(policy?.nightDifferentialPayEligible, true),
-  regularHolidayPayEligible:policy?.regularHolidayPayEligible !== false,
-  specialHolidayPayEligible:policy?.specialHolidayPayEligible !== false
- }
-}
-
 function getDTRDayMetrics(log = {}) {
  const dayLogs = getDTRDayLogs(log)
  const breakRowsByLogId = {}
@@ -1208,8 +1180,6 @@ async function hydrateAttendanceLogsWithScheduleFallback(logs = [], employeeSour
 
 function getDTRUndertimeMinutes(log = {}) {
  if (!log) return 0
- const policy = getDTRAttendancePolicy(log)
- if (!policy.undertimeDeductionApplicable) return 0
  const integrity = getAttendanceDayIntegrity(getDTRDayLogs(log))
  if (!integrity.isValidCompleted) return 0
  return getDTRDayMetrics(log).undertimeMinutes
@@ -1224,15 +1194,11 @@ function getDTRGraceAppliedMinutes(log = {}) {
 
 function getDTRActualOvertimeMinutes(log = {}) {
  if (!log) return 0
- const policy = getDTRAttendancePolicy(log)
- if (!policy.overtimePayEligible) return 0
  return getAttendanceDayActualOvertimeMinutes(getDTRDayLogs(log))
 }
 
 function getDTRApprovedOvertimeMinutes(log = {}) {
  if (!log) return 0
- const policy = getDTRAttendancePolicy(log)
- if (!policy.overtimePayEligible) return 0
  const approvedMinutes = roundPayableOvertimeMinutes(getDTRDayLogs(log)
   .filter(row => row?.overtime_approved === true)
   .reduce((sum, row) => sum + Math.max(0, safeNum(row?.overtime_minutes, 0)), 0))
@@ -1249,7 +1215,7 @@ function getDTRStatusInfo(log = {}) {
  if (integrity.isInvalidShortPunch) return { label:'INVALID', color:'red', code:integrity.code }
  const dayMetrics = getDTRDayMetrics(log)
  const approvedOT = getDTRApprovedOvertimeMinutes(log)
- const undertime = getDTRUndertimeMinutes(log)
+ const undertime = dayMetrics.undertimeMinutes
  const overbreak = dayMetrics.overbreakMinutes
  const noMealBreakApproved = dayMetrics.breakOverrideApplied === true && safeNum(dayMetrics.approvedUnpaidBreakMinutes, ALLOWED_BREAK_MINUTES) === 0
  if (approvedOT > 0 && undertime > 0 && overbreak > 0) return { label:'OT + UT + OB', color:'orange', code:'overtime_undertime_overbreak' }
@@ -2191,6 +2157,12 @@ function getPreviousDTRCutoffKey(key) {
  const [yearMonth, type] = String(key || '').split('|')
  if (type === '11-25') return `${shiftYearMonth(yearMonth, -1)}|26-10`
  return `${yearMonth}|11-25`
+}
+
+function getNextDTRCutoffKey(key) {
+ const [yearMonth, type] = String(key || '').split('|')
+ if (type === '11-25') return `${yearMonth}|26-10`
+ return `${shiftYearMonth(yearMonth, 1)}|11-25`
 }
 
 function getPayrollAttendanceReconMarker(startDate = '', endDate = '', employeeId = '') {
@@ -5086,7 +5058,8 @@ function isProductionPayrollCostType(value) {
 }
 
 function isReleasedPayrollRecord(record = {}) {
- return record.payroll_approved === true || !!record.approved_at
+ const status = String(record.payroll_status || '').trim().toLowerCase()
+ return record.payroll_approved === true || record.payroll_released === true || record.payroll_locked === true || !!record.approved_at || !!record.released_at || ['approved','released','locked','paid'].includes(status)
 }
 
 function normalizePayrollAcknowledgement(value) {
@@ -17179,15 +17152,10 @@ function buildDeliveryInvoicePrintCSS() {
  setMyCAHistory(ledgerRows.filter(ca =>!isOutstandingCashAdvance(ca)))
  }
  async function loadMyAttendanceHistory(emp) {
- const { data, error } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
- if (error) {
-  console.error('Attendance history load failed:', error)
-  setMyAttendance([])
-  return
- }
+ const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
  const scheduleAwareLogs = await hydrateAttendanceLogsWithScheduleFallback(data || [], emp)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduleAwareLogs)
- setMyAttendance(attachAttendanceEmployeePolicy(enrichedLogs, emp))
+ setMyAttendance(enrichedLogs)
  }
 
  async function loadMedicalCertificateLock(emp) {
@@ -17577,8 +17545,6 @@ function buildDeliveryInvoicePrintCSS() {
  const timeOut = nowTime()
  const activeAttendanceDate = verifiedLog.attendance_date || today
  const undertimeDeductionApplicable = employeeRuleEnabled(employee.undertime_deduction_applicable, true)
- const overtimePayEligible = employeeRuleEnabled(employee.overtime_pay_eligible, true)
- const nightDifferentialPayEligible = employeeRuleEnabled(employee.night_differential_pay_eligible, true)
 
  let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, rawOvertimeMinutes=0, status=verifiedLog.late_minutes>0?'Late':'Completed'
  const totalBreakMins = effectiveBreakRows.reduce((s,b)=>s+Number(b.break_minutes||0),0)
@@ -17597,7 +17563,7 @@ function buildDeliveryInvoicePrintCSS() {
  // UT is schedule-anchored separately from Late and Overbreak, so staying after
  // shift end cannot erase an early Time Out and no shortage is double-classified.
  rawOvertimeMinutes = Math.max(0, Math.round(attendanceMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
- overtimeMinutes = overtimePayEligible ? roundPayableOvertimeMinutes(rawOvertimeMinutes) : 0
+ overtimeMinutes = roundPayableOvertimeMinutes(rawOvertimeMinutes)
  if (undertimeMinutes>0) status='Undertime - Pending Approval'
  else if (overtimeMinutes>0) status='Overtime - Pending Filing'
 
@@ -17608,8 +17574,7 @@ function buildDeliveryInvoicePrintCSS() {
  const nsdEnd = 30*60 // 6AM next day = 1800 mins
  const os = Math.max(inM, nsdStart)
  const oe = Math.min(outM, nsdEnd)
- const rawNsdMinutes = oe > os? Math.round(oe - os): 0
- const nsdMinutes = nightDifferentialPayEligible ? rawNsdMinutes : 0
+ const nsdMinutes = oe > os? Math.round(oe - os): 0
  // 
 
  let selfieUrl = null
@@ -17739,24 +17704,6 @@ function buildDeliveryInvoicePrintCSS() {
  async function refreshTimeAdjustmentPreview(dateValue = otRequestDate, typeValue = otRequestType, fromValue = otRequestFrom, toValue = otRequestTo) {
  const targetDate = String(dateValue || '').slice(0, 10)
  const requestType = String(typeValue || 'overtime').toLowerCase()
- const overtimePayEligible = employeeRuleEnabled(employee?.overtime_pay_eligible, true)
- const undertimeDeductionApplicable = employeeRuleEnabled(employee?.undertime_deduction_applicable, true)
- if (requestType === 'overtime' && !overtimePayEligible) {
-  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Overtime filing is disabled for your employee payroll policy. No OT pay is created for this attendance date.', code:'overtime_exempt' }
-  setTimeAdjPreview(exemptPreview)
-  setOtRequestMinutes('')
-  setOtRequestFrom('')
-  setOtRequestTo('')
-  return exemptPreview
- }
- if (requestType === 'undertime' && !undertimeDeductionApplicable) {
-  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Undertime filing is not required for your employee payroll policy because no UT deduction applies.', code:'undertime_exempt' }
-  setTimeAdjPreview(exemptPreview)
-  setOtRequestMinutes('')
-  setOtRequestFrom('')
-  setOtRequestTo('')
-  return exemptPreview
- }
  if (targetDate && targetDate > today) {
   const futurePreview = { loading:false, canSubmit:false, minutes:0, message:'Future attendance dates cannot be filed. Select today or a completed past attendance date.', code:'future_date' }
   setTimeAdjPreview(futurePreview)
@@ -22945,7 +22892,10 @@ This recovery button creates one approved expense record using GROSS payroll ear
   const rangeValidation = requestType === 'overtime' && parsedTimeReason.hasOvertimeRange
    ? validateFiledOvertimeRange(validation, parsedTimeReason.overtimeRange?.filedFrom, parsedTimeReason.overtimeRange?.filedTo)
    : null
-  const canApprove = true
+  const payrollImpact = await checkTimeAdjPayrollStatus({ ...req, attendance_date:validation.resolvedAttendanceDate || req.attendance_date })
+  const postReleaseAdjustment = payrollImpact.released === true
+  const computedDraftPayroll = payrollImpact.computed === true && !postReleaseAdjustment
+  const canApprove = !payrollImpact.error && !computedDraftPayroll
   const minutesDiffer = requestedMinutes !== actualMinutes
   const filingMismatch = requestType === 'overtime' && (
    !parsedTimeReason.hasOvertimeRange ||
@@ -22961,6 +22911,15 @@ This recovery button creates one approved expense record using GROSS payroll ear
   const calculationMessage = requestType === 'undertime'
    ? `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). Raw attendance shortage: ${validation.metrics.rawUndertimeMinutes || 0} minute(s); chargeable UT: ${validation.metrics.undertimeMinutes || 0} minute(s) after rounding upward to a ${UNDERTIME_BLOCK_MINUTES}-minute block. Schedule check: ${validation.metrics.lateMinutes || 0} late minute(s) + ${validation.metrics.earlyOutMinutes || 0} early-out minute(s). Extra minutes before or after scheduled boundaries cannot reduce the protected shortage.`
    : `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). Raw OT: ${safeNum(window.rawMinutes, 0)} minute(s); policy-qualified OT: ${safeNum(window.payableMinutes ?? window.minutes, 0)} minute(s) in completed ${OVERTIME_BLOCK_MINUTES}-minute blocks.`
+  const payrollMessage = payrollImpact.error
+   ? ` Payroll status could not be verified: ${payrollImpact.error}`
+   : computedDraftPayroll
+    ? ' Approval is blocked because this date is already inside a computed draft/review payroll. Undo the draft payroll first, approve this request, then recompute.'
+    : postReleaseAdjustment
+     ? requestType === 'overtime'
+      ? ' This date is in released payroll. Owner/Payroll approval will preserve that payroll and create one linked, itemized overtime addition in the next open cutoff.'
+      : ' This date is in released payroll. Owner/Payroll approval will preserve that payroll, reconcile the entire source cutoff, and create only any missing attendance deduction in the next open cutoff.'
+     : ''
 
   return {
    loading:false,
@@ -22974,11 +22933,14 @@ This recovery button creates one approved expense record using GROSS payroll ear
    resolvedAttendanceDate:validation.resolvedAttendanceDate,
    resolvedFromPreviousDay:validation.resolvedFromPreviousDay,
    legacy:requestType === 'overtime' && !parsedTimeReason.hasOvertimeRange,
+   payrollImpact,
+   postReleaseAdjustment,
+   computedDraftPayroll,
    willAutoSync:minutesDiffer || filingMismatch,
    canApprove,
    message:actualMinutes > 0
-    ? `${calculationMessage} ${syncMessage}${validation.resolvedFromPreviousDay ? ` ${validation.resolutionMessage}` : ''}`
-    : `${calculationMessage} There are no actual ${requestType === 'overtime' ? 'overtime minutes above eight paid hours' : 'undertime minutes below eight paid hours'}. Approval will close this request at 0 minutes, and payroll will count nothing.`
+    ? `${calculationMessage} ${syncMessage}${validation.resolvedFromPreviousDay ? ` ${validation.resolutionMessage}` : ''}${payrollMessage}`
+    : `${calculationMessage} There are no actual ${requestType === 'overtime' ? 'overtime minutes above eight paid hours' : 'undertime minutes below eight paid hours'}. Approval will close this request at 0 minutes, and payroll will count nothing.${payrollMessage}`
   }
  } catch(error) {
   return { loading:false, requestType, parsedReason, canApprove:false, error:error?.message || String(error), message:'Attendance verification failed: ' + (error?.message || error) }
@@ -23085,7 +23047,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (!req?.employee_id || !attendanceDate) return { released:false, computed:false, records:[] }
  const { data, error } = await supabase
 .from('payroll_records')
-.select('id,payroll_start,payroll_end,payroll_approved,approved_at')
+.select('id,payroll_start,payroll_end,payroll_approved,payroll_released,payroll_locked,payroll_status,approved_at,released_at')
 .eq('employee_id', req.employee_id)
 .lte('payroll_start', attendanceDate)
 .gte('payroll_end', attendanceDate)
@@ -23094,10 +23056,169 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (error) return { released:false, computed:false, records:[], error:error.message }
  const records = data || []
  return {
- released: records.some(r => r.payroll_approved === true ||!!r.approved_at),
+ released: records.some(isReleasedPayrollRecord),
  computed: records.length > 0,
  records
  }
+ }
+
+ async function ensurePostReleaseAdjustmentSchemaReady() {
+  const { error } = await supabase
+   .from('payroll_adjustments')
+   .select('source_type,source_id,source_payroll_start,source_payroll_end,source_attendance_date,source_minutes,source_rate,source_multiplier,created_by')
+   .limit(1)
+  if (!error) return true
+  const message = String(error?.message || error)
+  if (/source_type|source_id|source_payroll_start|source_attendance_date|source_minutes|source_rate|source_multiplier|created_by/i.test(message)) {
+   throw new Error('The post-release payroll adjustment migration is not installed. Run App(68)-post-release-payroll-adjustments.sql in Supabase first, then refresh the app.')
+  }
+  throw error
+ }
+
+ async function resolvePostReleaseAdjustmentTarget(employeeId, sourcePayrollEnd) {
+  let cutoffKey = getCurrentDTRCutoffKey(today)
+  let period = getDTRCutoffPeriodFromKey(cutoffKey)
+  let attempts = 0
+  while (period && period.start <= String(sourcePayrollEnd || '').slice(0, 10) && attempts < 26) {
+   cutoffKey = getNextDTRCutoffKey(cutoffKey)
+   period = getDTRCutoffPeriodFromKey(cutoffKey)
+   attempts += 1
+  }
+  while (period && attempts < 26) {
+   const { data:coveringRows, error } = await supabase
+    .from('payroll_records')
+    .select('id,payroll_start,payroll_end,payroll_approved,payroll_released,payroll_locked,payroll_status,approved_at,released_at')
+    .eq('employee_id', employeeId)
+    .lte('payroll_start', period.start)
+    .gte('payroll_end', period.start)
+    .limit(20)
+   if (error) throw error
+   const releasedRow = (coveringRows || []).find(isReleasedPayrollRecord)
+   if (!releasedRow) {
+    return { period, adjustmentDate:period.start, draftPayroll:(coveringRows || [])[0] || null }
+   }
+   cutoffKey = getNextDTRCutoffKey(cutoffKey)
+   period = getDTRCutoffPeriodFromKey(cutoffKey)
+   attempts += 1
+  }
+  throw new Error('No open payroll cutoff was found for this adjustment. Review the employee payroll history before continuing.')
+ }
+
+ async function preparePostReleaseTimeAdjustment(req, validation, coveredPayroll = []) {
+  await ensurePostReleaseAdjustmentSchemaReady()
+  const requestType = String(req?.request_type || '').trim().toLowerCase()
+  const sourceId = String(req?.id || '').trim()
+  const exactMinutes = requestType === 'overtime'
+   ? Math.max(0, Math.round(safeNum(validation?.actualOvertimeMinutes, 0)))
+   : Math.max(0, Math.round(safeNum(validation?.actualUndertimeMinutes, 0)))
+  const sourceAttendanceDate = String(validation?.resolvedAttendanceDate || req?.attendance_date || '').slice(0, 10)
+  const sourceStarts = (coveredPayroll || []).map(row => String(row?.payroll_start || '').slice(0,10)).filter(Boolean).sort()
+  const sourceEnds = (coveredPayroll || []).map(row => String(row?.payroll_end || '').slice(0,10)).filter(Boolean).sort()
+  const sourcePayrollStart = sourceStarts[0] || ''
+  const sourcePayrollEnd = sourceEnds[sourceEnds.length - 1] || ''
+  if (!sourceId || !sourcePayrollStart || !sourcePayrollEnd) throw new Error('The source request or released payroll period is incomplete.')
+
+  const { data:existingRows, error:existingError } = await supabase
+   .from('payroll_adjustments')
+   .select('*')
+   .eq('source_type', POST_RELEASE_TIME_ADJ_SOURCE_TYPE)
+   .eq('source_id', sourceId)
+   .limit(2)
+  if (existingError) throw existingError
+  const existingAdjustment = (existingRows || [])[0] || null
+  if (existingAdjustment) {
+   if (String(existingAdjustment.source_attendance_date || '').slice(0,10) !== sourceAttendanceDate || Math.round(safeNum(existingAdjustment.source_minutes, 0)) !== exactMinutes) {
+    throw new Error('A prior-period adjustment already exists for this request but its source date or approved minutes differ. Review the adjustment history before continuing.')
+   }
+   const existingPeriod = getDTRCutoffPeriodFromKey(getCurrentDTRCutoffKey(existingAdjustment.adjustment_date))
+   return {
+    requestType, sourceId, sourceAttendanceDate, sourcePayrollStart, sourcePayrollEnd, exactMinutes,
+    adjustmentType:String(existingAdjustment.adjustment_type || ''), category:String(existingAdjustment.category || ''),
+    amount:moneyRound(safeNum(existingAdjustment.amount, 0)), rate:safeNum(existingAdjustment.source_rate, 0), multiplier:safeNum(existingAdjustment.source_multiplier, 1),
+    target:{ period:existingPeriod, adjustmentDate:String(existingAdjustment.adjustment_date || '').slice(0,10), draftPayroll:null },
+    existingAdjustment, employee:null, reconciliationRow:null
+   }
+  }
+
+  let employeeRecord = employees.find(emp => String(emp?.id || '') === String(req?.employee_id || '')) || null
+  if (!employeeRecord) {
+   const { data:employeeRows, error:employeeError } = await supabase.from('employees').select('*').eq('id', req.employee_id).limit(1)
+   if (employeeError) throw employeeError
+   employeeRecord = (employeeRows || [])[0] || null
+  }
+  if (!employeeRecord) throw new Error('The employee payroll-rate record was not found.')
+  const rateInfo = getEmployeeHourlyRateInfo(employeeRecord)
+  if (exactMinutes > 0 && (!rateInfo.isConfigured || safeNum(rateInfo.hourlyRate, 0) <= 0)) throw new Error('The employee hourly rate cannot be determined. Correct the payroll rate before approving this released-period request.')
+  const target = await resolvePostReleaseAdjustmentTarget(req.employee_id, sourcePayrollEnd)
+
+  if (requestType === 'overtime') {
+   const eligible = employeeRuleEnabled(employeeRecord.overtime_pay_eligible, true)
+   return {
+    requestType, sourceId, sourceAttendanceDate, sourcePayrollStart, sourcePayrollEnd, exactMinutes,
+    adjustmentType:'addition', category:POST_RELEASE_OT_CATEGORY,
+    amount:eligible ? moneyRound(exactMinutes * safeNum(rateInfo.hourlyRate, 0) / 60 * 1.25) : 0,
+    rate:safeNum(rateInfo.hourlyRate, 0), multiplier:1.25, target, existingAdjustment:null, employee:employeeRecord,
+    reconciliationRow:null, eligibilityNote:eligible ? '' : 'Employee is marked ineligible for overtime pay.'
+   }
+  }
+
+  const reconciliationRows = await runHistoricalAttendanceReconciliation({ start:sourcePayrollStart, end:sourcePayrollEnd, silent:true, preserveUi:true })
+  const reconciliationRow = (reconciliationRows || []).find(row => String(row?.employeeId || '') === String(req?.employee_id || '')) || null
+  if (!reconciliationRow) throw new Error('The released payroll attendance reconciliation could not be reconstructed for this employee.')
+  if (['blocked','incomplete','over'].includes(String(reconciliationRow.status || ''))) {
+   throw new Error(reconciliationRow.statusLabel || 'The released payroll attendance reconciliation requires manual review.')
+  }
+  return {
+   requestType, sourceId, sourceAttendanceDate, sourcePayrollStart, sourcePayrollEnd, exactMinutes,
+   adjustmentType:'deduction', category:PAYROLL_ATTENDANCE_RECON_CATEGORY,
+   amount:reconciliationRow.canCreate ? moneyRound(reconciliationRow.missingAdjustment) : 0,
+   rate:safeNum(reconciliationRow.hourlyRate, rateInfo.hourlyRate), multiplier:1, target, existingAdjustment:null,
+   employee:employeeRecord, reconciliationRow,
+   eligibilityNote:employeeRuleEnabled(employeeRecord.undertime_deduction_applicable, true) ? '' : 'Employee is exempt from undertime deduction.'
+  }
+ }
+
+ async function createPreparedPostReleaseAdjustment(req, context) {
+  if (!context || context.existingAdjustment || safeNum(context.amount, 0) <= 0.009) {
+   return { created:false, adjustment:context?.existingAdjustment || null }
+  }
+  const employeeRecord = context.employee || {}
+  let notes = ''
+  if (context.requestType === 'overtime') {
+   notes = `POST-RELEASE OT|TIME-ADJ:${context.sourceId} | SOURCE-PERIOD:${context.sourcePayrollStart} TO ${context.sourcePayrollEnd} | SOURCE-ATTENDANCE:${context.sourceAttendanceDate} | ${context.exactMinutes} approved policy OT minute(s) × ${php(context.rate)}/hour × 1.25. Released payroll was preserved; this item is applied on ${context.target.adjustmentDate} in the next open cutoff.`
+  } else {
+   const row = context.reconciliationRow || {}
+   const sourceDayDetails = (row.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0)
+   const serializedSourceDays = serializeAttendanceReconDayDetails(sourceDayDetails)
+   const readableSourceDays = sourceDayDetails.map(day => `${day.date}: ${safeNum(day.lateMinutes,0)} late min, ${safeNum(day.undertimeMinutes,0)} automatic UT min, ${php(day.deductionAmount)}`).join('; ')
+   notes = `${row.marker} | POST-RELEASE UT TRIGGER:TIME-ADJ:${context.sourceId} | SOURCE-PERIOD:${context.sourcePayrollStart} TO ${context.sourcePayrollEnd} | SOURCE-ATTENDANCE:${context.sourceAttendanceDate} | CORRECTION-APPLIED:${context.target.adjustmentDate} | ${PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN}${serializedSourceDays}${PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE} | Full-cutoff reconciliation prevents duplicate deduction. Source dates: ${readableSourceDays || 'No chargeable attendance shortage'}. Correct attendance deduction ${php(row.correctDeduction)}; saved payroll plus prior corrections ${php(safeNum(row.priorAttendanceDeduction, 0) + safeNum(row.existingReconAmount, 0))}; new missing difference ${php(context.amount)}.`
+  }
+  const payload = {
+   employee_id:req.employee_id,
+   employee_code:req.employee_code || employeeRecord.employee_code || '',
+   employee_name:req.employee_name || employeeRecord.full_name || '',
+   adjustment_date:context.target.adjustmentDate,
+   adjustment_type:context.adjustmentType,
+   category:context.category,
+   amount:moneyRound(context.amount),
+   notes,
+   source_type:POST_RELEASE_TIME_ADJ_SOURCE_TYPE,
+   source_id:context.sourceId,
+   source_payroll_start:context.sourcePayrollStart,
+   source_payroll_end:context.sourcePayrollEnd,
+   source_attendance_date:context.sourceAttendanceDate,
+   source_minutes:context.exactMinutes,
+   source_rate:moneyRound(context.rate),
+   source_multiplier:context.multiplier,
+   created_by:currentAdminLabel || adminRole || 'Admin'
+  }
+  const { data, error } = await supabase.from('payroll_adjustments').insert(payload).select().single()
+  if (!error) return { created:true, adjustment:data }
+  if (String(error?.message || '').toLowerCase().includes('duplicate')) {
+   const { data:duplicateRows, error:duplicateLookupError } = await supabase.from('payroll_adjustments').select('*').eq('source_type', POST_RELEASE_TIME_ADJ_SOURCE_TYPE).eq('source_id', context.sourceId).limit(1)
+   if (!duplicateLookupError && duplicateRows?.[0]) return { created:false, adjustment:duplicateRows[0] }
+  }
+  throw error
  }
 
  async function approveMealBreakExceptionRequest(req, validation, context = {}) {
@@ -23515,24 +23636,30 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   return
  }
 
+ let releasedPayrollRows = []
  const { data:coveredPayroll, error:coveredPayrollError } = await supabase
  .from('payroll_records')
- .select('id,payroll_start,payroll_end,payroll_approved,approved_at,employee_acknowledgement')
+ .select('id,payroll_start,payroll_end,payroll_approved,payroll_released,payroll_locked,payroll_status,approved_at,released_at,employee_acknowledgement')
  .eq('employee_id', req.employee_id)
  .lte('payroll_start', targetDate)
  .gte('payroll_end', targetDate)
  .limit(20)
  if (coveredPayrollError) { showToast('Failed to check payroll guard: '+coveredPayrollError.message, 'red'); return }
  if ((coveredPayroll || []).length > 0) {
-  const released = coveredPayroll.some(isReleasedPayrollRecord)
-  const periodText = coveredPayroll.map(r=>`${r.payroll_start} to ${r.payroll_end}`).join(', ')
-  if (released) {
-   showToast(`Approval blocked: ${targetDate} is inside released payroll (${periodText}). Use payroll adjustment next cutoff.`, 'red')
+ const released = coveredPayroll.some(isReleasedPayrollRecord)
+ const periodText = coveredPayroll.map(r=>`${r.payroll_start} to ${r.payroll_end}`).join(', ')
+ if (released) {
+   if (requestType === 'meal_break') {
+    showToast(`Approval blocked: ${targetDate} is inside released payroll (${periodText}). A meal-break correction can change several payroll components and must be handled through the historical attendance reconciliation workflow.`, 'red')
+    await logAudit('MEAL BREAK APPROVAL BLOCKED BY RELEASED PAYROLL', currentAdminLabel, req.employee_name, `${targetDate} | Payroll: ${periodText}`)
+    return
+   }
+   releasedPayrollRows = coveredPayroll.filter(isReleasedPayrollRecord)
   } else {
    showToast(`Approval blocked: ${targetDate} is inside already computed draft/review payroll (${periodText}). Undo that draft payroll first, process the attendance request, then recompute.`, 'red')
+   await logAudit('OT/UT APPROVAL BLOCKED BY PAYROLL GUARD', currentAdminLabel, req.employee_name, `${requestType} ${req.minutes} min on ${targetDate} | Payroll: ${periodText}`)
+   return
   }
-  await logAudit('OT/UT APPROVAL BLOCKED BY PAYROLL GUARD', currentAdminLabel, req.employee_name, `${requestType} ${req.minutes} min on ${targetDate} | Payroll: ${periodText}`)
-  return
  }
 
  if (requestType !== 'meal_break' && safeNum(validation.metrics.recordedBreakMinutes, 0) === 0 && !validation.metrics.breakOverrideApplied) {
@@ -23591,6 +23718,40 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const actualWindow = validation.overtimeWindow || {}
  const zeroMinuteApproval = exactMinutes <= 0
 
+ let postReleaseContext = null
+ if (releasedPayrollRows.length > 0) {
+  if (!requireOwnerOrPayrollAction('approve a released-period OT/UT request and create its next-cutoff adjustment')) return
+  if (!String(reviewNote || '').trim()) {
+   showToast('Enter an admin response documenting the late filing, verification, and approval basis before creating a post-release payroll adjustment.', 'red')
+   return
+  }
+  try {
+   postReleaseContext = await preparePostReleaseTimeAdjustment(req, validation, releasedPayrollRows)
+  } catch(postReleaseError) {
+   showToast('Post-release approval blocked: ' + (postReleaseError?.message || postReleaseError), 'red')
+   await logAudit('POST-RELEASE OT/UT PREPARATION BLOCKED', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | ${postReleaseError?.message || postReleaseError}`)
+   return
+  }
+  const targetPeriodLabel = postReleaseContext.target?.period?.label || `${postReleaseContext.target?.adjustmentDate || ''}`
+  const draftTargetWarning = postReleaseContext.target?.draftPayroll
+   ? `\n\nIMPORTANT: A draft payroll already covers the target cutoff. After this approval, undo and recompute that draft so the new adjustment appears on the payslip.`
+   : ''
+  const adjustmentExplanation = requestType === 'overtime'
+   ? postReleaseContext.amount > 0
+    ? `${php(postReleaseContext.amount)} will be created as an itemized overtime addition dated ${postReleaseContext.target.adjustmentDate}.`
+    : `No monetary addition will be created. ${postReleaseContext.eligibilityNote || 'The approved minutes are zero.'}`
+   : postReleaseContext.amount > 0
+    ? `${php(postReleaseContext.amount)} is the missing full-cutoff attendance deduction after subtracting everything already deducted in the released payroll and prior corrections. It will be dated ${postReleaseContext.target.adjustmentDate}.`
+    : `No new deduction will be created because the released payroll and prior corrections already cover the recalculated attendance shortage.${postReleaseContext.eligibilityNote ? ` ${postReleaseContext.eligibilityNote}` : ''}`
+  const confirmed = window.confirm(
+   `POST-RELEASE ${requestType.toUpperCase()} APPROVAL\n\nEmployee: ${req.employee_name}\nSource attendance: ${targetDate}\nReleased payroll: ${postReleaseContext.sourcePayrollStart} to ${postReleaseContext.sourcePayrollEnd}\nApproved policy minutes: ${exactMinutes}\n\n${adjustmentExplanation}\nTarget cutoff: ${targetPeriodLabel}\n\nThe released payroll totals will remain locked and unchanged. The adjustment will be separately itemized and linked to request ${req.id} so it cannot be posted twice.${draftTargetWarning}\n\nContinue?`
+  )
+  if (!confirmed) {
+   showToast('Post-release approval cancelled. No request, attendance, or payroll adjustment was changed.', 'orange')
+   return
+  }
+ }
+
  const parsedReason = parseTimeAdjustmentEmployeeReason(req.employee_reason || '')
  const savedRangeText = requestType === 'overtime' && parsedReason.hasOvertimeRange
   ? `${parsedReason.overtimeRange?.filedFrom || ''}-${parsedReason.overtimeRange?.filedTo || ''}`
@@ -23599,7 +23760,10 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   ? `; schedule ${validation.metrics.shiftStart || 'not saved'}-${validation.metrics.shiftEnd || 'not saved'}; raw late ${validation.metrics.rawLateMinutes || 0} min; policy late ${validation.metrics.lateMinutes || 0} min; grace applied ${validation.metrics.graceAppliedMinutes || 0} min; early out ${validation.metrics.earlyOutMinutes || 0} min; raw paid-work shortage ${validation.metrics.rawPaidWorkShortageMinutes || 0} min; grace-adjusted paid-work shortage ${validation.metrics.paidWorkShortageMinutes || 0} min; raw protected UT ${validation.metrics.rawUndertimeMinutes || 0} min; ${UNDERTIME_BLOCK_MINUTES}-minute block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min; final chargeable UT ${validation.metrics.undertimeMinutes || 0} min`
   : ''
  const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; raw span ${validation.metrics.rawSpanMinutes} min; break deducted ${validation.metrics.deductedBreakMinutes} min; paid work ${validation.metrics.paidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min${scheduleShortageText}.`
- const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}${zeroMinuteApproval ? 'REVIEWED AND CLOSED AT ZERO FROM ACTUAL ATTENDANCE' : 'APPROVED FROM ACTUAL ATTENDANCE AND POLICY'}: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}; raw OT ${safeNum(actualWindow.rawMinutes, 0)} min; excluded remainder ${safeNum(actualWindow.excludedMinutes, 0)} min` : `; raw UT ${validation.metrics.rawUndertimeMinutes || 0} min; block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min`}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
+ const postReleaseReviewSuffix = postReleaseContext
+  ? ` PRIOR-PERIOD CONTROL: released payroll ${postReleaseContext.sourcePayrollStart} to ${postReleaseContext.sourcePayrollEnd} was preserved; linked adjustment source ${POST_RELEASE_TIME_ADJ_SOURCE_TYPE}:${postReleaseContext.sourceId}; target date ${postReleaseContext.target.adjustmentDate}; calculated adjustment ${php(postReleaseContext.amount)}.`
+  : ''
+ const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}${zeroMinuteApproval ? 'REVIEWED AND CLOSED AT ZERO FROM ACTUAL ATTENDANCE' : 'APPROVED FROM ACTUAL ATTENDANCE AND POLICY'}: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}; raw OT ${safeNum(actualWindow.rawMinutes, 0)} min; excluded remainder ${safeNum(actualWindow.excludedMinutes, 0)} min` : `; raw UT ${validation.metrics.rawUndertimeMinutes || 0} min; block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min`}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.${postReleaseReviewSuffix}`
 
  const { error } = await supabase.from('time_adjustment_requests').update({
   attendance_date:targetDate,
@@ -23667,6 +23831,14 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
 
  const primaryAttendanceLog = validation.integrity.completedLogs[0]
  const sourceAttendanceLogIds = (validation.logs || []).map(row => row?.id).filter(Boolean)
+ const sourceAttendanceSnapshots = (validation.logs || []).filter(row => row?.id).map(row => ({
+  id:row.id,
+  overtime_minutes:Math.max(0, Math.round(safeNum(row.overtime_minutes, 0))),
+  overtime_approved:row.overtime_approved === true,
+  undertime_minutes:Math.max(0, Math.round(safeNum(row.undertime_minutes, 0))),
+  late_minutes:Math.max(0, Math.round(safeNum(row.late_minutes, 0))),
+  status:row.status || 'Completed'
+ }))
  if (requestType==='overtime') {
   let clearOTQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false })
   clearOTQuery = sourceAttendanceLogIds.length > 0
@@ -23718,6 +23890,28 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
     showToast('Approval was rolled back because attendance synchronization failed: ' + attendanceUTError.message, 'red')
     return
    }
+ }
+ }
+
+ let postReleaseAdjustmentResult = null
+ if (postReleaseContext) {
+  try {
+   postReleaseAdjustmentResult = await createPreparedPostReleaseAdjustment(req, postReleaseContext)
+  } catch(postReleaseAdjustmentError) {
+   await rollbackApprovalAfterSyncFailure('post-release payroll adjustment failed — ' + (postReleaseAdjustmentError?.message || postReleaseAdjustmentError))
+   for (const snapshot of sourceAttendanceSnapshots) {
+    const { error:restoreError } = await supabase.from('attendance_logs').update({
+     overtime_minutes:snapshot.overtime_minutes,
+     overtime_approved:snapshot.overtime_approved,
+     undertime_minutes:snapshot.undertime_minutes,
+     late_minutes:snapshot.late_minutes,
+     status:snapshot.status
+    }).eq('id', snapshot.id)
+    if (restoreError) console.error('Post-release attendance rollback failed:', restoreError)
+   }
+   await logAudit('POST-RELEASE OT/UT APPROVAL ROLLED BACK', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | ${postReleaseAdjustmentError?.message || postReleaseAdjustmentError}`)
+   showToast('Approval was rolled back because the linked next-cutoff payroll adjustment could not be created: ' + (postReleaseAdjustmentError?.message || postReleaseAdjustmentError), 'red')
+   return
   }
  }
 
@@ -23754,11 +23948,18 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   }
  }
 
+ const postReleasePayrollMessage = postReleaseContext
+  ? postReleaseContext.amount > 0
+   ? requestType === 'overtime'
+    ? ` The released payroll was not changed. An itemized ${php(postReleaseContext.amount)} overtime addition is linked to this request for the cutoff containing ${postReleaseContext.target.adjustmentDate}.`
+    : ` The released payroll was not changed. A full-cutoff reconciliation found ${php(postReleaseContext.amount)} still missing after prior deductions, so that itemized deduction is linked to this request for the cutoff containing ${postReleaseContext.target.adjustmentDate}.`
+   : ` The released payroll was not changed, and no new payroll amount was created because ${requestType === 'overtime' ? (postReleaseContext.eligibilityNote || 'there are no payable overtime minutes') : 'the recalculated attendance deduction is already covered'}.`
+  : ''
  await logAudit(
-  `${requestType.toUpperCase()} APPROVED FROM ACTUAL ATTENDANCE`,
+  postReleaseContext ? `POST-RELEASE ${requestType.toUpperCase()} APPROVED` : `${requestType.toUpperCase()} APPROVED FROM ACTUAL ATTENDANCE`,
   currentAdminLabel,
   req.employee_name,
-  `${exactMinutes} minute(s) on ${targetDate} | Saved request ${requestedMinutes} min | Raw ${validation.metrics.rawSpanMinutes} - Break ${validation.metrics.deductedBreakMinutes} = Paid ${validation.metrics.paidWorkedMinutes}`
+  `${exactMinutes} minute(s) on ${targetDate} | Saved request ${requestedMinutes} min | Raw ${validation.metrics.rawSpanMinutes} - Break ${validation.metrics.deductedBreakMinutes} = Paid ${validation.metrics.paidWorkedMinutes}${postReleaseContext ? ` | Source payroll ${postReleaseContext.sourcePayrollStart} to ${postReleaseContext.sourcePayrollEnd} preserved | Adjustment ${php(postReleaseContext.amount)} on ${postReleaseContext.target.adjustmentDate} | Adjustment row ${postReleaseAdjustmentResult?.adjustment?.id || 'none required'}` : ''}`
  )
  await createNotification(
   req.employee_id,
@@ -23766,8 +23967,8 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   'overtime',
   ` ${requestType==='overtime'?'Overtime':'Undertime'} Approved`,
   zeroMinuteApproval
-   ? `Your ${requestType} request for ${targetDate} was reviewed and closed at 0 minute(s), based on your actual Time In and Time Out less the mandatory break. Nothing will be added to or deducted from payroll from this request.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
-   : `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), calculated from your actual Time In and Time Out less the mandatory break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
+   ? `Your ${requestType} request for ${targetDate} was reviewed and closed at 0 minute(s), based on your actual Time In and Time Out less the mandatory break. Nothing will be added to or deducted from payroll from this request.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}${postReleasePayrollMessage}`
+   : `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), calculated from your actual Time In and Time Out less the mandatory break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}${postReleasePayrollMessage}`
  )
  const approvalTimestamp = new Date().toISOString()
  setTimeAdjRequests(prev=>prev.map(r=>{
@@ -23790,7 +23991,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   return r
  }))
  await refreshTimeAdjAdminValidation({ ...req, attendance_date:targetDate, minutes:exactMinutes, status:'approved' })
- showToast(`${requestType === 'overtime' ? 'Overtime' : 'Undertime'} ${zeroMinuteApproval ? 'reviewed and closed at 0' : `approved for ${exactMinutes}`} policy-qualified minute(s).${requestedMinutes !== exactMinutes ? ` Saved request corrected from ${requestedMinutes} minute(s).` : ''}${autoVoidedDuplicateIds.length > 0 ? ` ${autoVoidedDuplicateIds.length} duplicate pending request(s) were automatically voided.` : ''}`)
+ showToast(`${requestType === 'overtime' ? 'Overtime' : 'Undertime'} ${zeroMinuteApproval ? 'reviewed and closed at 0' : `approved for ${exactMinutes}`} policy-qualified minute(s).${requestedMinutes !== exactMinutes ? ` Saved request corrected from ${requestedMinutes} minute(s).` : ''}${postReleaseContext ? postReleaseContext.amount > 0 ? ` Released payroll preserved; ${php(postReleaseContext.amount)} adjustment created for ${postReleaseContext.target.adjustmentDate}.` : ' Released payroll preserved; no duplicate payroll amount was needed.' : ''}${postReleaseContext?.target?.draftPayroll ? ' Undo and recompute the target draft payroll now.' : ''}${autoVoidedDuplicateIds.length > 0 ? ` ${autoVoidedDuplicateIds.length} duplicate pending request(s) were automatically voided.` : ''}`)
  } finally {
   timeAdjApprovalLockRef.current = false
  }
@@ -24580,7 +24781,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const endDate = parseLocalDate(sourceEnd)
  if (!startDate || !endDate || endDate < startDate) { showToast('Historical payroll end date must be on or after the start date.', 'red'); return [] }
 
- setAttendanceReconLoading(true)
+ if (!options.preserveUi) setAttendanceReconLoading(true)
  try {
   const { data:payrollRows, error:payrollError } = await supabase
    .from('payroll_records')
@@ -24590,8 +24791,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    .order('employee_name', { ascending:true })
   if (payrollError) throw payrollError
   if (!(payrollRows || []).length) {
-   setAttendanceReconRows([])
-   setAttendanceReconSelected({})
+   if (!options.preserveUi) {
+    setAttendanceReconRows([])
+    setAttendanceReconSelected({})
+   }
    if (!options.silent) showToast(`No saved payroll records found for ${sourceStart} to ${sourceEnd}.`, 'red')
    return []
   }
@@ -24783,21 +24986,25 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
   const selected = {}
   auditRows.forEach(row => { if (row.canCreate) selected[row.employeeId] = true })
-  setAttendanceReconRows(auditRows)
-  setAttendanceReconSelected(selected)
-  setAttendanceReconLastRunAt(new Date().toISOString())
+  if (!options.preserveUi) {
+   setAttendanceReconRows(auditRows)
+   setAttendanceReconSelected(selected)
+   setAttendanceReconLastRunAt(new Date().toISOString())
+  }
   const readyCount = auditRows.filter(row => row.canCreate).length
   const readyAmount = moneyRound(auditRows.filter(row => row.canCreate).reduce((sum, row) => sum + row.missingAdjustment, 0))
   if (!options.silent) showToast(`Audit complete: ${readyCount} employee(s) need ${php(readyAmount)} in attendance corrections.`)
   return auditRows
  } catch(err) {
   console.error('Historical attendance reconciliation failed:', err)
-  setAttendanceReconRows([])
-  setAttendanceReconSelected({})
+  if (!options.preserveUi) {
+   setAttendanceReconRows([])
+   setAttendanceReconSelected({})
+  }
   if (!options.silent) showToast('Historical attendance audit failed: ' + (err?.message || err), 'red')
   return []
  } finally {
-  setAttendanceReconLoading(false)
+  if (!options.preserveUi) setAttendanceReconLoading(false)
  }
  }
 
@@ -24868,8 +25075,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (error) throw error
   const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, sourceStart, sourceEnd)
   const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
-  const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp)
-  const grouped = groupDTRLogsByDate(policyLogs)
+  const grouped = groupDTRLogsByDate(enrichedLogs)
   const allDays = buildDateRangeRows(sourceStart, sourceEnd, ({ dateStr, day, dayName }) => ({ dateStr, day, dayName, log:mergeDTRDayLogs(grouped[dateStr] || []) }))
   const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
   const sourceDates = Array.from(new Set((trace?.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0).map(day => day.date).filter(Boolean)))
@@ -26456,8 +26662,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, startDate, endDate)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
- const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp || { id:empId, employee_code:empCode, full_name:empName })
- const grouped = groupDTRLogsByDate(policyLogs)
+ const grouped = groupDTRLogsByDate(enrichedLogs)
  const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
  const totalDaysWorked = new Set(mergedLogs.filter(l=>getAttendanceDayIntegrity(getDTRDayLogs(l)).isValidCompleted).map(l=>String(l.attendance_date || '').slice(0,10))).size
  const totalAbsent = new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size
@@ -33605,6 +33810,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   ? 'CALCULATING'
   : approvalAlreadyExists
    ? 'ALREADY APPROVED'
+   : adminValidation?.computedDraftPayroll
+    ? 'UNDO PAYROLL FIRST'
+    : adminValidation?.postReleaseAdjustment
+     ? 'NEXT-CUTOFF ADJUSTMENT'
    : isMealBreakRequest
     ? adminValidation?.canApprove ? 'BREAK REVIEW READY' : 'BREAK REVIEW BLOCKED'
     : adminValidation?.mealBreakPending
@@ -33612,11 +33821,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      : attendanceValid && actualMinutes > 0
       ? (adminValidation?.willAutoSync ? 'AUTO-SYNC READY' : 'ACTUAL MATCH')
       : attendanceValid ? 'NO PAYABLE MINUTES' : 'DTR REVIEW'
- const validationBadgeColor = adminValidation?.loading ? 'orange' : approvalAlreadyExists || approvalBlocked ? 'red' : 'green'
+ const validationBadgeColor = adminValidation?.loading ? 'orange' : approvalAlreadyExists || approvalBlocked ? 'red' : adminValidation?.postReleaseAdjustment ? 'orange' : 'green'
  const approveButtonLabel = approvalAlreadyExists
   ? 'APPROVAL BLOCKED'
   : isMealBreakRequest
    ? 'APPROVE NO MEAL BREAK'
+   : adminValidation?.postReleaseAdjustment
+    ? 'APPROVE PRIOR-PERIOD ADJUSTMENT'
    : attendanceValid && actualMinutes <= 0 ? 'APPROVE 0 MIN & CLOSE' : 'APPROVE ACTUAL MINUTES'
  const cardColor = isMealBreakRequest ? '#1a1a2e' : isOvertimeRequest ? '#ca1b1b' : '#FDD412'
  const cardBackground = isMealBreakRequest
@@ -33685,8 +33896,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {req.admin_reason && req.status!=='pending' && <p style={cps}>Admin Note: <em>"{req.admin_reason}"</em></p>}
  {(req.status==='pending' || req.status==='approved') && (
  <>
- <label style={lblS}>Admin Response / Reason {isMealBreakRequest && req.status==='pending' ? '(required for approval)' : req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
- <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
+ <label style={lblS}>Admin Response / Reason {(isMealBreakRequest || adminValidation?.postReleaseAdjustment) && req.status==='pending' ? '(required for approval)' : req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
+ <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : adminValidation?.postReleaseAdjustment ? 'Document why the filing was late, who verified it, and the approval basis...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
  {canConfirmNoBreakFromExistingRequest && <button style={{...btnBase, background:'#1a1a2e', color:'white', width:'auto', padding:'8px 14px', marginTop:0, boxShadow:'0 2px 8px rgba(26,26,46,0.24)' }} onClick={async(e)=>{ const btn=e.currentTarget; const original=btn.textContent; btn.disabled=true; btn.textContent=req.status==='approved'?'Reopening and applying no break...':'Applying no break...'; await confirmNoMealBreakFromExistingTimeAdj(req); btn.disabled=false; btn.textContent=original }}>{req.status==='approved'?'REOPEN + APPLY NO BREAK':'CONFIRM NO BREAK & RECALCULATE'}</button>}
  {req.status==='pending' && <button disabled={adminValidation?.loading || approvalBlocked} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked)?'not-allowed':'pointer' }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Revalidating attendance...'; await approveTimeAdj(req); btn.disabled=!!(adminValidation?.loading || approvalBlocked); btn.textContent=approveButtonLabel }}>{approveButtonLabel}</button>}
@@ -34794,8 +35005,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 .order('attendance_date')
  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, period.start, period.end)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
- const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp)
- const grouped = groupDTRLogsByDate(policyLogs)
+ const grouped = groupDTRLogsByDate(enrichedLogs)
  const allDays = buildDateRangeRows(period.start, period.end, ({ dateStr, day, dayName })=>{
  const log = mergeDTRDayLogs(grouped[dateStr] || [])
  return { dateStr, day, dayName, log }
