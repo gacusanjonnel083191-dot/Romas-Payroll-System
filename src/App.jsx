@@ -477,6 +477,12 @@ function isNoMealBreakBreakGuardError(error) {
   || message.includes('BREAK_PUNCH_BLOCKED_BY_NO_MEAL_BREAK')
 }
 
+function isOvertimeEligibilityGuardError(error) {
+ const message = String(error?.message || error || '').toUpperCase()
+ return message.includes('OT_FILING_BLOCKED_NOT_ELIGIBLE')
+  || message.includes('OT_FILING_BLOCKED_EMPLOYEE_NOT_FOUND')
+}
+
 function getCombinedAttendanceSpanMinutes(logs = []) {
  const intervals = []
  ;(logs || []).forEach(log => {
@@ -1400,6 +1406,10 @@ function employeeRuleEnabled(value, fallback = true) {
  if (String(value).toLowerCase() === 'false') return false
  if (String(value).toLowerCase() === 'true') return true
  return fallback
+}
+
+function isEmployeeOvertimeEligible(emp = {}) {
+ return employeeRuleEnabled(emp?.overtime_pay_eligible, true)
 }
 
 function requiresStrictCameraTimeIn(emp = {}) {
@@ -17545,6 +17555,7 @@ function buildDeliveryInvoicePrintCSS() {
  const timeOut = nowTime()
  const activeAttendanceDate = verifiedLog.attendance_date || today
  const undertimeDeductionApplicable = employeeRuleEnabled(employee.undertime_deduction_applicable, true)
+ const overtimePayEligible = isEmployeeOvertimeEligible(employee)
 
  let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, rawOvertimeMinutes=0, status=verifiedLog.late_minutes>0?'Late':'Completed'
  const totalBreakMins = effectiveBreakRows.reduce((s,b)=>s+Number(b.break_minutes||0),0)
@@ -17563,7 +17574,7 @@ function buildDeliveryInvoicePrintCSS() {
  // UT is schedule-anchored separately from Late and Overbreak, so staying after
  // shift end cannot erase an early Time Out and no shortage is double-classified.
  rawOvertimeMinutes = Math.max(0, Math.round(attendanceMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
- overtimeMinutes = roundPayableOvertimeMinutes(rawOvertimeMinutes)
+ overtimeMinutes = overtimePayEligible ? roundPayableOvertimeMinutes(rawOvertimeMinutes) : 0
  if (undertimeMinutes>0) status='Undertime - Pending Approval'
  else if (overtimeMinutes>0) status='Overtime - Pending Filing'
 
@@ -17649,6 +17660,7 @@ function buildDeliveryInvoicePrintCSS() {
  if (activeAttendanceDate!== today) msg += `\n\n Night shift time-out saved under attendance date: ${activeAttendanceDate}.`
  if (nsdMinutes > 0) msg += `\n\n Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) will be computed in payroll at 10% premium.`
  if (overtimeMinutes>0) msg += `\n\n ${rawOvertimeMinutes} actual OT minute(s) detected. ${overtimeMinutes} minute(s) are payable in completed ${OVERTIME_BLOCK_MINUTES}-minute blocks. Please file an OT request.`
+ if (rawOvertimeMinutes>0 && !overtimePayEligible) msg += `\n\n ${rawOvertimeMinutes} minute(s) were recorded above eight paid work hours, but your employee policy marks you as not eligible for overtime pay. OT filing is blocked and payroll will count 0 OT minutes.`
  if (undertimeMinutes>0) {
   if (autoUTRequestCreated) msg += `\n\n ${rawUndertimeMinutes} actual shortage minute(s) were detected and filed as ${undertimeMinutes} chargeable UT minute(s) under the ${UNDERTIME_BLOCK_MINUTES}-minute block policy. Payroll will count only the verified policy minutes after approval.`
   else if (autoUTRequestSkipped) msg += `\n\n ${undertimeMinutes} min undertime was detected. An existing pending or approved UT request already covers this attendance date.`
@@ -17724,6 +17736,17 @@ function buildDeliveryInvoicePrintCSS() {
  setTimeAdjPreview({ loading:true, canSubmit:false, minutes:0, message:'Checking the attendance record...', code:'loading' })
  try {
   const validation = await fetchAttendanceDayValidation(employee.id, targetDate, { employeeCode:employee.employee_code, employeeName:employee.full_name })
+  let currentOvertimePolicy = employee
+  if (requestType === 'overtime') {
+   const { data:employeePolicyRows, error:employeePolicyError } = await supabase
+    .from('employees')
+    .select('id,full_name,employee_code,position,overtime_pay_eligible')
+    .eq('id', employee.id)
+    .limit(1)
+   if (employeePolicyError) throw employeePolicyError
+   currentOvertimePolicy = (employeePolicyRows || [])[0] || null
+  }
+  const overtimeEligible = requestType !== 'overtime' || (!!currentOvertimePolicy && isEmployeeOvertimeEligible(currentOvertimePolicy))
   const { integrity } = validation
   const canonicalDate = String(validation.resolvedAttendanceDate || targetDate).slice(0,10)
   const guardDates = Array.from(new Set([targetDate, canonicalDate].filter(Boolean)))
@@ -17755,6 +17778,12 @@ function buildDeliveryInvoicePrintCSS() {
    message = `Request blocked: ${integrity.message} Submit a DTR correction first.`
   } else if (!integrity.isValidCompleted) {
    message = 'Request blocked: no complete Time In and Time Out were found for this date.'
+  } else if (requestType === 'overtime' && !currentOvertimePolicy) {
+   minutes = 0
+   message = 'Overtime filing is blocked because the current employee policy record could not be verified. Ask HR or the owner to review your employee profile.'
+  } else if (requestType === 'overtime' && !overtimeEligible) {
+   minutes = 0
+   message = 'Overtime filing is blocked because your employee policy marks you as not eligible for overtime pay. Extra attendance time will remain visible in DTR, but it cannot be filed or paid as OT.'
   } else if (requestType === 'meal_break') {
    setOtRequestFrom('')
    setOtRequestTo('')
@@ -17966,6 +17995,8 @@ function buildDeliveryInvoicePrintCSS() {
    const duplicateMessage = String(error.message || '').toLowerCase().includes('duplicate')
    if (isNoMealBreakBreakGuardError(error)) {
     alert('No Meal Break filing blocked: a Break Out or Break In punch exists for this attendance shift. This remains blocked even when the saved break duration is 0 minutes. Correct the DTR first if the punch is wrong.')
+   } else if (isOvertimeEligibilityGuardError(error)) {
+    alert('Overtime filing blocked: your current employee policy marks you as not eligible for overtime pay. Ask HR or the owner to review your employee profile if this is incorrect.')
    } else {
     alert(duplicateMessage ? 'An active request already exists for this employee and attendance shift. Refresh and wait for admin review.' : 'Failed: '+error.message)
    }
@@ -22782,6 +22813,45 @@ This recovery button creates one approved expense record using GROSS payroll ear
    }
   }
 
+  if (requestType === 'overtime') {
+   const { data:employeePolicyRows, error:employeePolicyError } = await supabase
+    .from('employees')
+    .select('id,full_name,employee_code,position,overtime_pay_eligible')
+    .eq('id', req.employee_id)
+    .limit(1)
+   if (employeePolicyError) throw employeePolicyError
+   const employeePolicy = (employeePolicyRows || [])[0] || null
+   if (!employeePolicy) {
+    return {
+     loading:false,
+     requestType,
+     parsedReason,
+     validation,
+     requestedMinutes,
+     actualMinutes:0,
+     overtimeEligible:false,
+     canApprove:false,
+     message:'OT approval blocked: the current employee policy record could not be found. Restore or correct the employee profile before reviewing this request.'
+    }
+   }
+   if (!isEmployeeOvertimeEligible(employeePolicy)) {
+    const attendanceQualifiedMinutes = Math.max(0, Math.round(safeNum(validation.actualOvertimeMinutes, 0)))
+    return {
+     loading:false,
+     requestType,
+     parsedReason,
+     validation,
+     requestedMinutes,
+     actualMinutes:0,
+     attendanceQualifiedMinutes,
+     employeePolicy,
+     overtimeEligible:false,
+     canApprove:false,
+     message:`OT approval blocked: ${employeePolicy.full_name || req.employee_name || 'This employee'} is marked not eligible for overtime pay. Attendance supports ${attendanceQualifiedMinutes} policy minute(s), but payable OT is 0. Reject or void this legacy request; do not approve it.`
+    }
+   }
+  }
+
   const requestedAttendanceDate = String(req?.attendance_date || '').slice(0, 10)
   const resolvedAttendanceDate = String(validation.resolvedAttendanceDate || requestedAttendanceDate).slice(0, 10)
   const approvalGuardDates = Array.from(new Set([requestedAttendanceDate, resolvedAttendanceDate].filter(Boolean)))
@@ -23153,6 +23223,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
 
   if (requestType === 'overtime') {
    const eligible = employeeRuleEnabled(employeeRecord.overtime_pay_eligible, true)
+   if (!eligible) throw new Error('Approval blocked: this employee is marked not eligible for overtime pay. Reject or void the request instead.')
    return {
     requestType, sourceId, sourceAttendanceDate, sourcePayrollStart, sourcePayrollEnd, exactMinutes,
     adjustmentType:'addition', category:POST_RELEASE_OT_CATEGORY,
@@ -23634,6 +23705,27 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   showToast(`Approval cannot continue: ${validation.integrity.message} ${validation.resolutionMessage || ''} Correct the DTR first.`, 'red')
   await logAudit('OT/UT APPROVAL REQUIRES DTR CORRECTION', currentAdminLabel, req.employee_name, `${requestType} requested ${requestedAttendanceDate} | ${validation.integrity.message}`)
   return
+ }
+
+ if (requestType === 'overtime') {
+  const { data:employeePolicyRows, error:employeePolicyError } = await supabase
+   .from('employees')
+   .select('id,full_name,employee_code,position,overtime_pay_eligible')
+   .eq('id', req.employee_id)
+   .limit(1)
+  if (employeePolicyError) {
+   showToast('OT approval blocked: employee eligibility could not be verified — ' + employeePolicyError.message, 'red')
+   return
+  }
+  const employeePolicy = (employeePolicyRows || [])[0] || null
+  if (!employeePolicy || !isEmployeeOvertimeEligible(employeePolicy)) {
+   const policyReason = employeePolicy
+    ? `${employeePolicy.full_name || req.employee_name || 'This employee'} is marked not eligible for overtime pay.`
+    : 'The current employee policy record could not be found.'
+   showToast(`OT approval blocked: ${policyReason} Reject or void this request instead.`, 'red')
+   await logAudit('OT APPROVAL BLOCKED BY EMPLOYEE POLICY', currentAdminLabel, req.employee_name, `${targetDate} | ${policyReason}`)
+   return
+  }
  }
 
  let releasedPayrollRows = []
@@ -33810,6 +33902,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   ? 'CALCULATING'
   : approvalAlreadyExists
    ? 'ALREADY APPROVED'
+   : isOvertimeRequest && adminValidation?.overtimeEligible === false
+    ? 'OT POLICY BLOCKED'
    : adminValidation?.computedDraftPayroll
     ? 'UNDO PAYROLL FIRST'
     : adminValidation?.postReleaseAdjustment
@@ -33824,6 +33918,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const validationBadgeColor = adminValidation?.loading ? 'orange' : approvalAlreadyExists || approvalBlocked ? 'red' : adminValidation?.postReleaseAdjustment ? 'orange' : 'green'
  const approveButtonLabel = approvalAlreadyExists
   ? 'APPROVAL BLOCKED'
+  : isOvertimeRequest && adminValidation?.overtimeEligible === false
+   ? 'OT APPROVAL BLOCKED'
   : isMealBreakRequest
    ? 'APPROVE NO MEAL BREAK'
    : adminValidation?.postReleaseAdjustment
@@ -33837,7 +33933,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    : 'linear-gradient(180deg,#fff8dc 0%,#ffffff 42%)'
  const typeLabel = isMealBreakRequest ? 'NO MEAL BREAK' : isOvertimeRequest ? 'OVERTIME' : 'UNDERTIME'
  const typeBadgeColor = isMealBreakRequest ? 'blue' : isOvertimeRequest ? 'green' : 'orange'
- const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
+ const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && !(isOvertimeRequest && adminValidation?.overtimeEligible === false) && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
  return (
  <div key={req.id} style={{...cardS, border:`1.5px solid ${cardColor}`, borderTop:`6px solid ${cardColor}`, background:cardBackground, width:'100%', minWidth:0, margin:0, padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 7px 22px rgba(25,25,45,0.09)', boxSizing:'border-box', alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -43989,7 +44085,7 @@ onClick={async ()=>{
   }}
   style={inputStyle}
  >
-  <option value="overtime">Overtime</option>
+  <option value="overtime" disabled={!isEmployeeOvertimeEligible(employee)}>Overtime{!isEmployeeOvertimeEligible(employee)?' (Not Eligible)':''}</option>
   <option value="undertime">Undertime</option>
   <option value="meal_break">No Meal Break Exception</option>
  </select>
@@ -44404,7 +44500,8 @@ onClick={async ()=>{
  {getDTRGraceAppliedMinutes(log)>0&&getDTRUndertimeMinutes(log)===0&&<p style={{...cps, color:'#2d8a4e', fontWeight:'700' }}>Grace Applied: {getDTRGraceAppliedMinutes(log)} min — no undertime within the {DEFAULT_LATE_GRACE_MINUTES}-minute grace period</p>}
  {getDTROverbreakMinutes(log)>0&&<p style={{...cps, color:'#ca1b1b', fontWeight:'700' }}>Overbreak: {getDTROverbreakMinutes(log)} min — already included in actual worked-time shortage</p>}
  {getDTRUndertimeMinutes(log)>0&&<p style={{...cps, color:'#ca1b1b' }}>Automatic UT: {getDTRUndertimeMinutes(log)} min</p>}
- {getDTRActualOvertimeMinutes(log)>0&&<p style={{...cps, color:'#2d8a4e' }}>Actual OT: {getDTRActualOvertimeMinutes(log)} min {getDTRApprovedOvertimeMinutes(log)>0?' Approved':' Pending filing/approval'}</p>}
+ {getDTRActualOvertimeMinutes(log)>0&&isEmployeeOvertimeEligible(employee)&&<p style={{...cps, color:'#2d8a4e' }}>Actual OT: {getDTRActualOvertimeMinutes(log)} min {getDTRApprovedOvertimeMinutes(log)>0?' Approved':' Pending filing/approval'}</p>}
+ {getDTRActualOvertimeMinutes(log)>0&&!isEmployeeOvertimeEligible(employee)&&<p style={{...cps, color:'#777', fontWeight:'700' }}>Extra attendance: {getDTRActualOvertimeMinutes(log)} min — OT filing and pay are blocked by your employee policy.</p>}
  </div>
  )
  })}
