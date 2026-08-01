@@ -1036,6 +1036,36 @@ function getDTRDayLogs(log = {}) {
  return Array.isArray(log._logs) && log._logs.length > 0 ? log._logs : [log]
 }
 
+function buildAttendanceEmployeePolicy(employee = {}) {
+ return {
+  employeeId:String(employee?.id || employee?.employee_id || ''),
+  employeeCode:String(employee?.employee_code || employee?.employeeCode || ''),
+  employeeName:String(employee?.full_name || employee?.employee_name || employee?.employeeName || ''),
+  overtimePayEligible:employeeRuleEnabled(employee?.overtime_pay_eligible, true),
+  undertimeDeductionApplicable:employeeRuleEnabled(employee?.undertime_deduction_applicable, true),
+  nightDifferentialPayEligible:employeeRuleEnabled(employee?.night_differential_pay_eligible, true),
+  regularHolidayPayEligible:employee?.regular_holiday_pay_eligible !== false,
+  specialHolidayPayEligible:employee?.special_holiday_pay_eligible !== false
+ }
+}
+
+function attachAttendanceEmployeePolicy(logs = [], employee = {}) {
+ const policy = buildAttendanceEmployeePolicy(employee)
+ return (logs || []).map(log => ({ ...log, _employeePolicy:policy }))
+}
+
+function getDTRAttendancePolicy(log = {}) {
+ const dayLogs = getDTRDayLogs(log)
+ const policy = log?._employeePolicy || dayLogs.find(row => row?._employeePolicy)?._employeePolicy || {}
+ return {
+  overtimePayEligible:employeeRuleEnabled(policy?.overtimePayEligible, true),
+  undertimeDeductionApplicable:employeeRuleEnabled(policy?.undertimeDeductionApplicable, true),
+  nightDifferentialPayEligible:employeeRuleEnabled(policy?.nightDifferentialPayEligible, true),
+  regularHolidayPayEligible:policy?.regularHolidayPayEligible !== false,
+  specialHolidayPayEligible:policy?.specialHolidayPayEligible !== false
+ }
+}
+
 function getDTRDayMetrics(log = {}) {
  const dayLogs = getDTRDayLogs(log)
  const breakRowsByLogId = {}
@@ -1178,6 +1208,8 @@ async function hydrateAttendanceLogsWithScheduleFallback(logs = [], employeeSour
 
 function getDTRUndertimeMinutes(log = {}) {
  if (!log) return 0
+ const policy = getDTRAttendancePolicy(log)
+ if (!policy.undertimeDeductionApplicable) return 0
  const integrity = getAttendanceDayIntegrity(getDTRDayLogs(log))
  if (!integrity.isValidCompleted) return 0
  return getDTRDayMetrics(log).undertimeMinutes
@@ -1192,11 +1224,15 @@ function getDTRGraceAppliedMinutes(log = {}) {
 
 function getDTRActualOvertimeMinutes(log = {}) {
  if (!log) return 0
+ const policy = getDTRAttendancePolicy(log)
+ if (!policy.overtimePayEligible) return 0
  return getAttendanceDayActualOvertimeMinutes(getDTRDayLogs(log))
 }
 
 function getDTRApprovedOvertimeMinutes(log = {}) {
  if (!log) return 0
+ const policy = getDTRAttendancePolicy(log)
+ if (!policy.overtimePayEligible) return 0
  const approvedMinutes = roundPayableOvertimeMinutes(getDTRDayLogs(log)
   .filter(row => row?.overtime_approved === true)
   .reduce((sum, row) => sum + Math.max(0, safeNum(row?.overtime_minutes, 0)), 0))
@@ -1213,7 +1249,7 @@ function getDTRStatusInfo(log = {}) {
  if (integrity.isInvalidShortPunch) return { label:'INVALID', color:'red', code:integrity.code }
  const dayMetrics = getDTRDayMetrics(log)
  const approvedOT = getDTRApprovedOvertimeMinutes(log)
- const undertime = dayMetrics.undertimeMinutes
+ const undertime = getDTRUndertimeMinutes(log)
  const overbreak = dayMetrics.overbreakMinutes
  const noMealBreakApproved = dayMetrics.breakOverrideApplied === true && safeNum(dayMetrics.approvedUnpaidBreakMinutes, ALLOWED_BREAK_MINUTES) === 0
  if (approvedOT > 0 && undertime > 0 && overbreak > 0) return { label:'OT + UT + OB', color:'orange', code:'overtime_undertime_overbreak' }
@@ -17143,10 +17179,15 @@ function buildDeliveryInvoicePrintCSS() {
  setMyCAHistory(ledgerRows.filter(ca =>!isOutstandingCashAdvance(ca)))
  }
  async function loadMyAttendanceHistory(emp) {
- const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
+ const { data, error } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
+ if (error) {
+  console.error('Attendance history load failed:', error)
+  setMyAttendance([])
+  return
+ }
  const scheduleAwareLogs = await hydrateAttendanceLogsWithScheduleFallback(data || [], emp)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduleAwareLogs)
- setMyAttendance(enrichedLogs)
+ setMyAttendance(attachAttendanceEmployeePolicy(enrichedLogs, emp))
  }
 
  async function loadMedicalCertificateLock(emp) {
@@ -17536,6 +17577,8 @@ function buildDeliveryInvoicePrintCSS() {
  const timeOut = nowTime()
  const activeAttendanceDate = verifiedLog.attendance_date || today
  const undertimeDeductionApplicable = employeeRuleEnabled(employee.undertime_deduction_applicable, true)
+ const overtimePayEligible = employeeRuleEnabled(employee.overtime_pay_eligible, true)
+ const nightDifferentialPayEligible = employeeRuleEnabled(employee.night_differential_pay_eligible, true)
 
  let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, rawOvertimeMinutes=0, status=verifiedLog.late_minutes>0?'Late':'Completed'
  const totalBreakMins = effectiveBreakRows.reduce((s,b)=>s+Number(b.break_minutes||0),0)
@@ -17554,7 +17597,7 @@ function buildDeliveryInvoicePrintCSS() {
  // UT is schedule-anchored separately from Late and Overbreak, so staying after
  // shift end cannot erase an early Time Out and no shortage is double-classified.
  rawOvertimeMinutes = Math.max(0, Math.round(attendanceMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
- overtimeMinutes = roundPayableOvertimeMinutes(rawOvertimeMinutes)
+ overtimeMinutes = overtimePayEligible ? roundPayableOvertimeMinutes(rawOvertimeMinutes) : 0
  if (undertimeMinutes>0) status='Undertime - Pending Approval'
  else if (overtimeMinutes>0) status='Overtime - Pending Filing'
 
@@ -17565,7 +17608,8 @@ function buildDeliveryInvoicePrintCSS() {
  const nsdEnd = 30*60 // 6AM next day = 1800 mins
  const os = Math.max(inM, nsdStart)
  const oe = Math.min(outM, nsdEnd)
- const nsdMinutes = oe > os? Math.round(oe - os): 0
+ const rawNsdMinutes = oe > os? Math.round(oe - os): 0
+ const nsdMinutes = nightDifferentialPayEligible ? rawNsdMinutes : 0
  // 
 
  let selfieUrl = null
@@ -17695,6 +17739,24 @@ function buildDeliveryInvoicePrintCSS() {
  async function refreshTimeAdjustmentPreview(dateValue = otRequestDate, typeValue = otRequestType, fromValue = otRequestFrom, toValue = otRequestTo) {
  const targetDate = String(dateValue || '').slice(0, 10)
  const requestType = String(typeValue || 'overtime').toLowerCase()
+ const overtimePayEligible = employeeRuleEnabled(employee?.overtime_pay_eligible, true)
+ const undertimeDeductionApplicable = employeeRuleEnabled(employee?.undertime_deduction_applicable, true)
+ if (requestType === 'overtime' && !overtimePayEligible) {
+  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Overtime filing is disabled for your employee payroll policy. No OT pay is created for this attendance date.', code:'overtime_exempt' }
+  setTimeAdjPreview(exemptPreview)
+  setOtRequestMinutes('')
+  setOtRequestFrom('')
+  setOtRequestTo('')
+  return exemptPreview
+ }
+ if (requestType === 'undertime' && !undertimeDeductionApplicable) {
+  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Undertime filing is not required for your employee payroll policy because no UT deduction applies.', code:'undertime_exempt' }
+  setTimeAdjPreview(exemptPreview)
+  setOtRequestMinutes('')
+  setOtRequestFrom('')
+  setOtRequestTo('')
+  return exemptPreview
+ }
  if (targetDate && targetDate > today) {
   const futurePreview = { loading:false, canSubmit:false, minutes:0, message:'Future attendance dates cannot be filed. Select today or a completed past attendance date.', code:'future_date' }
   setTimeAdjPreview(futurePreview)
@@ -24806,7 +24868,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (error) throw error
   const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, sourceStart, sourceEnd)
   const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
-  const grouped = groupDTRLogsByDate(enrichedLogs)
+  const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp)
+  const grouped = groupDTRLogsByDate(policyLogs)
   const allDays = buildDateRangeRows(sourceStart, sourceEnd, ({ dateStr, day, dayName }) => ({ dateStr, day, dayName, log:mergeDTRDayLogs(grouped[dateStr] || []) }))
   const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
   const sourceDates = Array.from(new Set((trace?.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0).map(day => day.date).filter(Boolean)))
@@ -26393,7 +26456,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, startDate, endDate)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
- const grouped = groupDTRLogsByDate(enrichedLogs)
+ const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp || { id:empId, employee_code:empCode, full_name:empName })
+ const grouped = groupDTRLogsByDate(policyLogs)
  const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
  const totalDaysWorked = new Set(mergedLogs.filter(l=>getAttendanceDayIntegrity(getDTRDayLogs(l)).isValidCompleted).map(l=>String(l.attendance_date || '').slice(0,10))).size
  const totalAbsent = new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size
@@ -34730,7 +34794,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 .order('attendance_date')
  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, period.start, period.end)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
- const grouped = groupDTRLogsByDate(enrichedLogs)
+ const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp)
+ const grouped = groupDTRLogsByDate(policyLogs)
  const allDays = buildDateRangeRows(period.start, period.end, ({ dateStr, day, dayName })=>{
  const log = mergeDTRDayLogs(grouped[dateStr] || [])
  return { dateStr, day, dayName, log }
