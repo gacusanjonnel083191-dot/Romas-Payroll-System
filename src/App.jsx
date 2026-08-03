@@ -40895,7 +40895,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
             <span style={{ fontSize:'24px' }}>{getPagasaWeatherIcon(day.condition)}</span>
            </div>
            <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', alignItems:'center', marginTop:'7px' }}>
-            {calendarDay.relativeLabel && <span style={{ display:'inline-block', background:calendarDay.relativeLabel==='TODAY'?'#1a5276':calendarDay.relativeLabel==='TOMORROW'?'#ca1b1b':'#e8eef3', color:['TODAY','TOMORROW'].includes(calendarDay.relativeLabel)?'white':'#44546a', borderRadius:'12px', padding:'3px 7px', fontSize:'8px', fontWeight:'900' }}>{calendarDay.relativeLabel}</span>}
+            {calendarDay.relativeLabel && <span style={{ display:'inline-block', background:calendarDay.relativeLabel==='TODAY'?'#1a5276':calendarDay.relativeLabel==='TOMORROW'?'#2563eb':'#e8eef3', color:['TODAY','TOMORROW'].includes(calendarDay.relativeLabel)?'white':'#44546a', borderRadius:'12px', padding:'3px 7px', fontSize:'8px', fontWeight:'900' }}>{calendarDay.relativeLabel}</span>}
             <span style={{ display:'inline-block', background:forecastVisual.badgeBackground, color:'white', borderRadius:'12px', padding:'3px 7px', fontSize:'8px', fontWeight:'900' }}>{forecastVisual.icon} {forecastVisual.label}</span>
            </div>
            <p style={{ color:'#333', fontSize:'10px', lineHeight:1.45, minHeight:'44px', margin:'8px 0' }}>{day.condition}</p>
