@@ -40416,6 +40416,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   })
   const cityForecasts = Array.isArray(pagasaRegion1Data?.selected_cities) ? pagasaRegion1Data.selected_cities : []
   const announcementsList = Array.isArray(pagasaRegion1Data?.announcements) ? pagasaRegion1Data.announcements : []
+  const officialUpdate = pagasaRegion1Data?.official_update || {}
+  const exactOfficialBulletins = Array.isArray(officialUpdate?.latest_bulletins) && officialUpdate.latest_bulletins.length > 0
+   ? officialUpdate.latest_bulletins
+   : announcementsList
+  const latestExactOfficialBulletin = exactOfficialBulletins[0] || null
+  const exactOfficialForecastDays = Array.isArray(officialUpdate?.forecast_days) && officialUpdate.forecast_days.length > 0
+   ? officialUpdate.forecast_days.slice(0,5)
+   : regionalDays
   const pagasaQuality = pagasaRegion1Data?.data_quality || {}
   const pagasaSourceUrls = Object.values(pagasaRegion1Data?.source_urls || {}).filter(Boolean)
   const pagasaOfficialSourcesOnly = pagasaSourceUrls.length > 0 && pagasaSourceUrls.every(isOfficialPagasaUrl)
@@ -40480,6 +40488,48 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        <strong>Accuracy rule:</strong> The 3–5 day values below are extracted from PAGASA’s official regional/Northern Luzon outlook. Exact dates and traffic-light colors are app-derived planning aids and are clearly labeled as such. Municipality cards use the latest applicable PAGASA warning or nowcast wording, commonly covering the next two to three hours. The app does not invent a separate multi-day forecast for each Pangasinan town.
       </div>
 
+      <div style={{ background:'linear-gradient(180deg,#eef7ff 0%,#ffffff 100%)', border:'1.5px solid #1a5276', borderRadius:'14px', padding:'14px', marginBottom:'12px', boxShadow:'0 4px 14px rgba(26,82,118,0.10)' }}>
+       <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'flex-start', flexWrap:'wrap', marginBottom:'10px' }}>
+        <div>
+         <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', marginBottom:'4px' }}>
+          <h3 style={{ color:'#1a5276', margin:0, fontSize:'14px' }}>Exact Official PAGASA Update</h3>
+          <span style={{ background:'#1a5276', color:'white', borderRadius:'12px', padding:'3px 7px', fontSize:'8px', fontWeight:'900' }}>OFFICIAL WORDING</span>
+         </div>
+         <p style={{ color:'#64748b', fontSize:'9px', lineHeight:1.5, margin:0 }}>{officialUpdate?.wording_notice || 'Official PAGASA wording is displayed without app paraphrasing. Spacing may be normalized for readability.'}</p>
+        </div>
+        <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>openPagasaOfficialSource(officialUpdate?.source_url || pagasaRegion1Data?.source_urls?.regional)}>OPEN OFFICIAL SOURCE</button>
+       </div>
+
+       {latestExactOfficialBulletin ? (
+        <div style={{ background:'white', border:'1px solid #bfd7e8', borderRadius:'11px', padding:'12px' }}>
+         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'2fr 1fr 1fr', gap:'7px', marginBottom:'9px' }}>
+          <div style={{ background:'#f8fafc', borderRadius:'8px', padding:'8px' }}><p style={{ color:'#64748b', fontSize:'8px', fontWeight:'900', margin:'0 0 3px' }}>LATEST OFFICIAL BULLETIN</p><p style={{ color:'#1a1a2e', fontSize:'11px', fontWeight:'900', margin:0 }}>{latestExactOfficialBulletin.title || 'PAGASA Bulletin'}</p></div>
+          <div style={{ background:'#f8fafc', borderRadius:'8px', padding:'8px' }}><p style={{ color:'#64748b', fontSize:'8px', fontWeight:'900', margin:'0 0 3px' }}>ISSUED</p><p style={{ color:'#1a1a2e', fontSize:'10px', fontWeight:'900', margin:0 }}>{latestExactOfficialBulletin.issued_at_text || 'See official wording'}</p></div>
+          <div style={{ background:'#f8fafc', borderRadius:'8px', padding:'8px' }}><p style={{ color:'#64748b', fontSize:'8px', fontWeight:'900', margin:'0 0 3px' }}>NEXT UPDATE</p><p style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'900', margin:0 }}>{latestExactOfficialBulletin.next_update_at_text || 'Not stated in parsed bulletin'}</p></div>
+         </div>
+         <pre style={{ margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word', fontFamily:'inherit', fontSize:'10px', lineHeight:1.58, color:'#263238', background:'#fffdf4', border:'1px solid #f0df9a', borderRadius:'9px', padding:'11px', maxHeight:'320px', overflowY:'auto' }}>{latestExactOfficialBulletin.official_text || latestExactOfficialBulletin.text || 'Exact official bulletin wording is not available in this response.'}</pre>
+        </div>
+       ) : (
+        <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'9px', padding:'10px', color:'#856404', fontSize:'10px' }}>No exact bulletin block was returned. Click Refresh PAGASA to force a new live official retrieval.</div>
+       )}
+
+       <details style={{ marginTop:'9px', background:'white', border:'1px solid #dbe3ea', borderRadius:'10px', padding:'9px 11px' }}>
+        <summary style={{ cursor:'pointer', color:'#1a5276', fontSize:'10px', fontWeight:'900' }}>VIEW EXACT OFFICIAL 5-DAY OUTLOOK WORDING</summary>
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))', gap:'7px', marginTop:'9px' }}>
+         {exactOfficialForecastDays.map((day,index)=>{
+          const calendarDay = regionalForecastCalendar[index] || {}
+          return (
+           <div key={`official-wording-${day?.forecast_date || day?.day || index}`} style={{ background:'#f8fafc', border:'1px solid #dbe3ea', borderRadius:'9px', padding:'9px', minWidth:0 }}>
+            <p style={{ color:'#1a5276', fontWeight:'900', fontSize:'10px', margin:'0 0 2px' }}>{day?.day || `Day ${index+1}`}</p>
+            <p style={{ color:'#64748b', fontWeight:'800', fontSize:'8px', margin:'0 0 6px' }}>{calendarDay.exactDateLabel || day?.forecast_date || 'Date unavailable'}</p>
+            <pre style={{ margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word', fontFamily:'inherit', color:'#334155', fontSize:'8px', lineHeight:1.5 }}>{day?.official_text || [day?.condition, day?.min_c != null && day?.max_c != null ? `${day.min_c}°C – ${day.max_c}°C` : '', day?.wind_speed ? `Wind Speed: ${day.wind_speed}` : '', day?.wind_direction ? `Direction: ${day.wind_direction}` : '', day?.coastal_condition ? `Coastal Condition: ${day.coastal_condition}` : ''].filter(Boolean).join('\n') || 'Official day wording unavailable.'}</pre>
+           </div>
+          )
+         })}
+        </div>
+       </details>
+      </div>
+
       <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap', marginBottom:'10px' }}>
         <div><h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>PAGASA Extended Outlook — Northern Luzon / Region 1 Planning</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Use for production planning three to five days ahead. Confirm again near the decision cutoff.</p></div>
@@ -40530,6 +40580,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
            <p style={{ color:'#555', fontSize:'9px', margin:'2px 0' }}>Direction: {day.wind_direction || '—'}</p>
            <p style={{ color:'#555', fontSize:'9px', margin:'2px 0' }}>Coast: {day.coastal_condition || '—'}</p>
            <p style={{ color:forecastVisual.color, fontSize:'8px', fontWeight:'800', lineHeight:1.35, margin:'7px 0 0' }}>{forecastVisual.note}</p>
+           <details style={{ marginTop:'7px', borderTop:`1px solid ${forecastVisual.border}`, paddingTop:'5px' }}>
+            <summary style={{ cursor:'pointer', color:'#1a5276', fontSize:'8px', fontWeight:'900' }}>EXACT PAGASA WORDING</summary>
+            <pre style={{ margin:'5px 0 0', whiteSpace:'pre-wrap', wordBreak:'break-word', fontFamily:'inherit', color:'#475569', fontSize:'7.5px', lineHeight:1.45 }}>{day.official_text || [day.condition, day.min_c != null && day.max_c != null ? `${day.min_c}°C – ${day.max_c}°C` : '', day.wind_speed ? `Wind Speed: ${day.wind_speed}` : '', day.wind_direction ? `Direction: ${day.wind_direction}` : '', day.coastal_condition ? `Coastal Condition: ${day.coastal_condition}` : ''].filter(Boolean).join('\n')}</pre>
+           </details>
           </div>
          )
         })}
