@@ -34100,8 +34100,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  </div>
  {adminLogs.length===0 && <p style={{ color:'#888' }}>No records for this date. Click LOAD to fetch.</p>}
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(auto-fit, minmax(320px, 1fr))', gap:'12px', alignItems:'stretch' }}>
  {adminLogs.map(log=>(
- <div key={log.id} style={cardS}>
+ <div key={log.id} style={{...cardS, marginBottom:0, padding:'12px', minWidth:0, height:'100%', boxSizing:'border-box', textAlign:'left' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
  <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
  {employees.find(e=>e.employee_code===log.employee_code)?.profile_photo_url?
@@ -34115,12 +34116,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <p style={cps}>Schedule: {log.shift_start||'None'} {log.shift_end||'None'}</p>
  <p style={cps}>In: <strong>{log.time_in||' '}</strong> | Out: <strong>{log.time_out||' '}</strong> | Late: {log.late_minutes||0}m | Break: {log.total_break_minutes||0}m</p>
  <div style={{ display:'flex', gap:'10px', marginTop:'8px', flexWrap:'wrap' }}>
- {log.selfie_in_url && <div style={{ textAlign:'center' }}><p style={{...cps, marginBottom:'3px', fontWeight:'bold' }}> Time In</p><img src={log.selfie_in_url} alt="In" style={{ width:'80px', height:'80px', objectFit:'cover', borderRadius:'8px', border:'2px solid #2d8a4e', cursor:'pointer' }} onClick={()=>window.open(log.selfie_in_url,'_blank')} /><p style={{ fontSize:'10px', color:'#aaa' }}>click to enlarge</p></div>}
- {log.selfie_out_url && <div style={{ textAlign:'center' }}><p style={{...cps, marginBottom:'3px', fontWeight:'bold' }}> Time Out</p><img src={log.selfie_out_url} alt="Out" style={{ width:'80px', height:'80px', objectFit:'cover', borderRadius:'8px', border:'2px solid #ca1b1b', cursor:'pointer' }} onClick={()=>window.open(log.selfie_out_url,'_blank')} /><p style={{ fontSize:'10px', color:'#aaa' }}>click to enlarge</p></div>}
+ {log.selfie_in_url && <div style={{ textAlign:'center' }}><p style={{...cps, marginBottom:'3px', fontWeight:'bold' }}> Time In</p><img src={log.selfie_in_url} alt="In" style={{ width:'68px', height:'68px', objectFit:'cover', borderRadius:'8px', border:'2px solid #2d8a4e', cursor:'pointer' }} onClick={()=>window.open(log.selfie_in_url,'_blank')} /><p style={{ fontSize:'9px', color:'#aaa' }}>click to enlarge</p></div>}
+ {log.selfie_out_url && <div style={{ textAlign:'center' }}><p style={{...cps, marginBottom:'3px', fontWeight:'bold' }}> Time Out</p><img src={log.selfie_out_url} alt="Out" style={{ width:'68px', height:'68px', objectFit:'cover', borderRadius:'8px', border:'2px solid #ca1b1b', cursor:'pointer' }} onClick={()=>window.open(log.selfie_out_url,'_blank')} /><p style={{ fontSize:'9px', color:'#aaa' }}>click to enlarge</p></div>}
  {!log.selfie_in_url &&!log.selfie_out_url && log.status!=='Absent' && <p style={{...cps, color:'#aaa', fontStyle:'italic' }}>No selfies recorded</p>}
  </div>
  </div>
  ))}
+ </div>
  </div>
  )}
 
