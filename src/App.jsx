@@ -27237,8 +27237,106 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   return Array.isArray(views) ? views.filter(view => view?.id) : []
  }
 
+ function getPagasaForecastDateViews(data = pagasaRegion1Data) {
+  const sourceDays = Array.isArray(data?.regional?.days) ? data.regional.days.slice(0,5) : []
+  const sourceCalendar = getPagasaForecastCalendar(sourceDays, data)
+  const sourceRows = Array.isArray(data?.pangasinan?.municipalities) ? data.pangasinan.municipalities : []
+  const today = getPHDateTimeParts().date
+  const sourceUrl = data?.official_update?.source_url || data?.source_urls?.regional || 'https://pagasa.dost.gov.ph/regional-forecast/nlprsd'
+  const issueText = data?.regional?.extended_issued_at_text || data?.regional?.issued_at_text || ''
+
+  return Array.from({ length:5 }, (_,offset) => {
+   const targetDate = addDaysToDateString(today, offset)
+   const sourceIndex = sourceCalendar.findIndex(item => item?.date === targetDate)
+   const relativeLabel = offset === 0 ? 'TODAY' : offset === 1 ? 'TOMORROW' : `+${offset} DAYS`
+
+   if (sourceIndex < 0 || !sourceDays[sourceIndex]) {
+    return {
+     id:`forecast-date|${targetDate}`,
+     value:`forecast-date|${targetDate}`,
+     source_mode:'regional_forecast_date',
+     update_date:targetDate,
+     relative_label:relativeLabel,
+     title:`${formatDateForDisplay(targetDate)} — PAGASA regional outlook not yet available`,
+     label:`${formatDateForDisplay(targetDate)} (${relativeLabel}) — Official regional outlook not available`,
+     issued_at_text:issueText,
+     source_url:sourceUrl,
+     disabled:true,
+     unavailable:true
+    }
+   }
+
+   const day = sourceDays[sourceIndex]
+   const visual = getPagasaForecastOperationalVisual(day)
+   const risk = visual.risk === 'red' ? 'red' : visual.risk === 'green' ? 'green' : 'yellow'
+   const score = risk === 'red' ? 5 : risk === 'yellow' ? 2 : 0
+   const conditionText = String(day?.condition || '').trim() || 'Condition text unavailable from the official source'
+   const temperatureText = `${day?.min_c ?? '—'}–${day?.max_c ?? '—'}°C`
+   const detailText = [
+    conditionText,
+    `Temperature ${temperatureText}`,
+    day?.wind_speed ? `Wind ${day.wind_speed}` : '',
+    day?.wind_direction ? `Direction ${day.wind_direction}` : '',
+    day?.coastal_condition ? `Coast ${day.coastal_condition}` : ''
+   ].filter(Boolean).join(' | ')
+   const officialText = day?.official_text || detailText
+   const operationalLabel = risk === 'red'
+    ? 'REGIONAL HIGH CAUTION'
+    : risk === 'yellow'
+     ? 'REGIONAL MONITOR'
+     : 'REGIONAL NORMAL WATCH'
+   const statusLabel = `${day?.day || formatDateForDisplay(targetDate)} regional outlook — province planning baseline`
+   const basis = `Official PAGASA Northern Luzon / Region 1 extended outlook for ${formatDateForDisplay(targetDate)}. This date view is a province-wide planning baseline and is not a municipality-specific forecast or warning.`
+   const municipalityRows = sourceRows.map(row => ({
+    ...row,
+    risk_level:risk,
+    operational_label:operationalLabel,
+    status:'regional_forecast_date',
+    status_label:statusLabel,
+    warning_type:'PAGASA Extended Weather Outlook',
+    warning_color:null,
+    score,
+    basis,
+    context:detailText,
+    province_wide:true,
+    forecast_date:targetDate,
+    source_mode:'regional_forecast_date'
+   }))
+   const riskCounts = {
+    green:risk === 'green' ? municipalityRows.length : 0,
+    yellow:risk === 'yellow' ? municipalityRows.length : 0,
+    red:risk === 'red' ? municipalityRows.length : 0
+   }
+
+   return {
+    id:`forecast-date|${targetDate}`,
+    value:`forecast-date|${targetDate}`,
+    source_mode:'regional_forecast_date',
+    update_date:targetDate,
+    relative_label:relativeLabel,
+    title:`${day?.day || formatDateForDisplay(targetDate)}, ${formatDateForDisplay(targetDate)} — PAGASA regional outlook`,
+    label:`${formatDateForDisplay(targetDate)} (${relativeLabel}) — ${day?.day || 'PAGASA regional outlook'}`,
+    issued_at_text:issueText,
+    next_update_at_text:'',
+    text:detailText,
+    official_text:officialText,
+    hazard_key:'regional_extended_outlook',
+    source_url:sourceUrl,
+    forecast_day:day,
+    pangasinan:{
+     municipalities:municipalityRows,
+     risk_counts:riskCounts,
+     affected_count:municipalityRows.filter(row => row.risk_level !== 'green').length,
+     total_municipalities:municipalityRows.length,
+     note:'This date view applies the official PAGASA regional outlook equally as a province planning baseline. It is not a separate municipality forecast.'
+    }
+   }
+  })
+ }
+
  function getPagasaUpdateOptions(data = pagasaRegion1Data) {
   const views = getPagasaBulletinViews(data)
+  const forecastDateViews = getPagasaForecastDateViews(data)
   const latestIssued = views.find(view => view?.issued_at_text)?.issued_at_text
    || data?.official_update?.latest_bulletins?.find(row => row?.issued_at_text)?.issued_at_text
    || data?.regional?.issued_at_text
@@ -27246,14 +27344,20 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   return [
    {
     value:'latest',
+    group:'latest',
     label:`Latest applicable PAGASA updates${latestIssued ? ` — ${latestIssued}` : ''}`,
     title:'Latest applicable PAGASA updates (combined)',
     issued_at_text:latestIssued,
     update_date:getPagasaDateString(latestIssued),
     source_url:data?.official_update?.source_url || data?.source_urls?.regional || ''
    },
+   ...forecastDateViews.map(view => ({
+    ...view,
+    group:'forecast_dates'
+   })),
    ...views.map(view => ({
     value:String(view.id),
+    group:'bulletins',
     label:`${view.update_date ? formatDateForDisplay(view.update_date) : (view.issued_at_text || 'Official update')} — ${view.title || 'PAGASA Bulletin'}`,
     ...view
    }))
@@ -27262,6 +27366,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  function getPagasaSelectedUpdateView(data = pagasaRegion1Data, updateKey = pagasaSelectedUpdateKey) {
   if (!data || !updateKey || updateKey === 'latest') return null
+  const forecastDateView = getPagasaForecastDateViews(data).find(view => String(view?.id || '') === String(updateKey))
+  if (forecastDateView && !forecastDateView.disabled) return forecastDateView
   return getPagasaBulletinViews(data).find(view => String(view?.id || '') === String(updateKey)) || null
  }
 
@@ -40544,7 +40650,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const forecastCoverageLabel = getPagasaCoverageLabel(regionalForecastCalendar)
   const forecastDatesDerived = regionalForecastCalendar.some(item => item?.derived)
   const pagasaUpdateOptions = getPagasaUpdateOptions()
+  const pagasaLatestOption = pagasaUpdateOptions.find(option => option?.group === 'latest') || pagasaUpdateOptions[0] || null
+  const pagasaForecastDateOptions = pagasaUpdateOptions.filter(option => option?.group === 'forecast_dates')
+  const pagasaBulletinOptions = pagasaUpdateOptions.filter(option => option?.group === 'bulletins')
   const selectedUpdateView = getPagasaSelectedUpdateView()
+  const selectedIsForecastDate = selectedUpdateView?.source_mode === 'regional_forecast_date'
   const activePangasinan = getPagasaActivePangasinanData()
   const municipalities = getPagasaMunicipalityRows()
   const selectedAlert = getPagasaSelectedMunicipalityAlert()
@@ -40572,7 +40682,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       hazard_key:selectedUpdateView.hazard_key
      }]
    : announcementsList
-  const selectedUpdateOption = pagasaUpdateOptions.find(option => String(option.value) === String(pagasaSelectedUpdateKey)) || pagasaUpdateOptions[0] || null
+  const selectedUpdateOption = pagasaUpdateOptions.find(option => String(option.value) === String(pagasaSelectedUpdateKey)) || pagasaLatestOption
   const officialUpdate = pagasaRegion1Data?.official_update || {}
   const exactOfficialBulletins = Array.isArray(officialUpdate?.latest_bulletins) && officialUpdate.latest_bulletins.length > 0
    ? officialUpdate.latest_bulletins
@@ -40842,13 +40952,25 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'flex-end', flexWrap:'wrap', marginBottom:'10px' }}>
         <div>
          <h3 style={{ color:'#ca1b1b', margin:'0 0 3px', fontSize:'14px' }}>Pangasinan Municipality Weather Risk Monitor</h3>
-         <p style={{ color:'#777', fontSize:'10px', margin:0 }}>{affectedMunicipalities.length} of {municipalities.length} municipalities/cities currently require monitoring or precaution based on the retrieved PAGASA information.</p>
+         <p style={{ color:'#777', fontSize:'10px', margin:0 }}>
+          {selectedIsForecastDate
+           ? `${municipalities.length} municipalities/cities are shown under the province-wide PAGASA regional planning baseline for ${selectedUpdateView?.update_date ? formatDateForDisplay(selectedUpdateView.update_date) : 'the selected date'}. This is not a town-specific forecast.`
+           : `${affectedMunicipalities.length} of ${municipalities.length} municipalities/cities currently require monitoring or precaution based on the retrieved PAGASA information.`}
+         </p>
         </div>
         <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', alignItems:'flex-end' }}>
          <div style={{ minWidth:isMobile?'100%':'360px' }}>
-          <label style={{...lblS, marginBottom:'4px' }}>Official PAGASA Bulletin / Update Date Used</label>
+          <label style={{...lblS, marginBottom:'4px' }}>PAGASA Date / Bulletin Basis Used</label>
           <select value={pagasaSelectedUpdateKey} onChange={e=>setPagasaSelectedUpdateKey(e.target.value)} style={{...inputStyle, marginBottom:0, padding:'8px', fontWeight:'800' }}>
-           {pagasaUpdateOptions.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}
+           {pagasaLatestOption && <option value={pagasaLatestOption.value}>{pagasaLatestOption.label}</option>}
+           <optgroup label="5-DAY PAGASA REGIONAL OUTLOOK — TODAY TO +4 DAYS">
+            {pagasaForecastDateOptions.map(option=><option key={option.value} value={option.value} disabled={!!option.disabled}>{option.label}</option>)}
+           </optgroup>
+           {pagasaBulletinOptions.length > 0 && (
+            <optgroup label="CURRENT OFFICIAL PAGASA BULLETINS / UPDATES">
+             {pagasaBulletinOptions.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}
+            </optgroup>
+           )}
           </select>
          </div>
          <input value={pagasaMunicipalitySearch} onChange={e=>setPagasaMunicipalitySearch(e.target.value)} placeholder="Search municipality..." style={{...inputStyle, marginBottom:0, width:isMobile?'100%':'190px', padding:'8px' }} />
@@ -40870,7 +40992,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          <p style={{ color:'#123f5d', fontSize:'10px', fontWeight:'800', margin:0 }}>{formatPagasaFetchedAt(pagasaRegion1Data?.fetched_at)}</p>
         </div>
        </div>
-       <p style={{ color:'#777', fontSize:'9px', lineHeight:1.45, margin:'-3px 0 10px' }}>The municipality monitor uses current PAGASA warnings, advisories, and nowcasts—not one forecast for every day in the five-day outlook. Choose an official bulletin date above to see the towns and wording attached to that exact update.</p>
+       <p style={{ color:selectedIsForecastDate?'#7c5b00':'#777', background:selectedIsForecastDate?'#fff8dc':'transparent', border:selectedIsForecastDate?'1px solid #f5c518':'none', borderRadius:selectedIsForecastDate?'8px':'0', padding:selectedIsForecastDate?'8px 10px':'0', fontSize:'9px', lineHeight:1.5, margin:'-3px 0 10px' }}>
+        {selectedIsForecastDate
+         ? `Selected date mode: ${selectedUpdateView?.update_date ? formatDateForDisplay(selectedUpdateView.update_date) : 'forecast date'}. All municipality cards inherit the same official Northern Luzon / Region 1 outlook as a province planning baseline. PAGASA has not issued a separate municipality forecast for every Pangasinan town on this future date.`
+         : 'The municipality monitor uses current PAGASA warnings, advisories, and nowcasts—not one forecast for every day in the five-day outlook. Choose an official bulletin update to see the towns and wording attached to that exact update, or choose one of the five date options for a clearly labeled province-wide regional planning baseline.'}
+       </p>
 
        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'7px', marginBottom:'10px' }}>
         {[
@@ -40906,7 +41032,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          {selectedAlert?.province_wide && <p style={{ color:selectedVisual.color, fontSize:'9px', fontWeight:'900', margin:'0 0 5px' }}>PROVINCE-WIDE PANGASINAN REFERENCE</p>}
          <p style={{ color:'#444', fontSize:'10px', lineHeight:1.5, margin:'0 0 6px' }}><strong>Why this color:</strong> {selectedAlert?.basis || 'The classification is based on the retrieved official PAGASA wording and regional baseline.'}</p>
          <p style={{ color:'#555', fontSize:'9px', lineHeight:1.5, margin:0, maxHeight:'145px', overflowY:'auto' }}>{selectedAlert?.context || 'No municipality-specific warning text is available.'}</p>
-         <p style={{ color:'#777', fontSize:'9px', lineHeight:1.45, margin:'9px 0 0' }}>Green means no active severe town/province warning was found and the regional baseline is favorable. It is not a guarantee that rain cannot occur.</p>
+         <p style={{ color:'#777', fontSize:'9px', lineHeight:1.45, margin:'9px 0 0' }}>
+          {selectedIsForecastDate
+           ? 'Future-date cards are a province-level regional outlook applied equally for planning visibility. They are not individual municipality forecasts and must be rechecked against the latest PAGASA bulletin before dispatch.'
+           : 'Green means no active severe town/province warning was found and the regional baseline is favorable. It is not a guarantee that rain cannot occur.'}
+         </p>
         </div>
 
         <div style={{ maxHeight:'410px', overflowY:'auto', border:'1px solid #eee', borderRadius:'11px', padding:'8px' }}>
@@ -40941,7 +41071,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
       <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
-        <div><h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>{selectedUpdateView?'Selected PAGASA Update':'Current PAGASA Announcements'}</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>{selectedUpdateView?'Exact wording for the official bulletin selected in the update-date dropdown above.':'Rainfall advisories, thunderstorm watches/warnings, and related Northern Luzon announcements parsed from the official page.'}</p></div>
+        <div>
+         <h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>{selectedIsForecastDate?'Selected 5-Day PAGASA Forecast Date':selectedUpdateView?'Selected PAGASA Update':'Current PAGASA Announcements'}</h3>
+         <p style={{ color:'#777', fontSize:'10px', margin:0 }}>{selectedIsForecastDate?'Exact official regional outlook wording for the selected date. This is a province planning baseline, not a municipality-specific bulletin.':selectedUpdateView?'Exact wording for the official bulletin selected in the date/bulletin dropdown above.':'Rainfall advisories, thunderstorm watches/warnings, and related Northern Luzon announcements parsed from the official page.'}</p>
+        </div>
         <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>setPagasaShowAnnouncements(v=>!v)}>{pagasaShowAnnouncements?'HIDE':'SHOW'} ANNOUNCEMENTS ({activeAnnouncementsList.length})</button>
        </div>
        {pagasaShowAnnouncements && (
