@@ -17,8 +17,6 @@ const UNDERTIME_BLOCK_MINUTES = 30
 const DEFAULT_LATE_GRACE_MINUTES = 10
 const MIN_VALID_ATTENDANCE_SECONDS = 5 * 60
 const PAYROLL_ATTENDANCE_RECON_CATEGORY = 'Prior Payroll Attendance Correction'
-const POST_RELEASE_OT_CATEGORY = 'Prior-Period Overtime Adjustment'
-const POST_RELEASE_TIME_ADJ_SOURCE_TYPE = 'time_adjustment_request'
 const PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN = 'ATTENDANCE-SOURCE-DAYS['
 const PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE = ']END-ATTENDANCE-SOURCE-DAYS'
 const TIME_ADJ_OT_RANGE_OPEN = 'OT-TIME-RANGE['
@@ -475,12 +473,6 @@ function isNoMealBreakBreakGuardError(error) {
  return message.includes('NO_MEAL_BREAK_BLOCKED_BY_BREAK_PUNCH')
   || message.includes('NO_MEAL_BREAK_APPROVAL_BLOCKED_BY_BREAK_PUNCH')
   || message.includes('BREAK_PUNCH_BLOCKED_BY_NO_MEAL_BREAK')
-}
-
-function isOvertimeEligibilityGuardError(error) {
- const message = String(error?.message || error || '').toUpperCase()
- return message.includes('OT_FILING_BLOCKED_NOT_ELIGIBLE')
-  || message.includes('OT_FILING_BLOCKED_EMPLOYEE_NOT_FOUND')
 }
 
 function getCombinedAttendanceSpanMinutes(logs = []) {
@@ -1044,6 +1036,36 @@ function getDTRDayLogs(log = {}) {
  return Array.isArray(log._logs) && log._logs.length > 0 ? log._logs : [log]
 }
 
+function buildAttendanceEmployeePolicy(employee = {}) {
+ return {
+  employeeId:String(employee?.id || employee?.employee_id || ''),
+  employeeCode:String(employee?.employee_code || employee?.employeeCode || ''),
+  employeeName:String(employee?.full_name || employee?.employee_name || employee?.employeeName || ''),
+  overtimePayEligible:employeeRuleEnabled(employee?.overtime_pay_eligible, true),
+  undertimeDeductionApplicable:employeeRuleEnabled(employee?.undertime_deduction_applicable, true),
+  nightDifferentialPayEligible:employeeRuleEnabled(employee?.night_differential_pay_eligible, true),
+  regularHolidayPayEligible:employee?.regular_holiday_pay_eligible !== false,
+  specialHolidayPayEligible:employee?.special_holiday_pay_eligible !== false
+ }
+}
+
+function attachAttendanceEmployeePolicy(logs = [], employee = {}) {
+ const policy = buildAttendanceEmployeePolicy(employee)
+ return (logs || []).map(log => ({ ...log, _employeePolicy:policy }))
+}
+
+function getDTRAttendancePolicy(log = {}) {
+ const dayLogs = getDTRDayLogs(log)
+ const policy = log?._employeePolicy || dayLogs.find(row => row?._employeePolicy)?._employeePolicy || {}
+ return {
+  overtimePayEligible:employeeRuleEnabled(policy?.overtimePayEligible, true),
+  undertimeDeductionApplicable:employeeRuleEnabled(policy?.undertimeDeductionApplicable, true),
+  nightDifferentialPayEligible:employeeRuleEnabled(policy?.nightDifferentialPayEligible, true),
+  regularHolidayPayEligible:policy?.regularHolidayPayEligible !== false,
+  specialHolidayPayEligible:policy?.specialHolidayPayEligible !== false
+ }
+}
+
 function getDTRDayMetrics(log = {}) {
  const dayLogs = getDTRDayLogs(log)
  const breakRowsByLogId = {}
@@ -1186,6 +1208,8 @@ async function hydrateAttendanceLogsWithScheduleFallback(logs = [], employeeSour
 
 function getDTRUndertimeMinutes(log = {}) {
  if (!log) return 0
+ const policy = getDTRAttendancePolicy(log)
+ if (!policy.undertimeDeductionApplicable) return 0
  const integrity = getAttendanceDayIntegrity(getDTRDayLogs(log))
  if (!integrity.isValidCompleted) return 0
  return getDTRDayMetrics(log).undertimeMinutes
@@ -1200,11 +1224,15 @@ function getDTRGraceAppliedMinutes(log = {}) {
 
 function getDTRActualOvertimeMinutes(log = {}) {
  if (!log) return 0
+ const policy = getDTRAttendancePolicy(log)
+ if (!policy.overtimePayEligible) return 0
  return getAttendanceDayActualOvertimeMinutes(getDTRDayLogs(log))
 }
 
 function getDTRApprovedOvertimeMinutes(log = {}) {
  if (!log) return 0
+ const policy = getDTRAttendancePolicy(log)
+ if (!policy.overtimePayEligible) return 0
  const approvedMinutes = roundPayableOvertimeMinutes(getDTRDayLogs(log)
   .filter(row => row?.overtime_approved === true)
   .reduce((sum, row) => sum + Math.max(0, safeNum(row?.overtime_minutes, 0)), 0))
@@ -1221,7 +1249,7 @@ function getDTRStatusInfo(log = {}) {
  if (integrity.isInvalidShortPunch) return { label:'INVALID', color:'red', code:integrity.code }
  const dayMetrics = getDTRDayMetrics(log)
  const approvedOT = getDTRApprovedOvertimeMinutes(log)
- const undertime = dayMetrics.undertimeMinutes
+ const undertime = getDTRUndertimeMinutes(log)
  const overbreak = dayMetrics.overbreakMinutes
  const noMealBreakApproved = dayMetrics.breakOverrideApplied === true && safeNum(dayMetrics.approvedUnpaidBreakMinutes, ALLOWED_BREAK_MINUTES) === 0
  if (approvedOT > 0 && undertime > 0 && overbreak > 0) return { label:'OT + UT + OB', color:'orange', code:'overtime_undertime_overbreak' }
@@ -1406,10 +1434,6 @@ function employeeRuleEnabled(value, fallback = true) {
  if (String(value).toLowerCase() === 'false') return false
  if (String(value).toLowerCase() === 'true') return true
  return fallback
-}
-
-function isEmployeeOvertimeEligible(emp = {}) {
- return employeeRuleEnabled(emp?.overtime_pay_eligible, true)
 }
 
 function requiresStrictCameraTimeIn(emp = {}) {
@@ -2167,12 +2191,6 @@ function getPreviousDTRCutoffKey(key) {
  const [yearMonth, type] = String(key || '').split('|')
  if (type === '11-25') return `${shiftYearMonth(yearMonth, -1)}|26-10`
  return `${yearMonth}|11-25`
-}
-
-function getNextDTRCutoffKey(key) {
- const [yearMonth, type] = String(key || '').split('|')
- if (type === '11-25') return `${yearMonth}|26-10`
- return `${shiftYearMonth(yearMonth, 1)}|11-25`
 }
 
 function getPayrollAttendanceReconMarker(startDate = '', endDate = '', employeeId = '') {
@@ -5068,8 +5086,7 @@ function isProductionPayrollCostType(value) {
 }
 
 function isReleasedPayrollRecord(record = {}) {
- const status = String(record.payroll_status || '').trim().toLowerCase()
- return record.payroll_approved === true || record.payroll_released === true || record.payroll_locked === true || !!record.approved_at || !!record.released_at || ['approved','released','locked','paid'].includes(status)
+ return record.payroll_approved === true || !!record.approved_at
 }
 
 function normalizePayrollAcknowledgement(value) {
@@ -6350,6 +6367,68 @@ export default function App() {
  const tomorrowStr = tomorrow.toISOString().slice(0,10)
  const [forecastDate, setForecastDate] = useState(tomorrowStr)
  const [showForecastVariants, setShowForecastVariants] = useState(true)
+ const [deliveriesSubTab, setDeliveriesSubTab] = useState('operations')
+ const [pagasaRegion1Data, setPagasaRegion1Data] = useState(null)
+ const [pagasaRegion1Loading, setPagasaRegion1Loading] = useState(false)
+ const [pagasaRegion1Error, setPagasaRegion1Error] = useState('')
+ const [pagasaSelectedMunicipality, setPagasaSelectedMunicipality] = useState('Dagupan City')
+ const [pagasaMunicipalitySearch, setPagasaMunicipalitySearch] = useState('')
+ const [pagasaShowAnnouncements, setPagasaShowAnnouncements] = useState(true)
+ const [pagasaLastManualRefresh, setPagasaLastManualRefresh] = useState('')
+ const [showWeatherGuard, setShowWeatherGuard] = useState(true)
+ const [showWeatherGuardProfiles, setShowWeatherGuardProfiles] = useState(false)
+ const [showWeatherGuardSettings, setShowWeatherGuardSettings] = useState(false)
+ const [showWeatherGuardOutcome, setShowWeatherGuardOutcome] = useState(false)
+ const [weatherGuardLoading, setWeatherGuardLoading] = useState(false)
+ const [weatherGuardSaving, setWeatherGuardSaving] = useState(false)
+ const [weatherGuardFinalizing, setWeatherGuardFinalizing] = useState(false)
+ const [weatherGuardProfiles, setWeatherGuardProfiles] = useState([])
+ const [weatherGuardProfileDrafts, setWeatherGuardProfileDrafts] = useState({})
+ const [weatherGuardPlan, setWeatherGuardPlan] = useState(null)
+ const [weatherGuardDecisions, setWeatherGuardDecisions] = useState([])
+ const [weatherGuardDecisionOverrides, setWeatherGuardDecisionOverrides] = useState({})
+ const [weatherGuardSettings, setWeatherGuardSettings] = useState({
+  id:1,
+  decision_cutoff_time:'20:00',
+  mixing_minutes:30,
+  proofing_minutes:90,
+  frying_minutes:120,
+  decorating_minutes:120,
+  packing_minutes:60,
+  loading_minutes:30,
+  travel_buffer_minutes:60,
+  approval_threshold_pct:0
+ })
+ const [weatherGuardDraft, setWeatherGuardDraft] = useState({
+  weather_level:'no_warning',
+  weather_source_type:'none',
+  weather_location:'Pangasinan',
+  weather_issued_at:'',
+  weather_reference:'',
+  class_status:'unverified',
+  class_scope:'',
+  class_source_type:'none',
+  class_verified_by:'',
+  class_verified_at:'',
+  class_reference:'',
+  route_status:'unverified',
+  route_source_type:'none',
+  route_verified_by:'',
+  route_verified_at:'',
+  route_reference:'',
+  decision_cutoff_time:'20:00',
+  decision_notes:''
+ })
+ const [weatherGuardOutcome, setWeatherGuardOutcome] = useState({
+  actual_delivered_qty:'',
+  returned_qty:'',
+  sold_qty:'',
+  stockout_qty:'',
+  lost_sales_qty:'',
+  disposal_qty:'',
+  avoided_production_qty:'',
+  notes:''
+ })
  const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
  const [defaultOrderItems, setDefaultOrderItems] = useState([])
  const [deliveryInvoices, setDeliveryInvoices] = useState([])
@@ -6939,6 +7018,18 @@ export default function App() {
  const showPayrollReminder = currentDay === 11 || currentDay === 26
  const [orderCutoffTick, setOrderCutoffTick] = useState(Date.now())
  const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
+
+ useEffect(() => {
+  if (!adminMode || activeTab !== 'sales' || salesView !== 'deliveries') return
+  loadWeatherGuardData(forecastDate, { silent:true })
+ }, [adminMode, activeTab, salesView, forecastDate])
+
+ useEffect(() => {
+  if (!adminMode || activeTab !== 'sales' || salesView !== 'deliveries' || deliveriesSubTab !== 'pagasa') return
+  loadPagasaRegion1Weather({ silent:true })
+  const refreshTimer = setInterval(() => loadPagasaRegion1Weather({ silent:true }), 15 * 60 * 1000)
+  return () => clearInterval(refreshTimer)
+ }, [adminMode, activeTab, salesView, deliveriesSubTab])
 
  // Security & Owner Control Lockdown v1 helpers 
  const ADMIN_ROLE_VALUES = ['owner','manager','admin','pos_admin','hr','payroll','supervisor','asst_supervisor']
@@ -17162,10 +17253,15 @@ function buildDeliveryInvoicePrintCSS() {
  setMyCAHistory(ledgerRows.filter(ca =>!isOutstandingCashAdvance(ca)))
  }
  async function loadMyAttendanceHistory(emp) {
- const { data } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
+ const { data, error } = await supabase.from('attendance_logs').select('*').eq('employee_id', emp.id).order('attendance_date', { ascending:false }).limit(30)
+ if (error) {
+  console.error('Attendance history load failed:', error)
+  setMyAttendance([])
+  return
+ }
  const scheduleAwareLogs = await hydrateAttendanceLogsWithScheduleFallback(data || [], emp)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduleAwareLogs)
- setMyAttendance(enrichedLogs)
+ setMyAttendance(attachAttendanceEmployeePolicy(enrichedLogs, emp))
  }
 
  async function loadMedicalCertificateLock(emp) {
@@ -17555,7 +17651,8 @@ function buildDeliveryInvoicePrintCSS() {
  const timeOut = nowTime()
  const activeAttendanceDate = verifiedLog.attendance_date || today
  const undertimeDeductionApplicable = employeeRuleEnabled(employee.undertime_deduction_applicable, true)
- const overtimePayEligible = isEmployeeOvertimeEligible(employee)
+ const overtimePayEligible = employeeRuleEnabled(employee.overtime_pay_eligible, true)
+ const nightDifferentialPayEligible = employeeRuleEnabled(employee.night_differential_pay_eligible, true)
 
  let undertimeMinutes=0, rawUndertimeMinutes=0, overtimeMinutes=0, rawOvertimeMinutes=0, status=verifiedLog.late_minutes>0?'Late':'Completed'
  const totalBreakMins = effectiveBreakRows.reduce((s,b)=>s+Number(b.break_minutes||0),0)
@@ -17585,7 +17682,8 @@ function buildDeliveryInvoicePrintCSS() {
  const nsdEnd = 30*60 // 6AM next day = 1800 mins
  const os = Math.max(inM, nsdStart)
  const oe = Math.min(outM, nsdEnd)
- const nsdMinutes = oe > os? Math.round(oe - os): 0
+ const rawNsdMinutes = oe > os? Math.round(oe - os): 0
+ const nsdMinutes = nightDifferentialPayEligible ? rawNsdMinutes : 0
  // 
 
  let selfieUrl = null
@@ -17660,7 +17758,6 @@ function buildDeliveryInvoicePrintCSS() {
  if (activeAttendanceDate!== today) msg += `\n\n Night shift time-out saved under attendance date: ${activeAttendanceDate}.`
  if (nsdMinutes > 0) msg += `\n\n Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) will be computed in payroll at 10% premium.`
  if (overtimeMinutes>0) msg += `\n\n ${rawOvertimeMinutes} actual OT minute(s) detected. ${overtimeMinutes} minute(s) are payable in completed ${OVERTIME_BLOCK_MINUTES}-minute blocks. Please file an OT request.`
- if (rawOvertimeMinutes>0 && !overtimePayEligible) msg += `\n\n ${rawOvertimeMinutes} minute(s) were recorded above eight paid work hours, but your employee policy marks you as not eligible for overtime pay. OT filing is blocked and payroll will count 0 OT minutes.`
  if (undertimeMinutes>0) {
   if (autoUTRequestCreated) msg += `\n\n ${rawUndertimeMinutes} actual shortage minute(s) were detected and filed as ${undertimeMinutes} chargeable UT minute(s) under the ${UNDERTIME_BLOCK_MINUTES}-minute block policy. Payroll will count only the verified policy minutes after approval.`
   else if (autoUTRequestSkipped) msg += `\n\n ${undertimeMinutes} min undertime was detected. An existing pending or approved UT request already covers this attendance date.`
@@ -17716,6 +17813,24 @@ function buildDeliveryInvoicePrintCSS() {
  async function refreshTimeAdjustmentPreview(dateValue = otRequestDate, typeValue = otRequestType, fromValue = otRequestFrom, toValue = otRequestTo) {
  const targetDate = String(dateValue || '').slice(0, 10)
  const requestType = String(typeValue || 'overtime').toLowerCase()
+ const overtimePayEligible = employeeRuleEnabled(employee?.overtime_pay_eligible, true)
+ const undertimeDeductionApplicable = employeeRuleEnabled(employee?.undertime_deduction_applicable, true)
+ if (requestType === 'overtime' && !overtimePayEligible) {
+  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Overtime filing is disabled for your employee payroll policy. No OT pay is created for this attendance date.', code:'overtime_exempt' }
+  setTimeAdjPreview(exemptPreview)
+  setOtRequestMinutes('')
+  setOtRequestFrom('')
+  setOtRequestTo('')
+  return exemptPreview
+ }
+ if (requestType === 'undertime' && !undertimeDeductionApplicable) {
+  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Undertime filing is not required for your employee payroll policy because no UT deduction applies.', code:'undertime_exempt' }
+  setTimeAdjPreview(exemptPreview)
+  setOtRequestMinutes('')
+  setOtRequestFrom('')
+  setOtRequestTo('')
+  return exemptPreview
+ }
  if (targetDate && targetDate > today) {
   const futurePreview = { loading:false, canSubmit:false, minutes:0, message:'Future attendance dates cannot be filed. Select today or a completed past attendance date.', code:'future_date' }
   setTimeAdjPreview(futurePreview)
@@ -17736,17 +17851,6 @@ function buildDeliveryInvoicePrintCSS() {
  setTimeAdjPreview({ loading:true, canSubmit:false, minutes:0, message:'Checking the attendance record...', code:'loading' })
  try {
   const validation = await fetchAttendanceDayValidation(employee.id, targetDate, { employeeCode:employee.employee_code, employeeName:employee.full_name })
-  let currentOvertimePolicy = employee
-  if (requestType === 'overtime') {
-   const { data:employeePolicyRows, error:employeePolicyError } = await supabase
-    .from('employees')
-    .select('id,full_name,employee_code,position,overtime_pay_eligible')
-    .eq('id', employee.id)
-    .limit(1)
-   if (employeePolicyError) throw employeePolicyError
-   currentOvertimePolicy = (employeePolicyRows || [])[0] || null
-  }
-  const overtimeEligible = requestType !== 'overtime' || (!!currentOvertimePolicy && isEmployeeOvertimeEligible(currentOvertimePolicy))
   const { integrity } = validation
   const canonicalDate = String(validation.resolvedAttendanceDate || targetDate).slice(0,10)
   const guardDates = Array.from(new Set([targetDate, canonicalDate].filter(Boolean)))
@@ -17778,12 +17882,6 @@ function buildDeliveryInvoicePrintCSS() {
    message = `Request blocked: ${integrity.message} Submit a DTR correction first.`
   } else if (!integrity.isValidCompleted) {
    message = 'Request blocked: no complete Time In and Time Out were found for this date.'
-  } else if (requestType === 'overtime' && !currentOvertimePolicy) {
-   minutes = 0
-   message = 'Overtime filing is blocked because the current employee policy record could not be verified. Ask HR or the owner to review your employee profile.'
-  } else if (requestType === 'overtime' && !overtimeEligible) {
-   minutes = 0
-   message = 'Overtime filing is blocked because your employee policy marks you as not eligible for overtime pay. Extra attendance time will remain visible in DTR, but it cannot be filed or paid as OT.'
   } else if (requestType === 'meal_break') {
    setOtRequestFrom('')
    setOtRequestTo('')
@@ -17995,8 +18093,6 @@ function buildDeliveryInvoicePrintCSS() {
    const duplicateMessage = String(error.message || '').toLowerCase().includes('duplicate')
    if (isNoMealBreakBreakGuardError(error)) {
     alert('No Meal Break filing blocked: a Break Out or Break In punch exists for this attendance shift. This remains blocked even when the saved break duration is 0 minutes. Correct the DTR first if the punch is wrong.')
-   } else if (isOvertimeEligibilityGuardError(error)) {
-    alert('Overtime filing blocked: your current employee policy marks you as not eligible for overtime pay. Ask HR or the owner to review your employee profile if this is incorrect.')
    } else {
     alert(duplicateMessage ? 'An active request already exists for this employee and attendance shift. Refresh and wait for admin review.' : 'Failed: '+error.message)
    }
@@ -22813,45 +22909,6 @@ This recovery button creates one approved expense record using GROSS payroll ear
    }
   }
 
-  if (requestType === 'overtime') {
-   const { data:employeePolicyRows, error:employeePolicyError } = await supabase
-    .from('employees')
-    .select('id,full_name,employee_code,position,overtime_pay_eligible')
-    .eq('id', req.employee_id)
-    .limit(1)
-   if (employeePolicyError) throw employeePolicyError
-   const employeePolicy = (employeePolicyRows || [])[0] || null
-   if (!employeePolicy) {
-    return {
-     loading:false,
-     requestType,
-     parsedReason,
-     validation,
-     requestedMinutes,
-     actualMinutes:0,
-     overtimeEligible:false,
-     canApprove:false,
-     message:'OT approval blocked: the current employee policy record could not be found. Restore or correct the employee profile before reviewing this request.'
-    }
-   }
-   if (!isEmployeeOvertimeEligible(employeePolicy)) {
-    const attendanceQualifiedMinutes = Math.max(0, Math.round(safeNum(validation.actualOvertimeMinutes, 0)))
-    return {
-     loading:false,
-     requestType,
-     parsedReason,
-     validation,
-     requestedMinutes,
-     actualMinutes:0,
-     attendanceQualifiedMinutes,
-     employeePolicy,
-     overtimeEligible:false,
-     canApprove:false,
-     message:`OT approval blocked: ${employeePolicy.full_name || req.employee_name || 'This employee'} is marked not eligible for overtime pay. Attendance supports ${attendanceQualifiedMinutes} policy minute(s), but payable OT is 0. Reject or void this legacy request; do not approve it.`
-    }
-   }
-  }
-
   const requestedAttendanceDate = String(req?.attendance_date || '').slice(0, 10)
   const resolvedAttendanceDate = String(validation.resolvedAttendanceDate || requestedAttendanceDate).slice(0, 10)
   const approvalGuardDates = Array.from(new Set([requestedAttendanceDate, resolvedAttendanceDate].filter(Boolean)))
@@ -22962,10 +23019,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
   const rangeValidation = requestType === 'overtime' && parsedTimeReason.hasOvertimeRange
    ? validateFiledOvertimeRange(validation, parsedTimeReason.overtimeRange?.filedFrom, parsedTimeReason.overtimeRange?.filedTo)
    : null
-  const payrollImpact = await checkTimeAdjPayrollStatus({ ...req, attendance_date:validation.resolvedAttendanceDate || req.attendance_date })
-  const postReleaseAdjustment = payrollImpact.released === true
-  const computedDraftPayroll = payrollImpact.computed === true && !postReleaseAdjustment
-  const canApprove = !payrollImpact.error && !computedDraftPayroll
+  const canApprove = true
   const minutesDiffer = requestedMinutes !== actualMinutes
   const filingMismatch = requestType === 'overtime' && (
    !parsedTimeReason.hasOvertimeRange ||
@@ -22981,15 +23035,6 @@ This recovery button creates one approved expense record using GROSS payroll ear
   const calculationMessage = requestType === 'undertime'
    ? `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). Raw attendance shortage: ${validation.metrics.rawUndertimeMinutes || 0} minute(s); chargeable UT: ${validation.metrics.undertimeMinutes || 0} minute(s) after rounding upward to a ${UNDERTIME_BLOCK_MINUTES}-minute block. Schedule check: ${validation.metrics.lateMinutes || 0} late minute(s) + ${validation.metrics.earlyOutMinutes || 0} early-out minute(s). Extra minutes before or after scheduled boundaries cannot reduce the protected shortage.`
    : `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). Raw OT: ${safeNum(window.rawMinutes, 0)} minute(s); policy-qualified OT: ${safeNum(window.payableMinutes ?? window.minutes, 0)} minute(s) in completed ${OVERTIME_BLOCK_MINUTES}-minute blocks.`
-  const payrollMessage = payrollImpact.error
-   ? ` Payroll status could not be verified: ${payrollImpact.error}`
-   : computedDraftPayroll
-    ? ' Approval is blocked because this date is already inside a computed draft/review payroll. Undo the draft payroll first, approve this request, then recompute.'
-    : postReleaseAdjustment
-     ? requestType === 'overtime'
-      ? ' This date is in released payroll. Owner/Payroll approval will preserve that payroll and create one linked, itemized overtime addition in the next open cutoff.'
-      : ' This date is in released payroll. Owner/Payroll approval will preserve that payroll, reconcile the entire source cutoff, and create only any missing attendance deduction in the next open cutoff.'
-     : ''
 
   return {
    loading:false,
@@ -23003,14 +23048,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
    resolvedAttendanceDate:validation.resolvedAttendanceDate,
    resolvedFromPreviousDay:validation.resolvedFromPreviousDay,
    legacy:requestType === 'overtime' && !parsedTimeReason.hasOvertimeRange,
-   payrollImpact,
-   postReleaseAdjustment,
-   computedDraftPayroll,
    willAutoSync:minutesDiffer || filingMismatch,
    canApprove,
    message:actualMinutes > 0
-    ? `${calculationMessage} ${syncMessage}${validation.resolvedFromPreviousDay ? ` ${validation.resolutionMessage}` : ''}${payrollMessage}`
-    : `${calculationMessage} There are no actual ${requestType === 'overtime' ? 'overtime minutes above eight paid hours' : 'undertime minutes below eight paid hours'}. Approval will close this request at 0 minutes, and payroll will count nothing.${payrollMessage}`
+    ? `${calculationMessage} ${syncMessage}${validation.resolvedFromPreviousDay ? ` ${validation.resolutionMessage}` : ''}`
+    : `${calculationMessage} There are no actual ${requestType === 'overtime' ? 'overtime minutes above eight paid hours' : 'undertime minutes below eight paid hours'}. Approval will close this request at 0 minutes, and payroll will count nothing.`
   }
  } catch(error) {
   return { loading:false, requestType, parsedReason, canApprove:false, error:error?.message || String(error), message:'Attendance verification failed: ' + (error?.message || error) }
@@ -23117,7 +23159,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (!req?.employee_id || !attendanceDate) return { released:false, computed:false, records:[] }
  const { data, error } = await supabase
 .from('payroll_records')
-.select('id,payroll_start,payroll_end,payroll_approved,payroll_released,payroll_locked,payroll_status,approved_at,released_at')
+.select('id,payroll_start,payroll_end,payroll_approved,approved_at')
 .eq('employee_id', req.employee_id)
 .lte('payroll_start', attendanceDate)
 .gte('payroll_end', attendanceDate)
@@ -23126,170 +23168,10 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (error) return { released:false, computed:false, records:[], error:error.message }
  const records = data || []
  return {
- released: records.some(isReleasedPayrollRecord),
+ released: records.some(r => r.payroll_approved === true ||!!r.approved_at),
  computed: records.length > 0,
  records
  }
- }
-
- async function ensurePostReleaseAdjustmentSchemaReady() {
-  const { error } = await supabase
-   .from('payroll_adjustments')
-   .select('source_type,source_id,source_payroll_start,source_payroll_end,source_attendance_date,source_minutes,source_rate,source_multiplier,created_by')
-   .limit(1)
-  if (!error) return true
-  const message = String(error?.message || error)
-  if (/source_type|source_id|source_payroll_start|source_attendance_date|source_minutes|source_rate|source_multiplier|created_by/i.test(message)) {
-   throw new Error('The post-release payroll adjustment migration is not installed. Run App(68)-post-release-payroll-adjustments.sql in Supabase first, then refresh the app.')
-  }
-  throw error
- }
-
- async function resolvePostReleaseAdjustmentTarget(employeeId, sourcePayrollEnd) {
-  let cutoffKey = getCurrentDTRCutoffKey(today)
-  let period = getDTRCutoffPeriodFromKey(cutoffKey)
-  let attempts = 0
-  while (period && period.start <= String(sourcePayrollEnd || '').slice(0, 10) && attempts < 26) {
-   cutoffKey = getNextDTRCutoffKey(cutoffKey)
-   period = getDTRCutoffPeriodFromKey(cutoffKey)
-   attempts += 1
-  }
-  while (period && attempts < 26) {
-   const { data:coveringRows, error } = await supabase
-    .from('payroll_records')
-    .select('id,payroll_start,payroll_end,payroll_approved,payroll_released,payroll_locked,payroll_status,approved_at,released_at')
-    .eq('employee_id', employeeId)
-    .lte('payroll_start', period.start)
-    .gte('payroll_end', period.start)
-    .limit(20)
-   if (error) throw error
-   const releasedRow = (coveringRows || []).find(isReleasedPayrollRecord)
-   if (!releasedRow) {
-    return { period, adjustmentDate:period.start, draftPayroll:(coveringRows || [])[0] || null }
-   }
-   cutoffKey = getNextDTRCutoffKey(cutoffKey)
-   period = getDTRCutoffPeriodFromKey(cutoffKey)
-   attempts += 1
-  }
-  throw new Error('No open payroll cutoff was found for this adjustment. Review the employee payroll history before continuing.')
- }
-
- async function preparePostReleaseTimeAdjustment(req, validation, coveredPayroll = []) {
-  await ensurePostReleaseAdjustmentSchemaReady()
-  const requestType = String(req?.request_type || '').trim().toLowerCase()
-  const sourceId = String(req?.id || '').trim()
-  const exactMinutes = requestType === 'overtime'
-   ? Math.max(0, Math.round(safeNum(validation?.actualOvertimeMinutes, 0)))
-   : Math.max(0, Math.round(safeNum(validation?.actualUndertimeMinutes, 0)))
-  const sourceAttendanceDate = String(validation?.resolvedAttendanceDate || req?.attendance_date || '').slice(0, 10)
-  const sourceStarts = (coveredPayroll || []).map(row => String(row?.payroll_start || '').slice(0,10)).filter(Boolean).sort()
-  const sourceEnds = (coveredPayroll || []).map(row => String(row?.payroll_end || '').slice(0,10)).filter(Boolean).sort()
-  const sourcePayrollStart = sourceStarts[0] || ''
-  const sourcePayrollEnd = sourceEnds[sourceEnds.length - 1] || ''
-  if (!sourceId || !sourcePayrollStart || !sourcePayrollEnd) throw new Error('The source request or released payroll period is incomplete.')
-
-  const { data:existingRows, error:existingError } = await supabase
-   .from('payroll_adjustments')
-   .select('*')
-   .eq('source_type', POST_RELEASE_TIME_ADJ_SOURCE_TYPE)
-   .eq('source_id', sourceId)
-   .limit(2)
-  if (existingError) throw existingError
-  const existingAdjustment = (existingRows || [])[0] || null
-  if (existingAdjustment) {
-   if (String(existingAdjustment.source_attendance_date || '').slice(0,10) !== sourceAttendanceDate || Math.round(safeNum(existingAdjustment.source_minutes, 0)) !== exactMinutes) {
-    throw new Error('A prior-period adjustment already exists for this request but its source date or approved minutes differ. Review the adjustment history before continuing.')
-   }
-   const existingPeriod = getDTRCutoffPeriodFromKey(getCurrentDTRCutoffKey(existingAdjustment.adjustment_date))
-   return {
-    requestType, sourceId, sourceAttendanceDate, sourcePayrollStart, sourcePayrollEnd, exactMinutes,
-    adjustmentType:String(existingAdjustment.adjustment_type || ''), category:String(existingAdjustment.category || ''),
-    amount:moneyRound(safeNum(existingAdjustment.amount, 0)), rate:safeNum(existingAdjustment.source_rate, 0), multiplier:safeNum(existingAdjustment.source_multiplier, 1),
-    target:{ period:existingPeriod, adjustmentDate:String(existingAdjustment.adjustment_date || '').slice(0,10), draftPayroll:null },
-    existingAdjustment, employee:null, reconciliationRow:null
-   }
-  }
-
-  let employeeRecord = employees.find(emp => String(emp?.id || '') === String(req?.employee_id || '')) || null
-  if (!employeeRecord) {
-   const { data:employeeRows, error:employeeError } = await supabase.from('employees').select('*').eq('id', req.employee_id).limit(1)
-   if (employeeError) throw employeeError
-   employeeRecord = (employeeRows || [])[0] || null
-  }
-  if (!employeeRecord) throw new Error('The employee payroll-rate record was not found.')
-  const rateInfo = getEmployeeHourlyRateInfo(employeeRecord)
-  if (exactMinutes > 0 && (!rateInfo.isConfigured || safeNum(rateInfo.hourlyRate, 0) <= 0)) throw new Error('The employee hourly rate cannot be determined. Correct the payroll rate before approving this released-period request.')
-  const target = await resolvePostReleaseAdjustmentTarget(req.employee_id, sourcePayrollEnd)
-
-  if (requestType === 'overtime') {
-   const eligible = employeeRuleEnabled(employeeRecord.overtime_pay_eligible, true)
-   if (!eligible) throw new Error('Approval blocked: this employee is marked not eligible for overtime pay. Reject or void the request instead.')
-   return {
-    requestType, sourceId, sourceAttendanceDate, sourcePayrollStart, sourcePayrollEnd, exactMinutes,
-    adjustmentType:'addition', category:POST_RELEASE_OT_CATEGORY,
-    amount:eligible ? moneyRound(exactMinutes * safeNum(rateInfo.hourlyRate, 0) / 60 * 1.25) : 0,
-    rate:safeNum(rateInfo.hourlyRate, 0), multiplier:1.25, target, existingAdjustment:null, employee:employeeRecord,
-    reconciliationRow:null, eligibilityNote:eligible ? '' : 'Employee is marked ineligible for overtime pay.'
-   }
-  }
-
-  const reconciliationRows = await runHistoricalAttendanceReconciliation({ start:sourcePayrollStart, end:sourcePayrollEnd, silent:true, preserveUi:true })
-  const reconciliationRow = (reconciliationRows || []).find(row => String(row?.employeeId || '') === String(req?.employee_id || '')) || null
-  if (!reconciliationRow) throw new Error('The released payroll attendance reconciliation could not be reconstructed for this employee.')
-  if (['blocked','incomplete','over'].includes(String(reconciliationRow.status || ''))) {
-   throw new Error(reconciliationRow.statusLabel || 'The released payroll attendance reconciliation requires manual review.')
-  }
-  return {
-   requestType, sourceId, sourceAttendanceDate, sourcePayrollStart, sourcePayrollEnd, exactMinutes,
-   adjustmentType:'deduction', category:PAYROLL_ATTENDANCE_RECON_CATEGORY,
-   amount:reconciliationRow.canCreate ? moneyRound(reconciliationRow.missingAdjustment) : 0,
-   rate:safeNum(reconciliationRow.hourlyRate, rateInfo.hourlyRate), multiplier:1, target, existingAdjustment:null,
-   employee:employeeRecord, reconciliationRow,
-   eligibilityNote:employeeRuleEnabled(employeeRecord.undertime_deduction_applicable, true) ? '' : 'Employee is exempt from undertime deduction.'
-  }
- }
-
- async function createPreparedPostReleaseAdjustment(req, context) {
-  if (!context || context.existingAdjustment || safeNum(context.amount, 0) <= 0.009) {
-   return { created:false, adjustment:context?.existingAdjustment || null }
-  }
-  const employeeRecord = context.employee || {}
-  let notes = ''
-  if (context.requestType === 'overtime') {
-   notes = `POST-RELEASE OT|TIME-ADJ:${context.sourceId} | SOURCE-PERIOD:${context.sourcePayrollStart} TO ${context.sourcePayrollEnd} | SOURCE-ATTENDANCE:${context.sourceAttendanceDate} | ${context.exactMinutes} approved policy OT minute(s) × ${php(context.rate)}/hour × 1.25. Released payroll was preserved; this item is applied on ${context.target.adjustmentDate} in the next open cutoff.`
-  } else {
-   const row = context.reconciliationRow || {}
-   const sourceDayDetails = (row.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0)
-   const serializedSourceDays = serializeAttendanceReconDayDetails(sourceDayDetails)
-   const readableSourceDays = sourceDayDetails.map(day => `${day.date}: ${safeNum(day.lateMinutes,0)} late min, ${safeNum(day.undertimeMinutes,0)} automatic UT min, ${php(day.deductionAmount)}`).join('; ')
-   notes = `${row.marker} | POST-RELEASE UT TRIGGER:TIME-ADJ:${context.sourceId} | SOURCE-PERIOD:${context.sourcePayrollStart} TO ${context.sourcePayrollEnd} | SOURCE-ATTENDANCE:${context.sourceAttendanceDate} | CORRECTION-APPLIED:${context.target.adjustmentDate} | ${PAYROLL_ATTENDANCE_RECON_SOURCE_OPEN}${serializedSourceDays}${PAYROLL_ATTENDANCE_RECON_SOURCE_CLOSE} | Full-cutoff reconciliation prevents duplicate deduction. Source dates: ${readableSourceDays || 'No chargeable attendance shortage'}. Correct attendance deduction ${php(row.correctDeduction)}; saved payroll plus prior corrections ${php(safeNum(row.priorAttendanceDeduction, 0) + safeNum(row.existingReconAmount, 0))}; new missing difference ${php(context.amount)}.`
-  }
-  const payload = {
-   employee_id:req.employee_id,
-   employee_code:req.employee_code || employeeRecord.employee_code || '',
-   employee_name:req.employee_name || employeeRecord.full_name || '',
-   adjustment_date:context.target.adjustmentDate,
-   adjustment_type:context.adjustmentType,
-   category:context.category,
-   amount:moneyRound(context.amount),
-   notes,
-   source_type:POST_RELEASE_TIME_ADJ_SOURCE_TYPE,
-   source_id:context.sourceId,
-   source_payroll_start:context.sourcePayrollStart,
-   source_payroll_end:context.sourcePayrollEnd,
-   source_attendance_date:context.sourceAttendanceDate,
-   source_minutes:context.exactMinutes,
-   source_rate:moneyRound(context.rate),
-   source_multiplier:context.multiplier,
-   created_by:currentAdminLabel || adminRole || 'Admin'
-  }
-  const { data, error } = await supabase.from('payroll_adjustments').insert(payload).select().single()
-  if (!error) return { created:true, adjustment:data }
-  if (String(error?.message || '').toLowerCase().includes('duplicate')) {
-   const { data:duplicateRows, error:duplicateLookupError } = await supabase.from('payroll_adjustments').select('*').eq('source_type', POST_RELEASE_TIME_ADJ_SOURCE_TYPE).eq('source_id', context.sourceId).limit(1)
-   if (!duplicateLookupError && duplicateRows?.[0]) return { created:false, adjustment:duplicateRows[0] }
-  }
-  throw error
  }
 
  async function approveMealBreakExceptionRequest(req, validation, context = {}) {
@@ -23707,51 +23589,24 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   return
  }
 
- if (requestType === 'overtime') {
-  const { data:employeePolicyRows, error:employeePolicyError } = await supabase
-   .from('employees')
-   .select('id,full_name,employee_code,position,overtime_pay_eligible')
-   .eq('id', req.employee_id)
-   .limit(1)
-  if (employeePolicyError) {
-   showToast('OT approval blocked: employee eligibility could not be verified — ' + employeePolicyError.message, 'red')
-   return
-  }
-  const employeePolicy = (employeePolicyRows || [])[0] || null
-  if (!employeePolicy || !isEmployeeOvertimeEligible(employeePolicy)) {
-   const policyReason = employeePolicy
-    ? `${employeePolicy.full_name || req.employee_name || 'This employee'} is marked not eligible for overtime pay.`
-    : 'The current employee policy record could not be found.'
-   showToast(`OT approval blocked: ${policyReason} Reject or void this request instead.`, 'red')
-   await logAudit('OT APPROVAL BLOCKED BY EMPLOYEE POLICY', currentAdminLabel, req.employee_name, `${targetDate} | ${policyReason}`)
-   return
-  }
- }
-
- let releasedPayrollRows = []
  const { data:coveredPayroll, error:coveredPayrollError } = await supabase
  .from('payroll_records')
- .select('id,payroll_start,payroll_end,payroll_approved,payroll_released,payroll_locked,payroll_status,approved_at,released_at,employee_acknowledgement')
+ .select('id,payroll_start,payroll_end,payroll_approved,approved_at,employee_acknowledgement')
  .eq('employee_id', req.employee_id)
  .lte('payroll_start', targetDate)
  .gte('payroll_end', targetDate)
  .limit(20)
  if (coveredPayrollError) { showToast('Failed to check payroll guard: '+coveredPayrollError.message, 'red'); return }
  if ((coveredPayroll || []).length > 0) {
- const released = coveredPayroll.some(isReleasedPayrollRecord)
- const periodText = coveredPayroll.map(r=>`${r.payroll_start} to ${r.payroll_end}`).join(', ')
- if (released) {
-   if (requestType === 'meal_break') {
-    showToast(`Approval blocked: ${targetDate} is inside released payroll (${periodText}). A meal-break correction can change several payroll components and must be handled through the historical attendance reconciliation workflow.`, 'red')
-    await logAudit('MEAL BREAK APPROVAL BLOCKED BY RELEASED PAYROLL', currentAdminLabel, req.employee_name, `${targetDate} | Payroll: ${periodText}`)
-    return
-   }
-   releasedPayrollRows = coveredPayroll.filter(isReleasedPayrollRecord)
+  const released = coveredPayroll.some(isReleasedPayrollRecord)
+  const periodText = coveredPayroll.map(r=>`${r.payroll_start} to ${r.payroll_end}`).join(', ')
+  if (released) {
+   showToast(`Approval blocked: ${targetDate} is inside released payroll (${periodText}). Use payroll adjustment next cutoff.`, 'red')
   } else {
    showToast(`Approval blocked: ${targetDate} is inside already computed draft/review payroll (${periodText}). Undo that draft payroll first, process the attendance request, then recompute.`, 'red')
-   await logAudit('OT/UT APPROVAL BLOCKED BY PAYROLL GUARD', currentAdminLabel, req.employee_name, `${requestType} ${req.minutes} min on ${targetDate} | Payroll: ${periodText}`)
-   return
   }
+  await logAudit('OT/UT APPROVAL BLOCKED BY PAYROLL GUARD', currentAdminLabel, req.employee_name, `${requestType} ${req.minutes} min on ${targetDate} | Payroll: ${periodText}`)
+  return
  }
 
  if (requestType !== 'meal_break' && safeNum(validation.metrics.recordedBreakMinutes, 0) === 0 && !validation.metrics.breakOverrideApplied) {
@@ -23810,40 +23665,6 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const actualWindow = validation.overtimeWindow || {}
  const zeroMinuteApproval = exactMinutes <= 0
 
- let postReleaseContext = null
- if (releasedPayrollRows.length > 0) {
-  if (!requireOwnerOrPayrollAction('approve a released-period OT/UT request and create its next-cutoff adjustment')) return
-  if (!String(reviewNote || '').trim()) {
-   showToast('Enter an admin response documenting the late filing, verification, and approval basis before creating a post-release payroll adjustment.', 'red')
-   return
-  }
-  try {
-   postReleaseContext = await preparePostReleaseTimeAdjustment(req, validation, releasedPayrollRows)
-  } catch(postReleaseError) {
-   showToast('Post-release approval blocked: ' + (postReleaseError?.message || postReleaseError), 'red')
-   await logAudit('POST-RELEASE OT/UT PREPARATION BLOCKED', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | ${postReleaseError?.message || postReleaseError}`)
-   return
-  }
-  const targetPeriodLabel = postReleaseContext.target?.period?.label || `${postReleaseContext.target?.adjustmentDate || ''}`
-  const draftTargetWarning = postReleaseContext.target?.draftPayroll
-   ? `\n\nIMPORTANT: A draft payroll already covers the target cutoff. After this approval, undo and recompute that draft so the new adjustment appears on the payslip.`
-   : ''
-  const adjustmentExplanation = requestType === 'overtime'
-   ? postReleaseContext.amount > 0
-    ? `${php(postReleaseContext.amount)} will be created as an itemized overtime addition dated ${postReleaseContext.target.adjustmentDate}.`
-    : `No monetary addition will be created. ${postReleaseContext.eligibilityNote || 'The approved minutes are zero.'}`
-   : postReleaseContext.amount > 0
-    ? `${php(postReleaseContext.amount)} is the missing full-cutoff attendance deduction after subtracting everything already deducted in the released payroll and prior corrections. It will be dated ${postReleaseContext.target.adjustmentDate}.`
-    : `No new deduction will be created because the released payroll and prior corrections already cover the recalculated attendance shortage.${postReleaseContext.eligibilityNote ? ` ${postReleaseContext.eligibilityNote}` : ''}`
-  const confirmed = window.confirm(
-   `POST-RELEASE ${requestType.toUpperCase()} APPROVAL\n\nEmployee: ${req.employee_name}\nSource attendance: ${targetDate}\nReleased payroll: ${postReleaseContext.sourcePayrollStart} to ${postReleaseContext.sourcePayrollEnd}\nApproved policy minutes: ${exactMinutes}\n\n${adjustmentExplanation}\nTarget cutoff: ${targetPeriodLabel}\n\nThe released payroll totals will remain locked and unchanged. The adjustment will be separately itemized and linked to request ${req.id} so it cannot be posted twice.${draftTargetWarning}\n\nContinue?`
-  )
-  if (!confirmed) {
-   showToast('Post-release approval cancelled. No request, attendance, or payroll adjustment was changed.', 'orange')
-   return
-  }
- }
-
  const parsedReason = parseTimeAdjustmentEmployeeReason(req.employee_reason || '')
  const savedRangeText = requestType === 'overtime' && parsedReason.hasOvertimeRange
   ? `${parsedReason.overtimeRange?.filedFrom || ''}-${parsedReason.overtimeRange?.filedTo || ''}`
@@ -23852,10 +23673,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   ? `; schedule ${validation.metrics.shiftStart || 'not saved'}-${validation.metrics.shiftEnd || 'not saved'}; raw late ${validation.metrics.rawLateMinutes || 0} min; policy late ${validation.metrics.lateMinutes || 0} min; grace applied ${validation.metrics.graceAppliedMinutes || 0} min; early out ${validation.metrics.earlyOutMinutes || 0} min; raw paid-work shortage ${validation.metrics.rawPaidWorkShortageMinutes || 0} min; grace-adjusted paid-work shortage ${validation.metrics.paidWorkShortageMinutes || 0} min; raw protected UT ${validation.metrics.rawUndertimeMinutes || 0} min; ${UNDERTIME_BLOCK_MINUTES}-minute block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min; final chargeable UT ${validation.metrics.undertimeMinutes || 0} min`
   : ''
  const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; raw span ${validation.metrics.rawSpanMinutes} min; break deducted ${validation.metrics.deductedBreakMinutes} min; paid work ${validation.metrics.paidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min${scheduleShortageText}.`
- const postReleaseReviewSuffix = postReleaseContext
-  ? ` PRIOR-PERIOD CONTROL: released payroll ${postReleaseContext.sourcePayrollStart} to ${postReleaseContext.sourcePayrollEnd} was preserved; linked adjustment source ${POST_RELEASE_TIME_ADJ_SOURCE_TYPE}:${postReleaseContext.sourceId}; target date ${postReleaseContext.target.adjustmentDate}; calculated adjustment ${php(postReleaseContext.amount)}.`
-  : ''
- const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}${zeroMinuteApproval ? 'REVIEWED AND CLOSED AT ZERO FROM ACTUAL ATTENDANCE' : 'APPROVED FROM ACTUAL ATTENDANCE AND POLICY'}: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}; raw OT ${safeNum(actualWindow.rawMinutes, 0)} min; excluded remainder ${safeNum(actualWindow.excludedMinutes, 0)} min` : `; raw UT ${validation.metrics.rawUndertimeMinutes || 0} min; block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min`}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.${postReleaseReviewSuffix}`
+ const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}${zeroMinuteApproval ? 'REVIEWED AND CLOSED AT ZERO FROM ACTUAL ATTENDANCE' : 'APPROVED FROM ACTUAL ATTENDANCE AND POLICY'}: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}; raw OT ${safeNum(actualWindow.rawMinutes, 0)} min; excluded remainder ${safeNum(actualWindow.excludedMinutes, 0)} min` : `; raw UT ${validation.metrics.rawUndertimeMinutes || 0} min; block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min`}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
 
  const { error } = await supabase.from('time_adjustment_requests').update({
   attendance_date:targetDate,
@@ -23923,14 +23741,6 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
 
  const primaryAttendanceLog = validation.integrity.completedLogs[0]
  const sourceAttendanceLogIds = (validation.logs || []).map(row => row?.id).filter(Boolean)
- const sourceAttendanceSnapshots = (validation.logs || []).filter(row => row?.id).map(row => ({
-  id:row.id,
-  overtime_minutes:Math.max(0, Math.round(safeNum(row.overtime_minutes, 0))),
-  overtime_approved:row.overtime_approved === true,
-  undertime_minutes:Math.max(0, Math.round(safeNum(row.undertime_minutes, 0))),
-  late_minutes:Math.max(0, Math.round(safeNum(row.late_minutes, 0))),
-  status:row.status || 'Completed'
- }))
  if (requestType==='overtime') {
   let clearOTQuery = supabase.from('attendance_logs').update({ overtime_minutes:0, overtime_approved:false })
   clearOTQuery = sourceAttendanceLogIds.length > 0
@@ -23982,28 +23792,6 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
     showToast('Approval was rolled back because attendance synchronization failed: ' + attendanceUTError.message, 'red')
     return
    }
- }
- }
-
- let postReleaseAdjustmentResult = null
- if (postReleaseContext) {
-  try {
-   postReleaseAdjustmentResult = await createPreparedPostReleaseAdjustment(req, postReleaseContext)
-  } catch(postReleaseAdjustmentError) {
-   await rollbackApprovalAfterSyncFailure('post-release payroll adjustment failed — ' + (postReleaseAdjustmentError?.message || postReleaseAdjustmentError))
-   for (const snapshot of sourceAttendanceSnapshots) {
-    const { error:restoreError } = await supabase.from('attendance_logs').update({
-     overtime_minutes:snapshot.overtime_minutes,
-     overtime_approved:snapshot.overtime_approved,
-     undertime_minutes:snapshot.undertime_minutes,
-     late_minutes:snapshot.late_minutes,
-     status:snapshot.status
-    }).eq('id', snapshot.id)
-    if (restoreError) console.error('Post-release attendance rollback failed:', restoreError)
-   }
-   await logAudit('POST-RELEASE OT/UT APPROVAL ROLLED BACK', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | ${postReleaseAdjustmentError?.message || postReleaseAdjustmentError}`)
-   showToast('Approval was rolled back because the linked next-cutoff payroll adjustment could not be created: ' + (postReleaseAdjustmentError?.message || postReleaseAdjustmentError), 'red')
-   return
   }
  }
 
@@ -24040,18 +23828,11 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   }
  }
 
- const postReleasePayrollMessage = postReleaseContext
-  ? postReleaseContext.amount > 0
-   ? requestType === 'overtime'
-    ? ` The released payroll was not changed. An itemized ${php(postReleaseContext.amount)} overtime addition is linked to this request for the cutoff containing ${postReleaseContext.target.adjustmentDate}.`
-    : ` The released payroll was not changed. A full-cutoff reconciliation found ${php(postReleaseContext.amount)} still missing after prior deductions, so that itemized deduction is linked to this request for the cutoff containing ${postReleaseContext.target.adjustmentDate}.`
-   : ` The released payroll was not changed, and no new payroll amount was created because ${requestType === 'overtime' ? (postReleaseContext.eligibilityNote || 'there are no payable overtime minutes') : 'the recalculated attendance deduction is already covered'}.`
-  : ''
  await logAudit(
-  postReleaseContext ? `POST-RELEASE ${requestType.toUpperCase()} APPROVED` : `${requestType.toUpperCase()} APPROVED FROM ACTUAL ATTENDANCE`,
+  `${requestType.toUpperCase()} APPROVED FROM ACTUAL ATTENDANCE`,
   currentAdminLabel,
   req.employee_name,
-  `${exactMinutes} minute(s) on ${targetDate} | Saved request ${requestedMinutes} min | Raw ${validation.metrics.rawSpanMinutes} - Break ${validation.metrics.deductedBreakMinutes} = Paid ${validation.metrics.paidWorkedMinutes}${postReleaseContext ? ` | Source payroll ${postReleaseContext.sourcePayrollStart} to ${postReleaseContext.sourcePayrollEnd} preserved | Adjustment ${php(postReleaseContext.amount)} on ${postReleaseContext.target.adjustmentDate} | Adjustment row ${postReleaseAdjustmentResult?.adjustment?.id || 'none required'}` : ''}`
+  `${exactMinutes} minute(s) on ${targetDate} | Saved request ${requestedMinutes} min | Raw ${validation.metrics.rawSpanMinutes} - Break ${validation.metrics.deductedBreakMinutes} = Paid ${validation.metrics.paidWorkedMinutes}`
  )
  await createNotification(
   req.employee_id,
@@ -24059,8 +23840,8 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   'overtime',
   ` ${requestType==='overtime'?'Overtime':'Undertime'} Approved`,
   zeroMinuteApproval
-   ? `Your ${requestType} request for ${targetDate} was reviewed and closed at 0 minute(s), based on your actual Time In and Time Out less the mandatory break. Nothing will be added to or deducted from payroll from this request.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}${postReleasePayrollMessage}`
-   : `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), calculated from your actual Time In and Time Out less the mandatory break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}${postReleasePayrollMessage}`
+   ? `Your ${requestType} request for ${targetDate} was reviewed and closed at 0 minute(s), based on your actual Time In and Time Out less the mandatory break. Nothing will be added to or deducted from payroll from this request.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
+   : `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), calculated from your actual Time In and Time Out less the mandatory break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
  )
  const approvalTimestamp = new Date().toISOString()
  setTimeAdjRequests(prev=>prev.map(r=>{
@@ -24083,7 +23864,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   return r
  }))
  await refreshTimeAdjAdminValidation({ ...req, attendance_date:targetDate, minutes:exactMinutes, status:'approved' })
- showToast(`${requestType === 'overtime' ? 'Overtime' : 'Undertime'} ${zeroMinuteApproval ? 'reviewed and closed at 0' : `approved for ${exactMinutes}`} policy-qualified minute(s).${requestedMinutes !== exactMinutes ? ` Saved request corrected from ${requestedMinutes} minute(s).` : ''}${postReleaseContext ? postReleaseContext.amount > 0 ? ` Released payroll preserved; ${php(postReleaseContext.amount)} adjustment created for ${postReleaseContext.target.adjustmentDate}.` : ' Released payroll preserved; no duplicate payroll amount was needed.' : ''}${postReleaseContext?.target?.draftPayroll ? ' Undo and recompute the target draft payroll now.' : ''}${autoVoidedDuplicateIds.length > 0 ? ` ${autoVoidedDuplicateIds.length} duplicate pending request(s) were automatically voided.` : ''}`)
+ showToast(`${requestType === 'overtime' ? 'Overtime' : 'Undertime'} ${zeroMinuteApproval ? 'reviewed and closed at 0' : `approved for ${exactMinutes}`} policy-qualified minute(s).${requestedMinutes !== exactMinutes ? ` Saved request corrected from ${requestedMinutes} minute(s).` : ''}${autoVoidedDuplicateIds.length > 0 ? ` ${autoVoidedDuplicateIds.length} duplicate pending request(s) were automatically voided.` : ''}`)
  } finally {
   timeAdjApprovalLockRef.current = false
  }
@@ -24873,7 +24654,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const endDate = parseLocalDate(sourceEnd)
  if (!startDate || !endDate || endDate < startDate) { showToast('Historical payroll end date must be on or after the start date.', 'red'); return [] }
 
- if (!options.preserveUi) setAttendanceReconLoading(true)
+ setAttendanceReconLoading(true)
  try {
   const { data:payrollRows, error:payrollError } = await supabase
    .from('payroll_records')
@@ -24883,10 +24664,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    .order('employee_name', { ascending:true })
   if (payrollError) throw payrollError
   if (!(payrollRows || []).length) {
-   if (!options.preserveUi) {
-    setAttendanceReconRows([])
-    setAttendanceReconSelected({})
-   }
+   setAttendanceReconRows([])
+   setAttendanceReconSelected({})
    if (!options.silent) showToast(`No saved payroll records found for ${sourceStart} to ${sourceEnd}.`, 'red')
    return []
   }
@@ -25078,25 +24857,21 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
   const selected = {}
   auditRows.forEach(row => { if (row.canCreate) selected[row.employeeId] = true })
-  if (!options.preserveUi) {
-   setAttendanceReconRows(auditRows)
-   setAttendanceReconSelected(selected)
-   setAttendanceReconLastRunAt(new Date().toISOString())
-  }
+  setAttendanceReconRows(auditRows)
+  setAttendanceReconSelected(selected)
+  setAttendanceReconLastRunAt(new Date().toISOString())
   const readyCount = auditRows.filter(row => row.canCreate).length
   const readyAmount = moneyRound(auditRows.filter(row => row.canCreate).reduce((sum, row) => sum + row.missingAdjustment, 0))
   if (!options.silent) showToast(`Audit complete: ${readyCount} employee(s) need ${php(readyAmount)} in attendance corrections.`)
   return auditRows
  } catch(err) {
   console.error('Historical attendance reconciliation failed:', err)
-  if (!options.preserveUi) {
-   setAttendanceReconRows([])
-   setAttendanceReconSelected({})
-  }
+  setAttendanceReconRows([])
+  setAttendanceReconSelected({})
   if (!options.silent) showToast('Historical attendance audit failed: ' + (err?.message || err), 'red')
   return []
  } finally {
-  if (!options.preserveUi) setAttendanceReconLoading(false)
+  setAttendanceReconLoading(false)
  }
  }
 
@@ -25167,7 +24942,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (error) throw error
   const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, sourceStart, sourceEnd)
   const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
-  const grouped = groupDTRLogsByDate(enrichedLogs)
+  const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp)
+  const grouped = groupDTRLogsByDate(policyLogs)
   const allDays = buildDateRangeRows(sourceStart, sourceEnd, ({ dateStr, day, dayName }) => ({ dateStr, day, dayName, log:mergeDTRDayLogs(grouped[dateStr] || []) }))
   const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
   const sourceDates = Array.from(new Set((trace?.dayDetails || []).filter(day => safeNum(day.undertimeMinutes, 0) > 0 || safeNum(day.lateMinutes, 0) > 0).map(day => day.date).filter(Boolean)))
@@ -26733,6 +26509,779 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   }
  }
 
+
+ function getDefaultWeatherGuardDraft(dateValue = forecastDate) {
+  return {
+   weather_level:'no_warning',
+   weather_source_type:'none',
+   weather_location:'Pangasinan',
+   weather_issued_at:'',
+   weather_reference:'',
+   class_status:'unverified',
+   class_scope:'',
+   class_source_type:'none',
+   class_verified_by:'',
+   class_verified_at:'',
+   class_reference:'',
+   route_status:'unverified',
+   route_source_type:'none',
+   route_verified_by:'',
+   route_verified_at:'',
+   route_reference:'',
+   decision_cutoff_time:String(weatherGuardSettings?.decision_cutoff_time || '20:00').slice(0,5),
+   decision_notes:'',
+   delivery_date:dateValue
+  }
+ }
+
+ function toWeatherGuardDateTimeLocal(value = '') {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value).slice(0,16)
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return local.toISOString().slice(0,16)
+ }
+
+ function weatherGuardNowLocalInput() {
+  const date = new Date()
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return local.toISOString().slice(0,16)
+ }
+
+ function normalizeWeatherGuardTime(value = '20:00') {
+  return String(value || '20:00').slice(0,5)
+ }
+
+ function getWeatherGuardFactors(draft = weatherGuardDraft) {
+  const weatherFactorMap = {
+   no_warning:1,
+   watch:0.95,
+   moderate_rain:0.85,
+   heavy_rain:0.65,
+   severe_weather:0.40
+  }
+  const classFactorMap = {
+   normal:1,
+   partial_suspension:0.50,
+   fully_suspended:0,
+   unverified:1
+  }
+  const unverifiedBaseSchoolFactorMap = {
+   no_warning:1,
+   watch:0.75,
+   moderate_rain:0.50,
+   heavy_rain:0.25,
+   severe_weather:0
+  }
+  const weatherLevel = String(draft?.weather_level || 'no_warning')
+  const classStatus = String(draft?.class_status || 'unverified')
+  const nonSchoolFactor = weatherFactorMap[weatherLevel] ?? 1
+  const schoolFactor = classFactorMap[classStatus] ?? 1
+  const baseSchoolFactor = classStatus === 'unverified'
+   ? (unverifiedBaseSchoolFactorMap[weatherLevel] ?? 1)
+   : schoolFactor
+  return { weatherLevel, classStatus, nonSchoolFactor, schoolFactor, baseSchoolFactor }
+ }
+
+ function getWeatherGuardProfileDraft(reseller = {}) {
+  const key = String(reseller?.id || '')
+  const saved = weatherGuardProfiles.find(row => String(row.reseller_id) === key)
+  return weatherGuardProfileDrafts[key] || {
+   reseller_id:key,
+   municipality:saved?.municipality || reseller?.area || '',
+   outlet_category:saved?.outlet_category || 'mixed',
+   school_type:saved?.school_type || 'mixed',
+   grade_level_market:saved?.grade_level_market || '',
+   school_demand_pct:String(saved?.school_demand_pct ?? 50),
+   route_name:saved?.route_name || reseller?.area || '',
+   route_risk_level:saved?.route_risk_level || 'green',
+   route_notes:saved?.route_notes || '',
+   is_active:saved?.is_active !== false
+  }
+ }
+
+ function updateWeatherGuardProfileDraft(resellerId = '', field = '', value = '') {
+  const reseller = resellers.find(row => String(row.id) === String(resellerId)) || {}
+  setWeatherGuardProfileDrafts(prev => ({
+   ...prev,
+   [String(resellerId)]:{
+    ...getWeatherGuardProfileDraft(reseller),
+    ...(prev[String(resellerId)] || {}),
+    [field]:value
+   }
+  }))
+ }
+
+ function getWeatherGuardProfileForReseller(resellerId = '') {
+  const reseller = resellers.find(row => String(row.id) === String(resellerId)) || {}
+  return getWeatherGuardProfileDraft(reseller)
+ }
+
+ function getWeatherGuardDecisionKey(row = {}) {
+  if (row?.reseller_id) return `reseller:${row.reseller_id}`
+  const name = String(row?.reseller_name || row?.customer_name || row?.name || 'direct').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-')
+  return `direct:${name}`
+ }
+
+ function getWeatherGuardInvoiceQuantity(invoice = {}) {
+  return Math.max(0, Math.round((invoice?.delivery_invoice_items || []).reduce((sum, item) => sum + safeNum(item?.quantity, 0), 0)))
+ }
+
+ function getWeatherGuardSavedDecision(row = {}) {
+  const rowKey = getWeatherGuardDecisionKey(row)
+  return weatherGuardDecisions.find(decision => {
+   if (row?.reseller_id && decision?.reseller_id) return String(decision.reseller_id) === String(row.reseller_id)
+   return getWeatherGuardDecisionKey(decision) === rowKey
+  }) || null
+ }
+
+ function buildWeatherGuardRows(invoices = deliveryInvoices, dateValue = forecastDate) {
+  const invoiceRows = (invoices || []).filter(invoice => String(invoice?.delivery_date || '').slice(0,10) === String(dateValue || '').slice(0,10))
+  const grouped = {}
+
+  invoiceRows.forEach(invoice => {
+   const resellerId = invoice?.reseller_id || ''
+   const resellerName = invoice?.reseller_name || invoice?.customer_name || 'Direct / Other Customer'
+   const key = resellerId ? `reseller:${resellerId}` : getWeatherGuardDecisionKey({ reseller_name:resellerName })
+   if (!grouped[key]) {
+    grouped[key] = {
+     key,
+     reseller_id:resellerId || null,
+     reseller_name:resellerName,
+     municipality:invoice?.customer_address || '',
+     invoice_qty:0,
+     invoice_count:0
+    }
+   }
+   grouped[key].invoice_qty += getWeatherGuardInvoiceQuantity(invoice)
+   grouped[key].invoice_count += 1
+  })
+
+  const factors = getWeatherGuardFactors(weatherGuardDraft)
+  return Object.values(grouped).map(row => {
+   const isDirect = !row.reseller_id
+   const profile = isDirect
+    ? {
+       municipality:row.municipality || '',
+       outlet_category:'non_school',
+       school_type:'none',
+       school_demand_pct:0,
+       route_name:'',
+       route_risk_level:'green',
+       route_notes:''
+      }
+    : getWeatherGuardProfileForReseller(row.reseller_id)
+
+   const schoolDemandPct = Math.max(0, Math.min(100, safeNum(profile?.school_demand_pct, 50)))
+   const schoolDemand = row.invoice_qty * schoolDemandPct / 100
+   const nonSchoolDemand = row.invoice_qty - schoolDemand
+   const routeUnsafe = weatherGuardDraft.route_status === 'unsafe'
+   const recommendedQty = routeUnsafe
+    ? 0
+    : Math.max(0, Math.round((schoolDemand * factors.schoolFactor) + (nonSchoolDemand * factors.nonSchoolFactor)))
+   const baseQty = routeUnsafe
+    ? 0
+    : Math.max(0, Math.round((schoolDemand * factors.baseSchoolFactor) + (nonSchoolDemand * factors.nonSchoolFactor)))
+   const conditionalQty = Math.max(0, recommendedQty - baseQty)
+   const savedDecision = getWeatherGuardSavedDecision(row)
+   const overrideKey = getWeatherGuardDecisionKey(row)
+   const hasOverride = Object.prototype.hasOwnProperty.call(weatherGuardDecisionOverrides, overrideKey)
+   const defaultFinal = weatherGuardDraft.class_status === 'unverified' && weatherGuardDraft.weather_level !== 'no_warning'
+    ? baseQty
+    : recommendedQty
+   const finalQty = routeUnsafe
+    ? 0
+    : Math.max(0, Math.round(hasOverride
+      ? safeNum(weatherGuardDecisionOverrides[overrideKey], defaultFinal)
+      : safeNum(savedDecision?.final_qty, defaultFinal)))
+
+   let riskLevel = 'green'
+   if (routeUnsafe || weatherGuardDraft.class_status === 'fully_suspended' || weatherGuardDraft.weather_level === 'severe_weather' || safeNum(profile?.route_risk_level === 'red' ? 1 : 0,0)) riskLevel = 'red'
+   else if (
+    weatherGuardDraft.route_status === 'caution'
+    || weatherGuardDraft.class_status === 'partial_suspension'
+    || weatherGuardDraft.class_status === 'unverified' && weatherGuardDraft.weather_level !== 'no_warning'
+    || weatherGuardDraft.weather_level === 'heavy_rain'
+    || profile?.route_risk_level === 'amber'
+    || recommendedQty < row.invoice_qty
+   ) riskLevel = 'amber'
+
+   const dispatchStatus = routeUnsafe ? 'blocked' : riskLevel === 'green' ? 'allowed' : 'caution'
+   return {
+    ...row,
+    municipality:profile?.municipality || row.municipality || '',
+    outlet_category:profile?.outlet_category || (isDirect ? 'non_school' : 'mixed'),
+    school_type:profile?.school_type || (isDirect ? 'none' : 'mixed'),
+    school_demand_pct:schoolDemandPct,
+    route_name:profile?.route_name || '',
+    route_risk_level:profile?.route_risk_level || 'green',
+    school_factor:factors.schoolFactor,
+    non_school_factor:factors.nonSchoolFactor,
+    base_qty:baseQty,
+    conditional_qty:conditionalQty,
+    recommended_qty:recommendedQty,
+    final_qty:finalQty,
+    risk_level:riskLevel,
+    dispatch_status:dispatchStatus,
+    reallocation_qty:Math.max(0, row.invoice_qty - finalQty),
+    notes:savedDecision?.notes || ''
+   }
+  }).sort((a,b) => String(a.reseller_name || '').localeCompare(String(b.reseller_name || '')))
+ }
+
+ function getWeatherGuardSummary(rows = buildWeatherGuardRows()) {
+  return (rows || []).reduce((summary, row) => {
+   summary.normal += safeNum(row.invoice_qty,0)
+   summary.base += safeNum(row.base_qty,0)
+   summary.conditional += safeNum(row.conditional_qty,0)
+   summary.recommended += safeNum(row.recommended_qty,0)
+   summary.final += safeNum(row.final_qty,0)
+   summary.reallocation += safeNum(row.reallocation_qty,0)
+   if (row.risk_level === 'red') summary.red += 1
+   else if (row.risk_level === 'amber') summary.amber += 1
+   else summary.green += 1
+   if (row.dispatch_status === 'blocked') summary.blocked += 1
+   return summary
+  }, { normal:0, base:0, conditional:0, recommended:0, final:0, reallocation:0, green:0, amber:0, red:0, blocked:0 })
+ }
+
+ function getWeatherGuardErrorMessage(error) {
+  const message = String(error?.message || error || '')
+  const mappings = [
+   ['WEATHER_GUARD_ACCESS_DENIED','Your admin role is not allowed to manage this guard.'],
+   ['WEATHER_GUARD_DELIVERY_DATE_REQUIRED','Select a delivery date.'],
+   ['WEATHER_GUARD_CLASS_VERIFICATION_REQUIRED','Verified class suspension requires a DepEd/LGU/school source, verifier, and reference link or screenshot note.'],
+   ['WEATHER_GUARD_UNVERIFIED_CLASS_CANNOT_REDUCE_DEMAND','Unverified class information cannot reduce school demand.'],
+   ['WEATHER_GUARD_ROUTE_VERIFICATION_REQUIRED','An unsafe route requires an official/field source, verifier, and reference.'],
+   ['WEATHER_GUARD_UNSAFE_ROUTE_FINAL_QTY_MUST_BE_ZERO','Unsafe route: final released quantity must be zero.'],
+   ['WEATHER_GUARD_FINALIZE_OWNER_MANAGER_ONLY','Only the Owner or Manager may lock and release the final plan.'],
+   ['WEATHER_GUARD_PLAN_NOT_FOUND','Save the guard draft before finalizing it.']
+  ]
+  return mappings.find(([code]) => message.includes(code))?.[1] || message
+ }
+
+ async function loadWeatherGuardData(dateValue = forecastDate, options = {}) {
+  if (!dateValue) return
+  setWeatherGuardLoading(true)
+  try {
+   const [profilesResult, settingsResult, planResult] = await Promise.all([
+    supabase.from('weather_guard_outlet_profiles').select('*').eq('is_active', true).order('municipality'),
+    supabase.from('weather_guard_settings').select('*').eq('id', 1).maybeSingle(),
+    supabase.from('weather_guard_daily_plans').select('*').eq('delivery_date', dateValue).maybeSingle()
+   ])
+   if (profilesResult.error) throw profilesResult.error
+   if (settingsResult.error) throw settingsResult.error
+   if (planResult.error) throw planResult.error
+
+   const profiles = profilesResult.data || []
+   setWeatherGuardProfiles(profiles)
+   setWeatherGuardProfileDrafts(Object.fromEntries(profiles.map(row => [
+    String(row.reseller_id),
+    {
+     reseller_id:String(row.reseller_id),
+     municipality:row.municipality || '',
+     outlet_category:row.outlet_category || 'mixed',
+     school_type:row.school_type || 'mixed',
+     grade_level_market:row.grade_level_market || '',
+     school_demand_pct:String(row.school_demand_pct ?? 50),
+     route_name:row.route_name || '',
+     route_risk_level:row.route_risk_level || 'green',
+     route_notes:row.route_notes || '',
+     is_active:row.is_active !== false
+    }
+   ])))
+
+   const settings = settingsResult.data || weatherGuardSettings
+   setWeatherGuardSettings({
+    ...weatherGuardSettings,
+    ...settings,
+    decision_cutoff_time:normalizeWeatherGuardTime(settings?.decision_cutoff_time || '20:00')
+   })
+
+   const plan = planResult.data || null
+   setWeatherGuardPlan(plan)
+
+   if (plan) {
+    const [decisionsResult, outcomeResult] = await Promise.all([
+     supabase.from('weather_guard_outlet_decisions').select('*').eq('plan_id', plan.id).order('reseller_name'),
+     supabase.from('weather_guard_outcomes').select('*').eq('plan_id', plan.id).maybeSingle()
+    ])
+    if (decisionsResult.error) throw decisionsResult.error
+    if (outcomeResult.error) throw outcomeResult.error
+
+    const decisions = decisionsResult.data || []
+    setWeatherGuardDecisions(decisions)
+    setWeatherGuardDecisionOverrides(Object.fromEntries(decisions.map(row => [getWeatherGuardDecisionKey(row), String(row.final_qty ?? 0)])))
+    setWeatherGuardDraft({
+     weather_level:plan.weather_level || 'no_warning',
+     weather_source_type:plan.weather_source_type || 'none',
+     weather_location:plan.weather_location || 'Pangasinan',
+     weather_issued_at:toWeatherGuardDateTimeLocal(plan.weather_issued_at),
+     weather_reference:plan.weather_reference || '',
+     class_status:plan.class_status || 'unverified',
+     class_scope:plan.class_scope || '',
+     class_source_type:plan.class_source_type || 'none',
+     class_verified_by:plan.class_verified_by || '',
+     class_verified_at:toWeatherGuardDateTimeLocal(plan.class_verified_at),
+     class_reference:plan.class_reference || '',
+     route_status:plan.route_status || 'unverified',
+     route_source_type:plan.route_source_type || 'none',
+     route_verified_by:plan.route_verified_by || '',
+     route_verified_at:toWeatherGuardDateTimeLocal(plan.route_verified_at),
+     route_reference:plan.route_reference || '',
+     decision_cutoff_time:normalizeWeatherGuardTime(plan.decision_cutoff_time || settings?.decision_cutoff_time || '20:00'),
+     decision_notes:plan.decision_notes || ''
+    })
+    const outcome = outcomeResult.data || {}
+    setWeatherGuardOutcome({
+     actual_delivered_qty:String(outcome.actual_delivered_qty ?? ''),
+     returned_qty:String(outcome.returned_qty ?? ''),
+     sold_qty:String(outcome.sold_qty ?? ''),
+     stockout_qty:String(outcome.stockout_qty ?? ''),
+     lost_sales_qty:String(outcome.lost_sales_qty ?? ''),
+     disposal_qty:String(outcome.disposal_qty ?? ''),
+     avoided_production_qty:String(outcome.avoided_production_qty ?? ''),
+     notes:outcome.notes || ''
+    })
+   } else {
+    setWeatherGuardDecisions([])
+    setWeatherGuardDecisionOverrides({})
+    setWeatherGuardDraft({
+     ...getDefaultWeatherGuardDraft(dateValue),
+     decision_cutoff_time:normalizeWeatherGuardTime(settings?.decision_cutoff_time || '20:00')
+    })
+    setWeatherGuardOutcome({
+     actual_delivered_qty:'',
+     returned_qty:'',
+     sold_qty:'',
+     stockout_qty:'',
+     lost_sales_qty:'',
+     disposal_qty:'',
+     avoided_production_qty:'',
+     notes:''
+    })
+   }
+
+   if (!options.silent) showToast(`Weather and Class Suspension Guard loaded for ${dateValue}.`)
+  } catch(error) {
+   console.error('Weather guard load failed:', error)
+   if (!options.silent) showToast(`Weather guard load failed: ${getWeatherGuardErrorMessage(error)}`, 'red')
+  } finally {
+   setWeatherGuardLoading(false)
+  }
+ }
+
+ async function saveWeatherGuardProfiles() {
+  if (!['owner','manager','admin','supervisor','asst_supervisor'].includes(normalizedAdminRole)) {
+   showToast('Your role is not allowed to update outlet risk profiles.', 'red')
+   return
+  }
+  const payload = (resellers || []).map(reseller => {
+   const draft = getWeatherGuardProfileDraft(reseller)
+   return {
+    reseller_id:reseller.id,
+    municipality:String(draft.municipality || reseller.area || '').trim(),
+    outlet_category:draft.outlet_category || 'mixed',
+    school_type:draft.school_type || 'mixed',
+    grade_level_market:String(draft.grade_level_market || '').trim() || null,
+    school_demand_pct:Math.max(0, Math.min(100, safeNum(draft.school_demand_pct,50))),
+    route_name:String(draft.route_name || reseller.area || '').trim() || null,
+    route_risk_level:draft.route_risk_level || 'green',
+    route_notes:String(draft.route_notes || '').trim() || null,
+    is_active:true,
+    created_by:currentAdminLabel,
+    updated_by:currentAdminLabel
+   }
+  })
+  if (!payload.length) {
+   showToast('No active reseller outlets are loaded.', 'red')
+   return
+  }
+  setWeatherGuardSaving(true)
+  try {
+   const { error } = await supabase.from('weather_guard_outlet_profiles').upsert(payload, { onConflict:'reseller_id' })
+   if (error) throw error
+   await logAudit('WEATHER GUARD OUTLET PROFILES SAVED', currentAdminLabel, 'Production Forecast', `${payload.length} outlet profile(s) updated`)
+   showToast(`${payload.length} outlet risk profile(s) saved.`)
+   await loadWeatherGuardData(forecastDate, { silent:true })
+  } catch(error) {
+   showToast(`Outlet profiles failed: ${getWeatherGuardErrorMessage(error)}`, 'red')
+  } finally {
+   setWeatherGuardSaving(false)
+  }
+ }
+
+ async function saveWeatherGuardSettings() {
+  if (!['owner','manager'].includes(normalizedAdminRole)) {
+   showToast('Only the Owner or Manager may change the production cutoff settings.', 'red')
+   return
+  }
+  const payload = {
+   decision_cutoff_time:normalizeWeatherGuardTime(weatherGuardSettings.decision_cutoff_time || '20:00'),
+   mixing_minutes:Math.max(0, Math.round(safeNum(weatherGuardSettings.mixing_minutes,0))),
+   proofing_minutes:Math.max(0, Math.round(safeNum(weatherGuardSettings.proofing_minutes,0))),
+   frying_minutes:Math.max(0, Math.round(safeNum(weatherGuardSettings.frying_minutes,0))),
+   decorating_minutes:Math.max(0, Math.round(safeNum(weatherGuardSettings.decorating_minutes,0))),
+   packing_minutes:Math.max(0, Math.round(safeNum(weatherGuardSettings.packing_minutes,0))),
+   loading_minutes:Math.max(0, Math.round(safeNum(weatherGuardSettings.loading_minutes,0))),
+   travel_buffer_minutes:Math.max(0, Math.round(safeNum(weatherGuardSettings.travel_buffer_minutes,0))),
+   approval_threshold_pct:Math.max(0, Math.min(100, safeNum(weatherGuardSettings.approval_threshold_pct,0))),
+   updated_by:currentAdminLabel
+  }
+  setWeatherGuardSaving(true)
+  try {
+   const { error } = await supabase.from('weather_guard_settings').update(payload).eq('id',1)
+   if (error) throw error
+   await logAudit('WEATHER GUARD SETTINGS UPDATED', currentAdminLabel, 'Production Forecast', `Decision cutoff ${payload.decision_cutoff_time}`)
+   setWeatherGuardSettings(prev => ({ ...prev, ...payload }))
+   setWeatherGuardDraft(prev => ({ ...prev, decision_cutoff_time:payload.decision_cutoff_time }))
+   showToast('Weather guard production cutoff settings saved.')
+  } catch(error) {
+   showToast(`Weather guard settings failed: ${getWeatherGuardErrorMessage(error)}`, 'red')
+  } finally {
+   setWeatherGuardSaving(false)
+  }
+ }
+
+ function validateWeatherGuardDraft(rows = buildWeatherGuardRows()) {
+  if (!(rows || []).length) return 'Create delivery invoices for the selected date before saving a guard plan.'
+  if (weatherGuardDraft.weather_level !== 'no_warning') {
+   if (weatherGuardDraft.weather_source_type === 'none' || !String(weatherGuardDraft.weather_reference || '').trim()) {
+    return 'A weather warning requires an official source and reference link, bulletin number, or screenshot note.'
+   }
+  }
+  if (['partial_suspension','fully_suspended'].includes(weatherGuardDraft.class_status)) {
+   if (
+    weatherGuardDraft.class_source_type === 'none'
+    || !String(weatherGuardDraft.class_verified_by || '').trim()
+    || !String(weatherGuardDraft.class_reference || '').trim()
+   ) return 'A class suspension must be verified through DepEd, LGU, or the school, with verifier and reference.'
+  }
+  if (weatherGuardDraft.route_status === 'unsafe') {
+   if (
+    weatherGuardDraft.route_source_type === 'none'
+    || !String(weatherGuardDraft.route_verified_by || '').trim()
+    || !String(weatherGuardDraft.route_reference || '').trim()
+   ) return 'An unsafe route requires a source, verifier, and official/field reference.'
+   if (rows.some(row => safeNum(row.final_qty,0) > 0)) return 'Unsafe route: every final outlet quantity must be zero.'
+  }
+  return ''
+ }
+
+ async function saveWeatherGuardPlan() {
+  const rows = buildWeatherGuardRows()
+  const validationMessage = validateWeatherGuardDraft(rows)
+  if (validationMessage) {
+   showToast(validationMessage, 'red')
+   return null
+  }
+  const summary = getWeatherGuardSummary(rows)
+  const factors = getWeatherGuardFactors(weatherGuardDraft)
+  const planPayload = {
+   delivery_date:forecastDate,
+   weather_level:weatherGuardDraft.weather_level,
+   weather_source_type:weatherGuardDraft.weather_source_type,
+   weather_location:String(weatherGuardDraft.weather_location || '').trim(),
+   weather_issued_at:weatherGuardDraft.weather_issued_at ? new Date(weatherGuardDraft.weather_issued_at).toISOString() : null,
+   weather_reference:String(weatherGuardDraft.weather_reference || '').trim(),
+   class_status:weatherGuardDraft.class_status,
+   class_scope:String(weatherGuardDraft.class_scope || '').trim(),
+   class_source_type:weatherGuardDraft.class_source_type,
+   class_verified_by:String(weatherGuardDraft.class_verified_by || '').trim(),
+   class_verified_at:weatherGuardDraft.class_verified_at ? new Date(weatherGuardDraft.class_verified_at).toISOString() : null,
+   class_reference:String(weatherGuardDraft.class_reference || '').trim(),
+   route_status:weatherGuardDraft.route_status,
+   route_source_type:weatherGuardDraft.route_source_type,
+   route_verified_by:String(weatherGuardDraft.route_verified_by || '').trim(),
+   route_verified_at:weatherGuardDraft.route_verified_at ? new Date(weatherGuardDraft.route_verified_at).toISOString() : null,
+   route_reference:String(weatherGuardDraft.route_reference || '').trim(),
+   decision_cutoff_time:normalizeWeatherGuardTime(weatherGuardDraft.decision_cutoff_time || weatherGuardSettings.decision_cutoff_time),
+   school_factor:factors.schoolFactor,
+   non_school_factor:factors.nonSchoolFactor,
+   normal_forecast_qty:summary.normal,
+   base_production_qty:summary.base,
+   conditional_production_qty:summary.conditional,
+   risk_adjusted_qty:summary.recommended,
+   final_released_qty:summary.final,
+   decision_notes:String(weatherGuardDraft.decision_notes || '').trim()
+  }
+  const decisions = rows.map(row => ({
+   reseller_id:row.reseller_id,
+   reseller_name:row.reseller_name,
+   municipality:row.municipality,
+   outlet_category:row.outlet_category,
+   invoice_qty:row.invoice_qty,
+   school_demand_pct:row.school_demand_pct,
+   school_factor:row.school_factor,
+   non_school_factor:row.non_school_factor,
+   recommended_qty:row.recommended_qty,
+   final_qty:row.final_qty,
+   risk_level:row.risk_level,
+   dispatch_status:row.dispatch_status,
+   reallocation_qty:row.reallocation_qty,
+   notes:row.notes || ''
+  }))
+  setWeatherGuardSaving(true)
+  try {
+   const { data, error } = await supabase.rpc('save_weather_guard_plan', { p_plan:planPayload, p_decisions:decisions })
+   if (error) throw error
+   showToast(summary.final > summary.recommended
+    ? 'Guard draft saved. Final quantity exceeds the recommendation and now requires Owner/Manager approval.'
+    : 'Weather and class guard draft saved.')
+   await loadWeatherGuardData(forecastDate, { silent:true })
+   return data
+  } catch(error) {
+   showToast(`Weather guard save failed: ${getWeatherGuardErrorMessage(error)}`, 'red')
+   return null
+  } finally {
+   setWeatherGuardSaving(false)
+  }
+ }
+
+ async function finalizeWeatherGuardPlan() {
+  if (!['owner','manager'].includes(normalizedAdminRole)) {
+   showToast('Only the Owner or Manager may lock and release the production guard plan.', 'red')
+   return
+  }
+  let planId = weatherGuardPlan?.id
+  if (!planId || weatherGuardPlan?.status === 'locked') {
+   planId = await saveWeatherGuardPlan()
+   if (!planId) return
+  }
+  setWeatherGuardFinalizing(true)
+  try {
+   const { error } = await supabase.rpc('finalize_weather_guard_plan', {
+    p_plan_id:planId,
+    p_notes:`Locked from Production Forecast by ${currentAdminLabel}`
+   })
+   if (error) throw error
+   await loadWeatherGuardData(forecastDate, { silent:true })
+   showToast('Weather and class suspension guard plan locked and released.')
+  } catch(error) {
+   showToast(`Plan finalization failed: ${getWeatherGuardErrorMessage(error)}`, 'red')
+  } finally {
+   setWeatherGuardFinalizing(false)
+  }
+ }
+
+ function updateWeatherGuardFinalQty(row = {}, value = '') {
+  const key = getWeatherGuardDecisionKey(row)
+  setWeatherGuardDecisionOverrides(prev => ({ ...prev, [key]:value }))
+ }
+
+ function applyWeatherGuardRecommendations(mode = 'recommended') {
+  const rows = buildWeatherGuardRows()
+  setWeatherGuardDecisionOverrides(Object.fromEntries(rows.map(row => [
+   getWeatherGuardDecisionKey(row),
+   String(mode === 'base' ? row.base_qty : row.recommended_qty)
+  ])))
+ }
+
+ function prefillWeatherGuardOutcomeFromInvoices() {
+  const rows = buildWeatherGuardRows()
+  const delivered = rows.reduce((sum,row)=>sum+safeNum(row.invoice_qty,0),0)
+  const returns = (deliveryInvoices || [])
+   .filter(invoice => String(invoice?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10))
+   .reduce((sum, invoice) => sum + Math.max(0, safeNum(invoice?.returns_qty,0)), 0)
+  const finalReleased = getWeatherGuardSummary(rows).final
+  const disposal = Math.max(0, safeNum(weatherGuardOutcome.disposal_qty,0))
+  setWeatherGuardOutcome(prev => ({
+   ...prev,
+   actual_delivered_qty:String(delivered),
+   returned_qty:String(returns),
+   sold_qty:String(Math.max(0, delivered - returns - disposal)),
+   avoided_production_qty:String(Math.max(0, getWeatherGuardSummary(rows).normal - finalReleased))
+  }))
+ }
+
+ async function saveWeatherGuardOutcome() {
+  if (!weatherGuardPlan?.id) {
+   showToast('Save the weather guard plan before recording the outcome.', 'red')
+   return
+  }
+  const delivered = Math.max(0, Math.round(safeNum(weatherGuardOutcome.actual_delivered_qty,0)))
+  const returned = Math.max(0, Math.round(safeNum(weatherGuardOutcome.returned_qty,0)))
+  const disposal = Math.max(0, Math.round(safeNum(weatherGuardOutcome.disposal_qty,0)))
+  const sold = weatherGuardOutcome.sold_qty === ''
+   ? Math.max(0, delivered - returned - disposal)
+   : Math.max(0, Math.round(safeNum(weatherGuardOutcome.sold_qty,0)))
+  const payload = {
+   plan_id:weatherGuardPlan.id,
+   actual_delivered_qty:delivered,
+   returned_qty:returned,
+   sold_qty:sold,
+   stockout_qty:Math.max(0, Math.round(safeNum(weatherGuardOutcome.stockout_qty,0))),
+   lost_sales_qty:Math.max(0, Math.round(safeNum(weatherGuardOutcome.lost_sales_qty,0))),
+   disposal_qty:disposal,
+   avoided_production_qty:Math.max(0, Math.round(safeNum(weatherGuardOutcome.avoided_production_qty,0))),
+   notes:String(weatherGuardOutcome.notes || '').trim() || null,
+   recorded_by:currentAdminLabel,
+   recorded_at:new Date().toISOString()
+  }
+  setWeatherGuardSaving(true)
+  try {
+   const { error } = await supabase.from('weather_guard_outcomes').upsert(payload, { onConflict:'plan_id' })
+   if (error) throw error
+   await logAudit('WEATHER GUARD OUTCOME SAVED', currentAdminLabel, forecastDate, `Delivered ${delivered} | Returned ${returned} | Sold ${sold} | Avoided ${payload.avoided_production_qty}`)
+   showToast('Weather guard outcome and loss metrics saved.')
+   await loadWeatherGuardData(forecastDate, { silent:true })
+  } catch(error) {
+   showToast(`Outcome save failed: ${getWeatherGuardErrorMessage(error)}`, 'red')
+  } finally {
+   setWeatherGuardSaving(false)
+  }
+ }
+
+ function getWeatherGuardTotalLeadMinutes(settings = weatherGuardSettings) {
+  return ['mixing_minutes','proofing_minutes','frying_minutes','decorating_minutes','packing_minutes','loading_minutes','travel_buffer_minutes']
+   .reduce((sum,key)=>sum+Math.max(0, safeNum(settings?.[key],0)),0)
+ }
+
+
+ function getPagasaMunicipalityRows(data = pagasaRegion1Data) {
+  return Array.isArray(data?.pangasinan?.municipalities) ? data.pangasinan.municipalities : []
+ }
+
+ function getPagasaSelectedMunicipalityAlert(name = pagasaSelectedMunicipality, data = pagasaRegion1Data) {
+  const normalized = String(name || '').trim().toLowerCase()
+  return getPagasaMunicipalityRows(data).find(row => String(row?.name || '').trim().toLowerCase() === normalized) || null
+ }
+
+ function getPagasaAlertVisual(alert = {}) {
+  const score = Math.max(0, safeNum(alert?.score, 0))
+  if (score >= 4) return { color:'#ca1b1b', background:'#fff0f0', border:'#ef9a9a', label:'ACTIVE HEAVY RAIN' }
+  if (score >= 3) return { color:'#ca1b1b', background:'#fff5f5', border:'#ef9a9a', label:'HEAVY RAIN POSSIBLE' }
+  if (score >= 2) return { color:'#b45309', background:'#fff8dc', border:'#f5c518', label:'RAIN EXPECTED' }
+  if (score >= 1) return { color:'#856404', background:'#fffdf0', border:'#ffe082', label:'IN ADVISORY' }
+  return { color:'#555', background:'#f7f7f7', border:'#ddd', label:'NO CURRENT TOWN MENTION' }
+ }
+
+ function formatPagasaFetchedAt(value = '') {
+  if (!value) return 'Not yet loaded'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString('en-PH', {
+   timeZone:'Asia/Manila',
+   year:'numeric',
+   month:'short',
+   day:'numeric',
+   hour:'numeric',
+   minute:'2-digit'
+  })
+ }
+
+ function getPagasaWeatherIcon(condition = '') {
+  const text = String(condition || '').toLowerCase()
+  if (text.includes('storm') || text.includes('thunder')) return '⛈️'
+  if (text.includes('rain') || text.includes('shower')) return '🌧️'
+  if (text.includes('cloud')) return '☁️'
+  if (text.includes('sun') || text.includes('fair')) return '☀️'
+  return '🌦️'
+ }
+
+ function derivePagasaGuardLevel(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality) {
+  const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data)
+  const score = Math.max(0, safeNum(alert?.score, 0))
+  if (score >= 4) return 'heavy_rain'
+  if (score >= 3) return 'heavy_rain'
+  if (score >= 2) return 'moderate_rain'
+  const regionalConditions = (data?.regional?.days || []).slice(0,3).map(day => String(day?.condition || '')).join(' ').toLowerCase()
+  if (regionalConditions.includes('rain') || regionalConditions.includes('thunder') || (data?.announcements || []).length > 0) return 'watch'
+  return 'no_warning'
+ }
+
+ function getPagasaOperationalSummary(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality) {
+  const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data)
+  const forecastDays = (data?.regional?.days || []).slice(0,3)
+  const conditions = forecastDays.map(day => `${day.day}: ${day.condition}`).join(' | ')
+  return `${municipalityName}: ${alert?.status_label || 'No active municipality mention found'}. Region 1 outlook: ${conditions || 'No parsed forecast available.'}`
+ }
+
+ async function loadPagasaRegion1Weather(options = {}) {
+  const force = options.force === true
+  const silent = options.silent === true
+  setPagasaRegion1Loading(true)
+  if (!silent) setPagasaRegion1Error('')
+  try {
+   const { data, error } = await supabase.functions.invoke('pagasa-region1-weather', {
+    body:{ force }
+   })
+   if (error) throw error
+   if (data?.error) throw new Error(data?.details || data.error)
+   if (!Array.isArray(data?.regional?.days) || data.regional.days.length < 3) {
+    throw new Error('PAGASA returned an incomplete regional outlook.')
+   }
+   setPagasaRegion1Data(data)
+   setPagasaRegion1Error(data?.stale
+    ? `Live PAGASA retrieval failed. Showing the last successful cached snapshot${data?.cache_age_minutes != null ? ` from ${data.cache_age_minutes} minute(s) ago` : ''}.`
+    : '')
+   if (!getPagasaSelectedMunicipalityAlert(pagasaSelectedMunicipality, data)) {
+    const defaultTown = getPagasaMunicipalityRows(data).find(row => row.name === 'Dagupan City')?.name
+     || getPagasaMunicipalityRows(data)[0]?.name
+     || 'Dagupan City'
+    setPagasaSelectedMunicipality(defaultTown)
+   }
+   if (force) setPagasaLastManualRefresh(new Date().toISOString())
+   if (!silent) {
+    showToast(data?.stale
+     ? 'PAGASA live source was unavailable. The last successful official snapshot is displayed.'
+     : 'Official PAGASA Region 1 weather and Pangasinan advisories refreshed.',
+     data?.stale ? 'orange' : 'green')
+   }
+   return data
+  } catch(error) {
+   console.error('PAGASA Region 1 load failed:', error)
+   const message = String(error?.message || error || 'Unknown PAGASA error')
+   setPagasaRegion1Error(message)
+   if (!silent) showToast(`PAGASA weather failed: ${message}`, 'red')
+   return null
+  } finally {
+   setPagasaRegion1Loading(false)
+  }
+ }
+
+ function applyPagasaToWeatherGuard() {
+  if (!pagasaRegion1Data) {
+   showToast('Load PAGASA data first.', 'red')
+   return
+  }
+  const alert = getPagasaSelectedMunicipalityAlert()
+  const weatherLevel = derivePagasaGuardLevel()
+  const sourceUrl = pagasaRegion1Data?.source_urls?.regional || 'https://pagasa.dost.gov.ph/regional-forecast/nlprsd'
+  const issuedText = pagasaRegion1Data?.regional?.extended_issued_at_text || pagasaRegion1Data?.regional?.issued_at_text || ''
+  const summary = getPagasaOperationalSummary()
+  setWeatherGuardDraft(prev => ({
+   ...prev,
+   weather_level:weatherLevel,
+   weather_source_type:'pagasa',
+   weather_location:`${pagasaSelectedMunicipality}, Pangasinan / Region 1`,
+   weather_issued_at:toWeatherGuardDateTimeLocal(pagasaRegion1Data?.fetched_at || new Date().toISOString()),
+   weather_reference:[
+    `Official PAGASA Northern Luzon source: ${sourceUrl}`,
+    issuedText ? `PAGASA issue: ${issuedText}` : '',
+    alert?.warning_type ? `${alert.warning_type}: ${alert.status_label}` : '',
+    pagasaRegion1Data?.stale ? 'Displayed from last successful cached PAGASA snapshot.' : 'Retrieved live through the secured PAGASA Region 1 function.'
+   ].filter(Boolean).join(' | '),
+   decision_notes:[prev.decision_notes, `PAGASA import — ${summary}`].filter(Boolean).join(' | ')
+  }))
+  setDeliveriesSubTab('operations')
+  setShowWeatherGuard(true)
+  showToast('PAGASA condition copied to the Weather Guard draft. Review it before saving or locking production.')
+  setTimeout(() => {
+   const guard = document.getElementById('weather-class-suspension-guard')
+   if (guard) guard.scrollIntoView({ behavior:'smooth', block:'start' })
+  }, 150)
+ }
+
+ function openPagasaOfficialSource(url = '') {
+  const safeUrl = String(url || '').trim()
+  if (!safeUrl.startsWith('https://pagasa.dost.gov.ph/') && !safeUrl.startsWith('https://origin.pagasa.dost.gov.ph/')) {
+   showToast('Official PAGASA source link is unavailable.', 'red')
+   return
+  }
+  window.open(safeUrl, '_blank', 'noopener,noreferrer')
+ }
+
  async function printDTR(empId, empName, empCode, startOrMonth, endDateArg = null, periodLabelArg = '') {
  let startDate = startOrMonth
  let endDate = endDateArg
@@ -26754,7 +27303,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, startDate, endDate)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
- const grouped = groupDTRLogsByDate(enrichedLogs)
+ const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp || { id:empId, employee_code:empCode, full_name:empName })
+ const grouped = groupDTRLogsByDate(policyLogs)
  const mergedLogs = Object.values(grouped).map(dayLogs => mergeDTRDayLogs(dayLogs)).filter(Boolean)
  const totalDaysWorked = new Set(mergedLogs.filter(l=>getAttendanceDayIntegrity(getDTRDayLogs(l)).isValidCompleted).map(l=>String(l.attendance_date || '').slice(0,10))).size
  const totalAbsent = new Set(mergedLogs.filter(l=>l.status==='Absent').map(l=>String(l.attendance_date || '').slice(0,10))).size
@@ -33902,12 +34452,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   ? 'CALCULATING'
   : approvalAlreadyExists
    ? 'ALREADY APPROVED'
-   : isOvertimeRequest && adminValidation?.overtimeEligible === false
-    ? 'OT POLICY BLOCKED'
-   : adminValidation?.computedDraftPayroll
-    ? 'UNDO PAYROLL FIRST'
-    : adminValidation?.postReleaseAdjustment
-     ? 'NEXT-CUTOFF ADJUSTMENT'
    : isMealBreakRequest
     ? adminValidation?.canApprove ? 'BREAK REVIEW READY' : 'BREAK REVIEW BLOCKED'
     : adminValidation?.mealBreakPending
@@ -33915,15 +34459,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      : attendanceValid && actualMinutes > 0
       ? (adminValidation?.willAutoSync ? 'AUTO-SYNC READY' : 'ACTUAL MATCH')
       : attendanceValid ? 'NO PAYABLE MINUTES' : 'DTR REVIEW'
- const validationBadgeColor = adminValidation?.loading ? 'orange' : approvalAlreadyExists || approvalBlocked ? 'red' : adminValidation?.postReleaseAdjustment ? 'orange' : 'green'
+ const validationBadgeColor = adminValidation?.loading ? 'orange' : approvalAlreadyExists || approvalBlocked ? 'red' : 'green'
  const approveButtonLabel = approvalAlreadyExists
   ? 'APPROVAL BLOCKED'
-  : isOvertimeRequest && adminValidation?.overtimeEligible === false
-   ? 'OT APPROVAL BLOCKED'
   : isMealBreakRequest
    ? 'APPROVE NO MEAL BREAK'
-   : adminValidation?.postReleaseAdjustment
-    ? 'APPROVE PRIOR-PERIOD ADJUSTMENT'
    : attendanceValid && actualMinutes <= 0 ? 'APPROVE 0 MIN & CLOSE' : 'APPROVE ACTUAL MINUTES'
  const cardColor = isMealBreakRequest ? '#1a1a2e' : isOvertimeRequest ? '#ca1b1b' : '#FDD412'
  const cardBackground = isMealBreakRequest
@@ -33933,7 +34473,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    : 'linear-gradient(180deg,#fff8dc 0%,#ffffff 42%)'
  const typeLabel = isMealBreakRequest ? 'NO MEAL BREAK' : isOvertimeRequest ? 'OVERTIME' : 'UNDERTIME'
  const typeBadgeColor = isMealBreakRequest ? 'blue' : isOvertimeRequest ? 'green' : 'orange'
- const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && !(isOvertimeRequest && adminValidation?.overtimeEligible === false) && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
+ const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
  return (
  <div key={req.id} style={{...cardS, border:`1.5px solid ${cardColor}`, borderTop:`6px solid ${cardColor}`, background:cardBackground, width:'100%', minWidth:0, margin:0, padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 7px 22px rgba(25,25,45,0.09)', boxSizing:'border-box', alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -33992,8 +34532,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {req.admin_reason && req.status!=='pending' && <p style={cps}>Admin Note: <em>"{req.admin_reason}"</em></p>}
  {(req.status==='pending' || req.status==='approved') && (
  <>
- <label style={lblS}>Admin Response / Reason {(isMealBreakRequest || adminValidation?.postReleaseAdjustment) && req.status==='pending' ? '(required for approval)' : req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
- <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : adminValidation?.postReleaseAdjustment ? 'Document why the filing was late, who verified it, and the approval basis...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
+ <label style={lblS}>Admin Response / Reason {isMealBreakRequest && req.status==='pending' ? '(required for approval)' : req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
+ <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
  {canConfirmNoBreakFromExistingRequest && <button style={{...btnBase, background:'#1a1a2e', color:'white', width:'auto', padding:'8px 14px', marginTop:0, boxShadow:'0 2px 8px rgba(26,26,46,0.24)' }} onClick={async(e)=>{ const btn=e.currentTarget; const original=btn.textContent; btn.disabled=true; btn.textContent=req.status==='approved'?'Reopening and applying no break...':'Applying no break...'; await confirmNoMealBreakFromExistingTimeAdj(req); btn.disabled=false; btn.textContent=original }}>{req.status==='approved'?'REOPEN + APPLY NO BREAK':'CONFIRM NO BREAK & RECALCULATE'}</button>}
  {req.status==='pending' && <button disabled={adminValidation?.loading || approvalBlocked} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked)?'not-allowed':'pointer' }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Revalidating attendance...'; await approveTimeAdj(req); btn.disabled=!!(adminValidation?.loading || approvalBlocked); btn.textContent=approveButtonLabel }}>{approveButtonLabel}</button>}
@@ -35101,7 +35641,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 .order('attendance_date')
  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, period.start, period.end)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
- const grouped = groupDTRLogsByDate(enrichedLogs)
+ const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp)
+ const grouped = groupDTRLogsByDate(policyLogs)
  const allDays = buildDateRangeRows(period.start, period.end, ({ dateStr, day, dayName })=>{
  const log = mergeDTRDayLogs(grouped[dateStr] || [])
  return { dateStr, day, dayName, log }
@@ -39566,6 +40107,198 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
  {salesView==='deliveries' && (
  <div>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', background:'#f4f4f4', border:'1px solid #ddd', borderRadius:'12px', padding:'6px', marginBottom:'14px' }}>
+  {[
+   ['operations','DELIVERY OPERATIONS'],
+   ['pagasa','PAGASA REGION 1']
+  ].map(([value,label])=>(
+   <button key={value} onClick={()=>setDeliveriesSubTab(value)} style={{
+    flex:isMobile?'1 1 100%':'0 1 auto',
+    border:'none',
+    borderRadius:'9px',
+    padding:'10px 16px',
+    cursor:'pointer',
+    fontWeight:'900',
+    fontSize:'11px',
+    background:deliveriesSubTab===value?(value==='pagasa'?'#1a5276':'#ca1b1b'):'transparent',
+    color:deliveriesSubTab===value?'white':'#555',
+    boxShadow:deliveriesSubTab===value?'0 2px 8px rgba(0,0,0,0.16)':'none'
+   }}>{label}</button>
+  ))}
+ </div>
+
+ {deliveriesSubTab==='pagasa' && (()=>{
+  const regionalDays = Array.isArray(pagasaRegion1Data?.regional?.days) ? pagasaRegion1Data.regional.days.slice(0,5) : []
+  const municipalities = getPagasaMunicipalityRows()
+  const selectedAlert = getPagasaSelectedMunicipalityAlert()
+  const selectedVisual = getPagasaAlertVisual(selectedAlert || {})
+  const affectedMunicipalities = municipalities.filter(row=>safeNum(row?.score,0)>0)
+  const filteredMunicipalities = municipalities.filter(row=>{
+   const search = pagasaMunicipalitySearch.trim().toLowerCase()
+   return !search || String(row?.name || '').toLowerCase().includes(search)
+  })
+  const cityForecasts = Array.isArray(pagasaRegion1Data?.selected_cities) ? pagasaRegion1Data.selected_cities : []
+  const announcementsList = Array.isArray(pagasaRegion1Data?.announcements) ? pagasaRegion1Data.announcements : []
+  const liveStatus = pagasaRegion1Data?.stale ? 'CACHED FALLBACK' : pagasaRegion1Data ? 'LIVE OFFICIAL DATA' : 'NOT LOADED'
+  const liveColor = pagasaRegion1Data?.stale ? '#b45309' : pagasaRegion1Data ? '#2d8a4e' : '#777'
+  return (
+   <div style={{ marginBottom:'16px' }}>
+    <div style={{ background:'linear-gradient(135deg,#102a43,#1a5276)', color:'white', borderRadius:'16px', padding:'16px', marginBottom:'12px', boxShadow:'0 5px 18px rgba(16,42,67,0.22)' }}>
+     <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start', flexWrap:'wrap' }}>
+      <div>
+       <p style={{ fontSize:'10px', fontWeight:'900', letterSpacing:'1px', margin:'0 0 5px', opacity:0.85 }}>DOST–PAGASA OFFICIAL SOURCE</p>
+       <h2 style={{ margin:'0 0 5px', fontSize:'19px' }}>Region 1 Weather & Pangasinan Advisories</h2>
+       <p style={{ fontSize:'11px', margin:0, opacity:0.85, lineHeight:1.55 }}>Three-to-five-day regional outlook plus current PAGASA municipality warning matches for all Pangasinan cities and municipalities.</p>
+      </div>
+      <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', justifyContent:'flex-end' }}>
+       <span style={{ background:'rgba(255,255,255,0.12)', border:`1px solid ${liveColor}`, color:'white', borderRadius:'20px', padding:'7px 11px', fontSize:'10px', fontWeight:'900' }}>{liveStatus}</span>
+       <button style={{ background:'white', color:'#1a5276', border:'none', borderRadius:'9px', padding:'8px 13px', cursor:'pointer', fontWeight:'900', fontSize:'10px', opacity:pagasaRegion1Loading?0.65:1 }} disabled={pagasaRegion1Loading} onClick={()=>loadPagasaRegion1Weather({ force:true })}>{pagasaRegion1Loading?'REFRESHING...':'REFRESH PAGASA'}</button>
+      </div>
+     </div>
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'8px', marginTop:'12px' }}>
+      <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>PAGASA Regional Issue</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>{pagasaRegion1Data?.regional?.issued_at_text || '—'}</p></div>
+      <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>Extended Outlook Issue</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>{pagasaRegion1Data?.regional?.extended_issued_at_text || '—'}</p></div>
+      <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>Retrieved by App</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>{formatPagasaFetchedAt(pagasaRegion1Data?.fetched_at)}</p></div>
+     </div>
+    </div>
+
+    {pagasaRegion1Error && (
+     <div style={{ background:pagasaRegion1Data?'#fff8dc':'#fff0f0', border:`1px solid ${pagasaRegion1Data?'#f5c518':'#ca1b1b'}`, borderRadius:'10px', padding:'11px', marginBottom:'12px', color:pagasaRegion1Data?'#856404':'#ca1b1b', fontSize:'11px', lineHeight:1.55 }}>
+      <strong>{pagasaRegion1Data?'Data notice:':'Load error:'}</strong> {pagasaRegion1Error}
+     </div>
+    )}
+
+    {!pagasaRegion1Data && !pagasaRegion1Loading && (
+     <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'26px', textAlign:'center', marginBottom:'12px' }}>
+      <p style={{ fontSize:'32px', margin:'0 0 8px' }}>🌦️</p>
+      <p style={{ fontWeight:'900', color:'#1a5276', margin:'0 0 5px' }}>PAGASA data has not been loaded.</p>
+      <button style={{...btnBlack, background:'#1a5276', width:'auto', marginTop:'8px', padding:'9px 16px' }} onClick={()=>loadPagasaRegion1Weather({ force:true })}>LOAD OFFICIAL PAGASA DATA</button>
+     </div>
+    )}
+
+    {pagasaRegion1Loading && !pagasaRegion1Data && (
+     <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'28px', textAlign:'center', marginBottom:'12px', color:'#1a5276', fontWeight:'900' }}>Fetching official PAGASA pages and matching Pangasinan municipalities...</div>
+    )}
+
+    {pagasaRegion1Data && (
+     <>
+      <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'12px', padding:'11px', marginBottom:'12px', fontSize:'11px', lineHeight:1.6, color:'#6b5400' }}>
+       <strong>Accuracy rule:</strong> The 3–5 day cards below are PAGASA’s regional/Northern Luzon outlook. Municipality cards are current warning or nowcast matches, commonly covering the next two to three hours. The app does not invent a separate three-day forecast for each Pangasinan town.
+      </div>
+
+      <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
+       <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap', marginBottom:'10px' }}>
+        <div><h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>PAGASA Extended Outlook — Northern Luzon / Region 1 Planning</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Use for production planning three to five days ahead. Confirm again near the decision cutoff.</p></div>
+        <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>openPagasaOfficialSource(pagasaRegion1Data?.source_urls?.regional)}>OPEN OFFICIAL PAGE</button>
+       </div>
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))', gap:'8px' }}>
+        {regionalDays.map((day,index)=>(
+         <div key={`${day.day}-${index}`} style={{ background:index===0?'#eef7ff':'#fafafa', border:`1px solid ${index===0?'#8fc9f4':'#e5e5e5'}`, borderRadius:'11px', padding:'11px', minHeight:'175px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'5px' }}><p style={{ fontWeight:'900', color:'#1a5276', margin:0, fontSize:'12px' }}>{day.day}</p><span style={{ fontSize:'24px' }}>{getPagasaWeatherIcon(day.condition)}</span></div>
+          <p style={{ color:'#333', fontSize:'10px', lineHeight:1.45, minHeight:'44px', margin:'8px 0' }}>{day.condition}</p>
+          <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'14px', margin:'0 0 5px' }}>{day.min_c ?? '—'}°C – {day.max_c ?? '—'}°C</p>
+          <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Wind: {day.wind_speed || '—'}</p>
+          <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Direction: {day.wind_direction || '—'}</p>
+          <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Coast: {day.coastal_condition || '—'}</p>
+         </div>
+        ))}
+       </div>
+      </div>
+
+      {cityForecasts.length>0 && (
+       <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap', marginBottom:'10px' }}>
+         <div><h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>PAGASA Selected-City Reference Outlooks</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Official PAGASA selected cities relevant to Northern Luzon. These are reference cities—not substitutes for Pangasinan town forecasts.</p></div>
+         <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>openPagasaOfficialSource(pagasaRegion1Data?.source_urls?.selected_cities)}>OPEN CITY OUTLOOK</button>
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'9px' }}>
+         {cityForecasts.map(city=>(
+          <div key={city.city} style={{ border:'1px solid #e5e5e5', borderRadius:'11px', padding:'11px' }}>
+           <p style={{ fontWeight:'900', color:'#1a1a2e', margin:'0 0 8px', fontSize:'12px' }}>{city.city}</p>
+           <div style={{ display:'grid', gridTemplateColumns:'repeat(5,minmax(80px,1fr))', gap:'5px', overflowX:'auto' }}>
+            {(city.days || []).slice(0,5).map((day,index)=>(
+             <div key={`${city.city}-${day.day}-${index}`} style={{ background:'#f8f8f8', borderRadius:'8px', padding:'7px', minWidth:'85px' }}>
+              <p style={{ color:'#1a5276', fontWeight:'900', fontSize:'9px', margin:'0 0 3px' }}>{day.day}</p>
+              <p style={{ fontSize:'17px', margin:'0 0 3px' }}>{getPagasaWeatherIcon(day.condition)}</p>
+              <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'10px', margin:'0 0 2px' }}>{day.min_c ?? '—'}–{day.max_c ?? '—'}°C</p>
+              <p style={{ color:'#777', fontSize:'8px', margin:0 }}>Rain: {day.chance_of_rain_pct == null ? '—' : `${day.chance_of_rain_pct}%`}</p>
+             </div>
+            ))}
+           </div>
+          </div>
+         ))}
+        </div>
+       </div>
+      )}
+
+      <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
+       <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'flex-end', flexWrap:'wrap', marginBottom:'10px' }}>
+        <div><h3 style={{ color:'#ca1b1b', margin:'0 0 3px', fontSize:'14px' }}>Pangasinan Municipality Advisory Monitor</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>{affectedMunicipalities.length} of {municipalities.length} municipalities/cities currently appear in the retrieved PAGASA warning text.</p></div>
+        <div style={{ display:'flex', gap:'7px', flexWrap:'wrap' }}>
+         <input value={pagasaMunicipalitySearch} onChange={e=>setPagasaMunicipalitySearch(e.target.value)} placeholder="Search municipality..." style={{...inputStyle, marginBottom:0, width:isMobile?'100%':'190px', padding:'8px' }} />
+         <button style={{...btnGreen, background:'#1a5276', width:'auto', marginTop:0, padding:'8px 13px', fontSize:'10px' }} onClick={applyPagasaToWeatherGuard}>COPY SELECTED TOWN TO WEATHER GUARD</button>
+        </div>
+       </div>
+
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(250px,0.8fr) minmax(0,2fr)', gap:'10px' }}>
+        <div style={{ ...selectedVisual, border:`1px solid ${selectedVisual.border}`, borderRadius:'11px', padding:'12px', background:selectedVisual.background }}>
+         <label style={lblS}>Selected Municipality / City</label>
+         <select value={pagasaSelectedMunicipality} onChange={e=>setPagasaSelectedMunicipality(e.target.value)} style={{...inputStyle, marginBottom:'9px', fontWeight:'900' }}>
+          {municipalities.map(row=><option key={row.name} value={row.name}>{row.name}</option>)}
+         </select>
+         <p style={{ color:selectedVisual.color, fontWeight:'900', fontSize:'11px', margin:'0 0 5px' }}>{selectedVisual.label}</p>
+         <p style={{ color:'#333', fontSize:'11px', fontWeight:'700', margin:'0 0 5px' }}>{selectedAlert?.warning_type || 'No current PAGASA municipality alert'}</p>
+         <p style={{ color:'#555', fontSize:'10px', lineHeight:1.55, margin:0 }}>{selectedAlert?.context || 'No municipality-specific warning text is available.'}</p>
+         <p style={{ color:'#777', fontSize:'9px', lineHeight:1.45, margin:'9px 0 0' }}>“No current town mention” does not mean guaranteed safe weather. It only means the municipality was not named in the retrieved active warning text.</p>
+        </div>
+
+        <div style={{ maxHeight:'410px', overflowY:'auto', border:'1px solid #eee', borderRadius:'11px', padding:'8px' }}>
+         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,minmax(0,1fr))', gap:'6px' }}>
+          {filteredMunicipalities.map(row=>{
+           const visual = getPagasaAlertVisual(row)
+           const selected = row.name===pagasaSelectedMunicipality
+           return (
+            <button key={row.name} onClick={()=>setPagasaSelectedMunicipality(row.name)} style={{ textAlign:'left', border:`${selected?'2px':'1px'} solid ${selected?'#1a5276':visual.border}`, borderRadius:'9px', padding:'8px', cursor:'pointer', background:selected?'#eef7ff':visual.background }}>
+             <p style={{ color:selected?'#1a5276':visual.color, fontWeight:'900', fontSize:'10px', margin:'0 0 3px' }}>{row.name}</p>
+             <p style={{ color:visual.color, fontWeight:'800', fontSize:'8px', margin:0 }}>{visual.label}</p>
+            </button>
+           )
+          })}
+         </div>
+        </div>
+       </div>
+      </div>
+
+      <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
+       <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+        <div><h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>Current PAGASA Announcements</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Rainfall advisories, thunderstorm watches/warnings, and related Northern Luzon announcements parsed from the official page.</p></div>
+        <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>setPagasaShowAnnouncements(v=>!v)}>{pagasaShowAnnouncements?'HIDE':'SHOW'} ANNOUNCEMENTS ({announcementsList.length})</button>
+       </div>
+       {pagasaShowAnnouncements && (
+        <div style={{ marginTop:'9px' }}>
+         {announcementsList.length===0 && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>No active announcement block was parsed from the official page at the time of retrieval.</p>}
+         {announcementsList.map((announcement,index)=>(
+          <div key={`${announcement.title}-${index}`} style={{ background:index===0?'#fff8dc':'#fafafa', border:`1px solid ${index===0?'#f5c518':'#e5e5e5'}`, borderRadius:'10px', padding:'10px', marginBottom:'7px' }}>
+           <p style={{ color:index===0?'#b45309':'#1a1a2e', fontWeight:'900', fontSize:'11px', margin:'0 0 3px' }}>{announcement.title}</p>
+           {announcement.issued_at_text && <p style={{ color:'#777', fontSize:'9px', margin:'0 0 5px' }}>{announcement.issued_at_text}</p>}
+           <p style={{ color:'#444', fontSize:'10px', lineHeight:1.55, margin:0, whiteSpace:'pre-wrap' }}>{announcement.text}</p>
+          </div>
+         ))}
+        </div>
+       )}
+      </div>
+
+      <div style={{ background:'#f0fff4', border:'1px solid #a5d6a7', borderRadius:'12px', padding:'11px', fontSize:'10px', color:'#2d663b', lineHeight:1.55 }}>
+       <strong>Production control:</strong> PAGASA data is informational until an authorized user copies it into the Weather Guard, verifies class and route status, reviews outlet quantities, and saves or locks the production plan. This tab never cancels production automatically.
+      </div>
+     </>
+    )}
+   </div>
+  )
+ })()}
+
+ {deliveriesSubTab==='operations' && (
+ <>
  {/* PRODUCTION FORECAST */}
  {(()=>{
  // Dry premix weight per piece (grams) after 10% reduction
@@ -39830,6 +40563,283 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  )}
  </div>
  )
+ })()}
+
+ {/* WEATHER AND CLASS SUSPENSION GUARD */}
+ {(()=>{
+  const guardRows = buildWeatherGuardRows(deliveryInvoices, forecastDate)
+  const guardSummary = getWeatherGuardSummary(guardRows)
+  const factors = getWeatherGuardFactors(weatherGuardDraft)
+  const planStatus = String(weatherGuardPlan?.status || 'draft').toLowerCase()
+  const approvalStatus = String(weatherGuardPlan?.approval_status || (guardSummary.final > guardSummary.recommended ? 'pending' : 'not_required')).toLowerCase()
+  const canFinalize = ['owner','manager'].includes(normalizedAdminRole)
+  const warningActive = weatherGuardDraft.weather_level !== 'no_warning'
+  const classSuspended = ['partial_suspension','fully_suspended'].includes(weatherGuardDraft.class_status)
+  const routeUnsafe = weatherGuardDraft.route_status === 'unsafe'
+  const totalLeadMinutes = getWeatherGuardTotalLeadMinutes()
+  const totalLeadHours = `${Math.floor(totalLeadMinutes/60)}h ${totalLeadMinutes%60}m`
+  const profileCount = weatherGuardProfiles.length
+  const unprofiledCount = (resellers || []).filter(reseller => !weatherGuardProfiles.some(profile => String(profile.reseller_id) === String(reseller.id))).length
+
+  const statusColor = planStatus === 'locked' ? '#2d8a4e' : approvalStatus === 'pending' ? '#b45309' : '#555'
+  return (
+   <div id="weather-class-suspension-guard" style={{ background:'white', border:'2px solid #1a1a2e', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 4px 18px rgba(26,26,46,0.08)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+     <div>
+      <h3 style={{ color:'#1a1a2e', margin:'0 0 3px', fontSize:'15px' }}>Weather & Class Suspension Guard</h3>
+      <p style={{ color:'#777', margin:0, fontSize:'11px' }}>Protects one-day production by separating safe Base Production from Conditional Quantity held until verified information is available.</p>
+     </div>
+     <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+      <span style={{ background:planStatus==='locked'?'#e8f5e9':'#f4f4f4', color:statusColor, border:`1px solid ${statusColor}`, borderRadius:'20px', padding:'6px 12px', fontSize:'11px', fontWeight:'900' }}>{planStatus.toUpperCase()}</span>
+      {approvalStatus==='pending' && <span style={{ background:'#fff8dc', color:'#b45309', border:'1px solid #f5c518', borderRadius:'20px', padding:'6px 12px', fontSize:'11px', fontWeight:'900' }}>OWNER/MANAGER APPROVAL REQUIRED</span>}
+      <button style={{...btnGray, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'11px' }} onClick={()=>setShowWeatherGuard(v=>!v)}>{showWeatherGuard?'HIDE GUARD':'SHOW GUARD'}</button>
+      <button style={{...btnBlack, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'11px' }} disabled={weatherGuardLoading} onClick={()=>loadWeatherGuardData(forecastDate)}>{weatherGuardLoading?'LOADING...':'REFRESH'}</button>
+     </div>
+    </div>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px', marginTop:'12px' }}>
+     {[
+      ['Normal Forecast',guardSummary.normal,'#ca1b1b'],
+      ['Base Production',guardSummary.base,'#1a5276'],
+      ['Conditional Hold',guardSummary.conditional,'#b45309'],
+      ['Risk-Adjusted',guardSummary.recommended,'#6c1d45'],
+      ['Final Release',guardSummary.final,guardSummary.final>guardSummary.recommended?'#ca1b1b':'#2d8a4e']
+     ].map(([label,value,color])=>(
+      <div key={label} style={{ background:'#fffdf4', border:'1px solid #eee', borderRadius:'10px', padding:'10px', textAlign:'center' }}>
+       <p style={{ color:'#888', fontSize:'9px', fontWeight:'900', margin:'0 0 4px', textTransform:'uppercase' }}>{label}</p>
+       <p style={{ color, fontSize:'20px', fontWeight:'900', margin:0 }}>{safeNum(value,0).toLocaleString()} <span style={{ fontSize:'9px' }}>pcs</span></p>
+      </div>
+     ))}
+    </div>
+
+    {(warningActive || classSuspended || routeUnsafe || guardSummary.amber || guardSummary.red) && (
+     <div style={{ background:routeUnsafe?'#fff0f0':'#fff8dc', border:`1px solid ${routeUnsafe?'#ca1b1b':'#f5c518'}`, borderRadius:'10px', padding:'10px', marginTop:'10px', fontSize:'11px', lineHeight:1.6 }}>
+      <strong style={{ color:routeUnsafe?'#ca1b1b':'#b45309' }}>Guard status:</strong>{' '}
+      {routeUnsafe
+       ? 'Dispatch is blocked. Final released quantities must remain zero until the route is verified safe.'
+       : weatherGuardDraft.class_status==='unverified' && warningActive
+       ? 'Class status is still unverified. School demand is not cancelled; part of it is held as Conditional Quantity until the decision cutoff.'
+       : 'Verified conditions are applied to the risk-adjusted production recommendation.'}
+     </div>
+    )}
+
+    {showWeatherGuard && (
+     <>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'10px', marginTop:'12px' }}>
+       <div style={{ background:'#f7fbff', border:'1px solid #b3d9ff', borderRadius:'12px', padding:'12px' }}>
+        <p style={{ color:'#1a5276', fontWeight:'900', margin:'0 0 8px', fontSize:'12px' }}>1. Weather Warning</p>
+        <label style={lblS}>Condition</label>
+        <select value={weatherGuardDraft.weather_level} onChange={e=>setWeatherGuardDraft(prev=>({
+         ...prev,
+         weather_level:e.target.value,
+         weather_issued_at:e.target.value==='no_warning'?'':(prev.weather_issued_at || weatherGuardNowLocalInput())
+        }))} style={{...inputStyle, marginBottom:'7px' }}>
+         <option value="no_warning">No Warning</option>
+         <option value="watch">Weather Watch</option>
+         <option value="moderate_rain">Moderate Rain Risk</option>
+         <option value="heavy_rain">Heavy Rain / Flood Risk</option>
+         <option value="severe_weather">Severe Weather</option>
+        </select>
+        <label style={lblS}>Official Source</label>
+        <select value={weatherGuardDraft.weather_source_type} onChange={e=>setWeatherGuardDraft(prev=>({...prev,weather_source_type:e.target.value}))} style={{...inputStyle, marginBottom:'7px' }}>
+         <option value="none">None / Not verified</option>
+         <option value="pagasa">PAGASA</option>
+         <option value="lgu">LGU / DRRMO</option>
+         <option value="other_official">Other Official Source</option>
+        </select>
+        <input value={weatherGuardDraft.weather_location} onChange={e=>setWeatherGuardDraft(prev=>({...prev,weather_location:e.target.value}))} placeholder="Affected location / municipality" style={{...inputStyle, marginBottom:'7px' }} />
+        <input type="datetime-local" value={weatherGuardDraft.weather_issued_at} onChange={e=>setWeatherGuardDraft(prev=>({...prev,weather_issued_at:e.target.value}))} style={{...inputStyle, marginBottom:'7px' }} />
+        <textarea value={weatherGuardDraft.weather_reference} onChange={e=>setWeatherGuardDraft(prev=>({...prev,weather_reference:e.target.value}))} placeholder="Bulletin number, official link, or screenshot reference" style={{...inputStyle, minHeight:'58px', resize:'vertical', marginBottom:0 }} />
+        <p style={{ color:'#1a5276', fontSize:'10px', margin:'8px 0 0' }}>Non-school demand factor: <strong>{Math.round(factors.nonSchoolFactor*100)}%</strong></p>
+       </div>
+
+       <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'12px', padding:'12px' }}>
+        <p style={{ color:'#b45309', fontWeight:'900', margin:'0 0 8px', fontSize:'12px' }}>2. Class Status</p>
+        <label style={lblS}>Verified Status</label>
+        <select value={weatherGuardDraft.class_status} onChange={e=>setWeatherGuardDraft(prev=>({
+         ...prev,
+         class_status:e.target.value,
+         class_verified_at:e.target.value==='unverified'?'':(prev.class_verified_at || weatherGuardNowLocalInput())
+        }))} style={{...inputStyle, marginBottom:'7px' }}>
+         <option value="unverified">Unverified</option>
+         <option value="normal">Normal Classes</option>
+         <option value="partial_suspension">Partial Suspension</option>
+         <option value="fully_suspended">Fully Suspended</option>
+        </select>
+        <select value={weatherGuardDraft.class_source_type} onChange={e=>setWeatherGuardDraft(prev=>({...prev,class_source_type:e.target.value}))} style={{...inputStyle, marginBottom:'7px' }}>
+         <option value="none">No verified source</option>
+         <option value="deped">DepEd</option>
+         <option value="lgu">LGU</option>
+         <option value="school">School Announcement</option>
+        </select>
+        <input value={weatherGuardDraft.class_scope} onChange={e=>setWeatherGuardDraft(prev=>({...prev,class_scope:e.target.value}))} placeholder="Scope: municipality, school, or grade levels" style={{...inputStyle, marginBottom:'7px' }} />
+        <input value={weatherGuardDraft.class_verified_by} onChange={e=>setWeatherGuardDraft(prev=>({...prev,class_verified_by:e.target.value}))} placeholder="Verified by" style={{...inputStyle, marginBottom:'7px' }} />
+        <input type="datetime-local" value={weatherGuardDraft.class_verified_at} onChange={e=>setWeatherGuardDraft(prev=>({...prev,class_verified_at:e.target.value}))} style={{...inputStyle, marginBottom:'7px' }} />
+        <textarea value={weatherGuardDraft.class_reference} onChange={e=>setWeatherGuardDraft(prev=>({...prev,class_reference:e.target.value}))} placeholder="Official link, post, memo, or screenshot reference" style={{...inputStyle, minHeight:'58px', resize:'vertical', marginBottom:0 }} />
+        <p style={{ color:'#b45309', fontSize:'10px', margin:'8px 0 0' }}>School demand factor: <strong>{Math.round(factors.schoolFactor*100)}%</strong></p>
+       </div>
+
+       <div style={{ background:'#fff5f5', border:'1px solid #ef9a9a', borderRadius:'12px', padding:'12px' }}>
+        <p style={{ color:'#ca1b1b', fontWeight:'900', margin:'0 0 8px', fontSize:'12px' }}>3. Route & Dispatch</p>
+        <label style={lblS}>Route Status</label>
+        <select value={weatherGuardDraft.route_status} onChange={e=>setWeatherGuardDraft(prev=>({
+         ...prev,
+         route_status:e.target.value,
+         route_verified_at:e.target.value==='unverified'?'':(prev.route_verified_at || weatherGuardNowLocalInput())
+        }))} style={{...inputStyle, marginBottom:'7px' }}>
+         <option value="unverified">Unverified</option>
+         <option value="safe">Safe</option>
+         <option value="caution">Caution</option>
+         <option value="unsafe">Unsafe — Block Dispatch</option>
+        </select>
+        <select value={weatherGuardDraft.route_source_type} onChange={e=>setWeatherGuardDraft(prev=>({...prev,route_source_type:e.target.value}))} style={{...inputStyle, marginBottom:'7px' }}>
+         <option value="none">No verified source</option>
+         <option value="lgu">LGU</option>
+         <option value="drmm">DRRMO</option>
+         <option value="field_team">Driver / Field Team</option>
+         <option value="other_official">Other Official Source</option>
+        </select>
+        <input value={weatherGuardDraft.route_verified_by} onChange={e=>setWeatherGuardDraft(prev=>({...prev,route_verified_by:e.target.value}))} placeholder="Verified by" style={{...inputStyle, marginBottom:'7px' }} />
+        <input type="datetime-local" value={weatherGuardDraft.route_verified_at} onChange={e=>setWeatherGuardDraft(prev=>({...prev,route_verified_at:e.target.value}))} style={{...inputStyle, marginBottom:'7px' }} />
+        <textarea value={weatherGuardDraft.route_reference} onChange={e=>setWeatherGuardDraft(prev=>({...prev,route_reference:e.target.value}))} placeholder="Road closure advisory, driver report, official post, or screenshot reference" style={{...inputStyle, minHeight:'58px', resize:'vertical', marginBottom:'7px' }} />
+        <label style={lblS}>Decision Cutoff</label>
+        <input type="time" value={weatherGuardDraft.decision_cutoff_time} onChange={e=>setWeatherGuardDraft(prev=>({...prev,decision_cutoff_time:e.target.value}))} style={{...inputStyle, marginBottom:0 }} />
+       </div>
+      </div>
+
+      <div style={{ background:'#f8f7f5', border:'1px solid #e5e5e5', borderRadius:'12px', padding:'12px', marginTop:'10px' }}>
+       <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+        <div>
+         <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'12px', margin:'0 0 3px' }}>Outlet Production Decisions</p>
+         <p style={{ color:'#777', fontSize:'10px', margin:0 }}>Formula: (School Demand × Class Factor) + (Non-school Demand × Rain Factor). Unverified suspension never cancels school demand.</p>
+        </div>
+        <div style={{ display:'flex', gap:'7px', flexWrap:'wrap' }}>
+         <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>applyWeatherGuardRecommendations('base')}>USE BASE</button>
+         <button style={{...btnBlack, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>applyWeatherGuardRecommendations('recommended')}>USE RECOMMENDATIONS</button>
+        </div>
+       </div>
+       <div style={{ overflowX:'auto', marginTop:'9px', border:'1px solid #ddd', borderRadius:'10px' }}>
+        <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1120px', fontSize:'10px' }}>
+         <thead>
+          <tr style={{ background:'#1a1a2e', color:'white' }}>
+           {['Outlet','Profile','Normal','Base','Conditional','Recommended','Final Release','Risk','Dispatch','Reallocate'].map(header=><th key={header} style={{ padding:'8px', textAlign:header==='Outlet'||header==='Profile'?'left':'center' }}>{header}</th>)}
+          </tr>
+         </thead>
+         <tbody>
+          {guardRows.length===0 && <tr><td colSpan="10" style={{ padding:'18px', textAlign:'center', color:'#888' }}>No delivery invoices for {forecastDate}.</td></tr>}
+          {guardRows.map(row=>(
+           <tr key={row.key} style={{ borderBottom:'1px solid #eee', background:row.risk_level==='red'?'#fff5f5':row.risk_level==='amber'?'#fffdf0':'white' }}>
+            <td style={{ padding:'8px', minWidth:'190px' }}><strong>{row.reseller_name}</strong><br/><span style={{ color:'#888' }}>{row.municipality || 'Municipality not set'} | {row.invoice_count} invoice(s)</span></td>
+            <td style={{ padding:'8px', minWidth:'150px' }}>{String(row.outlet_category || '').replace('_',' ').toUpperCase()}<br/><span style={{ color:'#888' }}>School {safeNum(row.school_demand_pct,0)}%</span></td>
+            <td style={{ padding:'8px', textAlign:'center', fontWeight:'900' }}>{row.invoice_qty}</td>
+            <td style={{ padding:'8px', textAlign:'center', color:'#1a5276', fontWeight:'900' }}>{row.base_qty}</td>
+            <td style={{ padding:'8px', textAlign:'center', color:'#b45309', fontWeight:'900' }}>{row.conditional_qty}</td>
+            <td style={{ padding:'8px', textAlign:'center', color:'#6c1d45', fontWeight:'900' }}>{row.recommended_qty}</td>
+            <td style={{ padding:'6px', minWidth:'115px' }}><input type="number" min="0" value={row.final_qty} disabled={routeUnsafe} onChange={e=>updateWeatherGuardFinalQty(row,e.target.value)} style={{...inputStyle, margin:0, textAlign:'center', fontWeight:'900', color:row.final_qty>row.recommended_qty?'#ca1b1b':'#2d8a4e' }} /></td>
+            <td style={{ padding:'8px', textAlign:'center' }}><Badge label={row.risk_level.toUpperCase()} color={row.risk_level==='red'?'red':row.risk_level==='amber'?'orange':'green'} /></td>
+            <td style={{ padding:'8px', textAlign:'center', color:row.dispatch_status==='blocked'?'#ca1b1b':row.dispatch_status==='caution'?'#b45309':'#2d8a4e', fontWeight:'900' }}>{row.dispatch_status.toUpperCase()}</td>
+            <td style={{ padding:'8px', textAlign:'center', fontWeight:'900' }}>{row.reallocation_qty}</td>
+           </tr>
+          ))}
+         </tbody>
+        </table>
+       </div>
+      </div>
+
+      <div style={{ marginTop:'10px' }}>
+       <label style={lblS}>Decision / Reallocation Notes</label>
+       <textarea value={weatherGuardDraft.decision_notes} onChange={e=>setWeatherGuardDraft(prev=>({...prev,decision_notes:e.target.value}))} placeholder="Explain held quantity, reallocation, special outlet handling, or owner decision." style={{...inputStyle, minHeight:'62px', resize:'vertical', marginBottom:0 }} />
+      </div>
+
+      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'10px' }}>
+       <button style={{...btnGreen, width:'auto', marginTop:0, padding:'9px 16px', opacity:weatherGuardSaving?0.65:1 }} disabled={weatherGuardSaving || weatherGuardLoading} onClick={saveWeatherGuardPlan}>{weatherGuardSaving?'SAVING...':'SAVE GUARD DRAFT'}</button>
+       <button style={{...btnRed, width:'auto', marginTop:0, padding:'9px 16px', opacity:(!canFinalize||weatherGuardFinalizing)?0.55:1 }} disabled={!canFinalize || weatherGuardFinalizing || !guardRows.length} onClick={finalizeWeatherGuardPlan}>{weatherGuardFinalizing?'LOCKING...':'LOCK & RELEASE PLAN'}</button>
+       <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px' }} onClick={()=>setShowWeatherGuardProfiles(v=>!v)}>OUTLET PROFILES ({profileCount}/{resellers.length})</button>
+       <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px' }} onClick={()=>setShowWeatherGuardSettings(v=>!v)}>PRODUCTION CUTOFF</button>
+       <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px' }} onClick={()=>setShowWeatherGuardOutcome(v=>!v)}>OUTCOME & LOSS</button>
+      </div>
+
+      {unprofiledCount>0 && <p style={{ color:'#b45309', fontSize:'10px', margin:'8px 0 0', fontWeight:'700' }}>{unprofiledCount} active outlet(s) still use the default Mixed / 50% school-demand profile. Tag them below for accurate recommendations.</p>}
+
+      {showWeatherGuardProfiles && (
+       <div style={{ background:'#fffdf4', border:'1px solid #f5e4a3', borderRadius:'12px', padding:'12px', marginTop:'10px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+         <div><p style={{ fontWeight:'900', color:'#ca1b1b', margin:'0 0 3px', fontSize:'12px' }}>Outlet Risk Profiles</p><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Tag each outlet as School-Heavy, Mixed, or Non-School and record its estimated school-dependent demand.</p></div>
+         <button style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 14px', fontSize:'10px' }} disabled={weatherGuardSaving} onClick={saveWeatherGuardProfiles}>SAVE ALL PROFILES</button>
+        </div>
+        <div style={{ overflowX:'auto', marginTop:'9px', border:'1px solid #ddd', borderRadius:'10px' }}>
+         <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'1050px', fontSize:'10px' }}>
+          <thead><tr style={{ background:'#ca1b1b', color:'white' }}>{['Outlet','Municipality','Category','School Type','Grade Market','School Demand %','Route','Route Risk','Notes'].map(h=><th key={h} style={{ padding:'8px', textAlign:'left' }}>{h}</th>)}</tr></thead>
+          <tbody>
+           {(resellers || []).map(reseller=>{
+            const draft = getWeatherGuardProfileDraft(reseller)
+            return (
+             <tr key={reseller.id} style={{ borderBottom:'1px solid #eee' }}>
+              <td style={{ padding:'7px', minWidth:'155px' }}><strong>{reseller.name}</strong><br/><span style={{ color:'#888' }}>{reseller.area || ''}</span></td>
+              <td style={{ padding:'5px' }}><input value={draft.municipality || ''} onChange={e=>updateWeatherGuardProfileDraft(reseller.id,'municipality',e.target.value)} style={{...inputStyle, margin:0, minWidth:'120px' }} /></td>
+              <td style={{ padding:'5px' }}><select value={draft.outlet_category} onChange={e=>updateWeatherGuardProfileDraft(reseller.id,'outlet_category',e.target.value)} style={{...inputStyle, margin:0, minWidth:'120px' }}><option value="school_heavy">School-Heavy</option><option value="mixed">Mixed</option><option value="non_school">Non-School</option></select></td>
+              <td style={{ padding:'5px' }}><select value={draft.school_type} onChange={e=>updateWeatherGuardProfileDraft(reseller.id,'school_type',e.target.value)} style={{...inputStyle, margin:0, minWidth:'110px' }}><option value="public">Public</option><option value="private">Private</option><option value="mixed">Mixed</option><option value="none">None</option></select></td>
+              <td style={{ padding:'5px' }}><input value={draft.grade_level_market || ''} onChange={e=>updateWeatherGuardProfileDraft(reseller.id,'grade_level_market',e.target.value)} placeholder="Elementary / HS" style={{...inputStyle, margin:0, minWidth:'120px' }} /></td>
+              <td style={{ padding:'5px' }}><input type="number" min="0" max="100" value={draft.school_demand_pct} onChange={e=>updateWeatherGuardProfileDraft(reseller.id,'school_demand_pct',e.target.value)} style={{...inputStyle, margin:0, width:'90px', textAlign:'center' }} /></td>
+              <td style={{ padding:'5px' }}><input value={draft.route_name || ''} onChange={e=>updateWeatherGuardProfileDraft(reseller.id,'route_name',e.target.value)} style={{...inputStyle, margin:0, minWidth:'120px' }} /></td>
+              <td style={{ padding:'5px' }}><select value={draft.route_risk_level} onChange={e=>updateWeatherGuardProfileDraft(reseller.id,'route_risk_level',e.target.value)} style={{...inputStyle, margin:0, minWidth:'95px' }}><option value="green">Green</option><option value="amber">Amber</option><option value="red">Red</option></select></td>
+              <td style={{ padding:'5px' }}><input value={draft.route_notes || ''} onChange={e=>updateWeatherGuardProfileDraft(reseller.id,'route_notes',e.target.value)} placeholder="Flood-prone road, bridge, etc." style={{...inputStyle, margin:0, minWidth:'180px' }} /></td>
+             </tr>
+            )
+           })}
+          </tbody>
+         </table>
+        </div>
+       </div>
+      )}
+
+      {showWeatherGuardSettings && (
+       <div style={{ background:'#f7fbff', border:'1px solid #b3d9ff', borderRadius:'12px', padding:'12px', marginTop:'10px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+         <div><p style={{ fontWeight:'900', color:'#1a5276', margin:'0 0 3px', fontSize:'12px' }}>Production Decision Cutoff</p><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Measure your real process. Current total lead time: <strong>{totalLeadHours}</strong>. Do not treat the default as final until actual timing is recorded.</p></div>
+         <button style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 14px', fontSize:'10px' }} disabled={weatherGuardSaving} onClick={saveWeatherGuardSettings}>SAVE CUTOFF SETTINGS</button>
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'9px' }}>
+         {[
+          ['Decision Cutoff','decision_cutoff_time','time'],
+          ['Mixing','mixing_minutes','number'],
+          ['Proofing','proofing_minutes','number'],
+          ['Frying','frying_minutes','number'],
+          ['Decorating','decorating_minutes','number'],
+          ['Packing','packing_minutes','number'],
+          ['Loading','loading_minutes','number'],
+          ['Travel Buffer','travel_buffer_minutes','number']
+         ].map(([label,key,type])=>(
+          <div key={key}><label style={lblS}>{label}{type==='number'?' (min)':''}</label><input type={type} min={type==='number'?'0':undefined} value={weatherGuardSettings[key] ?? ''} onChange={e=>setWeatherGuardSettings(prev=>({...prev,[key]:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
+         ))}
+        </div>
+       </div>
+      )}
+
+      {showWeatherGuardOutcome && (
+       <div style={{ background:'#f0fff4', border:'1px solid #a5d6a7', borderRadius:'12px', padding:'12px', marginTop:'10px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+         <div><p style={{ fontWeight:'900', color:'#2d8a4e', margin:'0 0 3px', fontSize:'12px' }}>Outcome & Loss Tracking</p><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Record returns, stockouts, lost sales, disposal, and avoided production to improve future weather decisions.</p></div>
+         <div style={{ display:'flex', gap:'7px' }}><button style={{...btnGray, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'10px' }} onClick={prefillWeatherGuardOutcomeFromInvoices}>PREFILL INVOICES</button><button style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'10px' }} disabled={weatherGuardSaving || !weatherGuardPlan?.id} onClick={saveWeatherGuardOutcome}>SAVE OUTCOME</button></div>
+        </div>
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(7,1fr)', gap:'7px', marginTop:'9px' }}>
+         {[
+          ['Delivered','actual_delivered_qty'],
+          ['Returned','returned_qty'],
+          ['Sold','sold_qty'],
+          ['Stockout','stockout_qty'],
+          ['Lost Sales','lost_sales_qty'],
+          ['Disposal','disposal_qty'],
+          ['Avoided','avoided_production_qty']
+         ].map(([label,key])=><div key={key}><label style={lblS}>{label}</label><input type="number" min="0" value={weatherGuardOutcome[key]} onChange={e=>setWeatherGuardOutcome(prev=>({...prev,[key]:e.target.value}))} style={{...inputStyle, marginBottom:0, textAlign:'center' }} /></div>)}
+        </div>
+        <textarea value={weatherGuardOutcome.notes} onChange={e=>setWeatherGuardOutcome(prev=>({...prev,notes:e.target.value}))} placeholder="What happened? Which outlets were affected? What should change next time?" style={{...inputStyle, minHeight:'58px', resize:'vertical', margin:'9px 0 0' }} />
+       </div>
+      )}
+     </>
+    )}
+   </div>
+  )
  })()}
 
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
@@ -40293,6 +41303,8 @@ onClick={async ()=>{
  )
  })
  })()}
+ </>
+ )}
  </div>
  )}
 
@@ -44085,7 +45097,7 @@ onClick={async ()=>{
   }}
   style={inputStyle}
  >
-  <option value="overtime" disabled={!isEmployeeOvertimeEligible(employee)}>Overtime{!isEmployeeOvertimeEligible(employee)?' (Not Eligible)':''}</option>
+  <option value="overtime">Overtime</option>
   <option value="undertime">Undertime</option>
   <option value="meal_break">No Meal Break Exception</option>
  </select>
@@ -44500,8 +45512,7 @@ onClick={async ()=>{
  {getDTRGraceAppliedMinutes(log)>0&&getDTRUndertimeMinutes(log)===0&&<p style={{...cps, color:'#2d8a4e', fontWeight:'700' }}>Grace Applied: {getDTRGraceAppliedMinutes(log)} min — no undertime within the {DEFAULT_LATE_GRACE_MINUTES}-minute grace period</p>}
  {getDTROverbreakMinutes(log)>0&&<p style={{...cps, color:'#ca1b1b', fontWeight:'700' }}>Overbreak: {getDTROverbreakMinutes(log)} min — already included in actual worked-time shortage</p>}
  {getDTRUndertimeMinutes(log)>0&&<p style={{...cps, color:'#ca1b1b' }}>Automatic UT: {getDTRUndertimeMinutes(log)} min</p>}
- {getDTRActualOvertimeMinutes(log)>0&&isEmployeeOvertimeEligible(employee)&&<p style={{...cps, color:'#2d8a4e' }}>Actual OT: {getDTRActualOvertimeMinutes(log)} min {getDTRApprovedOvertimeMinutes(log)>0?' Approved':' Pending filing/approval'}</p>}
- {getDTRActualOvertimeMinutes(log)>0&&!isEmployeeOvertimeEligible(employee)&&<p style={{...cps, color:'#777', fontWeight:'700' }}>Extra attendance: {getDTRActualOvertimeMinutes(log)} min — OT filing and pay are blocked by your employee policy.</p>}
+ {getDTRActualOvertimeMinutes(log)>0&&<p style={{...cps, color:'#2d8a4e' }}>Actual OT: {getDTRActualOvertimeMinutes(log)} min {getDTRApprovedOvertimeMinutes(log)>0?' Approved':' Pending filing/approval'}</p>}
  </div>
  )
  })}
