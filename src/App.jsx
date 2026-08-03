@@ -76,6 +76,184 @@ const inputStyle = { width:'100%', padding:'11px 14px', marginBottom:'12px', bor
 const cardS = { border:'1px solid rgba(202,27,27,0.20)', padding:'14px', borderRadius:'14px', marginBottom:'10px', background:'linear-gradient(180deg,#fffdf4 0%,#ffffff 46%)', boxShadow:'0 4px 14px rgba(26,26,46,0.07)' }
 const cps = { margin:'3px 0', color:'#555', fontSize:'13px' }
 const h2s = { color:'#ca1b1b', marginTop:0, marginBottom:'16px', fontWeight:'800', letterSpacing:'-0.3px' }
+const ROMAS_ADMIN_VISUAL_CSS = `
+@media screen {
+ .romas-admin-shell {
+  --romas-red:#ca1b1b;
+  --romas-gold:#FDD412;
+  --romas-navy:#1a1a2e;
+  --romas-ink:#111827;
+  --romas-panel:#ffffff;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+ }
+ .romas-admin-sidebar {
+  background:linear-gradient(180deg,#141a31 0%,#1a1a2e 54%,#11162a 100%) !important;
+  box-shadow:8px 0 28px rgba(15,23,42,0.16);
+ }
+ .romas-admin-main { background:#e9edf3 !important; }
+ .romas-admin-tabs {
+  display:grid !important;
+  grid-template-columns:repeat(auto-fit,minmax(112px,1fr));
+  gap:6px !important;
+  overflow:visible !important;
+  padding:8px 14px !important;
+  background:linear-gradient(90deg,#11172c,#1a1a2e) !important;
+  border-bottom:3px solid var(--romas-gold) !important;
+  box-shadow:0 4px 16px rgba(15,23,42,0.18) !important;
+  position:relative;
+  z-index:5;
+ }
+ .romas-admin-tabs button {
+  min-width:0;
+  padding:8px 9px !important;
+  border:1px solid rgba(255,255,255,0.12) !important;
+  border-radius:6px !important;
+  background:rgba(255,255,255,0.06) !important;
+  color:rgba(255,255,255,0.76) !important;
+  box-shadow:none !important;
+  overflow:hidden;
+  text-overflow:ellipsis;
+ }
+ .romas-admin-tabs button:hover { background:rgba(253,212,18,0.14) !important; color:#fff !important; }
+ .romas-admin-tabs button.romas-subtab-active {
+  background:linear-gradient(135deg,var(--romas-red),#a81010) !important;
+  color:#fff !important;
+  border-color:rgba(253,212,18,0.8) !important;
+  box-shadow:0 4px 12px rgba(202,27,27,0.28) !important;
+ }
+ .romas-admin-content {
+  background:linear-gradient(135deg,#f4f6f9 0%,#eceff4 58%,#fff8dc 145%) !important;
+  padding:16px !important;
+ }
+ .romas-admin-page:not(.romas-page-dashboard) > div > h2:first-child,
+ .romas-admin-page:not(.romas-page-dashboard) > div > h3:first-child {
+  margin:0 0 14px !important;
+  padding:12px 15px !important;
+  color:#fff !important;
+  background:linear-gradient(100deg,#141a31 0%,#1a1a2e 72%,#2a3049 100%) !important;
+  border-left:5px solid var(--romas-gold);
+  border-radius:8px;
+  box-shadow:0 6px 18px rgba(15,23,42,0.13);
+  font-size:18px !important;
+  font-weight:900 !important;
+  letter-spacing:.02em !important;
+ }
+ .romas-admin-page table {
+  background:#fff;
+  border-radius:9px;
+  box-shadow:0 5px 18px rgba(15,23,42,0.08);
+ }
+ .romas-admin-page table thead tr { background:linear-gradient(90deg,#141a31,#242b48) !important; }
+ .romas-admin-page table thead th {
+  background:transparent !important;
+  color:#fff !important;
+  border-bottom:3px solid var(--romas-gold) !important;
+  font-weight:850 !important;
+  letter-spacing:.025em;
+ }
+ .romas-executive-dashboard {
+  min-height:100%;
+  padding:14px;
+  border-radius:12px;
+  background:
+   radial-gradient(circle at 92% 0%,rgba(202,27,27,.18),transparent 28%),
+   linear-gradient(145deg,#10162a 0%,#171d36 56%,#11172c 100%);
+  border:1px solid rgba(253,212,18,.22);
+  box-shadow:0 14px 34px rgba(15,23,42,.18);
+ }
+ .romas-dashboard-header {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  flex-wrap:wrap;
+  margin-bottom:12px;
+  padding:13px 15px;
+  border-radius:9px;
+  background:linear-gradient(100deg,#1a1a2e 0%,#242b48 76%,#6f1114 150%);
+  border-left:5px solid var(--romas-gold);
+  box-shadow:0 8px 22px rgba(0,0,0,.2);
+ }
+ .romas-dashboard-eyebrow { margin:0 0 3px; color:var(--romas-gold); font-size:10px; font-weight:900; letter-spacing:.14em; text-transform:uppercase; }
+ .romas-dashboard-title { margin:0 !important; color:#fff !important; font-size:20px !important; font-weight:950 !important; letter-spacing:.01em; }
+ .romas-dashboard-subtitle { margin:3px 0 0; color:rgba(255,255,255,.62); font-size:11px; }
+ .romas-dashboard-actions { display:flex; align-items:center; justify-content:flex-end; gap:7px; flex-wrap:wrap; }
+ .romas-dashboard-date { color:#fff; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); border-radius:7px; padding:7px 10px; font-size:11px; font-weight:850; }
+ .romas-dashboard-kpis {
+  grid-template-columns:repeat(4,minmax(0,1fr)) !important;
+  gap:9px !important;
+  margin-bottom:12px !important;
+ }
+ .romas-dashboard-kpi {
+  position:relative;
+  overflow:hidden;
+  min-height:92px;
+  padding:12px !important;
+  text-align:left !important;
+  background:linear-gradient(145deg,#202741,#171d34) !important;
+  border:1px solid rgba(255,255,255,.1) !important;
+  border-top:4px solid var(--metric-color,#FDD412) !important;
+  border-radius:8px !important;
+  box-shadow:0 6px 16px rgba(0,0,0,.18);
+ }
+ .romas-dashboard-kpi::after {
+  content:"";
+  position:absolute;
+  right:-18px;
+  bottom:-24px;
+  width:72px;
+  height:72px;
+  border-radius:50%;
+  background:var(--metric-color,#FDD412);
+  opacity:.09;
+ }
+ .romas-dashboard-kpi > p:first-child { color:rgba(255,255,255,.65) !important; text-transform:uppercase; letter-spacing:.06em; font-weight:800; }
+ .romas-dashboard-kpi > p:nth-child(2) { color:var(--metric-color,#FDD412) !important; font-size:25px !important; }
+ .romas-dashboard-kpi > p:last-child { color:rgba(255,255,255,.42) !important; }
+ .romas-dashboard-alert-grid,
+ .romas-dashboard-chart-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:10px; }
+ .romas-dashboard-alert-grid > div,
+ .romas-dashboard-panel {
+  margin:0 !important;
+  border-radius:9px !important;
+  box-shadow:0 6px 18px rgba(0,0,0,.16);
+ }
+ .romas-dashboard-panel {
+  min-width:0;
+  padding:14px !important;
+  background:#fff !important;
+  border:1px solid rgba(253,212,18,.35) !important;
+ }
+ .romas-dashboard-panel h3 {
+  margin:-14px -14px 13px !important;
+  padding:10px 12px;
+  color:#fff !important;
+  background:linear-gradient(90deg,#1a1a2e,#2c3352);
+  border-bottom:3px solid var(--romas-gold);
+  border-radius:8px 8px 0 0;
+  font-size:12px !important;
+  text-transform:uppercase;
+  letter-spacing:.045em;
+ }
+ .romas-dashboard-location { margin-top:4px !important; }
+}
+@media (max-width:1100px) {
+ .romas-dashboard-kpis { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+}
+@media (max-width:768px) {
+ .romas-admin-tabs { grid-template-columns:repeat(2,minmax(0,1fr)); padding:7px 10px !important; }
+ .romas-admin-tabs button { white-space:normal !important; line-height:1.2; }
+ .romas-admin-content { padding:10px !important; }
+ .romas-executive-dashboard { padding:9px; border-radius:9px; }
+ .romas-dashboard-header { align-items:flex-start; padding:12px; }
+ .romas-dashboard-actions { width:100%; justify-content:flex-start; }
+ .romas-dashboard-kpis { grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:7px !important; }
+ .romas-dashboard-kpi { min-height:84px; padding:10px !important; }
+ .romas-dashboard-kpi > p:nth-child(2) { font-size:22px !important; }
+ .romas-dashboard-alert-grid,
+ .romas-dashboard-chart-grid { grid-template-columns:1fr; }
+}
+`
 const lblS = { display:'block', marginBottom:'5px', fontWeight:'700', color:'#555', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px' }
 // Buttons
 const btnBase = { display:'inline-flex', alignItems:'center', justifyContent:'center', width:'100%', padding:'12px 18px', borderRadius:'10px', border:'none', fontWeight:'700', cursor:'pointer', marginTop:'8px', fontSize:'13px', letterSpacing:'0.3px', transition:'opacity 0.15s', fontFamily:'inherit' }
@@ -33613,7 +33791,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
  return (
- <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f0f2f5', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+ <div className="romas-admin-shell" style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'#f0f2f5', overflow:'hidden', display:'flex', flexDirection:'column' }}>
+ <style>{ROMAS_ADMIN_VISUAL_CSS}</style>
  {showPayrollReminder && (
  <div style={{ background:'#ca1b1b', color:'white', padding:'10px 20px', textAlign:'center', fontWeight:'bold', fontSize:'13px', flexShrink:0, zIndex:100 }}>
  PAYROLL REMINDER: Salary release is on the {currentDay===11?'15th':'30th'}. Please compute and release payroll on time!
@@ -33659,7 +33838,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {/* Sidebar */}
  {(!isMobile||sidebarOpen) && (
- <div style={{ width:isMobile?'100%':'200px', minWidth:isMobile?'auto':'200px', background:'#1a1a2e', padding:'0', display:'flex', flexDirection:'column', flexShrink:0, overflowY:'auto', height:isMobile?'auto':'100%' }}>
+ <div className="romas-admin-sidebar" style={{ width:isMobile?'100%':'200px', minWidth:isMobile?'auto':'200px', background:'#1a1a2e', padding:'0', display:'flex', flexDirection:'column', flexShrink:0, overflowY:'auto', height:isMobile?'auto':'100%' }}>
  {/* Logo */}
  {!isMobile && (
  <div style={{ padding:'12px 10px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
@@ -33752,12 +33931,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
 
  {/* Main Content */}
- <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden', background:'#f0f2f5' }}>
+ <div className="romas-admin-main" style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden', background:'#f0f2f5' }}>
  {/* Sub-tab Navigation Bar */}
  {visibleSubTabs.length > 1 && (
- <div style={{ background:'white', borderBottom:'3px solid #FDD412', padding:'10px 20px', display:'flex', gap:'6px', overflowX:'auto', flexShrink:0, boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
+ <div className="romas-admin-tabs" style={{ background:'white', borderBottom:'3px solid #FDD412', padding:'10px 20px', display:'flex', gap:'6px', overflowX:'auto', flexShrink:0, boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
  {visibleSubTabs.map(tab => (
- <button key={tab.key} onClick={()=>handleTabClick(tab.key)} style={{ padding:'8px 16px', border:'none', borderRadius:'20px', background:activeTab===tab.key?'#ca1b1b':'#f4f4f4', color:activeTab===tab.key?'white':'#555', cursor:'pointer', fontWeight:activeTab===tab.key?'700':'500', fontSize:'12px', whiteSpace:'nowrap', transition:'all 0.15s', letterSpacing:'0.2px', boxShadow:activeTab===tab.key?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>
+ <button className={activeTab===tab.key?'romas-subtab-active':''} key={tab.key} onClick={()=>handleTabClick(tab.key)} style={{ padding:'8px 16px', border:'none', borderRadius:'20px', background:activeTab===tab.key?'#ca1b1b':'#f4f4f4', color:activeTab===tab.key?'white':'#555', cursor:'pointer', fontWeight:activeTab===tab.key?'700':'500', fontSize:'12px', whiteSpace:'nowrap', transition:'all 0.15s', letterSpacing:'0.2px', boxShadow:activeTab===tab.key?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>
  {tab.label}
  </button>
  ))}
@@ -33765,17 +33944,30 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
 
  {/* Content Area */}
- <div style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'22px', background:'linear-gradient(135deg,#fffdf2 0%,#f8f7f5 54%,#fff6f6 100%)' }}>
+ <div className="romas-admin-content" style={{ flex:1, overflowY:'auto', padding:isMobile?'14px':'22px', background:'linear-gradient(135deg,#fffdf2 0%,#f8f7f5 54%,#fff6f6 100%)' }}>
  <SectionErrorBoundary resetKey={activeTab}>
- <div style={{ width:'100%', maxWidth:adminContentMaxWidth, margin:'0 auto', minWidth:0, boxSizing:'border-box' }}>
+ <div className={`romas-admin-page romas-page-${activeTab}`} style={{ width:'100%', maxWidth:adminContentMaxWidth, margin:'0 auto', minWidth:0, boxSizing:'border-box' }}>
 
  {/* POS MONITOR */}
  {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
 
  {/* DASHBOARD */}
  {activeTab==='dashboard' && (
+ <div className="romas-executive-dashboard">
+ <div className="romas-dashboard-header">
  <div>
- <h2 style={h2s}> Dashboard {today}</h2>
+ <p className="romas-dashboard-eyebrow">Integrated business workflow</p>
+ <h2 className="romas-dashboard-title">BUSINESS DASHBOARD</h2>
+ <p className="romas-dashboard-subtitle">Roma's Donuts operational overview</p>
+ </div>
+ <div className="romas-dashboard-actions">
+ <span className="romas-dashboard-date">{today}</span>
+ <button style={{...btnYellow, width:'auto', padding:'8px 13px', marginTop:0, fontSize:'11px' }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast(' Dashboard refreshed!') }}>REFRESH</button>
+ {(adminRole==='owner'||adminRole==='hr') && (
+ <button style={{...btnBlack, width:'auto', padding:'8px 13px', marginTop:0, fontSize:'11px', border:'1px solid rgba(255,255,255,0.18)' }} onClick={autoApplySIL}>AUTO-APPLY SIL</button>
+ )}
+ </div>
+ </div>
 
  {/* TIMED IN MODAL */}
  {showTimedInModal && (
@@ -33880,7 +34072,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
  {!dashboardData && <p style={{ color:'#888' }}>Loading...</p>}
  {dashboardData && (
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'24px' }}>
+ <div className="romas-dashboard-kpis" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'24px' }}>
  {[
  [' Total Employees', dashboardData.totalEmployees, 'blue', 'employees', null],
  [' Timed In', dashboardData.timedIn, 'green', 'attendance', loadTimedInEmployees],
@@ -33891,7 +34083,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  [' Pending Attendance Requests', dashboardData.pendingOT, dashboardData.pendingOT>0?'orange':'gray', 'overtime', null],
  [' Disputes', dashboardData.pendingDisputes, dashboardData.pendingDisputes>0?'red':'gray', 'disputes', null],
  ].map(([label,value,color,tab,action])=>(
- <div key={label} onClick={()=>{ if(action){ action() } else { setActiveTab(tab); if(tab==='leaveRequests')loadLeaveRequests(); if(tab==='cashRequests')loadCashAdvanceRequests(); if(tab==='overtime')loadTimeAdjRequests(); if(tab==='disputes')loadPayslipDisputes(); }}} style={{ background:'white', border:`2px solid ${color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#ddd'}`, borderRadius:'12px', padding:'16px', textAlign:'center', cursor:'pointer', userSelect:'none', transition:'all 0.15s' }} onMouseEnter={e=>{ e.currentTarget.style.transform='scale(1.04)'; e.currentTarget.style.boxShadow='0 4px 15px rgba(0,0,0,0.12)' }} onMouseLeave={e=>{ e.currentTarget.style.transform='scale(1)'; e.currentTarget.style.boxShadow='none' }}>
+ <div className="romas-dashboard-kpi" key={label} onClick={()=>{ if(action){ action() } else { setActiveTab(tab); if(tab==='leaveRequests')loadLeaveRequests(); if(tab==='cashRequests')loadCashAdvanceRequests(); if(tab==='overtime')loadTimeAdjRequests(); if(tab==='disputes')loadPayslipDisputes(); }}} style={{ '--metric-color':color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#94a3b8', background:'white', border:`2px solid ${color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#ddd'}`, borderRadius:'12px', padding:'16px', textAlign:'center', cursor:'pointer', userSelect:'none', transition:'all 0.15s' }} onMouseEnter={e=>{ e.currentTarget.style.transform='translateY(-2px)'; e.currentTarget.style.boxShadow='0 10px 22px rgba(0,0,0,0.24)' }} onMouseLeave={e=>{ e.currentTarget.style.transform='translateY(0)'; e.currentTarget.style.boxShadow='0 6px 16px rgba(0,0,0,0.18)' }}>
  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 6px' }}>{label}</p>
  <p style={{ fontWeight:'bold', fontSize:'26px', margin:'0 0 4px', color:color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#555' }}>{value}</p>
  <p style={{ color:'#bbb', fontSize:'10px', margin:0 }}>tap to view </p>
@@ -33900,13 +34092,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  )}
  <div>
- <div style={{ display:'flex', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'12px' }}>
- <button style={{...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast(' Dashboard refreshed!') }}>REFRESH</button>
- {(adminRole==='owner'||adminRole==='hr') && (
- <button style={{...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={autoApplySIL}> AUTO-APPLY SIL</button>
- )}
- </div>
-
+ <div className="romas-dashboard-alert-grid">
  {/* Probationary Alerts */}
  {dashboardData?.probDue?.length > 0 && (
  <div style={{ background:'#fff8dc', border:'2px solid #f5a623', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
@@ -33956,10 +34142,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
  </div>
  )}
+ </div>
 
+ <div className="romas-dashboard-chart-grid">
  {/* Attendance Chart */}
  {attendanceStats.length > 0 && (
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginTop:'20px' }}>
+ <div className="romas-dashboard-panel" style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginTop:'20px' }}>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 16px', fontSize:'14px' }}> Monthly Attendance (Last 6 Months)</h3>
  <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', height:'120px', borderBottom:'2px solid #eee', paddingBottom:'8px' }}>
  {attendanceStats.map(s=>{
@@ -33991,7 +34179,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {/* Payroll Cost Chart */}
  {payrollCostStats.length > 0 && (
- <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginTop:'12px' }}>
+ <div className="romas-dashboard-panel" style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'18px', marginTop:'12px' }}>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 16px', fontSize:'14px' }}> Payroll Cost This Year</h3>
  <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', height:'100px', borderBottom:'2px solid #eee', paddingBottom:'8px' }}>
  {payrollCostStats.map(s=>{
@@ -34007,7 +34195,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  </div>
  )}
- <button style={{...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setShowLocationSetting(!showLocationSetting)}> SET STORE LOCATION</button>
+ </div>
+ <button className="romas-dashboard-location" style={{...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setShowLocationSetting(!showLocationSetting)}> SET STORE LOCATION</button>
  </div>
  {showLocationSetting && (
  <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'20px', marginTop:'16px' }}>
