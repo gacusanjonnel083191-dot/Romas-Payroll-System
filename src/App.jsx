@@ -27139,6 +27139,99 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
 
 
+
+ function getPangasinanProvinceZoneDashboard(rows = []) {
+  const zoneDefinitions = [
+   {
+    key:'western_coast',
+    label:'Western Coast & Islands',
+    icon:'🌊',
+    towns:['Agno','Alaminos City','Anda','Bani','Bolinao','Burgos','Dasol','Infanta','Labrador','Mabini','Sual']
+   },
+   {
+    key:'central_coast',
+    label:'Central Coast & Metro Dagupan',
+    icon:'🏙️',
+    towns:['Binmaley','Calasiao','Dagupan City','Lingayen','Mangaldan','Mapandan','San Fabian','San Jacinto']
+   },
+   {
+    key:'central_plains',
+    label:'Central Plains & Southern Pangasinan',
+    icon:'🌾',
+    towns:['Aguilar','Basista','Bayambang','Bugallon','Malasiqui','Mangatarem','San Carlos City','Santa Barbara','Urbiztondo']
+   },
+   {
+    key:'eastern_pangasinan',
+    label:'Eastern & Northeastern Pangasinan',
+    icon:'⛰️',
+    towns:['Alcala','Asingan','Balungao','Bautista','Binalonan','Laoac','Manaoag','Natividad','Pozorrubio','Rosales','San Manuel','San Nicolas','San Quintin','Santa Maria','Santo Tomas','Sison','Tayug','Umingan','Urdaneta City','Villasis']
+   }
+  ]
+  const byName = new Map((Array.isArray(rows) ? rows : []).map(row => [String(row?.name || '').trim().toLowerCase(), row]))
+  const riskPriority = { green:0, yellow:1, red:2 }
+  return zoneDefinitions.map(zone => {
+   const zoneRows = zone.towns.map(name => byName.get(name.toLowerCase())).filter(Boolean)
+   const counts = zoneRows.reduce((result,row) => {
+    const risk = getPagasaAlertVisual(row).risk
+    result[risk] = safeNum(result[risk],0) + 1
+    return result
+   }, { green:0, yellow:0, red:0 })
+   const sorted = [...zoneRows].sort((a,b) => {
+    const riskA = getPagasaAlertVisual(a).risk
+    const riskB = getPagasaAlertVisual(b).risk
+    return (riskPriority[riskB] || 0) - (riskPriority[riskA] || 0) || safeNum(b?.score,0) - safeNum(a?.score,0)
+   })
+   const priorityRow = sorted[0] || null
+   const visual = getPagasaAlertVisual(priorityRow || {})
+   return {
+    ...zone,
+    rows:zoneRows,
+    counts,
+    total:zoneRows.length,
+    affected:zoneRows.filter(row => getPagasaAlertVisual(row).risk !== 'green').length,
+    priorityRow,
+    visual
+   }
+  })
+ }
+
+ function getPangasinanProvinceSummaryVisual(rows = []) {
+  const municipalityRows = Array.isArray(rows) ? rows : []
+  const riskPriority = { green:0, yellow:1, red:2 }
+  const sorted = [...municipalityRows].sort((a,b) => {
+   const riskA = getPagasaAlertVisual(a).risk
+   const riskB = getPagasaAlertVisual(b).risk
+   return (riskPriority[riskB] || 0) - (riskPriority[riskA] || 0) || safeNum(b?.score,0) - safeNum(a?.score,0)
+  })
+  const priorityRow = sorted[0] || null
+  const visual = getPagasaAlertVisual(priorityRow || {})
+  const affectedRows = municipalityRows.filter(row => getPagasaAlertVisual(row).risk !== 'green')
+  const redRows = municipalityRows.filter(row => getPagasaAlertVisual(row).risk === 'red')
+  const yellowRows = municipalityRows.filter(row => getPagasaAlertVisual(row).risk === 'yellow')
+  const statusLabel = redRows.length > 0
+   ? 'HIGH PROVINCE-WIDE CAUTION'
+   : yellowRows.length > 0
+    ? 'PROVINCE-WIDE MONITORING'
+    : 'ROUTINE PROVINCE WATCH'
+  const decisionText = redRows.length > 0
+   ? 'Review production lock, dispatch routes, coastal travel, and flood-prone delivery areas before release.'
+   : yellowRows.length > 0
+    ? 'Continue operations with active monitoring. Recheck PAGASA before loading and dispatch.'
+    : 'Normal operations may continue, subject to the latest official PAGASA update before dispatch.'
+  return { visual, priorityRow, affectedRows, redRows, yellowRows, statusLabel, decisionText }
+ }
+
+ function getPangasinanPagasaOfficialTools() {
+  return [
+   { label:'PAGASA LIVE DASHBOARD', icon:'🌦️', url:'https://pagasa.dost.gov.ph/' },
+   { label:'NORTHERN LUZON FORECAST', icon:'🧭', url:'https://pagasa.dost.gov.ph/regional-forecast/nlprsd' },
+   { label:'LIVE RADAR', icon:'📡', url:'https://www.pagasa.dost.gov.ph/radar' },
+   { label:'SATELLITE', icon:'🛰️', url:'https://www.pagasa.dost.gov.ph/products-and-services/satellite' },
+   { label:'WEEKLY OUTLOOK', icon:'📅', url:'https://www.pagasa.dost.gov.ph/weather/weather-outlook-weekly' },
+   { label:'NUMERICAL MODEL', icon:'🗺️', url:'https://bagong.pagasa.dost.gov.ph/products-and-services/numerical-modelling-system' }
+  ]
+ }
+
  function getPagasaBulletinViews(data = pagasaRegion1Data) {
   const views = data?.official_update?.bulletin_views
   return Array.isArray(views) ? views.filter(view => view?.id) : []
@@ -40502,6 +40595,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      ? 'LIVE / REVIEW FIELDS'
      : 'NOT LOADED'
   const liveColor = pagasaRegion1Data?.stale ? '#b45309' : pagasaQualityVerified && pagasaOfficialSourcesOnly ? '#2d8a4e' : pagasaRegion1Data ? '#d99a00' : '#777'
+  const provinceZoneDashboard = getPangasinanProvinceZoneDashboard(municipalities)
+  const provinceSummary = getPangasinanProvinceSummaryVisual(municipalities)
+  const provinceOfficialTools = getPangasinanPagasaOfficialTools()
+  const provinceTopRiskNames = provinceSummary.affectedRows.slice(0,8).map(row=>row?.name).filter(Boolean)
+  const provinceBasisBulletin = selectedUpdateView || latestExactOfficialBulletin || null
   return (
    <div style={{ marginBottom:'16px' }}>
     <div style={{ background:'linear-gradient(135deg,#102a43,#1a5276)', color:'white', borderRadius:'16px', padding:'16px', marginBottom:'12px', boxShadow:'0 5px 18px rgba(16,42,67,0.22)' }}>
@@ -40550,6 +40648,58 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      <>
       <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'12px', padding:'11px', marginBottom:'12px', fontSize:'11px', lineHeight:1.6, color:'#6b5400' }}>
        <strong>Accuracy rule:</strong> The 3–5 day values below are extracted from PAGASA’s official regional/Northern Luzon outlook. Exact dates and traffic-light colors are app-derived planning aids and are clearly labeled as such. Municipality cards use the latest applicable PAGASA warning or nowcast wording, commonly covering the next two to three hours. The app does not invent a separate multi-day forecast for each Pangasinan town.
+      </div>
+
+      <div style={{ background:'linear-gradient(135deg,#071f33 0%,#0d4f73 55%,#147d8f 100%)', color:'white', borderRadius:'16px', padding:'15px', marginBottom:'12px', boxShadow:'0 7px 22px rgba(7,31,51,0.24)' }}>
+       <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start', flexWrap:'wrap', marginBottom:'12px' }}>
+        <div>
+         <p style={{ fontSize:'9px', fontWeight:'900', letterSpacing:'1.1px', margin:'0 0 4px', opacity:0.8 }}>NATIVE PROVINCE COMMAND VIEW · OFFICIAL PAGASA INPUTS</p>
+         <h2 style={{ margin:'0 0 4px', fontSize:isMobile?'18px':'22px' }}>Pangasinan Province Live Weather Dashboard</h2>
+         <p style={{ fontSize:'10px', lineHeight:1.55, margin:0, opacity:0.86, maxWidth:'850px' }}>Province-wide operational view built from the selected official PAGASA bulletin, all 48 Pangasinan city/municipality matches, and the official Northern Luzon outlook. Geographic zone groupings are an internal Roma’s Donuts planning aid—not PAGASA forecast zones.</p>
+        </div>
+        <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', justifyContent:'flex-end' }}>
+         <span style={{ background:provinceSummary.visual.badgeBackground, border:'1px solid rgba(255,255,255,0.45)', color:'white', borderRadius:'18px', padding:'7px 10px', fontSize:'9px', fontWeight:'900' }}>{provinceSummary.visual.icon} {provinceSummary.statusLabel}</span>
+         <button style={{ background:'white', color:'#0d4f73', border:'none', borderRadius:'9px', padding:'8px 12px', cursor:'pointer', fontWeight:'900', fontSize:'9px' }} onClick={()=>openPagasaOfficialSource('https://pagasa.dost.gov.ph/')}>OPEN PAGASA DASHBOARD</button>
+        </div>
+       </div>
+
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,minmax(0,1fr))', gap:'7px', marginBottom:'9px' }}>
+        <div style={{ background:'rgba(255,255,255,0.11)', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'10px', padding:'10px' }}><p style={{ fontSize:'8px', opacity:0.72, fontWeight:'900', margin:'0 0 3px' }}>PROVINCE STATUS</p><p style={{ fontSize:'11px', lineHeight:1.35, fontWeight:'900', margin:0 }}>{provinceSummary.statusLabel}</p></div>
+        <div style={{ background:'rgba(255,255,255,0.11)', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'10px', padding:'10px' }}><p style={{ fontSize:'8px', opacity:0.72, fontWeight:'900', margin:'0 0 3px' }}>LGUs REQUIRING ATTENTION</p><p style={{ fontSize:'18px', fontWeight:'900', margin:0 }}>{provinceSummary.affectedRows.length}<span style={{ fontSize:'9px', opacity:0.75 }}> / {municipalities.length || 48}</span></p></div>
+        <div style={{ background:'rgba(255,255,255,0.11)', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'10px', padding:'10px' }}><p style={{ fontSize:'8px', opacity:0.72, fontWeight:'900', margin:'0 0 3px' }}>OFFICIAL BASIS</p><p style={{ fontSize:'10px', lineHeight:1.35, fontWeight:'900', margin:0 }}>{provinceBasisBulletin?.issued_at_text || pagasaRegion1Data?.regional?.issued_at_text || 'See source'}</p></div>
+        <div style={{ background:'rgba(255,255,255,0.11)', border:'1px solid rgba(255,255,255,0.16)', borderRadius:'10px', padding:'10px' }}><p style={{ fontSize:'8px', opacity:0.72, fontWeight:'900', margin:'0 0 3px' }}>LAST APP SYNC</p><p style={{ fontSize:'10px', lineHeight:1.35, fontWeight:'900', margin:0 }}>{formatPagasaFetchedAt(pagasaRegion1Data?.fetched_at)}</p></div>
+       </div>
+
+       <div style={{ background:'rgba(255,255,255,0.10)', border:'1px solid rgba(255,255,255,0.18)', borderRadius:'10px', padding:'10px', marginBottom:'9px' }}>
+        <p style={{ margin:'0 0 3px', fontSize:'8px', opacity:0.72, fontWeight:'900' }}>OPERATING GUIDANCE</p>
+        <p style={{ margin:0, fontSize:'10px', lineHeight:1.5, fontWeight:'800' }}>{provinceSummary.decisionText}</p>
+        {provinceTopRiskNames.length>0 && <p style={{ margin:'5px 0 0', fontSize:'9px', lineHeight:1.45, opacity:0.85 }}><strong>Priority LGUs:</strong> {provinceTopRiskNames.join(', ')}{provinceSummary.affectedRows.length>provinceTopRiskNames.length?' and others':''}</p>}
+       </div>
+
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,minmax(0,1fr))', gap:'7px', marginBottom:'10px' }}>
+        {provinceZoneDashboard.map(zone=>(
+         <button key={zone.key} onClick={()=>zone.priorityRow?.name && setPagasaSelectedMunicipality(zone.priorityRow.name)} style={{ textAlign:'left', cursor:zone.priorityRow?'pointer':'default', background:'rgba(255,255,255,0.96)', border:`2px solid ${zone.visual.border}`, borderRadius:'11px', padding:'10px', minHeight:'116px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', gap:'5px', alignItems:'flex-start' }}><div><p style={{ color:'#0d4f73', fontSize:'10px', fontWeight:'900', margin:'0 0 2px' }}>{zone.icon} {zone.label}</p><p style={{ color:'#64748b', fontSize:'8px', margin:0 }}>{zone.total} LGUs · app operational grouping</p></div><span style={{ background:zone.visual.badgeBackground, color:'white', borderRadius:'12px', padding:'3px 6px', fontSize:'8px', fontWeight:'900' }}>{zone.visual.risk.toUpperCase()}</span></div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'4px', margin:'8px 0 6px' }}><div style={{ background:'#f0fdf4', borderRadius:'6px', padding:'5px', color:'#166534', fontSize:'8px', fontWeight:'900' }}>G {safeNum(zone.counts.green,0)}</div><div style={{ background:'#fffbea', borderRadius:'6px', padding:'5px', color:'#9a6700', fontSize:'8px', fontWeight:'900' }}>Y {safeNum(zone.counts.yellow,0)}</div><div style={{ background:'#fff1f1', borderRadius:'6px', padding:'5px', color:'#b91c1c', fontSize:'8px', fontWeight:'900' }}>R {safeNum(zone.counts.red,0)}</div></div>
+          <p style={{ color:zone.visual.color, fontSize:'8px', lineHeight:1.35, fontWeight:'900', margin:0 }}>{zone.affected} requiring attention{zone.priorityRow?.name ? ` · highest: ${zone.priorityRow.name}` : ''}</p>
+         </button>
+        ))}
+       </div>
+
+       <div style={{ background:'rgba(255,255,255,0.96)', color:'#102a43', borderRadius:'12px', padding:'10px', marginBottom:'9px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap', marginBottom:'8px' }}><div><p style={{ color:'#0d4f73', fontSize:'10px', fontWeight:'900', margin:'0 0 2px' }}>PANGASINAN 5-DAY PLANNING BASELINE</p><p style={{ color:'#64748b', fontSize:'8px', margin:0 }}>Official Northern Luzon outlook used as the province planning baseline; not a separate forecast for every town.</p></div><span style={{ background:'#e0f2fe', color:'#075985', borderRadius:'14px', padding:'4px 7px', fontSize:'8px', fontWeight:'900' }}>{forecastCoverageLabel}</span></div>
+        <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(5,minmax(115px,1fr))':'repeat(5,minmax(0,1fr))', gap:'6px', overflowX:isMobile?'auto':'visible', paddingBottom:isMobile?'4px':0 }}>
+         {regionalDays.map((day,index)=>{
+          const calendarDay = regionalForecastCalendar[index] || {}
+          const dayVisual = getPagasaForecastOperationalVisual(day)
+          return <div key={`province-strip-${calendarDay.date || day.day}-${index}`} style={{ background:dayVisual.background, border:`1.5px solid ${dayVisual.border}`, borderRadius:'9px', padding:'8px', minWidth:isMobile?'115px':0 }}><div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'4px' }}><p style={{ color:'#0d4f73', fontSize:'9px', fontWeight:'900', margin:0 }}>{day.day}</p><span style={{ fontSize:'16px' }}>{getPagasaWeatherIcon(day.condition)}</span></div><p style={{ color:'#475569', fontSize:'8px', fontWeight:'800', margin:'2px 0 5px' }}>{calendarDay.shortDateLabel || calendarDay.exactDateLabel || 'Date unavailable'}</p><p style={{ color:dayVisual.color, fontSize:'9px', fontWeight:'900', margin:'0 0 3px' }}>{dayVisual.icon} {dayVisual.label}</p><p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'900', margin:0 }}>{day.min_c ?? '—'}°–{day.max_c ?? '—'}°C</p></div>
+         })}
+        </div>
+       </div>
+
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(6,minmax(0,1fr))', gap:'6px' }}>
+        {provinceOfficialTools.map(tool=><button key={tool.label} onClick={()=>openPagasaOfficialSource(tool.url)} style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.30)', borderRadius:'9px', padding:'8px 7px', cursor:'pointer', fontSize:'8px', lineHeight:1.3, fontWeight:'900' }}>{tool.icon} {tool.label}</button>)}
+       </div>
       </div>
 
       <div style={{ background:'linear-gradient(180deg,#eef7ff 0%,#ffffff 100%)', border:'1.5px solid #1a5276', borderRadius:'14px', padding:'14px', marginBottom:'12px', boxShadow:'0 4px 14px rgba(26,82,118,0.10)' }}>
