@@ -7027,7 +7027,7 @@ export default function App() {
  useEffect(() => {
   if (!adminMode || activeTab !== 'sales' || salesView !== 'deliveries' || deliveriesSubTab !== 'pagasa') return
   loadPagasaRegion1Weather({ silent:true })
-  const refreshTimer = setInterval(() => loadPagasaRegion1Weather({ silent:true }), 15 * 60 * 1000)
+  const refreshTimer = setInterval(() => loadPagasaRegion1Weather({ silent:true }), 10 * 60 * 1000)
   return () => clearInterval(refreshTimer)
  }, [adminMode, activeTab, salesView, deliveriesSubTab])
 
@@ -27352,6 +27352,88 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   return '🌦️'
  }
 
+ function isOfficialPagasaUrl(value = '') {
+  try {
+   const host = new URL(String(value || '')).hostname.toLowerCase()
+   return host === 'pagasa.dost.gov.ph' || host.endsWith('.pagasa.dost.gov.ph')
+  } catch(error) {
+   return false
+  }
+ }
+
+ function getPagasaForecastOperationalVisual(day = {}) {
+  const condition = String(day?.condition || '').trim().toLowerCase()
+  const wind = String(day?.wind_speed || '').trim().toLowerCase()
+  const coast = String(day?.coastal_condition || '').trim().toLowerCase()
+  const conditionParsed = day?.condition_parsed !== false
+   && !!condition
+   && !condition.includes('could not be parsed')
+   && !condition.includes('forecast condition available on the official pagasa page')
+
+  // These colors are an internal delivery/production planning aid derived from
+  // official PAGASA condition, wind, and coastal wording. They are not a
+  // replacement for PAGASA rainfall-warning colors or municipality warnings.
+  const severeCondition = /(stormy|heavy rain|heavy rains|intense rain|torrential|widespread rain|continuous rain|severe thunderstorm)/.test(condition)
+  const strongWind = /(strong|gale|stormy)/.test(wind)
+  const roughCoast = /(rough|very rough|high seas)/.test(coast)
+  if (severeCondition || strongWind || roughCoast) {
+   return {
+    risk:'red',
+    label:conditionParsed?'HIGH CAUTION':'HIGH CAUTION · PARTIAL',
+    icon:'🔴',
+    color:'#991b1b',
+    background:'#fff1f2',
+    border:'#ef4444',
+    badgeBackground:'#dc2626',
+    note:conditionParsed
+     ? 'High operational caution. Recheck the latest PAGASA warning before production lock and dispatch.'
+     : 'Strong wind or rough-sea wording was parsed, but the forecast condition text needs source review before a final decision.'
+   }
+  }
+
+  const rainyCondition = /(rain|shower|thunder|storm|overcast|cloudy skies)/.test(condition)
+  const moderateWind = /moderate/.test(wind)
+  const moderateCoast = /moderate/.test(coast)
+  if (rainyCondition || moderateWind || moderateCoast) {
+   return {
+    risk:'yellow',
+    label:conditionParsed?'MONITOR':'MONITOR · PARTIAL',
+    icon:'🟡',
+    color:'#854d0e',
+    background:'#fffbeb',
+    border:'#f5c518',
+    badgeBackground:'#d99a00',
+    note:conditionParsed
+     ? 'Monitor conditions and confirm again near the delivery or production decision cutoff.'
+     : 'Wind or coastal fields indicate monitoring, but the condition text needs source review before a final decision.'
+   }
+  }
+
+  if (!conditionParsed) {
+   return {
+    risk:'review',
+    label:'DATA REVIEW',
+    icon:'⚪',
+    color:'#475569',
+    background:'#f8fafc',
+    border:'#94a3b8',
+    badgeBackground:'#64748b',
+    note:'Forecast condition was not completely parsed. Open the official PAGASA page before making a final decision.'
+   }
+  }
+
+  return {
+   risk:'green',
+   label:'NORMAL WATCH',
+   icon:'🟢',
+   color:'#166534',
+   background:'#f0fdf4',
+   border:'#4ade80',
+   badgeBackground:'#16a34a',
+   note:'Favorable regional baseline. Continue routine monitoring because local weather can still change.'
+  }
+ }
+
  function derivePagasaGuardLevel(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality) {
   const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data)
   const riskLevel = String(alert?.risk_level || '').toLowerCase()
@@ -27376,7 +27458,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   setPagasaRegion1Loading(true)
   if (!silent) setPagasaRegion1Error('')
   try {
-   const { data, error } = await supabase.functions.invoke('pagasa-region1-weather', {
+   const { data, error } = await supabase.functions.invoke('pagasa-region1-weather-v4', {
     body:{ force }
    })
    if (error) throw error
@@ -27384,10 +27466,17 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    if (!Array.isArray(data?.regional?.days) || data.regional.days.length < 3) {
     throw new Error('PAGASA returned an incomplete regional outlook.')
    }
+   const sourceUrls = Object.values(data?.source_urls || {}).filter(Boolean)
+   if (String(data?.provider || '').trim() !== 'DOST-PAGASA' || !sourceUrls.length || !sourceUrls.every(isOfficialPagasaUrl)) {
+    throw new Error('PAGASA source verification failed. One or more returned sources are not official PAGASA domains.')
+   }
+   const qualityWarning = data?.data_quality && data.data_quality.status !== 'verified_live_parse'
+    ? `Official PAGASA data loaded, but ${Math.max(0, safeNum(data?.data_quality?.regional_days_count, data?.regional?.days?.length || 0) - safeNum(data?.data_quality?.complete_conditions, 0))} forecast condition field(s) require review.`
+    : ''
    setPagasaRegion1Data(data)
    setPagasaRegion1Error(data?.stale
     ? `Live PAGASA retrieval failed. Showing the last successful cached snapshot${data?.cache_age_minutes != null ? ` from ${data.cache_age_minutes} minute(s) ago` : ''}.`
-    : '')
+    : qualityWarning)
    if (!getPagasaSelectedMunicipalityAlert(pagasaSelectedMunicipality, data)) {
     const defaultTown = getPagasaMunicipalityRows(data).find(row => row.name === 'Dagupan City')?.name
      || getPagasaMunicipalityRows(data)[0]?.name
@@ -27405,7 +27494,13 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   } catch(error) {
    console.error('PAGASA Region 1 load failed:', error)
    const message = String(error?.message || error || 'Unknown PAGASA error')
-   setPagasaRegion1Error(message)
+   // Preserve the last usable snapshot for continuity, but visibly downgrade it
+   // to cached/stale so a failed refresh can never keep a misleading LIVE label.
+   setPagasaRegion1Data(previous => previous
+    ? { ...previous, stale:true, cached:true, live_error:message }
+    : previous
+   )
+   setPagasaRegion1Error(`Live PAGASA refresh failed. ${message}${pagasaRegion1Data ? ' The last displayed snapshot is retained and marked stale.' : ''}`)
    if (!silent) showToast(`PAGASA weather failed: ${message}`, 'red')
    return null
   } finally {
@@ -40321,8 +40416,20 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   })
   const cityForecasts = Array.isArray(pagasaRegion1Data?.selected_cities) ? pagasaRegion1Data.selected_cities : []
   const announcementsList = Array.isArray(pagasaRegion1Data?.announcements) ? pagasaRegion1Data.announcements : []
-  const liveStatus = pagasaRegion1Data?.stale ? 'CACHED FALLBACK' : pagasaRegion1Data ? 'LIVE OFFICIAL DATA' : 'NOT LOADED'
-  const liveColor = pagasaRegion1Data?.stale ? '#b45309' : pagasaRegion1Data ? '#2d8a4e' : '#777'
+  const pagasaQuality = pagasaRegion1Data?.data_quality || {}
+  const pagasaSourceUrls = Object.values(pagasaRegion1Data?.source_urls || {}).filter(Boolean)
+  const pagasaOfficialSourcesOnly = pagasaSourceUrls.length > 0 && pagasaSourceUrls.every(isOfficialPagasaUrl)
+  const pagasaQualityVerified = pagasaQuality?.status === 'verified_live_parse'
+   && safeNum(pagasaQuality?.complete_conditions, 0) >= regionalDays.length
+   && safeNum(pagasaQuality?.complete_temperatures, 0) >= regionalDays.length
+  const liveStatus = pagasaRegion1Data?.stale
+   ? 'CACHED FALLBACK'
+   : pagasaQualityVerified && pagasaOfficialSourcesOnly
+    ? 'LIVE / VERIFIED PARSE'
+    : pagasaRegion1Data
+     ? 'LIVE / REVIEW FIELDS'
+     : 'NOT LOADED'
+  const liveColor = pagasaRegion1Data?.stale ? '#b45309' : pagasaQualityVerified && pagasaOfficialSourcesOnly ? '#2d8a4e' : pagasaRegion1Data ? '#d99a00' : '#777'
   return (
    <div style={{ marginBottom:'16px' }}>
     <div style={{ background:'linear-gradient(135deg,#102a43,#1a5276)', color:'white', borderRadius:'16px', padding:'16px', marginBottom:'12px', boxShadow:'0 5px 18px rgba(16,42,67,0.22)' }}>
@@ -40341,6 +40448,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>PAGASA Regional Issue</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>{pagasaRegion1Data?.regional?.issued_at_text || '—'}</p></div>
       <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>Extended Outlook Issue</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>{pagasaRegion1Data?.regional?.extended_issued_at_text || '—'}</p></div>
       <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>Retrieved by App</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>{formatPagasaFetchedAt(pagasaRegion1Data?.fetched_at)}</p></div>
+     </div>
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'8px', marginTop:'8px' }}>
+      <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>Source Verification</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>{pagasaOfficialSourcesOnly?'Official PAGASA domains only':'SOURCE REVIEW REQUIRED'}</p></div>
+      <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>Parser Verification</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>{pagasaQualityVerified?'Forecast fields complete':'Check highlighted review cards'}</p></div>
+      <div style={{ background:'rgba(255,255,255,0.10)', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', fontSize:'9px', opacity:0.75 }}>Sync Policy</p><p style={{ margin:0, fontSize:'11px', fontWeight:'900' }}>Auto every 10 min · Manual refresh forces live fetch</p></div>
      </div>
     </div>
 
@@ -40365,7 +40477,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     {pagasaRegion1Data && (
      <>
       <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'12px', padding:'11px', marginBottom:'12px', fontSize:'11px', lineHeight:1.6, color:'#6b5400' }}>
-       <strong>Accuracy rule:</strong> The 3–5 day cards below are PAGASA’s regional/Northern Luzon outlook. Municipality cards are current warning or nowcast matches, commonly covering the next two to three hours. The app does not invent a separate three-day forecast for each Pangasinan town.
+       <strong>Accuracy rule:</strong> The 3–5 day values below are extracted from PAGASA’s official regional/Northern Luzon outlook. Exact dates and traffic-light colors are app-derived planning aids and are clearly labeled as such. Municipality cards use the latest applicable PAGASA warning or nowcast wording, commonly covering the next two to three hours. The app does not invent a separate multi-day forecast for each Pangasinan town.
       </div>
 
       <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
@@ -40387,11 +40499,20 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          <p style={{ color:forecastDatesDerived?'#8a6500':'#166534', fontSize:'10px', fontWeight:'900', lineHeight:1.35, margin:0 }}>{forecastDatesDerived?'Matched from PAGASA weekday sequence and issue/retrieval date':'Official date fields supplied by the source'}</p>
         </div>
        </div>
+       <div style={{ display:'flex', gap:'6px', alignItems:'center', flexWrap:'wrap', background:'#f8fafc', border:'1px solid #dbe3ea', borderRadius:'10px', padding:'8px 10px', marginBottom:'9px' }}>
+        <span style={{ color:'#334155', fontSize:'9px', fontWeight:'900' }}>APP OPERATIONAL COLOR GUIDE:</span>
+        <span style={{ color:'#166534', fontSize:'9px', fontWeight:'900' }}>🟢 NORMAL WATCH</span>
+        <span style={{ color:'#854d0e', fontSize:'9px', fontWeight:'900' }}>🟡 MONITOR</span>
+        <span style={{ color:'#991b1b', fontSize:'9px', fontWeight:'900' }}>🔴 HIGH CAUTION</span>
+        <span style={{ color:'#475569', fontSize:'9px', fontWeight:'900' }}>⚪ DATA REVIEW</span>
+        <span style={{ color:'#64748b', fontSize:'8px' }}>Colors are derived by the app from official PAGASA condition, wind, and coastal wording. They are not separate PAGASA warning levels.</span>
+       </div>
        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))', gap:'8px' }}>
         {regionalDays.map((day,index)=>{
          const calendarDay = regionalForecastCalendar[index] || {}
+         const forecastVisual = getPagasaForecastOperationalVisual(day)
          return (
-          <div key={`${calendarDay.date || day.day}-${index}`} style={{ background:index===0?'#eef7ff':'#fafafa', border:`1px solid ${index===0?'#8fc9f4':'#e5e5e5'}`, borderRadius:'11px', padding:'11px', minHeight:'194px', boxShadow:index===0?'0 3px 10px rgba(26,82,118,0.10)':'none' }}>
+          <div key={`${calendarDay.date || day.day}-${index}`} style={{ background:forecastVisual.background, border:`1.5px solid ${forecastVisual.border}`, borderRadius:'11px', padding:'11px', minHeight:'214px', boxShadow:index===0?'0 3px 10px rgba(26,82,118,0.10)':'none' }}>
            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'5px' }}>
             <div>
              <p style={{ fontWeight:'900', color:'#1a5276', margin:'0 0 2px', fontSize:'12px' }}>{day.day}</p>
@@ -40399,12 +40520,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
             </div>
             <span style={{ fontSize:'24px' }}>{getPagasaWeatherIcon(day.condition)}</span>
            </div>
-           {calendarDay.relativeLabel && <span style={{ display:'inline-block', background:calendarDay.relativeLabel==='TODAY'?'#1a5276':calendarDay.relativeLabel==='TOMORROW'?'#ca1b1b':'#e8eef3', color:['TODAY','TOMORROW'].includes(calendarDay.relativeLabel)?'white':'#44546a', borderRadius:'12px', padding:'3px 7px', fontSize:'8px', fontWeight:'900', marginTop:'7px' }}>{calendarDay.relativeLabel}</span>}
+           <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', alignItems:'center', marginTop:'7px' }}>
+            {calendarDay.relativeLabel && <span style={{ display:'inline-block', background:calendarDay.relativeLabel==='TODAY'?'#1a5276':calendarDay.relativeLabel==='TOMORROW'?'#ca1b1b':'#e8eef3', color:['TODAY','TOMORROW'].includes(calendarDay.relativeLabel)?'white':'#44546a', borderRadius:'12px', padding:'3px 7px', fontSize:'8px', fontWeight:'900' }}>{calendarDay.relativeLabel}</span>}
+            <span style={{ display:'inline-block', background:forecastVisual.badgeBackground, color:'white', borderRadius:'12px', padding:'3px 7px', fontSize:'8px', fontWeight:'900' }}>{forecastVisual.icon} {forecastVisual.label}</span>
+           </div>
            <p style={{ color:'#333', fontSize:'10px', lineHeight:1.45, minHeight:'44px', margin:'8px 0' }}>{day.condition}</p>
-           <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'14px', margin:'0 0 5px' }}>{day.min_c ?? '—'}°C – {day.max_c ?? '—'}°C</p>
-           <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Wind: {day.wind_speed || '—'}</p>
-           <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Direction: {day.wind_direction || '—'}</p>
-           <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Coast: {day.coastal_condition || '—'}</p>
+           <p style={{ color:forecastVisual.color, fontWeight:'900', fontSize:'14px', margin:'0 0 5px' }}>{day.min_c ?? '—'}°C – {day.max_c ?? '—'}°C</p>
+           <p style={{ color:'#555', fontSize:'9px', margin:'2px 0' }}>Wind: {day.wind_speed || '—'}</p>
+           <p style={{ color:'#555', fontSize:'9px', margin:'2px 0' }}>Direction: {day.wind_direction || '—'}</p>
+           <p style={{ color:'#555', fontSize:'9px', margin:'2px 0' }}>Coast: {day.coastal_condition || '—'}</p>
+           <p style={{ color:forecastVisual.color, fontSize:'8px', fontWeight:'800', lineHeight:1.35, margin:'7px 0 0' }}>{forecastVisual.note}</p>
           </div>
          )
         })}
