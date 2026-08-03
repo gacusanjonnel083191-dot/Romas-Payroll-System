@@ -6372,6 +6372,7 @@ export default function App() {
  const [pagasaRegion1Loading, setPagasaRegion1Loading] = useState(false)
  const [pagasaRegion1Error, setPagasaRegion1Error] = useState('')
  const [pagasaSelectedMunicipality, setPagasaSelectedMunicipality] = useState('Dagupan City')
+ const [pagasaSelectedUpdateKey, setPagasaSelectedUpdateKey] = useState('latest')
  const [pagasaMunicipalitySearch, setPagasaMunicipalitySearch] = useState('')
  const [pagasaShowAnnouncements, setPagasaShowAnnouncements] = useState(true)
  const [pagasaLastManualRefresh, setPagasaLastManualRefresh] = useState('')
@@ -27138,13 +27139,52 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
 
 
- function getPagasaMunicipalityRows(data = pagasaRegion1Data) {
-  return Array.isArray(data?.pangasinan?.municipalities) ? data.pangasinan.municipalities : []
+ function getPagasaBulletinViews(data = pagasaRegion1Data) {
+  const views = data?.official_update?.bulletin_views
+  return Array.isArray(views) ? views.filter(view => view?.id) : []
  }
 
- function getPagasaSelectedMunicipalityAlert(name = pagasaSelectedMunicipality, data = pagasaRegion1Data) {
+ function getPagasaUpdateOptions(data = pagasaRegion1Data) {
+  const views = getPagasaBulletinViews(data)
+  const latestIssued = views.find(view => view?.issued_at_text)?.issued_at_text
+   || data?.official_update?.latest_bulletins?.find(row => row?.issued_at_text)?.issued_at_text
+   || data?.regional?.issued_at_text
+   || ''
+  return [
+   {
+    value:'latest',
+    label:`Latest applicable PAGASA updates${latestIssued ? ` — ${latestIssued}` : ''}`,
+    title:'Latest applicable PAGASA updates (combined)',
+    issued_at_text:latestIssued,
+    update_date:getPagasaDateString(latestIssued),
+    source_url:data?.official_update?.source_url || data?.source_urls?.regional || ''
+   },
+   ...views.map(view => ({
+    value:String(view.id),
+    label:`${view.update_date ? formatDateForDisplay(view.update_date) : (view.issued_at_text || 'Official update')} — ${view.title || 'PAGASA Bulletin'}`,
+    ...view
+   }))
+  ]
+ }
+
+ function getPagasaSelectedUpdateView(data = pagasaRegion1Data, updateKey = pagasaSelectedUpdateKey) {
+  if (!data || !updateKey || updateKey === 'latest') return null
+  return getPagasaBulletinViews(data).find(view => String(view?.id || '') === String(updateKey)) || null
+ }
+
+ function getPagasaActivePangasinanData(data = pagasaRegion1Data, updateKey = pagasaSelectedUpdateKey) {
+  const selectedView = getPagasaSelectedUpdateView(data, updateKey)
+  return selectedView?.pangasinan || data?.pangasinan || {}
+ }
+
+ function getPagasaMunicipalityRows(data = pagasaRegion1Data, updateKey = pagasaSelectedUpdateKey) {
+  const activePangasinan = getPagasaActivePangasinanData(data, updateKey)
+  return Array.isArray(activePangasinan?.municipalities) ? activePangasinan.municipalities : []
+ }
+
+ function getPagasaSelectedMunicipalityAlert(name = pagasaSelectedMunicipality, data = pagasaRegion1Data, updateKey = pagasaSelectedUpdateKey) {
   const normalized = String(name || '').trim().toLowerCase()
-  return getPagasaMunicipalityRows(data).find(row => String(row?.name || '').trim().toLowerCase() === normalized) || null
+  return getPagasaMunicipalityRows(data, updateKey).find(row => String(row?.name || '').trim().toLowerCase() === normalized) || null
  }
 
  function getPagasaAlertVisual(alert = {}) {
@@ -27447,9 +27487,13 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  function getPagasaOperationalSummary(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality) {
   const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data)
+  const selectedUpdate = getPagasaSelectedUpdateView(data)
   const forecastDays = (data?.regional?.days || []).slice(0,3)
   const conditions = forecastDays.map(day => `${day.day}: ${day.condition}`).join(' | ')
-  return `${municipalityName}: ${alert?.status_label || 'No active municipality mention found'}. Region 1 outlook: ${conditions || 'No parsed forecast available.'}`
+  const updateBasis = selectedUpdate
+   ? `${selectedUpdate.title || 'PAGASA bulletin'}${selectedUpdate.issued_at_text ? ` (${selectedUpdate.issued_at_text})` : ''}`
+   : 'latest applicable PAGASA updates (combined)'
+  return `${municipalityName}: ${alert?.status_label || 'No active municipality mention found'}. Display basis: ${updateBasis}. Region 1 outlook: ${conditions || 'No parsed forecast available.'}`
  }
 
  async function loadPagasaRegion1Weather(options = {}) {
@@ -27474,6 +27518,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     ? `Official PAGASA data loaded, but ${Math.max(0, safeNum(data?.data_quality?.regional_days_count, data?.regional?.days?.length || 0) - safeNum(data?.data_quality?.complete_conditions, 0))} forecast condition field(s) require review.`
     : ''
    setPagasaRegion1Data(data)
+   const refreshedUpdateOptions = getPagasaUpdateOptions(data)
+   if (!refreshedUpdateOptions.some(option => String(option.value) === String(pagasaSelectedUpdateKey))) {
+    setPagasaSelectedUpdateKey('latest')
+   }
    setPagasaRegion1Error(data?.stale
     ? `Live PAGASA retrieval failed. Showing the last successful cached snapshot${data?.cache_age_minutes != null ? ` from ${data.cache_age_minutes} minute(s) ago` : ''}.`
     : qualityWarning)
@@ -27514,9 +27562,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    return
   }
   const alert = getPagasaSelectedMunicipalityAlert()
+  const selectedUpdate = getPagasaSelectedUpdateView()
   const weatherLevel = derivePagasaGuardLevel()
-  const sourceUrl = pagasaRegion1Data?.source_urls?.regional || 'https://pagasa.dost.gov.ph/regional-forecast/nlprsd'
-  const issuedText = pagasaRegion1Data?.regional?.extended_issued_at_text || pagasaRegion1Data?.regional?.issued_at_text || ''
+  const sourceUrl = selectedUpdate?.source_url || pagasaRegion1Data?.source_urls?.regional || 'https://pagasa.dost.gov.ph/regional-forecast/nlprsd'
+  const issuedText = selectedUpdate?.issued_at_text || pagasaRegion1Data?.regional?.extended_issued_at_text || pagasaRegion1Data?.regional?.issued_at_text || ''
   const summary = getPagasaOperationalSummary()
   setWeatherGuardDraft(prev => ({
    ...prev,
@@ -27526,6 +27575,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    weather_issued_at:toWeatherGuardDateTimeLocal(pagasaRegion1Data?.fetched_at || new Date().toISOString()),
    weather_reference:[
     `Official PAGASA Northern Luzon source: ${sourceUrl}`,
+    selectedUpdate?.title ? `Displayed update: ${selectedUpdate.title}` : 'Displayed update: latest applicable PAGASA updates (combined)',
     issuedText ? `PAGASA issue: ${issuedText}` : '',
     alert?.warning_type ? `${alert.warning_type}: ${alert.status_label}` : '',
     pagasaRegion1Data?.stale ? 'Displayed from last successful cached PAGASA snapshot.' : 'Retrieved live through the secured PAGASA Region 1 function.'
@@ -40400,6 +40450,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const regionalForecastCalendar = getPagasaForecastCalendar(regionalDays, pagasaRegion1Data)
   const forecastCoverageLabel = getPagasaCoverageLabel(regionalForecastCalendar)
   const forecastDatesDerived = regionalForecastCalendar.some(item => item?.derived)
+  const pagasaUpdateOptions = getPagasaUpdateOptions()
+  const selectedUpdateView = getPagasaSelectedUpdateView()
+  const activePangasinan = getPagasaActivePangasinanData()
   const municipalities = getPagasaMunicipalityRows()
   const selectedAlert = getPagasaSelectedMunicipalityAlert()
   const selectedVisual = getPagasaAlertVisual(selectedAlert || {})
@@ -40408,7 +40461,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    counts[risk] = safeNum(counts[risk],0) + 1
    return counts
   }, { green:0, yellow:0, red:0 })
-  const riskCounts = pagasaRegion1Data?.pangasinan?.risk_counts || calculatedRiskCounts
+  const riskCounts = activePangasinan?.risk_counts || calculatedRiskCounts
   const affectedMunicipalities = municipalities.filter(row=>getPagasaAlertVisual(row).risk!=='green')
   const filteredMunicipalities = municipalities.filter(row=>{
    const search = pagasaMunicipalitySearch.trim().toLowerCase()
@@ -40416,6 +40469,17 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   })
   const cityForecasts = Array.isArray(pagasaRegion1Data?.selected_cities) ? pagasaRegion1Data.selected_cities : []
   const announcementsList = Array.isArray(pagasaRegion1Data?.announcements) ? pagasaRegion1Data.announcements : []
+  const activeAnnouncementsList = selectedUpdateView
+   ? [{
+      title:selectedUpdateView.title,
+      issued_at_text:selectedUpdateView.issued_at_text,
+      next_update_at_text:selectedUpdateView.next_update_at_text,
+      text:selectedUpdateView.text || selectedUpdateView.official_text,
+      official_text:selectedUpdateView.official_text,
+      hazard_key:selectedUpdateView.hazard_key
+     }]
+   : announcementsList
+  const selectedUpdateOption = pagasaUpdateOptions.find(option => String(option.value) === String(pagasaSelectedUpdateKey)) || pagasaUpdateOptions[0] || null
   const officialUpdate = pagasaRegion1Data?.official_update || {}
   const exactOfficialBulletins = Array.isArray(officialUpdate?.latest_bulletins) && officialUpdate.latest_bulletins.length > 0
    ? officialUpdate.latest_bulletins
@@ -40630,11 +40694,33 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          <h3 style={{ color:'#ca1b1b', margin:'0 0 3px', fontSize:'14px' }}>Pangasinan Municipality Weather Risk Monitor</h3>
          <p style={{ color:'#777', fontSize:'10px', margin:0 }}>{affectedMunicipalities.length} of {municipalities.length} municipalities/cities currently require monitoring or precaution based on the retrieved PAGASA information.</p>
         </div>
-        <div style={{ display:'flex', gap:'7px', flexWrap:'wrap' }}>
+        <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', alignItems:'flex-end' }}>
+         <div style={{ minWidth:isMobile?'100%':'360px' }}>
+          <label style={{...lblS, marginBottom:'4px' }}>Official PAGASA Bulletin / Update Date Used</label>
+          <select value={pagasaSelectedUpdateKey} onChange={e=>setPagasaSelectedUpdateKey(e.target.value)} style={{...inputStyle, marginBottom:0, padding:'8px', fontWeight:'800' }}>
+           {pagasaUpdateOptions.map(option=><option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+         </div>
          <input value={pagasaMunicipalitySearch} onChange={e=>setPagasaMunicipalitySearch(e.target.value)} placeholder="Search municipality..." style={{...inputStyle, marginBottom:0, width:isMobile?'100%':'190px', padding:'8px' }} />
          <button style={{...btnGreen, background:'#1a5276', width:'auto', marginTop:0, padding:'8px 13px', fontSize:'10px' }} onClick={applyPagasaToWeatherGuard}>COPY SELECTED TOWN TO WEATHER GUARD</button>
         </div>
        </div>
+
+       <div style={{ background:'#eef7ff', border:'1px solid #9ec5e5', borderRadius:'10px', padding:'10px 12px', marginBottom:'10px', display:'grid', gridTemplateColumns:isMobile?'1fr':'1.5fr 1fr 1fr', gap:'8px' }}>
+        <div>
+         <p style={{ color:'#547084', fontSize:'8px', fontWeight:'900', letterSpacing:'0.6px', margin:'0 0 3px' }}>DISPLAYED PAGASA BASIS</p>
+         <p style={{ color:'#123f5d', fontSize:'11px', fontWeight:'900', margin:0 }}>{selectedUpdateOption?.title || 'Latest applicable PAGASA updates (combined)'}</p>
+        </div>
+        <div>
+         <p style={{ color:'#547084', fontSize:'8px', fontWeight:'900', letterSpacing:'0.6px', margin:'0 0 3px' }}>OFFICIAL ISSUE</p>
+         <p style={{ color:'#123f5d', fontSize:'10px', fontWeight:'800', margin:0 }}>{selectedUpdateOption?.issued_at_text || pagasaRegion1Data?.regional?.issued_at_text || 'Not stated by source'}</p>
+        </div>
+        <div>
+         <p style={{ color:'#547084', fontSize:'8px', fontWeight:'900', letterSpacing:'0.6px', margin:'0 0 3px' }}>RETRIEVED BY APP</p>
+         <p style={{ color:'#123f5d', fontSize:'10px', fontWeight:'800', margin:0 }}>{formatPagasaFetchedAt(pagasaRegion1Data?.fetched_at)}</p>
+        </div>
+       </div>
+       <p style={{ color:'#777', fontSize:'9px', lineHeight:1.45, margin:'-3px 0 10px' }}>The municipality monitor uses current PAGASA warnings, advisories, and nowcasts—not one forecast for every day in the five-day outlook. Choose an official bulletin date above to see the towns and wording attached to that exact update.</p>
 
        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'7px', marginBottom:'10px' }}>
         {[
@@ -40705,17 +40791,18 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
       <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
-        <div><h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>Current PAGASA Announcements</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Rainfall advisories, thunderstorm watches/warnings, and related Northern Luzon announcements parsed from the official page.</p></div>
-        <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>setPagasaShowAnnouncements(v=>!v)}>{pagasaShowAnnouncements?'HIDE':'SHOW'} ANNOUNCEMENTS ({announcementsList.length})</button>
+        <div><h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>{selectedUpdateView?'Selected PAGASA Update':'Current PAGASA Announcements'}</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>{selectedUpdateView?'Exact wording for the official bulletin selected in the update-date dropdown above.':'Rainfall advisories, thunderstorm watches/warnings, and related Northern Luzon announcements parsed from the official page.'}</p></div>
+        <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>setPagasaShowAnnouncements(v=>!v)}>{pagasaShowAnnouncements?'HIDE':'SHOW'} ANNOUNCEMENTS ({activeAnnouncementsList.length})</button>
        </div>
        {pagasaShowAnnouncements && (
         <div style={{ marginTop:'9px' }}>
-         {announcementsList.length===0 && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>No active announcement block was parsed from the official page at the time of retrieval.</p>}
-         {announcementsList.map((announcement,index)=>(
+         {activeAnnouncementsList.length===0 && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>No active announcement block was parsed from the official page at the time of retrieval.</p>}
+         {activeAnnouncementsList.map((announcement,index)=>(
           <div key={`${announcement.title}-${index}`} style={{ background:index===0?'#fff8dc':'#fafafa', border:`1px solid ${index===0?'#f5c518':'#e5e5e5'}`, borderRadius:'10px', padding:'10px', marginBottom:'7px' }}>
            <p style={{ color:index===0?'#b45309':'#1a1a2e', fontWeight:'900', fontSize:'11px', margin:'0 0 3px' }}>{announcement.title}</p>
-           {announcement.issued_at_text && <p style={{ color:'#777', fontSize:'9px', margin:'0 0 5px' }}>{announcement.issued_at_text}</p>}
-           <p style={{ color:'#444', fontSize:'10px', lineHeight:1.55, margin:0, whiteSpace:'pre-wrap' }}>{announcement.text}</p>
+           {announcement.issued_at_text && <p style={{ color:'#777', fontSize:'9px', margin:'0 0 3px' }}>{announcement.issued_at_text}</p>}
+           {announcement.next_update_at_text && <p style={{ color:'#b45309', fontSize:'9px', fontWeight:'800', margin:'0 0 5px' }}>Next PAGASA update: {announcement.next_update_at_text}</p>}
+           <p style={{ color:'#444', fontSize:'10px', lineHeight:1.55, margin:0, whiteSpace:'pre-wrap' }}>{announcement.official_text || announcement.text}</p>
           </div>
          ))}
         </div>
