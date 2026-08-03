@@ -27148,12 +27148,36 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
 
  function getPagasaAlertVisual(alert = {}) {
+  const riskLevel = String(alert?.risk_level || '').toLowerCase()
   const score = Math.max(0, safeNum(alert?.score, 0))
-  if (score >= 4) return { color:'#ca1b1b', background:'#fff0f0', border:'#ef9a9a', label:'ACTIVE HEAVY RAIN' }
-  if (score >= 3) return { color:'#ca1b1b', background:'#fff5f5', border:'#ef9a9a', label:'HEAVY RAIN POSSIBLE' }
-  if (score >= 2) return { color:'#b45309', background:'#fff8dc', border:'#f5c518', label:'RAIN EXPECTED' }
-  if (score >= 1) return { color:'#856404', background:'#fffdf0', border:'#ffe082', label:'IN ADVISORY' }
-  return { color:'#555', background:'#f7f7f7', border:'#ddd', label:'NO CURRENT TOWN MENTION' }
+  const resolvedRisk = riskLevel || (score >= 4 ? 'red' : score >= 1 ? 'yellow' : 'green')
+  if (resolvedRisk === 'red') return {
+   risk:'red',
+   color:'#b91c1c',
+   background:'#fff1f1',
+   border:'#ef4444',
+   badgeBackground:'#b91c1c',
+   label:alert?.operational_label || 'CRITICAL / HIGH RISK',
+   icon:'🔴'
+  }
+  if (resolvedRisk === 'yellow') return {
+   risk:'yellow',
+   color:'#9a6700',
+   background:'#fffbea',
+   border:'#f5c518',
+   badgeBackground:'#eab308',
+   label:alert?.operational_label || 'MODERATE / MONITOR',
+   icon:'🟡'
+  }
+  return {
+   risk:'green',
+   color:'#166534',
+   background:'#f0fdf4',
+   border:'#4ade80',
+   badgeBackground:'#16a34a',
+   label:alert?.operational_label || 'GOOD / NO ACTIVE ALERT',
+   icon:'🟢'
+  }
  }
 
  function formatPagasaFetchedAt(value = '') {
@@ -27181,10 +27205,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  function derivePagasaGuardLevel(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality) {
   const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data)
+  const riskLevel = String(alert?.risk_level || '').toLowerCase()
   const score = Math.max(0, safeNum(alert?.score, 0))
-  if (score >= 4) return 'heavy_rain'
-  if (score >= 3) return 'heavy_rain'
-  if (score >= 2) return 'moderate_rain'
+  if (riskLevel === 'red' || score >= 4) return 'heavy_rain'
+  if (riskLevel === 'yellow' || score >= 1) return 'moderate_rain'
   const regionalConditions = (data?.regional?.days || []).slice(0,3).map(day => String(day?.condition || '')).join(' ').toLowerCase()
   if (regionalConditions.includes('rain') || regionalConditions.includes('thunder') || (data?.announcements || []).length > 0) return 'watch'
   return 'no_warning'
@@ -40132,7 +40156,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const municipalities = getPagasaMunicipalityRows()
   const selectedAlert = getPagasaSelectedMunicipalityAlert()
   const selectedVisual = getPagasaAlertVisual(selectedAlert || {})
-  const affectedMunicipalities = municipalities.filter(row=>safeNum(row?.score,0)>0)
+  const calculatedRiskCounts = municipalities.reduce((counts,row)=>{
+   const risk = getPagasaAlertVisual(row).risk
+   counts[risk] = safeNum(counts[risk],0) + 1
+   return counts
+  }, { green:0, yellow:0, red:0 })
+  const riskCounts = pagasaRegion1Data?.pangasinan?.risk_counts || calculatedRiskCounts
+  const affectedMunicipalities = municipalities.filter(row=>getPagasaAlertVisual(row).risk!=='green')
   const filteredMunicipalities = municipalities.filter(row=>{
    const search = pagasaMunicipalitySearch.trim().toLowerCase()
    return !search || String(row?.name || '').toLowerCase().includes(search)
@@ -40233,23 +40263,51 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
       <div style={{ background:'white', border:'1px solid #ddd', borderRadius:'14px', padding:'14px', marginBottom:'12px' }}>
        <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'flex-end', flexWrap:'wrap', marginBottom:'10px' }}>
-        <div><h3 style={{ color:'#ca1b1b', margin:'0 0 3px', fontSize:'14px' }}>Pangasinan Municipality Advisory Monitor</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>{affectedMunicipalities.length} of {municipalities.length} municipalities/cities currently appear in the retrieved PAGASA warning text.</p></div>
+        <div>
+         <h3 style={{ color:'#ca1b1b', margin:'0 0 3px', fontSize:'14px' }}>Pangasinan Municipality Weather Risk Monitor</h3>
+         <p style={{ color:'#777', fontSize:'10px', margin:0 }}>{affectedMunicipalities.length} of {municipalities.length} municipalities/cities currently require monitoring or precaution based on the retrieved PAGASA information.</p>
+        </div>
         <div style={{ display:'flex', gap:'7px', flexWrap:'wrap' }}>
          <input value={pagasaMunicipalitySearch} onChange={e=>setPagasaMunicipalitySearch(e.target.value)} placeholder="Search municipality..." style={{...inputStyle, marginBottom:0, width:isMobile?'100%':'190px', padding:'8px' }} />
          <button style={{...btnGreen, background:'#1a5276', width:'auto', marginTop:0, padding:'8px 13px', fontSize:'10px' }} onClick={applyPagasaToWeatherGuard}>COPY SELECTED TOWN TO WEATHER GUARD</button>
         </div>
        </div>
 
-       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(250px,0.8fr) minmax(0,2fr)', gap:'10px' }}>
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'7px', marginBottom:'10px' }}>
+        {[
+         ['🟢','GREEN',safeNum(riskCounts.green,0),'No active severe municipality/province alert and favorable regional baseline.'],
+         ['🟡','YELLOW',safeNum(riskCounts.yellow,0),'Moderate rain, watch, possible hazard, or rainy regional baseline. Monitor closely.'],
+         ['🔴','RED',safeNum(riskCounts.red,0),'Heavy rain, severe warning, thunderstorm/strong winds, or threatening flood and landslide risk.']
+        ].map(([icon,label,count,description])=>{
+         const visual = getPagasaAlertVisual({ risk_level:String(label).toLowerCase() })
+         return (
+          <div key={label} style={{ background:visual.background, border:`1px solid ${visual.border}`, borderRadius:'10px', padding:'9px 11px' }}>
+           <div style={{ display:'flex', justifyContent:'space-between', gap:'7px', alignItems:'center' }}>
+            <p style={{ color:visual.color, fontSize:'11px', fontWeight:'900', margin:0 }}>{icon} {label}</p>
+            <span style={{ background:visual.badgeBackground, color:'white', borderRadius:'14px', padding:'3px 8px', fontSize:'10px', fontWeight:'900' }}>{count}</span>
+           </div>
+           <p style={{ color:'#555', fontSize:'9px', lineHeight:1.4, margin:'5px 0 0' }}>{description}</p>
+          </div>
+         )
+        })}
+       </div>
+
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(280px,0.85fr) minmax(0,2fr)', gap:'10px' }}>
         <div style={{ ...selectedVisual, border:`1px solid ${selectedVisual.border}`, borderRadius:'11px', padding:'12px', background:selectedVisual.background }}>
          <label style={lblS}>Selected Municipality / City</label>
          <select value={pagasaSelectedMunicipality} onChange={e=>setPagasaSelectedMunicipality(e.target.value)} style={{...inputStyle, marginBottom:'9px', fontWeight:'900' }}>
           {municipalities.map(row=><option key={row.name} value={row.name}>{row.name}</option>)}
          </select>
-         <p style={{ color:selectedVisual.color, fontWeight:'900', fontSize:'11px', margin:'0 0 5px' }}>{selectedVisual.label}</p>
-         <p style={{ color:'#333', fontSize:'11px', fontWeight:'700', margin:'0 0 5px' }}>{selectedAlert?.warning_type || 'No current PAGASA municipality alert'}</p>
-         <p style={{ color:'#555', fontSize:'10px', lineHeight:1.55, margin:0 }}>{selectedAlert?.context || 'No municipality-specific warning text is available.'}</p>
-         <p style={{ color:'#777', fontSize:'9px', lineHeight:1.45, margin:'9px 0 0' }}>“No current town mention” does not mean guaranteed safe weather. It only means the municipality was not named in the retrieved active warning text.</p>
+         <div style={{ display:'flex', alignItems:'center', gap:'7px', marginBottom:'6px' }}>
+          <span style={{ fontSize:'17px' }}>{selectedVisual.icon}</span>
+          <p style={{ color:selectedVisual.color, fontWeight:'900', fontSize:'11px', margin:0 }}>{selectedVisual.label}</p>
+         </div>
+         <p style={{ color:'#333', fontSize:'11px', fontWeight:'800', margin:'0 0 5px' }}>{selectedAlert?.status_label || selectedAlert?.warning_type || 'No active PAGASA municipality alert'}</p>
+         {selectedAlert?.warning_type && <p style={{ color:'#555', fontSize:'9px', margin:'0 0 5px' }}><strong>Advisory:</strong> {selectedAlert.warning_type}{selectedAlert?.warning_color ? ` — ${String(selectedAlert.warning_color).toUpperCase()}` : ''}</p>}
+         {selectedAlert?.province_wide && <p style={{ color:selectedVisual.color, fontSize:'9px', fontWeight:'900', margin:'0 0 5px' }}>PROVINCE-WIDE PANGASINAN REFERENCE</p>}
+         <p style={{ color:'#444', fontSize:'10px', lineHeight:1.5, margin:'0 0 6px' }}><strong>Why this color:</strong> {selectedAlert?.basis || 'The classification is based on the retrieved official PAGASA wording and regional baseline.'}</p>
+         <p style={{ color:'#555', fontSize:'9px', lineHeight:1.5, margin:0, maxHeight:'145px', overflowY:'auto' }}>{selectedAlert?.context || 'No municipality-specific warning text is available.'}</p>
+         <p style={{ color:'#777', fontSize:'9px', lineHeight:1.45, margin:'9px 0 0' }}>Green means no active severe town/province warning was found and the regional baseline is favorable. It is not a guarantee that rain cannot occur.</p>
         </div>
 
         <div style={{ maxHeight:'410px', overflowY:'auto', border:'1px solid #eee', borderRadius:'11px', padding:'8px' }}>
@@ -40258,9 +40316,22 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
            const visual = getPagasaAlertVisual(row)
            const selected = row.name===pagasaSelectedMunicipality
            return (
-            <button key={row.name} onClick={()=>setPagasaSelectedMunicipality(row.name)} style={{ textAlign:'left', border:`${selected?'2px':'1px'} solid ${selected?'#1a5276':visual.border}`, borderRadius:'9px', padding:'8px', cursor:'pointer', background:selected?'#eef7ff':visual.background }}>
-             <p style={{ color:selected?'#1a5276':visual.color, fontWeight:'900', fontSize:'10px', margin:'0 0 3px' }}>{row.name}</p>
-             <p style={{ color:visual.color, fontWeight:'800', fontSize:'8px', margin:0 }}>{visual.label}</p>
+            <button key={row.name} onClick={()=>setPagasaSelectedMunicipality(row.name)} style={{
+             textAlign:'left',
+             border:`${selected?'2px':'1px'} solid ${selected?'#1a5276':visual.border}`,
+             borderRadius:'9px',
+             padding:'8px',
+             cursor:'pointer',
+             background:selected?'#eef7ff':visual.background,
+             minHeight:'68px',
+             boxShadow:selected?'0 0 0 2px rgba(26,82,118,0.12)':'none'
+            }}>
+             <div style={{ display:'flex', justifyContent:'space-between', gap:'5px', alignItems:'flex-start' }}>
+              <p style={{ color:selected?'#1a5276':visual.color, fontWeight:'900', fontSize:'10px', margin:'0 0 3px' }}>{row.name}</p>
+              <span style={{ fontSize:'11px' }}>{visual.icon}</span>
+             </div>
+             <p style={{ color:visual.color, fontWeight:'900', fontSize:'8px', margin:'0 0 2px' }}>{visual.label}</p>
+             <p style={{ color:'#666', fontWeight:'700', fontSize:'7px', lineHeight:1.25, margin:0 }}>{row.status_label || row.warning_type || 'No active PAGASA alert'}</p>
             </button>
            )
           })}
