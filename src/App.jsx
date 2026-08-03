@@ -27194,6 +27194,155 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   })
  }
 
+
+ function getPagasaDateString(value = '') {
+  if (!value) return ''
+  const raw = String(value || '').trim()
+  const isoMatch = raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/)
+  if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+
+  const monthNames = {
+   january:1, february:2, march:3, april:4, may:5, june:6,
+   july:7, august:8, september:9, october:10, november:11, december:12,
+   jan:1, feb:2, mar:3, apr:4, jun:6, jul:7, aug:8, sep:9, sept:9, oct:10, nov:11, dec:12
+  }
+  const namedDate = raw.match(/\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(20\d{2})\b/i)
+   || raw.match(/\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{1,2}),?\s+(20\d{2})\b/i)
+  if (namedDate) {
+   const startsWithNumber = /^\d/.test(namedDate[1])
+   const day = Number(startsWithNumber ? namedDate[1] : namedDate[2])
+   const monthName = String(startsWithNumber ? namedDate[2] : namedDate[1]).toLowerCase()
+   const year = Number(namedDate[3])
+   const month = monthNames[monthName]
+   if (year && month && day) return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+  }
+
+  const parsed = new Date(raw)
+  if (Number.isNaN(parsed.getTime())) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+   timeZone:PH_TIME_ZONE,
+   year:'numeric', month:'2-digit', day:'2-digit'
+  }).formatToParts(parsed).reduce((acc, part) => {
+   if (part.type !== 'literal') acc[part.type] = part.value
+   return acc
+  }, {})
+  return parts.year && parts.month && parts.day ? `${parts.year}-${parts.month}-${parts.day}` : ''
+ }
+
+ function getPagasaDayExplicitDate(day = {}) {
+  return getPagasaDateString(
+   day?.date
+   || day?.forecast_date
+   || day?.valid_date
+   || day?.target_date
+   || day?.local_date
+   || day?.date_iso
+   || ''
+  )
+ }
+
+ function getPagasaWeekdayIndex(value = '') {
+  const key = String(value || '').trim().toLowerCase().replace(/[^a-z]/g, '')
+  const weekdayMap = {
+   sunday:0, sun:0,
+   monday:1, mon:1,
+   tuesday:2, tue:2, tues:2,
+   wednesday:3, wed:3,
+   thursday:4, thu:4, thur:4, thurs:4,
+   friday:5, fri:5,
+   saturday:6, sat:6
+  }
+  return Object.prototype.hasOwnProperty.call(weekdayMap, key) ? weekdayMap[key] : null
+ }
+
+ function getPagasaReferenceDate(data = pagasaRegion1Data) {
+  const directCandidates = [
+   data?.regional?.coverage_start_date,
+   data?.regional?.forecast_start_date,
+   data?.regional?.valid_from,
+   data?.regional?.extended_issued_at,
+   data?.regional?.issued_at,
+   data?.fetched_at
+  ]
+  for (const candidate of directCandidates) {
+   const date = getPagasaDateString(candidate)
+   if (date) return date
+  }
+  const textCandidates = [
+   data?.regional?.extended_issued_at_text,
+   data?.regional?.issued_at_text
+  ]
+  for (const candidate of textCandidates) {
+   const date = getPagasaDateString(candidate)
+   if (date) return date
+  }
+  return getPHDateTimeParts().date
+ }
+
+ function getPagasaForecastCalendar(days = [], data = pagasaRegion1Data) {
+  const rows = Array.isArray(days) ? days : []
+  if (!rows.length) return []
+
+  const explicitDates = rows.map(day => getPagasaDayExplicitDate(day))
+  const firstExplicitIndex = explicitDates.findIndex(Boolean)
+  let startDate = ''
+
+  if (firstExplicitIndex >= 0) {
+   startDate = addDaysToDateString(explicitDates[firstExplicitIndex], -firstExplicitIndex)
+  } else {
+   const referenceDate = getPagasaReferenceDate(data)
+   const reference = parseLocalDate(referenceDate)
+   const firstWeekday = getPagasaWeekdayIndex(rows[0]?.day || rows[0]?.weekday || '')
+   if (reference && firstWeekday !== null) {
+    const offset = (firstWeekday - reference.getDay() + 7) % 7
+    startDate = addDaysToDateString(referenceDate, offset)
+   } else {
+    startDate = referenceDate
+   }
+  }
+
+  const todayDate = getPHDateTimeParts().date
+  return rows.map((day, index) => {
+   const date = explicitDates[index] || addDaysToDateString(startDate, index)
+   const dayDiff = dateStringDiffDays(todayDate, date)
+   const relativeLabel = dayDiff === 0
+    ? 'TODAY'
+    : dayDiff === 1
+     ? 'TOMORROW'
+     : dayDiff > 1
+      ? `+${dayDiff} DAYS`
+      : dayDiff === -1
+       ? 'YESTERDAY'
+       : dayDiff < -1
+        ? `${Math.abs(dayDiff)} DAYS AGO`
+        : ''
+   return {
+    date,
+    exactDateLabel:date ? formatDateForDisplay(date) : 'Date unavailable',
+    compactDateLabel:date ? parseLocalDate(date)?.toLocaleDateString('en-US', { month:'short', day:'numeric' }) || date : '—',
+    relativeLabel,
+    derived:!explicitDates[index]
+   }
+  })
+ }
+
+ function getPagasaCoverageLabel(calendar = []) {
+  const dates = (calendar || []).map(item => item?.date).filter(Boolean)
+  if (!dates.length) return 'Coverage dates unavailable'
+  const start = parseLocalDate(dates[0])
+  const end = parseLocalDate(dates[dates.length - 1])
+  if (!start || !end) return `${formatDateForDisplay(dates[0])} – ${formatDateForDisplay(dates[dates.length - 1])}`
+  const sameYear = start.getFullYear() === end.getFullYear()
+  const sameMonth = sameYear && start.getMonth() === end.getMonth()
+  if (sameMonth) {
+   return `${start.toLocaleDateString('en-US', { month:'short' })} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`
+  }
+  if (sameYear) {
+   return `${start.toLocaleDateString('en-US', { month:'short', day:'numeric' })} – ${end.toLocaleDateString('en-US', { month:'short', day:'numeric' })}, ${end.getFullYear()}`
+  }
+  return `${start.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })} – ${end.toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' })}`
+ }
+
  function getPagasaWeatherIcon(condition = '') {
   const text = String(condition || '').toLowerCase()
   if (text.includes('storm') || text.includes('thunder')) return '⛈️'
@@ -40153,6 +40302,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {deliveriesSubTab==='pagasa' && (()=>{
   const regionalDays = Array.isArray(pagasaRegion1Data?.regional?.days) ? pagasaRegion1Data.regional.days.slice(0,5) : []
+  const regionalForecastCalendar = getPagasaForecastCalendar(regionalDays, pagasaRegion1Data)
+  const forecastCoverageLabel = getPagasaCoverageLabel(regionalForecastCalendar)
+  const forecastDatesDerived = regionalForecastCalendar.some(item => item?.derived)
   const municipalities = getPagasaMunicipalityRows()
   const selectedAlert = getPagasaSelectedMunicipalityAlert()
   const selectedVisual = getPagasaAlertVisual(selectedAlert || {})
@@ -40221,17 +40373,41 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         <div><h3 style={{ color:'#1a5276', margin:'0 0 3px', fontSize:'14px' }}>PAGASA Extended Outlook — Northern Luzon / Region 1 Planning</h3><p style={{ color:'#777', fontSize:'10px', margin:0 }}>Use for production planning three to five days ahead. Confirm again near the decision cutoff.</p></div>
         <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>openPagasaOfficialSource(pagasaRegion1Data?.source_urls?.regional)}>OPEN OFFICIAL PAGE</button>
        </div>
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,minmax(0,1fr))', gap:'7px', marginBottom:'10px' }}>
+        <div style={{ background:'#eef7ff', border:'1px solid #8fc9f4', borderRadius:'10px', padding:'9px 11px' }}>
+         <p style={{ color:'#64748b', fontSize:'8px', fontWeight:'900', letterSpacing:'0.6px', margin:'0 0 3px' }}>FORECAST COVERAGE</p>
+         <p style={{ color:'#1a5276', fontSize:'13px', fontWeight:'900', margin:0 }}>{forecastCoverageLabel}</p>
+        </div>
+        <div style={{ background:'#f8fafc', border:'1px solid #dbe3ea', borderRadius:'10px', padding:'9px 11px' }}>
+         <p style={{ color:'#64748b', fontSize:'8px', fontWeight:'900', letterSpacing:'0.6px', margin:'0 0 3px' }}>PLANNING WINDOW</p>
+         <p style={{ color:'#1a1a2e', fontSize:'13px', fontWeight:'900', margin:0 }}>{regionalForecastCalendar.length || regionalDays.length} day regional outlook</p>
+        </div>
+        <div style={{ background:forecastDatesDerived?'#fffbea':'#f0fdf4', border:`1px solid ${forecastDatesDerived?'#f5c518':'#86d69b'}`, borderRadius:'10px', padding:'9px 11px' }}>
+         <p style={{ color:'#64748b', fontSize:'8px', fontWeight:'900', letterSpacing:'0.6px', margin:'0 0 3px' }}>DATE BASIS</p>
+         <p style={{ color:forecastDatesDerived?'#8a6500':'#166534', fontSize:'10px', fontWeight:'900', lineHeight:1.35, margin:0 }}>{forecastDatesDerived?'Matched from PAGASA weekday sequence and issue/retrieval date':'Official date fields supplied by the source'}</p>
+        </div>
+       </div>
        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))', gap:'8px' }}>
-        {regionalDays.map((day,index)=>(
-         <div key={`${day.day}-${index}`} style={{ background:index===0?'#eef7ff':'#fafafa', border:`1px solid ${index===0?'#8fc9f4':'#e5e5e5'}`, borderRadius:'11px', padding:'11px', minHeight:'175px' }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'5px' }}><p style={{ fontWeight:'900', color:'#1a5276', margin:0, fontSize:'12px' }}>{day.day}</p><span style={{ fontSize:'24px' }}>{getPagasaWeatherIcon(day.condition)}</span></div>
-          <p style={{ color:'#333', fontSize:'10px', lineHeight:1.45, minHeight:'44px', margin:'8px 0' }}>{day.condition}</p>
-          <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'14px', margin:'0 0 5px' }}>{day.min_c ?? '—'}°C – {day.max_c ?? '—'}°C</p>
-          <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Wind: {day.wind_speed || '—'}</p>
-          <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Direction: {day.wind_direction || '—'}</p>
-          <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Coast: {day.coastal_condition || '—'}</p>
-         </div>
-        ))}
+        {regionalDays.map((day,index)=>{
+         const calendarDay = regionalForecastCalendar[index] || {}
+         return (
+          <div key={`${calendarDay.date || day.day}-${index}`} style={{ background:index===0?'#eef7ff':'#fafafa', border:`1px solid ${index===0?'#8fc9f4':'#e5e5e5'}`, borderRadius:'11px', padding:'11px', minHeight:'194px', boxShadow:index===0?'0 3px 10px rgba(26,82,118,0.10)':'none' }}>
+           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'5px' }}>
+            <div>
+             <p style={{ fontWeight:'900', color:'#1a5276', margin:'0 0 2px', fontSize:'12px' }}>{day.day}</p>
+             <p style={{ color:'#334155', fontWeight:'900', margin:0, fontSize:'10px' }}>{calendarDay.exactDateLabel || 'Date unavailable'}</p>
+            </div>
+            <span style={{ fontSize:'24px' }}>{getPagasaWeatherIcon(day.condition)}</span>
+           </div>
+           {calendarDay.relativeLabel && <span style={{ display:'inline-block', background:calendarDay.relativeLabel==='TODAY'?'#1a5276':calendarDay.relativeLabel==='TOMORROW'?'#ca1b1b':'#e8eef3', color:['TODAY','TOMORROW'].includes(calendarDay.relativeLabel)?'white':'#44546a', borderRadius:'12px', padding:'3px 7px', fontSize:'8px', fontWeight:'900', marginTop:'7px' }}>{calendarDay.relativeLabel}</span>}
+           <p style={{ color:'#333', fontSize:'10px', lineHeight:1.45, minHeight:'44px', margin:'8px 0' }}>{day.condition}</p>
+           <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'14px', margin:'0 0 5px' }}>{day.min_c ?? '—'}°C – {day.max_c ?? '—'}°C</p>
+           <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Wind: {day.wind_speed || '—'}</p>
+           <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Direction: {day.wind_direction || '—'}</p>
+           <p style={{ color:'#777', fontSize:'9px', margin:'2px 0' }}>Coast: {day.coastal_condition || '—'}</p>
+          </div>
+         )
+        })}
        </div>
       </div>
 
@@ -40242,21 +40418,29 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
          <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>openPagasaOfficialSource(pagasaRegion1Data?.source_urls?.selected_cities)}>OPEN CITY OUTLOOK</button>
         </div>
         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,1fr)', gap:'9px' }}>
-         {cityForecasts.map(city=>(
-          <div key={city.city} style={{ border:'1px solid #e5e5e5', borderRadius:'11px', padding:'11px' }}>
-           <p style={{ fontWeight:'900', color:'#1a1a2e', margin:'0 0 8px', fontSize:'12px' }}>{city.city}</p>
-           <div style={{ display:'grid', gridTemplateColumns:'repeat(5,minmax(80px,1fr))', gap:'5px', overflowX:'auto' }}>
-            {(city.days || []).slice(0,5).map((day,index)=>(
-             <div key={`${city.city}-${day.day}-${index}`} style={{ background:'#f8f8f8', borderRadius:'8px', padding:'7px', minWidth:'85px' }}>
-              <p style={{ color:'#1a5276', fontWeight:'900', fontSize:'9px', margin:'0 0 3px' }}>{day.day}</p>
-              <p style={{ fontSize:'17px', margin:'0 0 3px' }}>{getPagasaWeatherIcon(day.condition)}</p>
-              <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'10px', margin:'0 0 2px' }}>{day.min_c ?? '—'}–{day.max_c ?? '—'}°C</p>
-              <p style={{ color:'#777', fontSize:'8px', margin:0 }}>Rain: {day.chance_of_rain_pct == null ? '—' : `${day.chance_of_rain_pct}%`}</p>
-             </div>
-            ))}
+         {cityForecasts.map(city=>{
+          const cityDays = (city.days || []).slice(0,5)
+          const cityCalendar = getPagasaForecastCalendar(cityDays, pagasaRegion1Data)
+          return (
+           <div key={city.city} style={{ border:'1px solid #e5e5e5', borderRadius:'11px', padding:'11px' }}>
+            <p style={{ fontWeight:'900', color:'#1a1a2e', margin:'0 0 8px', fontSize:'12px' }}>{city.city}</p>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(5,minmax(88px,1fr))', gap:'5px', overflowX:'auto' }}>
+             {cityDays.map((day,index)=>{
+              const calendarDay = cityCalendar[index] || {}
+              return (
+               <div key={`${city.city}-${calendarDay.date || day.day}-${index}`} style={{ background:'#f8f8f8', borderRadius:'8px', padding:'7px', minWidth:'88px' }}>
+                <p style={{ color:'#1a5276', fontWeight:'900', fontSize:'9px', margin:'0 0 2px' }}>{day.day}</p>
+                <p style={{ color:'#475569', fontWeight:'800', fontSize:'8px', margin:'0 0 3px' }}>{calendarDay.compactDateLabel || '—'}</p>
+                <p style={{ fontSize:'17px', margin:'0 0 3px' }}>{getPagasaWeatherIcon(day.condition)}</p>
+                <p style={{ color:'#ca1b1b', fontWeight:'900', fontSize:'10px', margin:'0 0 2px' }}>{day.min_c ?? '—'}–{day.max_c ?? '—'}°C</p>
+                <p style={{ color:'#777', fontSize:'8px', margin:0 }}>Rain: {day.chance_of_rain_pct == null ? '—' : `${day.chance_of_rain_pct}%`}</p>
+               </div>
+              )
+             })}
+            </div>
            </div>
-          </div>
-         ))}
+          )
+         })}
         </div>
        </div>
       )}
