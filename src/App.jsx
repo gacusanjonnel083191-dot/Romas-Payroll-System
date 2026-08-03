@@ -236,9 +236,237 @@ const ROMAS_ADMIN_VISUAL_CSS = `
   letter-spacing:.045em;
  }
  .romas-dashboard-location { margin-top:4px !important; }
+
+ /* App-wide executive workspace. Screen-only and fully scoped to admin mode. */
+ .romas-admin-content {
+  scrollbar-color:rgba(253,212,18,.55) rgba(15,23,42,.08);
+  scrollbar-width:thin;
+ }
+ .romas-admin-content::-webkit-scrollbar { width:9px; height:9px; }
+ .romas-admin-content::-webkit-scrollbar-track { background:rgba(15,23,42,.08); }
+ .romas-admin-content::-webkit-scrollbar-thumb { background:rgba(202,27,27,.72); border:2px solid transparent; border-radius:999px; background-clip:padding-box; }
+ .romas-admin-page {
+  min-height:100%;
+  padding:12px;
+  border:1px solid rgba(253,212,18,.22);
+  border-radius:12px;
+  background:
+   radial-gradient(circle at 92% -8%,rgba(202,27,27,.20),transparent 27%),
+   radial-gradient(circle at -6% 96%,rgba(253,212,18,.08),transparent 25%),
+   linear-gradient(145deg,#10162a 0%,#171d36 54%,#11172c 100%);
+  box-shadow:0 14px 34px rgba(15,23,42,.16);
+ }
+ .romas-page-dashboard {
+  padding:0;
+  border:0;
+  background:transparent;
+  box-shadow:none;
+ }
+ .romas-admin-page > div { min-width:0; }
+ .romas-admin-page:not(.romas-page-dashboard) > div > h2:first-child {
+  margin:0 0 12px !important;
+  padding:13px 15px !important;
+  color:#fff !important;
+  background:linear-gradient(100deg,#1f2743 0%,#262d4b 72%,#6f1114 150%) !important;
+  border:1px solid rgba(255,255,255,.10);
+  border-left:5px solid var(--romas-gold);
+  border-radius:8px;
+  box-shadow:0 7px 20px rgba(0,0,0,.20);
+  font-size:19px !important;
+  font-weight:950 !important;
+  letter-spacing:.01em !important;
+ }
+ .romas-admin-page:not(.romas-page-dashboard) > div > div:first-child:has(h2) {
+  margin:0 0 12px !important;
+  padding:12px 14px !important;
+  color:#fff;
+  background:linear-gradient(100deg,#1f2743 0%,#262d4b 72%,#6f1114 150%) !important;
+  border:1px solid rgba(255,255,255,.10);
+  border-left:5px solid var(--romas-gold);
+  border-radius:8px;
+  box-shadow:0 7px 20px rgba(0,0,0,.20);
+ }
+ .romas-admin-page:not(.romas-page-dashboard) > div > div:first-child:has(h2) h2 {
+  margin:0 !important;
+  padding:0 !important;
+  color:#fff !important;
+  background:none !important;
+  border:0 !important;
+  box-shadow:none !important;
+  font-size:19px !important;
+  font-weight:950 !important;
+ }
+ .romas-admin-page:not(.romas-page-dashboard) > div > div:first-child:has(h2) p {
+  color:rgba(255,255,255,.66) !important;
+ }
+ .romas-admin-page:not(.romas-page-dashboard) > div > p {
+  color:rgba(255,255,255,.72) !important;
+ }
+ .romas-admin-page :is(input,select,textarea) {
+  border-radius:7px !important;
+  border-color:rgba(148,163,184,.45) !important;
+  box-shadow:inset 0 1px 2px rgba(15,23,42,.04);
+ }
+ .romas-admin-page :is(input,select,textarea):focus {
+  border-color:var(--romas-red) !important;
+  box-shadow:0 0 0 3px rgba(202,27,27,.12) !important;
+ }
+ .romas-admin-page button { line-height:1.2; }
+ .romas-admin-page table {
+  width:100%;
+  border-collapse:separate !important;
+  border-spacing:0 !important;
+  color:#1f2937;
+  background:#fff;
+  border:1px solid rgba(148,163,184,.24);
+  border-radius:8px;
+  box-shadow:0 5px 16px rgba(15,23,42,.08);
+ }
+ .romas-admin-page table thead { position:sticky; top:0; z-index:3; }
+ .romas-admin-page table thead tr { background:linear-gradient(90deg,#141a31,#242b48) !important; }
+ .romas-admin-page table thead th {
+  padding:8px 10px !important;
+  color:#fff !important;
+  background:transparent !important;
+  border-bottom:3px solid var(--romas-gold) !important;
+  font-size:10px !important;
+  font-weight:900 !important;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+ }
+ .romas-admin-page table tbody td {
+  padding-top:7px !important;
+  padding-bottom:7px !important;
+  border-bottom-color:rgba(148,163,184,.22) !important;
+ }
+ .romas-admin-page table tbody tr { transition:filter .14s ease; }
+ .romas-admin-page table tbody tr:hover { filter:brightness(.985); }
+ .romas-module-tabs {
+  display:grid !important;
+  grid-template-columns:repeat(auto-fit,minmax(128px,1fr)) !important;
+  gap:6px !important;
+  padding:8px !important;
+  margin-bottom:12px !important;
+  overflow:visible !important;
+  background:linear-gradient(90deg,#11172c,#222a48) !important;
+  border:1px solid rgba(253,212,18,.28) !important;
+  border-bottom:3px solid var(--romas-gold) !important;
+  border-radius:8px !important;
+  box-shadow:0 6px 18px rgba(0,0,0,.18) !important;
+ }
+ .romas-module-tabs > button {
+  width:100% !important;
+  min-width:0 !important;
+  min-height:36px;
+  margin:0 !important;
+  padding:7px 9px !important;
+  border:1px solid rgba(255,255,255,.12) !important;
+  border-radius:6px !important;
+  white-space:normal !important;
+  line-height:1.2 !important;
+ }
+ .romas-kpi-grid {
+  display:grid !important;
+  grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;
+  gap:8px !important;
+  margin-bottom:12px !important;
+ }
+ .romas-kpi-grid > * {
+  position:relative;
+  min-width:0;
+  min-height:86px;
+  overflow:hidden;
+  border-radius:9px !important;
+  box-shadow:0 6px 16px rgba(0,0,0,.15) !important;
+ }
+ .romas-kpi-grid > *::after {
+  content:"";
+  position:absolute;
+  right:-22px;
+  bottom:-28px;
+  width:76px;
+  height:76px;
+  border-radius:50%;
+  background:var(--romas-gold);
+  opacity:.08;
+  pointer-events:none;
+ }
+ .romas-chart-grid,
+ .romas-panel-grid {
+  display:grid !important;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr)) !important;
+  gap:10px !important;
+  align-items:start;
+  margin-bottom:12px !important;
+ }
+ .romas-chart-grid > *,
+ .romas-panel-grid > * {
+  min-width:0;
+  border-radius:9px !important;
+  box-shadow:0 6px 18px rgba(0,0,0,.14) !important;
+ }
+ .romas-chart-panel {
+  min-width:0;
+  overflow:hidden;
+  background:#fff !important;
+  border:1px solid rgba(253,212,18,.36) !important;
+  border-radius:9px !important;
+  box-shadow:0 6px 18px rgba(0,0,0,.14) !important;
+ }
+ .romas-chart-panel > :is(h3,p):first-child {
+  margin:-16px -16px 12px !important;
+  padding:10px 12px !important;
+  color:#fff !important;
+  background:linear-gradient(90deg,#1a1a2e,#2c3352) !important;
+  border-bottom:3px solid var(--romas-gold);
+  font-size:12px !important;
+  font-weight:900 !important;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+ }
+ .romas-page-analytics svg,
+ .romas-page-sales svg,
+ .romas-page-inventory svg,
+ .romas-page-foundation svg {
+  border-radius:7px;
+  background-image:linear-gradient(rgba(148,163,184,.10) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.10) 1px,transparent 1px);
+  background-size:24px 24px;
+ }
+
+ /* Business Dashboard receives the richest dark executive treatment. */
+ .romas-executive-dashboard {
+  display:flex;
+  flex-direction:column;
+  gap:0;
+ }
+ .romas-dashboard-kpis { grid-auto-rows:1fr; }
+ .romas-dashboard-kpi { min-height:96px; }
+ .romas-dashboard-kpi > p:nth-child(2) { line-height:1; }
+ .romas-dashboard-alert-grid > div {
+  border-radius:8px !important;
+  border-width:1px !important;
+  box-shadow:0 6px 18px rgba(0,0,0,.18) !important;
+ }
+ .romas-dashboard-panel {
+  min-height:214px;
+  color:#fff;
+  background:
+   linear-gradient(rgba(148,163,184,.075) 1px,transparent 1px),
+   linear-gradient(90deg,rgba(148,163,184,.075) 1px,transparent 1px),
+   linear-gradient(145deg,#202741,#171d34) !important;
+  background-size:28px 28px,28px 28px,auto !important;
+  border:1px solid rgba(253,212,18,.26) !important;
+ }
+ .romas-dashboard-panel span { color:rgba(255,255,255,.68) !important; }
+ .romas-dashboard-panel h3 { color:#fff !important; }
+ .romas-dashboard-location {
+  border:1px solid rgba(253,212,18,.42) !important;
+  box-shadow:0 5px 14px rgba(0,0,0,.18) !important;
+ }
 }
 @media (max-width:1100px) {
  .romas-dashboard-kpis { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+ .romas-kpi-grid { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
 }
 @media (max-width:768px) {
  .romas-admin-tabs { grid-template-columns:repeat(2,minmax(0,1fr)); padding:7px 10px !important; }
@@ -252,6 +480,15 @@ const ROMAS_ADMIN_VISUAL_CSS = `
  .romas-dashboard-kpi > p:nth-child(2) { font-size:22px !important; }
  .romas-dashboard-alert-grid,
  .romas-dashboard-chart-grid { grid-template-columns:1fr; }
+ .romas-admin-page { padding:8px; border-radius:9px; }
+ .romas-admin-page:not(.romas-page-dashboard) > div > h2:first-child,
+ .romas-admin-page:not(.romas-page-dashboard) > div > div:first-child:has(h2) { padding:10px 11px !important; }
+ .romas-admin-page:not(.romas-page-dashboard) > div > div:first-child:has(h2) { align-items:flex-start !important; }
+ .romas-module-tabs { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+ .romas-kpi-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:7px !important; }
+ .romas-kpi-grid > * { min-height:78px; }
+ .romas-chart-grid,
+ .romas-panel-grid { grid-template-columns:1fr !important; }
 }
 `
 const lblS = { display:'block', marginBottom:'5px', fontWeight:'700', color:'#555', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px' }
@@ -32118,7 +32355,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
    </div>
 
-   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'8px', marginBottom:'10px' }}>
+   <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : 'repeat(5, 1fr)', gap:'8px', marginBottom:'10px' }}>
     {card('Total POS Sales', php(totalSales), posDate, '#ca1b1b')}
     {card('Cash Sales', php(cashSales), 'Cash collected', '#2d8a4e')}
     {card('GCash Sales', php(gcashSales), 'Digital payment', '#4a90d9')}
@@ -32126,7 +32363,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     {card('Transactions', posSales.length, 'Avg: ' + php(avgSale), '#ca1b1b')}
    </div>
 
-   <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'10px', marginBottom:'10px' }}>
+   <div className="romas-panel-grid" style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1.2fr 1fr', gap:'10px', marginBottom:'10px' }}>
     <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'10px', padding:'7px 9px' }}>
      <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'16px' }}>Top Selling Products</h3>
      {topProducts.length === 0 ? <p style={{ color:'#888', fontSize:'13px' }}>No POS items found for this date.</p> : (
@@ -35045,7 +35282,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <Badge label={getOtUtWarningInfo(otUtAnalytics.totalOTPct).label} color={getOtUtWarningInfo(otUtAnalytics.totalOTPct).color} />
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(6, 1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(6, 1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
   {label:'Approved OT', value:`${Math.round((otUtAnalytics.totalApprovedOTMinutes/60)*10)/10}h`, note:`${otUtAnalytics.approvedOTCount} approved request(s)`, color:'#2d8a4e'},
   {label:'Approved UT', value:`${Math.round((otUtAnalytics.totalApprovedUTMinutes/60)*10)/10}h`, note:`${otUtAnalytics.approvedUTCount} approved request(s)`, color:'#f5a623'},
@@ -35062,7 +35299,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  ))}
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+ <div className="romas-panel-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
  <div style={{ border:'1px solid #e5f3e9', borderRadius:'12px', overflow:'hidden' }}>
  <div style={{ background:'#e8f5e9', color:'#2d8a4e', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Top 5 Employees With Most OT</div>
  {otUtAnalytics.topOT.length===0? <p style={{ margin:'12px', color:'#888', fontSize:'12px' }}>No approved overtime in this view.</p>:
@@ -35299,7 +35536,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {attendanceReconRows.length>0 && (
  <>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px', margin:'14px 0 12px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px', margin:'14px 0 12px' }}>
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Employees Audited</p><strong>{attendanceReconSummary.employees}</strong></div>
  <div style={{ background:'white', border:'1px solid #ffd6d6', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Ready for Correction</p><strong style={{ color:'#ca1b1b' }}>{attendanceReconSummary.ready}</strong></div>
  <div style={{ background:'white', border:'1px solid #ffd6d6', borderRadius:'10px', padding:'10px' }}><p style={{ margin:'0 0 3px', color:'#777', fontSize:'11px' }}>Total Missing Deduction</p><strong style={{ color:'#ca1b1b' }}>{php(attendanceReconSummary.missingAmount)}</strong></div>
@@ -35589,7 +35826,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  </div>
  {payrollReadiness && (
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px', marginBottom:(payrollReadiness.attendanceExceptions || []).length>0?'12px':'0' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'8px', marginBottom:(payrollReadiness.attendanceExceptions || []).length>0?'12px':'0' }}>
  {[['Active Employees',payrollReadiness.activeEmployeeCount||0],['Payroll Rows',payrollReadiness.payrollRecordCount||0],['Ready Employees',payrollReadiness.readyPayrollEmployeeCount||0],['Attendance Holds',(payrollReadiness.attendanceExceptions||[]).length],['Missing Rows',(payrollReadiness.missingEmployees||[]).length]].map(([label,value])=>(
  <div key={label} style={{ background:'white', border:'1px solid #eee', borderRadius:'9px', padding:'9px' }}><div style={{ fontSize:'10px', color:'#888' }}>{label}</div><div style={{ fontWeight:'900', color:value>0&&['Attendance Holds','Missing Rows'].includes(label)?'#ca1b1b':'#1a1a2e' }}>{value}</div></div>
  ))}
@@ -35734,7 +35971,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {!cashAdvanceCoverageLoading && cashAdvanceCoverageSummary && (
  <>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'10px', marginBottom:'16px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'10px', marginBottom:'16px' }}>
  {[
  ['Payroll Records', cashAdvanceCoverageSummary.payrollRecordCount],
  ['Employees w/ CA', cashAdvanceCoverageSummary.employeeCount],
@@ -35913,7 +36150,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {historyRecords.length>0 && (
  <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'16px', marginBottom:'16px' }}>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 10px', fontSize:'14px' }}> Period Summary</h3>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px' }}>
  {[
  ['Employees', historyRecords.length],
  ['Total Earnings', 'PHP '+historyRecords.reduce((s,r)=>s+Number(r.total_earnings||0),0).toFixed(2)],
@@ -36282,7 +36519,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Summary Cards */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'20px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'20px' }}>
  {[
  { name:'SSS', emp: remittanceData.sss.totalEmployee, employer: remittanceData.sss.totalEmployer, count: remittanceData.sss.list.length },
  { name:'Pag-IBIG', emp: remittanceData.pagibig.totalEmployee, employer: remittanceData.pagibig.totalEmployer, count: remittanceData.pagibig.list.length },
@@ -36603,7 +36840,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  <Badge label="PENDING REVIEW" color="orange" />
  </div>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', margin:'10px 0' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', margin:'10px 0' }}>
  {[
   ['Requested Amount', php(req.amount)],
   ['Payroll Deductions', `${deductionCount} cutoff(s)`],
@@ -36753,7 +36990,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const missingCount = Math.max(0, employeeBankRows.length - completeCount)
    const changedCount = employeeBankRows.filter(isEmployeeBankDraftChanged).length
    return (
-    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginBottom:showEmployeeBankMaster?'12px':0 }}>
+    <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginBottom:showEmployeeBankMaster?'12px':0 }}>
      {[
       ['Active Employees', employeeBankRows.length, '#1a1a2e'],
       ['Complete Accounts', completeCount, '#2d8a4e'],
@@ -36945,7 +37182,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginTop:0, opacity:autoContractGenerating?0.7:1 }} disabled={autoContractGenerating} onClick={()=>autoGenerateMissingContracts({ silent:false })}>{autoContractGenerating? 'GENERATING...': 'GENERATE MISSING / DUE CONTRACTS'}</button>
  </div>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
  <div style={{ background:'#fff8dc', borderRadius:'12px', padding:'12px', border:'1px solid #f5c518' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'11px', fontWeight:'bold' }}>MISSING CONTRACTS</p><p style={{ margin:0, color:'#ca1b1b', fontSize:'22px', fontWeight:'900' }}>{missingContracts.length}</p></div>
  <div style={{ background:'#fff5f5', borderRadius:'12px', padding:'12px', border:'1px solid #ffcdd2' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'11px', fontWeight:'bold' }}>DUE FOR REVIEW</p><p style={{ margin:0, color:'#ca1b1b', fontSize:'22px', fontWeight:'900' }}>{dueForReview.length}</p></div>
  <div style={{ background:'#fff8dc', borderRadius:'12px', padding:'12px', border:'1px solid #f5a623' }}><p style={{ margin:'0 0 4px', color:'#888', fontSize:'11px', fontWeight:'bold' }}>REVIEW WITHIN 30 DAYS</p><p style={{ margin:0, color:'#f5a623', fontSize:'22px', fontWeight:'900' }}>{reviewSoon.length}</p></div>
@@ -37161,7 +37398,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Documents Center Sub-Navigation */}
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'16px', background:'linear-gradient(90deg,#fff8dc,#ffffff)', padding:'10px', borderRadius:'14px', border:'1px solid rgba(202,27,27,0.22)', borderTop:'4px solid #ca1b1b', boxShadow:'0 4px 14px rgba(26,26,46,0.06)' }}>
+ <div className="romas-module-tabs" style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'16px', background:'linear-gradient(90deg,#fff8dc,#ffffff)', padding:'10px', borderRadius:'14px', border:'1px solid rgba(202,27,27,0.22)', borderTop:'4px solid #ca1b1b', boxShadow:'0 4px 14px rgba(26,26,46,0.06)' }}>
   <button
    onClick={()=>setDocumentCenterView('forms')}
    style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='forms'?'#ca1b1b':'#f4f4f4', color:documentCenterView==='forms'?'white':'#555', boxShadow:documentCenterView==='forms'?'0 2px 8px rgba(202,27,27,0.25)':'none' }}
@@ -37540,7 +37777,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Inventory Sub-Navigation */}
- <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'16px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+ <div className="romas-module-tabs" style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'16px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  {[
  ['items',' Items'],
  ['adjust',' Adjust Stock'],
@@ -38295,7 +38532,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Stat Cards Row */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
  { label:' Total Items', value:inventoryItems.length, sub:`${INVENTORY_CATEGORIES.filter(c=>inventoryItems.some(i=>i.category===c)).length} categories`, color:'#4a90d9', bg:'#e8f0fe' },
  { label:' Low Stock', value:lowStock.length, sub:lowStock.length>0?'Need reorder':'All good!', color:lowStock.length>0?'#ca1b1b':'#2d8a4e', bg:lowStock.length>0?'#fff5f5':'#f0fff4' },
@@ -38311,7 +38548,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Charts Row */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
+ <div className="romas-chart-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'14px', marginBottom:'14px' }}>
 
  {/* Stock Value by Category - Bar Chart */}
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'16px' }}>
@@ -39588,7 +39825,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Sub-navigation */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(6,1fr)', gap:'8px', marginBottom:'20px' }}>
+ <div className="romas-module-tabs" style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(6,1fr)', gap:'8px', marginBottom:'20px' }}>
  {[['dashboard','Dashboard'],['recipes','Product Cost'],['settings','Cost Allocation'],['profiles','Cost Profiles'],['analysis','Cost Analysis'],['production','Production']].map(([v,l])=>(
  <button key={v} onClick={()=>setCostingView(v)} style={{ padding:'10px', borderRadius:'10px', border:`2px solid ${costingView===v?'#ca1b1b':'#ddd'}`, background:costingView===v?'#ca1b1b':'white', color:costingView===v?'white':'#555', fontWeight:'bold', fontSize:'12px', cursor:'pointer' }}>{l}</button>
  ))}
@@ -39629,7 +39866,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    </div>
   </div>
 
-  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'9px', marginBottom:'14px' }}>
+  <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'9px', marginBottom:'14px' }}>
    {[
     ['Daily Labor',php(fin.dailyLabor),'#7b4f9e',`${php(fin.laborPerPiece)}/normal piece`],
     ['Daily Operating OPEX',php(fin.dailyOperatingCost),'#4a90d9',`${php(fin.operatingCostPerPiece)}/normal piece`],
@@ -40355,7 +40592,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
 
  {/* Sub-navigation */}
- <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
+ <div className="romas-module-tabs" style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletSummary','\uD83C\uDFEA Outlet Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
  <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
@@ -40700,7 +40937,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  </div>
  {/* P&L Cards */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
  { label:'Total COGS', value:php(financialData.totalCOGS), color:'#ca1b1b', sub:`Product ${php(financialData.directProductCOGS||0)} + Labor ${php(financialData.productionLaborCOGS||0)} | ${financialData.cogsSource || 'No source yet'}` },
  { label:'Gross Profit', value:php(financialData.grossProfit), color:financialData.grossProfit>=0?'#2d8a4e':'#ca1b1b', sub:`${financialData.grossMarginPct.toFixed(1)}% margin` },
@@ -42651,7 +42888,7 @@ onClick={async ()=>{
  const collectedToday = deliveryInvoices.filter(i=>i.paid_date===today).reduce((s,i)=>s+moneyRound(i.paid_amount||0),0)
  const collectedMonth = deliveryInvoices.filter(i=>i.paid_date?.startsWith(today.slice(0,7))).reduce((s,i)=>s+moneyRound(i.paid_amount||0),0)
  return (
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'10px', marginBottom:'16px' }}>
  {[
  ['Total Outstanding', php(totalAR), '#ca1b1b', `${outstanding.length} invoices`],
  ['Overdue', php(overdueAR), overdueAR>0?'#ca1b1b':'#2d8a4e', `${overdue.length} past due`],
@@ -43674,7 +43911,7 @@ onClick={async ()=>{
  </div>
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'10px', marginBottom:'14px' }}>
  {executive.kpiCards.map(card => (
  <div key={card.label} style={{ background:'white', color:'#222', borderRadius:'14px', padding:'12px', border:`2px solid ${card.color}` }}>
  <p style={{ margin:'0 0 4px', color:'#777', fontSize:'10px', textTransform:'uppercase', fontWeight:'900' }}>{card.icon} {card.label}</p>
@@ -44936,7 +45173,7 @@ onClick={async ()=>{
  return (
  <div>
  {/* Summary Cards */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'20px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'20px' }}>
  {[
  ['Total Revenue',php(totalRevenue),'#ca1b1b',' '],
  ['Total Collected',php(totalPaid),'#2d8a4e',' '],
@@ -44951,7 +45188,7 @@ onClick={async ()=>{
  </div>
 
  {/* Revenue Trend Chart */}
- <div style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
+ <div className="romas-chart-panel" style={{ background:'white', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 2px 10px rgba(0,0,0,0.07)' }}>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'13px', margin:'0 0 12px' }}> Daily Revenue Last 30 Days</p>
  <div style={{ overflowX:'auto' }}>
  <svg width={Math.max(600,revenueByDay.length*22)} height="160" style={{ display:'block' }}>
@@ -45134,7 +45371,7 @@ onClick={async ()=>{
  </div>
  )}
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'10px', marginBottom:'14px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
  ['Total Recipes', recipeVaultStats.total, '#1a1a2e', 'all'],
  ['Active', recipeVaultStats.active, '#2d8a4e', 'active'],
@@ -45149,7 +45386,7 @@ onClick={async ()=>{
  ))}
  </div>
 
- <div style={{ background:'white', borderRadius:'14px', padding:'12px', marginBottom:'14px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <div className="romas-module-tabs" style={{ background:'white', borderRadius:'14px', padding:'12px', marginBottom:'14px', display:'flex', gap:'8px', flexWrap:'wrap' }}>
  {[
  ['dashboard','Dashboard'],['recipes','Recipe List'],['template','Costing Template Guide']
  ].map(([key,label])=>(
@@ -45379,7 +45616,7 @@ onClick={async ()=>{
  </div>
  )}
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'16px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'16px' }}>
  {[
  { label:'Total SOPs', value:sopStats.total, color:'#1a1a2e', status:'all', ackOnly:false },
  { label:'Active', value:sopStats.active, color:'#2d8a4e', status:'active', ackOnly:false },
@@ -45395,7 +45632,7 @@ onClick={async ()=>{
  ))}
  </div>
 
- <div style={{ background:'white', borderRadius:'14px', padding:'10px', marginBottom:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)', display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <div className="romas-module-tabs" style={{ background:'white', borderRadius:'14px', padding:'10px', marginBottom:'16px', boxShadow:'0 2px 8px rgba(0,0,0,0.05)', display:'flex', gap:'8px', flexWrap:'wrap' }}>
  {[
  ['dashboard','Dashboard'],
  ['library','SOP Library'],
@@ -45685,7 +45922,7 @@ onClick={async ()=>{
  <div>
  <h2 style={h2s}> Franchise Management</h2>
  {/* Summary */}
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'16px' }}>
+ <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)', gap:'12px', marginBottom:'16px' }}>
  {[
  ['Total Franchises',franchises.length,'#4a90d9'],
  ['Active',franchises.filter(f=>f.status==='active').length,'#2d8a4e'],
