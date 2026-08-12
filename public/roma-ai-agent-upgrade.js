@@ -3,7 +3,7 @@
   if (window.__ROMA_AI_AGENT_UPGRADE__) return
   window.__ROMA_AI_AGENT_UPGRADE__ = true
 
-  const VERSION = '2026.08.13.1-weather'
+  const VERSION = '2026.08.13.2-weather'
   const previousFetch = window.fetch.bind(window)
   const fallbackStatuses = new Set([408, 425, 429, 500, 502, 503, 504])
   let weatherContextUntil = 0
@@ -27,26 +27,30 @@
     const q = String(message || '').toLowerCase()
     if (!q) return false
     const weather = /\b(weather|pagasa|forecast|rain|rainfall|thunderstorm|storm|bagyo|ulan|panahon|habagat|red|yellow|green)\b/i.test(q)
-    const weatherFollowup = Date.now() < weatherContextUntil && /^(how about|what about|paano naman|kumusta naman|dagupan|calasiao|binmaley|mangaldan|san |santa |santo )/i.test(q)
+    const weatherFollowup = Date.now() < weatherContextUntil && /^(how about|what about|paano naman|kumusta naman|same|and tomorrow|tomorrow|bukas|dagupan|calasiao|binmaley|mangaldan|san |santa |santo )/i.test(q)
     const crossModule = /\b(production|produce|sales|expense|delivery|deliveries|outlet|inventory|stock|payroll|costing|pricing|reseller|employee|staff|business impact|forecast production)\b/i.test(q)
     const modification = /\b(fix|debug|repair|modify|edit|delete|remove|deploy|redesign|replace)\b/i.test(q) || /\b(change|update)\s+(the\s+)?(code|system|app|module|button|layout|logic|database)\b/i.test(q)
     return (weather || weatherFollowup) && !crossModule && !modification
   }
 
-  async function refreshWeatherIfNeeded(init) {
-    const message = messageFromRequest(init)
-    if (!isPureWeatherQuestion(message)) return
-    weatherContextUntil = Date.now() + 15 * 60 * 1000
-    try {
-      const headers = new Headers(init?.headers || {})
-      headers.set('Content-Type','application/json')
-      await previousFetch('/api/roma-ai-weather-refresh', {
-        method:'POST',
-        headers,
-        body:'{}',
-        cache:'no-store'
-      })
-    } catch { /* stale-cache fallback remains available */ }
+  function showVerifiedWeatherMode() {
+    setTimeout(() => {
+      const mode = document.querySelector('#roma-ai-root .rai-mode')
+      if (mode) mode.textContent = 'Verified live PAGASA · business engine'
+    }, 120)
+  }
+
+  async function askVerifiedWeather(init) {
+    const headers = new Headers(init?.headers || {})
+    headers.set('Content-Type','application/json')
+    const response = await previousFetch('/api/roma-ai-weather-refresh', {
+      method:'POST',
+      headers,
+      body:typeof init?.body === 'string' ? init.body : '{}',
+      cache:'no-store'
+    })
+    if (response.ok) showVerifiedWeatherMode()
+    return response
   }
 
   function fallbackResponse(payload = {}, originalStatus = 0) {
@@ -65,7 +69,19 @@
 
   window.fetch = async function romaAiAgentFetch(input, init) {
     if (!isLegacyRomaApi(input)) return previousFetch(input, init)
-    await refreshWeatherIfNeeded(init)
+
+    const message = messageFromRequest(init)
+    if (isPureWeatherQuestion(message)) {
+      weatherContextUntil = Date.now() + 15 * 60 * 1000
+      try {
+        const weatherResponse = await askVerifiedWeather(init)
+        if (weatherResponse.ok) return weatherResponse
+        let weatherPayload = {}
+        try { weatherPayload = await weatherResponse.clone().json() } catch {}
+        if (!weatherPayload?.fallbackAvailable) return weatherResponse
+      } catch { /* continue to normal Roma AI + verified fallback */ }
+    }
+
     const raw = typeof input === 'string' ? input : input.url
     const url = new URL(raw, window.location.href)
     url.pathname = '/api/roma-ai-v2'
