@@ -28405,13 +28405,17 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  async function exportPayrollToExcel(records, start, end) {
  if (!records.length) { showToast('No records to export.', 'red'); return }
 
- const exportRows = records.map(record => ({
+ // RCBC credits only positive amounts. Zero- and negative-net-pay payroll rows
+ // are not payment instructions and must never enter bank-file validation.
+ const exportRows = records
+  .filter(record => Number(record.net_pay ?? record.netPay ?? 0) > 0)
+  .map(record => ({
   employeeName:String(record.employee_name || record.employeeName || '').trim(),
   employeeCode:String(record.employee_code || record.employeeCode || '').trim(),
   bankAccount:normalizeBankAccountForExport(record.bankAccount || record.bank_account_number || ''),
   bankAccountName:String(record.bankAccountName || record.bank_account_name || record.employee_name || record.employeeName || '').trim(),
   netPay:Number(record.net_pay ?? record.netPay ?? 0)
- }))
+  }))
  const validation = getRCBCExportReadiness(exportRows)
  if (validation.blockingInvalidRows.length || validation.duplicateNames.length) {
   const rowErrors = validation.blockingInvalidRows.slice(0, 5).map(({ row, error }) => `${row.employeeName || row.employeeCode || 'Employee'} (${error})`)
