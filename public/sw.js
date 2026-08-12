@@ -1,10 +1,10 @@
 // Roma's Donuts - Service Worker
-const CACHE_NAME = 'romas-payroll-v2-roma-ai-20260813-01-weather'
+const CACHE_NAME = 'romas-payroll-v2-roma-ai-20260813-02-weather'
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/logo.png',
-  '/roma-ai-agent-upgrade.js?v=2026.08.13.1-weather',
+  '/roma-ai-agent-upgrade.js?v=2026.08.13.2-weather',
 ]
 
 self.addEventListener('install', event => {
