@@ -1,5 +1,5 @@
 // Roma's Donuts - Service Worker
-const CACHE_NAME = 'romas-payroll-v2-roma-ai'
+const CACHE_NAME = 'romas-payroll-v2-roma-ai-20260812-13'
 const STATIC_ASSETS = [
   '/',
   '/index.html',
