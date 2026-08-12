@@ -28343,8 +28343,78 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  showToast(`Downloaded ${records.length} payslip${records.length === 1 ? '' : 's'} as a Word file.`)
  }
 
- function exportPayrollToExcel(records, start, end) {
+ async function exportPayrollToExcel(records, start, end) {
  if (!records.length) { showToast('No records to export.', 'red'); return }
+
+ // Saved payroll-history rows do not include bank details. Hydrate only the
+ // missing values so both payroll export buttons apply the same RCBC checks.
+ const employeeIds = [...new Set(records
+  .filter(record => !normalizeBankAccountForExport(record.bankAccount || record.bank_account_number))
+  .map(record => record.employee_id || record.employeeId)
+  .filter(Boolean)
+  .map(String))]
+ const employeeLookup = {}
+ if (employeeIds.length > 0) {
+  const { data:employeeRows, error:employeeError } = await supabase
+   .from('employees')
+   .select('id,full_name,bank_account_number,bank_account_name')
+   .in('id', employeeIds)
+  if (employeeError) {
+   showToast(`Payroll Excel not created: employee account details could not be loaded. ${employeeError.message}`, 'red')
+   return
+  }
+  ;(employeeRows || []).forEach(employee => { employeeLookup[String(employee.id)] = employee })
+ }
+
+ const normalizedRows = records.map(record => {
+  const employee = employeeLookup[String(record.employee_id || record.employeeId || '')] || {}
+  const employeeName = String(
+   record.employee_name ||
+   record.employeeName ||
+   employee.full_name ||
+   'Unnamed employee'
+  ).trim()
+  const accountNumber = normalizeBankAccountForExport(
+   record.bankAccount ||
+   record.bank_account_number ||
+   employee.bank_account_number ||
+   ''
+  )
+  const accountName = String(
+   record.bankAccountName ||
+   record.bank_account_name ||
+   employee.bank_account_name ||
+   employeeName
+  ).trim()
+  const rawAmount = Number(record.net_pay ?? record.netPay ?? 0)
+  const amount = Number.isFinite(rawAmount) ? Number(rawAmount.toFixed(2)) : NaN
+  return { employeeName, accountNumber, accountName, amount }
+ })
+
+ const invalidAmountRows = normalizedRows.filter(row => !Number.isFinite(row.amount) || row.amount <= 0)
+ const missingAccountRows = normalizedRows.filter(row => Number.isFinite(row.amount) && row.amount > 0 && !row.accountNumber)
+ const exportRows = normalizedRows.filter(row => Number.isFinite(row.amount) && row.amount > 0 && row.accountNumber)
+
+ if (exportRows.length === 0) {
+  const skippedNames = [...invalidAmountRows, ...missingAccountRows].map(row => row.employeeName).join(', ')
+  showToast(`Payroll Excel not created: no RCBC-valid rows. Skipped: ${skippedNames || 'all employees'}.`, 'red')
+  return
+ }
+
+ const accountOwners = {}
+ const duplicateNames = new Set()
+ exportRows.forEach(row => {
+  if (accountOwners[row.accountNumber]) {
+   duplicateNames.add(accountOwners[row.accountNumber])
+   duplicateNames.add(row.employeeName)
+  } else {
+   accountOwners[row.accountNumber] = row.employeeName
+  }
+ })
+ if (duplicateNames.size > 0) {
+  showToast(`Payroll Excel blocked: duplicate account number detected for ${[...duplicateNames].join(', ')}.`, 'red')
+  return
+ }
 
  const escapeXml = value => String(value ?? '')
   .replace(/&/g, '&amp;')
@@ -28354,29 +28424,9 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   .replace(/'/g, '&apos;')
  const textCell = (reference, value, style = '') => `<c r="${reference}" t="inlineStr"${style}><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`
 
- const rows = records.map((record, index) => {
-  const accountNumber = String(
-   record.bankAccount ||
-   record.bank_account_number ||
-   ''
-  ).trim()
-
-  const amount = Number(
-   record.net_pay ??
-   record.netPay ??
-   0
-  )
-
-  const accountName = String(
-   record.bankAccountName ||
-   record.bank_account_name ||
-   record.employee_name ||
-   record.employeeName ||
-   ''
-  ).trim()
-
+ const rows = exportRows.map((record, index) => {
   const rowNumber = index + 2
-  return `<row r="${rowNumber}">${textCell(`A${rowNumber}`, accountNumber)}<c r="B${rowNumber}" s="2"><v>${Number.isFinite(amount) ? amount : 0}</v></c>${textCell(`C${rowNumber}`, accountName)}</row>`
+  return `<row r="${rowNumber}">${textCell(`A${rowNumber}`, record.accountNumber)}<c r="B${rowNumber}" s="2"><v>${record.amount}</v></c>${textCell(`C${rowNumber}`, record.accountName)}</row>`
  })
 
  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">${textCell('A1', 'Account number', ' s="1"')}${textCell('B1', 'Amount', ' s="1"')}${textCell('C1', 'Name', ' s="1"')}</row>${rows.join('')}</sheetData></worksheet>`
@@ -28398,7 +28448,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  a.click()
  a.remove()
  URL.revokeObjectURL(url)
- showToast('Payroll Excel exported: Account number, Amount, and Name only.')
+ const skippedParts = []
+ if (invalidAmountRows.length > 0) skippedParts.push(`zero/invalid amount: ${invalidAmountRows.map(row => row.employeeName).join(', ')}`)
+ if (missingAccountRows.length > 0) skippedParts.push(`missing account number: ${missingAccountRows.map(row => row.employeeName).join(', ')}`)
+ showToast(`Payroll Excel exported: ${exportRows.length} RCBC-valid employee(s).${skippedParts.length > 0 ? ` Skipped ${invalidAmountRows.length + missingAccountRows.length} (${skippedParts.join(' | ')}).` : ''}`)
  }
 
  async function sendPayslipSmsNotifications(start = payrollStart, end = payrollEnd, options = {}) {
