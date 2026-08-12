@@ -1,6 +1,7 @@
 import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { createClient } from '@supabase/supabase-js'
+import { strToU8, zipSync } from 'fflate'
 
 const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
 const supabaseKey = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlYmJ1bmxuemtsYXZra3VndHpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMTU5MDgsImV4cCI6MjA5NDU5MTkwOH0.mdgYJBoRvHQcf-Tn-1AbTN-rnB5pPxOCSTxGlUrgJpg`
@@ -28342,29 +28343,18 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  showToast(`Downloaded ${records.length} payslip${records.length === 1 ? '' : 's'} as a Word file.`)
  }
 
- function exportPayrollToCSV(records, start, end) {
+ function exportPayrollToExcel(records, start, end) {
  if (!records.length) { showToast('No records to export.', 'red'); return }
 
- // Bank-upload CSV contract:
- // 1. The file contains exactly three columns.
- // 2. Column order is Account number, Amount, Name.
- // 3. No totals row is added.
- // 4. No payroll-period columns are added.
- // 5. No earnings or deduction breakdown is added.
- // 6. Account numbers are exported as quoted text.
- // 7. Quoting preserves leading zeroes in raw CSV data.
- // 8. Amount always uses two decimal places.
- // 9. Amount is based on final net pay.
- // 10. Name prefers the saved bank account name.
- // 11. Employee name is used only as a fallback.
- // 12. Missing account numbers remain blank for review.
- // 13. Every cell is escaped using standard CSV quoting.
- // 14. Windows-compatible CRLF line endings are used.
- // 15. The file has no blank separator rows.
- // 16. The file has no summary or metadata rows.
- const headers = ['Account number','Amount','Name']
+ const escapeXml = value => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&apos;')
+ const textCell = (reference, value, style = '') => `<c r="${reference}" t="inlineStr"${style}><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`
 
- const rows = records.map(record => {
+ const rows = records.map((record, index) => {
   const accountNumber = String(
    record.bankAccount ||
    record.bank_account_number ||
@@ -28375,7 +28365,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    record.net_pay ??
    record.netPay ??
    0
-  ).toFixed(2)
+  )
 
   const accountName = String(
    record.bankAccountName ||
@@ -28385,23 +28375,30 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    ''
   ).trim()
 
-  return [accountNumber, amount, accountName]
+  const rowNumber = index + 2
+  return `<row r="${rowNumber}">${textCell(`A${rowNumber}`, accountNumber)}<c r="B${rowNumber}" s="2"><v>${Number.isFinite(amount) ? amount : 0}</v></c>${textCell(`C${rowNumber}`, accountName)}</row>`
  })
 
- const csvContent = [headers, ...rows]
-  .map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
-  .join('\r\n')
+ const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">${textCell('A1', 'Account number', ' s="1"')}${textCell('B1', 'Amount', ' s="1"')}${textCell('C1', 'Name', ' s="1"')}</row>${rows.join('')}</sheetData></worksheet>`
+ const workbookFiles = {
+  '[Content_Types].xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'),
+  '_rels/.rels': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
+  'xl/workbook.xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Payroll" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+  'xl/_rels/workbook.xml.rels': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),
+  'xl/styles.xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs></styleSheet>'),
+  'xl/worksheets/sheet1.xml': strToU8(worksheet)
+ }
 
- const blob = new Blob([csvContent], { type:'text/csv;charset=utf-8;' })
+ const blob = new Blob([zipSync(workbookFiles)], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
  const url = URL.createObjectURL(blob)
  const a = document.createElement('a')
  a.href = url
- a.download = `Payroll_${start}_to_${end}.csv`
+ a.download = `Payroll_${start}_to_${end}.xlsx`
  document.body.appendChild(a)
  a.click()
  a.remove()
  URL.revokeObjectURL(url)
- showToast('Payroll CSV exported: Account number, Amount, and Name only.')
+ showToast('Payroll Excel exported: Account number, Amount, and Name only.')
  }
 
  async function sendPayslipSmsNotifications(start = payrollStart, end = payrollEnd, options = {}) {
@@ -35807,7 +35804,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <button style={{ background:'#b45309', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }} onClick={()=>reopenReleasedPayroll(payrollStart, payrollEnd)}> REOPEN RELEASED PAYROLL</button>
  )}
  <button style={{...btnGreen, width:'auto', padding:'12px 22px', marginTop:0 }} onClick={printAllPayslips} disabled={payrollResults.length===0}> PRINT ALL</button>
- <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToCSV(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT CSV</button>
+ <button style={{ background:'#4a90d9', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>exportPayrollToExcel(payrollResults, payrollStart, payrollEnd)} disabled={payrollResults.length===0}> EXPORT EXCEL</button>
  <button style={{ background:'#1a1a2e', color:'white', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:(payrollResults.length===0 || processingItems[`release_payroll_${payrollStart}_${payrollEnd}`])?0.5:1 }} onClick={()=>approvePayroll(payrollStart, payrollEnd)} disabled={payrollResults.length===0 || !!processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]}>{processingItems[`release_payroll_${payrollStart}_${payrollEnd}`]?' RELEASING...':' RELEASE FINAL PAYROLL'}</button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'12px 22px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0, opacity:payrollResults.length===0?0.5:1 }} onClick={()=>handleManualPayrollExpensePost(payrollStart, payrollEnd)} disabled={payrollResults.length===0}> POST PAYROLL TO EXPENSES</button>
  </div>
@@ -36173,8 +36170,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  PRINT ALL PAYSLIPS
  </button>
  <button style={{...btnBlack, width:'auto', padding:'10px 18px', marginTop:0 }}
- onClick={()=>exportPayrollToCSV(historyRecords, selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
- EXPORT TO CSV
+ onClick={()=>exportPayrollToExcel(historyRecords, selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
+ EXPORT TO EXCEL
  </button>
  <button style={{ background:'#f5a623', color:'#1a1a2e', padding:'10px 18px', border:'none', borderRadius:'10px', cursor:'pointer', fontWeight:'bold', fontSize:'13px', marginTop:0 }}
  onClick={()=>handleManualPayrollExpensePost(selectedHistoryPeriod.start, selectedHistoryPeriod.end)}>
