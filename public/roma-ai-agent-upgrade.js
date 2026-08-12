@@ -1,0 +1,84 @@
+(() => {
+  'use strict'
+  if (window.__ROMA_AI_AGENT_UPGRADE__) return
+  window.__ROMA_AI_AGENT_UPGRADE__ = true
+
+  const VERSION = '2026.08.12.20-agent'
+  const previousFetch = window.fetch.bind(window)
+
+  function isLegacyRomaApi(input) {
+    try {
+      const raw = typeof input === 'string' ? input : input?.url || ''
+      const url = new URL(raw, window.location.href)
+      return url.origin === window.location.origin && url.pathname === '/api/roma-ai'
+    } catch { return false }
+  }
+
+  window.fetch = function romaAiAgentFetch(input, init) {
+    if (!isLegacyRomaApi(input)) return previousFetch(input, init)
+    const raw = typeof input === 'string' ? input : input.url
+    const url = new URL(raw, window.location.href)
+    url.pathname = '/api/roma-ai-v2'
+    if (typeof input === 'string') return previousFetch(url.pathname + url.search, init)
+    return previousFetch(new Request(url.toString(), input), init)
+  }
+
+  async function token() {
+    const bridge = window.__ROMA_AI_BRIDGE__
+    const { data } = await bridge?.supabase?.auth?.getSession?.() || {}
+    return data?.session?.access_token || ''
+  }
+
+  async function developer(action, changeRequestId) {
+    const t = await token()
+    if (!t) throw new Error('login_session_required')
+    const r = await previousFetch('/api/roma-ai-developer', {
+      method: action ? 'POST' : 'GET',
+      headers: { Authorization: `Bearer ${t}`, ...(action ? {'Content-Type':'application/json'} : {}) },
+      body: action ? JSON.stringify({ action, changeRequestId }) : undefined
+    })
+    const p = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(p?.error || `developer_broker_${r.status}`)
+    return p
+  }
+
+  async function providerMeta() {
+    const r = await previousFetch('/api/roma-ai-v2', { cache:'no-store' })
+    return r.json().catch(() => ({}))
+  }
+
+  function enhance(root) {
+    if (!root || root.dataset.agentUpgrade === VERSION) return
+    root.dataset.agentUpgrade = VERSION
+    const title = root.querySelector('.rai-title span')
+    if (title) title.textContent = `Business & System Assistant · ${VERSION}`
+    const mode = root.querySelector('.rai-mode')
+    providerMeta().then(meta => {
+      if (!mode) return
+      if (meta?.providerConfigured) mode.textContent = 'Full AI brain + verified business tools'
+      else mode.textContent = 'Verified business engine · Full AI awaiting provider activation'
+    }).catch(() => {})
+
+    const chips = root.querySelector('.rai-chips')
+    if (chips && !chips.querySelector('[data-agent-chip="system-doctor"]')) {
+      const doctor = document.createElement('button')
+      doctor.className = 'rai-chip'
+      doctor.dataset.agentChip = 'system-doctor'
+      doctor.textContent = 'System Doctor'
+      doctor.addEventListener('click', () => {
+        const input = root.querySelector('textarea')
+        if (!input) return
+        input.value = 'Inspect the current screen and system context. Tell me what is wrong, why it is happening, and prepare a safe fix if needed.'
+        input.dispatchEvent(new Event('input', { bubbles:true }))
+        input.focus()
+      })
+      chips.appendChild(doctor)
+    }
+  }
+
+  const observer = new MutationObserver(() => enhance(document.getElementById('roma-ai-root')))
+  observer.observe(document.documentElement, { childList:true, subtree:true })
+  enhance(document.getElementById('roma-ai-root'))
+
+  window.__ROMA_AI_AGENT__ = Object.freeze({ version:VERSION, providerMeta, developer })
+})()
