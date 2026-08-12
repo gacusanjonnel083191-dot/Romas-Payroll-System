@@ -7490,6 +7490,35 @@ export default function App() {
  return false
  }
 
+ // Roma AI is loaded as an additive module from /public so it can be restored or
+ // upgraded without replacing this large business application. The bridge exposes
+ // the existing authenticated Supabase client and the minimum live session context
+ // needed for role-aware, read-only business answers and audited staff requests.
+ useEffect(() => {
+  if (typeof window === 'undefined') return undefined
+  window.__ROMA_AI_BRIDGE__ = {
+   version:'2026.08.12.10-restored',
+   supabase,
+   getContext:() => ({
+    adminMode:!!adminMode,
+    role:normalizeAdminRole(adminRole) || (employee ? 'employee' : 'guest'),
+    isOwner:isOwnerRole,
+    userId:adminAuthUser?.id || adminEmployee?.id || employee?.id || null,
+    userName:currentAdminLabel || employee?.full_name || 'User',
+    employeeId:employee?.id || null,
+    employeeName:employee?.full_name || null,
+    activeTab
+   }),
+   canAccess,
+   logAudit,
+   showToast
+  }
+  window.dispatchEvent(new CustomEvent('roma-ai-context-ready'))
+  return () => {
+   if (window.__ROMA_AI_BRIDGE__?.version === '2026.08.12.10-restored') delete window.__ROMA_AI_BRIDGE__
+  }
+ }, [adminMode, adminRole, adminAuthUser, adminEmployee, employee, activeTab])
+
  useEffect(() => {
  setPasskeySupported(browserSupportsPasskeys())
  }, [])

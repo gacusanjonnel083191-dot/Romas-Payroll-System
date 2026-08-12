@@ -1,5 +1,5 @@
 // Roma's Donuts - Service Worker
-const CACHE_NAME = 'romas-payroll-v1'
+const CACHE_NAME = 'romas-payroll-v2-roma-ai'
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -27,6 +27,18 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return
   // Don't cache Supabase API calls
   if (event.request.url.includes('supabase.co')) return
+
+  // App navigation must be network-first so a successful production deployment
+  // cannot stay hidden behind an older cached index that omits a restored module.
+  if (event.request.mode === 'navigate' || new URL(event.request.url).pathname === '/index.html') {
+    event.respondWith(
+      fetch(event.request).then(response => {
+        if (response.ok) caches.open(CACHE_NAME).then(cache => cache.put(event.request, response.clone()))
+        return response
+      }).catch(() => caches.match(event.request).then(cached => cached || caches.match('/index.html')))
+    )
+    return
+  }
 
   event.respondWith(
     caches.match(event.request).then(cached => {
