@@ -26422,6 +26422,32 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   return String(value || '').trim().replace(/[\s-]+/g, '')
  }
 
+ function getRCBCExportRowError(row = {}) {
+  const accountNumber = normalizeBankAccountForExport(row.bankAccount)
+  const accountName = String(row.bankAccountName || row.employeeName || '').trim()
+  const netPay = Number(row.netPay)
+
+  if (!accountNumber) return 'missing account number'
+  if (!/^\d+$/.test(accountNumber)) return 'account number must contain digits only'
+  if (!/^(?:\d{10}|\d{16})$/.test(accountNumber)) return 'account number must be 10 or 16 digits'
+  if (!accountName) return 'missing account name'
+  if (!Number.isFinite(netPay) || netPay <= 0) return 'net pay must be a positive amount'
+  if (Math.abs(moneyRound(netPay) - netPay) > 0.000001) return 'net pay must have no more than two decimal places'
+  return ''
+ }
+
+ function getRCBCExportValidation(rows = []) {
+  const invalidRows = (rows || []).map(row => ({ row, error:getRCBCExportRowError(row) })).filter(item => item.error)
+  const validRows = (rows || []).filter(row => !getRCBCExportRowError(row))
+  const duplicateNames = getDuplicateBankAccountNames(validRows, 'RCBC')
+  return {
+   invalidRows,
+   validRows,
+   duplicateNames,
+   valid:invalidRows.length === 0 && duplicateNames.length === 0
+  }
+ }
+
  function buildEmployeeBankDraft(row = {}) {
   return {
    bankName:normalizePayrollBankName(row.bank_name || ''),
@@ -26832,23 +26858,30 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
 
  async function downloadRCBCGeneratorExcel() {
-  const { assignedRows, skippedRows, selectedRows } = getCompleteBankExportRows('RCBC')
+  const assignedRows = getPayrollRowsForBank('RCBC')
   if (assignedRows.length === 0) {
    showToast('No positive-net-pay employee is assigned to RCBC.', 'red')
    return
   }
-  if (selectedRows.length === 0) {
-   showToast(`RCBC generator Excel not created: all ${assignedRows.length} assigned employee(s) have incomplete account details.`, 'red')
+
+  const validation = getRCBCExportValidation(assignedRows)
+  if (validation.invalidRows.length > 0) {
+   const invalidSummary = validation.invalidRows
+    .slice(0, 5)
+    .map(({ row, error }) => `${row.employeeName || row.employeeCode || 'Employee'} (${error})`)
+    .join(', ')
+   const remainingCount = Math.max(0, validation.invalidRows.length - 5)
+   showToast(`RCBC generator Excel blocked. Correct all ${validation.invalidRows.length} invalid employee row(s): ${invalidSummary}${remainingCount ? `, plus ${remainingCount} more` : ''}.`, 'red')
    return
   }
 
-  const duplicateNames = getDuplicateBankAccountNames(selectedRows, 'RCBC')
-  if (duplicateNames.length > 0) {
-   showToast(`RCBC generator Excel blocked: duplicate account number detected for ${duplicateNames.join(', ')}.`, 'red')
+  if (validation.duplicateNames.length > 0) {
+   showToast(`RCBC generator Excel blocked: duplicate account number detected for ${validation.duplicateNames.join(', ')}.`, 'red')
    return
   }
 
   try {
+   const selectedRows = validation.validRows
    const XLSX = await ensureXLSXLibrary()
    const totalAmount = selectedRows.reduce((sum, row) => sum + safeNum(row.netPay, 0), 0)
    const periodText = `${payrollStart} to ${payrollEnd}`
@@ -26910,16 +26943,15 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     cellStyles:true
    })
 
-   const skippedNames = skippedRows.map(row => row.employeeName).filter(Boolean)
    await logAudit(
     'RCBC GENERATOR EXCEL EXPORTED',
     currentAdminLabel,
     'RCBC',
-    `Period: ${periodText} | Purpose: input for RCBC Employee Payments Client Program | Fields: Account Number, Amount, Name | Exported: ${selectedRows.length} | Skipped incomplete: ${skippedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`
+    `Period: ${periodText} | Purpose: input for RCBC Employee Payments Client Program | Fields: Account Number, Amount, Name | Validated and exported: ${selectedRows.length} | Total: ${moneyRound(totalAmount).toFixed(2)}`
    )
    showToast(
-    `RCBC generator Excel downloaded. Import this XLSX into the RCBC Employee Payments Client Program first. Upload only the payroll/credit text file produced by that RCBC program to RCBC Online Corporate.${skippedRows.length ? ` Skipped ${skippedRows.length} incomplete employee(s): ${skippedNames.join(', ')}.` : ''}`,
-    skippedRows.length ? 'orange' : 'green'
+    `RCBC generator Excel downloaded after validating all ${selectedRows.length} employee row(s). Import this XLSX into the RCBC Employee Payments Client Program first. Upload only the payroll/credit text file produced by that RCBC program to RCBC Online Corporate.`,
+    'green'
    )
   } catch(error) {
    console.error('RCBC generator Excel export failed:', error)
@@ -36961,7 +36993,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    <li>Enter and save each employee's payroll bank details below.</li>
    <li>Load the exact payroll period.</li>
    <li>Download the CSV for the employee's assigned bank.</li>
-   <li>Incomplete accounts are skipped automatically. Duplicate account numbers still block the file for safety.</li>
+   <li>RCBC exports are blocked until every assigned employee row is valid. Other bank files skip incomplete accounts; duplicate account numbers always block export.</li>
   </ol>
  </div>
 
@@ -37083,10 +37115,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     { bank:'Generic', color:'#555', desc:'All positive-pay employees / reconciliation file', fields:'Employee Code,Name,Bank,Account No,Net Pay' }
    ].map(({bank,color,desc,fields})=>{
     const assignedRows = getPayrollRowsForBank(bank)
-    const skippedRows = assignedRows.filter(row => bank==='GCash'
-     ? !normalizeBankAccountForExport(row.mobileNumber || row.bankAccount)
-     : !normalizeBankAccountForExport(row.bankAccount))
-    const readyRows = assignedRows.filter(row => !skippedRows.includes(row))
+    const rcbcValidation = bank === 'RCBC' ? getRCBCExportValidation(assignedRows) : null
+    const skippedRows = bank === 'RCBC'
+     ? rcbcValidation.invalidRows.map(item => item.row)
+     : assignedRows.filter(row => bank==='GCash'
+      ? !normalizeBankAccountForExport(row.mobileNumber || row.bankAccount)
+      : !normalizeBankAccountForExport(row.bankAccount))
+    const readyRows = bank === 'RCBC' ? rcbcValidation.validRows : assignedRows.filter(row => !skippedRows.includes(row))
+    const exportBlocked = bank === 'RCBC'
+     ? !assignedRows.length || !rcbcValidation.valid
+     : !readyRows.length
     const total = readyRows.reduce((sum,row)=>sum+safeNum(row.netPay,0),0)
     return (
      <div key={bank} style={{ border:`2px solid ${color}`, borderRadius:'10px', padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
@@ -37096,11 +37134,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', color:'#555', fontSize:'11px', flexWrap:'wrap' }}>
        <span>Assigned: <strong>{assignedRows.length}</strong></span>
        <span style={{ color:'#2d8a4e' }}>Ready: <strong>{readyRows.length}</strong></span>
-       <span style={{ color:skippedRows.length?'#b45309':'#2d8a4e' }}>Skipped: <strong>{skippedRows.length}</strong></span>
+       <span style={{ color:skippedRows.length?'#b45309':'#2d8a4e' }}>{bank==='RCBC'?'Invalid':'Skipped'}: <strong>{skippedRows.length}</strong></span>
        <span>Export Total: <strong>{php(total)}</strong></span>
       </div>
+      {bank==='RCBC' && rcbcValidation.duplicateNames.length>0 && <p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'bold', margin:0 }}>Duplicate account: {rcbcValidation.duplicateNames.join(', ')}</p>}
+      {bank==='RCBC' && skippedRows.length>0 && <p style={{ color:'#ca1b1b', fontSize:'11px', fontWeight:'bold', margin:0 }}>Fix every invalid RCBC row before export.</p>}
       {bank==='RCBC' ? (
-       <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={downloadRCBCGeneratorExcel}>DOWNLOAD RCBC GENERATOR EXCEL</button>
+       <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:exportBlocked?0.55:1 }} disabled={exportBlocked} onClick={downloadRCBCGeneratorExcel}>DOWNLOAD RCBC GENERATOR EXCEL</button>
       ) : (
        <button style={{...btnRed, background:color, marginTop:'4px', fontSize:'12px', padding:'9px', opacity:readyRows.length?1:0.55 }} disabled={!readyRows.length} onClick={()=>downloadPayrollBankCSV(bank)}>DOWNLOAD {bank} FILE</button>
       )}
