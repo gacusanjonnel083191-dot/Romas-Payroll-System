@@ -1,0 +1,35 @@
+/* Roma AI composer visibility hardening — 2026-08-12 */
+/* Scoped and intentionally forceful because the host business app loads its global form styles after Roma AI CSS. */
+#roma-ai-root .rai-compose textarea,
+#roma-ai-root .rai-input-wrap textarea {
+  color: #111827 !important;
+  -webkit-text-fill-color: #111827 !important;
+  caret-color: #ca1b1b !important;
+  background: transparent !important;
+  opacity: 1 !important;
+  text-shadow: none !important;
+  font-weight: 500;
+}
+
+#roma-ai-root .rai-compose textarea::placeholder,
+#roma-ai-root .rai-input-wrap textarea::placeholder {
+  color: #6b7280 !important;
+  -webkit-text-fill-color: #6b7280 !important;
+  opacity: 1 !important;
+}
+
+#roma-ai-root .rai-input-wrap {
+  background: #f8fafc !important;
+}
+
+#roma-ai-root .rai-compose textarea:focus {
+  color: #111827 !important;
+  -webkit-text-fill-color: #111827 !important;
+}
+
+@media (max-width: 560px) {
+  #roma-ai-root .rai-compose textarea,
+  #roma-ai-root .rai-input-wrap textarea {
+    font-size: 16px !important;
+  }
+}
