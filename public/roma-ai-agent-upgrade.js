@@ -3,8 +3,9 @@
   if (window.__ROMA_AI_AGENT_UPGRADE__) return
   window.__ROMA_AI_AGENT_UPGRADE__ = true
 
-  const VERSION = '2026.08.12.20-agent'
+  const VERSION = '2026.08.12.21-agent'
   const previousFetch = window.fetch.bind(window)
+  const fallbackStatuses = new Set([408, 425, 429, 500, 502, 503, 504])
 
   function isLegacyRomaApi(input) {
     try {
@@ -14,13 +15,37 @@
     } catch { return false }
   }
 
-  window.fetch = function romaAiAgentFetch(input, init) {
+  function fallbackResponse(payload = {}, originalStatus = 0) {
+    return new Response(JSON.stringify({
+      ok: false,
+      error: payload?.error || 'roma_ai_agent_transport_unavailable',
+      message: payload?.message || 'Full AI is temporarily unavailable. Using the verified business engine instead.',
+      fallbackAvailable: true,
+      originalStatus
+    }), {
+      status: 503,
+      statusText: 'Service Unavailable',
+      headers: { 'Content-Type':'application/json', 'Cache-Control':'no-store' }
+    })
+  }
+
+  window.fetch = async function romaAiAgentFetch(input, init) {
     if (!isLegacyRomaApi(input)) return previousFetch(input, init)
     const raw = typeof input === 'string' ? input : input.url
     const url = new URL(raw, window.location.href)
     url.pathname = '/api/roma-ai-v2'
-    if (typeof input === 'string') return previousFetch(url.pathname + url.search, init)
-    return previousFetch(new Request(url.toString(), input), init)
+    try {
+      const redirected = typeof input === 'string'
+        ? await previousFetch(url.pathname + url.search, init)
+        : await previousFetch(new Request(url.toString(), input), init)
+      if (redirected.ok) return redirected
+      let payload = {}
+      try { payload = await redirected.clone().json() } catch {}
+      if (payload?.fallbackAvailable || fallbackStatuses.has(redirected.status)) return fallbackResponse(payload, redirected.status)
+      return redirected
+    } catch (error) {
+      return fallbackResponse({ error:'roma_ai_v2_fetch_failed', message:error?.message || 'Roma AI network request failed.' }, 0)
+    }
   }
 
   async function token() {
@@ -34,7 +59,7 @@
     if (!t) throw new Error('login_session_required')
     const r = await previousFetch('/api/roma-ai-developer', {
       method: action ? 'POST' : 'GET',
-      headers: { Authorization: `Bearer ${t}`, ...(action ? {'Content-Type':'application/json'} : {}) },
+      headers: { Authorization:`Bearer ${t}`, ...(action ? {'Content-Type':'application/json'} : {}) },
       body: action ? JSON.stringify({ action, changeRequestId }) : undefined
     })
     const p = await r.json().catch(() => ({}))
@@ -55,7 +80,7 @@
     const mode = root.querySelector('.rai-mode')
     providerMeta().then(meta => {
       if (!mode) return
-      if (meta?.providerConfigured) mode.textContent = 'Full AI brain + verified business tools'
+      if (meta?.providerConfigured) mode.textContent = 'AI provider detected · verified fallback ready'
       else mode.textContent = 'Verified business engine · Full AI awaiting provider activation'
     }).catch(() => {})
 
