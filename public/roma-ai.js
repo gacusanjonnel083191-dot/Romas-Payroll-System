@@ -231,7 +231,7 @@
     if(document.getElementById('roma-ai-root')) return
     const root=document.createElement('div'); root.id='roma-ai-root'
     root.innerHTML=`
-      <button class="rai-launch" type="button" aria-label="Open Roma AI" title="Roma AI">R</button>
+      <button class="rai-launch" type="button" aria-label="Open Roma AI" title="Roma AI"><span class="rai-launch-spark" aria-hidden="true">✦</span><span class="rai-launch-label" aria-hidden="true">AI</span></button>
       <section class="rai-panel" role="dialog" aria-label="Roma AI Business Assistant" aria-hidden="true">
         <header class="rai-head"><div class="rai-mark">RA</div><div class="rai-title"><strong>Roma AI</strong><span>Business Operating Assistant · ${esc(VERSION)}</span></div><button class="rai-icon-btn rai-close" type="button" aria-label="Close">×</button></header>
         <div class="rai-status"><span>Live app data · role-aware access</span><b class="rai-role">Connecting…</b></div>
