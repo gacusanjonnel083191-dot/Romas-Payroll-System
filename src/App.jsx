@@ -1,7 +1,6 @@
 import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import { createClient } from '@supabase/supabase-js'
-import { strToU8, zipSync } from 'fflate'
 
 const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
 const supabaseKey = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlYmJ1bmxuemtsYXZra3VndHpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMTU5MDgsImV4cCI6MjA5NDU5MTkwOH0.mdgYJBoRvHQcf-Tn-1AbTN-rnB5pPxOCSTxGlUrgJpg`
@@ -28375,62 +28374,58 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  showToast(`Downloaded ${records.length} payslip${records.length === 1 ? '' : 's'} as a Word file.`)
  }
 
- function exportPayrollToExcel(records, start, end) {
+ async function exportPayrollToExcel(records, start, end) {
  if (!records.length) { showToast('No records to export.', 'red'); return }
 
- const escapeXml = value => String(value ?? '')
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&apos;')
- const textCell = (reference, value, style = '') => `<c r="${reference}" t="inlineStr"${style}><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`
-
- const rows = records.map((record, index) => {
-  const accountNumber = String(
-   record.bankAccount ||
-   record.bank_account_number ||
-   ''
-  ).trim()
-
-  const amount = Number(
-   record.net_pay ??
-   record.netPay ??
-   0
-  )
-
-  const accountName = String(
-   record.bankAccountName ||
-   record.bank_account_name ||
-   record.employee_name ||
-   record.employeeName ||
-   ''
-  ).trim()
-
-  const rowNumber = index + 2
-  return `<row r="${rowNumber}">${textCell(`A${rowNumber}`, accountNumber)}<c r="B${rowNumber}" s="2"><v>${Number.isFinite(amount) ? amount : 0}</v></c>${textCell(`C${rowNumber}`, accountName)}</row>`
- })
-
- const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">${textCell('A1', 'Account number', ' s="1"')}${textCell('B1', 'Amount', ' s="1"')}${textCell('C1', 'Name', ' s="1"')}</row>${rows.join('')}</sheetData></worksheet>`
- const workbookFiles = {
-  '[Content_Types].xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'),
-  '_rels/.rels': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
-  'xl/workbook.xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Payroll" sheetId="1" r:id="rId1"/></sheets></workbook>'),
-  'xl/_rels/workbook.xml.rels': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),
-  'xl/styles.xml': strToU8('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs></styleSheet>'),
-  'xl/worksheets/sheet1.xml': strToU8(worksheet)
+ const exportRows = records.map(record => ({
+  employeeName:String(record.employee_name || record.employeeName || '').trim(),
+  employeeCode:String(record.employee_code || record.employeeCode || '').trim(),
+  bankAccount:normalizeBankAccountForExport(record.bankAccount || record.bank_account_number || ''),
+  bankAccountName:String(record.bankAccountName || record.bank_account_name || record.employee_name || record.employeeName || '').trim(),
+  netPay:Number(record.net_pay ?? record.netPay ?? 0)
+ }))
+ const validation = getRCBCExportValidation(exportRows)
+ if (!validation.valid) {
+  const rowErrors = validation.invalidRows.slice(0, 5).map(({ row, error }) => `${row.employeeName || row.employeeCode || 'Employee'} (${error})`)
+  if (validation.duplicateNames.length) rowErrors.push(`duplicate account: ${validation.duplicateNames.join(', ')}`)
+  showToast(`RCBC Excel blocked. Correct the payroll bank details first: ${rowErrors.join(', ')}.`, 'red')
+  return
  }
 
- const blob = new Blob([zipSync(workbookFiles)], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
- const url = URL.createObjectURL(blob)
- const a = document.createElement('a')
- a.href = url
- a.download = `Payroll_${start}_to_${end}.xlsx`
- document.body.appendChild(a)
- a.click()
- a.remove()
- URL.revokeObjectURL(url)
- showToast('Payroll Excel exported: Account number, Amount, and Name only.')
+ try {
+  const XLSX = await ensureXLSXLibrary()
+  const worksheet = XLSX.utils.aoa_to_sheet([
+   ['ACCOUNT NO.', 'AMOUNT', 'ACCOUNT NAME'],
+   ...validation.validRows.map(row => [
+    row.bankAccount,
+    moneyRound(row.netPay),
+    row.bankAccountName
+   ])
+  ])
+
+  // RCBC's desktop generator is strict about cell data types. Account numbers
+  // must be text, while every amount must be an explicit numeric cell (not a
+  // formatted string or an implicitly typed value).
+  validation.validRows.forEach((row, index) => {
+   const rowNumber = index + 2
+   worksheet[`A${rowNumber}`] = { t:'s', v:row.bankAccount, z:'@' }
+   worksheet[`B${rowNumber}`] = { t:'n', v:moneyRound(row.netPay), z:'0.00' }
+   worksheet[`C${rowNumber}`] = { t:'s', v:row.bankAccountName }
+  })
+  worksheet['!cols'] = [{ wch:22 }, { wch:16 }, { wch:34 }]
+
+  const workbook = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Payroll')
+  XLSX.writeFile(workbook, `Payroll_${start}_to_${end}.xlsx`, {
+   bookType:'xlsx',
+   compression:true,
+   cellStyles:true
+  })
+  showToast(`RCBC-compatible payroll Excel exported with ${validation.validRows.length} validated employee row(s).`)
+ } catch(error) {
+  console.error('Payroll Excel export failed:', error)
+  showToast(`Payroll Excel export failed: ${error?.message || error}`, 'red')
+ }
  }
 
  async function sendPayslipSmsNotifications(start = payrollStart, end = payrollEnd, options = {}) {
