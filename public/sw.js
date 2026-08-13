@@ -5,6 +5,7 @@ const STATIC_ASSETS = [
   '/index.html',
   '/logo.png',
   '/roma-ai-agent-upgrade.js?v=2026.08.13.3-general-agent',
+  '/roma-ai-diagnostics.js?v=2026.08.13.3-general-agent',
 ]
 
 self.addEventListener('install', event => {
