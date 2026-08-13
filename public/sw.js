@@ -1,10 +1,10 @@
 // Roma's Donuts - Service Worker
-const CACHE_NAME = 'romas-payroll-v2-roma-ai-20260813-03-general-agent'
+const CACHE_NAME = 'romas-payroll-v2-roma-ai-20260813-04-general-agent-auth'
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/logo.png',
-  '/roma-ai-agent-upgrade.js?v=2026.08.13.3-general-agent',
+  '/roma-ai-agent-upgrade.js?v=2026.08.13.4-general-agent-auth',
   '/roma-ai-diagnostics.js?v=2026.08.13.3-general-agent',
 ]
 
