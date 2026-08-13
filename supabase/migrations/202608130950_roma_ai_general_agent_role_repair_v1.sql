@@ -99,7 +99,7 @@ declare
 begin
   if not coalesce((ctx->>'enabled')::boolean,false) then raise exception 'Roma AI access denied'; end if;
 
-  select id,status,started_at,completed_at,total_findings,critical_count,high_count,total_exposure
+  select id,status,started_at,completed_at,total_exceptions,critical_count,high_count,financial_exposure
     into latest_run
     from public.business_integrity_runs
     order by started_at desc nulls last
@@ -133,10 +133,10 @@ begin
       'status',latest_run.status,
       'started_at',latest_run.started_at,
       'completed_at',latest_run.completed_at,
-      'total_findings',latest_run.total_findings,
+      'total_findings',latest_run.total_exceptions,
       'critical_count',latest_run.critical_count,
       'high_count',latest_run.high_count,
-      'total_exposure',latest_run.total_exposure
+      'total_exposure',latest_run.financial_exposure
     ) end
   );
 end;
