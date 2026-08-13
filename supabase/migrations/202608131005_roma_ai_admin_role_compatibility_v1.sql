@@ -1,0 +1,69 @@
+-- Roma AI Admin compatibility.
+-- Existing roles are preserved. Legacy manager and explicit admin both receive the
+-- privileged general-agent tier, while Owner remains the only approval/execution role.
+
+alter table public.admin_users drop constraint if exists admin_users_role_check;
+alter table public.admin_users add constraint admin_users_role_check
+  check (role = any (array['owner'::text,'manager'::text,'admin'::text,'hr'::text,'payroll'::text,'supervisor'::text,'asst_supervisor'::text]));
+
+create or replace function public.roma_ai_session_context()
+returns jsonb
+language plpgsql
+stable security definer
+set search_path to 'public','pg_temp'
+set timezone to 'Asia/Manila'
+as $function$
+declare
+  a jsonb;
+  r text;
+  skills jsonb;
+  common_skills jsonb := '["business_summary","sales","expenses","inventory","receivables","production","costing","attendance","payroll","pos","integrity","screenshot_doctor","developer","voice_navigation"]'::jsonb;
+begin
+  a:=public.business_control_current_actor();
+  r:=lower(coalesce(a->>'role',''));
+  if not coalesce((a->>'is_active')::boolean,false)
+     or r not in ('owner','admin','manager','hr','supervisor','asst_supervisor') then
+    return jsonb_build_object('enabled',false,'actor',a,'skills','[]'::jsonb,'owner_approval_required',true,'can_request_repairs',false,'can_inspect_source',false,'can_approve_changes',false,'can_execute_repairs',false);
+  end if;
+  skills:=common_skills || case when r='owner' then '["deployment"]'::jsonb else '[]'::jsonb end;
+  return jsonb_build_object(
+    'enabled',true,'actor',a,'skills',skills,'owner_approval_required',true,
+    'general_agent_access',true,'safe_cross_module_read',true,'can_request_repairs',true,'can_inspect_source',true,
+    'can_approve_changes',(r='owner'),'can_execute_repairs',(r='owner'),
+    'effective_role',case when r='manager' then 'admin' else r end,
+    'developer_execution_enabled',(select coalesce(developer_execution_enabled,false) from public.roma_ai_settings where id='default')
+  );
+end;
+$function$;
+
+create or replace function public.roma_ai_role_policy_v2()
+returns jsonb language plpgsql stable security definer set search_path to 'public','pg_temp'
+as $function$
+declare ctx jsonb:=public.roma_ai_session_context(); r text:=lower(coalesce(ctx#>>'{actor,role}',''));
+begin
+ if not coalesce((ctx->>'enabled')::boolean,false) then raise exception 'Roma AI access denied'; end if;
+ return jsonb_build_object(
+   'role',r,'effective_role',coalesce(ctx->>'effective_role',r),
+   'can_ask_general_questions',true,'can_read_safe_cross_module_data',true,'can_use_system_doctor',true,
+   'can_inspect_approved_source',true,'can_request_repairs',true,
+   'can_approve_changes',(r='owner'),'can_execute_repairs',(r='owner'),
+   'owner_approval_required',true,'sensitive_fields_redacted',true,'unrestricted_sql_allowed',false,'secrets_exposed_to_model',false
+ );
+end;$function$;
+
+create or replace function public.roma_ai_system_health_v2()
+returns jsonb language plpgsql stable security definer set search_path to 'public','pg_temp' set timezone to 'Asia/Manila'
+as $function$
+declare ctx jsonb:=public.roma_ai_session_context(); latest_run record; pending_changes integer:=0; critical_open integer:=0; active_staff integer:=0;
+begin
+ if not coalesce((ctx->>'enabled')::boolean,false) then raise exception 'Roma AI access denied'; end if;
+ select id,status,started_at,completed_at,total_exceptions,critical_count,high_count,financial_exposure into latest_run from public.business_integrity_runs order by started_at desc nulls last limit 1;
+ select count(*) into pending_changes from public.roma_ai_change_requests where status in ('pending_owner','approved');
+ select count(*) into critical_open from public.business_integrity_exceptions where severity='critical' and status not in ('resolved','waived');
+ select count(*) into active_staff from public.admin_users where coalesce(is_active,true)=true and lower(role) in ('owner','admin','manager','hr','supervisor','asst_supervisor');
+ return jsonb_build_object('checked_at',now(),'role',ctx#>>'{actor,role}','effective_role',coalesce(ctx->>'effective_role',ctx#>>'{actor,role}'),'roma_ai_enabled',true,'general_agent_access',coalesce((ctx->>'general_agent_access')::boolean,false),'developer_execution_enabled',coalesce((ctx->>'developer_execution_enabled')::boolean,false),'owner_approval_required',true,'active_privileged_users',active_staff,'pending_or_approved_change_requests',pending_changes,'open_critical_integrity_findings',critical_open,'latest_integrity_run',case when latest_run.id is null then null else jsonb_build_object('id',latest_run.id,'status',latest_run.status,'started_at',latest_run.started_at,'completed_at',latest_run.completed_at,'total_findings',latest_run.total_exceptions,'critical_count',latest_run.critical_count,'high_count',latest_run.high_count,'total_exposure',latest_run.financial_exposure) end);
+end;$function$;
+
+update public.roma_ai_skills
+set allowed_roles=array['owner','admin','manager','hr','supervisor','asst_supervisor']::text[],updated_at=now()
+where id in ('business_brain','integrity_investigator','costing_pricing','hr_payroll','inventory_supply','knowledge','system_doctor','developer');
