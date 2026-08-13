@@ -3,7 +3,7 @@
   if (window.__ROMA_AI_AGENT_UPGRADE__) return
   window.__ROMA_AI_AGENT_UPGRADE__ = true
 
-  const VERSION = '2026.08.13.3-general-agent'
+  const VERSION = '2026.08.13.4-general-agent-auth'
   const previousFetch = window.fetch.bind(window)
   const fallbackStatuses = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504])
 
@@ -13,6 +13,11 @@
       const url = new URL(raw, window.location.href)
       return url.origin === window.location.origin && url.pathname === '/api/roma-ai'
     } catch { return false }
+  }
+
+  function publicSupabaseKey() {
+    const client = window.__ROMA_AI_BRIDGE__?.supabase
+    return String(client?.supabaseKey || client?.rest?.headers?.apikey || '')
   }
 
   function fallbackResponse(payload = {}, originalStatus = 0) {
@@ -30,25 +35,35 @@
   }
 
   // One semantic brain: every normal question goes to the GPT-orchestrated agent first.
-  // Weather, payroll, inventory, HR, costing, screenshots and repair requests are tools
-  // of the same agent rather than separate keyword-driven chatbot brains.
+  // The browser already has a PUBLIC Supabase key. Passing that public key to the
+  // server lets Roma AI initialize verified tools while the user's JWT remains the
+  // actual authorization boundary.
   window.fetch = async function romaAiAgentFetch(input, init) {
     if (!isLegacyRomaApi(input)) return previousFetch(input, init)
 
     const raw = typeof input === 'string' ? input : input.url
     const url = new URL(raw, window.location.href)
-    url.pathname = '/api/roma-ai-v2'
+    url.pathname = '/api/roma-ai-v3'
+    const key = publicSupabaseKey()
     try {
-      const redirected = typeof input === 'string'
-        ? await previousFetch(url.pathname + url.search, init)
-        : await previousFetch(new Request(url.toString(), input), init)
+      let redirected
+      if (typeof input === 'string') {
+        const headers = new Headers(init?.headers || {})
+        if (key) headers.set('X-Roma-Supabase-Key', key)
+        redirected = await previousFetch(url.pathname + url.search, { ...(init || {}), headers })
+      } else {
+        const request = new Request(url.toString(), input)
+        const headers = new Headers(request.headers)
+        if (key) headers.set('X-Roma-Supabase-Key', key)
+        redirected = await previousFetch(new Request(request, { headers }))
+      }
       if (redirected.ok) return redirected
       let payload = {}
       try { payload = await redirected.clone().json() } catch {}
       if (payload?.fallbackAvailable || fallbackStatuses.has(redirected.status)) return fallbackResponse(payload, redirected.status)
       return redirected
     } catch (error) {
-      return fallbackResponse({ error:'roma_ai_v2_fetch_failed', message:error?.message || 'Roma AI network request failed.' }, 0)
+      return fallbackResponse({ error:'roma_ai_v3_fetch_failed', message:error?.message || 'Roma AI network request failed.' }, 0)
     }
   }
 
@@ -72,7 +87,7 @@
   }
 
   async function providerMeta() {
-    const r = await previousFetch('/api/roma-ai-v2', { cache:'no-store' })
+    const r = await previousFetch('/api/roma-ai-v3', { cache:'no-store' })
     return r.json().catch(() => ({}))
   }
 
