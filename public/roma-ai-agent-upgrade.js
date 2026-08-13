@@ -3,10 +3,9 @@
   if (window.__ROMA_AI_AGENT_UPGRADE__) return
   window.__ROMA_AI_AGENT_UPGRADE__ = true
 
-  const VERSION = '2026.08.13.2-weather'
+  const VERSION = '2026.08.13.3-general-agent'
   const previousFetch = window.fetch.bind(window)
-  const fallbackStatuses = new Set([408, 425, 429, 500, 502, 503, 504])
-  let weatherContextUntil = 0
+  const fallbackStatuses = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504])
 
   function isLegacyRomaApi(input) {
     try {
@@ -14,43 +13,6 @@
       const url = new URL(raw, window.location.href)
       return url.origin === window.location.origin && url.pathname === '/api/roma-ai'
     } catch { return false }
-  }
-
-  function messageFromRequest(init) {
-    try {
-      if (typeof init?.body !== 'string') return ''
-      return String(JSON.parse(init.body)?.message || '').trim()
-    } catch { return '' }
-  }
-
-  function isPureWeatherQuestion(message) {
-    const q = String(message || '').toLowerCase()
-    if (!q) return false
-    const weather = /\b(weather|pagasa|forecast|rain|rainfall|thunderstorm|storm|bagyo|ulan|panahon|habagat|red|yellow|green)\b/i.test(q)
-    const weatherFollowup = Date.now() < weatherContextUntil && /^(how about|what about|paano naman|kumusta naman|same|and tomorrow|tomorrow|bukas|dagupan|calasiao|binmaley|mangaldan|san |santa |santo )/i.test(q)
-    const crossModule = /\b(production|produce|sales|expense|delivery|deliveries|outlet|inventory|stock|payroll|costing|pricing|reseller|employee|staff|business impact|forecast production)\b/i.test(q)
-    const modification = /\b(fix|debug|repair|modify|edit|delete|remove|deploy|redesign|replace)\b/i.test(q) || /\b(change|update)\s+(the\s+)?(code|system|app|module|button|layout|logic|database)\b/i.test(q)
-    return (weather || weatherFollowup) && !crossModule && !modification
-  }
-
-  function showVerifiedWeatherMode() {
-    setTimeout(() => {
-      const mode = document.querySelector('#roma-ai-root .rai-mode')
-      if (mode) mode.textContent = 'Verified live PAGASA · business engine'
-    }, 120)
-  }
-
-  async function askVerifiedWeather(init) {
-    const headers = new Headers(init?.headers || {})
-    headers.set('Content-Type','application/json')
-    const response = await previousFetch('/api/roma-ai-weather-refresh', {
-      method:'POST',
-      headers,
-      body:typeof init?.body === 'string' ? init.body : '{}',
-      cache:'no-store'
-    })
-    if (response.ok) showVerifiedWeatherMode()
-    return response
   }
 
   function fallbackResponse(payload = {}, originalStatus = 0) {
@@ -67,20 +29,11 @@
     })
   }
 
+  // One semantic brain: every normal question goes to the GPT-orchestrated agent first.
+  // Weather, payroll, inventory, HR, costing, screenshots and repair requests are tools
+  // of the same agent rather than separate keyword-driven chatbot brains.
   window.fetch = async function romaAiAgentFetch(input, init) {
     if (!isLegacyRomaApi(input)) return previousFetch(input, init)
-
-    const message = messageFromRequest(init)
-    if (isPureWeatherQuestion(message)) {
-      weatherContextUntil = Date.now() + 15 * 60 * 1000
-      try {
-        const weatherResponse = await askVerifiedWeather(init)
-        if (weatherResponse.ok) return weatherResponse
-        let weatherPayload = {}
-        try { weatherPayload = await weatherResponse.clone().json() } catch {}
-        if (!weatherPayload?.fallbackAvailable) return weatherResponse
-      } catch { /* continue to normal Roma AI + verified fallback */ }
-    }
 
     const raw = typeof input === 'string' ? input : input.url
     const url = new URL(raw, window.location.href)
@@ -123,33 +76,38 @@
     return r.json().catch(() => ({}))
   }
 
+  function addChip(chips, key, label, prompt) {
+    if (!chips || chips.querySelector(`[data-agent-chip="${key}"]`)) return
+    const button = document.createElement('button')
+    button.className = 'rai-chip'
+    button.dataset.agentChip = key
+    button.textContent = label
+    button.addEventListener('click', () => {
+      const root = document.getElementById('roma-ai-root')
+      const input = root?.querySelector('textarea')
+      if (!input) return
+      input.value = prompt
+      input.dispatchEvent(new Event('input', { bubbles:true }))
+      input.focus()
+    })
+    chips.appendChild(button)
+  }
+
   function enhance(root) {
     if (!root || root.dataset.agentUpgrade === VERSION) return
     root.dataset.agentUpgrade = VERSION
     const title = root.querySelector('.rai-title span')
-    if (title) title.textContent = `Business & System Assistant · ${VERSION}`
+    if (title) title.textContent = `General Business & System Agent · ${VERSION}`
     const mode = root.querySelector('.rai-mode')
     providerMeta().then(meta => {
       if (!mode) return
-      if (meta?.providerConfigured) mode.textContent = 'AI provider detected · verified fallback ready'
-      else mode.textContent = 'Verified business engine · Full AI awaiting provider activation'
+      if (meta?.providerConfigured) mode.textContent = 'Full AI agent · verified live system tools'
+      else mode.textContent = 'Verified business fallback · Full AI provider unavailable'
     }).catch(() => {})
 
     const chips = root.querySelector('.rai-chips')
-    if (chips && !chips.querySelector('[data-agent-chip="system-doctor"]')) {
-      const doctor = document.createElement('button')
-      doctor.className = 'rai-chip'
-      doctor.dataset.agentChip = 'system-doctor'
-      doctor.textContent = 'System Doctor'
-      doctor.addEventListener('click', () => {
-        const input = root.querySelector('textarea')
-        if (!input) return
-        input.value = 'Inspect the current screen and system context. Tell me what is wrong, why it is happening, and prepare a safe fix if needed.'
-        input.dispatchEvent(new Event('input', { bubbles:true }))
-        input.focus()
-      })
-      chips.appendChild(doctor)
-    }
+    addChip(chips, 'system-doctor', 'System Doctor', 'Inspect the current screen and system context. Diagnose the root cause, verify the relevant data and source code, and prepare a safe repair if needed.')
+    addChip(chips, 'repair', 'Repair', 'Investigate the problem I am describing. Check the relevant live system data and approved source code, explain the root cause, and prepare a professional repair request. Do not change production unless the Owner approves and explicitly authorizes deployment.')
   }
 
   const observer = new MutationObserver(() => enhance(document.getElementById('roma-ai-root')))
