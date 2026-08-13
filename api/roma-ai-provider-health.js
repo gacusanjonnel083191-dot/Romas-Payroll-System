@@ -1,6 +1,8 @@
 export default async function handler(req,res){
   if(req.method!=='GET') return res.status(405).json({ok:false,error:'method_not_allowed'})
-  const token=process.env.AI_GATEWAY_API_KEY||process.env.VERCEL_OIDC_TOKEN||''
+  const headerValue=req.headers?.['x-vercel-oidc-token']
+  const headerToken=Array.isArray(headerValue)?headerValue[0]:headerValue
+  const token=process.env.AI_GATEWAY_API_KEY||headerToken||process.env.VERCEL_OIDC_TOKEN||''
   if(!token) return res.status(200).json({ok:false,providerConfigured:false})
   try{
     const r=await fetch('https://ai-gateway.vercel.sh/v1/responses',{
