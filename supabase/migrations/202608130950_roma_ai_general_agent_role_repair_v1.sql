@@ -31,10 +31,6 @@ begin
     );
   end if;
 
-  -- Privileged staff use the same general AI brain and may read the complete
-  -- SAFE-COLUMN business catalog, diagnose any module, inspect approved source,
-  -- and create repair requests. Sensitive columns remain excluded by
-  -- roma_ai_read_records_v1. Only the Owner may approve/execute changes.
   skills := common_skills || case when r='owner' then '["deployment"]'::jsonb else '[]'::jsonb end;
 
   return jsonb_build_object(
@@ -142,17 +138,15 @@ begin
 end;
 $function$;
 
--- All privileged staff see the same reasoning/diagnostic skill catalog. Execution
--- is still blocked server-side unless the authenticated role is Owner.
 update public.roma_ai_skills
-set allowed_roles='["owner","admin","hr","supervisor","asst_supervisor"]'::jsonb,
+set allowed_roles=array['owner','admin','hr','supervisor','asst_supervisor']::text[],
     updated_at=now()
 where id in ('business_brain','integrity_investigator','costing_pricing','hr_payroll','inventory_supply','knowledge','system_doctor','developer');
 
 update public.roma_ai_skills
 set description='System-wide code diagnosis and repair proposals for privileged staff; Owner governs approval, preview promotion, deployment and rollback.',
     instruction='Inspect approved source and verified system evidence before proposing a repair. Staff may diagnose and request repairs; only Owner may approve or execute production-changing actions.',
-    tools='["search_source","read_source","request_change","developer_capabilities"]'::jsonb,
+    tools=array['search_source','read_source','request_change','developer_capabilities']::text[],
     risk_class='propose',
     updated_at=now()
 where id='developer';
