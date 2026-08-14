@@ -109,3 +109,8 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+/* Keep employee self-service payslip actions consistent: detailed cards should not expose a download action. */
+button.download-btn:has(+ .full-payslip-pdf) {
+  display: none !important;
+}
