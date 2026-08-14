@@ -29306,50 +29306,175 @@ async function computePayroll() {
  }
 
  function printFinalPay(fp) {
- const pw = window.open('','_blank','width=420,height=660')
- pw.document.write(`<!DOCTYPE html><html><head><title>Final Pay</title>
- <style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:Arial,sans-serif;padding:15mm;font-size:12px;color:#000;}
- @media print{@page{size:A4;margin:15mm;}}</style></head><body>
- <div style="text-align:center;margin-bottom:16px;border-bottom:2px solid #ca1b1b;padding-bottom:10px;">
- <div style="font-size:22px;font-weight:bold;color:#ca1b1b;">Roma's Donuts</div>
- <div style="font-size:10px;color:#666;">Payroll &amp; Attendance System</div>
- <div style="font-size:16px;font-weight:bold;margin-top:4px;">FINAL PAY SLIP</div>
- </div>
- <div style="background:#fff8dc;border:2px solid #ca1b1b;border-radius:6px;padding:10px;margin-bottom:14px;">
- <div style="font-size:18px;font-weight:bold;color:#ca1b1b;">${fp.employeeName}</div>
- <div style="font-size:13px;font-weight:bold;color:#555;">${fp.position||''}</div>
- <div style="font-size:11px;color:#888;">Code: ${fp.employeeCode}</div>
- </div>
- <table style="width:100%;border-collapse:collapse;margin-bottom:12px;">
- <tr style="background:#f5f5f5;"><td style="padding:6px 10px;font-weight:bold;border:1px solid #eee;">Hire Date</td><td style="padding:6px 10px;border:1px solid #eee;">${fp.hireDate}</td></tr>
- <tr><td style="padding:6px 10px;font-weight:bold;border:1px solid #eee;">Last Working Date</td><td style="padding:6px 10px;border:1px solid #eee;">${fp.lastDate}</td></tr>
- <tr style="background:#f5f5f5;"><td style="padding:6px 10px;font-weight:bold;border:1px solid #eee;">Years of Service</td><td style="padding:6px 10px;border:1px solid #eee;">${fp.yearsOfService} year(s)</td></tr>
- <tr><td style="padding:6px 10px;font-weight:bold;border:1px solid #eee;">Separation Reason</td><td style="padding:6px 10px;border:1px solid #eee;">${fp.reason}</td></tr>
- <tr style="background:#f5f5f5;"><td style="padding:6px 10px;font-weight:bold;border:1px solid #eee;">Daily Rate</td><td style="padding:6px 10px;border:1px solid #eee;">${php(fp.dailyRate)}</td></tr>
- </table>
- <div style="background:#e8f5e9;padding:8px 10px;font-weight:bold;color:#2d8a4e;margin-bottom:2px;border-radius:4px;">FINAL PAY COMPONENTS</div>
- <table style="width:100%;border-collapse:collapse;margin-bottom:12px;">
- <tr><td style="padding:5px 10px;border:1px solid #eee;">Last Salary (${fp.unpaidDays} day(s))</td><td style="padding:5px 10px;text-align:right;border:1px solid #eee;">${php(fp.lastSalary)}</td></tr>
- <tr style="background:#f9f9f9;"><td style="padding:5px 10px;border:1px solid #eee;">Pro-rated 13th Month Pay</td><td style="padding:5px 10px;text-align:right;border:1px solid #eee;">${php(fp.proRated13th)}</td></tr>
- <tr><td style="padding:5px 10px;border:1px solid #eee;">Unused SIL (${fp.unusedSIL} day(s))</td><td style="padding:5px 10px;text-align:right;border:1px solid #eee;">${php(fp.silPay)}</td></tr>
- <tr style="background:#f9f9f9;"><td style="padding:5px 10px;border:1px solid #eee;">Separation Pay</td><td style="padding:5px 10px;text-align:right;border:1px solid #eee;">${php(fp.separationPay)}</td></tr>
- </table>
- <div style="background:#fff0f0;padding:8px 10px;font-weight:bold;color:#ca1b1b;margin-bottom:2px;border-radius:4px;">DEDUCTIONS</div>
- <table style="width:100%;border-collapse:collapse;margin-bottom:14px;">
- <tr><td style="padding:5px 10px;border:1px solid #eee;">Outstanding Cash Advance</td><td style="padding:5px 10px;text-align:right;border:1px solid #eee;">${php(fp.totalCA)}</td></tr>
- </table>
- <div style="background:#ca1b1b;color:white;padding:12px 16px;border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
- <span style="font-weight:bold;font-size:14px;">TOTAL FINAL PAY</span>
- <span style="font-weight:bold;font-size:20px;">${php(fp.totalFinalPay)}</span>
- </div>
- <div style="margin-top:40px;display:flex;justify-content:space-between;">
- <div style="text-align:center;"><div style="border-top:1px solid #000;width:150px;padding-top:4px;font-size:10px;">Employee Signature</div></div>
- <div style="text-align:center;"><div style="border-top:1px solid #000;width:150px;padding-top:4px;font-size:10px;">Authorized Signature</div></div>
- </div>
- </body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },800)
+ if (!fp) { showToast('No final pay selected.', 'red'); return }
+
+ const canvas = document.createElement('canvas')
+ canvas.width = 1240
+ canvas.height = 1754
+ const ctx = canvas.getContext('2d')
+ if (!ctx) { showToast('Image download is not supported on this device.', 'red'); return }
+
+ const red = '#ca1b1b'
+ const gold = '#FDD412'
+ const green = '#2d8a4e'
+ const navy = '#1a1a2e'
+ const ink = '#111827'
+ const muted = '#6b7280'
+ const left = 90
+ const right = canvas.width - 90
+ const contentWidth = right - left
+ const clean = value => String(value ?? '').trim()
+ const money = value => php(safeNum(value, 0))
+ const roundedRect = (x, y, w, h, radius, fill, stroke = null, lineWidth = 1) => {
+  const r = Math.min(radius, w / 2, h / 2)
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+  if (fill) { ctx.fillStyle = fill; ctx.fill() }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lineWidth; ctx.stroke() }
+ }
+ const labelValueRow = (label, value, y, shaded = false) => {
+  ctx.fillStyle = shaded ? '#f7f7f8' : '#ffffff'
+  ctx.fillRect(left, y, contentWidth, 70)
+  ctx.strokeStyle = '#e5e7eb'
+  ctx.lineWidth = 2
+  ctx.strokeRect(left, y, contentWidth, 70)
+  ctx.beginPath()
+  ctx.moveTo(left + 515, y)
+  ctx.lineTo(left + 515, y + 70)
+  ctx.stroke()
+  ctx.fillStyle = ink
+  ctx.font = '700 25px Arial, sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(clean(label), left + 24, y + 35)
+  ctx.font = '400 25px Arial, sans-serif'
+  ctx.fillText(clean(value) || '—', left + 539, y + 35)
+ }
+ const amountRow = (label, value, y, shaded = false) => {
+  ctx.fillStyle = shaded ? '#fafafa' : '#ffffff'
+  ctx.fillRect(left, y, contentWidth, 66)
+  ctx.strokeStyle = '#e5e7eb'
+  ctx.lineWidth = 2
+  ctx.strokeRect(left, y, contentWidth, 66)
+  ctx.fillStyle = ink
+  ctx.font = '400 24px Arial, sans-serif'
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'middle'
+  ctx.fillText(clean(label), left + 24, y + 33)
+  ctx.font = '700 24px Arial, sans-serif'
+  ctx.textAlign = 'right'
+  ctx.fillText(clean(value), right - 24, y + 33)
  }
 
+ ctx.fillStyle = '#ffffff'
+ ctx.fillRect(0, 0, canvas.width, canvas.height)
+ ctx.fillStyle = red
+ ctx.fillRect(0, 0, canvas.width, 24)
+ ctx.fillStyle = gold
+ ctx.fillRect(0, 24, canvas.width, 10)
+
+ ctx.textAlign = 'center'
+ ctx.textBaseline = 'alphabetic'
+ ctx.fillStyle = red
+ ctx.font = '900 50px Arial, sans-serif'
+ ctx.fillText("ROMA'S DONUTS", canvas.width / 2, 115)
+ ctx.fillStyle = muted
+ ctx.font = '400 22px Arial, sans-serif'
+ ctx.fillText('Payroll & Attendance System', canvas.width / 2, 151)
+ ctx.fillStyle = navy
+ ctx.font = '900 34px Arial, sans-serif'
+ ctx.fillText('FINAL PAY SLIP', canvas.width / 2, 207)
+ ctx.fillStyle = gold
+ ctx.fillRect(left, 228, contentWidth, 6)
+
+ roundedRect(left, 266, contentWidth, 150, 18, '#fff8dc', red, 4)
+ ctx.textAlign = 'left'
+ ctx.fillStyle = red
+ ctx.font = '900 36px Arial, sans-serif'
+ ctx.fillText(clean(fp.employeeName) || 'Employee', left + 28, 323)
+ ctx.fillStyle = ink
+ ctx.font = '700 25px Arial, sans-serif'
+ ctx.fillText(clean(fp.position) || 'Employee', left + 28, 361)
+ ctx.fillStyle = muted
+ ctx.font = '400 22px Arial, sans-serif'
+ ctx.fillText(`Employee Code: ${clean(fp.employeeCode) || '—'}`, left + 28, 397)
+
+ let y = 452
+ labelValueRow('Hire Date', fp.hireDate, y, true); y += 70
+ labelValueRow('Last Working Date', fp.lastDate, y); y += 70
+ labelValueRow('Years of Service', `${safeNum(fp.yearsOfService, 0)} year(s)`, y, true); y += 70
+ labelValueRow('Separation Reason', fp.reason, y); y += 70
+ labelValueRow('Daily Rate', money(fp.dailyRate), y, true); y += 96
+
+ roundedRect(left, y, contentWidth, 58, 10, '#e8f5e9')
+ ctx.fillStyle = green
+ ctx.font = '900 24px Arial, sans-serif'
+ ctx.textAlign = 'left'
+ ctx.textBaseline = 'middle'
+ ctx.fillText('FINAL PAY COMPONENTS', left + 22, y + 29)
+ y += 66
+ amountRow(`Last Salary (${safeNum(fp.unpaidDays, 0)} day(s))`, money(fp.lastSalary), y); y += 66
+ amountRow('Pro-rated 13th Month Pay', money(fp.proRated13th), y, true); y += 66
+ amountRow(`Unused SIL (${safeNum(fp.unusedSIL, 0)} day(s))`, money(fp.silPay), y); y += 66
+ amountRow('Separation Pay', money(fp.separationPay), y, true); y += 88
+
+ roundedRect(left, y, contentWidth, 58, 10, '#fff0f0')
+ ctx.fillStyle = red
+ ctx.font = '900 24px Arial, sans-serif'
+ ctx.textAlign = 'left'
+ ctx.fillText('DEDUCTIONS', left + 22, y + 29)
+ y += 66
+ amountRow('Outstanding Cash Advance', money(fp.totalCA), y); y += 92
+
+ roundedRect(left, y, contentWidth, 104, 14, red)
+ ctx.fillStyle = '#ffffff'
+ ctx.font = '900 27px Arial, sans-serif'
+ ctx.textAlign = 'left'
+ ctx.fillText('TOTAL FINAL PAY', left + 28, y + 52)
+ ctx.font = '900 39px Arial, sans-serif'
+ ctx.textAlign = 'right'
+ ctx.fillText(money(fp.totalFinalPay), right - 28, y + 52)
+ y += 214
+
+ ctx.strokeStyle = ink
+ ctx.lineWidth = 2
+ ctx.beginPath(); ctx.moveTo(left + 55, y); ctx.lineTo(left + 390, y); ctx.stroke()
+ ctx.beginPath(); ctx.moveTo(right - 390, y); ctx.lineTo(right - 55, y); ctx.stroke()
+ ctx.fillStyle = muted
+ ctx.font = '400 20px Arial, sans-serif'
+ ctx.textAlign = 'center'
+ ctx.fillText('Employee Signature / Date', left + 222, y + 31)
+ ctx.fillText('Authorized Signature / Date', right - 222, y + 31)
+
+ ctx.fillStyle = '#f9fafb'
+ ctx.fillRect(0, canvas.height - 100, canvas.width, 100)
+ ctx.fillStyle = muted
+ ctx.font = '400 18px Arial, sans-serif'
+ ctx.textAlign = 'center'
+ ctx.fillText(`Generated ${new Date().toLocaleString('en-PH', { timeZone:PH_TIME_ZONE })}`, canvas.width / 2, canvas.height - 54)
+
+ const safeName = (clean(fp.employeeName) || clean(fp.employeeCode) || 'Employee')
+  .replace(/[^a-z0-9]+/gi, '_')
+  .replace(/^_+|_+$/g, '')
+ const filename = `Romas_Donuts_Final_Pay_${safeName || 'Employee'}_${clean(fp.lastDate) || today}.png`
+ canvas.toBlob(blob => {
+  if (!blob) { showToast('Could not create the final pay image.', 'red'); return }
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1500)
+  showToast('Downloaded final pay as a PNG image.')
+ }, 'image/png', 1)
+ }
  function escapePrintHTML(value) {
  return String(value?? '')
 .replace(/&/g, '&amp;')
