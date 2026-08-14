@@ -10810,6 +10810,17 @@ Cancel = create batch record only for existing stock.`)
   }
   return Math.max(0, safeNum(profile?.fixed_cost_per_piece))
  }
+ function getVariantLaborHandlingFactor(variant = {}, profile = null) {
+ const manualFactor = safeNum(variant?.labor_handling_factor, 0)
+ if (manualFactor > 0) return Math.min(5, manualFactor)
+ return positiveNum(profile?.allocation_multiplier, 1)
+ }
+ function getVariantLaborHandlingDisplay(variant = {}, profile = null) {
+ const manualFactor = safeNum(variant?.labor_handling_factor, 0)
+ return manualFactor > 0
+  ? `Manual product handling × ${Math.min(5, manualFactor).toFixed(2)}`
+  : getCostProfileDisplay('labor', profile)
+ }
  function getCostProfileDisplay(type = '', profile = null) {
   if (!profile) return 'Company default'
   if (type === 'packaging') {
@@ -10873,25 +10884,48 @@ Cancel = create batch record only for existing stock.`)
   }
  }
  async function saveCostProfile() {
-  const type = costProfileEditorType
-  const table = getCostProfileTable(type)
-  const name = String(costProfileForm.profile_name || '').trim()
+ const type = costProfileEditorType
+ const table = getCostProfileTable(type)
+ const name = String(costProfileForm.profile_name || '').trim()
   if (!table || !name) { showToast('Enter a profile name.', 'red'); return }
   setCostProfileSaving(true)
   try {
+   const systemProfileNames = type === 'labor'
+    ? ['Light Handling','Standard Handling','Heavy Handling','No Labor']
+    : type === 'delivery'
+     ? ['Standard Route','Far Route','Commissary Pickup']
+     : []
+   const existingProfile = getCostProfileCollection(type).find(row=>String(row.id || '')===String(costProfileForm.id || ''))
+   const protectedProfileName = systemProfileNames.includes(existingProfile?.profile_name) ? existingProfile.profile_name : name
    const basePayload = {
-    profile_name:name,
+    profile_name:protectedProfileName,
     description:String(costProfileForm.description || '').trim() || null,
     is_default:costProfileForm.is_default === true,
     is_active:costProfileForm.is_active !== false,
     updated_by:currentAdminLabel
    }
+   const protectedAllocation = type === 'labor'
+    ? {
+       'Light Handling':{ uses_company_allocation:true, allocation_multiplier:0.85, fixed_cost_per_piece:0 },
+       'Standard Handling':{ uses_company_allocation:true, allocation_multiplier:1, fixed_cost_per_piece:0 },
+       'Heavy Handling':{ uses_company_allocation:true, allocation_multiplier:1.25, fixed_cost_per_piece:0 },
+       'No Labor':{ uses_company_allocation:false, allocation_multiplier:1, fixed_cost_per_piece:0 }
+      }[protectedProfileName]
+    : type === 'delivery'
+     ? {
+        'Standard Route':{ uses_company_allocation:true, allocation_multiplier:1, fixed_cost_per_piece:0 },
+        'Far Route':{ uses_company_allocation:true, allocation_multiplier:1.25, fixed_cost_per_piece:0 },
+        'Commissary Pickup':{ uses_company_allocation:false, allocation_multiplier:1, fixed_cost_per_piece:0 }
+       }[protectedProfileName]
+     : null
    const payload = type === 'packaging'
     ? {
        ...basePayload,
        uses_company_default:costProfileForm.uses_company_default === true,
        cost_per_piece:costProfileForm.uses_company_default ? 0 : Math.max(0, safeNum(costProfileForm.cost_per_piece))
       }
+    : protectedAllocation
+     ? {...basePayload,...protectedAllocation}
     : {
        ...basePayload,
        uses_company_allocation:costProfileForm.uses_company_allocation !== false,
@@ -10913,11 +10947,11 @@ Cancel = create batch record only for existing stock.`)
     costProfileForm.id ? 'COST PROFILE UPDATED' : 'COST PROFILE CREATED',
     currentAdminLabel,
     'Costing',
-    `${type.toUpperCase()} | ${name}`
+    `${type.toUpperCase()} | ${protectedProfileName}`
    )
    resetCostProfileEditor('')
    await loadCostProfiles({ silent:true })
-   showToast(`${name} saved. Product costs were recalculated.`)
+   showToast(`${protectedProfileName} saved. Product costs were recalculated.`)
   } catch(error) {
    showToast(`Profile save failed: ${error.message || error}`, 'red')
   } finally {
@@ -10946,6 +10980,9 @@ Cancel = create batch record only for existing stock.`)
    Product:v.name,
    Category:v.category || '',
    'Pieces Per Batch':safeNum(v.pieces_per_batch),
+   'Normal Daily Product Mix':safeNum(v.normalDailyPieces),
+   'Equivalent Unit Factor':safeNum(v.equivalentUnitFactor),
+   'Equivalent Unit Note':v.variant?.equivalent_unit_note || '',
    'Ingredients Per Piece':moneyRound(v.ingredientCost),
    'Packaging Per Piece':moneyRound(v.packagingPerPiece),
    'Direct Materials Per Piece':moneyRound(v.directMaterialCostPerPiece),
@@ -11013,19 +11050,37 @@ Cancel = create batch record only for existing stock.`)
   }
   if (String(savingVariantSetupId || '') === String(id)) return null
 
+  const manualHandlingValue = fields?.labor_handling_factor
+  const manualHandlingFactor = manualHandlingValue === '' || manualHandlingValue === null || manualHandlingValue === undefined
+   ? null
+   : safeNum(manualHandlingValue, 0)
+  if (manualHandlingFactor !== null && (manualHandlingFactor <= 0 || manualHandlingFactor > 5)) {
+   showToast('Manual handling factor must be greater than 0 and no more than 5. Leave it blank to use the selected labor profile.', 'red')
+   return null
+  }
+
   const requested = {
    pieces_per_batch:positiveNum(fields?.pieces_per_batch, 1),
    selling_price:Math.max(0, safeNum(fields?.selling_price, 0)),
+   normal_daily_pieces:Math.max(0, safeNum(fields?.normal_daily_pieces, 0)),
+   equivalent_unit_factor:Math.min(10, positiveNum(fields?.equivalent_unit_factor, 1)),
+   equivalent_unit_note:String(fields?.equivalent_unit_note || '').trim() || null,
    packaging_profile_id:fields?.packaging_profile_id || null,
    labor_profile_id:fields?.labor_profile_id || null,
+   labor_handling_factor:manualHandlingFactor,
    delivery_profile_id:fields?.delivery_profile_id || null,
    packaging_cost_per_piece:Math.max(0, safeNum(fields?.packaging_cost_per_piece, 0)),
    labor_cost_per_batch:Math.max(0, safeNum(fields?.labor_cost_per_batch, 0)),
-   delivery_cost_per_piece:Math.max(0, safeNum(fields?.delivery_cost_per_piece, 0)),
-   cost_override_notes:String(fields?.cost_override_notes || '').trim() || null
-  }
+	   delivery_cost_per_piece:Math.max(0, safeNum(fields?.delivery_cost_per_piece, 0)),
+	   cost_override_notes:String(fields?.cost_override_notes || '').trim() || null
+	  }
+	  const hasManualPesoCost = requested.packaging_cost_per_piece > 0 || requested.labor_cost_per_batch > 0 || requested.delivery_cost_per_piece > 0
+	  if (hasManualPesoCost && String(requested.cost_override_notes || '').length < 8) {
+	   showToast('Enter a short reason of at least 8 characters for the manual product cost.', 'red')
+	   return null
+	  }
 
-  setSavingVariantSetupId(id)
+	  setSavingVariantSetupId(id)
   try {
    // Primary path: one atomic database operation that validates all selected
    // profiles, saves the complete product setup, and returns the stored row.
@@ -11036,11 +11091,21 @@ Cancel = create batch record only for existing stock.`)
     p_selling_price:requested.selling_price,
     p_packaging_profile_id:requested.packaging_profile_id,
     p_labor_profile_id:requested.labor_profile_id,
+    p_labor_handling_factor:requested.labor_handling_factor,
     p_delivery_profile_id:requested.delivery_profile_id,
     p_packaging_cost_per_piece:requested.packaging_cost_per_piece,
     p_labor_cost_per_batch:requested.labor_cost_per_batch,
     p_delivery_cost_per_piece:requested.delivery_cost_per_piece,
-    p_cost_override_notes:requested.cost_override_notes
+    p_cost_override_notes:requested.cost_override_notes,
+    p_normal_daily_pieces:requested.normal_daily_pieces,
+    p_equivalent_unit_factor:requested.equivalent_unit_factor,
+    p_equivalent_unit_note:requested.equivalent_unit_note,
+    p_packaging_override_enabled:requested.packaging_cost_per_piece > 0,
+    p_labor_override_enabled:requested.labor_cost_per_batch > 0,
+    p_delivery_override_enabled:requested.delivery_cost_per_piece > 0,
+    p_is_manufactured:fields?.is_manufactured !== false,
+    p_requires_company_delivery:fields?.requires_company_delivery !== false,
+    p_updated_by:currentAdminLabel
    })
 
    if (!rpcResult.error) {
@@ -11075,9 +11140,17 @@ Cancel = create batch record only for existing stock.`)
    const verificationErrors = []
    if (!sameId(savedRow.packaging_profile_id, requested.packaging_profile_id)) verificationErrors.push('packaging profile')
    if (!sameId(savedRow.labor_profile_id, requested.labor_profile_id)) verificationErrors.push('labor profile')
+   if (requested.labor_handling_factor === null) {
+    if (savedRow.labor_handling_factor !== null && savedRow.labor_handling_factor !== undefined) verificationErrors.push('manual handling factor')
+   } else if (Math.abs(safeNum(savedRow.labor_handling_factor, 0) - requested.labor_handling_factor) > 0.0001) verificationErrors.push('manual handling factor')
    if (!sameId(savedRow.delivery_profile_id, requested.delivery_profile_id)) verificationErrors.push('delivery profile')
    if (Math.abs(safeNum(savedRow.pieces_per_batch, 0) - requested.pieces_per_batch) > 0.0001) verificationErrors.push('good pieces per batch')
    if (Math.abs(safeNum(savedRow.selling_price, 0) - requested.selling_price) > 0.0001) verificationErrors.push('retail price')
+	   if (Math.abs(safeNum(savedRow.normal_daily_pieces, 0) - requested.normal_daily_pieces) > 0.0001) verificationErrors.push('normal daily product mix')
+	   if (Math.abs(safeNum(savedRow.equivalent_unit_factor, 0) - requested.equivalent_unit_factor) > 0.0001) verificationErrors.push('equivalent-unit factor')
+	   if (Math.abs(safeNum(savedRow.packaging_cost_per_piece, 0) - requested.packaging_cost_per_piece) > 0.0001) verificationErrors.push('manual packaging cost')
+	   if (Math.abs(safeNum(savedRow.labor_cost_per_batch, 0) - requested.labor_cost_per_batch) > 0.0001) verificationErrors.push('manual labor cost')
+	   if (Math.abs(safeNum(savedRow.delivery_cost_per_piece, 0) - requested.delivery_cost_per_piece) > 0.0001) verificationErrors.push('manual delivery cost')
 
    if (verificationErrors.length > 0) {
     throw new Error(`Save verification failed for: ${verificationErrors.join(', ')}.`)
@@ -11092,7 +11165,7 @@ Cancel = create batch record only for existing stock.`)
     'PRODUCT COST SETUP UPDATED',
     currentAdminLabel,
     savedRow.name || 'Product',
-    `Pieces/batch ${requested.pieces_per_batch} | Retail ${php(requested.selling_price)} | Packaging profile ${requested.packaging_profile_id || 'DEFAULT'} | Labor profile ${requested.labor_profile_id || 'DEFAULT'} | Delivery profile ${requested.delivery_profile_id || 'DEFAULT'}`
+	    `Pieces/batch ${requested.pieces_per_batch} | Normal mix ${requested.normal_daily_pieces} | EU factor ${requested.equivalent_unit_factor} | Handling factor ${requested.labor_handling_factor ?? 'PROFILE'} | Manual labor ${requested.labor_cost_per_batch > 0 ? `${php(requested.labor_cost_per_batch / requested.pieces_per_batch)}/pc` : 'AUTO'} | Manual delivery ${requested.delivery_cost_per_piece > 0 ? `${php(requested.delivery_cost_per_piece)}/pc` : 'AUTO'} | Retail ${php(requested.selling_price)} | Packaging profile ${requested.packaging_profile_id || 'DEFAULT'} | Labor profile ${requested.labor_profile_id || 'DEFAULT'} | Delivery profile ${requested.delivery_profile_id || 'DEFAULT'}`
    )
    await loadDonutVariants()
    setEditingVariantId(null)
@@ -11101,7 +11174,7 @@ Cancel = create batch record only for existing stock.`)
    return savedRow
   } catch(error) {
    const message = String(error?.message || error || 'Unknown save error')
-   if (['packaging_profile_id','labor_profile_id','delivery_profile_id','save_variant_cost_setup'].some(column=>message.includes(column))) {
+   if (['packaging_profile_id','labor_profile_id','labor_handling_factor','delivery_profile_id','save_variant_cost_setup'].some(column=>message.includes(column))) {
     showToast('Product setup could not be saved. Refresh once, then retry. The costing profile migration and save function must be active in Supabase. Details: '+message, 'red')
    } else {
     showToast('Product setup save failed: '+message, 'red')
@@ -11417,7 +11490,7 @@ Cancel = create batch record only for existing stock.`)
   const safeStep = positiveNum(step, 1)
   return moneyRound(Math.ceil(Math.max(0, safeNum(value, 0)) / safeStep) * safeStep)
  }
- function computeCostAllocationSummary() {
+ function computeCostAllocationSummary(variantOverride = null) {
   const productionDays = positiveNum(costSettings.production_days_per_month, 26)
   const totalDailyPieces = positiveNum(costSettings.total_daily_pieces, 1)
   const dailyLabor = Math.max(0, safeNum(costSettings.daily_labor_cost))
@@ -11433,26 +11506,96 @@ Cancel = create batch record only for existing stock.`)
   const adminOpexMonthly = safeNum(costSettings.monthly_admin_opex) + safeNum(costSettings.monthly_marketing) + safeNum(costSettings.monthly_software_communications) + safeNum(costSettings.monthly_other_fixed)
   const monthlyOperatingCost = utilitiesMonthly + factoryOverheadMonthly + deliveryMonthly + adminOpexMonthly + equipmentDepreciationMonthly
   const dailyOperatingCost = monthlyOperatingCost / productionDays
-  const perPiece = amount => amount / productionDays / totalDailyPieces
+  const allocationVariants = (donutVariants || []).filter(row=>row?.is_active !== false).map(row =>
+   variantOverride && String(row.id) === String(variantOverride.id)
+    ? {...row,...variantOverride}
+    : row
+  )
+  const configuredMixPieces = allocationVariants.reduce((sum,row)=>sum + Math.max(0,safeNum(row.normal_daily_pieces)),0)
+  const hasNormalizedMix = configuredMixPieces > 0
+  const mixScale = hasNormalizedMix ? totalDailyPieces / configuredMixPieces : 0
+	  const allocationRows = allocationVariants.map(row => {
+	   const mixPieces = hasNormalizedMix ? Math.max(0,safeNum(row.normal_daily_pieces)) * mixScale : 0
+	   const equivalentUnitFactor = Math.min(10, positiveNum(row.equivalent_unit_factor, 1))
+	   const laborProfile = resolveVariantCostProfile(row, 'labor')
+	   const deliveryProfile = resolveVariantCostProfile(row, 'delivery')
+	   const laborOverridePerBatch = Math.max(0,safeNum(row.labor_cost_per_batch))
+	   const deliveryOverridePerPiece = Math.max(0,safeNum(row.delivery_cost_per_piece))
+	   const laborUsesOverride = laborOverridePerBatch > 0 || row.labor_override_enabled === true
+	   const deliveryUsesOverride = deliveryOverridePerPiece > 0 || row.delivery_override_enabled === true
+	   const laborFixedPerPiece = row.is_manufactured === false
+	    ? 0
+	    : laborUsesOverride
+	     ? laborOverridePerBatch / positiveNum(row.pieces_per_batch, 1)
+	     : laborProfile?.uses_company_allocation === false
+	      ? Math.max(0, safeNum(laborProfile?.fixed_cost_per_piece))
+	      : null
+	   const deliveryFixedPerPiece = row.requires_company_delivery === false
+	    ? 0
+	    : deliveryUsesOverride
+	     ? deliveryOverridePerPiece
+	     : deliveryProfile?.uses_company_allocation === false
+	      ? Math.max(0, safeNum(deliveryProfile?.fixed_cost_per_piece))
+	      : null
+	   const laborMultiplier = laborFixedPerPiece !== null
+	    ? 0
+	    : getVariantLaborHandlingFactor(row, laborProfile)
+	   const deliveryMultiplier = deliveryFixedPerPiece !== null
+	    ? 0
+	    : positiveNum(deliveryProfile?.allocation_multiplier, 1)
+	   return { row, mixPieces, equivalentUnitFactor, laborMultiplier, deliveryMultiplier, laborFixedPerPiece, deliveryFixedPerPiece }
+	  })
+  const totalDailyEquivalentUnits = allocationRows.reduce((sum,row)=>sum + row.mixPieces * row.equivalentUnitFactor,0)
+  const laborWeightedEquivalentUnits = allocationRows.reduce((sum,row)=>sum + row.mixPieces * row.equivalentUnitFactor * row.laborMultiplier,0)
+  const deliveryWeightedEquivalentUnits = allocationRows.reduce((sum,row)=>sum + row.mixPieces * row.equivalentUnitFactor * row.deliveryMultiplier,0)
+  const fallbackEquivalentUnits = totalDailyPieces
+  const sharedEquivalentUnits = totalDailyEquivalentUnits > 0 ? totalDailyEquivalentUnits : fallbackEquivalentUnits
+	  const laborEquivalentUnits = laborWeightedEquivalentUnits > 0 ? laborWeightedEquivalentUnits : sharedEquivalentUnits
+	  const deliveryEquivalentUnits = deliveryWeightedEquivalentUnits > 0 ? deliveryWeightedEquivalentUnits : sharedEquivalentUnits
+	  const fixedLaborDaily = allocationRows.reduce((sum,row)=>sum + row.mixPieces * Math.max(0,safeNum(row.laborFixedPerPiece)),0)
+	  const fixedDeliveryDaily = allocationRows.reduce((sum,row)=>sum + row.mixPieces * Math.max(0,safeNum(row.deliveryFixedPerPiece)),0)
+	  const remainingLaborDaily = Math.max(0, dailyLabor - fixedLaborDaily)
+	  const deliveryDaily = deliveryMonthly / productionDays
+	  const remainingDeliveryDaily = Math.max(0, deliveryDaily - fixedDeliveryDaily)
+	  const monthlyPerEquivalentUnit = (amount, denominator = sharedEquivalentUnits) => amount / productionDays / Math.max(1, denominator)
   return {
    productionDays,
    totalDailyPieces,
-   dailyLabor,
-   laborPerPiece:dailyLabor / totalDailyPieces,
+   configuredMixPieces,
+   mixScale,
+   hasNormalizedMix,
+   allocationRows,
+   totalDailyEquivalentUnits:sharedEquivalentUnits,
+   laborWeightedEquivalentUnits:laborEquivalentUnits,
+	   deliveryWeightedEquivalentUnits:deliveryEquivalentUnits,
+	   dailyLabor,
+	   fixedLaborDaily,
+	   remainingLaborDaily,
+	   laborPerEquivalentUnit:remainingLaborDaily / laborEquivalentUnits,
+	   laborPerPiece:remainingLaborDaily / laborEquivalentUnits,
    utilitiesMonthly,
-   utilitiesPerPiece:perPiece(utilitiesMonthly),
+   utilitiesPerEquivalentUnit:monthlyPerEquivalentUnit(utilitiesMonthly),
+   utilitiesPerPiece:monthlyPerEquivalentUnit(utilitiesMonthly),
    factoryOverheadMonthly,
-   factoryOverheadPerPiece:perPiece(factoryOverheadMonthly),
-   deliveryMonthly,
-   deliveryPerPiece:perPiece(deliveryMonthly),
+   factoryOverheadPerEquivalentUnit:monthlyPerEquivalentUnit(factoryOverheadMonthly),
+	   factoryOverheadPerPiece:monthlyPerEquivalentUnit(factoryOverheadMonthly),
+	   deliveryMonthly,
+	   deliveryDaily,
+	   fixedDeliveryDaily,
+	   remainingDeliveryDaily,
+	   deliveryPerEquivalentUnit:remainingDeliveryDaily / Math.max(1, deliveryEquivalentUnits),
+	   deliveryPerPiece:remainingDeliveryDaily / Math.max(1, deliveryEquivalentUnits),
    adminOpexMonthly,
-   adminOpexPerPiece:perPiece(adminOpexMonthly),
+   adminOpexPerEquivalentUnit:monthlyPerEquivalentUnit(adminOpexMonthly),
+   adminOpexPerPiece:monthlyPerEquivalentUnit(adminOpexMonthly),
    equipmentDepreciationMonthly,
-   equipmentDepreciationPerPiece:perPiece(equipmentDepreciationMonthly),
+   equipmentDepreciationPerEquivalentUnit:monthlyPerEquivalentUnit(equipmentDepreciationMonthly),
+   equipmentDepreciationPerPiece:monthlyPerEquivalentUnit(equipmentDepreciationMonthly),
    vehicleDepreciationMonthly,
    monthlyOperatingCost,
    dailyOperatingCost,
-   operatingCostPerPiece:dailyOperatingCost / totalDailyPieces,
+   operatingCostPerEquivalentUnit:dailyOperatingCost / sharedEquivalentUnits,
+   operatingCostPerPiece:dailyOperatingCost / sharedEquivalentUnits,
   }
  }
  function computeVariantCost(variantId, piecesPerBatch, recipeRowsOverride = null, variantOverride = null) {
@@ -11497,26 +11640,34 @@ Cancel = create batch record only for existing stock.`)
   })
   const ingredientBatchCost = rowDetails.reduce((sum, row) => sum + safeNum(row.batchCost), 0)
   const ingredientCost = ingredientBatchCost / safePiecesPerBatch
-  const allocation = computeCostAllocationSummary()
+  const equivalentUnitFactor = Math.min(10, positiveNum(variant.equivalent_unit_factor, 1))
+  const allocation = computeCostAllocationSummary(variant)
   const packagingProfile = resolveVariantCostProfile(variant, 'packaging')
   const laborProfile = resolveVariantCostProfile(variant, 'labor')
   const deliveryProfile = resolveVariantCostProfile(variant, 'delivery')
   const packagingOverridePerPiece = Math.max(0, safeNum(variant.packaging_cost_per_piece))
   const laborOverridePerBatch = Math.max(0, safeNum(variant.labor_cost_per_batch))
+  const laborHandlingFactor = getVariantLaborHandlingFactor(variant, laborProfile)
   const deliveryOverridePerPiece = Math.max(0, safeNum(variant.delivery_cost_per_piece))
   const packagingPerPiece = packagingOverridePerPiece > 0
    ? packagingOverridePerPiece
    : getPackagingProfileCost(packagingProfile)
   const laborPerPiece = laborOverridePerBatch > 0
    ? laborOverridePerBatch / safePiecesPerBatch
-   : getAllocatedProfileCost(laborProfile, allocation.laborPerPiece)
+   : variant.is_manufactured === false
+    ? 0
+    : laborProfile?.uses_company_allocation === false
+     ? Math.max(0, safeNum(laborProfile?.fixed_cost_per_piece))
+     : allocation.laborPerEquivalentUnit * equivalentUnitFactor * laborHandlingFactor
   const deliveryPerPiece = deliveryOverridePerPiece > 0
    ? deliveryOverridePerPiece
-   : getAllocatedProfileCost(deliveryProfile, allocation.deliveryPerPiece)
-  const utilitiesPerPiece = allocation.utilitiesPerPiece
-  const factoryOverheadPerPiece = allocation.factoryOverheadPerPiece
-  const adminOpexPerPiece = allocation.adminOpexPerPiece
-  const depreciationPerPiece = allocation.equipmentDepreciationPerPiece
+   : variant.requires_company_delivery === false
+    ? 0
+    : getAllocatedProfileCost(deliveryProfile, allocation.deliveryPerEquivalentUnit * equivalentUnitFactor)
+  const utilitiesPerPiece = allocation.utilitiesPerEquivalentUnit * equivalentUnitFactor
+  const factoryOverheadPerPiece = allocation.factoryOverheadPerEquivalentUnit * equivalentUnitFactor
+  const adminOpexPerPiece = allocation.adminOpexPerEquivalentUnit * equivalentUnitFactor
+  const depreciationPerPiece = allocation.equipmentDepreciationPerEquivalentUnit * equivalentUnitFactor
   const directMaterialCostPerPiece = ingredientCost + packagingPerPiece
   const manufacturingCostPerPiece = directMaterialCostPerPiece + laborPerPiece + utilitiesPerPiece + factoryOverheadPerPiece + depreciationPerPiece
   const deliveredCostPerPiece = manufacturingCostPerPiece + deliveryPerPiece
@@ -11524,12 +11675,12 @@ Cancel = create batch record only for existing stock.`)
   const packagingCostSource = packagingOverridePerPiece > 0
    ? 'Product override'
    : getCostProfileDisplay('packaging', packagingProfile)
-  const laborCostSource = laborOverridePerBatch > 0
-   ? `Product override · ${php(laborOverridePerBatch)}/batch`
-   : getCostProfileDisplay('labor', laborProfile)
-  const deliveryCostSource = deliveryOverridePerPiece > 0
-   ? 'Product override'
-   : getCostProfileDisplay('delivery', deliveryProfile)
+	  const laborCostSource = laborOverridePerBatch > 0
+	   ? `Manual product cost · ${php(laborOverridePerBatch / safePiecesPerBatch)}/pc (${php(laborOverridePerBatch)}/batch)`
+	   : getVariantLaborHandlingDisplay(variant, laborProfile)
+	  const deliveryCostSource = deliveryOverridePerPiece > 0
+	   ? `Manual product cost · ${php(deliveryOverridePerPiece)}/pc`
+	   : getCostProfileDisplay('delivery', deliveryProfile)
   const wastePct = clampCostingPercentage(costSettings.waste_percentage)
   const returnPct = clampCostingPercentage(costSettings.expected_return_percentage)
   const sellableYieldFactor = Math.max(0.01, (1 - wastePct / 100) * (1 - returnPct / 100))
@@ -11561,6 +11712,8 @@ Cancel = create batch record only for existing stock.`)
   return {
    variant,
    variantIngs,
+   equivalentUnitFactor,
+   normalDailyPieces:Math.max(0, safeNum(variant.normal_daily_pieces)),
    rowDetails,
    ingredientBatchCost,
    ingredientCost,
@@ -11615,8 +11768,11 @@ Cancel = create batch record only for existing stock.`)
   const allocation = computeCostAllocationSummary()
   const variantData = donutVariants.map(v => ({...v,...computeVariantCost(v.id, v.pieces_per_batch)}))
   const costReadyVariants = variantData.filter(v => v.isCostReady)
+  const readyMixTotal = costReadyVariants.reduce((sum,v)=>sum + Math.max(0,safeNum(v.normal_daily_pieces)),0)
   const avgContribution = costReadyVariants.length > 0
-   ? costReadyVariants.reduce((sum, v) => sum + Math.max(0, v.currentResellerPrice - v.directMaterialCostPerPiece), 0) / costReadyVariants.length
+   ? readyMixTotal > 0
+    ? costReadyVariants.reduce((sum, v) => sum + Math.max(0, v.currentResellerPrice - v.directMaterialCostPerPiece) * Math.max(0,safeNum(v.normal_daily_pieces)), 0) / readyMixTotal
+    : costReadyVariants.reduce((sum, v) => sum + Math.max(0, v.currentResellerPrice - v.directMaterialCostPerPiece), 0) / costReadyVariants.length
    : 0
   const dailyFixedRequirement = allocation.dailyOperatingCost + allocation.dailyLabor
   const dailyBEP = avgContribution > 0 ? Math.ceil(dailyFixedRequirement / avgContribution) : 0
@@ -11777,13 +11933,13 @@ Cancel = create batch record only for existing stock.`)
   <div style="text-align:center;border-bottom:2px solid #ca1b1b;padding-bottom:8px"><h1>Roma's Donuts</h1><div style="font-size:12px;font-weight:bold">PROFESSIONAL PRODUCT COSTING & PRICING REPORT</div><div style="color:#777;margin-top:3px">Generated ${new Date().toLocaleString('en-PH')} | Company target margin ${safeNum(costSettings.target_margin_percentage)}% | Reseller margin ${safeNum(costSettings.reseller_margin_percentage)}%</div></div>
   <div class="cards">
    ${[
-    ['Cost-ready products',`${readyCount}/${fin.variantData.length}`],['Daily labor',php(fin.dailyLabor)],['Daily operating OPEX',php(fin.dailyOperatingCost)],['Labor / normal piece',php(fin.laborPerPiece)],['Operating OPEX / normal piece',php(fin.operatingCostPerPiece)],['Estimated daily BEP',fin.dailyBEP?`${fin.dailyBEP.toLocaleString('en-PH')} pcs`:'Incomplete recipes']
+    ['Cost-ready products',`${readyCount}/${fin.variantData.length}`],['Daily labor',php(fin.dailyLabor)],['Daily operating OPEX',php(fin.dailyOperatingCost)],['Labor / standard EU',php(fin.laborPerPiece)],['Operating OPEX / standard EU',php(fin.operatingCostPerPiece)],['Estimated daily BEP',fin.dailyBEP?`${fin.dailyBEP.toLocaleString('en-PH')} pcs`:'Incomplete recipes']
    ].map(([label,value])=>`<div class="card"><div class="label">${label}</div><div class="value">${value}</div></div>`).join('')}
   </div>
   <table><thead><tr><th>Product</th><th>Category</th><th>Materials</th><th>Labor</th><th>Operating OPEX</th><th>Loss Recovery</th><th>Full Cost</th><th>Company Price Now</th><th>Current SRP</th><th>Company Margin</th><th>Required Company Price</th><th>Suggested SRP</th><th>Status</th></tr></thead><tbody>
   ${fin.variantData.map(v=>`<tr><td><strong>${v.name}</strong><div class="muted">${safeNum(v.pieces_per_batch)} pcs/batch</div></td><td>${v.category||''}</td><td class="right">${v.isCostReady?php(v.directMaterialCostPerPiece):'—'}</td><td class="right">${php(v.laborPerPiece)}</td><td class="right">${php(v.fixedPerPiece)}</td><td class="right">${php(v.lossAllowancePerPiece)}</td><td class="right"><strong>${v.isCostReady?php(v.totalCost):'—'}</strong></td><td class="right">${php(v.currentResellerPrice)}</td><td class="right">${php(v.currentRetailPrice)}</td><td class="right ${v.isCostReady&&v.resellerChannelMarginPct>=v.targetMarginPct?'ok':'warn'}">${v.isCostReady?`${v.resellerChannelMarginPct.toFixed(1)}%`:'—'}</td><td class="right">${v.isCostReady?php(v.recommendedCompanyPrice):'—'}</td><td class="right ok">${v.isCostReady?php(v.recommendedRetailPrice):'—'}</td><td class="${v.statusCode==='healthy'?'ok':'warn'}">${v.statusLabel}</td></tr>`).join('')}
   </tbody></table>
-  <p style="margin-top:8px;color:#666;line-height:1.5"><strong>Formula:</strong> exact linked recipe cost + packaging + direct labor + utilities + factory overhead + delivery + administrative OPEX + depreciation, divided by the sellable yield after configured waste and returns. Suggested SRP protects the company target margin and the reseller margin.</p>
+  <p style="margin-top:8px;color:#666;line-height:1.5"><strong>Formula:</strong> exact linked recipe and packaging cost + normalized equivalent-unit allocation of labor, utilities, factory overhead, delivery, administrative OPEX, and depreciation, divided by the sellable yield after configured waste and returns. Size/EU, handling, and route are separate drivers; selling price is never an allocation driver.</p>
   <div class="no-print" style="text-align:center;margin-top:14px"><button onclick="window.print()" style="padding:9px 22px;background:#ca1b1b;color:white;border:none;border-radius:7px;font-weight:bold;cursor:pointer">PRINT REPORT</button></div>
   </body></html>`)
   pw.document.close()
@@ -34151,12 +34307,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {/* Mobile Top Bar */}
  {isMobile && (
- <div style={{ background:'#1a1a2e', padding:'12px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
- <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
- <img src="/logo.png" alt="Logo" style={{ width:'28px', height:'28px', objectFit:'contain' }} />
- <span style={{ color:'white', fontWeight:'bold', fontSize:'14px' }}>Roma's Donuts</span>
+ <div style={{ background:'#1a1a2e', padding:'8px 12px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexShrink:0 }}>
+ <div style={{ minWidth:0, flex:'1 1 auto' }}>
+ <img src={ROMAS_SIDEBAR_BRAND_IMAGE} alt="Roma's Donuts — Every bite is a little piece of heaven" style={{ width:'100%', maxWidth:'200px', height:'54px', objectFit:'cover', display:'block', borderRadius:'10px', border:'1px solid rgba(253,212,18,0.75)', boxShadow:'0 4px 12px rgba(0,0,0,0.24)' }} />
  </div>
- <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+ <div style={{ display:'flex', gap:'8px', alignItems:'center', flexShrink:0 }}>
  {adminEmployee && <button onClick={openAdminEmployeePortal} style={{ background:'#ca1b1b', border:'none', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}> MY TIME</button>}
  <button onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.2)', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold' }}>{sidebarOpen?' ':' '}</button>
  </div>
@@ -39967,8 +40122,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'9px', marginBottom:'14px' }}>
    {[
-    ['Daily Labor',php(fin.dailyLabor),'#7b4f9e',`${php(fin.laborPerPiece)}/normal piece`],
-    ['Daily Operating OPEX',php(fin.dailyOperatingCost),'#4a90d9',`${php(fin.operatingCostPerPiece)}/normal piece`],
+    ['Daily Labor',php(fin.dailyLabor),'#7b4f9e',`${php(fin.laborPerPiece)}/standard EU`],
+    ['Daily Operating OPEX',php(fin.dailyOperatingCost),'#4a90d9',`${php(fin.operatingCostPerPiece)}/standard EU`],
     ['Average Company Margin',`${avgCompanyMargin.toFixed(1)}%`,avgCompanyMargin>=safeNum(costSettings.target_margin_percentage)?'#2d8a4e':'#ca1b1b',`Target ${safeNum(costSettings.target_margin_percentage)}%`],
     ['Cost-Ready Products',`${readyVariants.length}/${fin.variantData.length}`,'#2d8a4e','Complete and auditable'],
     ['Needs Review',reviewVariants.length,reviewVariants.length?'#ca1b1b':'#2d8a4e',reviewVariants.length?'Fix recipe or price':'All healthy'],
@@ -39977,14 +40132,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   <div style={{ background:'white', border:'1px solid #eee', borderRadius:'13px', padding:'14px', marginBottom:'14px' }}>
    <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'10px' }}>
-    <div><p style={{ fontWeight:'900', color:'#333', fontSize:'13px', margin:'0 0 3px' }}>Per-piece allocation at normal production volume</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{safeNum(costSettings.total_daily_pieces).toLocaleString('en-PH')} pieces/day × {safeNum(costSettings.production_days_per_month)} production days/month</p></div>
+    <div><p style={{ fontWeight:'900', color:'#333', fontSize:'13px', margin:'0 0 3px' }}>Normalized shared-cost allocation</p><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{safeNum(costSettings.total_daily_pieces).toLocaleString('en-PH')} pieces/day normalized from {safeNum(fin.configuredMixPieces).toLocaleString('en-PH')} product-mix pieces into {safeNum(fin.totalDailyEquivalentUnits).toLocaleString('en-PH')} equivalent units/day</p></div>
     <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 12px', fontSize:'10px' }} onClick={()=>setCostingView('settings')}>EDIT COST DRIVERS</button>
    </div>
    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'7px' }}>
     {[
      ['Labor',fin.laborPerPiece],['Utilities',fin.utilitiesPerPiece],['Factory overhead',fin.factoryOverheadPerPiece],['Delivery',fin.deliveryPerPiece],['Admin OPEX',fin.adminOpexPerPiece],['Depreciation',fin.equipmentDepreciationPerPiece]
-    ].map(([label,value])=><div key={label} style={{ background:'#f8f9fb', borderRadius:'8px', padding:'8px', textAlign:'center' }}><p style={{ color:'#888', fontSize:'9px', margin:'0 0 2px' }}>{label}</p><p style={{ color:'#333', fontWeight:'900', fontSize:'12px', margin:0 }}>{php(value)}/pc</p></div>)}
+    ].map(([label,value])=><div key={label} style={{ background:'#f8f9fb', borderRadius:'8px', padding:'8px', textAlign:'center' }}><p style={{ color:'#888', fontSize:'9px', margin:'0 0 2px' }}>{label}</p><p style={{ color:'#333', fontWeight:'900', fontSize:'12px', margin:0 }}>{php(value)}/standard EU</p></div>)}
    </div>
+   {!fin.hasNormalizedMix && <div style={{ background:'#fff0f0', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'9px', marginTop:'9px', color:'#8b1111', fontSize:'10px', lineHeight:1.5 }}><strong>Product mix required:</strong> enter a normal daily product-mix quantity for active products. Until then, the engine uses the legacy standard-piece fallback and cannot prove that shared pools reconcile exactly.</div>}
+   <div style={{ background:'#eef7ff', border:'1px solid #9ac7ef', borderRadius:'8px', padding:'9px', marginTop:'9px', color:'#214d72', fontSize:'10px', lineHeight:1.5 }}><strong>Normalization:</strong> each central pool is divided by its weighted equivalent-unit denominator. Labor also includes handling multipliers; delivery also includes route multipliers. This keeps the total allocated pool equal to the actual central expense instead of adding extra cost.</div>
    <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'8px', padding:'9px', marginTop:'9px', color:'#665500', fontSize:'10px', lineHeight:1.5 }}><strong>Loss recovery:</strong> production waste {safeNum(costSettings.waste_percentage)}% and expected unsold returns {safeNum(costSettings.expected_return_percentage)}%. The engine divides by the remaining sellable yield instead of simply adding the percentages.</div>
   </div>
 
@@ -39996,7 +40153,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <div style={{ minWidth:'1160px' }}>
      <div style={{ display:'grid', gridTemplateColumns:'1.8fr repeat(8,1fr) 1.15fr', gap:'6px', background:'#f6f7f9', padding:'7px 9px', color:'#777', fontSize:'9px', fontWeight:'900' }}><span>PRODUCT</span><span style={{textAlign:'right'}}>MATERIALS</span><span style={{textAlign:'right'}}>LABOR</span><span style={{textAlign:'right'}}>OPEX</span><span style={{textAlign:'right'}}>FULL COST</span><span style={{textAlign:'right'}}>COMPANY PRICE</span><span style={{textAlign:'right'}}>CURRENT SRP</span><span style={{textAlign:'right'}}>MARGIN</span><span style={{textAlign:'right'}}>SUGGESTED SRP</span><span style={{textAlign:'center'}}>STATUS</span></div>
      {group.variants.map((v,index)=><div key={v.id} style={{ display:'grid', gridTemplateColumns:'1.8fr repeat(8,1fr) 1.15fr', gap:'6px', padding:'8px 9px', alignItems:'center', borderTop:'1px solid #eee', background:index%2===0?'white':'#fcfcfc' }}>
-      <button onClick={()=>{setCostingView('recipes');setExpandedRecipeVariantId(v.id)}} style={{ border:'none', background:'transparent', padding:0, textAlign:'left', cursor:'pointer' }}><strong style={{ color:'#333', fontSize:'11px' }}>{v.name}</strong><div style={{ color:'#999', fontSize:'8px' }}>{safeNum(v.pieces_per_batch)} pcs/batch</div></button>
+      <button onClick={()=>{setCostingView('recipes');setExpandedRecipeVariantId(v.id)}} style={{ border:'none', background:'transparent', padding:0, textAlign:'left', cursor:'pointer' }}><strong style={{ color:'#333', fontSize:'11px' }}>{v.name}</strong><div style={{ color:'#999', fontSize:'8px' }}>{safeNum(v.pieces_per_batch)} pcs/batch · EU {positiveNum(v.equivalentUnitFactor,1).toFixed(2)} · mix {safeNum(v.normalDailyPieces)}/day</div></button>
       <span style={{ textAlign:'right', fontSize:'10px' }}>{v.isCostReady?php(v.directMaterialCostPerPiece):'—'}</span>
       <span style={{ textAlign:'right', fontSize:'10px' }}>{php(v.laborPerPiece)}</span>
       <span style={{ textAlign:'right', fontSize:'10px' }}>{php(v.fixedPerPiece)}</span>
@@ -40019,7 +40176,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div>
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'10px', padding:'12px', marginBottom:'16px', fontSize:'12px' }}>
  <strong style={{ color:'#ca1b1b' }}> Required Supabase Tables:</strong>
- <p style={{ color:'#555', margin:'6px 0 2px' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> includes selling_price, pieces_per_batch, packaging_cost_per_piece, labor_cost_per_batch, and delivery_cost_per_piece. Run the supplied migration before using product-specific overrides.</p>
+ <p style={{ color:'#555', margin:'6px 0 2px' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>donut_variants</code> includes selling_price, pieces_per_batch, normal_daily_pieces, equivalent_unit_factor, equivalent_unit_note, reusable profile IDs, and documented override fields. Shared costs normalize from these allocation drivers; selling price is never used as a cost driver.</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>base_dough_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at</p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>powder_base_recipe</code> id (uuid PK), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), notes (text), created_at <strong style={{ color:'#ca1b1b' }}>required for permanent Powder Base saving</strong></p>
  <p style={{ color:'#555', margin:'2px 0' }}> <code style={{ background:'#eee', padding:'1px 4px', borderRadius:'3px' }}>variant_recipes</code> id (uuid PK), variant_id (uuid), inventory_item_id (uuid nullable), item_name (text), quantity_per_batch (numeric), unit (text), ingredient_type (text), notes (text), created_at</p>
@@ -40221,7 +40378,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(220px,1.5fr) repeat(5,minmax(82px,0.7fr)) auto', gap:'8px', alignItems:'center' }}>
       <div>
        <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}><strong style={{ color:'#333', fontSize:'12px' }}>{v.name}</strong><Badge label={cost.statusLabel} color={statusColor}/>{hasBaseLink&&<Badge label="BASE" color="green"/>}{hasPowderLink&&<Badge label="POWDER" color="blue"/>}</div>
-       <p style={{ color:'#999', fontSize:'9px', margin:'3px 0 0' }}>{safeNum(v.pieces_per_batch)} pcs/batch · {recipeRows.length} linked component(s)</p>
+       <p style={{ color:'#999', fontSize:'9px', margin:'3px 0 0' }}>{safeNum(v.pieces_per_batch)} pcs/batch · EU {positiveNum(v.equivalent_unit_factor,1).toFixed(2)} · handling {safeNum(v.labor_handling_factor,0)>0?safeNum(v.labor_handling_factor).toFixed(2):'profile'} · normal mix {safeNum(v.normal_daily_pieces)} pcs/day · {recipeRows.length} linked component(s)</p>
       </div>
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>MATERIALS/PC</p><strong style={{ color:'#333', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.directMaterialCostPerPiece):'—'}</strong></div>
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>FULL COST/PC</p><strong style={{ color:'#ca1b1b', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.totalCost):'—'}</strong></div>
@@ -40230,7 +40387,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>SUGGESTED SRP</p><strong style={{ color:'#2d8a4e', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.recommendedRetailPrice):'—'}</strong></div>
       <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end' }}>
        <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>setExpandedRecipeVariantId(isExpanded?null:v.id)}>{isExpanded?'HIDE':'DETAILS'}</button>
-       <button style={{...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setEditingVariantId(v.id);setAdvancedCostOverrideVariantId(null);setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price, packaging_profile_id:v.packaging_profile_id || getDefaultCostProfile('packaging')?.id || '', labor_profile_id:v.labor_profile_id || getDefaultCostProfile('labor')?.id || '', delivery_profile_id:v.delivery_profile_id || getDefaultCostProfile('delivery')?.id || '', packaging_cost_per_piece:v.packaging_cost_per_piece || '', labor_cost_per_batch:v.labor_cost_per_batch || '', delivery_cost_per_piece:v.delivery_cost_per_piece || '', cost_override_notes:v.cost_override_notes || '' })}}>PRODUCT SETUP</button>
+	       <button style={{...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setEditingVariantId(v.id);setAdvancedCostOverrideVariantId(null);setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price, normal_daily_pieces:v.normal_daily_pieces || '', equivalent_unit_factor:v.equivalent_unit_factor || 1, equivalent_unit_note:v.equivalent_unit_note || '', packaging_profile_id:v.packaging_profile_id || getDefaultCostProfile('packaging')?.id || '', labor_profile_id:v.labor_profile_id || getDefaultCostProfile('labor')?.id || '', labor_handling_factor:v.labor_handling_factor ?? '', delivery_profile_id:v.delivery_profile_id || getDefaultCostProfile('delivery')?.id || '', packaging_cost_per_piece:v.packaging_cost_per_piece || '', labor_cost_per_piece_manual:safeNum(v.labor_cost_per_batch)>0?moneyRound(safeNum(v.labor_cost_per_batch)/positiveNum(v.pieces_per_batch,1)):'', delivery_cost_per_piece:v.delivery_cost_per_piece || '', cost_override_notes:v.cost_override_notes || '' })}}>PRODUCT SETUP</button>
        <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setSelectedRecipeVariantId(v.id);setExpandedRecipeVariantId(v.id);setEditingVariantRecipe(recipeRows.length?recipeRows.map(r=>({...r,quantity_per_batch:productionRecipeQuantityGrams(r),unit:'g'})):[{item_name:'',inventory_item_id:'',quantity_per_batch:'',unit:'g',ingredient_type:'topping',notes:''}])}}>{recipeRows.length?'EDIT RECIPE':'ADD RECIPE'}</button>
       </div>
      </div>
@@ -40240,29 +40397,41 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        ...v,
        pieces_per_batch:positiveNum(editVariantFields.pieces_per_batch || v.pieces_per_batch),
        selling_price:Math.max(0, safeNum(editVariantFields.selling_price ?? v.selling_price)),
+       normal_daily_pieces:Math.max(0, safeNum(editVariantFields.normal_daily_pieces ?? v.normal_daily_pieces)),
+       equivalent_unit_factor:Math.min(10, positiveNum(editVariantFields.equivalent_unit_factor ?? v.equivalent_unit_factor, 1)),
+       equivalent_unit_note:editVariantFields.equivalent_unit_note || '',
        packaging_profile_id:editVariantFields.packaging_profile_id || null,
        labor_profile_id:editVariantFields.labor_profile_id || null,
+       labor_handling_factor:editVariantFields.labor_handling_factor === '' ? null : Math.min(5, Math.max(0.01, safeNum(editVariantFields.labor_handling_factor, 1))),
        delivery_profile_id:editVariantFields.delivery_profile_id || null,
        packaging_cost_per_piece:Math.max(0, safeNum(editVariantFields.packaging_cost_per_piece)),
-       labor_cost_per_batch:Math.max(0, safeNum(editVariantFields.labor_cost_per_batch)),
-       delivery_cost_per_piece:Math.max(0, safeNum(editVariantFields.delivery_cost_per_piece)),
-       cost_override_notes:editVariantFields.cost_override_notes || ''
-      }
-      const previewCost = computeVariantCost(v.id, previewVariant.pieces_per_batch, null, previewVariant)
-      const advancedOpen = String(advancedCostOverrideVariantId || '') === String(v.id)
+	       labor_cost_per_batch:Math.max(0, safeNum(editVariantFields.labor_cost_per_piece_manual)) * positiveNum(editVariantFields.pieces_per_batch || v.pieces_per_batch, 1),
+	       delivery_cost_per_piece:Math.max(0, safeNum(editVariantFields.delivery_cost_per_piece)),
+	       cost_override_notes:editVariantFields.cost_override_notes || ''
+	      }
+	      const previewCost = computeVariantCost(v.id, previewVariant.pieces_per_batch, null, previewVariant)
+	      const automaticProfileCost = computeVariantCost(v.id, previewVariant.pieces_per_batch, null, {...previewVariant,labor_cost_per_batch:0,labor_override_enabled:false,delivery_cost_per_piece:0,delivery_override_enabled:false})
+	      const advancedOpen = String(advancedCostOverrideVariantId || '') === String(v.id)
       return <div style={{ background:'linear-gradient(180deg,#fff8dc,#fffdf4)', border:'1px solid #f5c518', borderTop:'5px solid #ca1b1b', borderRadius:'11px', padding:'12px', marginTop:'9px' }}>
        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
         <div><strong style={{color:'#ca1b1b',fontSize:'12px'}}>Product Cost Assignment</strong><p style={{color:'#806600',fontSize:'9px',margin:'3px 0 0',lineHeight:1.45}}>Assign reusable profiles. Every product automatically pulls the current company allocation; advanced overrides are reserved for genuine product exceptions.</p></div>
         <button style={{...btnGray,width:'auto',padding:'6px 10px',marginTop:0,fontSize:'9px'}} onClick={()=>setCostingView('profiles')}>MANAGE PROFILES</button>
        </div>
-       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))', gap:'8px' }}>
+       <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(4,minmax(0,1fr))', gap:'8px' }}>
         <div><label style={lblS}>Good pieces / batch</label><input type="number" min="1" value={editVariantFields.pieces_per_batch??v.pieces_per_batch} onChange={e=>setEditVariantFields(p=>({...p,pieces_per_batch:e.target.value}))} style={{...inputStyle,marginBottom:0}}/></div>
         <div><label style={lblS}>Current retail price</label><input type="number" min="0" step="0.01" value={editVariantFields.selling_price??v.selling_price} onChange={e=>setEditVariantFields(p=>({...p,selling_price:e.target.value}))} style={{...inputStyle,marginBottom:0}}/></div>
+        <div><label style={lblS}>Normal daily product mix</label><input type="number" min="0" step="0.01" value={editVariantFields.normal_daily_pieces??v.normal_daily_pieces??0} onChange={e=>setEditVariantFields(p=>({...p,normal_daily_pieces:e.target.value}))} style={{...inputStyle,marginBottom:0}}/><p style={{color:'#806600',fontSize:'8px',margin:'3px 0 0'}}>Used as a relative mix weight; automatically normalized to company output.</p></div>
+        <div><label style={lblS}>Size / equivalent-unit factor</label><input type="number" min="0.01" max="10" step="0.01" value={editVariantFields.equivalent_unit_factor??v.equivalent_unit_factor??1} onChange={e=>setEditVariantFields(p=>({...p,equivalent_unit_factor:e.target.value}))} style={{...inputStyle,marginBottom:0}}/><p style={{color:'#806600',fontSize:'8px',margin:'3px 0 0'}}>1.00 = standard large donut; 0.25 = one-quarter unit.</p></div>
         <div><label style={lblS}>Packaging profile</label><select value={editVariantFields.packaging_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,packaging_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Company default profile</option>{costPackagingProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_default?'company default':`${php(row.cost_per_piece)}/pc`}</option>)}</select></div>
         <div><label style={lblS}>Labor profile</label><select value={editVariantFields.labor_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,labor_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Standard company labor</option>{costLaborProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_allocation!==false?`×${positiveNum(row.allocation_multiplier,1).toFixed(2)}`:`${php(row.fixed_cost_per_piece)}/pc`}</option>)}</select></div>
-        <div><label style={lblS}>Delivery profile</label><select value={editVariantFields.delivery_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,delivery_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Standard company delivery</option>{costDeliveryProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_allocation!==false?`×${positiveNum(row.allocation_multiplier,1).toFixed(2)}`:`${php(row.fixed_cost_per_piece)}/pc`}</option>)}</select></div>
-       </div>
-       <p style={{margin:'7px 0 0',color:'#806600',fontSize:'9px',fontWeight:'700',lineHeight:1.45}}>The three selected profile IDs are saved directly to this product. The editor now stays protected until Supabase returns and verifies the stored row.</p>
+	        <div><label style={lblS}>Manual handling factor (optional)</label><input type="number" min="0.01" max="5" step="0.01" disabled={safeNum(editVariantFields.labor_cost_per_piece_manual)>0} value={editVariantFields.labor_handling_factor??''} onChange={e=>setEditVariantFields(p=>({...p,labor_handling_factor:e.target.value}))} placeholder="Blank = selected profile" style={{...inputStyle,marginBottom:0,opacity:safeNum(editVariantFields.labor_cost_per_piece_manual)>0?.55:1}}/><p style={{color:'#806600',fontSize:'8px',margin:'3px 0 0'}}>{safeNum(editVariantFields.labor_cost_per_piece_manual)>0?'Manual labor cost is active, so the handling factor is temporarily ignored.':'Example: 0.25 for one-quarter labor effort. This changes the allocation weight only.'}</p></div>
+	        <div><label style={lblS}>Manual labor cost / piece (optional)</label><input type="number" min="0" step="0.01" value={editVariantFields.labor_cost_per_piece_manual??''} onChange={e=>setEditVariantFields(p=>({...p,labor_cost_per_piece_manual:e.target.value}))} placeholder={`Auto ${php(automaticProfileCost.laborPerPiece)}/pc`} style={{...inputStyle,marginBottom:0,border:safeNum(editVariantFields.labor_cost_per_piece_manual)>0?'2px solid #ca1b1b':inputStyle.border}}/><p style={{color:'#806600',fontSize:'8px',margin:'3px 0 0'}}>Blank uses {getVariantLaborHandlingDisplay(previewVariant,previewCost.laborProfile)} at {php(automaticProfileCost.laborPerPiece)}/pc. A manual amount replaces it.</p></div>
+	        <div><label style={lblS}>Delivery profile</label><select value={editVariantFields.delivery_profile_id || ''} onChange={e=>setEditVariantFields(p=>({...p,delivery_profile_id:e.target.value}))} style={{...inputStyle,marginBottom:0}}><option value="">Standard company delivery</option>{costDeliveryProfiles.filter(row=>row.is_active!==false).map(row=><option key={row.id} value={row.id}>{row.profile_name} · {row.uses_company_allocation!==false?`×${positiveNum(row.allocation_multiplier,1).toFixed(2)}`:`${php(row.fixed_cost_per_piece)}/pc`}</option>)}</select></div>
+	        <div><label style={lblS}>Manual delivery cost / piece (optional)</label><input type="number" min="0" step="0.01" value={editVariantFields.delivery_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,delivery_cost_per_piece:e.target.value}))} placeholder={`Auto ${php(automaticProfileCost.deliveryPerPiece)}/pc`} style={{...inputStyle,marginBottom:0,border:safeNum(editVariantFields.delivery_cost_per_piece)>0?'2px solid #ca1b1b':inputStyle.border}}/><p style={{color:'#806600',fontSize:'8px',margin:'3px 0 0'}}>Blank uses {getCostProfileDisplay('delivery',previewCost.deliveryProfile)} at {php(automaticProfileCost.deliveryPerPiece)}/pc. A manual amount replaces it.</p></div>
+	        <div><label style={lblS}>Equivalent-unit basis note</label><input value={editVariantFields.equivalent_unit_note || ''} onChange={e=>setEditVariantFields(p=>({...p,equivalent_unit_note:e.target.value}))} placeholder="Example: 20g bite ÷ 80g standard = 0.25" style={{...inputStyle,marginBottom:0}}/></div>
+	       </div>
+	       <div style={{marginTop:'8px'}}><label style={lblS}>Manual cost justification {safeNum(previewVariant.packaging_cost_per_piece)>0||safeNum(previewVariant.labor_cost_per_batch)>0||safeNum(previewVariant.delivery_cost_per_piece)>0?'(required)':'(optional)'}</label><input value={editVariantFields.cost_override_notes || ''} onChange={e=>setEditVariantFields(p=>({...p,cost_override_notes:e.target.value}))} placeholder="Example: bite-size item needs less handling and takes less delivery space" style={{...inputStyle,marginBottom:0,border:(safeNum(previewVariant.packaging_cost_per_piece)>0||safeNum(previewVariant.labor_cost_per_batch)>0||safeNum(previewVariant.delivery_cost_per_piece)>0)&&String(editVariantFields.cost_override_notes||'').trim().length<8?'2px solid #ca1b1b':inputStyle.border}}/><p style={{color:'#806600',fontSize:'8px',margin:'3px 0 0'}}>Required for audit whenever packaging, labor, or delivery uses a manual peso amount.</p></div>
+	       <p style={{margin:'7px 0 0',color:'#806600',fontSize:'9px',fontWeight:'700',lineHeight:1.45}}>Shared pools are normalized across the full daily product mix. Selling price never controls allocation. Size/EU, handling, and route are independent drivers, and the editor stays protected until Supabase returns and verifies the stored row.</p>
 
        <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(6,1fr)', gap:'7px', marginTop:'10px' }}>
         {[
@@ -40281,19 +40450,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        <div style={{ marginTop:'9px' }}>
         <button style={{...btnBlack,width:'auto',padding:'7px 11px',marginTop:0,fontSize:'9px'}} onClick={()=>setAdvancedCostOverrideVariantId(advancedOpen?null:v.id)}>{advancedOpen?'HIDE ADVANCED OVERRIDES':'ADVANCED COST OVERRIDES'}</button>
        </div>
-       {advancedOpen && <div style={{background:'#fff5f5',border:'1px solid rgba(202,27,27,0.24)',borderRadius:'9px',padding:'10px',marginTop:'8px'}}>
-        <p style={{color:'#ca1b1b',fontSize:'9px',fontWeight:'900',margin:'0 0 7px'}}>Use only when this product cannot reasonably use its assigned profile. Blank or zero returns to the profile calculation.</p>
-        <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'8px'}}>
-         <div><label style={lblS}>Packaging / piece override</label><input type="number" min="0" step="0.01" value={editVariantFields.packaging_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,packaging_cost_per_piece:e.target.value}))} placeholder="Blank = packaging profile" style={{...inputStyle,marginBottom:0}}/></div>
-         <div><label style={lblS}>Labor / batch override</label><input type="number" min="0" step="0.01" value={editVariantFields.labor_cost_per_batch??''} onChange={e=>setEditVariantFields(p=>({...p,labor_cost_per_batch:e.target.value}))} placeholder="Blank = labor profile" style={{...inputStyle,marginBottom:0}}/></div>
-         <div><label style={lblS}>Delivery / piece override</label><input type="number" min="0" step="0.01" value={editVariantFields.delivery_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,delivery_cost_per_piece:e.target.value}))} placeholder="Blank = delivery profile" style={{...inputStyle,marginBottom:0}}/></div>
-        </div>
-        <label style={{...lblS,marginTop:'8px'}}>Override justification</label><input value={editVariantFields.cost_override_notes || ''} onChange={e=>setEditVariantFields(p=>({...p,cost_override_notes:e.target.value}))} placeholder="Example: premium box, heavy manual finishing, special far-route delivery" style={{...inputStyle,marginBottom:0}}/>
-       </div>}
+	       {advancedOpen && <div style={{background:'#fff5f5',border:'1px solid rgba(202,27,27,0.24)',borderRadius:'9px',padding:'10px',marginTop:'8px'}}>
+	        <p style={{color:'#ca1b1b',fontSize:'9px',fontWeight:'900',margin:'0 0 7px'}}>Packaging remains an advanced exception. Labor and delivery manual costs are now available directly beside their profiles above. Blank or zero returns to the automatic calculation.</p>
+	        <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)',gap:'8px'}}>
+	         <div><label style={lblS}>Packaging / piece override</label><input type="number" min="0" step="0.01" value={editVariantFields.packaging_cost_per_piece??''} onChange={e=>setEditVariantFields(p=>({...p,packaging_cost_per_piece:e.target.value}))} placeholder="Blank = packaging profile" style={{...inputStyle,marginBottom:0}}/></div>
+	        </div>
+	       </div>}
        <div style={{ display:'flex', gap:'7px', flexWrap:'wrap', marginTop:'10px' }}><button
         style={{...btnGreen,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px',opacity:String(savingVariantSetupId||'')===String(v.id)?0.65:1}}
         disabled={String(savingVariantSetupId||'')===String(v.id)}
-        onClick={async()=>{await updateVariant(v.id,{ pieces_per_batch:previewVariant.pieces_per_batch, selling_price:previewVariant.selling_price, packaging_profile_id:previewVariant.packaging_profile_id || null, labor_profile_id:previewVariant.labor_profile_id || null, delivery_profile_id:previewVariant.delivery_profile_id || null, packaging_cost_per_piece:previewVariant.packaging_cost_per_piece, labor_cost_per_batch:previewVariant.labor_cost_per_batch, delivery_cost_per_piece:previewVariant.delivery_cost_per_piece, cost_override_notes:String(previewVariant.cost_override_notes || '').trim() || null })}}
+        onClick={async()=>{await updateVariant(v.id,{ pieces_per_batch:previewVariant.pieces_per_batch, selling_price:previewVariant.selling_price, normal_daily_pieces:previewVariant.normal_daily_pieces, equivalent_unit_factor:previewVariant.equivalent_unit_factor, equivalent_unit_note:String(previewVariant.equivalent_unit_note || '').trim() || null, packaging_profile_id:previewVariant.packaging_profile_id || null, labor_profile_id:previewVariant.labor_profile_id || null, labor_handling_factor:editVariantFields.labor_handling_factor, delivery_profile_id:previewVariant.delivery_profile_id || null, packaging_cost_per_piece:previewVariant.packaging_cost_per_piece, labor_cost_per_batch:previewVariant.labor_cost_per_batch, delivery_cost_per_piece:previewVariant.delivery_cost_per_piece, cost_override_notes:String(previewVariant.cost_override_notes || '').trim() || null })}}
        >{String(savingVariantSetupId||'')===String(v.id)?'SAVING & VERIFYING...':'SAVE PRODUCT SETUP'}</button><button style={{...btnGray,width:'auto',padding:'7px 12px',marginTop:0,fontSize:'10px'}} onClick={()=>{setEditingVariantId(null);setAdvancedCostOverrideVariantId(null)}}>CANCEL</button></div>
       </div>
      })()}
@@ -40470,7 +40636,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <table style={{width:'100%',borderCollapse:'collapse',minWidth:'1780px'}}>
      <thead><tr style={{background:'#1a1a2e',color:'white'}}>{['Product','Ingredients','Packaging','Direct Materials','Labor','Production O/H','Manufacturing','Delivery','Delivered Cost','Admin OPEX','Loss Allowance','Fully Loaded','Company Price','Current SRP','Margin','Suggested SRP','Profiles','Status'].map(label=><th key={label} style={{padding:'8px 7px',fontSize:'8px',textAlign:label==='Product'||label==='Profiles'?'left':'right'}}>{label}</th>)}</tr></thead>
      <tbody>{fin.variantData.map((row,index)=><tr key={row.id} style={{borderTop:'1px solid #eee',background:index%2?'#fffdf4':'white'}}>
-      <td style={{padding:'8px 7px',fontSize:'10px',fontWeight:'900',color:'#333'}}>{row.name}<div style={{color:'#999',fontSize:'8px'}}>{row.category} · {safeNum(row.pieces_per_batch)} pcs/batch</div></td>
+      <td style={{padding:'8px 7px',fontSize:'10px',fontWeight:'900',color:'#333'}}>{row.name}<div style={{color:'#999',fontSize:'8px'}}>{row.category} · {safeNum(row.pieces_per_batch)} pcs/batch · EU {positiveNum(row.equivalentUnitFactor,1).toFixed(2)} · mix {safeNum(row.normalDailyPieces)}/day</div></td>
       {[row.ingredientCost,row.packagingPerPiece,row.directMaterialCostPerPiece,row.laborPerPiece,row.utilitiesPerPiece+row.factoryOverheadPerPiece+row.depreciationPerPiece,row.manufacturingCostPerPiece,row.deliveryPerPiece,row.deliveredCostPerPiece,row.adminOpexPerPiece,row.lossAllowancePerPiece,row.totalCost,row.currentResellerPrice,row.currentRetailPrice].map((value,i)=><td key={i} style={{padding:'8px 7px',fontSize:'9px',textAlign:'right',fontWeight:i===10?'900':'500',color:i===10?'#ca1b1b':'#555'}}>{row.isCostReady||i>10?php(value):'—'}</td>)}
       <td style={{padding:'8px 7px',fontSize:'9px',textAlign:'right',fontWeight:'900',color:row.resellerChannelMarginPct>=row.targetMarginPct?'#2d8a4e':'#ca1b1b'}}>{row.isCostReady?`${row.resellerChannelMarginPct.toFixed(1)}%`:'—'}</td>
       <td style={{padding:'8px 7px',fontSize:'9px',textAlign:'right',fontWeight:'900',color:'#2d8a4e'}}>{row.isCostReady?php(row.recommendedRetailPrice):'—'}</td>
@@ -40671,11 +40837,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     <p style={{color:'#fdd412',fontSize:'9px',fontWeight:'900',letterSpacing:'1px',margin:'0 0 8px'}}>LIVE ALLOCATION PREVIEW</p>
     <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)',gap:'8px'}}>
      {[
-      ['Monthly operating OPEX',php(allocation.monthlyOperatingCost)],['Daily operating OPEX',php(allocation.dailyOperatingCost)],['Labor / piece',php(allocation.laborPerPiece)],['Operating OPEX / piece',php(allocation.operatingCostPerPiece)],['Estimated daily BEP',fin.dailyBEP?`${fin.dailyBEP.toLocaleString('en-PH')} pcs`:'Complete recipes']
+      ['Monthly operating OPEX',php(allocation.monthlyOperatingCost)],['Daily operating OPEX',php(allocation.dailyOperatingCost)],['Labor / standard EU',php(allocation.laborPerPiece)],['Operating OPEX / standard EU',php(allocation.operatingCostPerPiece)],['Estimated daily BEP',fin.dailyBEP?`${fin.dailyBEP.toLocaleString('en-PH')} pcs`:'Complete recipes']
      ].map(([label,value])=><div key={label}><p style={{color:'rgba(255,255,255,0.55)',fontSize:'8px',margin:'0 0 2px'}}>{label}</p><strong style={{fontSize:'12px'}}>{value}</strong></div>)}
     </div>
    </div>
-   <div style={{background:'#fff8dc',border:'1px solid #f5c518',borderRadius:'8px',padding:'9px',fontSize:'9px',lineHeight:1.5,color:'#665500',marginBottom:'10px'}}><strong>Allocation rule:</strong> these company-wide costs are divided over normal good output. Product variants inherit them automatically through their assigned labor and delivery profiles. Use product overrides only for documented exceptions.</div>
+   <div style={{background:'#fff8dc',border:'1px solid #f5c518',borderRadius:'8px',padding:'9px',fontSize:'9px',lineHeight:1.5,color:'#665500',marginBottom:'10px'}}><strong>Allocation rule:</strong> these company-wide costs are divided over normalized equivalent units from the saved product mix. Product size, labor handling, and delivery route are separate weights; the engine normalizes each pool so it cannot charge more than the actual central expense. Use product overrides only for documented exceptions.</div>
    <button style={{...btnGreen,opacity:savingCostSettings?0.6:1}} disabled={savingCostSettings} onClick={saveCostSettings}>{savingCostSettings?'SAVING...':'SAVE ALL PROFESSIONAL COST SETTINGS'}</button>
   </div>
  })()}
