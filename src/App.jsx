@@ -28416,7 +28416,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   setPagasaRegion1Loading(true)
   if (!silent) setPagasaRegion1Error('')
   try {
-   const { data, error } = await supabase.functions.invoke('pagasa-region1-weather-v5', {
+   const { data, error } = await supabase.functions.invoke('pagasa-region1-weather-v6', {
     body:{ force }
    })
    if (error) throw error
