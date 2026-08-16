@@ -2473,45 +2473,6 @@ function dateStringDiffDays(a = '', b = '') {
  return Math.round((db.getTime() - da.getTime()) / (1000 * 60 * 60 * 24))
 }
 
-function medicalCertificateCoversAbsenceRange(cert = {}, absenceStart = '', absenceEnd = '') {
- const certStart = String(cert?.absence_start || cert?.leave_start || '').slice(0, 10)
- const certEnd = String(cert?.absence_end || cert?.leave_end || certStart || '').slice(0, 10)
- const status = String(cert?.status || 'uploaded').trim().toLowerCase()
- if (!certStart || !certEnd || !absenceStart || !absenceEnd) return false
- if (['rejected', 'void', 'voided', 'cancelled', 'deleted'].includes(status)) return false
- return certStart <= absenceStart && certEnd >= absenceEnd
-}
-
-function getMedicalCertificateAbsenceLock(attendanceLogs = [], medicalCertificates = [], referenceDate = '') {
- const refDate = String(referenceDate || getTodayDate()).slice(0, 10)
- const byDate = new Map()
- ;(attendanceLogs || []).forEach(log => {
-  const dateStr = String(log?.attendance_date || '').slice(0, 10)
-  if (!dateStr || dateStr >= refDate) return
-  const existing = byDate.get(dateStr)
-  if (!existing || (isAbsentAttendanceLog(log) && !isAbsentAttendanceLog(existing))) byDate.set(dateStr, log)
- })
- const dates = Array.from(byDate.keys()).sort().reverse()
- for (const endDate of dates) {
-  const endLog = byDate.get(endDate)
-  if (!isAbsentAttendanceLog(endLog)) continue
-  const startDate = addDaysToDateString(endDate, -1)
-  const startLog = byDate.get(startDate)
-  if (!isAbsentAttendanceLog(startLog)) continue
-  const covered = (medicalCertificates || []).some(cert => medicalCertificateCoversAbsenceRange(cert, startDate, endDate))
-  if (!covered) {
-   return {
-    locked: true,
-    absenceStart: startDate,
-    absenceEnd: endDate,
-    absentDays: 2,
-    message: `Time In locked. Medical certificate required for 2 consecutive absences (${formatDateForDisplay(startDate)} - ${formatDateForDisplay(endDate)}).`
-   }
-  }
- }
- return { locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
-}
-
 function getHolidayAbsenceGuardDates(holidayDate = '') {
  const dateStr = String(holidayDate || '').slice(0, 10)
  if (!dateStr) return []
@@ -6309,7 +6270,7 @@ export default function App() {
  const [disputeReasonPresets, setDisputeReasonPresets] = useState({})
  const [profilePhotoUrl, setProfilePhotoUrl] = useState(null)
  const [uploadingPhoto, setUploadingPhoto] = useState(false)
- const [medicalCertLock, setMedicalCertLock] = useState({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' })
+ const [medicalCertLock, setMedicalCertLock] = useState({ checking:true, locked:true, verificationError:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'Checking attendance eligibility...' })
  const [medicalCertUploading, setMedicalCertUploading] = useState(false)
  const [showOTRequest, setShowOTRequest] = useState(false)
  const [otRequestType, setOtRequestType] = useState('overtime')
@@ -7696,6 +7657,7 @@ export default function App() {
  if (!queue.length) return
  setSyncingOffline(true)
  let synced = 0
+ const remaining = []
  for (const item of queue) {
  try {
  if (item.type === 'timein') {
@@ -7732,12 +7694,16 @@ export default function App() {
   synced++
  }
  }
- } catch(e) { console.error('Sync error:', e) }
+ } catch(e) {
+  console.error('Sync error:', e)
+  remaining.push(item)
  }
- localStorage.setItem('offline_queue', '[]')
- setOfflineQueue([])
+ }
+ localStorage.setItem('offline_queue', JSON.stringify(remaining))
+ setOfflineQueue(remaining)
  setSyncingOffline(false)
  if (synced > 0) showToast(` Synced ${synced} offline record(s)!`)
+ if (remaining.length > 0) showToast(`${remaining.length} offline record(s) still require verification.`, 'red')
  }
 
  function queueOfflineAction(type, data) {
@@ -8263,7 +8229,7 @@ export default function App() {
  setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
  setTodaySchedule(null); setMyPayslips([]); setCameraMode(null)
  setCapturedPhoto(null); stopCamera(); setPendingAnnouncement(null); setShowAnnouncementPopup(false)
- setMedicalCertLock({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }); setMedicalCertUploading(false)
+ setMedicalCertLock({ checking:true, locked:true, verificationError:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'Checking attendance eligibility...' }); setMedicalCertUploading(false)
  setShowMySops(false); setMySopDocuments([]); setMySopAckRecords([]); setViewingMySop(null)
  }
  function closeAllPanels() {
@@ -17921,49 +17887,33 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  async function loadMedicalCertificateLock(emp) {
- if (!emp?.id) return { locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
- setMedicalCertLock(prev => ({...prev, checking:true }))
+ if (!emp?.id || !emp?.employee_code || !emp?.pin) {
+  const blocked = { checking:false, locked:true, verificationError:true, absenceStart:'', absenceEnd:'', absentDays:0, message:'Time In is temporarily locked because employee identity could not be verified.' }
+  setMedicalCertLock(blocked)
+  return blocked
+ }
+ setMedicalCertLock({ checking:true, locked:true, verificationError:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'Checking attendance eligibility...' })
  try {
-  const lookbackStart = addDaysToDateString(today, -14)
-  const { data:logs, error:logsError } = await supabase
-   .from('attendance_logs')
-   .select('id,attendance_date,status,time_in,time_out')
-   .eq('employee_id', emp.id)
-   .gte('attendance_date', lookbackStart)
-   .lte('attendance_date', today)
-   .order('attendance_date', { ascending:false })
-  if (logsError) throw logsError
-
-  let certificates = []
-  let certificateTableReady = true
-  try {
-   const { data:certRows, error:certError } = await supabase
-    .from('employee_medical_certificates')
-    .select('*')
-    .eq('employee_id', emp.id)
-    .order('created_at', { ascending:false })
-   if (certError) throw certError
-   certificates = certRows || []
-  } catch(certErr) {
-   console.warn('Medical certificate table not available yet:', certErr)
-   certificateTableReady = false
-   certificates = []
+  const { data, error } = await supabase.functions.invoke('attendance-medical-guard', {
+   body:{ action:'check', employee_code:emp.employee_code, pin:emp.pin, reference_date:today }
+  })
+  if (error || !data?.ok || !data?.lock) throw new Error(data?.message || error?.message || 'Attendance verification service did not return a valid result.')
+  const lockInfo = {
+   checking:false,
+   locked:!!data.lock.locked,
+   verificationError:false,
+   absenceStart:data.lock.absenceStart || '',
+   absenceEnd:data.lock.absenceEnd || '',
+   absentDays:safeNum(data.lock.absentDays, data.lock.locked ? 2 : 0),
+   message:data.lock.message || ''
   }
-
-  if (!certificateTableReady) {
-   const unlocked = { checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
-   setMedicalCertLock(unlocked)
-   return unlocked
-  }
-
-  const lockInfo = getMedicalCertificateAbsenceLock(logs || [], certificates, today)
-  setMedicalCertLock({...lockInfo, checking:false })
+  setMedicalCertLock(lockInfo)
   return lockInfo
  } catch(err) {
   console.error('Medical certificate lock check failed:', err)
-  const fallback = { checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' }
-  setMedicalCertLock(fallback)
-  return fallback
+  const blocked = { checking:false, locked:true, verificationError:true, absenceStart:'', absenceEnd:'', absentDays:0, message:'Time In is temporarily locked because attendance eligibility could not be verified. Check the internet connection and reload the app.' }
+  setMedicalCertLock(blocked)
+  return blocked
  }
  }
 
@@ -17985,30 +17935,17 @@ function buildDeliveryInvoicePrintCSS() {
  }
  setMedicalCertUploading(true)
  try {
-  const ext = (file.name?.split('.').pop() || 'pdf').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'pdf'
-  const safeCode = String(employee.employee_code || employee.id).replace(/[^a-zA-Z0-9_-]/g, '_')
-  const fileName = `${safeCode}_${medicalCertLock.absenceStart}_to_${medicalCertLock.absenceEnd}_${Date.now()}.${ext}`
-  const { error:uploadError } = await supabase.storage
-   .from('medical-certificates')
-   .upload(fileName, file, { upsert:false, contentType:file.type || 'application/octet-stream' })
-  if (uploadError) throw uploadError
-  const { data:urlData } = supabase.storage.from('medical-certificates').getPublicUrl(fileName)
-  const fileUrl = urlData?.publicUrl || null
-  const { error:insertError } = await supabase.from('employee_medical_certificates').insert({
-   employee_id:employee.id,
-   employee_code:employee.employee_code,
-   employee_name:employee.full_name,
-   absence_start:medicalCertLock.absenceStart,
-   absence_end:medicalCertLock.absenceEnd,
-   absent_days:medicalCertLock.absentDays || 2,
-   file_name:fileName,
-   file_url:fileUrl,
-   status:'uploaded'
-  })
-  if (insertError) throw insertError
+  const form = new FormData()
+  form.append('action', 'upload')
+  form.append('employee_code', employee.employee_code || '')
+  form.append('pin', employee.pin || '')
+  form.append('reference_date', today)
+  form.append('file', file, file.name || 'medical-certificate')
+  const { data, error } = await supabase.functions.invoke('attendance-medical-guard', { body:form })
+  if (error || !data?.ok) throw new Error(data?.message || error?.message || 'Secure medical certificate upload failed.')
   await logAudit('MEDICAL CERTIFICATE UPLOADED', employee.full_name || employee.employee_code || 'Employee', employee.full_name || '', `Uploaded medical certificate for ${medicalCertLock.absenceStart} to ${medicalCertLock.absenceEnd}`)
   showToast(' Medical certificate uploaded. Time In is unlocked.')
-  setMedicalCertLock({ checking:false, locked:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'' })
+  setMedicalCertLock({ checking:true, locked:true, verificationError:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'Verifying the uploaded certificate...' })
   await loadMedicalCertificateLock(employee)
  } catch(err) {
   console.error('Medical certificate upload failed:', err)
@@ -18082,15 +18019,19 @@ function buildDeliveryInvoicePrintCSS() {
  }
  }
  async function initiateTimeIn() {
+ if (medicalCertLock?.checking) {
+  alert('Please wait while the system verifies your attendance eligibility.')
+  return
+ }
  if (medicalCertLock?.locked) {
   alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
   return
  }
+ if (!navigator.onLine || !isOnline) {
+  alert('Internet connection is required for Time In so attendance eligibility can be verified securely.')
+  return
+ }
  if (requiresStrictCameraTimeIn(employee)) {
-  if (!navigator.onLine || !isOnline) {
-   alert('Internet connection is required for your Time In because the live selfie must upload before attendance is recorded.')
-   return
-  }
   if (!navigator.mediaDevices?.getUserMedia) {
    alert('Live camera access is unavailable in this browser. Please use the company tablet or a supported browser and allow Camera permission.')
    return
@@ -18188,6 +18129,11 @@ function buildDeliveryInvoicePrintCSS() {
  async function confirmTimeIn(photoOverride = null) {
  const selfiePhoto = photoOverride || capturedPhoto
  if (!selfiePhoto) { alert('Please take a selfie first.'); return }
+ if (medicalCertLock?.checking) {
+  alert('Time In is waiting for attendance eligibility verification. Please try again in a moment.')
+  setCameraMode(null); setCapturedPhoto(null)
+  return
+ }
  if (medicalCertLock?.locked) {
   alert(medicalCertLock.message || 'Time In is locked. Please upload your medical certificate first.')
   setCameraMode(null); setCapturedPhoto(null)
@@ -18195,26 +18141,9 @@ function buildDeliveryInvoicePrintCSS() {
  }
  const strictTimeIn = requiresStrictCameraTimeIn(employee)
  setLoading(true)
- // Keep the existing offline Time In behavior for normal employees. Only
- // employees explicitly enabled for strict camera Time In must upload first.
  if (!isOnline || !navigator.onLine) {
-  if (strictTimeIn) {
-   setLoading(false)
-   alert('Time In was not saved because the device is offline. Connect to the internet and try again so the selfie uploads first.')
-   return
-  }
-  const gracePeriod = employee.grace_period_minutes?? 10
-  let lateMinutes = 0, status = 'No Assigned Shift'
-  if (todaySchedule?.shift_start) {
-   const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
-   const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod ? roundPenaltyMinutes(raw, gracePeriod) : 0
-   status = lateMinutes > 0? 'Late': 'On Time'
-  }
-  const offlineLog = { employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, grace_period_minutes:gracePeriod, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:null }
-  queueOfflineAction('timein', { employee_id:employee.id, attendance_date:today, data:offlineLog })
-  setTodayLog({...offlineLog, id:'offline_'+Date.now() })
   setLoading(false); setCameraMode(null); setCapturedPhoto(null)
-  showToast(' Offline Time In saved locally. Will sync when online.')
+  alert('Time In was not saved because the device is offline. Connect to the internet so attendance eligibility can be verified securely.')
   return
  }
  const { data:existing } = await supabase.from('attendance_logs').select('*').eq('employee_id', employee.id).eq('attendance_date', today).maybeSingle()
@@ -18256,7 +18185,12 @@ function buildDeliveryInvoicePrintCSS() {
  }
  const { data, error } = await supabase.from('attendance_logs').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, grace_period_minutes:gracePeriod, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:selfieUrl }).select().single()
  setLoading(false)
- if (error) { alert('Time In failed: '+error.message); return }
+ if (error) {
+  const medicalLockError = String(error?.message || '').includes('MEDICAL_CERTIFICATE_REQUIRED')
+  if (medicalLockError) await loadMedicalCertificateLock(employee)
+  alert(medicalLockError ? 'Time In is locked. Upload your medical certificate first.' : 'Time In failed: '+error.message)
+  return
+ }
  setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
  await logAudit('TIME IN', employee.full_name, employee.full_name, `Timed in at ${data.time_in}${strictTimeIn?' | Strict camera upload':''}`)
  alert('Time In saved successfully!')
@@ -46521,15 +46455,20 @@ onClick={async ()=>{
  )}
  {geoStatus && <p style={{ color:'#f5a623', textAlign:'center', fontWeight:'bold', fontSize:'13px', margin:'0 0 8px' }}>{geoStatus}</p>}
 
- {medicalCertLock?.locked && (
+ {(medicalCertLock?.checking || medicalCertLock?.locked) && (
  <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'14px', marginBottom:'12px', boxShadow:'0 4px 14px rgba(202,27,27,0.12)' }}>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', textAlign:'center' }}> Time In Locked — Medical Certificate Required</p>
- <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px', textAlign:'center' }}>{medicalCertLock.message || 'You were marked absent for 2 consecutive days. Upload a medical certificate to unlock Time In.'}</p>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', textAlign:'center' }}>{medicalCertLock?.checking ? ' Verifying Attendance Eligibility' : medicalCertLock?.verificationError ? ' Time In Temporarily Locked — Verification Required' : ' Time In Locked — Medical Certificate Required'}</p>
+ <p style={{ color:'#555', fontSize:'12px', lineHeight:1.45, margin:'0 0 10px', textAlign:'center' }}>{medicalCertLock.message || 'You were absent for 2 consecutive scheduled workdays. Upload a medical certificate to unlock Time In.'}</p>
+ {!medicalCertLock?.checking && medicalCertLock?.verificationError && (
+ <button type="button" onClick={()=>loadMedicalCertificateLock(employee)} style={{ display:'block', width:'100%', background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'11px 14px', textAlign:'center', fontWeight:'bold', fontSize:'12px', cursor:'pointer' }}>RETRY SECURE VERIFICATION</button>
+ )}
+ {!medicalCertLock?.checking && !medicalCertLock?.verificationError && medicalCertLock?.locked && (<>
  <label style={{ display:'block', background:medicalCertUploading?'#f0f0f0':'#ca1b1b', color:medicalCertUploading?'#999':'white', borderRadius:'10px', padding:'11px 14px', textAlign:'center', fontWeight:'bold', fontSize:'12px', cursor:medicalCertUploading?'wait':'pointer' }}>
  {medicalCertUploading?'UPLOADING MEDICAL CERTIFICATE...':'UPLOAD MEDICAL CERTIFICATE'}
  <input type="file" accept="image/*,.pdf" disabled={medicalCertUploading} onChange={handleMedicalCertificateUpload} style={{ display:'none' }} />
  </label>
  <p style={{ color:'#888', fontSize:'10px', margin:'8px 0 0', textAlign:'center' }}>Accepted: PDF, JPG, PNG, WEBP. After upload, Time In unlocks automatically.</p>
+ </>)}
  </div>
  )}
 
@@ -46594,12 +46533,13 @@ onClick={async ()=>{
  const needsCompanyDevice = DEVICE_RESTRICTED_DEPTS.includes(employee?.department)
  const deviceOk =!needsCompanyDevice || isCompanyDevice
  const timeInLockedByMedicalCert = !!medicalCertLock?.locked
+ const timeInVerificationPending = !!medicalCertLock?.checking
  const hasValidOpenAttendance = isAttendanceLogEligibleForActiveShift(todayLog)
- const canTimeInNow = !todayLog && deviceOk && !timeInLockedByMedicalCert
+ const canTimeInNow = !todayLog && deviceOk && !timeInLockedByMedicalCert && !timeInVerificationPending
  return (
  <div>
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'8px' }}>
- <button style={{ background:!canTimeInNow?'#f0f0f0':'#ca1b1b', color:!canTimeInNow?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:!canTimeInNow?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={timeInLockedByMedicalCert?()=>showToast(' Upload medical certificate first to unlock Time In.','red'):deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog||timeInLockedByMedicalCert||!deviceOk}> TIME IN</button>
+ <button style={{ background:!canTimeInNow?'#f0f0f0':'#ca1b1b', color:!canTimeInNow?'#aaa':'white', padding:'14px', border:'none', borderRadius:'10px', cursor:!canTimeInNow?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={timeInVerificationPending?()=>showToast(' Attendance verification is still running.','red'):timeInLockedByMedicalCert?()=>showToast(' Upload medical certificate first to unlock Time In.','red'):deviceOk?initiateTimeIn:()=>showToast(' Production staff must time in on the company tablet.','red')} disabled={loading||!!todayLog||timeInLockedByMedicalCert||timeInVerificationPending||!deviceOk}>{timeInVerificationPending?' CHECKING...':' TIME IN'}</button>
  <button style={{ background:!hasValidOpenAttendance?'#f0f0f0':deviceOk?'#1a1a2e':'#e0e0e0', color:!hasValidOpenAttendance?'#aaa':deviceOk?'white':'#999', padding:'14px', border:'none', borderRadius:'10px', cursor:(!hasValidOpenAttendance||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'14px', letterSpacing:'0.5px' }} onClick={deviceOk?initiateTimeOut:()=>showToast(' Production staff must time out on the company tablet.','red')} disabled={loading||!hasValidOpenAttendance||!deviceOk}> TIME OUT</button>
  <button style={{ background:(!hasValidOpenAttendance||onBreak)?'#f0f0f0':deviceOk?'#4a90d9':'#e0e0e0', color:(!hasValidOpenAttendance||onBreak)?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!hasValidOpenAttendance||onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakOut:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!hasValidOpenAttendance||onBreak||!deviceOk}> BREAK OUT</button>
  <button style={{ background:!onBreak?'#f0f0f0':deviceOk?'#2d8a4e':'#e0e0e0', color:!onBreak?'#aaa':deviceOk?'white':'#999', padding:'11px', border:'none', borderRadius:'10px', cursor:(!onBreak||!deviceOk)?'not-allowed':'pointer', fontWeight:'bold', fontSize:'13px' }} onClick={deviceOk?initiateBreakIn:()=>showToast(' Production staff must use the company tablet.','red')} disabled={!onBreak}> BREAK IN</button>
