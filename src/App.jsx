@@ -7426,7 +7426,15 @@ export default function App() {
  const [showTimedOutModal, setShowTimedOutModal] = useState(false)
  const [timedOutList, setTimedOutList] = useState([])
  const [storeLocation, setStoreLocation] = useState({ lat: STORE_LAT, lng: STORE_LNG, radius: STORE_RADIUS_METERS })
- const [isCompanyDevice, setIsCompanyDevice] = useState(()=>localStorage.getItem('roma_company_device')==='true')
+ const [isCompanyDevice, setIsCompanyDevice] = useState(()=>{
+  const storedDevice = localStorage.getItem('roma_company_device')==='true'
+  const cookieDevice = typeof document !== 'undefined' && document.cookie.split(';').some(part=>part.trim()==='roma_company_device=true')
+  return storedDevice || cookieDevice
+ })
+ const [companyDeviceAuthOpen, setCompanyDeviceAuthOpen] = useState(false)
+ const [companyDeviceAuthEmail, setCompanyDeviceAuthEmail] = useState('')
+ const [companyDeviceAuthPassword, setCompanyDeviceAuthPassword] = useState('')
+ const [companyDeviceAuthLoading, setCompanyDeviceAuthLoading] = useState(false)
  const DEVICE_RESTRICTED_DEPTS = ['Production']
  const [showLocationSetting, setShowLocationSetting] = useState(false)
  const [locationStatus, setLocationStatus] = useState('')
@@ -7927,6 +7935,52 @@ export default function App() {
  }
 
  // Auth 
+ function saveCompanyDeviceRegistration(registered) {
+  if (registered) {
+   localStorage.setItem('roma_company_device','true')
+   document.cookie = 'roma_company_device=true; Max-Age=31536000; Path=/; SameSite=Strict; Secure'
+  } else {
+   localStorage.removeItem('roma_company_device')
+   document.cookie = 'roma_company_device=; Max-Age=0; Path=/; SameSite=Strict; Secure'
+  }
+  setIsCompanyDevice(registered)
+ }
+
+ async function authorizeCompanyDeviceWithOwner() {
+  const email = companyDeviceAuthEmail.trim()
+  if (!email || !companyDeviceAuthPassword) { showToast('Enter the owner email and password.', 'red'); return }
+
+  setCompanyDeviceAuthLoading(true)
+  let temporaryAuthStarted = false
+  try {
+   const { data:authData, error:authError } = await supabase.auth.signInWithPassword({ email, password:companyDeviceAuthPassword })
+   if (authError) throw authError
+   temporaryAuthStarted = true
+   if (!authData?.user?.id) throw new Error('Owner authentication did not return a valid account.')
+
+   const { data:profile, error:profileError } = await supabase
+   .from('admin_users')
+   .select('id, full_name, role, extra_roles, is_active')
+   .eq('auth_user_id', authData.user.id)
+   .eq('is_active', true)
+   .maybeSingle()
+   if (profileError) throw profileError
+   if (!profile || !getAdminAuthRoles(profile).includes('owner')) throw new Error('Only the registered owner account can authorize a company device.')
+
+   saveCompanyDeviceRegistration(true)
+   await logAudit('COMPANY DEVICE AUTHORIZED', profile.full_name || email, 'Attendance Device', `Owner authorized this browser as the production company device for ${employee?.full_name || 'employee attendance'}.`)
+   setCompanyDeviceAuthOpen(false)
+   setCompanyDeviceAuthEmail('')
+   setCompanyDeviceAuthPassword('')
+   showToast('Company device authorized. Time In/Out is now active.', 'green')
+  } catch (err) {
+   showToast('Device authorization failed: ' + (err?.message || 'Please check the owner credentials.'), 'red')
+  } finally {
+   if (temporaryAuthStarted) await supabase.auth.signOut().catch(()=>{})
+   setCompanyDeviceAuthLoading(false)
+  }
+ }
+
  async function login() {
  setLoading(true)
  const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
@@ -35346,15 +35400,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <p style={{ fontWeight:'bold', fontSize:'14px', margin:0, color:isCompanyDevice?'#4ade80':'#f87171' }}>{isCompanyDevice?' Registered as Company Device':' Not a Company Device'}</p>
  </div>
  {isCompanyDevice && (
- <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'8px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ localStorage.removeItem('roma_company_device'); setIsCompanyDevice(false); showToast(' Device unregistered.') }}> Unregister This Device</button>
+ <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'8px 16px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={()=>{ saveCompanyDeviceRegistration(false); showToast(' Device unregistered.') }}> Unregister This Device</button>
  )}
  </div>
  </div>
  {!isCompanyDevice && (
  <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px', width:'100%', cursor:'pointer', fontWeight:'bold', fontSize:'13px', letterSpacing:'0.5px' }} onClick={()=>{
  if (window.confirm('Register THIS device as the company production tablet?\n\nOnly do this on the physical tablet in your production area.')) {
- localStorage.setItem('roma_company_device','true')
- setIsCompanyDevice(true)
+ saveCompanyDeviceRegistration(true)
  showToast(' This device is now the company tablet! Production staff can Time In/Out here.')
  }
  }}> REGISTER THIS DEVICE AS COMPANY TABLET</button>
@@ -46556,7 +46609,20 @@ onClick={async ()=>{
  {needsCompanyDevice &&!isCompanyDevice && (
  <div style={{ background:'#fff5f5', border:'1px solid #ca1b1b', borderRadius:'10px', padding:'10px 14px', marginBottom:'8px', textAlign:'center' }}>
  <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'0 0 4px' }}> Time In/Out locked on this device</p>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Please use the company tablet in the production area.</p>
+ <p style={{ color:'#888', fontSize:'11px', margin:'0 0 8px' }}>If this is the production tablet, the owner can securely authorize it again.</p>
+ {!companyDeviceAuthOpen ? (
+  <button type="button" style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'8px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>setCompanyDeviceAuthOpen(true)}>OWNER: AUTHORIZE THIS DEVICE</button>
+ ) : (
+  <div style={{ display:'grid', gap:'7px', marginTop:'8px', textAlign:'left' }}>
+   <input type="email" value={companyDeviceAuthEmail} onChange={e=>setCompanyDeviceAuthEmail(e.target.value)} placeholder="Owner email" autoComplete="username" style={{...inputStyle, marginBottom:0, padding:'9px 10px', fontSize:'12px' }} />
+   <input type="password" value={companyDeviceAuthPassword} onChange={e=>setCompanyDeviceAuthPassword(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter' && !companyDeviceAuthLoading) authorizeCompanyDeviceWithOwner() }} placeholder="Owner password" autoComplete="current-password" style={{...inputStyle, marginBottom:0, padding:'9px 10px', fontSize:'12px' }} />
+   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'7px' }}>
+    <button type="button" disabled={companyDeviceAuthLoading} style={{...btnGray, width:'100%', marginTop:0, padding:'8px', fontSize:'11px' }} onClick={()=>{ setCompanyDeviceAuthOpen(false); setCompanyDeviceAuthPassword('') }}>CANCEL</button>
+    <button type="button" disabled={companyDeviceAuthLoading} style={{...btnRed, width:'100%', marginTop:0, padding:'8px', fontSize:'11px' }} onClick={authorizeCompanyDeviceWithOwner}>{companyDeviceAuthLoading?'VERIFYING...':'AUTHORIZE'}</button>
+   </div>
+   <p style={{ color:'#888', fontSize:'10px', margin:0, textAlign:'center' }}>Owner authorization is required. Employee PINs cannot register devices.</p>
+  </div>
+ )}
  </div>
  )}
  {/* Company device badge */}
