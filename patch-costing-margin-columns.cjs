@@ -20,13 +20,13 @@ if (!src.includes(inlineMarginMarker)) {
 // 2) Convert every Product Recipe & Unit Cost category into a compact two-card desktop grid.
 const cardLayoutMarker = 'COSTING_TWO_COLUMN_CARDS_V1'
 if (!src.includes(cardLayoutMarker)) {
-  const oldCategoryWrapper = `<div style={{ border:\`1px solid \${catColor}33\`, borderTop:'none', borderRadius:'0 0 9px 9px', overflow:'hidden' }}> {catVariants.map((v,index)=>{`
-  const newCategoryWrapper = `<div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'10px', padding:'10px', background:'#f7f8fa', border:\`1px solid \${catColor}33\`, borderTop:'none', borderRadius:'0 0 9px 9px', overflow:'visible' }}>{/* COSTING_TWO_COLUMN_CARDS_V1 */} {catVariants.map((v,index)=>{`
+  const categoryWrapperPattern = /<div style=\{\{ border:`1px solid \$\{catColor\}33`, borderTop:'none', borderRadius:'0 0 9px 9px', overflow:'hidden' \}\}> \{catVariants\.map\(\(v,index\)=>\{/m
+  const newCategoryWrapper = "<div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'10px', padding:'10px', background:'#f7f8fa', border:`1px solid ${catColor}33`, borderTop:'none', borderRadius:'0 0 9px 9px', overflow:'visible' }}>{/* COSTING_TWO_COLUMN_CARDS_V1 */} {catVariants.map((v,index)=>{"
 
-  if (!src.includes(oldCategoryWrapper)) {
+  if (!categoryWrapperPattern.test(src)) {
     throw new Error('Could not find the Product Recipe category wrapper. Two-card layout patch aborted safely.')
   }
-  src = src.replace(oldCategoryWrapper, newCategoryWrapper)
+  src = src.replace(categoryWrapperPattern, newCategoryWrapper)
 
   const oldProductCard = `return <div key={v.id} style={{ background:index%2===0?'white':'#fcfcfc', borderTop:index===0?'none':'1px solid #eee', padding:'10px 12px' }}>`
   const newProductCard = `return <div key={v.id} style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:'10px', padding:'9px 10px', minWidth:0, boxShadow:'0 1px 2px rgba(0,0,0,0.04)', alignSelf:'start' }}>`
