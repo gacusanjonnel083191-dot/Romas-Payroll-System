@@ -4,13 +4,10 @@ const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
 function replaceAt(source, start, oldText, newText, label) {
-  if (start < 0 || source.slice(start, start + oldText.length) !== oldText) {
-    throw new Error(`Could not replace ${label}. Patch aborted safely.`)
-  }
+  if (start < 0 || source.slice(start, start + oldText.length) !== oldText) throw new Error(`Could not replace ${label}. Patch aborted safely.`)
   return source.slice(0, start) + newText + source.slice(start + oldText.length)
 }
 
-// 1) Keep reseller and retail gross margins directly beside the product name.
 const inlineMarginMarker = 'COSTING_INLINE_MARGIN'
 if (!src.includes(inlineMarginMarker)) {
   const productHeaderPattern = /<div\s+style=\{\{\s*display:'flex',\s*gap:'6px',\s*flexWrap:'wrap',\s*alignItems:'center'\s*\}\}>\s*<strong\s+style=\{\{\s*color:'#333',\s*fontSize:'12px'\s*\}\}>\{v\.name\}<\/strong>\s*<Badge\s+label=\{cost\.statusLabel\}\s+color=\{statusColor\}\/>\s*\{hasBaseLink&&<Badge\s+label="BASE"\s+color="green"\/>\}\s*\{hasPowderLink&&<Badge\s+label="POWDER"\s+color="blue"\/>\}\s*<\/div>/m
@@ -19,7 +16,6 @@ if (!src.includes(inlineMarginMarker)) {
   src = src.replace(productHeaderPattern, inlineMarginHeader)
 }
 
-// 2) Convert Product Recipe & Unit Cost products into compact cards.
 const cardLayoutMarker = 'COSTING_TWO_COLUMN_CARDS_V2'
 if (!src.includes(cardLayoutMarker)) {
   const sectionIndex = src.indexOf('Product Recipe & Unit Cost')
@@ -51,9 +47,9 @@ if (!src.includes(cardLayoutMarker)) {
   src = replaceAt(src, actionsIndex, oldActions, newActions, 'Product Recipe action buttons')
 }
 
-for (const anchor of ['Base Dough Recipe','Powder Base Recipe']) {
-  const i = src.lastIndexOf(anchor)
-  console.log(`\n--- LAST ${anchor} SOURCE CONTEXT ---\n${i >= 0 ? src.slice(Math.max(0,i-2600), i+6500) : 'NOT FOUND'}\n--- END ${anchor} ---\n`)
+for (const anchor of ['EDIT BASE DOUGH','EDIT POWDER BASE']) {
+  const i = src.indexOf(anchor)
+  console.log(`\n--- ${anchor} SOURCE CONTEXT ---\n${i >= 0 ? src.slice(Math.max(0,i-5000), i+5000) : 'NOT FOUND'}\n--- END ${anchor} ---\n`)
 }
 
 fs.writeFileSync(path, src, 'utf8')
