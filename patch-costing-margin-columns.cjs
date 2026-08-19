@@ -3,6 +3,15 @@ const fs = require('fs')
 const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
+for (const term of ['SELLING AT LOSS', 'BELOW TARGET']) {
+  const i = src.indexOf(term)
+  if (i >= 0) {
+    console.log(`COSTING_BADGE_SNIPPET_${term.replace(/\s+/g, '_')}: ${src.slice(Math.max(0, i - 1200), i + 1600).replace(/\s+/g, ' ')}`)
+  } else {
+    console.log(`COSTING_BADGE_TERM_NOT_FOUND_${term.replace(/\s+/g, '_')}`)
+  }
+}
+
 const marker = 'COMPANY GROSS MARGIN'
 if (src.includes(marker)) {
   console.log('Costing margin columns already present; no patch needed.')
