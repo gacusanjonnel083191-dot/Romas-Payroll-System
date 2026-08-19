@@ -3,42 +3,20 @@ const fs = require('fs')
 const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
-for (const term of ['CURRENT SRP</p>', 'displayedRecipeCost']) {
-  let from = 0
-  let count = 0
-  while (count < 4) {
-    const i = src.indexOf(term, from)
-    if (i < 0) break
-    console.log(`COSTING_PRODUCT_ROW_SNIPPET_${term.replace(/[^A-Za-z0-9]+/g, '_')}_${count + 1}: ${src.slice(Math.max(0, i - 3200), i + 4200).replace(/\s+/g, ' ')}`)
-    from = i + term.length
-    count += 1
-  }
-  if (!count) console.log(`COSTING_PRODUCT_ROW_TERM_NOT_FOUND_${term.replace(/[^A-Za-z0-9]+/g, '_')}`)
-}
-
-const marker = 'COMPANY GROSS MARGIN'
+const marker = 'COSTING_INLINE_MARGIN'
 if (src.includes(marker)) {
-  console.log('Costing margin columns already present; no patch needed.')
+  console.log('Inline costing margins already present; no patch needed.')
   process.exit(0)
 }
 
-const oldGrid = "gridTemplateColumns:isMobile?'1fr':'minmax(220px,1.5fr) repeat(5,minmax(82px,0.7fr)) auto'"
-const newGrid = "gridTemplateColumns:isMobile?'1fr':'minmax(220px,1.5fr) repeat(6,minmax(82px,0.7fr)) auto'"
+const productHeaderPattern = /<div\s+style=\{\{\s*display:'flex',\s*gap:'6px',\s*flexWrap:'wrap',\s*alignItems:'center'\s*\}\}>\s*<strong\s+style=\{\{\s*color:'#333',\s*fontSize:'12px'\s*\}\}>\{v\.name\}<\/strong>\s*<Badge\s+label=\{cost\.statusLabel\}\s+color=\{statusColor\}\/>\s*\{hasBaseLink&&<Badge\s+label="BASE"\s+color="green"\/>\}\s*\{hasPowderLink&&<Badge\s+label="POWDER"\s+color="blue"\/>\}\s*<\/div>/m
 
-if (!src.includes(oldGrid)) {
-  throw new Error('Could not find the product-cost row grid layout. The costing UI may have changed; patch aborted safely.')
-}
-src = src.replace(oldGrid, newGrid)
-
-const currentSrpLine = /^([ \t]*<div[^\n]*>CURRENT SRP<\/p>[^\n]*<\/div>)$/m
-const match = src.match(currentSrpLine)
-if (!match) {
-  throw new Error('Could not find the CURRENT SRP cell in the product costing list. Patch aborted safely.')
+if (!productHeaderPattern.test(src)) {
+  throw new Error('Could not find the product-name badge row in Costing. Patch aborted safely.')
 }
 
-const indent = (match[1].match(/^[ \t]*/) || [''])[0]
-const marginCell = `${indent}<div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>COMPANY GROSS MARGIN</p><div style={{ display:'flex', flexDirection:'column', gap:'1px', alignItems:isMobile?'flex-start':'flex-end' }}><strong style={{ color:displayedRecipeCost.isCostReady&&safeNum(displayedRecipeCost.currentResellerPrice,0)>0&&safeNum(displayedRecipeCost.currentResellerPrice,0)>=safeNum(displayedRecipeCost.totalCost,0)?'#2d8a4e':'#ca1b1b', fontSize:'9px', whiteSpace:'nowrap' }}>Reseller {displayedRecipeCost.isCostReady&&safeNum(displayedRecipeCost.currentResellerPrice,0)>0?\`${'${'}(((safeNum(displayedRecipeCost.currentResellerPrice,0)-safeNum(displayedRecipeCost.totalCost,0))/safeNum(displayedRecipeCost.currentResellerPrice,0))*100).toFixed(1)}%\`:'—'}</strong><strong style={{ color:displayedRecipeCost.isCostReady&&safeNum(displayedRecipeCost.currentRetailPrice,0)>0&&safeNum(displayedRecipeCost.currentRetailPrice,0)>=safeNum(displayedRecipeCost.totalCost,0)?'#2d8a4e':'#ca1b1b', fontSize:'9px', whiteSpace:'nowrap' }}>Retail {displayedRecipeCost.isCostReady&&safeNum(displayedRecipeCost.currentRetailPrice,0)>0?\`${'${'}(((safeNum(displayedRecipeCost.currentRetailPrice,0)-safeNum(displayedRecipeCost.totalCost,0))/safeNum(displayedRecipeCost.currentRetailPrice,0))*100).toFixed(1)}%\`:'—'}</strong></div></div>`
+const inlineMarginHeader = `<div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}>{/* COSTING_INLINE_MARGIN */}<strong style={{ color:'#333', fontSize:'12px' }}>{v.name}</strong>{(cost.statusCode==='incomplete'||cost.statusCode==='review')&&<Badge label={cost.statusLabel} color={statusColor}/>} {hasPowderLink&&<Badge label="POWDER" color="blue"/>}<span style={{ color:!displayedRecipeCost.isCostReady?'#999':safeNum(displayedRecipeCost.currentResellerPrice,0)>0&&safeNum(displayedRecipeCost.currentResellerPrice,0)>=safeNum(displayedRecipeCost.totalCost,0)?'#2d8a4e':'#ca1b1b', fontSize:'9px', fontWeight:'900', whiteSpace:'nowrap' }}>Reseller {displayedRecipeCost.isCostReady&&safeNum(displayedRecipeCost.currentResellerPrice,0)>0?\`${'${'}(((safeNum(displayedRecipeCost.currentResellerPrice,0)-safeNum(displayedRecipeCost.totalCost,0))/safeNum(displayedRecipeCost.currentResellerPrice,0))*100).toFixed(1)}%\`:'—'}</span><span style={{ color:!displayedRecipeCost.isCostReady?'#999':safeNum(displayedRecipeCost.currentRetailPrice,0)>0&&safeNum(displayedRecipeCost.currentRetailPrice,0)>=safeNum(displayedRecipeCost.totalCost,0)?'#2d8a4e':'#ca1b1b', fontSize:'9px', fontWeight:'900', whiteSpace:'nowrap' }}>Retail {displayedRecipeCost.isCostReady&&safeNum(displayedRecipeCost.currentRetailPrice,0)>0?\`${'${'}(((safeNum(displayedRecipeCost.currentRetailPrice,0)-safeNum(displayedRecipeCost.totalCost,0))/safeNum(displayedRecipeCost.currentRetailPrice,0))*100).toFixed(1)}%\`:'—'}</span></div>`
 
-src = src.replace(currentSrpLine, `${match[1]}\n${marginCell}`)
+src = src.replace(productHeaderPattern, inlineMarginHeader)
 fs.writeFileSync(path, src, 'utf8')
-console.log('Added reseller-sale and retail-sale gross margin percentages to every product costing row.')
+console.log('Moved reseller and retail gross margins beside each product name; removed SELLING AT LOSS, BELOW TARGET, READY, and BASE badges from product rows while preserving INCOMPLETE/REVIEW COST warnings.')
