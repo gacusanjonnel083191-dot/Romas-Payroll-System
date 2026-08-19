@@ -1,0 +1,61 @@
+/* Cash Advance Requests: compact responsive admin layout */
+.ca-requests-compact-grid {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 14px !important;
+  align-items: start !important;
+}
+
+.ca-requests-compact-grid > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.ca-requests-compact-grid > .ca-pending-request-card {
+  grid-column: auto !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 14px !important;
+  box-sizing: border-box !important;
+  align-self: stretch !important;
+  border-radius: 14px !important;
+  box-shadow: 0 5px 16px rgba(35, 20, 20, 0.08) !important;
+}
+
+.ca-pending-request-card .ca-pending-request-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  margin: 10px 0 !important;
+}
+
+.ca-pending-request-card .ca-pending-request-metrics > div {
+  min-width: 0 !important;
+  padding: 9px !important;
+}
+
+.ca-pending-request-card input {
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.ca-pending-request-card button {
+  max-width: 100% !important;
+}
+
+@media (max-width: 1180px) {
+  .ca-requests-compact-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .ca-requests-compact-grid {
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+  }
+
+  .ca-requests-compact-grid > .ca-pending-request-card {
+    padding: 12px !important;
+  }
+}
