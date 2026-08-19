@@ -1,8 +1,8 @@
 const fs = require('fs');
 const src = fs.readFileSync('src/App.jsx','utf8');
 
-function contexts(label, needle, limit=5, radius=1800) {
-  let from = 0, count = 0;
+function contexts(label, needle, limit=5, radius=3000, startAt=0) {
+  let from = startAt, count = 0;
   console.log(`\n===== ${label} | ${needle} =====`);
   while (count < limit) {
     const i = src.indexOf(needle, from);
@@ -14,14 +14,13 @@ function contexts(label, needle, limit=5, radius=1800) {
   if (!count) console.log('NO MATCH');
 }
 
-contexts('Dashboard label','Dashboard',8,2400);
-contexts('lower dashboard','dashboard',10,1600);
-contexts('owner briefing table','business_owner_briefings',5,1800);
-contexts('integrity exceptions','business_integrity_exceptions',5,1800);
-contexts('delivery invoice state','deliveryInvoices',6,1500);
-contexts('analytics invoice source','const allInvoices = deliveryInvoices',3,1400);
-contexts('inventory state','inventoryItems',5,1300);
-contexts('attendance state','attendanceLogs',5,1300);
-contexts('payroll state','payrollRecords',5,1300);
-contexts('production state','productionLogs',5,1300);
-console.log('\n===== END DASHBOARD INSPECTION =====');
+contexts('dashboard render class','romas-executive-dashboard',5,5000,100000);
+contexts('dashboard header render','romas-dashboard-header',5,4500,100000);
+contexts('dashboard active tab expression',"activeTab === 'dashboard'",6,4500,250000);
+contexts('dashboard active tab compact',"activeTab==='dashboard'",6,4500,250000);
+contexts('dashboard data setter','setDashboardData',8,3500,250000);
+contexts('dashboard loader','loadDashboard',8,4000,250000);
+contexts('owner briefing table','business_owner_briefings',5,3500,250000);
+contexts('integrity exceptions table','business_integrity_exceptions',5,3500,250000);
+contexts('analytics invoice source','const allInvoices = deliveryInvoices',3,3000,250000);
+console.log('\n===== END FOCUSED DASHBOARD INSPECTION =====');
