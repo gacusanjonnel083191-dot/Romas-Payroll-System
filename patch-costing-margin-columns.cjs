@@ -3,13 +3,18 @@ const fs = require('fs')
 const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
-for (const term of ['SELLING AT LOSS', 'BELOW TARGET']) {
-  const i = src.indexOf(term)
-  if (i >= 0) {
-    console.log(`COSTING_BADGE_SNIPPET_${term.replace(/\s+/g, '_')}: ${src.slice(Math.max(0, i - 1200), i + 1600).replace(/\s+/g, ' ')}`)
-  } else {
-    console.log(`COSTING_BADGE_TERM_NOT_FOUND_${term.replace(/\s+/g, '_')}`)
+const diagnosticTerms = ['displayedRecipeCost.statusLabel', 'recipeCost.statusLabel', 'statusLabel}', "'BASE'", '>BASE<']
+for (const term of diagnosticTerms) {
+  let from = 0
+  let count = 0
+  while (count < 6) {
+    const i = src.indexOf(term, from)
+    if (i < 0) break
+    console.log(`COSTING_RENDER_SNIPPET_${term.replace(/[^A-Za-z0-9]+/g, '_')}_${count + 1}: ${src.slice(Math.max(0, i - 1000), i + 1800).replace(/\s+/g, ' ')}`)
+    from = i + term.length
+    count += 1
   }
+  if (!count) console.log(`COSTING_RENDER_TERM_NOT_FOUND_${term.replace(/[^A-Za-z0-9]+/g, '_')}`)
 }
 
 const marker = 'COMPANY GROSS MARGIN'
