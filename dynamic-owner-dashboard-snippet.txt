@@ -1,127 +1,71 @@
 {/* DYNAMIC_OWNER_COMMAND_CENTER_V1 */}
 {(isOwnerRole || normalizedAdminRole==='manager') && (() => {
- const briefing = dashboardData?.ownerBriefing || null
- const fd = foundationData || null
- const priorities = Array.isArray(briefing?.priorities) ? briefing.priorities.slice(0,6) : []
- const recommendations = Array.isArray(fd?.recommendations) ? fd.recommendations.slice(0,4) : []
- const pendingApprovals = safeNum(dashboardData?.pendingLeave,0) + safeNum(dashboardData?.pendingCA,0) + safeNum(dashboardData?.pendingOT,0) + safeNum(dashboardData?.pendingDisputes,0)
- const lowStockCount = Array.isArray(fd?.inventoryReorderRows) ? fd.inventoryReorderRows.length : safeNum(fd?.lowStockItems,0)
- const financePeriod = fd?.start && fd?.end ? `${fd.start} to ${fd.end}` : 'Integrated business data'
- const healthScore = fd ? safeNum(fd.healthScore,0) : null
- const healthTone = healthScore==null ? {label:'LOADING',color:'#64748b',bg:'#f1f5f9'} : healthScore < 70 ? {label:'CRITICAL',color:'#b42318',bg:'#fff1f0'} : healthScore < 85 ? {label:'WATCH',color:'#b56a00',bg:'#fff8e7'} : {label:'HEALTHY',color:'#18794e',bg:'#eefbf4'}
- const controlCritical = safeNum(briefing?.metrics?.critical_count, priorities.filter(p=>String(p?.severity||'').toLowerCase()==='critical').length)
- const controlHigh = safeNum(briefing?.metrics?.high_count, priorities.filter(p=>String(p?.severity||'').toLowerCase()==='high').length)
- const kpis = [
-  { label:'NET SALES', value:fd?php(fd.netSales):'—', note:financePeriod, accent:'#18794e', icon:'S' },
-  { label:'NET PROFIT', value:fd?php(fd.netProfit):'—', note:fd?`${safeNum(fd.netMarginPct,0).toFixed(1)}% net margin`:'Loading profitability', accent:fd&&safeNum(fd.netProfit,0)<0?'#b42318':'#18794e', icon:'P' },
-  { label:'OPEN RECEIVABLES', value:fd?php(fd.totalAR):(briefing?.metrics?.open_receivables!=null?php(briefing.metrics.open_receivables):'—'), note:fd?`${php(fd.overdueAR)} overdue`:'Latest control briefing', accent:safeNum(fd?.overdueAR,0)>0?'#b42318':'#3568a8', icon:'R' },
-  { label:'PAYROLL EXPOSURE', value:fd?php(fd.payrollExpense):'—', note:fd?.payrollExpenseSource||'Current control period', accent:'#6f4aa2', icon:'₱' },
-  { label:'INVENTORY REORDER', value:fd?lowStockCount:'—', note:fd?`${php(fd.inventoryValue)} inventory value`:'Loading inventory controls', accent:lowStockCount>0?'#c17a00':'#18794e', icon:'I' },
-  { label:'BUSINESS HEALTH', value:fd?`${healthScore.toFixed(0)}/100`:'—', note:fd?.businessHealthGrade||'Loading health score', accent:healthTone.color, icon:'H' },
+ const briefing=dashboardData?.ownerBriefing||null, fd=foundationData||null
+ const priorities=Array.isArray(briefing?.priorities)?briefing.priorities.slice(0,8):[]
+ const recs=Array.isArray(fd?.recommendations)?fd.recommendations.slice(0,5):[]
+ const pending=safeNum(dashboardData?.pendingLeave,0)+safeNum(dashboardData?.pendingCA,0)+safeNum(dashboardData?.pendingOT,0)+safeNum(dashboardData?.pendingDisputes,0)
+ const low=Array.isArray(fd?.inventoryReorderRows)?fd.inventoryReorderRows.length:safeNum(fd?.lowStockItems,0)
+ const health=fd?safeNum(fd.healthScore,0):null
+ const tone=health==null?{label:'LOADING',c:'#64748b',bg:'#f1f5f9'}:health<70?{label:'CRITICAL',c:'#b42318',bg:'#fff1f0'}:health<85?{label:'WATCH',c:'#b56a00',bg:'#fff8e7'}:{label:'HEALTHY',c:'#18794e',bg:'#eefbf4'}
+ const num=(r,keys)=>{for(const k of keys){const n=Number(r?.[k]);if(Number.isFinite(n))return n}return 0}
+ const txt=(r,keys,f='')=>{for(const k of keys){const v=r?.[k];if(v!==undefined&&v!==null&&String(v).trim())return String(v)}return f}
+ const openModule=m=>{const q=String(m||'').toLowerCase();const key=q.includes('receiv')?'sales':q.includes('payable')?'payable':q.includes('invent')?'inventory':q.includes('cost')||q.includes('production')?'costing':q.includes('payroll')?'payroll':q.includes('attendance')||q.includes('hr')?'attendance':q.includes('sales')?'sales':q;const tabs=(visibleSections||[]).flatMap(s=>s.tabs||[]);const t=tabs.find(x=>`${x.key||''} ${x.label||''}`.toLowerCase().includes(key));if(t)handleTabClick(t.key)}
+ const fmtDate=v=>{const s=String(v||'').slice(0,10);if(!s)return'';const d=new Date(`${s}T00:00:00`);return Number.isNaN(d.getTime())?s:new Intl.DateTimeFormat('en-PH',{month:'short',day:'numeric'}).format(d)}
+ const salesMap=new Map()
+ ;(Array.isArray(fd?.rows?.dailySalesRows)?fd.rows.dailySalesRows:Array.isArray(fd?.dailySalesRows)?fd.dailySalesRows:[]).forEach(r=>{const d=txt(r,['sales_date','business_date','date','day','created_at']).slice(0,10);if(!d||d>today)return;const v=num(r,['net_sales','netSales','total_sales','totalSales','sales','revenue','amount','gross_sales','grossSales']);salesMap.set(d,(salesMap.get(d)||0)+v)})
+ const sales=Array.from(salesMap.entries()).sort((a,b)=>a[0].localeCompare(b[0])).slice(-14).map(([d,v])=>({name:fmtDate(d),value:v})), salesMax=Math.max(1,...sales.map(x=>Math.abs(x.value)))
+ const normalize=(rows,nameKeys,valueKeys)=>rows.map(r=>({name:txt(r,nameKeys,'Unlabeled'),value:num(r,valueKeys)})).filter(x=>x.value>0).sort((a,b)=>b.value-a.value).slice(0,6)
+ const products=normalize(Array.isArray(fd?.productProfitabilityRows)?fd.productProfitabilityRows:[],['product_name','productName','variant_name','variantName','name','item_name'],['revenue','sales','net_sales','netSales','total_sales','totalSales','amount','quantity','qty','pieces'])
+ const resellers=normalize(Array.isArray(fd?.resellerPerformanceRows)?fd.resellerPerformanceRows:Array.isArray(fd?.resellerRanking)?fd.resellerRanking:[],['reseller_name','resellerName','name','outlet_name','outletName','customer_name'],['net_sales','netSales','sales','revenue','total_sales','totalSales','amount','invoice_total','invoiceTotal'])
+ const aging=Array.isArray(fd?.arAging)?fd.arAging.map((r,i)=>({name:txt(r,['bucket','label','range','name'],`Bucket ${i+1}`),value:num(r,['amount','balance','total','value','receivable'])})):fd?.arAging&&typeof fd.arAging==='object'?Object.entries(fd.arAging).map(([k,v])=>({name:k,value:typeof v==='object'?num(v,['amount','balance','total','value']):safeNum(v,0)})):[]
+ const kpis=[
+  ['NET SALES',fd?php(fd.netSales):'—',fd?.start&&fd?.end?`${fd.start} to ${fd.end}`:'Current period','#18794e'],
+  ['NET PROFIT',fd?php(fd.netProfit):'—',fd?`${safeNum(fd.netMarginPct,0).toFixed(1)}% net margin`:'Loading',fd&&safeNum(fd.netProfit,0)<0?'#b42318':'#18794e'],
+  ['RECEIVABLES',fd?php(fd.totalAR):(briefing?.metrics?.open_receivables!=null?php(briefing.metrics.open_receivables):'—'),fd?`${php(fd.overdueAR)} overdue`:'Latest briefing','#b42318'],
+  ['PAYROLL',fd?php(fd.payrollExpense):'—',fd?.payrollExpenseSource||'Current period','#6f4aa2'],
+  ['REORDER ITEMS',fd?low:'—',fd?`${php(fd.inventoryValue)} inventory value`:'Loading','#c17a00'],
+  ['BUSINESS HEALTH',fd?`${health.toFixed(0)}/100`:'—',fd?.businessHealthGrade||'Integrated score',tone.c],
  ]
- const moduleKeyword = moduleName => {
-  const m = String(moduleName||'').toLowerCase()
-  if (m.includes('receivable')) return 'sales'
-  if (m.includes('payable')) return 'payable'
-  if (m.includes('inventory')) return 'inventory'
-  if (m.includes('production') || m.includes('cost')) return 'costing'
-  if (m.includes('payroll')) return 'payroll'
-  if (m.includes('attendance') || m.includes('hr')) return 'attendance'
-  if (m.includes('sales')) return 'sales'
-  return m
- }
- const openModule = moduleName => {
-  const keyword = moduleKeyword(moduleName)
-  const tabs = (visibleSections||[]).flatMap(section=>section.tabs||[])
-  const target = tabs.find(tab=>`${String(tab.key||'')} ${String(tab.label||'')}`.toLowerCase().includes(keyword))
-  if (target) handleTabClick(target.key)
- }
- const ops = [
-  {label:'ON DUTY', value:safeNum(dashboardData?.timedIn,0), accent:'#18794e'},
-  {label:'ABSENT TODAY', value:safeNum(dashboardData?.absent,0), accent:safeNum(dashboardData?.absent,0)>0?'#b42318':'#64748b'},
-  {label:'PENDING APPROVALS', value:pendingApprovals, accent:pendingApprovals>0?'#c17a00':'#64748b'},
-  {label:'PENDING DELIVERIES', value:fd?safeNum(fd.pendingDeliveries,0):'—', accent:safeNum(fd?.pendingDeliveries,0)>0?'#3568a8':'#64748b'},
-  {label:'RETURNS RATE', value:fd?`${safeNum(fd.returnsRate,0).toFixed(1)}%`:'—', accent:safeNum(fd?.returnsRate,0)>8?'#b42318':safeNum(fd?.returnsRate,0)>5?'#c17a00':'#18794e'},
-  {label:'REORDER ITEMS', value:fd?lowStockCount:'—', accent:lowStockCount>0?'#c17a00':'#18794e'},
- ]
- return <div style={{ marginBottom:'18px' }}>
-  <div style={{ background:'linear-gradient(180deg,#fffdf8 0%,#fff9ef 100%)', border:'1px solid #eadfc9', borderRadius:'16px', padding:isMobile?'12px':'16px', boxShadow:'0 12px 28px rgba(31,41,55,.10)', overflow:'hidden', position:'relative' }}>
-   <div style={{ position:'absolute', top:0, left:0, right:0, height:'4px', background:'linear-gradient(90deg,#c91f2c 0 56%,#f6b900 56% 100%)' }} />
-
-   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'14px', flexWrap:'wrap', marginBottom:'14px', paddingTop:'4px' }}>
-    <div style={{ minWidth:0, flex:'1 1 560px', borderLeft:'4px solid #c91f2c', paddingLeft:'12px' }}>
-     <p style={{ color:'#a31623', fontWeight:'900', fontSize:'9px', letterSpacing:'1.3px', margin:'0 0 4px' }}>ROMA'S DONUTS · OWNER COMMAND CENTER</p>
-     <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', marginBottom:'4px' }}>
-      <h3 style={{ color:'#1f2937', fontSize:isMobile?'17px':'21px', margin:0, lineHeight:1.2, fontWeight:'900' }}>Business at a glance</h3>
-      <span style={{ background:healthTone.bg, color:healthTone.color, border:`1px solid ${healthTone.color}22`, borderRadius:'999px', padding:'4px 8px', fontSize:'8px', fontWeight:'900', letterSpacing:'.45px' }}>{healthTone.label}</span>
-     </div>
-     <p style={{ color:'#68707d', fontSize:'10px', lineHeight:1.45, margin:0 }}>Performance, exceptions, daily operations, and the next owner actions — consolidated from live system data.</p>
-    </div>
-    <div style={{ display:'flex', alignItems:'stretch', gap:'8px', flexWrap:'wrap' }}>
-     <div style={{ background:'#ffffff', border:'1px solid #eee4d2', borderRadius:'10px', padding:'8px 10px', minWidth:'135px' }}>
-      <p style={{ color:'#8b8274', fontSize:'7.5px', fontWeight:'900', letterSpacing:'.45px', margin:'0 0 3px' }}>CONTROL BRIEFING</p>
-      <p style={{ color:'#1f2937', fontSize:'10px', fontWeight:'900', margin:'0 0 2px' }}>{briefing?.briefing_date || 'Not available'}</p>
-      <p style={{ color:'#9a9388', fontSize:'7.5px', margin:0 }}>{briefing?.generated_at ? new Date(briefing.generated_at).toLocaleString('en-PH') : 'Refresh to update'}</p>
-     </div>
-     <div style={{ background:controlCritical>0?'#fff4f3':'#f2fbf6', border:`1px solid ${controlCritical>0?'#f3c9c4':'#cdebd8'}`, borderRadius:'10px', padding:'8px 10px', minWidth:'145px' }}>
-      <p style={{ color:controlCritical>0?'#a31623':'#18794e', fontSize:'7.5px', fontWeight:'900', letterSpacing:'.45px', margin:'0 0 3px' }}>OWNER ATTENTION</p>
-      <p style={{ color:'#1f2937', fontSize:'10px', fontWeight:'900', margin:'0 0 2px' }}>{controlCritical} critical · {controlHigh} high</p>
-      <p style={{ color:'#8d8378', fontSize:'7.5px', margin:0 }}>Latest integrity review</p>
-     </div>
-    </div>
+ const ops=[['ON DUTY',safeNum(dashboardData?.timedIn,0),'#18794e'],['ABSENT',safeNum(dashboardData?.absent,0),safeNum(dashboardData?.absent,0)>0?'#b42318':'#64748b'],['APPROVALS',pending,pending>0?'#c17a00':'#64748b'],['DELIVERIES',fd?safeNum(fd.pendingDeliveries,0):'—','#3568a8'],['RETURNS',fd?`${safeNum(fd.returnsRate,0).toFixed(1)}%`:'—',safeNum(fd?.returnsRate,0)>8?'#b42318':'#18794e'],['REORDER',fd?low:'—',low>0?'#c17a00':'#18794e']]
+ const Panel=({title,sub,children})=><section style={{background:'#fff',border:'1px solid #eee7db',borderRadius:'12px',padding:'12px',minWidth:0,boxShadow:'0 2px 8px rgba(31,41,55,.04)'}}><p style={{color:'#172033',fontWeight:'900',fontSize:'10px',margin:'0 0 2px'}}>{title}</p>{sub&&<p style={{color:'#8a8f98',fontSize:'8px',margin:'0 0 9px'}}>{sub}</p>}{children}</section>
+ const BarList=({rows,color='#c91f2c',money=true,empty='No data available.'})=>{const max=Math.max(1,...rows.map(x=>x.value));return rows.length===0?<p style={{color:'#9aa0aa',fontSize:'9px'}}>{empty}</p>:<div style={{display:'flex',flexDirection:'column',gap:'7px'}}>{rows.map((r,i)=><div key={`${r.name}-${i}`}><div style={{display:'flex',justifyContent:'space-between',gap:'8px',marginBottom:'3px'}}><span style={{color:'#3f4652',fontSize:'8.5px',fontWeight:'800'}}>{i+1}. {r.name}</span><b style={{color:'#172033',fontSize:'8px'}}>{money?php(r.value):r.value.toLocaleString()}</b></div><div style={{height:'7px',background:'#f1f1f1',borderRadius:'7px',overflow:'hidden'}}><div style={{height:'100%',width:`${Math.max(3,(r.value/max)*100)}%`,background:i===0?color:`${color}80`}}/></div></div>)}</div>}
+ return <div style={{marginBottom:'18px'}}>
+  <div style={{background:'linear-gradient(180deg,#fffdf8 0%,#fff9ef 100%)',border:'1px solid #eadfc9',borderRadius:'16px',padding:isMobile?'12px':'16px',boxShadow:'0 12px 28px rgba(31,41,55,.10)',overflow:'hidden',position:'relative'}}>
+   <div style={{position:'absolute',top:0,left:0,right:0,height:'4px',background:'linear-gradient(90deg,#c91f2c 0 56%,#f6b900 56% 100%)'}}/>
+   <div style={{display:'flex',justifyContent:'space-between',gap:'12px',alignItems:'center',flexWrap:'wrap',paddingTop:'4px',marginBottom:'13px'}}>
+    <div style={{borderLeft:'4px solid #c91f2c',paddingLeft:'12px'}}><p style={{color:'#a31623',fontWeight:'900',fontSize:'9px',letterSpacing:'1.2px',margin:'0 0 3px'}}>ROMA'S DONUTS · OWNER COMMAND CENTER</p><h3 style={{color:'#1f2937',fontSize:isMobile?'17px':'21px',margin:'0 0 3px',fontWeight:'900'}}>Executive business overview</h3><p style={{color:'#68707d',fontSize:'9px',margin:0}}>Status in cards · trends in graphs · exact decisions in tables.</p></div>
+    <div style={{display:'flex',gap:'7px',alignItems:'center'}}><span style={{background:tone.bg,color:tone.c,borderRadius:'999px',padding:'5px 9px',fontSize:'8px',fontWeight:'900'}}>{tone.label}</span><span style={{background:'#fff',border:'1px solid #eee4d2',borderRadius:'9px',padding:'6px 8px',fontSize:'8px',color:'#5f6672'}}>{briefing?.briefing_date||'No briefing'} · {safeNum(briefing?.metrics?.critical_count,0)} critical</span></div>
    </div>
 
-   {briefing?.headline && <div style={{ display:'flex', alignItems:'flex-start', gap:'9px', background:controlCritical>0?'#fff7f5':'#f7faf8', border:'1px solid #eee4d8', borderRadius:'10px', padding:'9px 11px', marginBottom:'12px' }}>
-    <span style={{ width:'8px', height:'8px', borderRadius:'50%', background:controlCritical>0?'#c91f2c':'#18794e', marginTop:'4px', flexShrink:0 }} />
-    <div style={{ minWidth:0 }}><strong style={{ display:'block', color:'#27303e', fontSize:'11px', lineHeight:1.3, marginBottom:'2px' }}>{briefing.headline}</strong><span style={{ color:'#707987', fontSize:'9px', lineHeight:1.35 }}>{briefing?.executive_summary || ''}</span></div>
-   </div>}
-
-   <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(6,minmax(0,1fr))', gap:'8px', marginBottom:'12px' }}>
-    {kpis.map(kpi=><div key={kpi.label} style={{ background:'#fff', border:'1px solid #eee8dc', borderRadius:'11px', padding:'10px 10px 9px', minWidth:0, boxShadow:'0 2px 7px rgba(31,41,55,.045)' }}>
-     <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'6px' }}><span style={{ width:'20px', height:'20px', borderRadius:'6px', background:`${kpi.accent}14`, color:kpi.accent, display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:'9px', fontWeight:'900', flexShrink:0 }}>{kpi.icon}</span><p style={{ color:'#7a7f89', fontSize:'7.8px', fontWeight:'900', letterSpacing:'.35px', margin:0, lineHeight:1.15 }}>{kpi.label}</p></div>
-     <p style={{ color:'#172033', fontSize:isMobile?'15px':'18px', lineHeight:1.05, fontWeight:'900', margin:'0 0 5px', overflow:'hidden', textOverflow:'ellipsis' }}>{kpi.value}</p>
-     <p style={{ color:'#9a9da5', fontSize:'7.5px', margin:0, lineHeight:1.25 }}>{kpi.note}</p>
-     <div style={{ height:'2px', borderRadius:'2px', background:kpi.accent, marginTop:'8px', opacity:.9 }} />
-    </div>)}
+   <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(6,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
+    {kpis.map(([l,v,n,c])=><div key={l} style={{background:'#fff',border:'1px solid #eee8dc',borderRadius:'10px',padding:'10px',minWidth:0}}><p style={{color:'#7a7f89',fontSize:'7.5px',fontWeight:'900',margin:'0 0 5px'}}>{l}</p><p style={{color:'#172033',fontSize:isMobile?'15px':'18px',fontWeight:'900',margin:'0 0 4px'}}>{v}</p><p style={{color:'#9a9da5',fontSize:'7px',margin:0}}>{n}</p><div style={{height:'2px',background:c,borderRadius:'2px',marginTop:'7px'}}/></div>)}
    </div>
 
-   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(0,1.45fr) minmax(320px,.55fr)', gap:'10px', alignItems:'start' }}>
-    <section style={{ background:'#fff', border:'1px solid #eee7db', borderRadius:'12px', padding:'11px', minWidth:0, boxShadow:'0 2px 8px rgba(31,41,55,.04)' }}>
-     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'9px', gap:'8px' }}>
-      <div><p style={{ color:'#a31623', fontWeight:'900', fontSize:'10px', letterSpacing:'.25px', margin:'0 0 2px' }}>ACTION REQUIRED</p><p style={{ color:'#8a8f98', fontSize:'8px', margin:0 }}>Highest-priority exceptions that need an owner decision or follow-up.</p></div>
-      <span style={{ background:priorities.length?'#fff1ef':'#eef9f2', color:priorities.length?'#a31623':'#18794e', borderRadius:'999px', padding:'4px 8px', fontSize:'7.5px', fontWeight:'900', whiteSpace:'nowrap' }}>{priorities.length?`${priorities.length} PRIORITIES`:'CLEAR'}</span>
-     </div>
-     {priorities.length===0?<div style={{ padding:'16px', border:'1px dashed #c7e4d1', borderRadius:'9px', background:'#f7fcf9', color:'#18794e', fontSize:'10px', fontWeight:'800' }}>No owner-priority briefing items are currently available.</div>:
-      <div style={{ display:'flex', flexDirection:'column', gap:'5px' }}>
-       {priorities.map((p,i)=>{
-        const severity=String(p?.severity||'high').toLowerCase()
-        const sev=severity==='critical'?{color:'#b42318',bg:'#fff1f0',label:'CRITICAL'}:severity==='high'?{color:'#b56a00',bg:'#fff8e7',label:'HIGH'}:severity==='medium'?{color:'#8a6a00',bg:'#fffbe8',label:'MEDIUM'}:{color:'#3568a8',bg:'#eef5ff',label:'INFO'}
-        return <button key={p?.id||`${p?.title}-${i}`} onClick={()=>openModule(p?.module)} style={{ width:'100%', border:'1px solid #eee9df', borderLeft:`3px solid ${sev.color}`, borderRadius:'8px', padding:'8px 9px', cursor:'pointer', background:'#fff', minWidth:0, textAlign:'left', fontFamily:'inherit' }}>
-         <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(180px,.8fr) minmax(160px,.65fr) minmax(230px,1.25fr) auto', gap:'8px', alignItems:'center' }}>
-          <div style={{ minWidth:0 }}><div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap' }}><strong style={{ color:'#27303e', fontSize:'9.5px', lineHeight:1.25 }}>{p?.title||'Business control exception'}</strong><span style={{ color:sev.color, background:sev.bg, borderRadius:'999px', padding:'2px 5px', fontSize:'6.5px', fontWeight:'900', whiteSpace:'nowrap' }}>{sev.label}</span></div></div>
-          <div style={{ minWidth:0 }}><p style={{ color:'#9a9388', fontSize:'7px', fontWeight:'800', margin:'0 0 2px' }}>EXPOSURE / MODULE</p><p style={{ color:'#525a68', fontSize:'8.5px', margin:0 }}>{safeNum(p?.amount_exposure,0)>0?php(p.amount_exposure):'No amount'} · {p?.module||'Business'}</p></div>
-          <p style={{ color:'#5d6571', fontSize:'8px', lineHeight:1.35, margin:0 }}>{p?.recommended_action||'Review the source record and resolve the exception.'}</p>
-          <span style={{ color:'#a31623', fontSize:'7px', fontWeight:'900', whiteSpace:'nowrap' }}>OPEN →</span>
-         </div>
-        </button>
-       })}
-      </div>}
-    </section>
-
-    <div style={{ display:'flex', flexDirection:'column', gap:'10px', minWidth:0 }}>
-     <section style={{ background:'#fff', border:'1px solid #eee7db', borderRadius:'12px', padding:'11px', boxShadow:'0 2px 8px rgba(31,41,55,.04)' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}><div><p style={{ color:'#172033', fontWeight:'900', fontSize:'10px', margin:'0 0 2px' }}>TODAY'S OPERATIONS</p><p style={{ color:'#8a8f98', fontSize:'8px', margin:0 }}>Current operating signals</p></div><span style={{ color:'#a31623', fontWeight:'900', fontSize:'8px' }}>{today}</span></div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:'6px' }}>
-       {ops.map(item=><div key={item.label} style={{ background:'#faf9f6', border:'1px solid #f0ece4', borderRadius:'8px', padding:'8px' }}><div style={{ display:'flex', alignItems:'center', gap:'5px', marginBottom:'3px' }}><span style={{ width:'6px', height:'6px', borderRadius:'50%', background:item.accent, flexShrink:0 }} /><p style={{ color:'#8b8f97', fontSize:'6.8px', fontWeight:'900', margin:0, lineHeight:1.1 }}>{item.label}</p></div><strong style={{ color:'#202938', fontSize:'14px' }}>{item.value}</strong></div>)}
-      </div>
-     </section>
-     <section style={{ background:'#fff', border:'1px solid #eee7db', borderRadius:'12px', padding:'11px', boxShadow:'0 2px 8px rgba(31,41,55,.04)' }}>
-      <div style={{ marginBottom:'5px' }}><p style={{ color:'#172033', fontWeight:'900', fontSize:'10px', margin:'0 0 2px' }}>DECISION SUPPORT</p><p style={{ color:'#8a8f98', fontSize:'8px', margin:0 }}>Recommended next owner actions</p></div>
-      {recommendations.length===0?<p style={{ color:'#7e838c', fontSize:'8.5px', lineHeight:1.45, margin:'8px 0 0' }}>Recommendations will appear when the supporting Foundation data is available. No unsupported recommendation is generated.</p>:
-       recommendations.map((r,i)=><div key={i} style={{ display:'grid', gridTemplateColumns:'22px minmax(0,1fr)', gap:'7px', alignItems:'flex-start', padding:'7px 0', borderTop:i?'1px solid #f0ece6':'none' }}><span style={{ width:'20px', height:'20px', borderRadius:'6px', background:i===0?'#fff1ef':'#fff8e7', color:i===0?'#a31623':'#a06a00', fontWeight:'900', fontSize:'8px', display:'inline-flex', alignItems:'center', justifyContent:'center' }}>{i+1}</span><span style={{ color:'#525a68', fontSize:'8.5px', lineHeight:1.42 }}>{r}</span></div>)}
-     </section>
-    </div>
+   <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(0,1.6fr) minmax(280px,.4fr)',gap:'10px',marginBottom:'10px'}}>
+    <Panel title="SALES TREND" sub="Recent recorded sales through today. Future-dated invoices remain scheduled and are excluded from earned/current revenue.">
+     {sales.length===0?<div style={{height:'150px',display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa',borderRadius:'8px',color:'#9aa0aa',fontSize:'9px'}}>No dated sales series available.</div>:<div style={{height:'165px',display:'flex',alignItems:'flex-end',gap:'5px',padding:'8px 3px 0',borderBottom:'1px solid #e8e8e8'}}>{sales.map((r,i)=><div key={`${r.name}-${i}`} title={`${r.name}: ${php(r.value)}`} style={{flex:1,height:'100%',display:'flex',flexDirection:'column',justifyContent:'flex-end',gap:'4px'}}><div style={{height:`${Math.max(3,(Math.abs(r.value)/salesMax)*122)}px`,background:i===sales.length-1?'#c91f2c':'#efb0b5',borderRadius:'4px 4px 1px 1px'}}/><span style={{fontSize:'6.5px',color:'#8a8f98',textAlign:'center',whiteSpace:'nowrap',overflow:'hidden'}}>{r.name}</span></div>)}</div>}
+    </Panel>
+    <Panel title="BUSINESS HEALTH" sub="One score, with immediate control context.">
+     <div style={{display:'flex',justifyContent:'center',margin:'4px 0 10px'}}><div style={{width:'112px',height:'112px',borderRadius:'50%',background:`conic-gradient(${tone.c} ${Math.max(0,Math.min(100,health||0))*3.6}deg,#edf0f3 0)`,display:'flex',alignItems:'center',justifyContent:'center'}}><div style={{width:'82px',height:'82px',borderRadius:'50%',background:'#fff',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}><b style={{fontSize:'22px',color:'#172033'}}>{health==null?'—':health.toFixed(0)}</b><span style={{fontSize:'7px',color:'#8a8f98'}}>/100</span><span style={{fontSize:'7px',fontWeight:'900',color:tone.c,marginTop:'2px'}}>{tone.label}</span></div></div></div>
+     <p style={{color:'#68707d',fontSize:'8px',lineHeight:1.4,margin:0,textAlign:'center'}}>{briefing?.headline||fd?.businessHealthGrade||'Integrated business controls'}</p>
+    </Panel>
    </div>
+
+   <Panel title="ACTION REQUIRED" sub="Prioritized exception table: exact issue, exposure, recommended action, and direct module access.">
+    {priorities.length===0?<div style={{padding:'14px',background:'#f7fcf9',borderRadius:'8px',color:'#18794e',fontSize:'9px',fontWeight:'800'}}>No owner-priority items are currently available.</div>:<div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:'850px'}}><thead><tr style={{background:'#faf7f1'}}>{['PRIORITY','ISSUE','MODULE / EXPOSURE','RECOMMENDED ACTION',''].map(h=><th key={h} style={{textAlign:'left',padding:'7px 8px',color:'#7c756b',fontSize:'7px',borderBottom:'1px solid #eee7db'}}>{h}</th>)}</tr></thead><tbody>{priorities.map((p,i)=>{const s=String(p?.severity||'high').toLowerCase(),c=s==='critical'?'#b42318':s==='high'?'#b56a00':'#3568a8',bg=s==='critical'?'#fff1f0':s==='high'?'#fff8e7':'#eef5ff';return <tr key={p?.id||i} style={{borderBottom:'1px solid #f0ece5'}}><td style={{padding:'8px'}}><span style={{color:c,background:bg,borderRadius:'999px',padding:'3px 6px',fontSize:'7px',fontWeight:'900',textTransform:'uppercase'}}>{s}</span></td><td style={{padding:'8px',color:'#27303e',fontSize:'9px',fontWeight:'800'}}>{p?.title||'Business exception'}</td><td style={{padding:'8px',color:'#5f6672',fontSize:'8px'}}>{p?.module||'Business'}{safeNum(p?.amount_exposure,0)>0?<><br/><b>{php(p.amount_exposure)}</b></>:null}</td><td style={{padding:'8px',color:'#5f6672',fontSize:'8px',lineHeight:1.4}}>{p?.recommended_action||'Review and resolve the source record.'}</td><td style={{padding:'8px',textAlign:'right'}}><button onClick={()=>openModule(p?.module)} style={{border:'none',background:'#c91f2c',color:'#fff',borderRadius:'7px',padding:'6px 9px',fontSize:'7px',fontWeight:'900',cursor:'pointer'}}>OPEN</button></td></tr>})}</tbody></table></div>}
+   </Panel>
+
+   <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:'10px',marginTop:'10px'}}>
+    <Panel title="TOP PRODUCTS" sub="Fast product comparison from Foundation profitability / sales data."><BarList rows={products} color="#c91f2c" empty="Product ranking will appear when product-level sales data is available."/></Panel>
+    <Panel title="TOP RESELLERS" sub="Revenue ranking across reseller and outlet accounts."><BarList rows={resellers} color="#f6b900" empty="Reseller ranking will appear when Foundation performance data is available."/></Panel>
+   </div>
+
+   <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(0,1.1fr) minmax(0,.9fr)',gap:'10px',marginTop:'10px'}}>
+    <Panel title="RECEIVABLES AGING" sub="Outstanding money grouped by age bucket so collections can be prioritized."><BarList rows={aging.filter(x=>x.value>0).slice(0,7)} color="#b42318" empty="Aging buckets are unavailable in the current snapshot."/></Panel>
+    <Panel title="TODAY'S OPERATIONS" sub="Compact operational status — cards are retained only where they work best."><div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'6px'}}>{ops.map(([l,v,c])=><div key={l} style={{background:'#fafafa',border:'1px solid #f0ece5',borderRadius:'8px',padding:'8px'}}><span style={{display:'block',width:'6px',height:'6px',borderRadius:'50%',background:c,marginBottom:'5px'}}/><p style={{color:'#9398a1',fontSize:'6.5px',fontWeight:'900',margin:'0 0 3px'}}>{l}</p><b style={{color:'#202938',fontSize:'13px'}}>{v}</b></div>)}</div></Panel>
+   </div>
+
+   <div style={{marginTop:'10px'}}><Panel title="DECISION SUPPORT" sub="Short owner recommendations based on the integrated Foundation analysis.">{recs.length===0?<p style={{color:'#9aa0aa',fontSize:'9px'}}>Recommendations will appear after Foundation data is available.</p>:<div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:'6px'}}>{recs.map((r,i)=><div key={i} style={{display:'grid',gridTemplateColumns:'22px 1fr',gap:'7px',padding:'8px',background:'#fafafa',borderRadius:'8px'}}><span style={{width:'20px',height:'20px',borderRadius:'6px',background:i===0?'#fff1ef':'#fff9e6',color:i===0?'#a31623':'#9a7300',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:'900',fontSize:'8px'}}>{i+1}</span><span style={{color:'#515967',fontSize:'8.5px',lineHeight:1.4}}>{r}</span></div>)}</div>}</Panel></div>
   </div>
  </div>
 })()}
