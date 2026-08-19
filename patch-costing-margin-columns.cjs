@@ -3,18 +3,17 @@ const fs = require('fs')
 const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
-const diagnosticTerms = ['displayedRecipeCost.statusLabel', 'recipeCost.statusLabel', 'statusLabel}', "'BASE'", '>BASE<']
-for (const term of diagnosticTerms) {
+for (const term of ['CURRENT SRP</p>', 'displayedRecipeCost']) {
   let from = 0
   let count = 0
-  while (count < 6) {
+  while (count < 4) {
     const i = src.indexOf(term, from)
     if (i < 0) break
-    console.log(`COSTING_RENDER_SNIPPET_${term.replace(/[^A-Za-z0-9]+/g, '_')}_${count + 1}: ${src.slice(Math.max(0, i - 1000), i + 1800).replace(/\s+/g, ' ')}`)
+    console.log(`COSTING_PRODUCT_ROW_SNIPPET_${term.replace(/[^A-Za-z0-9]+/g, '_')}_${count + 1}: ${src.slice(Math.max(0, i - 3200), i + 4200).replace(/\s+/g, ' ')}`)
     from = i + term.length
     count += 1
   }
-  if (!count) console.log(`COSTING_RENDER_TERM_NOT_FOUND_${term.replace(/[^A-Za-z0-9]+/g, '_')}`)
+  if (!count) console.log(`COSTING_PRODUCT_ROW_TERM_NOT_FOUND_${term.replace(/[^A-Za-z0-9]+/g, '_')}`)
 }
 
 const marker = 'COMPANY GROSS MARGIN'
