@@ -68,5 +68,11 @@ if (!src.includes(cardLayoutMarker)) {
   src = replaceAt(src, actionsIndex, oldActions, newActions, 'Product Recipe action buttons')
 }
 
+// Temporary build-time diagnostics for the two shared recipe panels.
+for (const anchor of ['Base Dough Recipe','Powder Base Recipe']) {
+  const i = src.indexOf(anchor)
+  console.log(`\n--- ${anchor} SOURCE CONTEXT ---\n${i >= 0 ? src.slice(Math.max(0,i-1800), i+4200) : 'NOT FOUND'}\n--- END ${anchor} ---\n`)
+}
+
 fs.writeFileSync(path, src, 'utf8')
 console.log('Costing UI patched: compact two-card desktop grid, one card per row on mobile, smaller spacing, and margins beside product names.')
