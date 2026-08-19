@@ -1,26 +1,18 @@
 const fs = require('fs');
 const src = fs.readFileSync('src/App.jsx','utf8');
-
-function contexts(label, needle, limit=5, radius=3000, startAt=0) {
-  let from = startAt, count = 0;
-  console.log(`\n===== ${label} | ${needle} =====`);
-  while (count < limit) {
-    const i = src.indexOf(needle, from);
-    if (i < 0) break;
-    console.log(`\n--- occurrence ${count+1} @ ${i} ---\n` + src.slice(Math.max(0,i-radius), Math.min(src.length,i+needle.length+radius)) + '\n--- end occurrence ---');
-    from = i + needle.length;
-    count++;
-  }
-  if (!count) console.log('NO MATCH');
+function one(label, needle, radius=6000, startAt=0) {
+  const i = src.indexOf(needle,startAt);
+  console.log(`\n===== ${label} @ ${i} =====`);
+  if (i<0) return console.log('NO MATCH');
+  console.log(src.slice(Math.max(0,i-radius),Math.min(src.length,i+needle.length+radius)));
 }
-
-contexts('dashboard render class','romas-executive-dashboard',5,5000,100000);
-contexts('dashboard header render','romas-dashboard-header',5,4500,100000);
-contexts('dashboard active tab expression',"activeTab === 'dashboard'",6,4500,250000);
-contexts('dashboard active tab compact',"activeTab==='dashboard'",6,4500,250000);
-contexts('dashboard data setter','setDashboardData',8,3500,250000);
-contexts('dashboard loader','loadDashboard',8,4000,250000);
-contexts('owner briefing table','business_owner_briefings',5,3500,250000);
-contexts('integrity exceptions table','business_integrity_exceptions',5,3500,250000);
-contexts('analytics invoice source','const allInvoices = deliveryInvoices',3,3000,250000);
-console.log('\n===== END FOCUSED DASHBOARD INSPECTION =====');
+function many(label, needle, limit=10, radius=1800, startAt=0){let at=startAt;console.log(`\n===== ${label} =====`);for(let n=0;n<limit;n++){const i=src.indexOf(needle,at);if(i<0)break;console.log(`\n--- ${n+1} @ ${i} ---\n${src.slice(Math.max(0,i-radius),Math.min(src.length,i+needle.length+radius))}`);at=i+needle.length;}}
+one('LOAD DASHBOARD','async function loadDashboard()',11000,1000000);
+one('SET DASHBOARD OBJECT','setDashboardData({',7500,1000000);
+many('DASHBOARD DATA RENDER OCCURRENCES','dashboardData',14,2200,1700000);
+one('DASHBOARD KPI CLASS','romas-dashboard-kpis',6500,1700000);
+one('DASHBOARD ALERT GRID','romas-dashboard-alert-grid',7500,1700000);
+one('ANALYTICS FUTURE FILTER SOURCE','const allInvoices = deliveryInvoices',3500,1000000);
+one('OWNER BRIEFING SOURCE','business_owner_briefings',4500,1000000);
+one('INTEGRITY SOURCE','business_integrity_exceptions',4500,1000000);
+console.log('\n===== END DASHBOARD INSPECTION =====');
