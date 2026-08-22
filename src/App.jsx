@@ -715,6 +715,25 @@ function getPHDateOffsetString(days = 0, asOf = new Date()) {
  return formatDateLocal(date)
 }
 
+const TOMORROW_FORECAST_WINDOW_START_MINUTES = 8 * 60
+const TOMORROW_FORECAST_WINDOW_END_MINUTES = 11 * 60
+const TOMORROW_DELIVERY_START_LABEL = '5:00 AM'
+
+function getTomorrowOperationsForecastWindow(asOf = new Date()) {
+ const ph = getPHDateTimeParts(asOf)
+ const targetDate = getPHDateOffsetString(1, asOf)
+ const beforeWindow = ph.totalMinutes < TOMORROW_FORECAST_WINDOW_START_MINUTES
+ const insideWindow = ph.totalMinutes >= TOMORROW_FORECAST_WINDOW_START_MINUTES && ph.totalMinutes <= TOMORROW_FORECAST_WINDOW_END_MINUTES
+ const status = beforeWindow ? 'upcoming' : insideWindow ? 'active' : 'recheck'
+ const label = beforeWindow ? 'OPENS AT 8:00 AM' : insideWindow ? 'MORNING WINDOW ACTIVE' : 'MORNING WINDOW PASSED'
+ const message = beforeWindow
+  ? 'You may prepare early. Recheck official weather, classes, routes, and final orders during the 8:00–11:00 AM Philippine-time window.'
+  : insideWindow
+   ? 'Complete tomorrow\'s production and delivery decision now, then save the draft for the final weather and route recheck tonight.'
+   : 'The recommended 8:00–11:00 AM preparation window has passed. The forecast remains editable for late orders, official advisories, and emergency corrections.'
+ return { ...ph, targetDate, status, label, message, beforeWindow, insideWindow }
+}
+
 function getOrderCutoffStatus(targetDeliveryDate = null, asOf = new Date()) {
  // Order cut-off has been completely removed.
  // Resellers and admins can create, edit, and approve orders/invoices anytime.
@@ -6740,11 +6759,12 @@ export default function App() {
  const [invoiceCopyFromResellerId, setInvoiceCopyFromResellerId] = useState('')
  const [resellerOrderTemplateSourceId, setResellerOrderTemplateSourceId] = useState('')
  const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
- const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate()+1)
- const tomorrowStr = tomorrow.toISOString().slice(0,10)
+ const tomorrowStr = getPHDateOffsetString(1)
  const [forecastDate, setForecastDate] = useState(tomorrowStr)
  const [showForecastVariants, setShowForecastVariants] = useState(true)
  const [deliveriesSubTab, setDeliveriesSubTab] = useState('operations')
+ const [tomorrowForecastPreparing, setTomorrowForecastPreparing] = useState(false)
+ const [tomorrowForecastTick, setTomorrowForecastTick] = useState(Date.now())
  const [pagasaRegion1Data, setPagasaRegion1Data] = useState(null)
  const [pagasaRegion1Loading, setPagasaRegion1Loading] = useState(false)
  const [pagasaRegion1Error, setPagasaRegion1Error] = useState('')
@@ -7406,16 +7426,23 @@ export default function App() {
  const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
 
  useEffect(() => {
-  if (!adminMode || activeTab !== 'sales' || salesView !== 'deliveries') return
+  if (!adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
   loadWeatherGuardData(forecastDate, { silent:true })
  }, [adminMode, activeTab, salesView, forecastDate])
 
  useEffect(() => {
-  if (!adminMode || activeTab !== 'sales' || salesView !== 'deliveries' || deliveriesSubTab !== 'pagasa') return
+  if (!adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
   loadPagasaRegion1Weather({ silent:true })
   const refreshTimer = setInterval(() => loadPagasaRegion1Weather({ silent:true }), 10 * 60 * 1000)
   return () => clearInterval(refreshTimer)
- }, [adminMode, activeTab, salesView, deliveriesSubTab])
+ }, [adminMode, activeTab, salesView])
+
+ useEffect(() => {
+  if (!adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
+  setTomorrowForecastTick(Date.now())
+  const minuteTimer = setInterval(() => setTomorrowForecastTick(Date.now()), 60 * 1000)
+  return () => clearInterval(minuteTimer)
+ }, [adminMode, activeTab, salesView])
 
  // Security & Owner Control Lockdown v1 helpers 
  const ADMIN_ROLE_VALUES = ['owner','manager','admin','pos_admin','hr','payroll','supervisor','asst_supervisor']
@@ -18890,12 +18917,13 @@ function buildDeliveryInvoicePrintCSS() {
  function canAccess(tab) {
  const role = normalizeAdminRole(adminRole)
  if (role === 'owner') return true
- if (role === 'manager') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
- if (role === 'admin' || role === 'pos_admin') return ['posMonitor'].includes(tab)
+ if (role === 'manager') return ['dashboard','tomorrowForecast','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
+ if (role === 'admin') return ['tomorrowForecast','posMonitor'].includes(tab)
+ if (role === 'pos_admin') return ['posMonitor'].includes(tab)
  if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops','posMonitor'].includes(tab)
  if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement','posMonitor'].includes(tab)
- if (role === 'supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
- if (role === 'asst_supervisor') return ['dashboard','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
+ if (role === 'supervisor') return ['dashboard','tomorrowForecast','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
+ if (role === 'asst_supervisor') return ['dashboard','tomorrowForecast','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
  return false
  }
 
@@ -27450,6 +27478,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
    const plan = planResult.data || null
    setWeatherGuardPlan(plan)
+   let loadedDecisions = []
+   let loadedOutcome = null
 
    if (plan) {
     const [decisionsResult, outcomeResult] = await Promise.all([
@@ -27460,6 +27490,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     if (outcomeResult.error) throw outcomeResult.error
 
     const decisions = decisionsResult.data || []
+    loadedDecisions = decisions
     setWeatherGuardDecisions(decisions)
     setWeatherGuardDecisionOverrides(Object.fromEntries(decisions.map(row => [getWeatherGuardDecisionKey(row), String(row.final_qty ?? 0)])))
     setWeatherGuardDraft({
@@ -27483,6 +27514,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
      decision_notes:plan.decision_notes || ''
     })
     const outcome = outcomeResult.data || {}
+    loadedOutcome = outcomeResult.data || null
     setWeatherGuardOutcome({
      actual_delivered_qty:String(outcome.actual_delivered_qty ?? ''),
      returned_qty:String(outcome.returned_qty ?? ''),
@@ -27513,12 +27545,127 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    }
 
    if (!options.silent) showToast(`Weather and Class Suspension Guard loaded for ${dateValue}.`)
+   return { profiles, settings, plan, decisions:loadedDecisions, outcome:loadedOutcome }
   } catch(error) {
    console.error('Weather guard load failed:', error)
    if (!options.silent) showToast(`Weather guard load failed: ${getWeatherGuardErrorMessage(error)}`, 'red')
+   return null
   } finally {
    setWeatherGuardLoading(false)
   }
+ }
+
+ function getTomorrowForecastPagasaView(data = pagasaRegion1Data, targetDate = forecastDate) {
+  if (!data || !targetDate) return null
+  return getPagasaForecastDateViews(data).find(view => view?.update_date === targetDate && !view?.disabled) || null
+ }
+
+ async function prepareTomorrowOperationsForecast(options = {}) {
+  const targetDate = getPHDateOffsetString(1)
+  const forceWeather = options.forceWeather !== false
+  setTomorrowForecastPreparing(true)
+  setForecastDate(targetDate)
+  setSalesView('deliveries')
+  setDeliveriesSubTab('operations')
+  setShowWeatherGuard(true)
+  try {
+   const [guardSnapshot, weatherData] = await Promise.all([
+    loadWeatherGuardData(targetDate, { silent:true }),
+    loadPagasaRegion1Weather({ force:forceWeather, silent:true }),
+    loadResellers(),
+    loadDeliveryInvoices(),
+    loadDonutVariants()
+   ])
+   const targetView = getTomorrowForecastPagasaView(weatherData, targetDate)
+   if (targetView) setPagasaSelectedUpdateKey(targetView.id)
+
+   const lockedPlan = String(guardSnapshot?.plan?.status || '').toLowerCase() === 'locked'
+   if (weatherData && targetView && !lockedPlan) {
+    applyPagasaDataToWeatherGuard({
+     data:weatherData,
+     updateKey:targetView.id,
+     municipalityName:pagasaSelectedMunicipality || 'Dagupan City',
+     targetDate,
+     silent:true
+    })
+   }
+
+   if (!weatherData) {
+    showToast(`Tomorrow's forecast workspace opened for ${targetDate}, but live PAGASA refresh failed. Review the official source before saving.`, 'orange')
+   } else if (!targetView) {
+    showToast(`Tomorrow's workspace opened for ${targetDate}. The target-date PAGASA regional outlook is not available yet, so weather remains for manual review.`, 'orange')
+   } else if (lockedPlan) {
+    showToast(`Locked plan loaded for ${targetDate}. PAGASA was refreshed for rechecking but did not overwrite the locked forecast.`, 'green')
+   } else {
+    showToast(`Tomorrow's operations forecast is prepared for ${targetDate}. Review classes, routes, quantities, then save the draft.`, 'green')
+   }
+   setTimeout(() => document.getElementById('tomorrow-operations-forecast')?.scrollIntoView({ behavior:'smooth', block:'start' }), 150)
+   return { targetDate, guardSnapshot, weatherData, targetView }
+  } catch(error) {
+   console.error('Tomorrow operations forecast preparation failed:', error)
+   showToast(`Tomorrow's forecast could not be fully prepared: ${getWeatherGuardErrorMessage(error)}`, 'red')
+   return null
+  } finally {
+   setTomorrowForecastPreparing(false)
+  }
+ }
+
+ async function openTomorrowForecastPagasaSource() {
+  const targetDate = forecastDate || getPHDateOffsetString(1)
+  let data = pagasaRegion1Data
+  if (!data) data = await loadPagasaRegion1Weather({ force:true, silent:false })
+  const targetView = getTomorrowForecastPagasaView(data, targetDate)
+  if (targetView) setPagasaSelectedUpdateKey(targetView.id)
+  setDeliveriesSubTab('pagasa')
+  if (!targetView && data) showToast(`The official PAGASA outlook does not yet include ${targetDate}. Use the latest bulletin and recheck later.`, 'orange')
+ }
+
+ function printTomorrowOperationsForecast() {
+  const rows = buildWeatherGuardRows(deliveryInvoices, forecastDate)
+  const summary = getWeatherGuardSummary(rows)
+  const selectedPlanMatches = String(weatherGuardPlan?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10)
+  const planStatus = selectedPlanMatches ? String(weatherGuardPlan?.status || 'draft').toUpperCase() : 'UNSAVED DRAFT'
+  const targetView = getTomorrowForecastPagasaView(pagasaRegion1Data, forecastDate)
+  const targetMunicipality = targetView?.pangasinan?.municipalities?.find(row => String(row?.name || '').toLowerCase() === String(pagasaSelectedMunicipality || '').toLowerCase())
+   || targetView?.pangasinan?.municipalities?.[0]
+   || null
+  const weatherVisual = getPagasaAlertVisual(targetMunicipality || {})
+  const generatedAt = new Date().toLocaleString('en-PH', { timeZone:PH_TIME_ZONE, year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+  const classVerified = weatherGuardDraft.class_status !== 'unverified'
+  const routeVerified = weatherGuardDraft.route_status !== 'unverified'
+  const invoiceCount = (deliveryInvoices || []).filter(invoice => String(invoice?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10)).length
+  const profiledCount = rows.filter(row => !row.reseller_id || weatherGuardProfiles.some(profile => String(profile.reseller_id) === String(row.reseller_id))).length
+  const readiness = [
+   ['Tomorrow invoices / orders', rows.length > 0 && summary.normal > 0, `${invoiceCount} invoice(s), ${summary.normal.toLocaleString()} pcs`],
+   ['Official target-date PAGASA outlook', !!targetView && !pagasaRegion1Data?.stale, targetView ? weatherVisual.label : 'Not available'],
+   ['Class status checked', classVerified, String(weatherGuardDraft.class_status || 'unverified').replaceAll('_',' ')],
+   ['Route status checked', routeVerified, String(weatherGuardDraft.route_status || 'unverified').replaceAll('_',' ')],
+   ['Relevant outlet profiles', rows.length > 0 && profiledCount === rows.length, `${profiledCount}/${rows.length}`],
+   ['Plan saved / locked', selectedPlanMatches, planStatus]
+  ]
+  const pw = window.open('', '_blank', 'width=980,height=900')
+  if (!pw) { showToast('Allow pop-ups to print the operations forecast.', 'red'); return }
+  const esc = value => escapePrintHTML(value)
+  pw.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tomorrow Operations Forecast - ${esc(forecastDate)}</title>
+  <style>
+  *{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#1a1a2e;margin:0;background:#f4f4f4}.sheet{width:210mm;min-height:297mm;margin:0 auto;background:#fff;padding:11mm}.head{display:flex;justify-content:space-between;gap:18px;border-bottom:4px solid #ca1b1b;padding-bottom:10px}.brand{color:#ca1b1b;font-weight:900;font-size:22px}.title{text-align:right}.title h1{font-size:20px;margin:0 0 4px}.meta{font-size:10px;color:#666}.status{display:inline-block;margin-top:7px;padding:5px 10px;border-radius:16px;background:#1a1a2e;color:#fff;font-size:10px;font-weight:900}.timeline,.summary,.checks{display:grid;gap:7px;margin-top:12px}.timeline{grid-template-columns:repeat(4,1fr)}.summary{grid-template-columns:repeat(5,1fr)}.checks{grid-template-columns:repeat(2,1fr)}.card{border:1px solid #ddd;border-radius:8px;padding:8px}.card small{display:block;color:#777;font-size:8px;text-transform:uppercase;font-weight:900;margin-bottom:4px}.card b{font-size:13px}.weather{margin-top:12px;border:1px solid ${weatherVisual.border};background:${weatherVisual.background};border-radius:9px;padding:10px}.weather h3{margin:0 0 5px;color:${weatherVisual.color};font-size:13px}.weather p{font-size:9px;line-height:1.45;margin:3px 0}.check{display:flex;justify-content:space-between;gap:10px;border:1px solid #e5e5e5;border-radius:7px;padding:7px;font-size:9px}.ok{color:#2d8a4e;font-weight:900}.pending{color:#b45309;font-weight:900}table{width:100%;border-collapse:collapse;margin-top:12px;font-size:9px}th{background:#1a1a2e;color:#fff;padding:6px;text-align:center}th:first-child,td:first-child{text-align:left}td{padding:6px;border-bottom:1px solid #e8e8e8;text-align:center}.totals{background:#fff8dc;font-weight:900}.notes{margin-top:12px;border:1px solid #ddd;border-radius:8px;padding:9px;font-size:9px;line-height:1.5;white-space:pre-wrap}.signatures{display:grid;grid-template-columns:1fr 1fr;gap:35px;margin-top:28px}.line{border-top:1px solid #222;padding-top:4px;text-align:center;font-size:9px}.footer{margin-top:16px;padding-top:7px;border-top:1px solid #ddd;font-size:8px;color:#777;text-align:center}.no-print{text-align:center;margin:15px}.no-print button{background:#ca1b1b;color:#fff;border:0;border-radius:8px;padding:10px 22px;font-weight:900;cursor:pointer}@media print{@page{size:A4;margin:0}body{background:#fff}.sheet{margin:0}.no-print{display:none}}
+  </style></head><body><div class="sheet">
+  <div class="head"><div><div class="brand">Roma's Donuts</div><div class="meta">Tomorrow-first production and delivery control</div></div><div class="title"><h1>TOMORROW'S OPERATIONS FORECAST</h1><div class="meta">Delivery date: <strong>${esc(formatDateForDisplay(forecastDate))}</strong> · Starts ${TOMORROW_DELIVERY_START_LABEL}</div><span class="status">${esc(planStatus)}</span></div></div>
+  <div class="timeline"><div class="card"><small>Morning Start</small><b>8:00 AM</b></div><div class="card"><small>Forecast Complete</small><b>11:00 AM</b></div><div class="card"><small>Final Risk Recheck</small><b>${esc(normalizeWeatherGuardTime(weatherGuardDraft.decision_cutoff_time || '20:00'))}</b></div><div class="card"><small>Delivery Start</small><b>${TOMORROW_DELIVERY_START_LABEL}</b></div></div>
+  <div class="summary">${[
+   ['Normal Forecast',summary.normal],['Base Production',summary.base],['Conditional Hold',summary.conditional],['Risk-Adjusted',summary.recommended],['Final Release',summary.final]
+  ].map(([label,value])=>`<div class="card"><small>${esc(label)}</small><b>${safeNum(value,0).toLocaleString()} pcs</b></div>`).join('')}</div>
+  <div class="weather"><h3>${weatherVisual.icon} ${esc(weatherVisual.label)}</h3><p><strong>Weather:</strong> ${esc(targetView?.forecast_day?.condition || weatherGuardDraft.weather_level || 'Not loaded')}</p><p><strong>Class status:</strong> ${esc(String(weatherGuardDraft.class_status || 'unverified').replaceAll('_',' '))} · <strong>Route:</strong> ${esc(String(weatherGuardDraft.route_status || 'unverified').replaceAll('_',' '))}</p><p><strong>Official reference:</strong> ${esc(weatherGuardDraft.weather_reference || targetView?.source_url || 'Official source not yet attached')}</p></div>
+  <div class="checks">${readiness.map(([label,ok,note])=>`<div class="check"><span><strong>${esc(label)}</strong><br>${esc(note)}</span><span class="${ok?'ok':'pending'}">${ok?'READY':'CHECK'}</span></div>`).join('')}</div>
+  <table><thead><tr><th>Outlet / Route</th><th>Normal</th><th>Base</th><th>Recommended</th><th>Final</th><th>Risk</th><th>Dispatch</th></tr></thead><tbody>
+  ${rows.length ? rows.map(row=>`<tr><td><strong>${esc(row.reseller_name)}</strong><br><span style="color:#777">${esc(row.municipality || 'Municipality not set')}</span></td><td>${row.invoice_qty}</td><td>${row.base_qty}</td><td>${row.recommended_qty}</td><td><strong>${row.final_qty}</strong></td><td>${esc(String(row.risk_level || '').toUpperCase())}</td><td>${esc(String(row.dispatch_status || '').toUpperCase())}</td></tr>`).join('') : '<tr><td colspan="7" style="text-align:center;padding:18px;color:#777">No delivery invoices are loaded for this date.</td></tr>'}
+  <tr class="totals"><td>TOTAL</td><td>${summary.normal}</td><td>${summary.base}</td><td>${summary.recommended}</td><td>${summary.final}</td><td colspan="2"></td></tr></tbody></table>
+  <div class="notes"><strong>Decision / reallocation notes</strong><br>${esc(weatherGuardDraft.decision_notes || 'No notes entered.')}</div>
+  <div class="signatures"><div class="line">Prepared by: ${esc(currentAdminLabel || 'Admin')}</div><div class="line">Owner / Manager approval</div></div>
+  <div class="footer">Generated ${esc(generatedAt)} · Official weather is a planning input only. Recheck PAGASA, class announcements, and routes before production lock, loading, and dispatch.</div>
+  </div><div class="no-print"><button onclick="window.print()">PRINT OPERATIONS FORECAST</button></div></body></html>`)
+  pw.document.close()
+  setTimeout(() => { pw.focus(); pw.print() }, 500)
  }
 
  async function saveWeatherGuardProfiles() {
@@ -28322,8 +28469,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   }
  }
 
- function derivePagasaGuardLevel(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality) {
-  const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data)
+ function derivePagasaGuardLevel(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality, updateKey = pagasaSelectedUpdateKey) {
+  const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data, updateKey)
   const riskLevel = String(alert?.risk_level || '').toLowerCase()
   const score = Math.max(0, safeNum(alert?.score, 0))
   if (riskLevel === 'red' || score >= 4) return 'heavy_rain'
@@ -28333,10 +28480,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   return 'no_warning'
  }
 
- function getPagasaOperationalSummary(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality) {
-  const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data)
-  const selectedUpdate = getPagasaSelectedUpdateView(data)
-  const forecastDays = (data?.regional?.days || []).slice(0,3)
+ function getPagasaOperationalSummary(data = pagasaRegion1Data, municipalityName = pagasaSelectedMunicipality, updateKey = pagasaSelectedUpdateKey) {
+  const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data, updateKey)
+  const selectedUpdate = getPagasaSelectedUpdateView(data, updateKey)
+  const forecastDays = selectedUpdate?.forecast_day ? [selectedUpdate.forecast_day] : (data?.regional?.days || []).slice(0,3)
   const conditions = forecastDays.map(day => `${day.day}: ${day.condition}`).join(' | ')
   const updateBasis = selectedUpdate
    ? `${selectedUpdate.title || 'PAGASA bulletin'}${selectedUpdate.issued_at_text ? ` (${selectedUpdate.issued_at_text})` : ''}`
@@ -28404,39 +28551,57 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   }
  }
 
- function applyPagasaToWeatherGuard() {
-  if (!pagasaRegion1Data) {
+ function applyPagasaDataToWeatherGuard(options = {}) {
+  const data = options.data || pagasaRegion1Data
+  const updateKey = options.updateKey || pagasaSelectedUpdateKey
+  const municipalityName = options.municipalityName || pagasaSelectedMunicipality || 'Dagupan City'
+  const targetDate = options.targetDate || forecastDate
+  if (!data) {
    showToast('Load PAGASA data first.', 'red')
-   return
+   return false
   }
-  const alert = getPagasaSelectedMunicipalityAlert()
-  const selectedUpdate = getPagasaSelectedUpdateView()
-  const weatherLevel = derivePagasaGuardLevel()
-  const sourceUrl = selectedUpdate?.source_url || pagasaRegion1Data?.source_urls?.regional || 'https://pagasa.dost.gov.ph/regional-forecast/nlprsd'
-  const issuedText = selectedUpdate?.issued_at_text || pagasaRegion1Data?.regional?.extended_issued_at_text || pagasaRegion1Data?.regional?.issued_at_text || ''
-  const summary = getPagasaOperationalSummary()
+  const alert = getPagasaSelectedMunicipalityAlert(municipalityName, data, updateKey)
+  const selectedUpdate = getPagasaSelectedUpdateView(data, updateKey)
+  const weatherLevel = derivePagasaGuardLevel(data, municipalityName, updateKey)
+  const sourceUrl = selectedUpdate?.source_url || data?.source_urls?.regional || 'https://pagasa.dost.gov.ph/regional-forecast/nlprsd'
+  const issuedText = selectedUpdate?.issued_at_text || data?.regional?.extended_issued_at_text || data?.regional?.issued_at_text || ''
+  const summary = getPagasaOperationalSummary(data, municipalityName, updateKey)
   setWeatherGuardDraft(prev => ({
    ...prev,
    weather_level:weatherLevel,
    weather_source_type:'pagasa',
-   weather_location:`${pagasaSelectedMunicipality}, Pangasinan / Region 1`,
-   weather_issued_at:toWeatherGuardDateTimeLocal(pagasaRegion1Data?.fetched_at || new Date().toISOString()),
+   weather_location:`${municipalityName}, Pangasinan / Region 1${targetDate ? ` · Delivery ${targetDate}` : ''}`,
+   weather_issued_at:toWeatherGuardDateTimeLocal(data?.fetched_at || new Date().toISOString()),
    weather_reference:[
     `Official PAGASA Northern Luzon source: ${sourceUrl}`,
     selectedUpdate?.title ? `Displayed update: ${selectedUpdate.title}` : 'Displayed update: latest applicable PAGASA updates (combined)',
     issuedText ? `PAGASA issue: ${issuedText}` : '',
     alert?.warning_type ? `${alert.warning_type}: ${alert.status_label}` : '',
-    pagasaRegion1Data?.stale ? 'Displayed from last successful cached PAGASA snapshot.' : 'Retrieved live through the secured PAGASA Region 1 function.'
+    data?.stale ? 'Displayed from last successful cached PAGASA snapshot.' : 'Retrieved live through the secured PAGASA Region 1 function.'
    ].filter(Boolean).join(' | '),
    decision_notes:[prev.decision_notes, `PAGASA import — ${summary}`].filter(Boolean).join(' | ')
   }))
-  setDeliveriesSubTab('operations')
+  if (options.switchToOperations !== false) setDeliveriesSubTab('operations')
   setShowWeatherGuard(true)
-  showToast('PAGASA condition copied to the Weather Guard draft. Review it before saving or locking production.')
-  setTimeout(() => {
-   const guard = document.getElementById('weather-class-suspension-guard')
-   if (guard) guard.scrollIntoView({ behavior:'smooth', block:'start' })
-  }, 150)
+  if (!options.silent) {
+   showToast('PAGASA condition copied to the operations forecast draft. Review it before saving or locking production.')
+   setTimeout(() => {
+    const guard = document.getElementById('weather-class-suspension-guard')
+    if (guard) guard.scrollIntoView({ behavior:'smooth', block:'start' })
+   }, 150)
+  }
+  return true
+ }
+
+ function applyPagasaToWeatherGuard() {
+  return applyPagasaDataToWeatherGuard({
+   data:pagasaRegion1Data,
+   updateKey:pagasaSelectedUpdateKey,
+   municipalityName:pagasaSelectedMunicipality,
+   targetDate:forecastDate,
+   switchToOperations:true,
+   silent:false
+  })
  }
 
  function openPagasaOfficialSource(url = '') {
@@ -33345,6 +33510,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  { key:'dashboard', icon:'\uD83C\uDFE0', label:'Dashboard',
  tabs:[{key:'dashboard',label:'Overview'}],
  roles:['owner','manager','hr','payroll','supervisor','asst_supervisor'] },
+ { key:'tomorrowForecast', icon:'\uD83C\uDF26\uFE0F', label:"Tomorrow's Forecast",
+ tabs:[{key:'tomorrowForecast',label:"Tomorrow's Operations Forecast"}],
+ roles:['owner','manager','admin','supervisor','asst_supervisor'] },
  { key:'hr', icon:'\uD83D\uDC65', label:'HR & Attendance',
  tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'leaveRequests',label:'Leave \uD83D\uDD14'},{key:'announcements',label:'Announcements'},{key:'contracts',label:'Contracts'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
@@ -33386,7 +33554,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
  const visibleSubTabs = currentSection.tabs.filter(t => t.key === 'documents' || canAccess(t.key))
- const adminDataDenseTabs = new Set(['posMonitor','attendance','payroll','payrollHistory','remittance','dtr','bankDisbursement','inventory','sales','analytics','payablesMain'])
+ const adminDataDenseTabs = new Set(['posMonitor','tomorrowForecast','attendance','payroll','payrollHistory','remittance','dtr','bankDisbursement','inventory','sales','analytics','payablesMain'])
  const adminMediumWidthTabs = new Set(['dashboard','overtime','employees','schedule','performance','contracts','cashAdvanceCoverage','adjustment','thirteenth','finalpay','cashRequests','disputes'])
  const adminContentMaxWidth = '100%'
  const canManageSopLibrary = ['owner','manager'].includes(normalizeAdminRole(adminRole))
@@ -34322,6 +34490,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
  const handleTabClick = (key) => {
+      if(key==='tomorrowForecast') {
+        setActiveTab('tomorrowForecast')
+        setSidebarOpen(false)
+        void prepareTomorrowOperationsForecast({ forceWeather:false })
+        return
+      }
       if(key==='payablesMain') {
         setActiveTab('payablesMain')
         setSalesView('payables')
@@ -40952,19 +41126,24 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
 
  {/* SALES & RESELLERS */}
- {(activeTab==='sales'||activeTab==='payablesMain') && (
+ {(activeTab==='sales'||activeTab==='payablesMain'||activeTab==='tomorrowForecast') && (
  <div>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
- <h2 style={h2s}> Sales & Resellers</h2>
+ <div>
+  <h2 style={h2s}>{activeTab==='tomorrowForecast' ? " Tomorrow's Operations Forecast" : ' Sales & Resellers'}</h2>
+  {activeTab==='tomorrowForecast' && <p style={{ color:'#777', fontSize:'11px', margin:'4px 0 0' }}>Prepare between 8:00–11:00 AM for tonight's production and tomorrow's 5:00 AM delivery start.</p>}
+ </div>
  {salesView==='financial' && financialData && <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printPLReport}> PRINT P&L</button>}
  </div>
 
  {/* Sub-navigation */}
+ {activeTab!=='tomorrowForecast' && (
  <div className="romas-module-tabs" style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletSummary','\uD83C\uDFEA Outlet Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
  <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
+ )}
 
 
  {/* OUTLET INVENTORY & WEEKLY REMITTANCE */}
@@ -41417,8 +41596,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', background:'#f4f4f4', border:'1px solid #ddd', borderRadius:'12px', padding:'6px', marginBottom:'14px' }}>
   {[
-   ['operations','DELIVERY OPERATIONS'],
-   ['pagasa','PAGASA REGION 1']
+   ['operations',"TOMORROW'S OPERATIONS FORECAST"],
+   ['pagasa','OFFICIAL PAGASA SOURCE']
   ].map(([value,label])=>(
    <button key={value} onClick={()=>setDeliveriesSubTab(value)} style={{
     flex:isMobile?'1 1 100%':'0 1 auto',
@@ -41765,7 +41944,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
           </select>
          </div>
          <input value={pagasaMunicipalitySearch} onChange={e=>setPagasaMunicipalitySearch(e.target.value)} placeholder="Search municipality..." style={{...inputStyle, marginBottom:0, width:isMobile?'100%':'190px', padding:'8px' }} />
-         <button style={{...btnGreen, background:'#1a5276', width:'auto', marginTop:0, padding:'8px 13px', fontSize:'10px' }} onClick={applyPagasaToWeatherGuard}>COPY SELECTED TOWN TO WEATHER GUARD</button>
+         <button style={{...btnGreen, background:'#1a5276', width:'auto', marginTop:0, padding:'8px 13px', fontSize:'10px' }} onClick={applyPagasaToWeatherGuard}>COPY SELECTED BASIS TO OPERATIONS FORECAST</button>
         </div>
        </div>
 
@@ -41884,7 +42063,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       </div>
 
       <div style={{ background:'#f0fff4', border:'1px solid #a5d6a7', borderRadius:'12px', padding:'11px', fontSize:'10px', color:'#2d663b', lineHeight:1.55 }}>
-       <strong>Production control:</strong> PAGASA data is informational until an authorized user copies it into the Weather Guard, verifies class and route status, reviews outlet quantities, and saves or locks the production plan. This tab never cancels production automatically.
+       <strong>Production control:</strong> PAGASA data is informational until an authorized user copies it into Tomorrow's Operations Forecast, verifies class and route status, reviews outlet quantities, and saves or locks the production plan. This tab never cancels production automatically.
       </div>
      </>
     )}
@@ -41894,6 +42073,91 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {deliveriesSubTab==='operations' && (
  <>
+ {/* TOMORROW OPERATIONS FORECAST WORKFLOW */}
+ {(()=>{
+  const windowStatus = getTomorrowOperationsForecastWindow(new Date(tomorrowForecastTick))
+  const targetIsTomorrow = forecastDate === windowStatus.targetDate
+  const targetInvoices = (deliveryInvoices || []).filter(invoice => String(invoice?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10))
+  const targetInvoiceQty = targetInvoices.reduce((sum, invoice) => sum + getWeatherGuardInvoiceQuantity(invoice), 0)
+  const targetPagasaView = getTomorrowForecastPagasaView(pagasaRegion1Data, forecastDate)
+  const targetPagasaMunicipality = targetPagasaView?.pangasinan?.municipalities?.find(row => String(row?.name || '').toLowerCase() === String(pagasaSelectedMunicipality || '').toLowerCase())
+   || targetPagasaView?.pangasinan?.municipalities?.[0]
+   || null
+  const targetWeatherVisual = getPagasaAlertVisual(targetPagasaMunicipality || {})
+  const rows = buildWeatherGuardRows(deliveryInvoices, forecastDate)
+  const summary = getWeatherGuardSummary(rows)
+  const planMatches = String(weatherGuardPlan?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10)
+  const planLocked = planMatches && String(weatherGuardPlan?.status || '').toLowerCase() === 'locked'
+  const classChecked = weatherGuardDraft.class_status !== 'unverified'
+  const routeChecked = weatherGuardDraft.route_status !== 'unverified'
+  const relevantProfileCount = rows.filter(row => !row.reseller_id || weatherGuardProfiles.some(profile => String(profile.reseller_id) === String(row.reseller_id))).length
+  const profilesReady = rows.length > 0 && relevantProfileCount === rows.length
+  const officialWeatherReady = !!targetPagasaView && !pagasaRegion1Data?.stale
+  const checklist = [
+   { label:'Tomorrow orders / invoices', ready:targetInvoices.length > 0 && targetInvoiceQty > 0, note:targetInvoices.length ? `${targetInvoices.length} invoice(s) · ${targetInvoiceQty.toLocaleString()} pcs` : 'No invoices for this delivery date' },
+   { label:'Official target-date PAGASA', ready:officialWeatherReady, note:targetPagasaView ? `${targetWeatherVisual.icon} ${targetWeatherVisual.label}${pagasaRegion1Data?.stale?' · cached':''}` : 'Target-date outlook not loaded' },
+   { label:'Class status verified', ready:classChecked, note:String(weatherGuardDraft.class_status || 'unverified').replaceAll('_',' ') },
+   { label:'Routes checked', ready:routeChecked, note:String(weatherGuardDraft.route_status || 'unverified').replaceAll('_',' ') },
+   { label:'Relevant outlet profiles', ready:profilesReady, note:`${relevantProfileCount}/${rows.length} ready` },
+   { label:'Forecast saved', ready:planMatches, note:planLocked ? 'Locked and released' : planMatches ? 'Draft saved' : 'Not yet saved' }
+  ]
+  const readyCount = checklist.filter(item => item.ready).length
+  let command = { label:'IN REVIEW', color:'#b45309', background:'#fff8dc', message:'Complete the missing checks before production release.' }
+  if (weatherGuardDraft.route_status === 'unsafe') command = { label:'DISPATCH BLOCKED', color:'#ca1b1b', background:'#fff0f0', message:'Verified unsafe route: final released quantities must remain zero.' }
+  else if (!targetInvoices.length || targetInvoiceQty <= 0) command = { label:'WAITING FOR ORDERS', color:'#6b7280', background:'#f4f4f4', message:'Create or load tomorrow\'s invoices before production quantities can be finalized.' }
+  else if (planLocked) command = { label:'LOCKED FOR PRODUCTION', color:'#2d8a4e', background:'#e8f5e9', message:'The owner/manager plan is locked. Recheck official advisories before loading and dispatch.' }
+  else if (targetWeatherVisual.risk === 'red') command = { label:'HIGH-RISK REVIEW', color:'#ca1b1b', background:'#fff0f0', message:'Official regional conditions require close review of production, classes, routes, and dispatch.' }
+  else if (readyCount >= checklist.length - 1) command = { label:'READY TO SAVE / LOCK', color:'#2d8a4e', background:'#e8f5e9', message:'The operational inputs are complete. Review final outlet quantities, save, then lock when approved.' }
+
+  return (
+   <div id="tomorrow-operations-forecast" style={{ background:'linear-gradient(135deg,#1a1a2e,#16213e)', color:'white', borderRadius:'16px', padding:isMobile?'14px':'18px', marginBottom:'16px', boxShadow:'0 8px 24px rgba(26,26,46,0.22)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', gap:'12px', alignItems:'flex-start', flexWrap:'wrap' }}>
+     <div style={{ maxWidth:'760px' }}>
+      <p style={{ color:'#fdd412', fontSize:'9px', fontWeight:'900', letterSpacing:'1.1px', margin:'0 0 5px' }}>DAILY 8:00–11:00 AM · PHILIPPINE TIME</p>
+      <h2 style={{ color:'white', fontSize:isMobile?'18px':'22px', margin:'0 0 5px' }}>Tomorrow's Operations Forecast</h2>
+      <p style={{ color:'rgba(255,255,255,0.78)', fontSize:'11px', lineHeight:1.55, margin:0 }}>Prepare tonight's production and tomorrow's outlet deliveries from real invoices, official PAGASA inputs, verified class status, route safety, and authorized final quantities.</p>
+     </div>
+     <div style={{ textAlign:'right' }}>
+      <span style={{ display:'inline-block', background:targetIsTomorrow?(windowStatus.status==='active'?'#fdd412':'rgba(255,255,255,0.14)'):'#4a90d9', color:targetIsTomorrow&&windowStatus.status==='active'?'#1a1a2e':'white', border:'1px solid rgba(255,255,255,0.32)', borderRadius:'18px', padding:'6px 10px', fontSize:'9px', fontWeight:'900' }}>{targetIsTomorrow?windowStatus.label:'CUSTOM DELIVERY DATE'}</span>
+      <p style={{ color:'white', fontWeight:'900', fontSize:'13px', margin:'7px 0 2px' }}>{formatDateForDisplay(forecastDate)}</p>
+      <p style={{ color:'rgba(255,255,255,0.66)', fontSize:'9px', margin:0 }}>Delivery starts {TOMORROW_DELIVERY_START_LABEL}</p>
+     </div>
+    </div>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'8px', marginTop:'13px' }}>
+     {[
+      ['1 · START','8:00 AM','Refresh orders + PAGASA'],
+      ['2 · COMPLETE','11:00 AM','Save morning forecast'],
+      ['3 · RECHECK',normalizeWeatherGuardTime(weatherGuardDraft.decision_cutoff_time || '20:00'),'Weather, classes + routes'],
+      ['4 · DELIVER',TOMORROW_DELIVERY_START_LABEL,'Final dispatch check']
+     ].map(([step,time,note])=><div key={step} style={{ background:'rgba(255,255,255,0.09)', border:'1px solid rgba(255,255,255,0.14)', borderRadius:'10px', padding:'10px' }}><p style={{ color:'#fdd412', fontSize:'8px', fontWeight:'900', margin:'0 0 4px' }}>{step}</p><p style={{ color:'white', fontSize:'14px', fontWeight:'900', margin:'0 0 3px' }}>{time}</p><p style={{ color:'rgba(255,255,255,0.62)', fontSize:'8px', lineHeight:1.35, margin:0 }}>{note}</p></div>)}
+    </div>
+
+    <div style={{ background:command.background, border:`2px solid ${command.color}`, borderRadius:'11px', padding:'10px 12px', marginTop:'10px', color:command.color, display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+     <div><strong style={{ fontSize:'12px' }}>{command.label}</strong><p style={{ color:'#555', fontSize:'9px', margin:'3px 0 0', lineHeight:1.45 }}>{command.message}</p></div>
+     <div style={{ textAlign:'right' }}><strong style={{ fontSize:'16px' }}>{readyCount}/{checklist.length}</strong><p style={{ color:'#777', fontSize:'8px', margin:0 }}>checks ready</p></div>
+    </div>
+
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,1fr)', gap:'7px', marginTop:'9px' }}>
+     {checklist.map(item=><div key={item.label} style={{ background:'rgba(255,255,255,0.08)', border:`1px solid ${item.ready?'rgba(72,187,120,0.55)':'rgba(245,197,24,0.42)'}`, borderRadius:'9px', padding:'9px', display:'flex', justifyContent:'space-between', gap:'8px' }}><div><p style={{ color:'white', fontSize:'9px', fontWeight:'900', margin:'0 0 3px' }}>{item.label}</p><p style={{ color:'rgba(255,255,255,0.62)', fontSize:'8px', margin:0, lineHeight:1.35 }}>{item.note}</p></div><span style={{ color:item.ready?'#7ee2a8':'#fdd412', fontSize:'9px', fontWeight:'900' }}>{item.ready?'READY':'CHECK'}</span></div>)}
+    </div>
+
+    <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'11px' }}>
+     <button style={{...btnYellow, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'10px', opacity:tomorrowForecastPreparing?0.6:1 }} disabled={tomorrowForecastPreparing} onClick={()=>prepareTomorrowOperationsForecast({ forceWeather:true })}>{tomorrowForecastPreparing?'PREPARING...':'REFRESH & PREPARE TOMORROW'}</button>
+     <button style={{...btnGreen, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'10px', opacity:targetPagasaView?1:0.55 }} disabled={!targetPagasaView} onClick={()=>{
+      if (!targetPagasaView) { showToast('Load the official target-date PAGASA outlook first.', 'red'); return }
+      setPagasaSelectedUpdateKey(targetPagasaView.id)
+      applyPagasaDataToWeatherGuard({ data:pagasaRegion1Data, updateKey:targetPagasaView.id, municipalityName:pagasaSelectedMunicipality, targetDate:forecastDate })
+     }}>APPLY TARGET-DATE PAGASA</button>
+     <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'10px' }} onClick={openTomorrowForecastPagasaSource}>OPEN OFFICIAL PAGASA</button>
+     <button style={{...btnBlack, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'10px', border:'1px solid rgba(255,255,255,0.35)' }} onClick={printTomorrowOperationsForecast}>PRINT OPERATIONS SHEET</button>
+     {!targetIsTomorrow && <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'10px' }} onClick={()=>setForecastDate(windowStatus.targetDate)}>RESET TO TOMORROW</button>}
+    </div>
+    <p style={{ color:'rgba(255,255,255,0.62)', fontSize:'9px', lineHeight:1.45, margin:'10px 0 0' }}>{targetIsTomorrow?windowStatus.message:'You selected a custom delivery date. The same verification and owner-lock rules still apply.'} The 11:00 AM target is guidance—not a hard lock—so official late advisories and emergency corrections remain possible and auditable.</p>
+   </div>
+  )
+ })()}
+
  {/* PRODUCTION FORECAST */}
  {(()=>{
  // Dry premix weight per piece (grams) after 10% reduction
@@ -42088,12 +42352,12 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'12px' }}>
  <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}> Production Forecast</h3>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Based on invoices for the selected delivery date</p>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}> Invoice Production Baseline</h3>
+ <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Exact product quantities and dry premix requirement from invoices for the selected delivery date</p>
  </div>
  <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', flexWrap:'wrap' }}>
  <div>
- <label style={{ fontSize:'10px', color:'#888', display:'block', marginBottom:'2px' }}>Delivery Date to Forecast:</label>
+ <label style={{ fontSize:'10px', color:'#888', display:'block', marginBottom:'2px' }}>Selected Delivery Date:</label>
  <input type="date" value={forecastDate} onChange={e=>setForecastDate(e.target.value)} style={{...inputStyle, marginBottom:0, width:'150px', fontSize:'12px', padding:'6px 10px' }} />
  </div>
  <div style={{ background:'#fff9e6', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 14px', textAlign:'center' }}>
@@ -42181,8 +42445,8 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
    <div id="weather-class-suspension-guard" style={{ background:'white', border:'2px solid #1a1a2e', borderRadius:'14px', padding:'16px', marginBottom:'16px', boxShadow:'0 4px 18px rgba(26,26,46,0.08)' }}>
     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
      <div>
-      <h3 style={{ color:'#1a1a2e', margin:'0 0 3px', fontSize:'15px' }}>Weather & Class Suspension Guard</h3>
-      <p style={{ color:'#777', margin:0, fontSize:'11px' }}>Protects one-day production by separating safe Base Production from Conditional Quantity held until verified information is available.</p>
+      <h3 style={{ color:'#1a1a2e', margin:'0 0 3px', fontSize:'15px' }}>Tomorrow's Risk & Release Plan</h3>
+      <p style={{ color:'#777', margin:0, fontSize:'11px' }}>Converts the invoice baseline into safe Base Production, Conditional Hold, risk-adjusted quantities, and the authorized final release.</p>
      </div>
      <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
       <span style={{ background:planStatus==='locked'?'#e8f5e9':'#f4f4f4', color:statusColor, border:`1px solid ${statusColor}`, borderRadius:'20px', padding:'6px 12px', fontSize:'11px', fontWeight:'900' }}>{planStatus.toUpperCase()}</span>
@@ -42347,10 +42611,10 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
       </div>
 
       <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'10px' }}>
-       <button style={{...btnGreen, width:'auto', marginTop:0, padding:'9px 16px', opacity:weatherGuardSaving?0.65:1 }} disabled={weatherGuardSaving || weatherGuardLoading} onClick={saveWeatherGuardPlan}>{weatherGuardSaving?'SAVING...':'SAVE GUARD DRAFT'}</button>
-       <button style={{...btnRed, width:'auto', marginTop:0, padding:'9px 16px', opacity:(!canFinalize||weatherGuardFinalizing)?0.55:1 }} disabled={!canFinalize || weatherGuardFinalizing || !guardRows.length} onClick={finalizeWeatherGuardPlan}>{weatherGuardFinalizing?'LOCKING...':'LOCK & RELEASE PLAN'}</button>
+       <button style={{...btnGreen, width:'auto', marginTop:0, padding:'9px 16px', opacity:weatherGuardSaving?0.65:1 }} disabled={weatherGuardSaving || weatherGuardLoading} onClick={saveWeatherGuardPlan}>{weatherGuardSaving?'SAVING...':'SAVE FORECAST DRAFT'}</button>
+       <button style={{...btnRed, width:'auto', marginTop:0, padding:'9px 16px', opacity:(!canFinalize||weatherGuardFinalizing)?0.55:1 }} disabled={!canFinalize || weatherGuardFinalizing || !guardRows.length} onClick={finalizeWeatherGuardPlan}>{weatherGuardFinalizing?'LOCKING...':"LOCK TOMORROW'S PLAN"}</button>
        <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px' }} onClick={()=>setShowWeatherGuardProfiles(v=>!v)}>OUTLET PROFILES ({profileCount}/{resellers.length})</button>
-       <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px' }} onClick={()=>setShowWeatherGuardSettings(v=>!v)}>PRODUCTION CUTOFF</button>
+       <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px' }} onClick={()=>setShowWeatherGuardSettings(v=>!v)}>FINAL RISK RECHECK</button>
        <button style={{...btnGray, width:'auto', marginTop:0, padding:'9px 14px' }} onClick={()=>setShowWeatherGuardOutcome(v=>!v)}>OUTCOME & LOSS</button>
       </div>
 
