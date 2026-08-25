@@ -34607,7 +34607,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  {/* Sidebar */}
  {(!isMobile||sidebarOpen) && (
- <div className="romas-admin-sidebar" style={{ width:isMobile?'100%':'200px', minWidth:isMobile?'auto':'200px', background:'#1a1a2e', padding:'0', display:'flex', flexDirection:'column', flexShrink:0, overflowY:'auto', height:isMobile?'auto':'100%' }}>
+ <div className="romas-admin-sidebar" style={{ width:isMobile?'100%':'200px', minWidth:isMobile?'auto':'200px', background:'#1a1a2e', padding:'0', display:'flex', flexDirection:'column', flex:isMobile?'1 1 0':'0 0 auto', minHeight:0, overflowY:'auto', height:isMobile?'auto':'100%' }}>
  {/* Logo */}
  {!isMobile && (
  <div style={{ padding:'12px 10px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
@@ -34700,7 +34700,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  )}
 
  {/* Main Content */}
- <div className="romas-admin-main" style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden', background:'#f0f2f5' }}>
+ <div className="romas-admin-main" style={{ flex:1, minWidth:0, display:isMobile&&sidebarOpen?'none':'flex', flexDirection:'column', overflow:'hidden', background:'#f0f2f5' }}>
  {/* Sub-tab Navigation Bar */}
  {visibleSubTabs.length > 1 && (
  isMobile ? (
