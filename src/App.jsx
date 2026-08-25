@@ -34600,7 +34600,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  <div style={{ display:'flex', gap:'8px', alignItems:'center', flexShrink:0 }}>
  {adminEmployee && <button onClick={openAdminEmployeePortal} style={{ background:'#ca1b1b', border:'none', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}> MY TIME</button>}
- <button onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.2)', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold' }}>{sidebarOpen?' ':' '}</button>
+ <button type="button" aria-label={sidebarOpen?'Close main menu':'Open main menu'} aria-expanded={sidebarOpen} onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.2)', color:'white', borderRadius:'8px', padding:'7px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px', minWidth:'54px' }}>{sidebarOpen?'CLOSE':'MENU'}</button>
  </div>
  </div>
  )}
@@ -34703,6 +34703,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div className="romas-admin-main" style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', overflow:'hidden', background:'#f0f2f5' }}>
  {/* Sub-tab Navigation Bar */}
  {visibleSubTabs.length > 1 && (
+ isMobile ? (
+ <div className="romas-mobile-page-nav" style={{ background:'#1a1a2e', borderBottom:'3px solid #FDD412', padding:'8px 10px', display:'flex', alignItems:'center', gap:'8px', flexShrink:0, boxShadow:'0 2px 10px rgba(26,26,46,0.16)' }}>
+ <label htmlFor="romas-mobile-page-select" style={{ color:'#FDD412', fontSize:'10px', fontWeight:'900', letterSpacing:'0.6px', flexShrink:0 }}>PAGE</label>
+ <select id="romas-mobile-page-select" aria-label={`${currentSection.label} page`} value={activeTab} onChange={e=>handleTabClick(e.target.value)} style={{ flex:1, minWidth:0, height:'38px', margin:0, padding:'0 34px 0 12px', border:'1px solid rgba(253,212,18,0.8)', borderRadius:'8px', background:'#ffffff', color:'#1a1a2e', fontSize:'13px', fontWeight:'800', fontFamily:'inherit', boxSizing:'border-box' }}>
+ {visibleSubTabs.map(tab => <option key={tab.key} value={tab.key}>{tab.label}</option>)}
+ </select>
+ </div>
+ ) : (
  <div className="romas-admin-tabs" style={{ background:'white', borderBottom:'3px solid #FDD412', padding:'10px 20px', display:'flex', gap:'6px', overflowX:'auto', flexShrink:0, boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
  {visibleSubTabs.map(tab => (
  <button className={activeTab===tab.key?'romas-subtab-active':''} key={tab.key} onClick={()=>handleTabClick(tab.key)} style={{ padding:'8px 16px', border:'none', borderRadius:'20px', background:activeTab===tab.key?'#ca1b1b':'#f4f4f4', color:activeTab===tab.key?'white':'#555', cursor:'pointer', fontWeight:activeTab===tab.key?'700':'500', fontSize:'12px', whiteSpace:'nowrap', transition:'all 0.15s', letterSpacing:'0.2px', boxShadow:activeTab===tab.key?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>
@@ -34710,6 +34718,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </button>
  ))}
  </div>
+ )
  )}
 
  {/* Content Area */}
