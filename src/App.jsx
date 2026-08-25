@@ -34543,6 +34543,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='recipes') { setRecipeVaultView('dashboard'); refreshRecipeVault({ silent:true }) }
  }
 
+ const openAnalyticsInvoiceStatus = (status) => {
+ setActiveTab('sales')
+ setSalesView('receivables')
+ setInvoiceFilter(status)
+ setInvoiceSearchTerm('')
+ setSidebarOpen(false)
+ loadDeliveryInvoices()
+ requestAnimationFrame(()=>document.querySelector('.romas-admin-content')?.scrollTo({ top:0, behavior:'smooth' }))
+ }
+
  // Open full employee portal from admin panel 
  const openAdminEmployeePortal = () => {
  if (!adminEmployee) { showToast('No employee record linked to your admin account. Ask owner to assign your employee profile.', 'red'); return }
@@ -45922,10 +45932,10 @@ onClick={async ()=>{
  ['Partial',allInvoices.filter(i=>getInvoicePaymentStatus(i)==='partial').length,'#f5a623'],
  ['Unpaid',allInvoices.filter(i=>getInvoicePaymentStatus(i)==='unpaid').length,'#ca1b1b'],
  ].map(([l,v,c])=>(
- <div key={l} style={{ background:`${c}11`, borderRadius:'10px', padding:'12px', textAlign:'center', border:`1px solid ${c}33` }}>
+ <button type="button" key={l} aria-label={`View ${l.toLowerCase()} invoices`} onClick={()=>openAnalyticsInvoiceStatus(l.toLowerCase())} style={{ width:'100%', appearance:'none', background:`${c}11`, borderRadius:'10px', padding:'12px', textAlign:'center', border:`1px solid ${c}33`, cursor:'pointer', fontFamily:'inherit', touchAction:'manipulation' }}>
  <p style={{ color:'#888', fontSize:'10px', margin:'0 0 4px', textTransform:'uppercase' }}>{l}</p>
  <p style={{ fontWeight:'bold', color:c, fontSize:'24px', margin:0 }}>{v}</p>
- </div>
+ </button>
  ))}
  </div>
  </div>
