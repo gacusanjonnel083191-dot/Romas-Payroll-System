@@ -23319,11 +23319,33 @@ requestPushPermission()
  loadDeactivatedEmployees(); loadEmployees()
  }
  async function createNotification(employeeId, employeeName, type, title, message) {
- await supabase.from('notifications').insert({ employee_id:employeeId, employee_name:employeeName, type, title, message })
- // Browser push notification
- if ('Notification' in window && Notification.permission === 'granted') {
- new Notification(`Roma's Donuts ${title}`, { body:message, icon:'/logo.png' })
+ const { error } = await supabase.from('notifications').insert({ employee_id:employeeId, employee_name:employeeName, type, title, message })
+ if (error) {
+  console.warn('createNotification database insert:', error.message)
+  return false
  }
+
+ // Mobile browsers generally require notifications to be displayed through the
+ // registered service worker. Keep this optional device alert detached and
+ // contained so it can never interrupt the completed business action or leave
+ // an approval button stuck in its processing state.
+ if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+  void (async()=>{
+   try {
+    const registration = 'serviceWorker' in navigator
+     ? await navigator.serviceWorker.getRegistration()
+     : null
+    if (registration?.showNotification) {
+     await registration.showNotification(`Roma's Donuts ${title}`, { body:message, icon:'/logo.png' })
+     return
+    }
+    new Notification(`Roma's Donuts ${title}`, { body:message, icon:'/logo.png' })
+   } catch(notificationError) {
+    console.warn('Browser notification skipped:', notificationError)
+   }
+  })()
+ }
+ return true
  }
  async function deleteReadNotifications() {
  const { error } = await supabase
@@ -24995,6 +25017,10 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  setCashAdvanceRequests(prev=>prev.filter(r=>r.id!==id))
  loadResolvedCARequests()
  showToast(` CA approved, recorded, and scheduled for payroll deduction: ${php(perPayroll)} ${installments} payroll(s).`)
+ } catch(error) {
+ console.error('Cash advance review UI recovery:', error)
+ showToast('The cash advance was checked, but the screen could not finish updating. Refresh the requests to confirm its saved status.', 'red')
+ void loadCashAdvanceRequests()
  } finally {
  setProcessingItems(prev=>{ const copy={...prev}; delete copy[`ca_${id}`]; return copy })
  }
@@ -36128,6 +36154,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const typeLabel = isMealBreakRequest ? 'NO MEAL BREAK' : isOvertimeRequest ? 'OVERTIME' : 'UNDERTIME'
  const typeBadgeColor = isMealBreakRequest ? 'blue' : isOvertimeRequest ? 'green' : 'orange'
  const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
+ const approvalActionKey = `time_adj_approve_${req.id}`
+ const approvalProcessing = !!processingItems[approvalActionKey]
  return (
  <div key={req.id} style={{...cardS, border:`1.5px solid ${cardColor}`, borderTop:`6px solid ${cardColor}`, background:cardBackground, width:'100%', minWidth:0, margin:0, padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 7px 22px rgba(25,25,45,0.09)', boxSizing:'border-box', alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -36190,7 +36218,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
  {canConfirmNoBreakFromExistingRequest && <button style={{...btnBase, background:'#1a1a2e', color:'white', width:'auto', padding:'8px 14px', marginTop:0, boxShadow:'0 2px 8px rgba(26,26,46,0.24)' }} onClick={async(e)=>{ const btn=e.currentTarget; const original=btn.textContent; btn.disabled=true; btn.textContent=req.status==='approved'?'Reopening and applying no break...':'Applying no break...'; await confirmNoMealBreakFromExistingTimeAdj(req); btn.disabled=false; btn.textContent=original }}>{req.status==='approved'?'REOPEN + APPLY NO BREAK':'CONFIRM NO BREAK & RECALCULATE'}</button>}
- {req.status==='pending' && <button disabled={adminValidation?.loading || approvalBlocked} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked)?'not-allowed':'pointer' }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Revalidating attendance...'; await approveTimeAdj(req); btn.disabled=!!(adminValidation?.loading || approvalBlocked); btn.textContent=approveButtonLabel }}>{approveButtonLabel}</button>}
+ {req.status==='pending' && <button disabled={adminValidation?.loading || approvalBlocked || approvalProcessing} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked || approvalProcessing)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked || approvalProcessing)?'not-allowed':'pointer' }} onClick={async()=>{ if(approvalProcessing) return; setProcessingItems(prev=>({...prev,[approvalActionKey]:true})); try { await approveTimeAdj(req) } catch(error) { console.error('Attendance approval UI recovery:', error); showToast('The attendance request was checked, but the screen could not finish updating. Refresh the list to confirm its saved status.', 'red') } finally { setProcessingItems(prev=>{ const copy={...prev}; delete copy[approvalActionKey]; return copy }) } }}>{approvalProcessing?'Revalidating attendance...':approveButtonLabel}</button>}
  {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent='REJECT' }}>REJECT</button>}
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL' }}>{req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL'}</button>
  </div>
@@ -37543,6 +37571,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {cashAdvanceRequests.map(req=>{
  const deductionCount = Math.max(1, installmentCounts[req.id] || 1)
  const perPayroll = Math.ceil((safeNum(req.amount,0) / deductionCount) * 100) / 100
+ const caApprovalActionKey = `ca_${req.id}`
+ const caApprovalProcessing = !!processingItems[caApprovalActionKey]
  return (
  <div key={req.id} style={{...cardS, border:'2px solid #ca1b1b', background:'#fff8dc' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
@@ -37571,7 +37601,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <input type="number" min="1" max="24" value={deductionCount} onChange={e=>{ const v=parseInt(e.target.value)||1; setInstallmentCounts(p=>({...p,[req.id]:Math.max(1,v)})) }} style={{...inputStyle, marginBottom:'4px' }} />
  <p style={{ color:'#888', fontSize:'12px', marginBottom:'10px' }}>The employee will be deducted {php(perPayroll)} per payroll cutoff for {deductionCount} payroll cutoff(s), unless owner edits the CA ledger later.</p>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:processingItems[req.id]?0.6:1 }} disabled={processingItems[req.id]} onClick={async()=>{ setProcessingItems(p=>({...p,[req.id]:true})); await updateCashAdvanceStatus(req.id,'approved'); setProcessingItems(p=>({...p,[req.id]:false})) }}>{processingItems[req.id]?' Processing...':' APPROVE & CREATE CA LEDGER'}</button>
+ <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:caApprovalProcessing?0.6:1 }} disabled={caApprovalProcessing} onClick={()=>updateCashAdvanceStatus(req.id,'approved')}>{caApprovalProcessing?' Processing...':' APPROVE & CREATE CA LEDGER'}</button>
  <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={(e)=>{ e.stopPropagation(); setShowCADisapproveBox(p=>({...p,[req.id]:!p[req.id]})) }}> DISAPPROVE</button>
  </div>
  {showCADisapproveBox[req.id] && (
