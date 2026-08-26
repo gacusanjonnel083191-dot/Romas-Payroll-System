@@ -6830,6 +6830,22 @@ export default function App() {
  const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
  const [defaultOrderItems, setDefaultOrderItems] = useState([])
  const [deliveryInvoices, setDeliveryInvoices] = useState([])
+ const INVOICE_DELETION_REASON_OPTIONS = [
+  ['duplicate_invoice','Duplicate invoice'],
+  ['incorrect_customer','Incorrect customer / reseller'],
+  ['incorrect_delivery_details','Incorrect date or delivery details'],
+  ['test_or_accidental_invoice','Test or accidental invoice'],
+  ['other','Other documented reason'],
+ ]
+ const [invoiceDeletionAccess, setInvoiceDeletionAccess] = useState({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
+ const [invoiceDeletionRequests, setInvoiceDeletionRequests] = useState([])
+ const [invoiceDeletionRequestsLoading, setInvoiceDeletionRequestsLoading] = useState(false)
+ const [requestingInvoiceDeletion, setRequestingInvoiceDeletion] = useState(null)
+ const [invoiceDeletionReasonCategory, setInvoiceDeletionReasonCategory] = useState('')
+ const [invoiceDeletionReasonDetail, setInvoiceDeletionReasonDetail] = useState('')
+ const [invoiceDeletionSubmitting, setInvoiceDeletionSubmitting] = useState(false)
+ const [invoiceDeletionReviewNotes, setInvoiceDeletionReviewNotes] = useState({})
+ const [invoiceDeletionReviewProcessing, setInvoiceDeletionReviewProcessing] = useState({})
  const [invoiceSearchTerm, setInvoiceSearchTerm] = useState('')
  const [onlinePayments, setOnlinePayments] = useState([])
  const [onlinePaymentsLoading, setOnlinePaymentsLoading] = useState(false)
@@ -7526,8 +7542,8 @@ export default function App() {
  try {
  const { data } = await supabase.auth.getSession()
  const user = data?.session?.user
- if (mounted && user) {
- await loadAdminAuthProfile(user, { openPanel:true, silent:true })
+if (mounted && user) {
+await loadAdminAuthProfile(user, { openPanel:true, silent:true })
  }
  } catch (err) {
  console.warn('Admin auth session restore failed:', err)
@@ -7538,10 +7554,13 @@ export default function App() {
 
  const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
  if (!mounted) return
- if (!session?.user) {
- setAdminAuthUser(null)
- setAdminAuthProfile(null)
- }
+if (!session?.user) {
+setAdminAuthUser(null)
+setAdminAuthProfile(null)
+setInvoiceDeletionAccess({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
+setInvoiceDeletionRequests([])
+setRequestingInvoiceDeletion(null)
+}
  })
 
  return () => {
@@ -8036,9 +8055,12 @@ export default function App() {
  if (!empError && empData) linkedEmployee = empData
  }
 
- setAdminAuthUser(user)
- setAdminAuthProfile(profile)
- setAvailableRoles(roles)
+setAdminAuthUser(user)
+setAdminAuthProfile(profile)
+setAvailableRoles(roles)
+const deletionAccess = await loadInvoiceDeletionAccess({ silent:options.silent })
+if (deletionAccess.can_request || deletionAccess.can_review) await loadInvoiceDeletionRequests({ silent:true })
+else setInvoiceDeletionRequests([])
 
  if (options.openPanel) {
  openAdmin(roles[0], linkedEmployee)
@@ -8065,8 +8087,10 @@ export default function App() {
  await logAudit('ADMIN AUTH LOGIN SUCCESS', email, 'System Access', 'Supabase Auth admin login succeeded.')
  } catch (err) {
  await supabase.auth.signOut().catch(()=>{})
- setAdminAuthUser(null)
- setAdminAuthProfile(null)
+setAdminAuthUser(null)
+setAdminAuthProfile(null)
+setInvoiceDeletionAccess({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
+setInvoiceDeletionRequests([])
  await logAudit('ADMIN AUTH LOGIN FAILED', email || 'Unknown email', 'System Access', err?.message || 'Admin auth login failed.')
  alert('Admin login failed: ' + (err?.message || 'Please check your email/password and admin role setup.'))
  } finally {
@@ -8079,9 +8103,15 @@ export default function App() {
  setAdminMode(false)
  setAdminRole(null)
  setAdminEmployee(null)
- setAdminAuthUser(null)
- setAdminAuthProfile(null)
- setAvailableRoles([])
+setAdminAuthUser(null)
+setAdminAuthProfile(null)
+setAvailableRoles([])
+setInvoiceDeletionAccess({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
+setInvoiceDeletionRequests([])
+setRequestingInvoiceDeletion(null)
+setInvoiceDeletionReasonCategory('')
+setInvoiceDeletionReasonDetail('')
+setInvoiceDeletionReviewNotes({})
  setShowAdminPasswordForm(false)
  setNewAdminPassword('')
  setConfirmAdminPassword('')
@@ -12283,9 +12313,9 @@ Cancel = create batch record only for existing stock.`)
  return isMoneySettled(balance)? 0: Math.max(0, balance)
  }
 
- function getNormalizedInvoiceStatus(inv) {
- const status = String(inv?.status || 'unpaid').toLowerCase()
- if (status === 'cancelled') return status
+function getNormalizedInvoiceStatus(inv) {
+const status = String(inv?.status || 'unpaid').toLowerCase()
+if (['cancelled','voided'].includes(status)) return status
  const balance = getInvoiceBalance(inv)
  const paid = moneyRound(inv?.paid_amount || 0)
  if (paid > 0 && balance <= 0) return 'paid'
@@ -12294,9 +12324,9 @@ Cancel = create batch record only for existing stock.`)
  }
 
 
- function getInvoicePaymentStatus(inv) {
- const status = String(inv?.status || 'unpaid').toLowerCase()
- if (status === 'cancelled') return 'cancelled'
+function getInvoicePaymentStatus(inv) {
+const status = String(inv?.status || 'unpaid').toLowerCase()
+if (['cancelled','voided'].includes(status)) return status
  const total = moneyRound(inv?.total_amount || 0)
  const paid = moneyRound(inv?.paid_amount || 0)
  const balance = getInvoiceBalance(inv)
@@ -12310,15 +12340,15 @@ Cancel = create batch record only for existing stock.`)
  return status === 'paid'? 'paid': 'unpaid'
  }
 
- function invoiceMatchesFilter(inv, filter) {
- const paymentStatus = getInvoicePaymentStatus(inv)
- const savedStatus = String(inv?.status || 'unpaid').toLowerCase()
+function invoiceMatchesFilter(inv, filter) {
+const paymentStatus = getInvoicePaymentStatus(inv)
+const savedStatus = String(inv?.status || 'unpaid').toLowerCase()
  const t2 = new Date(); t2.setDate(t2.getDate() + 1); const tS = t2.toISOString().slice(0, 10)
 
  if (filter === 'today') return inv.delivery_date === today
  if (filter === 'tomorrow') return inv.delivery_date === tS
  if (filter === 'upcoming') return inv.delivery_date > tS
- if (filter === 'all') return true
+if (filter === 'all') return savedStatus !== 'voided'
 
  if (filter === 'paid') return paymentStatus === 'paid'
  if (filter === 'partial') return paymentStatus === 'partial'
@@ -12329,9 +12359,9 @@ Cancel = create batch record only for existing stock.`)
  if (filter === 'delivered') return savedStatus === 'delivered' && paymentStatus!== 'paid'
 
  // Active means invoices still needing action/collection.
- if (filter === 'active') return paymentStatus!== 'paid' && savedStatus!== 'cancelled'
+if (filter === 'active') return paymentStatus!== 'paid' && !['cancelled','voided'].includes(savedStatus)
 
- return paymentStatus!== 'paid' && savedStatus!== 'cancelled'
+return paymentStatus!== 'paid' && !['cancelled','voided'].includes(savedStatus)
  }
 
  function getInvoiceDeliveryDate(inv) {
@@ -12550,9 +12580,9 @@ Cancel = create batch record only for existing stock.`)
  return Math.max(0, Math.floor((asOf.getTime() - delivered.getTime()) / (1000 * 60 * 60 * 24)))
  }
 
- function isInvoiceCreditBlocked(inv, asOfDate = today) {
- const status = String(inv?.status || '').toLowerCase()
- if (!inv || status === 'paid' || status === 'cancelled') return false
+function isInvoiceCreditBlocked(inv, asOfDate = today) {
+const status = String(inv?.status || '').toLowerCase()
+if (!inv || ['paid','cancelled','voided'].includes(status)) return false
  if (getInvoiceBalance(inv) <= 0) return false
  const holdDate = getInvoiceCreditHoldDate(inv)
  if (!holdDate) return false
@@ -12562,8 +12592,8 @@ Cancel = create batch record only for existing stock.`)
  function buildResellerCreditStatus(resellerId, invoiceRows = deliveryInvoices, asOfDate = today) {
  const relatedIds = getResellerBranchIds(resellerId).map(String)
  const related = (invoiceRows || []).filter(inv => relatedIds.includes(String(inv.reseller_id || '')))
- const outstanding = related
-.filter(inv => getInvoiceBalance(inv) > 0 &&!['paid','cancelled'].includes(String(inv.status || '').toLowerCase()))
+const outstanding = related
+.filter(inv => getInvoiceBalance(inv) > 0 &&!['paid','cancelled','voided'].includes(String(inv.status || '').toLowerCase()))
 .map(inv => ({
 ...inv,
  balance_amount: getInvoiceBalance(inv),
@@ -12886,7 +12916,7 @@ Cancel = create batch record only for existing stock.`)
  const { data: todayInvs } = await supabase.from('delivery_invoices')
 .select('id, invoice_number, reseller_name, status').eq('delivery_date', today)
  if (!todayInvs) return
- for (const inv of todayInvs.filter(i => i.status!== 'delivered' && i.status!== 'paid' && i.status!== 'cancelled')) {
+for (const inv of todayInvs.filter(i => !['delivered','paid','cancelled','voided'].includes(String(i.status || '').toLowerCase()))) {
  await supabase.from('delivery_invoices').update({ status:'delivered' }).eq('id', inv.id)
  await logAudit('AUTO-DELIVERED', 'System', inv.reseller_name, inv.invoice_number + ' auto-marked delivered')
  }
@@ -12938,8 +12968,8 @@ Cancel = create batch record only for existing stock.`)
  // Load every saved invoice in pages. The previous .limit(500) silently hid
  // older records once the database exceeded 500 invoices.
  const withItems = await fetchAllDeliveryInvoiceRows('*, delivery_invoice_items(*)')
- if (!withItems.error) {
- const normalized = await normalizePaidInvoiceRows(withItems.data || [])
+if (!withItems.error) {
+const normalized = await normalizePaidInvoiceRows((withItems.data || []).filter(isSalesSummaryInvoiceCounted))
  const withReturns = await attachReturnsToDeliveryInvoices(normalized)
  setDeliveryInvoices(withReturns.sort(sortDeliveryInvoicesNewestFirst))
  return
@@ -12953,7 +12983,7 @@ Cancel = create batch record only for existing stock.`)
  return
  }
 
- const normalizedBasic = await normalizePaidInvoiceRows(basic.data || [])
+const normalizedBasic = await normalizePaidInvoiceRows((basic.data || []).filter(isSalesSummaryInvoiceCounted))
  const basicWithReturns = await attachReturnsToDeliveryInvoices(normalizedBasic)
  setDeliveryInvoices(basicWithReturns.sort(sortDeliveryInvoicesNewestFirst))
  } catch(e) {
@@ -13834,114 +13864,154 @@ Cancel = create batch record only for existing stock.`)
  } catch(err) { showToast(' Failed: '+err.message,'red') }
  setSavingEditInvoice(false)
  }
- async function deleteInvoice(invoice) {
- if (!invoice?.id) { showToast(' Invalid invoice selected.', 'red'); return }
- if (adminRole!== 'owner') {
- showToast(' Owner permission required. Switch to Owner account to force delete invoices.', 'red')
- return
+ function getInvoiceDeletionReasonLabel(value) {
+  return INVOICE_DELETION_REASON_OPTIONS.find(([key]) => key === value)?.[1] || String(value || '').replace(/_/g, ' ') || 'Not specified'
  }
 
- const paidAmount = safeNum(invoice.paid_amount, 0)
- const status = String(invoice.status || '').toLowerCase()
- const hasFinancialMovement = paidAmount > 0 || ['paid', 'partial', 'delivered'].includes(status)
- const warning = hasFinancialMovement
-? `WARNING: This invoice already has movement/status (${status.toUpperCase() || 'UNKNOWN'}${paidAmount > 0? `, paid ${php(paidAmount)}`: ''}).
-
-For audit safety, deleting it will also remove linked payment/return records if they exist.
-
-Delete invoice ${invoice.invoice_number} for ${invoice.reseller_name}?`
-: `Delete invoice ${invoice.invoice_number} for ${invoice.reseller_name}?
-
-This will remove the invoice and its line items.`
-
- if (!window.confirm(warning)) return
-
- const key = `delete_invoice_${invoice.id}`
- setProcessingItems(p => ({...p, [key]: true }))
-
- const isMissingOptionalTableError = (error) => {
- const msg = String(error?.message || '').toLowerCase()
- return msg.includes('does not exist') || msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')
+ function getPendingInvoiceDeletionRequest(invoiceId) {
+  return (invoiceDeletionRequests || []).find(request => request.invoice_id === invoiceId && request.status === 'pending') || null
  }
 
- const runRequired = async (label, query) => {
- const { error } = await query
- if (error) throw new Error(`${label}: ${error.message}`)
+ async function loadInvoiceDeletionAccess(options = {}) {
+  try {
+   const { data, error } = await supabase.rpc('get_invoice_deletion_access')
+   if (error) throw error
+   const nextAccess = {
+    can_request:!!data?.can_request,
+    can_review:!!data?.can_review,
+    admin_user_id:data?.admin_user_id || null,
+    admin_name:data?.admin_name || ''
+   }
+   setInvoiceDeletionAccess(nextAccess)
+   return nextAccess
+  } catch (error) {
+   if (!options.silent) console.warn('loadInvoiceDeletionAccess:', error?.message || error)
+   const noAccess = { can_request:false, can_review:false, admin_user_id:null, admin_name:'' }
+   setInvoiceDeletionAccess(noAccess)
+   return noAccess
+  }
  }
 
- const runOptional = async (label, query) => {
- const { error } = await query
- if (error) {
- if (isMissingOptionalTableError(error)) {
- console.warn(`${label} skipped:`, error)
- return
- }
- throw new Error(`${label}: ${error.message}`)
- }
- }
-
- try {
- // Owner force delete: unlink reseller orders that were converted into this invoice first.
- // This prevents the reseller_orders.invoice_id foreign-key from blocking invoice deletion.
- const { error:orderUnlinkErr } = await supabase
-.from('reseller_orders')
-.update({ invoice_id:null, status:'pending' })
-.eq('invoice_id', invoice.id)
-
- if (orderUnlinkErr) {
- const msg = String(orderUnlinkErr.message || '').toLowerCase()
- if (msg.includes('column') || msg.includes('status')) {
- await runRequired('Unlink linked reseller orders', supabase.from('reseller_orders').update({ invoice_id:null }).eq('invoice_id', invoice.id))
- } else if (!isMissingOptionalTableError(orderUnlinkErr)) {
- throw new Error(`Unlink linked reseller orders: ${orderUnlinkErr.message}`)
- }
+ async function loadInvoiceDeletionRequests(options = {}) {
+  if (!options.silent) setInvoiceDeletionRequestsLoading(true)
+  try {
+   const { data, error } = await supabase
+   .from('invoice_deletion_requests')
+   .select('*')
+   .order('requested_at', { ascending:false })
+   .limit(100)
+   if (error) throw error
+   setInvoiceDeletionRequests(data || [])
+   return data || []
+  } catch (error) {
+   if (!options.silent) console.warn('loadInvoiceDeletionRequests:', error?.message || error)
+   setInvoiceDeletionRequests([])
+   return []
+  } finally {
+   if (!options.silent) setInvoiceDeletionRequestsLoading(false)
+  }
  }
 
- // Delete dependent return rows first so foreign-key relationships do not block invoice deletion.
- const { data:returnRows, error:returnLoadErr } = await supabase
-.from('reseller_returns')
-.select('id')
-.eq('invoice_id', invoice.id)
-
- if (returnLoadErr &&!isMissingOptionalTableError(returnLoadErr)) {
- throw new Error(`Load linked returns: ${returnLoadErr.message}`)
+ function openInvoiceDeletionCenter() {
+  setActiveTab('sales')
+  setSalesView('deliveries')
+  setDeliveriesSubTab('operations')
+  setSidebarOpen(false)
+  setShowNotifications(false)
+  void loadInvoiceDeletionAccess({ silent:true })
+  void loadInvoiceDeletionRequests({ silent:true })
+  window.setTimeout(() => {
+   document.getElementById('invoice-deletion-approval-center')?.scrollIntoView({ behavior:'smooth', block:'start' })
+  }, 180)
  }
 
- const returnIds = (returnRows || []).map(r => r.id).filter(Boolean)
- if (returnIds.length > 0) {
- await runRequired('Delete linked return items', supabase.from('reseller_return_items').delete().in('return_id', returnIds))
- await runRequired('Delete linked returns', supabase.from('reseller_returns').delete().in('id', returnIds))
+ function beginInvoiceDeletionRequest(invoice) {
+  if (!invoice?.id) { showToast('Invalid invoice selected.', 'red'); return }
+  if (!invoiceDeletionAccess.can_request) {
+   showToast('This account is not authorized to request invoice deletion.', 'red')
+   return
+  }
+  const pending = getPendingInvoiceDeletionRequest(invoice.id)
+  if (pending) {
+   showToast(`Deletion request for ${invoice.invoice_number} is already waiting for owner approval.`, 'red')
+   openInvoiceDeletionCenter()
+   return
+  }
+  setRequestingInvoiceDeletion(invoice)
+  setInvoiceDeletionReasonCategory('')
+  setInvoiceDeletionReasonDetail('')
  }
 
- // Optional modules may or may not exist depending on which SQL packages have been installed.
- await runOptional('Delete linked reseller disputes', supabase.from('reseller_disputes').delete().eq('invoice_id', invoice.id))
+ async function submitInvoiceDeletionRequest() {
+  const invoice = requestingInvoiceDeletion
+  const reasonCategory = invoiceDeletionReasonCategory
+  const reasonDetail = invoiceDeletionReasonDetail.trim()
+  if (!invoice?.id) { showToast('Select an invoice first.', 'red'); return }
+  if (!reasonCategory) { showToast('Select the reason for requesting deletion.', 'red'); return }
+  if (reasonDetail.length < 10) { showToast('Enter a detailed explanation with at least 10 characters.', 'red'); return }
 
- await runRequired('Delete linked payments', supabase.from('reseller_payments').delete().eq('invoice_id', invoice.id))
- await runRequired('Delete invoice items', supabase.from('delivery_invoice_items').delete().eq('invoice_id', invoice.id))
- await runRequired('Delete invoice header', supabase.from('delivery_invoices').delete().eq('id', invoice.id))
-
- await logAudit('OWNER FORCE DELETED INVOICE', adminRole, invoice.reseller_name, `${invoice.invoice_number} ${php(invoice.total_amount)}${hasFinancialMovement? ' with linked movement removed': ''} linked orders unlinked first`)
- showToast(` Invoice ${invoice.invoice_number} deleted.`)
-
- setShowPaymentFormMap(p => ({...p, [invoice.id]: false }))
- setPaymentAmount(p => ({...p, [invoice.id]: '' }))
- setPaymentNotes(p => ({...p, [invoice.id]: '' }))
- setPaymentMethod(p => ({...p, [invoice.id]: 'Cash' }))
- if (viewingInvoice?.id === invoice.id) setViewingInvoice(null)
- if (editingInvoice?.id === invoice.id) setEditingInvoice(null)
-
- await loadDeliveryInvoices()
- refreshFoundationAfterDataChange('invoice-deleted')
- } catch (err) {
- console.error('Delete invoice failed:', err)
- showToast(' Delete failed: ' + (err?.message || err), 'red')
- } finally {
- setProcessingItems(p => ({...p, [key]: false }))
+  setInvoiceDeletionSubmitting(true)
+  try {
+   const { data, error } = await supabase.rpc('request_invoice_deletion', {
+    p_invoice_id:invoice.id,
+    p_reason_category:reasonCategory,
+    p_reason_detail:reasonDetail
+   })
+   if (error) throw error
+   setRequestingInvoiceDeletion(null)
+   setInvoiceDeletionReasonCategory('')
+   setInvoiceDeletionReasonDetail('')
+   await Promise.all([loadInvoiceDeletionRequests({ silent:true }), loadNotifications()])
+   showToast(data?.message || `Deletion request for ${invoice.invoice_number} sent to the owner.`)
+   window.setTimeout(() => document.getElementById('invoice-deletion-approval-center')?.scrollIntoView({ behavior:'smooth', block:'start' }), 120)
+  } catch (error) {
+   showToast('Request failed: ' + (error?.message || error), 'red')
+  } finally {
+   setInvoiceDeletionSubmitting(false)
+  }
  }
+
+ async function reviewInvoiceDeletionRequest(request, decision) {
+  if (!request?.id || !invoiceDeletionAccess.can_review) {
+   showToast('Only the authenticated owner can review deletion requests.', 'red')
+   return
+  }
+  const reviewNote = String(invoiceDeletionReviewNotes[request.id] || '').trim()
+  if (decision === 'reject' && reviewNote.length < 3) {
+   showToast('Enter a rejection note with at least 3 characters.', 'red')
+   return
+  }
+ const message = decision === 'approve'
+   ? `Approve ${request.requested_by_name || 'the requester'}'s request for ${request.invoice_number}? The server will permanently delete it only if it is a clean unpaid invoice; otherwise it will be voided and financial history will remain.`
+   : `Reject the deletion request for ${request.invoice_number}? The invoice will remain unchanged.`
+  if (!window.confirm(message)) return
+
+  const key = `${request.id}:${decision}`
+  setInvoiceDeletionReviewProcessing(previous => ({...previous, [key]:true}))
+  try {
+   const { data, error } = await supabase.rpc('review_invoice_deletion_request', {
+    p_request_id:request.id,
+    p_decision:decision,
+    p_review_note:reviewNote || null
+   })
+   if (error) throw error
+   setInvoiceDeletionReviewNotes(previous => ({...previous, [request.id]:''}))
+   if (viewingInvoice?.id === request.invoice_id) setViewingInvoice(null)
+   if (editingInvoice?.id === request.invoice_id) { setEditingInvoice(null); setEditInvoiceItems([]) }
+   await Promise.all([
+    loadInvoiceDeletionRequests({ silent:true }),
+    loadDeliveryInvoices(),
+    loadNotifications(),
+    loadFinancialData()
+   ])
+   refreshFoundationAfterDataChange('invoice-deletion-reviewed')
+   showToast(data?.message || `Invoice deletion request ${decision === 'approve' ? 'approved' : 'rejected'}.`)
+  } catch (error) {
+   showToast('Review failed: ' + (error?.message || error), 'red')
+  } finally {
+   setInvoiceDeletionReviewProcessing(previous => ({...previous, [key]:false}))
+  }
  }
- 
-
-
 
 function getInvoiceProductionDispatchNote(invoice) {
   const clean = value => String(value || '').replace(/\s+/g, ' ').trim()
@@ -15026,7 +15096,7 @@ function buildDeliveryInvoicePrintCSS() {
      .order('created_at', { ascending:false })
 
    if (error) throw error
-   const normalized = await normalizePaidInvoiceRows(data || [])
+  const normalized = await normalizePaidInvoiceRows((data || []).filter(isSalesSummaryInvoiceCounted))
    const withReturns = await attachReturnsToDeliveryInvoices(normalized)
    return withReturns.sort(sortDeliveryInvoicesNewestFirst)
  }
@@ -16595,7 +16665,7 @@ function buildDeliveryInvoicePrintCSS() {
 .eq('reseller_id', resellerId)
 .order('delivery_date',{ascending:false})
 .limit(80)
- if (!invErr) setResellerInvoices(invs||[])
+ if (!invErr) setResellerInvoices((invs||[]).filter(isSalesSummaryInvoiceCounted))
  else {
  console.warn('Reseller invoices load error:', invErr)
  setResellerInvoices([])
@@ -16778,9 +16848,9 @@ function buildDeliveryInvoicePrintCSS() {
  return !['rejected','cancelled','canceled','void','deleted'].includes(s)
  }
 
- function isActiveDuplicateInvoiceStatus(status) {
- const s = String(status || '').trim().toLowerCase()
- return !['cancelled','canceled','void','deleted'].includes(s)
+function isActiveDuplicateInvoiceStatus(status) {
+const s = String(status || '').trim().toLowerCase()
+return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
 
  async function checkSameDayInvoiceForExactBranch(resellerId, deliveryDate, options = {}) {
@@ -17634,7 +17704,7 @@ function buildDeliveryInvoicePrintCSS() {
  const prodLogs = prodLogsRes.data || []
  const productionReportsForMonth = productionReportsRes.data || []
  const expenses = expensesRes.data || []
- const invoices = invoicesRes.data || []
+ const invoices = (invoicesRes.data || []).filter(isSalesSummaryInvoiceCounted)
  const returnsForMonth = returnsRes.data || []
  const payrollRecordsForMonth = payrollRes.data || []
  const employeesForPayroll = employeesRes.data || []
@@ -18914,9 +18984,10 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
  // Admin Functions 
- function canAccess(tab) {
- const role = normalizeAdminRole(adminRole)
- if (role === 'owner') return true
+function canAccess(tab) {
+const role = normalizeAdminRole(adminRole)
+if (tab === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) return true
+if (role === 'owner') return true
  if (role === 'manager') return ['dashboard','tomorrowForecast','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
  if (role === 'admin') return ['tomorrowForecast','posMonitor'].includes(tab)
  if (role === 'pos_admin') return ['posMonitor'].includes(tab)
@@ -21591,11 +21662,11 @@ This recovery button creates one approved expense record using GROSS payroll ear
  foundationSelect('wastage_logs', '*', q=>q.gte('wastage_date', trendStart).lte('wastage_date', end))
  ])
 
- let invoices = invoicesWithItemsRes.data || []
+ let invoices = (invoicesWithItemsRes.data || []).filter(isSalesSummaryInvoiceCounted)
  const errors = [employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, recipeVaultCostRes, trendDailySalesRes, trendDailySalesOnlineRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
  if (invoicesWithItemsRes.error) {
  const fallbackInv = await foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', start).lte('delivery_date', end))
- invoices = fallbackInv.data || []
+ invoices = (fallbackInv.data || []).filter(isSalesSummaryInvoiceCounted)
  if (fallbackInv.error) errors.push(fallbackInv.error)
  }
 
@@ -21625,7 +21696,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const recipeCostRowsForFoundation = recipeVaultCostRes.data || []
  const trendDailySalesRows = trendDailySalesRes.data || []
  const trendDailySalesOnlineRows = trendDailySalesOnlineRes.data || []
- const trendInvoiceRows = trendInvoicesRes.data || []
+ const trendInvoiceRows = (trendInvoicesRes.data || []).filter(isSalesSummaryInvoiceCounted)
  const trendReturnRows = trendReturnsRes.data || []
  const trendPayrollRows = trendPayrollRes.data || []
  const trendProductionLogRows = trendProductionLogsRes.data || []
@@ -23128,7 +23199,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  { timeout: 10000, enableHighAccuracy: true }
  )
  }
- function openAdmin(role, empData) {
+function openAdmin(role, empData) {
  const safeRole = normalizeAdminRole(role)
  if (!safeRole) {
  showToast(' Invalid or missing admin role. Please check admin_users setup.', 'red')
@@ -23146,8 +23217,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  setActiveTab(defaultTab)
  loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
  loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
- loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); if (safeRole==='owner' || safeRole==='payroll') autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if (safeRole==='owner' || safeRole==='manager') loadFoundationData().catch(()=>{})
- requestPushPermission()
+loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); if (safeRole==='owner' || safeRole==='payroll') autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if (safeRole==='owner' || safeRole==='manager') loadFoundationData().catch(()=>{})
+void loadInvoiceDeletionAccess({ silent:true }).then(access => {
+ if (access.can_request || access.can_review) return loadInvoiceDeletionRequests({ silent:true })
+ setInvoiceDeletionRequests([])
+ return null
+})
+requestPushPermission()
  // Check Tuesday deposit reminder
  setTimeout(()=>checkTuesdayDepositReminder(), 2000)
  }
@@ -23293,13 +23369,18 @@ This recovery button creates one approved expense record using GROSS payroll ear
  setUnreadCount(0)
  }
 
- async function markOneRead(id) {
- await supabase.from('notifications').update({ is_read:true }).eq('id', id)
- await supabase.from('notifications').delete().eq('id', id)
- setNotifications(p => p.filter(n => n.id!== id))
- setUnreadCount(p => Math.max(0, p - 1))
- }
- async function requestPushPermission() {
+async function markOneRead(id) {
+await supabase.from('notifications').update({ is_read:true }).eq('id', id)
+await supabase.from('notifications').delete().eq('id', id)
+setNotifications(p => p.filter(n => n.id!== id))
+setUnreadCount(p => Math.max(0, p - 1))
+}
+async function handleNotificationClick(notification) {
+ if (!notification) return
+ await markOneRead(notification.id)
+ if (notification.reference_type === 'invoice_deletion_request') openInvoiceDeletionCenter()
+}
+async function requestPushPermission() {
  if ('Notification' in window && Notification.permission === 'default') {
  await Notification.requestPermission()
  }
@@ -33505,6 +33586,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  // Admin Render 
  if (adminMode) {
+ const pendingInvoiceDeletionRequests = (invoiceDeletionRequests || []).filter(request => request.status === 'pending')
  const SECTIONS = [
  { key:'posMonitor', icon:<img src="/icons/pos-machine.svg" alt="" style={{width:18,height:18,objectFit:'contain'}} />, label:'SAGS POS', tabs:[{key:'posMonitor',label:'Outlet POS Monitor'}], roles:['owner','manager','pos_admin','hr','payroll','supervisor','asst_supervisor'] },
  { key:'dashboard', icon:'\uD83C\uDFE0', label:'Dashboard',
@@ -33551,7 +33633,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  tabs:[{key:'franchise',label:'Franchise'}],
  roles:['owner'] },
  ]
- const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner'))
+ const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner') || (s.key === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)))
  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
  const visibleSubTabs = currentSection.tabs.filter(t => t.key === 'documents' || canAccess(t.key))
  const adminDataDenseTabs = new Set(['posMonitor','tomorrowForecast','attendance','payroll','payrollHistory','remittance','dtr','bankDisbursement','inventory','sales','analytics','payablesMain'])
@@ -34535,7 +34617,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadCostProfiles(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
- if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+if(key==='sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) loadInvoiceDeletionRequests({ silent:true })
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
  if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
  if(key==='franchise') { loadFranchises() }
@@ -34543,8 +34626,61 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='recipes') { setRecipeVaultView('dashboard'); refreshRecipeVault({ silent:true }) }
  }
 
+function renderInvoiceDeletionApprovalCenter() {
+  if (!invoiceDeletionAccess.can_request && !invoiceDeletionAccess.can_review) return null
+  return (
+   <div id="invoice-deletion-approval-center" style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'14px', marginBottom:'14px', scrollMarginTop:'14px' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+     <div>
+      <h3 style={{ margin:'0 0 4px', color:'#b45309', fontSize:'14px' }}>Invoice Deletion Approval Center</h3>
+      <p style={{ margin:0, color:'#6b4b16', fontSize:'11px', lineHeight:1.5 }}>{invoiceDeletionAccess.can_review ? 'Review Sheryl Rosal’s requests. Approval permanently deletes only a clean unpaid invoice; every other invoice is voided with its history retained.' : 'Your invoice stays active until the owner approves. Every request requires a reason and remains in the audit trail.'}</p>
+     </div>
+     <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} disabled={invoiceDeletionRequestsLoading} onClick={()=>loadInvoiceDeletionRequests()}>{invoiceDeletionRequestsLoading ? 'Refreshing...' : 'Refresh'}</button>
+    </div>
+    {invoiceDeletionRequestsLoading && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Loading deletion requests...</p>}
+    {!invoiceDeletionRequestsLoading && invoiceDeletionRequests.length === 0 && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>No invoice deletion requests yet.</p>}
+    {!invoiceDeletionRequestsLoading && invoiceDeletionRequests.slice(0,20).map(request => {
+     const pending = request.status === 'pending'
+     const approving = !!invoiceDeletionReviewProcessing[`${request.id}:approve`]
+     const rejecting = !!invoiceDeletionReviewProcessing[`${request.id}:reject`]
+     const statusColor = pending ? '#b45309' : request.status === 'approved' ? '#2d8a4e' : '#ca1b1b'
+     return (
+      <div key={request.id} style={{ background:'white', border:`1px solid ${statusColor}55`, borderLeft:`5px solid ${statusColor}`, borderRadius:'10px', padding:'11px 12px', marginTop:'9px' }}>
+       <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'flex-start', flexWrap:'wrap' }}>
+        <div>
+         <p style={{ margin:'0 0 3px', fontWeight:'900', color:'#1a1a2e', fontSize:'12px' }}>{request.invoice_number} - {request.reseller_name || 'Customer'}</p>
+         <p style={{ margin:0, color:'#777', fontSize:'10px' }}>Requested by {request.requested_by_name} on {new Date(request.requested_at).toLocaleString('en-PH')}</p>
+        </div>
+        <div style={{ textAlign:'right' }}>
+         <span style={{ display:'inline-block', background:`${statusColor}16`, color:statusColor, border:`1px solid ${statusColor}55`, borderRadius:'999px', padding:'3px 8px', fontSize:'9px', fontWeight:'900', textTransform:'uppercase' }}>{request.status}</span>
+         <p style={{ margin:'4px 0 0', fontWeight:'900', color:'#333', fontSize:'12px' }}>{php(request.total_amount)}</p>
+        </div>
+       </div>
+       <div style={{ background:'#f8f8f8', borderRadius:'8px', padding:'8px 10px', marginTop:'8px' }}>
+        <p style={{ margin:'0 0 3px', color:'#555', fontSize:'10px', fontWeight:'900' }}>{getInvoiceDeletionReasonLabel(request.reason_category)}</p>
+        <p style={{ margin:0, color:'#555', fontSize:'11px', lineHeight:1.45, whiteSpace:'pre-wrap' }}>{request.reason_detail}</p>
+       </div>
+       {request.result_summary && <p style={{ margin:'8px 0 0', color:statusColor, fontSize:'10px', lineHeight:1.45, fontWeight:'700' }}>{request.result_summary}</p>}
+       {request.review_note && <p style={{ margin:'5px 0 0', color:'#666', fontSize:'10px', lineHeight:1.45 }}><strong>Owner note:</strong> {request.review_note}</p>}
+       {pending && invoiceDeletionAccess.can_review && (
+        <div style={{ marginTop:'9px' }}>
+         <textarea value={invoiceDeletionReviewNotes[request.id] || ''} onChange={event=>setInvoiceDeletionReviewNotes(previous=>({...previous,[request.id]:event.target.value}))} placeholder="Owner review note (required when rejecting)" style={{...inputStyle, minHeight:'62px', resize:'vertical', marginBottom:'8px' }} disabled={approving || rejecting} />
+         <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+          <button style={{...btnGreen, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'10px', opacity:approving||rejecting?0.65:1 }} disabled={approving || rejecting} onClick={()=>reviewInvoiceDeletionRequest(request,'approve')}>{approving ? 'Processing...' : 'Approve Securely'}</button>
+          <button style={{...btnRed, width:'auto', marginTop:0, padding:'8px 12px', fontSize:'10px', opacity:approving||rejecting?0.65:1 }} disabled={approving || rejecting} onClick={()=>reviewInvoiceDeletionRequest(request,'reject')}>{rejecting ? 'Processing...' : 'Reject'}</button>
+         </div>
+        </div>
+       )}
+       {pending && invoiceDeletionAccess.can_request && !invoiceDeletionAccess.can_review && <p style={{ margin:'8px 0 0', color:'#b45309', fontSize:'10px', fontWeight:'800' }}>Waiting for owner approval. The invoice has not been deleted or voided.</p>}
+      </div>
+     )
+    })}
+   </div>
+ )
+}
+
  const openAnalyticsInvoiceStatus = (status) => {
- setActiveTab('sales')
+setActiveTab('sales')
  setSalesView('receivables')
  setInvoiceFilter(status)
  setInvoiceSearchTerm('')
@@ -34599,8 +34735,32 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  </div>
  </div>
  </div>
- )}
- <div style={{ flex:1, display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden' }}>
+)}
+{requestingInvoiceDeletion && (
+<div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.68)', zIndex:99998, display:'flex', alignItems:'center', justifyContent:'center', padding:'18px' }} onClick={()=>{ if(!invoiceDeletionSubmitting) setRequestingInvoiceDeletion(null) }}>
+<div role="dialog" aria-modal="true" aria-labelledby="invoice-deletion-request-title" style={{ background:'white', borderRadius:'16px', padding:'20px', maxWidth:'520px', width:'100%', maxHeight:'calc(100vh - 36px)', overflowY:'auto', boxShadow:'0 12px 44px rgba(0,0,0,0.4)' }} onClick={event=>event.stopPropagation()}>
+<h3 id="invoice-deletion-request-title" style={{ margin:'0 0 6px', color:'#ca1b1b' }}>Request Invoice Deletion</h3>
+<p style={{ margin:'0 0 12px', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The invoice stays unchanged until the owner reviews this request. A clean unpaid invoice may be deleted; an invoice with delivery or financial activity will be voided and retained.</p>
+<div style={{ background:'#f7f7f7', border:'1px solid #e4e4e4', borderRadius:'10px', padding:'10px 12px', marginBottom:'12px' }}>
+<p style={{ margin:'0 0 3px', fontWeight:'900', color:'#1a1a2e', fontSize:'13px' }}>{requestingInvoiceDeletion.invoice_number}</p>
+<p style={{ margin:0, color:'#666', fontSize:'12px' }}>{requestingInvoiceDeletion.reseller_name || requestingInvoiceDeletion.customer_name || 'Customer'} - {php(requestingInvoiceDeletion.total_amount)}</p>
+</div>
+<label style={lblS}>Reason category *</label>
+<select value={invoiceDeletionReasonCategory} onChange={event=>setInvoiceDeletionReasonCategory(event.target.value)} style={inputStyle} disabled={invoiceDeletionSubmitting}>
+<option value="">Select the reason</option>
+{INVOICE_DELETION_REASON_OPTIONS.map(([value,label])=><option key={value} value={value}>{label}</option>)}
+</select>
+<label style={lblS}>Detailed explanation * (minimum 10 characters)</label>
+<textarea value={invoiceDeletionReasonDetail} onChange={event=>setInvoiceDeletionReasonDetail(event.target.value)} placeholder="Explain exactly why this invoice should be removed or voided." style={{...inputStyle, minHeight:'110px', resize:'vertical' }} disabled={invoiceDeletionSubmitting} />
+<p style={{ margin:'-6px 0 12px', color:invoiceDeletionReasonDetail.trim().length>=10?'#2d8a4e':'#888', fontSize:'10px', textAlign:'right' }}>{invoiceDeletionReasonDetail.trim().length} / 10 minimum</p>
+<div style={{ display:'flex', gap:'10px', flexWrap:'wrap' }}>
+<button style={{...btnRed, flex:'1 1 220px', marginTop:0, opacity:invoiceDeletionSubmitting?0.65:1 }} disabled={invoiceDeletionSubmitting} onClick={submitInvoiceDeletionRequest}>{invoiceDeletionSubmitting?'Sending request...':'Send to Owner for Approval'}</button>
+<button style={{...btnGray, flex:'1 1 120px', marginTop:0 }} disabled={invoiceDeletionSubmitting} onClick={()=>setRequestingInvoiceDeletion(null)}>Cancel</button>
+</div>
+</div>
+</div>
+)}
+<div style={{ flex:1, display:'flex', flexDirection:isMobile?'column':'row', overflow:'hidden' }}>
 
  {/* Mobile Top Bar */}
  {isMobile && (
@@ -34608,9 +34768,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  <div style={{ minWidth:0, flex:'1 1 auto' }}>
  <img src={ROMAS_SIDEBAR_BRAND_IMAGE} alt="Roma's Donuts — Every bite is a little piece of heaven" style={{ width:'100%', maxWidth:'200px', height:'54px', objectFit:'cover', display:'block', borderRadius:'10px', border:'1px solid rgba(253,212,18,0.75)', boxShadow:'0 4px 12px rgba(0,0,0,0.24)' }} />
  </div>
- <div style={{ display:'flex', gap:'8px', alignItems:'center', flexShrink:0 }}>
- {adminEmployee && <button onClick={openAdminEmployeePortal} style={{ background:'#ca1b1b', border:'none', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}> MY TIME</button>}
- <button type="button" aria-label={sidebarOpen?'Close main menu':'Open main menu'} aria-expanded={sidebarOpen} onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.2)', color:'white', borderRadius:'8px', padding:'7px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px', minWidth:'54px' }}>{sidebarOpen?'CLOSE':'MENU'}</button>
+<div style={{ display:'flex', gap:'8px', alignItems:'center', flexShrink:0 }}>
+{adminEmployee && <button onClick={openAdminEmployeePortal} style={{ background:'#ca1b1b', border:'none', color:'white', borderRadius:'8px', padding:'5px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}> MY TIME</button>}
+<button type="button" aria-label="Open notifications" onClick={()=>{ setSidebarOpen(true); setShowNotifications(true); loadNotifications() }} style={{ position:'relative', width:'34px', height:'34px', borderRadius:'8px', border:'1px solid rgba(253,212,18,0.8)', background:'rgba(255,255,255,0.1)', color:'white', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', padding:0 }}>
+<span aria-hidden="true" style={{ fontSize:'15px', lineHeight:1 }}>&#128276;</span>
+{unreadCount > 0 && <span style={{ position:'absolute', top:'-6px', right:'-6px', background:'#ca1b1b', color:'white', border:'1.5px solid #FDD412', borderRadius:'999px', minWidth:'17px', height:'17px', padding:'0 3px', boxSizing:'border-box', fontSize:'8px', fontWeight:'900', display:'flex', alignItems:'center', justifyContent:'center' }}>{unreadCount > 9? '9+': unreadCount}</span>}
+</button>
+<button type="button" aria-label={sidebarOpen?'Close main menu':'Open main menu'} aria-expanded={sidebarOpen} onClick={()=>setSidebarOpen(!sidebarOpen)} style={{ background:'rgba(255,255,255,0.1)', border:'1px solid rgba(255,255,255,0.2)', color:'white', borderRadius:'8px', padding:'7px 10px', cursor:'pointer', fontWeight:'bold', fontSize:'11px', minWidth:'54px' }}>{sidebarOpen?'CLOSE':'MENU'}</button>
  </div>
  </div>
  )}
@@ -34641,7 +34805,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  {notifications.length === 0? (
  <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'11px', textAlign:'center', padding:'16px', margin:0 }}>No unread notifications</p>
  ): notifications.map(n=>(
- <div key={n.id} onClick={()=>markOneRead(n.id)} style={{ padding:'8px 14px', borderBottom:'1px solid rgba(255,255,255,0.05)', background:n.is_read?'transparent':'rgba(253,212,18,0.08)', cursor:'pointer', transition:'background 0.15s' }}>
+<div key={n.id} onClick={()=>handleNotificationClick(n)} style={{ padding:'8px 14px', borderBottom:'1px solid rgba(255,255,255,0.05)', background:n.is_read?'transparent':'rgba(253,212,18,0.08)', cursor:'pointer', transition:'background 0.15s' }}>
  <p style={{ color:n.is_read?'rgba(255,255,255,0.5)':'white', fontSize:'11px', fontWeight:n.is_read?'normal':'bold', margin:'0 0 2px' }}>{n.title}</p>
  <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'10px', margin:'0 0 2px', lineHeight:1.4 }}>{n.message}</p>
  <p style={{ color:'rgba(255,255,255,0.25)', fontSize:'9px', margin:0 }}>{n.employee_name} {new Date(n.created_at).toLocaleDateString('en-PH',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</p>
@@ -34678,9 +34842,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const isActive = currentSection.key === section.key
                   const shouldBlinkThisPayablesButton = section.key==='payablesMain' && shouldBlinkPayablesMainButton
  const pendingLeaveCount = leaveRequests.filter(r=>r.status==='pending').length
- const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
- (section.key==='payroll' && (cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
- (section.key==='sales' && (pendingExpenses>0 && adminRole==='owner')) || (section.key==='payablesMain' && ownerDeadlineSummary.warningCount>0)
+const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
+(section.key==='payroll' && (cashAdvanceRequests.filter(r=>r.status==='pending').length>0||payslipDisputes.filter(d=>d.status==='pending').length>0)) ||
+(section.key==='sales' && ((pendingExpenses>0 && adminRole==='owner') || pendingInvoiceDeletionRequests.length>0)) || (section.key==='payablesMain' && ownerDeadlineSummary.warningCount>0)
  return (
  <button key={section.key} onClick={()=>{ handleTabClick(section.tabs.find(t=>canAccess(t.key))?.key||section.tabs[0].key) }} style={{ padding:'10px 12px', borderRadius:'8px', border:'none', cursor:'pointer', textAlign:'left', width:'100%', background:shouldBlinkThisPayablesButton?'#fdd412':isActive?'#ca1b1b':'transparent', color:shouldBlinkThisPayablesButton?'#1a1a2e':isActive?'white':'rgba(255,255,255,0.65)', animation:shouldBlinkThisPayablesButton?'payablesSidebarBlink 0.8s ease-in-out infinite':'none', boxShadow:shouldBlinkThisPayablesButton?'0 0 16px rgba(253,212,18,0.9)':'none', display:'flex', alignItems:'center', gap:'10px', transition:'all 0.15s', position:'relative' }}>
  <span style={{ fontSize:'16px', flexShrink:0 }}>{section.icon}</span>
@@ -42753,8 +42917,9 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  {showCreateInvoice?'CANCEL':'+ CREATE INVOICE'}
  </button>
  </div>
- </div>
- {/* Delivery Day Dropdown + Status Filter Tabs */}
+</div>
+{renderInvoiceDeletionApprovalCenter()}
+{/* Delivery Day Dropdown + Status Filter Tabs */}
  <div style={{ background:'#fffdf4', border:'1px solid #f5e4a3', borderRadius:'14px', padding:'12px', marginBottom:'12px' }}>
  {(()=>{
  const dayInvoices = getDayFilteredInvoices(invoiceDayFilter)
@@ -43083,9 +43248,10 @@ onClick={async ()=>{
  )
  }
  return visibleInvoices.map(inv=>{
- const balance = getInvoiceBalance(inv)
- const displayStatus = getInvoicePaymentStatus(inv)
- const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : { blocked:false, message:'' }
+const balance = getInvoiceBalance(inv)
+const displayStatus = getInvoicePaymentStatus(inv)
+const deletionRequest = getPendingInvoiceDeletionRequest(inv.id)
+const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : { blocked:false, message:'' }
  const isOverdue = displayStatus!=='paid' && balance > 0 && inv.due_date < today
  const statusColor = credit.blocked?'#ca1b1b':displayStatus==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':'#f57c00'
  return (
@@ -43134,9 +43300,9 @@ onClick={async ()=>{
  {inv.status!=='unpaid' && (
  <button style={{...btnBlack, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#555' }} onClick={()=>printReturnForm(inv)}> RETURN FORM</button>
  )}
- {adminRole==='owner' && (
- <button title="Owner-only force delete" style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:processingItems[`delete_invoice_${inv.id}`]?'not-allowed':'pointer', opacity:processingItems[`delete_invoice_${inv.id}`]?0.65:1, fontWeight:'bold', fontSize:'11px' }} disabled={processingItems[`delete_invoice_${inv.id}`]} onClick={()=>deleteInvoice(inv)}>{processingItems[`delete_invoice_${inv.id}`]?' DELETING...':' OWNER DELETE'}</button>
- )}
+{invoiceDeletionAccess.can_request && (
+<button title={deletionRequest?'Waiting for owner approval':'Request owner approval before deletion'} style={{ background:deletionRequest?'#fff8e1':'#fff5f5', color:deletionRequest?'#b45309':'#ca1b1b', border:`1px solid ${deletionRequest?'#f5a623':'#ca1b1b'}`, borderRadius:'8px', padding:'6px 12px', cursor:deletionRequest?'not-allowed':'pointer', opacity:deletionRequest?0.75:1, fontWeight:'bold', fontSize:'11px' }} disabled={!!deletionRequest} onClick={()=>beginInvoiceDeletionRequest(inv)}>{deletionRequest?'DELETION PENDING':'REQUEST DELETION'}</button>
+)}
  </div>
  {/* Info banner payment in Receivables */}
  {(inv.status==='delivered'||inv.status==='partial') && (
