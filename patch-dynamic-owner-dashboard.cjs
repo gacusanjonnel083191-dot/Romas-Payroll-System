@@ -32,27 +32,94 @@ if (!src.includes('DYNAMIC_OWNER_BRIEFING_QUERY_V1')) {
   replaceAfter(loadDashboardIndex, pendingDisputeField, `${pendingDisputeField}\n  ownerBriefing,`, 'owner briefing dashboard field', 14000)
 }
 
-// 2) Insert the professional command center at the top of the current Dashboard tab.
-if (!src.includes('DYNAMIC_OWNER_COMMAND_CENTER_V1')) {
-  const dashboardRenderIndex = src.indexOf("{activeTab==='dashboard' && (")
-  if (dashboardRenderIndex < 0) throw new Error('Dashboard render block was not found.')
-  const timedInModalIndex = src.indexOf('{/* TIMED IN MODAL */}', dashboardRenderIndex)
-  if (timedInModalIndex < 0 || timedInModalIndex - dashboardRenderIndex > 12000) {
-    throw new Error('Dashboard insertion point was not found safely.')
+// 2) Upgrade a previously build-patched V1 source safely before applying V2.
+//    V2 is owner-only, keeps the original operational dashboard available through
+//    an explicit view switch, and does not rename the dashboard for other roles.
+const hadLegacyOwnerDashboard = src.includes('DYNAMIC_OWNER_COMMAND_CENTER_V1')
+if (hadLegacyOwnerDashboard) {
+  const legacyStart = src.indexOf('{/* DYNAMIC_OWNER_COMMAND_CENTER_V1 */}')
+  const timedInModalIndex = src.indexOf('{/* TIMED IN MODAL */}', legacyStart)
+  if (legacyStart < 0 || timedInModalIndex < 0 || timedInModalIndex - legacyStart > 22000) {
+    throw new Error('Could not remove the V1 owner dashboard safely.')
   }
-  src = src.slice(0, timedInModalIndex) + commandCenterSnippet + '\n  ' + src.slice(timedInModalIndex)
+  src = src.slice(0, legacyStart) + src.slice(timedInModalIndex)
 }
 
-// 3) Refreshing the dashboard must refresh the integrated Foundation data as well.
-if (!src.includes('DYNAMIC_DASHBOARD_REFRESH_V1')) {
-  const dashboardRenderIndex = src.indexOf("{activeTab==='dashboard' && (")
-  if (dashboardRenderIndex < 0) throw new Error('Dashboard render block was not found for refresh patch.')
-  const oldRefresh = "onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast(' Dashboard refreshed!') }}"
-  const newRefresh = "onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); if (isOwnerRole || normalizedAdminRole==='manager') await loadFoundationData({ silent:true }); /* DYNAMIC_DASHBOARD_REFRESH_V1 */ showToast(' Dashboard refreshed!') }}"
-  replaceAfter(dashboardRenderIndex, oldRefresh, newRefresh, 'dashboard integrated refresh', 7000)
+const legacyRefresh = "onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); if (isOwnerRole || normalizedAdminRole==='manager') await loadFoundationData({ silent:true }); /* DYNAMIC_DASHBOARD_REFRESH_V1 */ showToast(' Dashboard refreshed!') }}"
+const standardRefresh = "onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast(' Dashboard refreshed!') }}"
+if (src.includes(legacyRefresh)) src = src.replace(legacyRefresh, standardRefresh)
+
+if (hadLegacyOwnerDashboard) {
+  src = src
+    .replace('<p className="romas-dashboard-eyebrow">Dynamic management dashboard</p>', '<p className="romas-dashboard-eyebrow">Integrated business workflow</p>')
+    .replace('<h2 className="romas-dashboard-title">OWNER COMMAND CENTER</h2>', '<h2 className="romas-dashboard-title">BUSINESS DASHBOARD</h2>')
+    .replace('<p className="romas-dashboard-subtitle">Live decisions, controls, and operational signals</p>', '<p className="romas-dashboard-subtitle">Roma\'s Donuts operational overview</p>')
 }
 
-// 4) Future-dated invoices are scheduled business, not earned/current revenue.
+// 3) Add the owner dashboard mode once. The default is the Command Center; the
+//    original HR/attendance/site-controls dashboard remains available on demand.
+if (!src.includes('OWNER_DASHBOARD_MODE_V2')) {
+  const foundationLoadingState = "const [foundationLoading, setFoundationLoading] = useState(false)"
+  const foundationLoadingIndex = src.indexOf(foundationLoadingState)
+  if (foundationLoadingIndex < 0) throw new Error('Foundation dashboard state was not found.')
+  const modeState = `${foundationLoadingState}\n const [ownerDashboardMode, setOwnerDashboardMode] = useState('command') // OWNER_DASHBOARD_MODE_V2`
+  src = replaceAt(src, foundationLoadingIndex, foundationLoadingState, modeState, 'owner dashboard mode state')
+}
+
+// 4) Keep the command center live while the owner is viewing the Dashboard.
+if (!src.includes('OWNER_DASHBOARD_AUTO_REFRESH_V2')) {
+  const oldFoundationGate = "const canViewFoundation = activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')"
+  const newFoundationGate = "const canViewFoundation = (activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')) || (activeTab === 'dashboard' && adminRole === 'owner') // OWNER_DASHBOARD_AUTO_REFRESH_V2"
+  const gateIndex = src.indexOf(oldFoundationGate)
+  if (gateIndex < 0) throw new Error('Foundation auto-refresh gate was not found.')
+  src = replaceAt(src, gateIndex, oldFoundationGate, newFoundationGate, 'owner dashboard auto-refresh gate')
+}
+
+// 5) Reset the owner to the command view on login and whenever Dashboard is opened.
+if (!src.includes('OWNER_DASHBOARD_LOGIN_RESET_V2')) {
+  const adminModeLine = "setAdminMode(true); setAdminRole(safeRole); setEmployeeSearch(''); setSidebarOpen(false)"
+  const adminModeIndex = src.indexOf(adminModeLine)
+  if (adminModeIndex < 0) throw new Error('Admin open flow was not found.')
+  const resetLine = `${adminModeLine}\n if (safeRole === 'owner') setOwnerDashboardMode('command') // OWNER_DASHBOARD_LOGIN_RESET_V2`
+  src = replaceAt(src, adminModeIndex, adminModeLine, resetLine, 'owner dashboard login reset')
+}
+
+if (!src.includes('OWNER_DASHBOARD_NAV_RESET_V2')) {
+  const oldDashboardLoad = "if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }"
+  const newDashboardLoad = "if(key==='dashboard') { if (isOwnerRole) setOwnerDashboardMode('command'); /* OWNER_DASHBOARD_NAV_RESET_V2 */ loadDashboard(); loadDashboardCharts() }"
+  const dashboardLoadIndex = src.indexOf(oldDashboardLoad)
+  if (dashboardLoadIndex < 0) throw new Error('Dashboard navigation loader was not found.')
+  src = replaceAt(src, dashboardLoadIndex, oldDashboardLoad, newDashboardLoad, 'owner dashboard navigation reset')
+}
+
+// 6) Render the new owner-only command center as the default Dashboard. The
+//    established operational dashboard is untouched for non-owners and can be
+//    opened by the owner through ownerDashboardMode='operations'.
+if (!src.includes('DYNAMIC_OWNER_COMMAND_CENTER_V2')) {
+  const originalDashboardCondition = "{activeTab==='dashboard' && ("
+  const guardedDashboardCondition = "{activeTab==='dashboard' && (!isOwnerRole || ownerDashboardMode==='operations') && ("
+  let dashboardRenderIndex = src.indexOf(originalDashboardCondition)
+  if (dashboardRenderIndex >= 0) {
+    src = replaceAt(src, dashboardRenderIndex, originalDashboardCondition, guardedDashboardCondition, 'operational dashboard role guard')
+  } else {
+    dashboardRenderIndex = src.indexOf(guardedDashboardCondition)
+    if (dashboardRenderIndex < 0) throw new Error('Dashboard render block was not found.')
+  }
+  src = src.slice(0, dashboardRenderIndex) + commandCenterSnippet + '\n\n ' + src.slice(dashboardRenderIndex)
+}
+
+// 7) Give the owner a clear way back from HR/site controls to the command view.
+if (!src.includes('OWNER_DASHBOARD_RETURN_V2')) {
+  const dashboardActions = '<div className="romas-dashboard-actions">'
+  const operationalDashboardIndex = src.indexOf("{activeTab==='dashboard' && (!isOwnerRole || ownerDashboardMode==='operations') && (")
+  if (operationalDashboardIndex < 0) throw new Error('Operational dashboard block was not found for return control.')
+  const dashboardActionsIndex = src.indexOf(dashboardActions, operationalDashboardIndex)
+  if (dashboardActionsIndex < 0 || dashboardActionsIndex - operationalDashboardIndex > 4000) throw new Error('Operational dashboard actions were not found safely.')
+  const returnControl = `${dashboardActions}\n {isOwnerRole && <button type="button" style={{...btnYellow, width:'auto', padding:'8px 13px', marginTop:0, fontSize:'11px' }} onClick={()=>setOwnerDashboardMode('command')}>OWNER COMMAND CENTER</button>} {/* OWNER_DASHBOARD_RETURN_V2 */}`
+  src = replaceAt(src, dashboardActionsIndex, dashboardActions, returnControl, 'owner command center return control')
+}
+
+// 8) Future-dated invoices are scheduled business, not earned/current revenue.
 //    Keep them in the system but exclude them from Analytics until their delivery date arrives.
 if (!src.includes('ANALYTICS_EXCLUDE_FUTURE_INVOICES_V1')) {
   const analyticsSource = 'const allInvoices = deliveryInvoices'
@@ -62,19 +129,5 @@ if (!src.includes('ANALYTICS_EXCLUDE_FUTURE_INVOICES_V1')) {
   src = replaceAt(src, analyticsIndex, analyticsSource, filteredSource, 'future invoice Analytics filter')
 }
 
-// 5) Clarify the dashboard purpose without removing the existing operational detail below it.
-const dashboardTitle = '<h2 className="romas-dashboard-title">BUSINESS DASHBOARD</h2>'
-if (src.includes(dashboardTitle)) {
-  src = src.replace(dashboardTitle, '<h2 className="romas-dashboard-title">OWNER COMMAND CENTER</h2>')
-}
-const dashboardSubtitle = '<p className="romas-dashboard-subtitle">Roma\'s Donuts operational overview</p>'
-if (src.includes(dashboardSubtitle)) {
-  src = src.replace(dashboardSubtitle, '<p className="romas-dashboard-subtitle">Live decisions, controls, and operational signals</p>')
-}
-const dashboardEyebrow = '<p className="romas-dashboard-eyebrow">Integrated business workflow</p>'
-if (src.includes(dashboardEyebrow)) {
-  src = src.replace(dashboardEyebrow, '<p className="romas-dashboard-eyebrow">Dynamic management dashboard</p>')
-}
-
 fs.writeFileSync(path, src, 'utf8')
-console.log('Dynamic Owner Command Center applied: live briefing priorities, integrated Foundation KPIs, decision support, operational signals, and future-invoice Analytics protection.')
+console.log('Owner Command Center V2 applied: owner-only executive view, verified Foundation KPIs, targets, trends, drill-downs, and preserved HR/site controls.')

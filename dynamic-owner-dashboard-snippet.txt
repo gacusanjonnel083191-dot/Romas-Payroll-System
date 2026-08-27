@@ -1,71 +1,256 @@
-{/* DYNAMIC_OWNER_COMMAND_CENTER_V1 */}
-{(isOwnerRole || normalizedAdminRole==='manager') && (() => {
- const briefing=dashboardData?.ownerBriefing||null, fd=foundationData||null
- const priorities=Array.isArray(briefing?.priorities)?briefing.priorities.slice(0,8):[]
- const recs=Array.isArray(fd?.recommendations)?fd.recommendations.slice(0,5):[]
- const pending=safeNum(dashboardData?.pendingLeave,0)+safeNum(dashboardData?.pendingCA,0)+safeNum(dashboardData?.pendingOT,0)+safeNum(dashboardData?.pendingDisputes,0)
- const low=Array.isArray(fd?.inventoryReorderRows)?fd.inventoryReorderRows.length:safeNum(fd?.lowStockItems,0)
- const health=fd?safeNum(fd.healthScore,0):null
- const tone=health==null?{label:'LOADING',c:'#64748b',bg:'#f1f5f9'}:health<70?{label:'CRITICAL',c:'#b42318',bg:'#fff1f0'}:health<85?{label:'WATCH',c:'#b56a00',bg:'#fff8e7'}:{label:'HEALTHY',c:'#18794e',bg:'#eefbf4'}
- const num=(r,keys)=>{for(const k of keys){const n=Number(r?.[k]);if(Number.isFinite(n))return n}return 0}
- const txt=(r,keys,f='')=>{for(const k of keys){const v=r?.[k];if(v!==undefined&&v!==null&&String(v).trim())return String(v)}return f}
- const openModule=m=>{const q=String(m||'').toLowerCase();const key=q.includes('receiv')?'sales':q.includes('payable')?'payable':q.includes('invent')?'inventory':q.includes('cost')||q.includes('production')?'costing':q.includes('payroll')?'payroll':q.includes('attendance')||q.includes('hr')?'attendance':q.includes('sales')?'sales':q;const tabs=(visibleSections||[]).flatMap(s=>s.tabs||[]);const t=tabs.find(x=>`${x.key||''} ${x.label||''}`.toLowerCase().includes(key));if(t)handleTabClick(t.key)}
- const fmtDate=v=>{const s=String(v||'').slice(0,10);if(!s)return'';const d=new Date(`${s}T00:00:00`);return Number.isNaN(d.getTime())?s:new Intl.DateTimeFormat('en-PH',{month:'short',day:'numeric'}).format(d)}
- const salesMap=new Map()
- ;(Array.isArray(fd?.rows?.dailySalesRows)?fd.rows.dailySalesRows:Array.isArray(fd?.dailySalesRows)?fd.dailySalesRows:[]).forEach(r=>{const d=txt(r,['sales_date','business_date','date','day','created_at']).slice(0,10);if(!d||d>today)return;const v=num(r,['net_sales','netSales','total_sales','totalSales','sales','revenue','amount','gross_sales','grossSales']);salesMap.set(d,(salesMap.get(d)||0)+v)})
- const sales=Array.from(salesMap.entries()).sort((a,b)=>a[0].localeCompare(b[0])).slice(-14).map(([d,v])=>({name:fmtDate(d),value:v})), salesMax=Math.max(1,...sales.map(x=>Math.abs(x.value)))
- const normalize=(rows,nameKeys,valueKeys)=>rows.map(r=>({name:txt(r,nameKeys,'Unlabeled'),value:num(r,valueKeys)})).filter(x=>x.value>0).sort((a,b)=>b.value-a.value).slice(0,6)
- const products=normalize(Array.isArray(fd?.productProfitabilityRows)?fd.productProfitabilityRows:[],['product_name','productName','variant_name','variantName','name','item_name'],['revenue','sales','net_sales','netSales','total_sales','totalSales','amount','quantity','qty','pieces'])
- const resellers=normalize(Array.isArray(fd?.resellerPerformanceRows)?fd.resellerPerformanceRows:Array.isArray(fd?.resellerRanking)?fd.resellerRanking:[],['reseller_name','resellerName','name','outlet_name','outletName','customer_name'],['net_sales','netSales','sales','revenue','total_sales','totalSales','amount','invoice_total','invoiceTotal'])
- const aging=Array.isArray(fd?.arAging)?fd.arAging.map((r,i)=>({name:txt(r,['bucket','label','range','name'],`Bucket ${i+1}`),value:num(r,['amount','balance','total','value','receivable'])})):fd?.arAging&&typeof fd.arAging==='object'?Object.entries(fd.arAging).map(([k,v])=>({name:k,value:typeof v==='object'?num(v,['amount','balance','total','value']):safeNum(v,0)})):[]
- const kpis=[
-  ['NET SALES',fd?php(fd.netSales):'—',fd?.start&&fd?.end?`${fd.start} to ${fd.end}`:'Current period','#18794e'],
-  ['NET PROFIT',fd?php(fd.netProfit):'—',fd?`${safeNum(fd.netMarginPct,0).toFixed(1)}% net margin`:'Loading',fd&&safeNum(fd.netProfit,0)<0?'#b42318':'#18794e'],
-  ['RECEIVABLES',fd?php(fd.totalAR):(briefing?.metrics?.open_receivables!=null?php(briefing.metrics.open_receivables):'—'),fd?`${php(fd.overdueAR)} overdue`:'Latest briefing','#b42318'],
-  ['PAYROLL',fd?php(fd.payrollExpense):'—',fd?.payrollExpenseSource||'Current period','#6f4aa2'],
-  ['REORDER ITEMS',fd?low:'—',fd?`${php(fd.inventoryValue)} inventory value`:'Loading','#c17a00'],
-  ['BUSINESS HEALTH',fd?`${health.toFixed(0)}/100`:'—',fd?.businessHealthGrade||'Integrated score',tone.c],
+{/* DYNAMIC_OWNER_COMMAND_CENTER_V2 */}
+{activeTab==='dashboard' && isOwnerRole && ownerDashboardMode==='command' && (() => {
+ const fd = foundationData || null
+ const executive = fd ? buildExecutiveCommandCenter(fd) : null
+ const briefing = dashboardData?.ownerBriefing || null
+ const kpis = executive?.kpiCards || []
+ const safeRows = value => Array.isArray(value) ? value : []
+ const toneFor = value => {
+  const status = String(value || '').toUpperCase()
+  if (status.includes('CRITICAL') || status.includes('ALERT') || status.includes('DO TODAY')) return { color:'#b42318', background:'#fff1f0' }
+  if (status.includes('WATCH') || status.includes('CHECK') || status.includes('REVIEW')) return { color:'#b56a00', background:'#fff8e7' }
+  if (status.includes('GOOD') || status.includes('HEALTHY') || status.includes('CLEAR') || status.includes('STABLE') || status.includes('EXCELLENT')) return { color:'#18794e', background:'#eefbf4' }
+  return { color:'#3568a8', background:'#eef5ff' }
+ }
+ const statusBadge = status => {
+  const tone = toneFor(status)
+  return <span style={{ display:'inline-flex', alignItems:'center', borderRadius:'999px', padding:'4px 8px', color:tone.color, background:tone.background, fontSize:'8px', lineHeight:1, fontWeight:'900', whiteSpace:'nowrap' }}>{status || 'CHECK'}</span>
+ }
+ const moduleFor = value => {
+  const name = String(value || '').toLowerCase()
+  if (name.includes('inventory') || name.includes('stock')) return 'inventory'
+  if (name.includes('payroll') || name.includes('salary')) return 'payroll'
+  if (name.includes('attendance') || name.includes('employee') || name.includes('document') || name.includes('approval')) return 'attendance'
+  if (name.includes('payable') || name.includes('pdc')) return 'payablesMain'
+  if (name.includes('product') || name.includes('food cost') || name.includes('production') || name.includes('wastage') || name.includes('cogs')) return 'costing'
+  if (name.includes('receivable') || name.includes('return') || name.includes('sales') || name.includes('cash')) return 'sales'
+  return 'foundation'
+ }
+ const metricDestination = label => {
+  if (label === 'Low Stock') return 'inventory'
+  if (label === 'Payroll Ratio') return 'payroll'
+  if (label === 'Food Cost' || label === 'Wastage' || label === 'Product Margin') return 'costing'
+  return 'foundation'
+ }
+ const openModule = value => handleTabClick(moduleFor(value))
+ const briefingActions = safeRows(briefing?.priorities).map(priority => ({
+  area:priority?.title || 'Owner priority',
+  value:safeNum(priority?.amount_exposure,0) > 0 ? php(priority.amount_exposure) : (priority?.module || 'Business control'),
+  target:priority?.module || 'Business',
+  status:String(priority?.severity || 'WATCH').toUpperCase(),
+  action:priority?.recommended_action || 'Review and resolve the source record.',
+  module:priority?.module || priority?.title || 'foundation',
+ }))
+ const actionRows = (briefingActions.length > 0 ? briefingActions : safeRows(executive?.topRisks)).slice(0,6)
+ const severityRank = status => {
+  const value = String(status || '').toUpperCase()
+  if (value.includes('CRITICAL') || value.includes('ALERT')) return 0
+  if (value.includes('WATCH')) return 1
+  return 2
+ }
+ const targetRows = [...safeRows(executive?.riskRows)].sort((a,b)=>severityRank(a.status)-severityRank(b.status))
+ const cashTrend = safeRows(fd?.cashFlowTrend).slice(-6)
+ const cashMax = Math.max(1,...cashTrend.flatMap(row=>[Math.abs(safeNum(row.cashIn,0)),Math.abs(safeNum(row.cashOut,0))]))
+ const agingRows = safeRows(fd?.arAging)
+ const agingMax = Math.max(1,...agingRows.map(row=>safeNum(row.total,0)))
+ const productRows = [...safeRows(fd?.productProfitabilityRows)].sort((a,b)=>safeNum(b.netRevenueAfterReturns,0)-safeNum(a.netRevenueAfterReturns,0)).slice(0,5)
+ const resellerRows = [...safeRows(fd?.resellerPerformanceRows)].sort((a,b)=>safeNum(b.sales,0)-safeNum(a.sales,0)).slice(0,5)
+ const lowStockCount = Array.isArray(fd?.lowStockItems) ? fd.lowStockItems.length : safeNum(fd?.lowStockItems,0)
+ const operationalRows = [
+  { label:'ON DUTY', value:safeNum(dashboardData?.timedIn,0), status:safeNum(dashboardData?.timedIn,0)>0?'ACTIVE':'CHECK', tab:'attendance' },
+  { label:'ABSENT TODAY', value:safeNum(dashboardData?.absent,0), status:safeNum(dashboardData?.absent,0)>0?'ALERT':'GOOD', tab:'attendance' },
+  { label:'PENDING APPROVALS', value:safeNum(fd?.totalPendingApprovals,0), status:safeNum(fd?.totalPendingApprovals,0)>0?'CHECK':'GOOD', tab:'foundation' },
+  { label:'PENDING DELIVERIES', value:safeNum(fd?.pendingDeliveries,0), status:safeNum(fd?.pendingDeliveries,0)>0?'ACTIVE':'CLEAR', tab:'sales' },
+  { label:'RETURN RATE', value:fd?`${safeNum(fd.returnsRate,0).toFixed(1)}%`:'—', status:safeNum(fd?.returnsRate,0)>5?'WATCH':'GOOD', tab:'sales' },
+  { label:'LOW STOCK', value:fd?lowStockCount:'—', status:lowStockCount>0?'CHECK':'GOOD', tab:'inventory' },
  ]
- const ops=[['ON DUTY',safeNum(dashboardData?.timedIn,0),'#18794e'],['ABSENT',safeNum(dashboardData?.absent,0),safeNum(dashboardData?.absent,0)>0?'#b42318':'#64748b'],['APPROVALS',pending,pending>0?'#c17a00':'#64748b'],['DELIVERIES',fd?safeNum(fd.pendingDeliveries,0):'—','#3568a8'],['RETURNS',fd?`${safeNum(fd.returnsRate,0).toFixed(1)}%`:'—',safeNum(fd?.returnsRate,0)>8?'#b42318':'#18794e'],['REORDER',fd?low:'—',low>0?'#c17a00':'#18794e']]
- const Panel=({title,sub,children})=><section style={{background:'#fff',border:'1px solid #eee7db',borderRadius:'12px',padding:'12px',minWidth:0,boxShadow:'0 2px 8px rgba(31,41,55,.04)'}}><p style={{color:'#172033',fontWeight:'900',fontSize:'10px',margin:'0 0 2px'}}>{title}</p>{sub&&<p style={{color:'#8a8f98',fontSize:'8px',margin:'0 0 9px'}}>{sub}</p>}{children}</section>
- const BarList=({rows,color='#c91f2c',money=true,empty='No data available.'})=>{const max=Math.max(1,...rows.map(x=>x.value));return rows.length===0?<p style={{color:'#9aa0aa',fontSize:'9px'}}>{empty}</p>:<div style={{display:'flex',flexDirection:'column',gap:'7px'}}>{rows.map((r,i)=><div key={`${r.name}-${i}`}><div style={{display:'flex',justifyContent:'space-between',gap:'8px',marginBottom:'3px'}}><span style={{color:'#3f4652',fontSize:'8.5px',fontWeight:'800'}}>{i+1}. {r.name}</span><b style={{color:'#172033',fontSize:'8px'}}>{money?php(r.value):r.value.toLocaleString()}</b></div><div style={{height:'7px',background:'#f1f1f1',borderRadius:'7px',overflow:'hidden'}}><div style={{height:'100%',width:`${Math.max(3,(r.value/max)*100)}%`,background:i===0?color:`${color}80`}}/></div></div>)}</div>}
- return <div style={{marginBottom:'18px'}}>
-  <div style={{background:'linear-gradient(180deg,#fffdf8 0%,#fff9ef 100%)',border:'1px solid #eadfc9',borderRadius:'16px',padding:isMobile?'12px':'16px',boxShadow:'0 12px 28px rgba(31,41,55,.10)',overflow:'hidden',position:'relative'}}>
-   <div style={{position:'absolute',top:0,left:0,right:0,height:'4px',background:'linear-gradient(90deg,#c91f2c 0 56%,#f6b900 56% 100%)'}}/>
-   <div style={{display:'flex',justifyContent:'space-between',gap:'12px',alignItems:'center',flexWrap:'wrap',paddingTop:'4px',marginBottom:'13px'}}>
-    <div style={{borderLeft:'4px solid #c91f2c',paddingLeft:'12px'}}><p style={{color:'#a31623',fontWeight:'900',fontSize:'9px',letterSpacing:'1.2px',margin:'0 0 3px'}}>ROMA'S DONUTS · OWNER COMMAND CENTER</p><h3 style={{color:'#1f2937',fontSize:isMobile?'17px':'21px',margin:'0 0 3px',fontWeight:'900'}}>Executive business overview</h3><p style={{color:'#68707d',fontSize:'9px',margin:0}}>Status in cards · trends in graphs · exact decisions in tables.</p></div>
-    <div style={{display:'flex',gap:'7px',alignItems:'center'}}><span style={{background:tone.bg,color:tone.c,borderRadius:'999px',padding:'5px 9px',fontSize:'8px',fontWeight:'900'}}>{tone.label}</span><span style={{background:'#fff',border:'1px solid #eee4d2',borderRadius:'9px',padding:'6px 8px',fontSize:'8px',color:'#5f6672'}}>{briefing?.briefing_date||'No briefing'} · {safeNum(briefing?.metrics?.critical_count,0)} critical</span></div>
+ const quickLinks = [
+  ['SAGS POS','posMonitor'],
+  ['SALES & COLLECTIONS','sales'],
+  ['INVENTORY','inventory'],
+  ['PAYROLL','payroll'],
+  ['FULL FOUNDATION REPORT','foundation'],
+ ]
+ const panel = (title, subtitle, content, extraStyle = {}) => (
+  <section style={{ background:'#fff', border:'1px solid #eee7db', borderRadius:'14px', padding:isMobile?'12px':'15px', minWidth:0, boxShadow:'0 3px 12px rgba(31,41,55,.05)', ...extraStyle }}>
+   <div style={{ marginBottom:'11px' }}>
+    <h3 style={{ color:'#172033', fontSize:'11px', letterSpacing:'.5px', margin:'0 0 3px', fontWeight:'900' }}>{title}</h3>
+    {subtitle && <p style={{ color:'#7b8390', fontSize:'9px', lineHeight:1.45, margin:0 }}>{subtitle}</p>}
+   </div>
+   {content}
+  </section>
+ )
+ const refreshOwnerDashboard = async() => {
+  await Promise.all([
+   loadDashboard(),
+   loadFoundationData(foundationMonth, { silent:false, showLoading:true }),
+  ])
+  showToast(' Owner Command Center refreshed!')
+ }
+
+ return (
+  <div className="romas-executive-dashboard">
+   <div className="romas-dashboard-header">
+    <div>
+     <p className="romas-dashboard-eyebrow">Owner management view</p>
+     <h2 className="romas-dashboard-title">OWNER COMMAND CENTER</h2>
+     <p className="romas-dashboard-subtitle">Profit, cash, targets, risks, and today&apos;s decisions in one place</p>
+    </div>
+    <div className="romas-dashboard-actions" style={{ alignItems:'center' }}>
+     <label style={{ color:'rgba(255,255,255,.76)', fontSize:'9px', fontWeight:'800' }}>
+      PERIOD
+      <input aria-label="Owner dashboard period" type="month" value={foundationMonth} onChange={event=>{ const month=event.target.value; setFoundationMonth(month); void loadFoundationData(month,{ silent:false, showLoading:true }) }} style={{ display:'block', width:'145px', height:'34px', margin:'4px 0 0', padding:'0 9px', border:'1px solid rgba(255,255,255,.3)', borderRadius:'8px', background:'#fff', color:'#172033', fontSize:'11px', fontWeight:'800', boxSizing:'border-box' }} />
+     </label>
+     <button type="button" style={{...btnYellow, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'10px' }} onClick={refreshOwnerDashboard} disabled={foundationLoading}>{foundationLoading?'REFRESHING...':'REFRESH'}</button>
+     <button type="button" style={{...btnBlack, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'10px', border:'1px solid rgba(255,255,255,.24)' }} onClick={()=>setOwnerDashboardMode('operations')}>HR &amp; SITE CONTROLS</button>
+    </div>
    </div>
 
-   <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(6,minmax(0,1fr))',gap:'8px',marginBottom:'10px'}}>
-    {kpis.map(([l,v,n,c])=><div key={l} style={{background:'#fff',border:'1px solid #eee8dc',borderRadius:'10px',padding:'10px',minWidth:0}}><p style={{color:'#7a7f89',fontSize:'7.5px',fontWeight:'900',margin:'0 0 5px'}}>{l}</p><p style={{color:'#172033',fontSize:isMobile?'15px':'18px',fontWeight:'900',margin:'0 0 4px'}}>{v}</p><p style={{color:'#9a9da5',fontSize:'7px',margin:0}}>{n}</p><div style={{height:'2px',background:c,borderRadius:'2px',marginTop:'7px'}}/></div>)}
+   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', margin:'0 0 12px', padding:'9px 12px', background:'#fffdf8', border:'1px solid #eadfc9', borderRadius:'10px' }}>
+    <p style={{ margin:0, color:'#626b78', fontSize:'9px' }}>
+     Period: <strong style={{ color:'#172033' }}>{fd?.start || `${foundationMonth}-01`} to {fd?.end || foundationMonth}</strong>
+     {' · '}Last updated: <strong style={{ color:'#172033' }}>{formatFoundationLastUpdated(foundationLastUpdated || fd?.loadedAt)}</strong>
+    </p>
+    <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+     {quickLinks.map(([label,tab])=><button type="button" key={tab} onClick={()=>handleTabClick(tab)} style={{ border:'1px solid #e8dfd2', background:'#fff', color:'#515967', borderRadius:'7px', padding:'6px 8px', fontSize:'7.5px', fontWeight:'900', cursor:'pointer' }}>{label}</button>)}
+    </div>
    </div>
 
-   <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(0,1.6fr) minmax(280px,.4fr)',gap:'10px',marginBottom:'10px'}}>
-    <Panel title="SALES TREND" sub="Recent recorded sales through today. Future-dated invoices remain scheduled and are excluded from earned/current revenue.">
-     {sales.length===0?<div style={{height:'150px',display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa',borderRadius:'8px',color:'#9aa0aa',fontSize:'9px'}}>No dated sales series available.</div>:<div style={{height:'165px',display:'flex',alignItems:'flex-end',gap:'5px',padding:'8px 3px 0',borderBottom:'1px solid #e8e8e8'}}>{sales.map((r,i)=><div key={`${r.name}-${i}`} title={`${r.name}: ${php(r.value)}`} style={{flex:1,height:'100%',display:'flex',flexDirection:'column',justifyContent:'flex-end',gap:'4px'}}><div style={{height:`${Math.max(3,(Math.abs(r.value)/salesMax)*122)}px`,background:i===sales.length-1?'#c91f2c':'#efb0b5',borderRadius:'4px 4px 1px 1px'}}/><span style={{fontSize:'6.5px',color:'#8a8f98',textAlign:'center',whiteSpace:'nowrap',overflow:'hidden'}}>{r.name}</span></div>)}</div>}
-    </Panel>
-    <Panel title="BUSINESS HEALTH" sub="One score, with immediate control context.">
-     <div style={{display:'flex',justifyContent:'center',margin:'4px 0 10px'}}><div style={{width:'112px',height:'112px',borderRadius:'50%',background:`conic-gradient(${tone.c} ${Math.max(0,Math.min(100,health||0))*3.6}deg,#edf0f3 0)`,display:'flex',alignItems:'center',justifyContent:'center'}}><div style={{width:'82px',height:'82px',borderRadius:'50%',background:'#fff',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}><b style={{fontSize:'22px',color:'#172033'}}>{health==null?'—':health.toFixed(0)}</b><span style={{fontSize:'7px',color:'#8a8f98'}}>/100</span><span style={{fontSize:'7px',fontWeight:'900',color:tone.c,marginTop:'2px'}}>{tone.label}</span></div></div></div>
-     <p style={{color:'#68707d',fontSize:'8px',lineHeight:1.4,margin:0,textAlign:'center'}}>{briefing?.headline||fd?.businessHealthGrade||'Integrated business controls'}</p>
-    </Panel>
-   </div>
+   {foundationLoading && fd && <div role="status" style={{ marginBottom:'10px', padding:'8px 11px', borderRadius:'9px', background:'#eef5ff', color:'#3568a8', fontSize:'9px', fontWeight:'800' }}>Refreshing the command center. Current verified figures remain visible until the new snapshot is ready.</div>}
+   {fd?.errors?.length > 0 && <div style={{ marginBottom:'10px', padding:'8px 11px', borderRadius:'9px', background:'#fff8e7', color:'#8b5a00', fontSize:'9px', fontWeight:'800' }}>{fd.errors.length} data source{fd.errors.length!==1?'s':''} could not be read. Available figures are shown; open the full Foundation report for details.</div>}
 
-   <Panel title="ACTION REQUIRED" sub="Prioritized exception table: exact issue, exposure, recommended action, and direct module access.">
-    {priorities.length===0?<div style={{padding:'14px',background:'#f7fcf9',borderRadius:'8px',color:'#18794e',fontSize:'9px',fontWeight:'800'}}>No owner-priority items are currently available.</div>:<div style={{overflowX:'auto'}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:'850px'}}><thead><tr style={{background:'#faf7f1'}}>{['PRIORITY','ISSUE','MODULE / EXPOSURE','RECOMMENDED ACTION',''].map(h=><th key={h} style={{textAlign:'left',padding:'7px 8px',color:'#7c756b',fontSize:'7px',borderBottom:'1px solid #eee7db'}}>{h}</th>)}</tr></thead><tbody>{priorities.map((p,i)=>{const s=String(p?.severity||'high').toLowerCase(),c=s==='critical'?'#b42318':s==='high'?'#b56a00':'#3568a8',bg=s==='critical'?'#fff1f0':s==='high'?'#fff8e7':'#eef5ff';return <tr key={p?.id||i} style={{borderBottom:'1px solid #f0ece5'}}><td style={{padding:'8px'}}><span style={{color:c,background:bg,borderRadius:'999px',padding:'3px 6px',fontSize:'7px',fontWeight:'900',textTransform:'uppercase'}}>{s}</span></td><td style={{padding:'8px',color:'#27303e',fontSize:'9px',fontWeight:'800'}}>{p?.title||'Business exception'}</td><td style={{padding:'8px',color:'#5f6672',fontSize:'8px'}}>{p?.module||'Business'}{safeNum(p?.amount_exposure,0)>0?<><br/><b>{php(p.amount_exposure)}</b></>:null}</td><td style={{padding:'8px',color:'#5f6672',fontSize:'8px',lineHeight:1.4}}>{p?.recommended_action||'Review and resolve the source record.'}</td><td style={{padding:'8px',textAlign:'right'}}><button onClick={()=>openModule(p?.module)} style={{border:'none',background:'#c91f2c',color:'#fff',borderRadius:'7px',padding:'6px 9px',fontSize:'7px',fontWeight:'900',cursor:'pointer'}}>OPEN</button></td></tr>})}</tbody></table></div>}
-   </Panel>
+   {!fd ? (
+    <div style={{ minHeight:'320px', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:'10px', background:'#fff', border:'1px solid #eee7db', borderRadius:'16px', padding:'30px', textAlign:'center' }}>
+     <div style={{ width:'54px', height:'54px', borderRadius:'50%', background:foundationLoading?'#eef5ff':'#fff8e7', color:foundationLoading?'#3568a8':'#b56a00', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'20px', fontWeight:'900' }}>{foundationLoading?'…':'!'}</div>
+     <h3 style={{ color:'#172033', margin:0, fontSize:'16px' }}>{foundationLoading?'Loading owner metrics…':'Owner metrics are not loaded yet'}</h3>
+     <p style={{ color:'#737b87', margin:0, maxWidth:'520px', fontSize:'11px', lineHeight:1.55 }}>The command center reads your existing sales, released payroll, approved expenses, production, inventory, returns, and collection records. It does not create or change financial transactions.</p>
+     {!foundationLoading && <button type="button" style={{...btnRed, width:'auto', padding:'9px 16px', marginTop:'4px' }} onClick={refreshOwnerDashboard}>LOAD COMMAND CENTER</button>}
+    </div>
+   ) : (
+    <>
+     <section style={{ background:'linear-gradient(135deg,#fffdf8 0%,#fff7e8 100%)', border:`1px solid ${executive.statusColor}55`, borderLeft:`5px solid ${executive.statusColor}`, borderRadius:'14px', padding:isMobile?'13px':'16px', marginBottom:'12px', boxShadow:'0 5px 16px rgba(31,41,55,.06)' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
+       <div style={{ flex:'1 1 420px' }}>
+        <p style={{ color:'#8b6d37', fontSize:'8px', fontWeight:'900', letterSpacing:'.8px', margin:'0 0 5px' }}>EXECUTIVE BRIEFING</p>
+        <h3 style={{ color:'#172033', fontSize:isMobile?'15px':'18px', lineHeight:1.3, margin:'0 0 7px', fontWeight:'900' }}>{briefing?.headline || executive.headline}</h3>
+        <p style={{ color:'#5f6672', fontSize:'10px', lineHeight:1.55, margin:0 }}><strong>Recommended next move:</strong> {executive.nextMove}</p>
+       </div>
+       <div style={{ display:'flex', alignItems:'center', gap:'7px', flexWrap:'wrap' }}>
+        {statusBadge(executive.status)}
+        <span style={{ borderRadius:'999px', padding:'4px 8px', color:'#b42318', background:'#fff1f0', fontSize:'8px', fontWeight:'900' }}>{executive.alertCount} ALERT</span>
+        <span style={{ borderRadius:'999px', padding:'4px 8px', color:'#b56a00', background:'#fff8e7', fontSize:'8px', fontWeight:'900' }}>{executive.watchCount} WATCH</span>
+       </div>
+      </div>
+     </section>
 
-   <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:'10px',marginTop:'10px'}}>
-    <Panel title="TOP PRODUCTS" sub="Fast product comparison from Foundation profitability / sales data."><BarList rows={products} color="#c91f2c" empty="Product ranking will appear when product-level sales data is available."/></Panel>
-    <Panel title="TOP RESELLERS" sub="Revenue ranking across reseller and outlet accounts."><BarList rows={resellers} color="#f6b900" empty="Reseller ranking will appear when Foundation performance data is available."/></Panel>
-   </div>
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(6,minmax(0,1fr))', gap:'9px', marginBottom:'12px' }}>
+      {kpis.map(kpi=><button type="button" key={kpi.label} aria-label={`Open details for ${kpi.label}`} onClick={()=>handleTabClick(metricDestination(kpi.label))} style={{ appearance:'none', textAlign:'left', background:'#fff', border:'1px solid #eee7db', borderTop:`4px solid ${kpi.color}`, borderRadius:'11px', padding:'11px', minWidth:0, cursor:'pointer', boxShadow:'0 3px 10px rgba(31,41,55,.04)' }}>
+       <span style={{ display:'block', color:'#7a818d', fontSize:'7.5px', fontWeight:'900', marginBottom:'6px' }}>{String(kpi.label).toUpperCase()}</span>
+       <strong style={{ display:'block', color:'#172033', fontSize:isMobile?'14px':'16px', lineHeight:1.15, overflowWrap:'anywhere' }}>{kpi.value}</strong>
+       <span style={{ display:'block', color:'#9096a0', fontSize:'7.5px', lineHeight:1.35, marginTop:'5px' }}>{kpi.note}</span>
+       <span style={{ display:'block', color:kpi.color, fontSize:'7px', fontWeight:'900', marginTop:'7px' }}>OPEN DETAILS →</span>
+      </button>)}
+     </div>
 
-   <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(0,1.1fr) minmax(0,.9fr)',gap:'10px',marginTop:'10px'}}>
-    <Panel title="RECEIVABLES AGING" sub="Outstanding money grouped by age bucket so collections can be prioritized."><BarList rows={aging.filter(x=>x.value>0).slice(0,7)} color="#b42318" empty="Aging buckets are unavailable in the current snapshot."/></Panel>
-    <Panel title="TODAY'S OPERATIONS" sub="Compact operational status — cards are retained only where they work best."><div style={{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'6px'}}>{ops.map(([l,v,c])=><div key={l} style={{background:'#fafafa',border:'1px solid #f0ece5',borderRadius:'8px',padding:'8px'}}><span style={{display:'block',width:'6px',height:'6px',borderRadius:'50%',background:c,marginBottom:'5px'}}/><p style={{color:'#9398a1',fontSize:'6.5px',fontWeight:'900',margin:'0 0 3px'}}>{l}</p><b style={{color:'#202938',fontSize:'13px'}}>{v}</b></div>)}</div></Panel>
-   </div>
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(0,1.65fr) minmax(300px,.35fr)', gap:'12px', marginBottom:'12px' }}>
+      {panel('ACTION REQUIRED','The highest-priority issues from the latest owner briefing, with a verified Foundation fallback.',
+       actionRows.length===0 ? <div style={{ padding:'14px', borderRadius:'9px', background:'#eefbf4', color:'#18794e', fontSize:'10px', fontWeight:'800' }}>No critical owner action is currently detected.</div> :
+       <div style={{ overflowX:'auto' }}><table style={{ width:'100%', minWidth:'720px', borderCollapse:'collapse' }}>
+        <thead><tr style={{ background:'#faf7f1' }}>{['STATUS','ISSUE','VALUE / AREA','RECOMMENDED ACTION',''].map(heading=><th key={heading} style={{ textAlign:heading===''?'right':'left', padding:'8px', borderBottom:'1px solid #eee7db', color:'#7b7368', fontSize:'7.5px' }}>{heading}</th>)}</tr></thead>
+        <tbody>{actionRows.map((row,index)=><tr key={`${row.area}-${index}`} style={{ borderBottom:'1px solid #f1ede6' }}>
+         <td style={{ padding:'9px 8px', verticalAlign:'top' }}>{statusBadge(row.status)}</td>
+         <td style={{ padding:'9px 8px', color:'#27303e', fontSize:'9px', fontWeight:'900', verticalAlign:'top' }}>{row.area}</td>
+         <td style={{ padding:'9px 8px', color:'#5f6672', fontSize:'8.5px', verticalAlign:'top' }}><strong>{row.value}</strong><br/><span style={{ color:'#9297a0' }}>{row.target}</span></td>
+         <td style={{ padding:'9px 8px', color:'#5f6672', fontSize:'8.5px', lineHeight:1.45, verticalAlign:'top' }}>{row.action}</td>
+         <td style={{ padding:'9px 8px', textAlign:'right', verticalAlign:'top' }}><button type="button" onClick={()=>openModule(row.module || row.area)} style={{ border:'none', borderRadius:'7px', padding:'6px 9px', background:'#ca1b1b', color:'#fff', fontSize:'7px', fontWeight:'900', cursor:'pointer' }}>OPEN</button></td>
+        </tr>)}</tbody>
+       </table></div>
+      )}
 
-   <div style={{marginTop:'10px'}}><Panel title="DECISION SUPPORT" sub="Short owner recommendations based on the integrated Foundation analysis.">{recs.length===0?<p style={{color:'#9aa0aa',fontSize:'9px'}}>Recommendations will appear after Foundation data is available.</p>:<div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:'6px'}}>{recs.map((r,i)=><div key={i} style={{display:'grid',gridTemplateColumns:'22px 1fr',gap:'7px',padding:'8px',background:'#fafafa',borderRadius:'8px'}}><span style={{width:'20px',height:'20px',borderRadius:'6px',background:i===0?'#fff1ef':'#fff9e6',color:i===0?'#a31623':'#9a7300',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:'900',fontSize:'8px'}}>{i+1}</span><span style={{color:'#515967',fontSize:'8.5px',lineHeight:1.4}}>{r}</span></div>)}</div>}</Panel></div>
+      {panel('TODAY\'S OPERATIONS','Compact live signals. Open any item to inspect its source module.',
+       <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:'7px' }}>
+        {operationalRows.map(row=><button type="button" key={row.label} onClick={()=>handleTabClick(row.tab)} style={{ appearance:'none', textAlign:'left', background:'#fafafa', border:'1px solid #f0ece5', borderRadius:'9px', padding:'9px', cursor:'pointer' }}>
+         <span style={{ display:'block', color:'#8c929c', fontSize:'6.8px', fontWeight:'900', marginBottom:'5px' }}>{row.label}</span>
+         <strong style={{ display:'block', color:'#202938', fontSize:'15px', marginBottom:'5px' }}>{row.value}</strong>
+         {statusBadge(row.status)}
+        </button>)}
+       </div>
+      )}
+     </div>
+
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(0,1.25fr) minmax(320px,.75fr)', gap:'12px', marginBottom:'12px' }}>
+      {panel('SIX-MONTH CASH FLOW TREND','Cash in versus cash out from the same Foundation snapshot. Net cash is shown below each month.',
+       cashTrend.length===0 ? <p style={{ color:'#9197a1', fontSize:'9px', margin:0 }}>No monthly cash-flow trend is available.</p> :
+       <div>
+        <div style={{ height:'190px', display:'flex', alignItems:'flex-end', gap:isMobile?'7px':'12px', padding:'8px 4px 0', borderBottom:'1px solid #e6e9ed', overflowX:'auto' }}>
+         {cashTrend.map(row=><div key={row.month} style={{ flex:'1 0 58px', height:'100%', display:'flex', flexDirection:'column', justifyContent:'flex-end', alignItems:'center', minWidth:0 }}>
+          <div style={{ flex:1, width:'100%', display:'flex', justifyContent:'center', alignItems:'flex-end', gap:'4px' }}>
+           <div title={`Cash in: ${php(row.cashIn)}`} style={{ width:'34%', height:`${Math.max(3,(Math.abs(safeNum(row.cashIn,0))/cashMax)*132)}px`, borderRadius:'4px 4px 0 0', background:'#58a87c' }}/>
+           <div title={`Cash out: ${php(row.cashOut)}`} style={{ width:'34%', height:`${Math.max(3,(Math.abs(safeNum(row.cashOut,0))/cashMax)*132)}px`, borderRadius:'4px 4px 0 0', background:'#d96b72' }}/>
+          </div>
+          <strong style={{ color:safeNum(row.netCashFlow,0)>=0?'#18794e':'#b42318', fontSize:'7px', marginTop:'5px' }}>{php(row.netCashFlow)}</strong>
+          <span style={{ color:'#838a95', fontSize:'7px', marginTop:'3px' }}>{row.label}</span>
+         </div>)}
+        </div>
+        <div style={{ display:'flex', gap:'14px', marginTop:'9px', color:'#68707d', fontSize:'8px' }}><span><i style={{ display:'inline-block', width:'8px', height:'8px', borderRadius:'2px', background:'#58a87c', marginRight:'5px' }}/>Cash in</span><span><i style={{ display:'inline-block', width:'8px', height:'8px', borderRadius:'2px', background:'#d96b72', marginRight:'5px' }}/>Cash out</span></div>
+       </div>
+      )}
+
+      {panel('RECEIVABLES AGING','Outstanding reseller balances grouped by age so collection work starts with the oldest money.',
+       agingRows.length===0 ? <p style={{ color:'#9197a1', fontSize:'9px', margin:0 }}>No receivables aging data is available.</p> :
+       <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+        {agingRows.map(row=><div key={row.label}>
+         <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', marginBottom:'4px' }}><span style={{ color:'#515967', fontSize:'8.5px', fontWeight:'800' }}>{row.label} <small style={{ color:'#969ba4' }}>({safeNum(row.count,0)})</small></span><strong style={{ color:safeNum(row.total,0)>0?'#b42318':'#18794e', fontSize:'8.5px' }}>{php(row.total)}</strong></div>
+         <div style={{ height:'8px', borderRadius:'8px', background:'#f0f1f3', overflow:'hidden' }}><div style={{ width:`${safeNum(row.total,0)>0?Math.max(4,(safeNum(row.total,0)/agingMax)*100):0}%`, height:'100%', borderRadius:'8px', background:String(row.label).includes('31')?'#b42318':'#e49a62' }}/></div>
+        </div>)}
+       </div>
+      )}
+     </div>
+
+     {panel('PERFORMANCE VS TARGET','Current results use the established Foundation formulas and business control targets—no duplicate financial calculations.',
+      <div style={{ overflowX:'auto' }}><table style={{ width:'100%', minWidth:'780px', borderCollapse:'collapse' }}>
+       <thead><tr style={{ background:'#1a1a2e', color:'#fff' }}>{['CONTROL','CURRENT','TARGET','STATUS','OWNER ACTION'].map(heading=><th key={heading} style={{ textAlign:'left', padding:'9px', fontSize:'7.5px' }}>{heading}</th>)}</tr></thead>
+       <tbody>{targetRows.map((row,index)=><tr key={row.area} style={{ background:index%2===0?'#fff':'#fbfbfa', borderBottom:'1px solid #eee' }}>
+        <td style={{ padding:'9px', color:'#27303e', fontSize:'9px', fontWeight:'900' }}>{row.area}</td>
+        <td style={{ padding:'9px', color:'#27303e', fontSize:'9px', fontWeight:'900' }}>{row.value}</td>
+        <td style={{ padding:'9px', color:'#69717d', fontSize:'8.5px' }}>{row.target}</td>
+        <td style={{ padding:'9px' }}>{statusBadge(row.status)}</td>
+        <td style={{ padding:'9px', color:'#5f6672', fontSize:'8.5px', lineHeight:1.4 }}>{row.action}</td>
+       </tr>)}</tbody>
+      </table></div>
+     , { marginBottom:'12px' })}
+
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'12px', marginBottom:'12px' }}>
+      {panel('TOP PRODUCTS','Ranked by net revenue after returns, with gross profit and margin from product profitability.',
+       productRows.length===0 ? <p style={{ color:'#9197a1', fontSize:'9px', margin:0 }}>Product rankings will appear when item-level sales and costing data are available.</p> :
+       <div style={{ overflowX:'auto' }}><table style={{ width:'100%', minWidth:'520px', borderCollapse:'collapse' }}>
+        <thead><tr style={{ background:'#faf7f1' }}>{['PRODUCT','NET SALES','GROSS PROFIT','MARGIN','STATUS'].map(heading=><th key={heading} style={{ textAlign:heading==='PRODUCT'?'left':'right', padding:'8px', color:'#7b7368', fontSize:'7px', borderBottom:'1px solid #eee7db' }}>{heading}</th>)}</tr></thead>
+        <tbody>{productRows.map(row=><tr key={row.name} style={{ borderBottom:'1px solid #f1ede6' }}><td style={{ padding:'8px', color:'#27303e', fontSize:'8.5px', fontWeight:'800' }}>{row.name}</td><td style={{ padding:'8px', textAlign:'right', color:'#515967', fontSize:'8.5px' }}>{php(row.netRevenueAfterReturns)}</td><td style={{ padding:'8px', textAlign:'right', color:safeNum(row.grossProfit,0)>=0?'#18794e':'#b42318', fontSize:'8.5px', fontWeight:'800' }}>{php(row.grossProfit)}</td><td style={{ padding:'8px', textAlign:'right', color:'#515967', fontSize:'8.5px' }}>{safeNum(row.marginPct,0).toFixed(1)}%</td><td style={{ padding:'8px', textAlign:'right' }}>{statusBadge(row.status)}</td></tr>)}</tbody>
+       </table></div>
+      )}
+
+      {panel('TOP RESELLERS','Ranked by net sales, with unpaid balance, returns, and the existing reseller performance score.',
+       resellerRows.length===0 ? <p style={{ color:'#9197a1', fontSize:'9px', margin:0 }}>Reseller rankings will appear when invoice data are available.</p> :
+       <div style={{ overflowX:'auto' }}><table style={{ width:'100%', minWidth:'520px', borderCollapse:'collapse' }}>
+        <thead><tr style={{ background:'#faf7f1' }}>{['RESELLER','NET SALES','UNPAID','RETURNS','SCORE'].map(heading=><th key={heading} style={{ textAlign:heading==='RESELLER'?'left':'right', padding:'8px', color:'#7b7368', fontSize:'7px', borderBottom:'1px solid #eee7db' }}>{heading}</th>)}</tr></thead>
+        <tbody>{resellerRows.map(row=><tr key={row.name} style={{ borderBottom:'1px solid #f1ede6' }}><td style={{ padding:'8px', color:'#27303e', fontSize:'8.5px', fontWeight:'800' }}>{row.name}</td><td style={{ padding:'8px', textAlign:'right', color:'#515967', fontSize:'8.5px' }}>{php(row.sales)}</td><td style={{ padding:'8px', textAlign:'right', color:safeNum(row.unpaid,0)>0?'#b42318':'#18794e', fontSize:'8.5px', fontWeight:'800' }}>{php(row.unpaid)}</td><td style={{ padding:'8px', textAlign:'right', color:'#515967', fontSize:'8.5px' }}>{safeNum(row.returnRatePct,0).toFixed(1)}%</td><td style={{ padding:'8px', textAlign:'right' }}>{statusBadge(`${safeNum(row.score,0).toFixed(0)}/100 ${row.status || ''}`)}</td></tr>)}</tbody>
+       </table></div>
+      )}
+     </div>
+
+     {panel('TODAY\'S OWNER CHECKLIST','A short decision list generated from the same target and exception logic used above.',
+      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'8px' }}>
+       {safeRows(executive.dailyChecklist).map((item,index)=><div key={item.task} style={{ display:'grid', gridTemplateColumns:'28px 1fr auto', gap:'8px', alignItems:'start', padding:'10px', background:'#fafafa', border:'1px solid #f0ece5', borderRadius:'10px' }}>
+        <span style={{ width:'26px', height:'26px', borderRadius:'8px', background:index===0?'#fff1f0':'#fff8e7', color:index===0?'#b42318':'#8b6500', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'9px', fontWeight:'900' }}>{index+1}</span>
+        <div><strong style={{ display:'block', color:'#27303e', fontSize:'9px', marginBottom:'3px' }}>{item.task}</strong><span style={{ color:'#6f7783', fontSize:'8px', lineHeight:1.4 }}>{item.note}</span></div>
+        {statusBadge(item.status)}
+       </div>)}
+      </div>
+     )}
+
+     <p style={{ color:'#858c97', fontSize:'8px', lineHeight:1.5, margin:'11px 2px 0' }}>Source discipline: this dashboard only presents existing Foundation calculations. Sales, returns, released payroll, approved expenses, production, inventory, collections, and cash records remain governed by their current source modules.</p>
+    </>
+   )}
   </div>
- </div>
+ )
 })()}
