@@ -34741,7 +34741,7 @@ setActiveTab('sales')
  </div>
  )}
  {toast && (
- <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>
+ <div style={{ position:'fixed', top:'calc(env(safe-area-inset-top, 0px) + 12px)', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 20px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', lineHeight:1.4, boxShadow:'0 4px 20px rgba(0,0,0,0.3)', width:'max-content', maxWidth:'calc(100vw - 24px)', boxSizing:'border-box', whiteSpace:'normal', overflowWrap:'anywhere', textAlign:'center', pointerEvents:'none' }}>
  {toast.msg}
  </div>
  )}
@@ -46900,7 +46900,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )}
  {toast && (
- <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
+ <div style={{ position:'fixed', top:'calc(env(safe-area-inset-top, 0px) + 12px)', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 20px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', lineHeight:1.4, boxShadow:'0 4px 20px rgba(0,0,0,0.3)', width:'max-content', maxWidth:'calc(100vw - 24px)', boxSizing:'border-box', whiteSpace:'normal', overflowWrap:'anywhere', textAlign:'center', pointerEvents:'none' }}>{toast.msg}</div>
  )}
 
  {renderAppUpdateBanner()}
@@ -47838,7 +47838,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  return (
  <div style={{ minHeight:'100vh', background:'#f6f6f6', fontFamily:'Arial, sans-serif' }}>
- {toast && <div style={{ position:'fixed', top:'16px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 24px', borderRadius:'12px', fontWeight:'bold', boxShadow:'0 6px 18px rgba(0,0,0,0.25)' }}>{toast.msg}</div>}
+ {toast && <div style={{ position:'fixed', top:'calc(env(safe-area-inset-top, 0px) + 12px)', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 20px', borderRadius:'12px', fontWeight:'bold', lineHeight:1.4, boxShadow:'0 6px 18px rgba(0,0,0,0.25)', width:'max-content', maxWidth:'calc(100vw - 24px)', boxSizing:'border-box', whiteSpace:'normal', overflowWrap:'anywhere', textAlign:'center', pointerEvents:'none' }}>{toast.msg}</div>}
  {renderAppUpdateBanner()}
 
  <div style={{ background:'linear-gradient(135deg,#1a1a2e,#ca1b1b)', color:'white', padding:isMobile?'18px 14px':'20px 28px', boxShadow:'0 4px 18px rgba(0,0,0,0.18)' }}>
@@ -48201,7 +48201,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  return (
  <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'linear-gradient(135deg,#ca1b1b,#fdd412)', display:'flex', alignItems:'center', justifyContent:'center', padding:'20px', boxSizing:'border-box', overflow:'auto' }}>
  {toast && (
- <div style={{ position:'fixed', top:'20px', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 28px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', boxShadow:'0 4px 20px rgba(0,0,0,0.3)', whiteSpace:'nowrap', pointerEvents:'none' }}>{toast.msg}</div>
+ <div style={{ position:'fixed', top:'calc(env(safe-area-inset-top, 0px) + 12px)', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 20px', borderRadius:'10px', fontWeight:'bold', fontSize:'14px', lineHeight:1.4, boxShadow:'0 4px 20px rgba(0,0,0,0.3)', width:'max-content', maxWidth:'calc(100vw - 24px)', boxSizing:'border-box', whiteSpace:'normal', overflowWrap:'anywhere', textAlign:'center', pointerEvents:'none' }}>{toast.msg}</div>
  )}
  {renderAppUpdateBanner()}
  <div style={{ background:'white', borderRadius:'24px', boxShadow:'0 20px 60px rgba(0,0,0,0.25)', width:'100%', maxWidth:'440px', padding:'36px 32px', boxSizing:'border-box' }}>
