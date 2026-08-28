@@ -20048,12 +20048,15 @@ if (role === 'owner') return true
 
  // Philippine Regular Holidays (auto-set) 
  async function addPhilippineHolidays(year) {
+ const nationalHeroesDay = new Date(Number(year), 8, 0)
+ while (nationalHeroesDay.getDay() !== 1) nationalHeroesDay.setDate(nationalHeroesDay.getDate() - 1)
+ const nationalHeroesDayDate = formatDateLocal(nationalHeroesDay)
  const regularHolidays = [
  { date:`${year}-01-01`, name:"New Year's Day", type:'regular' },
  { date:`${year}-04-09`, name:"Araw ng Kagitingan (Day of Valor)", type:'regular' },
  { date:`${year}-05-01`, name:"Labor Day", type:'regular' },
  { date:`${year}-06-12`, name:"Independence Day", type:'regular' },
- { date:`${year}-08-25`, name:"National Heroes Day", type:'regular' },
+ { date:nationalHeroesDayDate, name:"National Heroes Day", type:'regular' },
  { date:`${year}-11-30`, name:"Bonifacio Day", type:'regular' },
  { date:`${year}-12-25`, name:"Christmas Day", type:'regular' },
  { date:`${year}-12-30`, name:"Rizal Day", type:'regular' },
