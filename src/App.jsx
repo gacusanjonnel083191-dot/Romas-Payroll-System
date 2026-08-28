@@ -12532,6 +12532,11 @@ return paymentStatus!== 'paid' && !['cancelled','voided'].includes(savedStatus)
  if (dateKey && parseLocalDate(dateKey)) dates.add(dateKey)
  })
 
+ getApprovedInvoiceDeletionRequests().forEach(request => {
+  const dateKey = getInvoiceDeletionDeliveryDate(request)
+  if (dateKey && parseLocalDate(dateKey)) dates.add(dateKey)
+ })
+
  return Array.from(dates).sort((a, b) => b.localeCompare(a))
  }
 
@@ -13872,6 +13877,44 @@ const normalizedBasic = await normalizePaidInvoiceRows((basic.data || []).filter
   return (invoiceDeletionRequests || []).find(request => request.invoice_id === invoiceId && request.status === 'pending') || null
  }
 
+ function getApprovedInvoiceDeletionRequests() {
+  return (invoiceDeletionRequests || []).filter(request => request.status === 'approved' && ['voided','deleted'].includes(String(request.result_action || '').toLowerCase()))
+ }
+
+ function getInvoiceDeletionDeliveryDate(request) {
+  return String(request?.invoice_snapshot?.invoice?.delivery_date || '').slice(0, 10)
+ }
+
+ function invoiceDeletionRequestMatchesSearch(request, searchTerm = invoiceSearchTerm) {
+  const term = normalizeInvoiceSearchValue(searchTerm)
+  if (!term) return true
+  const invoice = request?.invoice_snapshot?.invoice || {}
+  const items = Array.isArray(request?.invoice_snapshot?.items) ? request.invoice_snapshot.items : []
+  return normalizeInvoiceSearchValue([
+   request?.invoice_number,
+   request?.reseller_name,
+   request?.requested_by_name,
+   request?.reviewed_by_name,
+   request?.reason_detail,
+   request?.result_action,
+   request?.result_summary,
+   getInvoiceDeletionDeliveryDate(request),
+   invoice?.customer_name,
+   invoice?.customer_address,
+   invoice?.delivery_address,
+   invoice?.contact_number,
+   ...items.map(item => item?.variant_name)
+  ].filter(Boolean).join(' ')).includes(term)
+ }
+
+ function getVisibleApprovedInvoiceDeletionRequests(dayFilter = invoiceDayFilter) {
+  const searchActive = !!normalizeInvoiceSearchValue(invoiceSearchTerm)
+  return getApprovedInvoiceDeletionRequests()
+  .filter(request => searchActive || dayFilter === 'all' || getInvoiceDeletionDeliveryDate(request) === dayFilter)
+  .filter(request => invoiceDeletionRequestMatchesSearch(request))
+  .sort((a, b) => String(b.reviewed_at || b.updated_at || '').localeCompare(String(a.reviewed_at || a.updated_at || '')))
+ }
+
  async function loadInvoiceDeletionAccess(options = {}) {
   try {
    const { data, error } = await supabase.rpc('get_invoice_deletion_access')
@@ -14005,6 +14048,7 @@ const normalizedBasic = await normalizePaidInvoiceRows((basic.data || []).filter
     loadFinancialData()
    ])
    refreshFoundationAfterDataChange('invoice-deletion-reviewed')
+   if (decision === 'approve') { setInvoiceFilter('voided'); setInvoiceDayFilter('all') }
    showToast(data?.message || `Invoice deletion request ${decision === 'approve' ? 'approved' : 'rejected'}.`)
   } catch (error) {
    showToast('Review failed: ' + (error?.message || error), 'red')
@@ -34654,19 +34698,20 @@ if(key==='sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.
 
 function renderInvoiceDeletionApprovalCenter() {
   if (!invoiceDeletionAccess.can_request && !invoiceDeletionAccess.can_review) return null
+  const pendingRequests = (invoiceDeletionRequests || []).filter(request => request.status === 'pending')
   return (
    <div id="invoice-deletion-approval-center" style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'14px', marginBottom:'14px', scrollMarginTop:'14px' }}>
     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
      <div>
-      <h3 style={{ margin:'0 0 4px', color:'#b45309', fontSize:'14px' }}>Invoice Deletion Approval Center</h3>
-      <p style={{ margin:0, color:'#6b4b16', fontSize:'11px', lineHeight:1.5 }}>{invoiceDeletionAccess.can_review ? 'Review Sheryl Rosal’s requests. Approval permanently deletes only a clean unpaid invoice; every other invoice is voided with its history retained.' : 'Your invoice stays active until the owner approves. Every request requires a reason and remains in the audit trail.'}</p>
+      <h3 style={{ margin:'0 0 4px', color:'#b45309', fontSize:'14px' }}>Pending Invoice Deletion Approvals</h3>
+      <p style={{ margin:0, color:'#6b4b16', fontSize:'11px', lineHeight:1.5 }}>{invoiceDeletionAccess.can_review ? 'Review pending requests from authorized staff. Approved records move to the Voided Invoices tab and remain available as a read-only audit trail.' : 'Your invoice stays active until the owner approves. Approved records move to the Voided Invoices tab.'}</p>
      </div>
      <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} disabled={invoiceDeletionRequestsLoading} onClick={()=>loadInvoiceDeletionRequests()}>{invoiceDeletionRequestsLoading ? 'Refreshing...' : 'Refresh'}</button>
     </div>
     {invoiceDeletionRequestsLoading && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Loading deletion requests...</p>}
-    {!invoiceDeletionRequestsLoading && invoiceDeletionRequests.length === 0 && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>No invoice deletion requests yet.</p>}
-    {!invoiceDeletionRequestsLoading && invoiceDeletionRequests.slice(0,20).map(request => {
-     const pending = request.status === 'pending'
+    {!invoiceDeletionRequestsLoading && pendingRequests.length === 0 && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>No pending invoice deletion requests.</p>}
+    {!invoiceDeletionRequestsLoading && pendingRequests.slice(0,20).map(request => {
+     const pending = true
      const approving = !!invoiceDeletionReviewProcessing[`${request.id}:approve`]
      const rejecting = !!invoiceDeletionReviewProcessing[`${request.id}:reject`]
      const statusColor = pending ? '#b45309' : request.status === 'approved' ? '#2d8a4e' : '#ca1b1b'
@@ -34702,6 +34747,63 @@ function renderInvoiceDeletionApprovalCenter() {
      )
     })}
    </div>
+ )
+}
+
+function renderVoidedInvoicesRegister() {
+ const records = getVisibleApprovedInvoiceDeletionRequests(invoiceDayFilter)
+ const totalApproved = getApprovedInvoiceDeletionRequests().length
+ return (
+  <div style={{ background:'#f8f9fb', border:'1px solid #dfe3e8', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
+   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'10px' }}>
+    <div>
+     <h3 style={{ margin:'0 0 4px', color:'#4b5563', fontSize:'14px' }}>Voided Invoices</h3>
+     <p style={{ margin:0, color:'#6b7280', fontSize:'11px', lineHeight:1.5 }}>Read-only register of owner-approved invoice removals. These records do not appear in active invoices, receivables, or operational sales totals.</p>
+    </div>
+    <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} disabled={invoiceDeletionRequestsLoading} onClick={()=>loadInvoiceDeletionRequests()}>{invoiceDeletionRequestsLoading ? 'Refreshing...' : 'Refresh'}</button>
+   </div>
+   {invoiceDeletionRequestsLoading && <p style={{ color:'#777', fontSize:'11px', margin:0 }}>Loading voided invoice records...</p>}
+   {!invoiceDeletionRequestsLoading && records.length === 0 && (
+    <div style={{ background:'white', border:'1px dashed #cfd5dc', borderRadius:'10px', padding:'24px', textAlign:'center' }}>
+     <p style={{ color:'#555', fontSize:'12px', fontWeight:'800', margin:'0 0 4px' }}>{totalApproved === 0 ? 'No voided invoices yet.' : 'No voided invoices match the selected date or search.'}</p>
+     <p style={{ color:'#888', fontSize:'10px', margin:0 }}>Change the Invoice Day filter or clear the search box.</p>
+    </div>
+   )}
+   {!invoiceDeletionRequestsLoading && records.map(request => {
+    const action = String(request.result_action || 'voided').toLowerCase()
+    const actionLabel = action === 'deleted' ? 'PERMANENTLY DELETED' : 'VOIDED'
+    const actionColor = action === 'deleted' ? '#7f1d1d' : '#4b5563'
+    const invoice = request?.invoice_snapshot?.invoice || {}
+    const items = Array.isArray(request?.invoice_snapshot?.items) ? request.invoice_snapshot.items : []
+    const decision = request?.decision_snapshot || {}
+    return (
+     <div key={request.id} style={{ background:'white', border:`1px solid ${actionColor}44`, borderLeft:`5px solid ${actionColor}`, borderRadius:'10px', padding:'12px', marginTop:'9px' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'flex-start', flexWrap:'wrap' }}>
+       <div>
+        <p style={{ margin:'0 0 3px', fontWeight:'900', color:'#1a1a2e', fontSize:'12px' }}>{request.invoice_number} - {request.reseller_name || 'Customer'}</p>
+        <p style={{ margin:0, color:'#777', fontSize:'10px', lineHeight:1.45 }}>Delivery date: {getInvoiceDeletionDeliveryDate(request) || 'Not recorded'} | Status before removal: {String(request.invoice_status_at_request || invoice.status || 'unknown').toUpperCase()}</p>
+       </div>
+       <div style={{ textAlign:'right' }}>
+        <span style={{ display:'inline-block', background:`${actionColor}12`, color:actionColor, border:`1px solid ${actionColor}55`, borderRadius:'999px', padding:'3px 8px', fontSize:'9px', fontWeight:'900' }}>{actionLabel}</span>
+        <p style={{ margin:'4px 0 0', fontWeight:'900', color:'#333', fontSize:'12px' }}>{php(request.total_amount)}</p>
+       </div>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,minmax(0,1fr))', gap:'7px', marginTop:'9px' }}>
+       <div style={{ background:'#f8f8f8', borderRadius:'8px', padding:'8px' }}><p style={{ margin:'0 0 2px', color:'#888', fontSize:'9px', fontWeight:'800' }}>REQUESTED BY</p><p style={{ margin:0, color:'#444', fontSize:'10px', fontWeight:'700' }}>{request.requested_by_name || 'Not recorded'}<br/>{request.requested_at ? new Date(request.requested_at).toLocaleString('en-PH',{ timeZone:'Asia/Manila' }) : ''}</p></div>
+       <div style={{ background:'#f8f8f8', borderRadius:'8px', padding:'8px' }}><p style={{ margin:'0 0 2px', color:'#888', fontSize:'9px', fontWeight:'800' }}>APPROVED BY</p><p style={{ margin:0, color:'#444', fontSize:'10px', fontWeight:'700' }}>{request.reviewed_by_name || 'Owner'}<br/>{request.reviewed_at ? new Date(request.reviewed_at).toLocaleString('en-PH',{ timeZone:'Asia/Manila' }) : ''}</p></div>
+       <div style={{ background:'#f8f8f8', borderRadius:'8px', padding:'8px' }}><p style={{ margin:'0 0 2px', color:'#888', fontSize:'9px', fontWeight:'800' }}>FINANCIAL LINKS RETAINED</p><p style={{ margin:0, color:'#444', fontSize:'10px', fontWeight:'700' }}>{safeNum(decision.payment_count,0)} payment(s), {safeNum(decision.return_count,0)} return(s), {safeNum(decision.dispute_count,0)} dispute(s), {safeNum(decision.linked_order_count,0)} order(s)</p></div>
+      </div>
+      <div style={{ background:'#fff8f0', borderRadius:'8px', padding:'8px 10px', marginTop:'8px' }}>
+       <p style={{ margin:'0 0 3px', color:'#7c5a16', fontSize:'10px', fontWeight:'900' }}>{getInvoiceDeletionReasonLabel(request.reason_category)}</p>
+       <p style={{ margin:0, color:'#555', fontSize:'11px', lineHeight:1.45, whiteSpace:'pre-wrap' }}>{request.reason_detail}</p>
+      </div>
+      {items.length > 0 && <p style={{ margin:'7px 0 0', color:'#666', fontSize:'10px', lineHeight:1.45 }}><strong>Items retained in audit snapshot:</strong> {items.map(item=>`${item.variant_name || 'Item'} (${safeNum(item.quantity,0)} pcs)`).join(', ')}</p>}
+      {request.result_summary && <p style={{ margin:'7px 0 0', color:actionColor, fontSize:'10px', lineHeight:1.45, fontWeight:'700' }}>{request.result_summary}</p>}
+      {request.review_note && <p style={{ margin:'5px 0 0', color:'#666', fontSize:'10px', lineHeight:1.45 }}><strong>Owner note:</strong> {request.review_note}</p>}
+     </div>
+    )
+   })}
+  </div>
  )
 }
 
@@ -41353,7 +41455,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {activeTab!=='tomorrowForecast' && (
  <div className="romas-module-tabs" style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletSummary','\uD83C\uDFEA Outlet Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
- <button key={v} onClick={()=>{ setSalesView(v); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
+ <button key={v} onClick={()=>{ setSalesView(v); if(v==='receivables' && invoiceFilter==='voided') setInvoiceFilter('active'); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
  )}
@@ -42953,6 +43055,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <div style={{ background:'#fffdf4', border:'1px solid #f5e4a3', borderRadius:'14px', padding:'12px', marginBottom:'12px' }}>
  {(()=>{
  const dayInvoices = getDayFilteredInvoices(invoiceDayFilter)
+ const voidedCount = getApprovedInvoiceDeletionRequests().filter(request => invoiceDayFilter === 'all' || getInvoiceDeletionDeliveryDate(request) === invoiceDayFilter).length
  const statusOptions = [
  ['active', ` Active (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'active')).length})`],
  ['unpaid', ` Unpaid (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'unpaid')).length})`],
@@ -42960,6 +43063,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  ['partial', ` Partial (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'partial')).length})`],
  ['paid', ` Paid (${dayInvoices.filter(i=>invoiceMatchesFilter(i,'paid')).length})`],
  ['all', ` All (${dayInvoices.length})`],
+ ['voided', ` Voided Invoices (${voidedCount})`],
  ]
  return (
  <>
@@ -42995,7 +43099,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 
  {/* Live Invoice Search */}
  <div style={{ background:'white', border:'1px solid #e8e8e8', borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
- <label style={{...lblS, marginBottom:'6px' }}>Search All Invoices</label>
+ <label style={{...lblS, marginBottom:'6px' }}>{invoiceFilter === 'voided' ? 'Search Voided Invoices' : 'Search All Invoices'}</label>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
  <input
  type="text"
@@ -43016,7 +43120,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </div>
  <p style={{ color:'#777', fontSize:'11px', margin:'8px 0 0', lineHeight:1.45 }}>
  {invoiceSearchTerm
-? `Showing ${getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter).length} result(s) from all loaded invoices. Status tab still applies.`
+? `Showing ${invoiceFilter === 'voided' ? getVisibleApprovedInvoiceDeletionRequests(invoiceDayFilter).length : getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter).length} result(s) from all loaded invoices. Status tab still applies.`
 : 'Type any saved delivery date using YYYY-MM-DD, month name, or numeric date format. You can also search reseller, invoice number, area, or address.'}
  </p>
  </div>
@@ -43257,7 +43361,7 @@ onClick={async ()=>{
 )}
 
  {invoicesLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading invoices...</p>}
- {!invoicesLoading && deliveryInvoices.length===0 && (
+ {!invoicesLoading && invoiceFilter !== 'voided' && deliveryInvoices.length===0 && (
  <div style={{ textAlign:'center', padding:'30px', color:'#888' }}>
  <p style={{ fontSize:'28px', margin:'0 0 10px' }}> </p>
  <p style={{ fontWeight:'bold', fontSize:'14px' }}>No invoices yet</p>
@@ -43266,6 +43370,7 @@ onClick={async ()=>{
  )}
  {/* Filtered invoices by selected day and status */}
  {(()=>{
+ if (invoiceFilter === 'voided') return renderVoidedInvoicesRegister()
  const visibleInvoices = getVisibleDeliveryInvoices(invoiceFilter, invoiceDayFilter)
  const invoiceSearchActive =!!normalizeInvoiceSearchValue(invoiceSearchTerm)
  if (!invoicesLoading && deliveryInvoices.length > 0 && visibleInvoices.length === 0) {
@@ -43338,7 +43443,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {(inv.status==='delivered'||inv.status==='partial') && (
  <div style={{ background:'#e8f0fe', borderRadius:'8px', padding:'8px 12px', marginTop:'8px', display:'flex', alignItems:'center', gap:'8px' }}>
  <span style={{ fontSize:'16px' }}> </span>
- <p style={{ color:'#4a90d9', fontSize:'11px', fontWeight:'bold', margin:0 }}>Payment recording is in <button onClick={()=>setSalesView('receivables')} style={{ background:'none', border:'none', color:'#ca1b1b', fontWeight:'bold', cursor:'pointer', fontSize:'11px', textDecoration:'underline', padding:0 }}>Receivables tab </button></p>
+ <p style={{ color:'#4a90d9', fontSize:'11px', fontWeight:'bold', margin:0 }}>Payment recording is in <button onClick={()=>{ setSalesView('receivables'); if(invoiceFilter==='voided') setInvoiceFilter('active') }} style={{ background:'none', border:'none', color:'#ca1b1b', fontWeight:'bold', cursor:'pointer', fontSize:'11px', textDecoration:'underline', padding:0 }}>Receivables tab </button></p>
  </div>
  )}
 
