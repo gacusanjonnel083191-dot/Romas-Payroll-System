@@ -6376,6 +6376,7 @@ export default function App() {
  const [notifications, setNotifications] = useState([])
  const [showNotifications, setShowNotifications] = useState(false)
  const [unreadCount, setUnreadCount] = useState(0)
+ const [notificationActionBusy, setNotificationActionBusy] = useState(false)
  const [adminDate, setAdminDate] = useState(today)
  const [absentEmployeeId, setAbsentEmployeeId] = useState('')
  const [absentDate, setAbsentDate] = useState(today)
@@ -23406,12 +23407,12 @@ requestPushPermission()
  async function loadNotifications() {
  await deleteReadNotifications()
 
- const { data, error } = await supabase
-.from('notifications')
-.select('*')
-.or('is_read.eq.false,is_read.is.null')
-.order('created_at', { ascending:false })
-.limit(50)
+ const { data, error, count } = await supabase
+ .from('notifications')
+ .select('*', { count:'exact' })
+ .or('is_read.eq.false,is_read.is.null')
+ .order('created_at', { ascending:false })
+ .limit(50)
 
  if (error) {
  console.warn('loadNotifications:', error.message)
@@ -23421,33 +23422,81 @@ requestPushPermission()
  }
 
  setNotifications(data || [])
- setUnreadCount((data || []).length)
+ setUnreadCount(Math.max(0, safeNum(count, (data || []).length)))
  }
 
  async function markAllRead() {
- const ids = notifications.map(n => n.id).filter(Boolean)
+ if (notificationActionBusy) return
+ setNotificationActionBusy(true)
+ const markBefore = new Date().toISOString()
+ try {
+  // Mark every unread notification that existed when the admin clicked the
+  // action. The panel displays only the latest 50, so using their IDs left
+  // older unread batches behind and made them reappear after every refresh.
+  const { error:updateError } = await supabase
+   .from('notifications')
+   .update({ is_read:true })
+   .or('is_read.eq.false,is_read.is.null')
+   .lte('created_at', markBefore)
+  if (updateError) throw updateError
 
- if (ids.length > 0) {
- await supabase.from('notifications').update({ is_read:true }).in('id', ids)
- await supabase.from('notifications').delete().in('id', ids)
- } else {
- await deleteReadNotifications()
+  const { count:remainingCount, error:verifyError } = await supabase
+   .from('notifications')
+   .select('id', { count:'exact', head:true })
+   .or('is_read.eq.false,is_read.is.null')
+   .lte('created_at', markBefore)
+  if (verifyError) throw verifyError
+  if (safeNum(remainingCount, 0) > 0) throw new Error(`${remainingCount} notification(s) could not be marked as read.`)
+
+  const { error:deleteError } = await supabase
+   .from('notifications')
+   .delete()
+   .eq('is_read', true)
+   .lte('created_at', markBefore)
+  if (deleteError) console.warn('Read notification cleanup:', deleteError.message)
+
+  await loadNotifications()
+  showToast('All existing notifications were marked as read.')
+ } catch(error) {
+  console.error('markAllRead:', error)
+  await loadNotifications()
+  showToast('Notifications could not be cleared: ' + (error?.message || error), 'red')
+ } finally {
+  setNotificationActionBusy(false)
  }
-
- setNotifications([])
- setUnreadCount(0)
  }
 
 async function markOneRead(id) {
-await supabase.from('notifications').update({ is_read:true }).eq('id', id)
-await supabase.from('notifications').delete().eq('id', id)
-setNotifications(p => p.filter(n => n.id!== id))
-setUnreadCount(p => Math.max(0, p - 1))
+if (!id || notificationActionBusy) return false
+setNotificationActionBusy(true)
+try {
+ const { data:updated, error:updateError } = await supabase
+  .from('notifications')
+  .update({ is_read:true })
+  .eq('id', id)
+  .select('id,is_read')
+  .maybeSingle()
+ if (updateError) throw updateError
+ if (!updated?.is_read) throw new Error('The database did not save the read status.')
+
+ const { error:deleteError } = await supabase.from('notifications').delete().eq('id', id)
+ if (deleteError) console.warn('Read notification cleanup:', deleteError.message)
+ setNotifications(p => p.filter(n => n.id!== id))
+ setUnreadCount(p => Math.max(0, p - 1))
+ return true
+} catch(error) {
+ console.error('markOneRead:', error)
+ await loadNotifications()
+ showToast('Notification could not be marked as read: ' + (error?.message || error), 'red')
+ return false
+} finally {
+ setNotificationActionBusy(false)
+}
 }
 async function handleNotificationClick(notification) {
  if (!notification) return
- await markOneRead(notification.id)
- if (notification.reference_type === 'invoice_deletion_request') openInvoiceDeletionCenter()
+ const saved = await markOneRead(notification.id)
+ if (saved && notification.reference_type === 'invoice_deletion_request') openInvoiceDeletionCenter()
 }
 async function requestPushPermission() {
  if ('Notification' in window && Notification.permission === 'default') {
@@ -34931,7 +34980,7 @@ setActiveTab('sales')
  <div style={{ background:'#16213e', borderBottom:'1px solid rgba(255,255,255,0.1)', maxHeight:'320px', overflowY:'auto' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'8px 14px', borderBottom:'1px solid rgba(255,255,255,0.08)' }}>
  <p style={{ color:'white', fontWeight:'bold', fontSize:'11px', margin:0 }}> Unread Notifications {unreadCount>0&&<span style={{ background:'#FDD412', color:'#1a1a2e', borderRadius:'10px', padding:'1px 6px', fontSize:'9px', marginLeft:'4px' }}>{unreadCount} new</span>}</p>
- {unreadCount > 0 && <button onClick={markAllRead} style={{ background:'none', border:'none', color:'#FDD412', fontSize:'10px', cursor:'pointer', fontWeight:'bold' }}>Mark all read</button>}
+ {unreadCount > 0 && <button disabled={notificationActionBusy} onClick={markAllRead} style={{ background:'none', border:'none', color:'#FDD412', fontSize:'10px', cursor:notificationActionBusy?'wait':'pointer', fontWeight:'bold', opacity:notificationActionBusy?0.65:1 }}>{notificationActionBusy?'Clearing...':'Mark all read'}</button>}
  </div>
  {notifications.length === 0? (
  <p style={{ color:'rgba(255,255,255,0.4)', fontSize:'11px', textAlign:'center', padding:'16px', margin:0 }}>No unread notifications</p>
