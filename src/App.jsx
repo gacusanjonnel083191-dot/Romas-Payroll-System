@@ -1,5 +1,6 @@
 import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
+import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
@@ -14893,6 +14894,129 @@ function buildDeliveryInvoicePrintCSS() {
    setTimeout(() => URL.revokeObjectURL(url), 1500)
  }
 
+ const DELIVERY_INVOICE_PAGE_WIDTH_MM = 105
+ const DELIVERY_INVOICE_PAGE_HEIGHT_MM = 165
+ const DELIVERY_INVOICE_SAFE_MARGIN_MM = 6
+ const DELIVERY_INVOICE_EXPORT_DPI = 300
+
+ function downloadGeneratedInvoiceFile(filename, blob) {
+   const url = URL.createObjectURL(blob)
+   const link = document.createElement('a')
+   link.href = url
+   link.download = sanitizeWordFileName(filename)
+   document.body.appendChild(link)
+   link.click()
+   document.body.removeChild(link)
+   setTimeout(() => URL.revokeObjectURL(url), 2000)
+ }
+
+ function invoiceCanvasToBlob(canvas, type = 'image/png') {
+   return new Promise((resolve, reject) => {
+     canvas.toBlob(blob => {
+       if (blob) resolve(blob)
+       else reject(new Error('The browser could not create the invoice image.'))
+     }, type, 1)
+   })
+ }
+
+ async function renderDeliveryInvoicePageCanvas(invoice) {
+   const contentWidthMm = DELIVERY_INVOICE_PAGE_WIDTH_MM - (DELIVERY_INVOICE_SAFE_MARGIN_MM * 2)
+   const contentHeightMm = DELIVERY_INVOICE_PAGE_HEIGHT_MM - (DELIVERY_INVOICE_SAFE_MARGIN_MM * 2)
+   const iframe = document.createElement('iframe')
+   iframe.setAttribute('aria-hidden', 'true')
+   iframe.style.position = 'fixed'
+   iframe.style.left = '-20000px'
+   iframe.style.top = '0'
+   iframe.style.width = `${contentWidthMm}mm`
+   iframe.style.height = `${contentHeightMm}mm`
+   iframe.style.border = '0'
+   iframe.style.opacity = '0'
+   iframe.style.pointerEvents = 'none'
+   document.body.appendChild(iframe)
+
+   try {
+     const frameDocument = iframe.contentDocument
+     if (!frameDocument) throw new Error('The browser could not prepare the invoice export page.')
+     frameDocument.open()
+     frameDocument.write(`<!doctype html><html><head><meta charset="utf-8">${buildDeliveryInvoicePrintCSS()}<style>
+       html,body{width:${contentWidthMm}mm!important;height:${contentHeightMm}mm!important;overflow:hidden!important;}
+       .invoice-page{width:${contentWidthMm}mm!important;height:${contentHeightMm}mm!important;margin:0!important;}
+     </style></head><body>${buildDeliveryInvoicePrintPage(invoice)}</body></html>`)
+     frameDocument.close()
+
+     if (frameDocument.fonts?.ready) await frameDocument.fonts.ready
+     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+     const invoicePage = frameDocument.querySelector('.invoice-page')
+     if (!invoicePage) throw new Error('The invoice export layout could not be rendered.')
+
+     const contentCanvas = await html2canvas(invoicePage, {
+       backgroundColor:'#ffffff',
+       logging:false,
+       scale:DELIVERY_INVOICE_EXPORT_DPI / 96,
+       useCORS:true,
+       windowWidth:Math.ceil((contentWidthMm / 25.4) * 96),
+       windowHeight:Math.ceil((contentHeightMm / 25.4) * 96)
+     })
+
+     const pageCanvas = document.createElement('canvas')
+     pageCanvas.width = Math.round((DELIVERY_INVOICE_PAGE_WIDTH_MM / 25.4) * DELIVERY_INVOICE_EXPORT_DPI)
+     pageCanvas.height = Math.round((DELIVERY_INVOICE_PAGE_HEIGHT_MM / 25.4) * DELIVERY_INVOICE_EXPORT_DPI)
+     const marginPx = Math.round((DELIVERY_INVOICE_SAFE_MARGIN_MM / 25.4) * DELIVERY_INVOICE_EXPORT_DPI)
+     const targetWidth = pageCanvas.width - (marginPx * 2)
+     const targetHeight = pageCanvas.height - (marginPx * 2)
+     const ctx = pageCanvas.getContext('2d')
+     if (!ctx) throw new Error('The browser could not create the invoice export canvas.')
+     ctx.fillStyle = '#ffffff'
+     ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height)
+     ctx.imageSmoothingEnabled = true
+     ctx.imageSmoothingQuality = 'high'
+     ctx.drawImage(contentCanvas, marginPx, marginPx, targetWidth, targetHeight)
+     return pageCanvas
+   } finally {
+     iframe.remove()
+   }
+ }
+
+ async function downloadDeliveryInvoicePdfFile(filename, invoices) {
+   const invoiceList = Array.isArray(invoices) ? invoices : []
+   if (!invoiceList.length) throw new Error('No invoices are available for PDF export.')
+   const pdf = new jsPDF({
+     orientation:'portrait',
+     unit:'mm',
+     format:[DELIVERY_INVOICE_PAGE_WIDTH_MM, DELIVERY_INVOICE_PAGE_HEIGHT_MM],
+     compress:true
+   })
+   for (let idx = 0; idx < invoiceList.length; idx++) {
+     if (idx > 0) pdf.addPage([DELIVERY_INVOICE_PAGE_WIDTH_MM, DELIVERY_INVOICE_PAGE_HEIGHT_MM], 'portrait')
+     const canvas = await renderDeliveryInvoicePageCanvas(invoiceList[idx])
+     pdf.addImage(canvas, 'PNG', 0, 0, DELIVERY_INVOICE_PAGE_WIDTH_MM, DELIVERY_INVOICE_PAGE_HEIGHT_MM, undefined, 'FAST')
+   }
+   downloadGeneratedInvoiceFile(`${filename}.pdf`, pdf.output('blob'))
+ }
+
+ async function downloadDeliveryInvoiceImageFiles(filename, invoices) {
+   const invoiceList = Array.isArray(invoices) ? invoices : []
+   if (!invoiceList.length) throw new Error('No invoices are available for image export.')
+   const imageFiles = []
+   for (let idx = 0; idx < invoiceList.length; idx++) {
+     const invoice = invoiceList[idx]
+     const canvas = await renderDeliveryInvoicePageCanvas(invoice)
+     const blob = await invoiceCanvasToBlob(canvas)
+     const invoiceNumber = invoice?.invoice_number || invoice?.id || `Invoice_${idx + 1}`
+     imageFiles.push({
+       name:`${String(idx + 1).padStart(2, '0')}_${sanitizeWordFileName(invoiceNumber)}.png`,
+       data:new Uint8Array(await blob.arrayBuffer())
+     })
+   }
+
+   if (imageFiles.length === 1) {
+     downloadGeneratedInvoiceFile(`${filename}.png`, new Blob([imageFiles[0].data], { type:'image/png' }))
+     return
+   }
+   const zipBlob = createStoredZipBlob(imageFiles, 'application/zip')
+   downloadGeneratedInvoiceFile(`${filename}.zip`, zipBlob)
+ }
+
 
  function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
    const data = normalizePayslipForPrint(pay || {})
@@ -15171,10 +15295,25 @@ function buildDeliveryInvoicePrintCSS() {
      if (dayInvoices.length === 0) { showToast(' No saved invoices for this date.','red'); return }
      const invalid = dayInvoices.map(inv => ({ inv, error: validateDeliveryInvoiceForPrint(inv) })).find(row => row.error)
      if (invalid) { showToast(` Print blocked for ${invalid.inv?.invoice_number || 'invoice'}: ${invalid.error}`, 'red'); return }
-     downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
-     showToast(` Downloaded ${dayInvoices.length} fresh invoice(s) from database as Word file.`)
+     showToast(` Preparing ${dayInvoices.length} printer-safe invoice PDF page(s)...`)
+     await downloadDeliveryInvoicePdfFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)
+     showToast(` Downloaded ${dayInvoices.length} verified invoice(s) as one printer-safe PDF.`)
    } catch (err) {
      showToast(' Failed to fetch fresh invoices for printing: ' + (err?.message || err), 'red')
+   }
+ }
+
+ async function downloadAllDailyInvoiceImages(date) {
+   try {
+     const dayInvoices = await getFreshDeliveryInvoicesForPrintByDate(date)
+     if (dayInvoices.length === 0) { showToast(' No saved invoices for this date.','red'); return }
+     const invalid = dayInvoices.map(inv => ({ inv, error:validateDeliveryInvoiceForPrint(inv) })).find(row => row.error)
+     if (invalid) { showToast(` Image export blocked for ${invalid.inv?.invoice_number || 'invoice'}: ${invalid.error}`, 'red'); return }
+     showToast(` Preparing ${dayInvoices.length} high-resolution invoice image(s)...`)
+     await downloadDeliveryInvoiceImageFiles(`Romas_Donuts_Invoice_Images_${date}`, dayInvoices)
+     showToast(` Downloaded ${dayInvoices.length} verified invoice image(s)${dayInvoices.length > 1 ? ' in one ZIP file' : ''}.`)
+   } catch (err) {
+     showToast(' Failed to export invoice images: ' + (err?.message || err), 'red')
    }
  }
  async function recordPayment(invoice) {
@@ -15237,10 +15376,26 @@ function buildDeliveryInvoicePrintCSS() {
    const validationError = validateDeliveryInvoiceForPrint(freshInvoice)
    if (validationError) { showToast(` Print blocked: ${validationError}`, 'red'); return }
    const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
-   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
-   showToast(' Downloaded fresh invoice Word file from database.')
+   showToast(' Preparing printer-safe invoice PDF...')
+   await downloadDeliveryInvoicePdfFile(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
+   showToast(' Downloaded verified invoice as a printer-safe PDF.')
  } catch (err) {
    showToast(' Print blocked: invoice could not be verified from database. Refresh invoices and try again. ' + (err?.message || err), 'red')
+ }
+ }
+
+ async function downloadDeliveryInvoiceImage(invoice) {
+ if (!invoice) { showToast(' No invoice selected.','red'); return }
+ try {
+   const freshInvoice = await getFreshDeliveryInvoiceForAction(invoice, { requireSaved:true })
+   const validationError = validateDeliveryInvoiceForPrint(freshInvoice)
+   if (validationError) { showToast(` Image export blocked: ${validationError}`, 'red'); return }
+   const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
+   showToast(' Preparing high-resolution invoice image...')
+   await downloadDeliveryInvoiceImageFiles(`Romas_Donuts_Invoice_${invoiceNumber}`, [freshInvoice])
+   showToast(' Downloaded verified invoice as a high-resolution PNG image.')
+ } catch (err) {
+   showToast(' Image export blocked: invoice could not be verified from database. Refresh invoices and try again. ' + (err?.message || err), 'red')
  }
  }
  function buildInvoiceAdjustmentRows(invoice) {
@@ -43077,7 +43232,10 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </button>
  )}
  {invoiceDayFilter!== 'all' && deliveryInvoices.filter(i=>getInvoiceDeliveryDate(i)===invoiceDayFilter).length > 0 && (
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDayFilter)}> PRINT ALL ({invoiceDayFilter})</button>
+ <>
+ <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDayFilter)}> PRINT ALL PDF ({invoiceDayFilter})</button>
+ <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>downloadAllDailyInvoiceImages(invoiceDayFilter)}> DOWNLOAD IMAGES</button>
+ </>
  )}
  <button style={{...btnYellow, padding:'9px 16px' }} onClick={async ()=>{
  const willOpen = !showCreateInvoice
@@ -43472,7 +43630,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
+ <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PDF</button>
+ <button style={{...btnBlack, background:'#6c5ce7', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadDeliveryInvoiceImage(inv)}> IMAGE</button>
  <button style={{...btnYellow, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>startInvoiceAdjustment(inv)}> ADJUST</button>
  <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {inv.status==='unpaid' && (
@@ -43869,8 +44028,9 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <span style={{ fontSize:'12px', color:'#555', fontWeight:'bold' }}>Reported Unsold: {getInvoiceViewItemRows(viewingInvoice).reduce((s,i)=>s+i.unsoldQty,0).toLocaleString('en-PH')} pcs</span>
  </div>
  {viewingInvoice.notes && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}> {viewingInvoice.notes}</p>}
- <div style={{ display:'flex', gap:'8px' }}>
- <button style={{...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}> PRINT INVOICE</button>
+ <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ <button style={{...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}> DOWNLOAD PDF</button>
+ <button style={{...btnBlack, background:'#6c5ce7', flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ downloadDeliveryInvoiceImage(viewingInvoice); }}> DOWNLOAD IMAGE</button>
  <button style={{...btnGray, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>setViewingInvoice(null)}>Close</button>
  </div>
  </div>
@@ -43965,7 +44125,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  {/* Action Buttons */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
+ <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PDF</button>
+ <button style={{...btnBlack, background:'#6c5ce7', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadDeliveryInvoiceImage(inv)}> IMAGE</button>
  <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {displayStatus!=='paid' && (
  <button style={{...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>openInvoiceSettlement(inv)}>
