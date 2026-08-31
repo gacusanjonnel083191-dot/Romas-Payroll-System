@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'apply-invoice-word-4x6.cjs'
+      - 'invoice-4x6-trigger.txt'
 
 permissions:
   contents: write
