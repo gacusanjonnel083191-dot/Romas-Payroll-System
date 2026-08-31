@@ -1,0 +1,65 @@
+name: Apply invoice Word 4x6 patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apply-invoice-word-4x6.cjs'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify clean baseline build
+        run: |
+          npm run build
+          git diff --exit-code
+
+      - name: Apply invoice patch
+        run: |
+          node apply-invoice-word-4x6.cjs
+          test "$(git diff --name-only)" = "src/App.jsx"
+          cp src/App.jsx /tmp/App.after-invoice-patch.jsx
+          node apply-invoice-word-4x6.cjs
+          cmp src/App.jsx /tmp/App.after-invoice-patch.jsx
+
+      - name: Build patched application
+        run: |
+          npm run build
+          cmp src/App.jsx /tmp/App.after-invoice-patch.jsx
+          test "$(git diff --name-only)" = "src/App.jsx"
+
+      - name: Verify invoice export contract
+        run: |
+          grep -F 'const DELIVERY_INVOICE_PAGE_WIDTH_MM = 101.6' src/App.jsx
+          grep -F 'const DELIVERY_INVOICE_PAGE_HEIGHT_MM = 152.4' src/App.jsx
+          grep -F 'async function downloadDeliveryInvoiceWordImageFile(filename, invoices)' src/App.jsx
+          grep -F 'Romas_Donuts_Invoices_4x6_${date}' src/App.jsx
+          grep -F '<w:pgSz w:w="5760" w:h="8640"/>' src/App.jsx
+          ! grep -F 'await downloadDeliveryInvoicePdfFile(`Romas_Donuts_Delivery_Invoices_${date}`, dayInvoices)' src/App.jsx
+
+      - name: Commit targeted source change
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/App.jsx
+          git commit -m 'Fix 4x6 Word invoice export layout'
+          git push origin main
