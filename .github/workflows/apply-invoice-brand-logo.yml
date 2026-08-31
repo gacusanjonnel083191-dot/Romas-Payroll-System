@@ -50,7 +50,11 @@ jobs:
           const fs = require('fs')
           const s = fs.readFileSync('src/App.jsx', 'utf8')
           const required = [
-            "wordImageCell('rIdLogo', 450, { width:full, span:5 })], 520)",
+            "wordImageCell('rIdLogo', 420, { width:full, span:5 })], 500)",
+            'async function fetchLogoImageBytes()',
+            "name:'word/media/logo.png'",
+            'Id="rIdLogo"',
+            'Default Extension="png" ContentType="image/png"',
             '<w:pgSz w:w="5760" w:h="8640"/>',
             'const MARGIN = 170',
             'downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoices_4x6_${date}`, dayInvoices, logoBytes)',
@@ -68,11 +72,11 @@ jobs:
           ]
           for (const needle of forbidden) if (s.includes(needle)) throw new Error(`Old behavior remains: ${needle}`)
 
-          // Worst-case native Word row budget: logo + all fixed rows + 17 product rows.
-          const usedTwips = 520 + 320 + (280 * 4) + 250 + (290 * 17) + 40 + 280 + 320 + 280
+          // Worst-case native Word row budget: logo + title + detail rows + 17 products + footer rows.
+          const usedTwips = 500 + 320 + (280 * 3) + 250 + 280 + (280 * 17) + 40 + 280 + 320 + 280
           const usableTwips = 8640 - (170 * 2)
           if (usedTwips > usableTwips) throw new Error(`Invoice rows exceed 4x6 page: ${usedTwips} > ${usableTwips}`)
-          console.log(`Verified 4x6 fit: ${usedTwips}/${usableTwips} twips used.`)
+          console.log(`Verified native 4x6 invoice table fit: ${usedTwips}/${usableTwips} twips.`)
           NODE
           git diff --check
 
