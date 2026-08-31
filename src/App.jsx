@@ -14677,7 +14677,7 @@ function buildDeliveryInvoicePrintCSS() {
    // safe for every invoice this system can produce, not just typical ones.
    // Keep the product table as five separate columns. The Amount column is slightly wider
    // so totals and peso amounts do not clip, while the Unsold column stays separate for returns.
-   const widths = [1746, 1100, 850, 1150, 807]
+   const widths = [1675, 1155, 863, 863, 864]
    const full = widths.reduce((sum, w) => sum + w, 0)
    const valueSpan4 = widths[1] + widths[2] + widths[3] + widths[4]
 
@@ -14688,29 +14688,29 @@ function buildDeliveryInvoicePrintCSS() {
    const PALE_RED = 'FBDCDC'
 
    const rows = []
-   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:20, line:240, shade:BRAND_RED, color:'FFFFFF' })], 360))
+   rows.push(wordRow([wordCell(data.title, { width:full, span:5, align:'center', bold:true, size:20, line:240, shade:BRAND_RED, color:'FFFFFF' })], 320))
    rows.push(wordRow([
      wordCell('Date:', { width:widths[0], align:'center', bold:true, size:20 }),
      wordCell(data.date, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
-   ], 320))
+   ], 280))
    rows.push(wordRow([
      wordCell('Customer:', { width:widths[0], align:'center', bold:true, size:20 }),
      wordCell(data.customerName, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
-   ], 320))
+   ], 280))
    rows.push(wordRow([
      wordCell('Address:', { width:widths[0], align:'center', bold:true, size:20 }),
      wordCell(data.customerAddress, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_RED })
-   ], 320))
+   ], 280))
    rows.push(wordRow([
      wordCell(`NOTES:${data.productionDispatchNote ? ' ' + data.productionDispatchNote : ''}`, { width:full, span:5, align:'left', bold:true, size:20, line:240, shade:PALE_GOLD })
-   ], 290))
+   ], 250))
    rows.push(wordRow([
      wordCell('Product', { width:widths[0], align:'center', bold:true, size:20 }),
      wordCell('Delivered', { width:widths[1], align:'center', bold:true, size:20 }),
      wordCell('Price', { width:widths[2], align:'center', bold:true, size:20 }),
      wordCell('Amount', { width:widths[3], align:'center', bold:true, size:20 }),
      wordCell('Unsold', { width:widths[4], align:'center', bold:true, size:20 })
-   ], 320))
+   ], 280))
 
    data.productRows.forEach(row => {
      rows.push(wordRow([
@@ -14719,7 +14719,7 @@ function buildDeliveryInvoicePrintCSS() {
        wordCell(row.price, { width:widths[2], align:'right', size:20 }),
        wordCell(row.amount, { width:widths[3], align:'right', size:20 }),
        wordCell(row.unsold, { width:widths[4], align:'center', size:20 })
-     ], 340))
+     ], 320))
    })
 
    rows.push(wordRow(widths.map(w => wordCell('', { width:w, align:'center', size:20 })), 40))
@@ -14729,18 +14729,18 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell('', { width:widths[2], align:'center', size:20 }),
      wordCell('', { width:widths[3], align:'center', size:20 }),
      wordCell('', { width:widths[4], align:'center', size:20 })
-   ], 320))
+   ], 280))
    rows.push(wordRow([
      wordCell(`${data.containerLabel} Cover`, { width:widths[0], align:'center', bold:true, italic:true, size:20 }),
      wordCell('', { width:widths[1], align:'center', size:20, shade:BRAND_GOLD }),
      wordCell('TOTAL', { width:widths[2], align:'center', bold:true, size:20, shade:BRAND_GOLD }),
      wordCell(data.total, { width:widths[3], align:'right', bold:true, size:20, shade:BRAND_GOLD }),
      wordCell('', { width:widths[4], align:'center', size:20, shade:BRAND_GOLD })
-   ], 340))
+   ], 320))
    rows.push(wordRow([
      wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
      wordCell(data.preparedBy, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
-   ], 320))
+   ], 280))
 
    return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
  }
@@ -14759,9 +14759,9 @@ function buildDeliveryInvoicePrintCSS() {
    // produce: even the maximum possible order (all 17 donut variants at
    // once) uses a full-height 10.5cm x 16.5cm layout with no second-page spill
    // and minimal blank space at the bottom.
-   const MARGIN = 147
+   const MARGIN = 170
    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5953" w:h="9354"/><w:pgMar w:top="${MARGIN}" w:right="${MARGIN}" w:bottom="${MARGIN}" w:left="${MARGIN}" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyParts.join('')}<w:sectPr><w:pgSz w:w="5760" w:h="8640"/><w:pgMar w:top="${MARGIN}" w:right="${MARGIN}" w:bottom="${MARGIN}" w:left="${MARGIN}" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
  }
 
  function createCrc32Table() {
@@ -15358,9 +15358,9 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
      if (dayInvoices.length === 0) { showToast(' No saved invoices for this date.','red'); return }
      const invalid = dayInvoices.map(inv => ({ inv, error: validateDeliveryInvoiceForPrint(inv) })).find(row => row.error)
      if (invalid) { showToast(` Print blocked for ${invalid.inv?.invoice_number || 'invoice'}: ${invalid.error}`, 'red'); return }
-     showToast(` Preparing ${dayInvoices.length} 4x6 Word invoice page(s)...`)
-     await downloadDeliveryInvoiceWordImageFile(`Romas_Donuts_Invoices_4x6_${date}`, dayInvoices)
-     showToast(` Downloaded ${dayInvoices.length} verified invoice(s) as one 4x6 Word file.`)
+     showToast(` Preparing ${dayInvoices.length} branded 4x6 Word invoice page(s)...`)
+     downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoices_4x6_${date}`, dayInvoices)
+     showToast(` Downloaded ${dayInvoices.length} verified invoice(s) as one branded 4x6 Word file.`)
    } catch (err) {
      showToast(' Failed to fetch fresh invoices for printing: ' + (err?.message || err), 'red')
    }
@@ -15439,9 +15439,9 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
    const validationError = validateDeliveryInvoiceForPrint(freshInvoice)
    if (validationError) { showToast(` Print blocked: ${validationError}`, 'red'); return }
    const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
-   showToast(' Preparing 4x6 Word invoice...')
-   await downloadDeliveryInvoiceWordImageFile(`Romas_Donuts_Invoice_4x6_${invoiceNumber}`, [freshInvoice])
-   showToast(' Downloaded verified invoice as a 4x6 Word file.')
+   showToast(' Preparing branded 4x6 Word invoice...')
+   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_4x6_${invoiceNumber}`, [freshInvoice])
+   showToast(' Downloaded verified invoice as a branded 4x6 Word file.')
  } catch (err) {
    showToast(' Print blocked: invoice could not be verified from database. Refresh invoices and try again. ' + (err?.message || err), 'red')
  }
@@ -43295,10 +43295,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </button>
  )}
  {invoiceDayFilter!== 'all' && deliveryInvoices.filter(i=>getInvoiceDeliveryDate(i)===invoiceDayFilter).length > 0 && (
- <>
- <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDayFilter)}> PRINT ALL PDF ({invoiceDayFilter})</button>
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>downloadAllDailyInvoiceImages(invoiceDayFilter)}> DOWNLOAD IMAGES</button>
- </>
+ <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'9px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printAllDailyInvoices(invoiceDayFilter)}> PRINT ALL ({invoiceDayFilter})</button>
  )}
  <button style={{...btnYellow, padding:'9px 16px' }} onClick={async ()=>{
  const willOpen = !showCreateInvoice
@@ -43693,8 +43690,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'8px' }}>
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PDF</button>
- <button style={{...btnBlack, background:'#6c5ce7', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadDeliveryInvoiceImage(inv)}> IMAGE</button>
+ <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
  <button style={{...btnYellow, background:'#f5a623', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>startInvoiceAdjustment(inv)}> ADJUST</button>
  <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {inv.status==='unpaid' && (
@@ -44092,8 +44088,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  {viewingInvoice.notes && <p style={{ color:'#888', fontSize:'12px', margin:'0 0 12px' }}> {viewingInvoice.notes}</p>}
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}> DOWNLOAD PDF</button>
- <button style={{...btnBlack, background:'#6c5ce7', flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ downloadDeliveryInvoiceImage(viewingInvoice); }}> DOWNLOAD IMAGE</button>
+ <button style={{...btnRed, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>{ printDeliveryInvoice(viewingInvoice); }}> PRINT</button>
  <button style={{...btnGray, flex:1, marginTop:0, fontSize:'12px' }} onClick={()=>setViewingInvoice(null)}>Close</button>
  </div>
  </div>
@@ -44188,8 +44183,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  {/* Action Buttons */}
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
- <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PDF</button>
- <button style={{...btnBlack, background:'#6c5ce7', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadDeliveryInvoiceImage(inv)}> IMAGE</button>
+ <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>printDeliveryInvoice(inv)}> PRINT</button>
  <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'7px 14px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {displayStatus!=='paid' && (
  <button style={{...btnYellow, padding:'7px 16px', fontWeight:'bold', fontSize:'12px' }} onClick={()=>openInvoiceSettlement(inv)}>
