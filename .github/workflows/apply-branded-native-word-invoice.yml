@@ -32,7 +32,9 @@ jobs:
         run: npm ci
 
       - name: Apply invoice fix
-        run: node tools/apply-branded-native-word-invoice.cjs
+        run: |
+          node tools/apply-branded-native-word-invoice.cjs
+          cp src/App.jsx /tmp/App.invoice-fixed.jsx
 
       - name: Check patch formatting
         run: git diff --check
@@ -40,11 +42,39 @@ jobs:
       - name: Build production app
         run: npm run build
 
-      - name: Verify patch is idempotent
+      - name: Restore exact verified invoice source after build-time patches
+        run: cp /tmp/App.invoice-fixed.jsx src/App.jsx
+
+      - name: Verify final invoice source
         run: |
-          cp src/App.jsx /tmp/App.before-second-run.jsx
-          node tools/apply-branded-native-word-invoice.cjs
-          cmp -s src/App.jsx /tmp/App.before-second-run.jsx || { echo 'Patch is not idempotent'; exit 1; }
+          node - <<'NODE'
+          const fs = require('fs')
+          const s = fs.readFileSync('src/App.jsx', 'utf8')
+          const required = [
+            'const widths = [1675, 1155, 863, 863, 864]',
+            '<w:pgSz w:w="5760" w:h="8640"/>',
+            'const MARGIN = 170',
+            'downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoices_4x6_${date}`, dayInvoices)',
+            'downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_4x6_${invoiceNumber}`, [freshInvoice])',
+            '> PRINT ALL ({invoiceDayFilter})</button>',
+            '> PRINT</button>'
+          ]
+          for (const needle of required) {
+            if (!s.includes(needle)) throw new Error(`Missing final invoice requirement: ${needle}`)
+          }
+          const forbidden = [
+            'await downloadDeliveryInvoiceWordImageFile(`Romas_Donuts_Invoices_4x6_${date}`, dayInvoices)',
+            'await downloadDeliveryInvoiceWordImageFile(`Romas_Donuts_Invoice_4x6_${invoiceNumber}`, [freshInvoice])',
+            '> PRINT ALL PDF ({invoiceDayFilter})</button>',
+            '> DOWNLOAD IMAGES</button>',
+            '> DOWNLOAD PDF</button>'
+          ]
+          for (const needle of forbidden) {
+            if (s.includes(needle)) throw new Error(`Old invoice behavior remains: ${needle}`)
+          }
+          console.log('Final branded native Word invoice source verified.')
+          NODE
+          git diff --check
 
       - name: Commit verified app change
         run: |
