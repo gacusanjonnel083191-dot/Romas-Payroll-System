@@ -1,2 +1,0 @@
-Apply the approved Roma's Donuts 4x6 Word invoice export patch.
-Retry after isolating existing build-time source patches.
