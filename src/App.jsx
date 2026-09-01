@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js'
 const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
 const supabaseKey = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlYmJ1bmxuemtsYXZra3VndHpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMTU5MDgsImV4cCI6MjA5NDU5MTkwOH0.mdgYJBoRvHQcf-Tn-1AbTN-rnB5pPxOCSTxGlUrgJpg`
 const supabase = createClient(supabaseUrl, supabaseKey)
+const EMPLOYEE_SELECT_FIELDS = 'id,employee_code,full_name,position,shift_start,shift_end,daily_rate,is_active,created_at,is_admin,has_sss,has_pagibig,has_philhealth,hire_date,sick_leave_balance,vacation_leave_balance,profile_photo_url,pay_type,hourly_rate,grace_period_minutes,date_of_birth,gender,civil_status,home_address,contact_number,emergency_contact_name,emergency_contact_number,employment_type,department,sil_balance,work_location,location_lat,location_lng,location_radius,admin_role,extra_roles,payroll_cost_type,regular_holiday_pay_eligible,special_holiday_pay_eligible,payroll_basis,monthly_salary,semi_monthly_salary,annual_working_days,overtime_pay_eligible,undertime_deduction_applicable,attendance_required_for_pay,absence_deduction_applicable,night_differential_pay_eligible,bank_name,bank_account_number,bank_account_name,strict_camera_timein,sss_no,pagibig_no,philhealth_no,tin_no'
 
 const isMobile = typeof window!== 'undefined' && window.innerWidth <= 768
 const STORE_LAT = 15.4755
@@ -6263,6 +6264,7 @@ export default function App() {
  const [myCashAdvances, setMyCashAdvances] = useState([])
  const [myActiveCAs, setMyActiveCAs] = useState([])
  const [myCAHistory, setMyCAHistory] = useState([])
+ const [employeeCashAdvanceSessionToken, setEmployeeCashAdvanceSessionToken] = useState(null)
  const [showCAHistory, setShowCAHistory] = useState(false)
  const [myLeaveBalance, setMyLeaveBalance] = useState({ sil:0, usedSIL:0, unpaidApproved:0, eligible:false, type:'Unpaid Leave' })
  const [showLeaveRequest, setShowLeaveRequest] = useState(false)
@@ -7949,6 +7951,22 @@ setRequestingInvoiceDeletion(null)
  }
 
  // Auth 
+ async function createEmployeePortalSession(code, employeePin) {
+  const { data, error } = await supabase.rpc('employee_portal_login', {
+   p_employee_code:String(code || '').trim(),
+   p_pin:String(employeePin || '').trim()
+  })
+  if (error) throw error
+  if (!data?.employee || !data?.cash_advance_session_token) throw new Error('Secure employee session was not created.')
+  return data
+ }
+
+ function clearEmployeeCashAdvanceSession() {
+  const sessionToken = employeeCashAdvanceSessionToken
+  setEmployeeCashAdvanceSessionToken(null)
+  if (sessionToken) void supabase.rpc('employee_cash_advance_logout', { p_session_token:sessionToken })
+ }
+
  function saveCompanyDeviceRegistration(registered) {
   if (registered) {
    localStorage.setItem('roma_company_device','true')
@@ -7997,25 +8015,38 @@ setRequestingInvoiceDeletion(null)
 
  async function login() {
  setLoading(true)
- const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
- setLoading(false)
- if (error ||!data) { alert('Invalid Employee ID or PIN'); return }
+ let portalSession
+ try {
+  portalSession = await createEmployeePortalSession(employeeCode, pin)
+ } catch (error) {
+  setLoading(false)
+  alert(error?.message || 'Invalid Employee ID or PIN')
+  return
+ }
+ const data = { ...portalSession.employee, pin:pin.trim() }
 
  const syncResult = await syncEmployeeSIL(data, { silent:true })
  const activeEmployee = syncResult?.employee || data
 
+ setEmployeeCashAdvanceSessionToken(portalSession.cash_advance_session_token)
  setEmployee(activeEmployee)
  if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
+ setLoading(false)
  }
 
  // Smart Login: employee PIN is now for employee self-service only.
  // Admin-level users must use Owner/Admin Login with Supabase Auth.
  async function handleLogin() {
  setLoading(true)
-
- const { data, error } = await supabase.from('employees').select('*').eq('employee_code', employeeCode.trim()).eq('pin', pin.trim()).eq('is_active', true).single()
- setLoading(false)
- if (error ||!data) { alert('Invalid Employee ID or PIN. Please try again.'); return }
+ let portalSession
+ try {
+  portalSession = await createEmployeePortalSession(employeeCode, pin)
+ } catch (error) {
+  setLoading(false)
+  alert(error?.message || 'Invalid Employee ID or PIN. Please try again.')
+  return
+ }
+ const data = { ...portalSession.employee, pin:pin.trim() }
 
  const syncResult = await syncEmployeeSIL(data, { silent:true })
  const activeEmployee = syncResult?.employee || data
@@ -8026,8 +8057,10 @@ setRequestingInvoiceDeletion(null)
  await logAudit('EMPLOYEE ADMIN LOGIN REDIRECTED', activeEmployee.full_name || activeEmployee.employee_code || 'Employee', activeEmployee.full_name || '', 'Employee PIN login cannot open admin panel after the Supabase Auth upgrade.')
  }
 
+ setEmployeeCashAdvanceSessionToken(portalSession.cash_advance_session_token)
  setEmployee(activeEmployee)
  if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
+ setLoading(false)
  }
 
  async function loadAdminAuthProfile(user, options = {}) {
@@ -8050,7 +8083,7 @@ setRequestingInvoiceDeletion(null)
  if (profile.employee_id) {
  const { data: empData, error: empError } = await supabase
 .from('employees')
-.select('*')
+.select(EMPLOYEE_SELECT_FIELDS)
 .eq('id', profile.employee_id)
 .eq('is_active', true)
 .maybeSingle()
@@ -8142,7 +8175,7 @@ setInvoiceDeletionReviewNotes({})
  setChangingAdminPassword(false)
  }
 
- async function openEmployeeAfterAuthentication(empData) {
+ async function openEmployeeAfterAuthentication(empData, options = {}) {
  if (!empData) return
  const syncResult = await syncEmployeeSIL(empData, { silent:true })
  const activeEmployee = syncResult?.employee || empData
@@ -8152,6 +8185,7 @@ setInvoiceDeletionReviewNotes({})
  showToast(' Admin access now uses the Owner/Admin Login tab. Opening employee portal only.', 'red')
  }
 
+ setEmployeeCashAdvanceSessionToken(options.cashAdvanceSessionToken || null)
  setEmployee(activeEmployee)
  if (activeEmployee.profile_photo_url) setProfilePhotoUrl(activeEmployee.profile_photo_url)
  }
@@ -8193,7 +8227,7 @@ setInvoiceDeletionReviewNotes({})
  if (!verifyData?.verified ||!verifyData?.employee) throw new Error(verifyData?.error || 'Fingerprint login failed.')
 
  showToast(' Fingerprint login successful!')
- await openEmployeeAfterAuthentication(verifyData.employee)
+ await openEmployeeAfterAuthentication(verifyData.employee, { cashAdvanceSessionToken:verifyData.cash_advance_session_token })
  } catch (err) {
  console.error('Passkey login error:', err)
  showToast(' ' + (err?.message || 'Fingerprint login failed.'), 'red')
@@ -8285,6 +8319,7 @@ setInvoiceDeletionReviewNotes({})
  }
 
  function logout() {
+ clearEmployeeCashAdvanceSession()
  setEmployee(null); setEmployeeCode(''); setPin(''); setTodayLog(null)
  setTodaySchedule(null); setMyPayslips([]); setCameraMode(null)
  setCapturedPhoto(null); stopCamera(); setPendingAnnouncement(null); setShowAnnouncementPopup(false)
@@ -8623,7 +8658,7 @@ setInvoiceDeletionReviewNotes({})
  setAutoContractGenerating(true)
  try {
  const [{ data:employeeRows, error:empError }, { data:contractRows, error:contractError }] = await Promise.all([
- supabase.from('employees').select('*').eq('is_active', true).order('full_name'),
+ supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true).order('full_name'),
  supabase.from('employee_contracts').select('*')
  ])
  if (empError) throw empError
@@ -18221,27 +18256,35 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  const visiblePayslips = enrichedPayslips.filter(pay => !isDraftPayrollRecord(pay))
  setMyPayslips(visiblePayslips)
  }
- async function loadMyCashAdvances(emp) {
+ async function loadMyCashAdvances(emp, secureSessionToken = employeeCashAdvanceSessionToken) {
  if (!emp?.id) return
+ if (!secureSessionToken) {
+  setMyCashAdvances([])
+  setMyActiveCAs([])
+  setMyCAHistory([])
+  showToast('Secure cash-advance session unavailable. Please log out and log in again.', 'red')
+  return
+ }
 
- // Load requests (pending/approved/disapproved)
- const { data: requests, error:requestError } = await supabase
-.from('cash_advance_requests')
-.select('*')
-.eq('employee_id', emp.id)
-.order('created_at', { ascending:false })
- if (!requestError) setMyCashAdvances(requests || [])
+ // Employee cash-advance reads use a short-lived server-verified session.
+ // The underlying tables are never directly exposed to the employee browser.
+ const [{ data:requests, error:requestError }, { data:ledger, error:ledgerError }] = await Promise.all([
+  supabase.rpc('employee_cash_advance_requests', { p_session_token:secureSessionToken }),
+  supabase.rpc('employee_cash_advance_ledgers', { p_session_token:secureSessionToken })
+ ])
+
+ if (requestError) {
+  console.error('Employee cash-advance request load failed:', requestError)
+  setMyCashAdvances([])
+ } else {
+  setMyCashAdvances(requests || [])
+ }
 
  // Load the full CA ledger and classify locally by remaining balance.
  // This protects the employee view if an old record was accidentally marked Paid
  // while it still has a positive balance.
- const { data: ledger, error:ledgerError } = await supabase
-.from('cash_advances')
-.select('*')
-.eq('employee_id', emp.id)
-.order('advance_date', { ascending:false })
-
  if (ledgerError) {
+ console.error('Employee cash-advance ledger load failed:', ledgerError)
  setMyActiveCAs([])
  setMyCAHistory([])
  return
@@ -19161,39 +19204,18 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  if (!requestCashAmount || !cleanReason) { alert('Please enter amount and reason.'); return }
  const amount = Number(requestCashAmount)
  if (!amount || amount <= 0) { alert('Amount must be greater than 0.'); return }
+ if (!employeeCashAdvanceSessionToken) { alert('Your secure cash-advance session has expired. Please log out and log in again.'); return }
  setSubmittingCashAdvanceRequest(true)
  try {
-  const { data:existingPending, error:existingError } = await supabase
-   .from('cash_advance_requests')
-   .select('id,amount,created_at,status')
-   .eq('employee_id', employee.id)
-   .eq('status', 'pending')
-   .limit(1)
-
-  if (existingError) {
-   alert('Failed checking existing cash advance request: ' + existingError.message)
-   return
-  }
-
-  if ((existingPending || []).length > 0) {
-   alert('You already have a pending cash advance request. Please wait for admin review before submitting another request.')
-   setShowCashAdvanceRequest(false)
-   loadMyCashAdvances(employee)
-   return
-  }
-
-  const { error } = await supabase.from('cash_advance_requests').insert({
-   employee_id:employee.id,
-   employee_code:employee.employee_code,
-   employee_name:employee.full_name,
-   amount,
-   reason:cleanReason,
-   status:'pending'
+  const { error } = await supabase.rpc('employee_submit_cash_advance', {
+   p_session_token:employeeCashAdvanceSessionToken,
+   p_amount:amount,
+   p_reason:cleanReason
   })
 
   if (error) {
    const msg = String(error.message || '').toLowerCase()
-   if (error.code === '23505' || msg.includes('duplicate') || msg.includes('unique')) {
+   if (error.code === '23505' || msg.includes('already have a pending') || msg.includes('duplicate') || msg.includes('unique')) {
     alert('Cash advance request already submitted. Please wait for admin review instead of submitting again.')
     setShowCashAdvanceRequest(false)
     loadMyCashAdvances(employee)
@@ -19268,7 +19290,7 @@ function canAccess(tab) {
 const role = normalizeAdminRole(adminRole)
 if (tab === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) return true
 if (role === 'owner') return true
- if (role === 'manager') return ['dashboard','tomorrowForecast','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
+ if (role === 'manager') return ['dashboard','tomorrowForecast','attendance','employees','schedule','holidays','leaveRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
  if (role === 'admin') return ['tomorrowForecast','posMonitor'].includes(tab)
  if (role === 'pos_admin') return ['posMonitor'].includes(tab)
  if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops','posMonitor'].includes(tab)
@@ -20194,7 +20216,7 @@ if (role === 'owner') return true
 
  const { data:freshEmp } = await supabase
 .from('employees')
-.select('*')
+.select(EMPLOYEE_SELECT_FIELDS)
 .eq('id', emp.id)
 .maybeSingle()
 
@@ -20212,7 +20234,7 @@ if (role === 'owner') return true
  }
 
  async function autoApplySIL() {
- const { data:emps, error } = await supabase.from('employees').select('*').eq('is_active', true)
+ const { data:emps, error } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
 
  if (error) {
  showToast('Failed to check SIL: ' + error.message, 'red')
@@ -23514,7 +23536,7 @@ requestPushPermission()
  const yesterday = getDateOffsetString(-1)
  const now = new Date()
 
- const { data:emps } = await supabase.from('employees').select('*').eq('is_active', true)
+ const { data:emps } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
 
  // Night-shift-safe dashboard: include open logs from yesterday because
  // production shifts can start before midnight and time out after 12AM.
@@ -23586,11 +23608,11 @@ requestPushPermission()
  setShowTimedOutModal(true)
  }
  async function loadEmployees() {
- const { data } = await supabase.from('employees').select('*').eq('is_active', true).order('full_name')
+ const { data } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true).order('full_name')
  setEmployees(data || [])
  }
  async function loadDeactivatedEmployees() {
- const { data } = await supabase.from('employees').select('*').eq('is_active', false).order('full_name')
+ const { data } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', false).order('full_name')
  setDeactivatedEmployees(data || [])
  }
  async function reactivateEmployee(empId, empName) {
@@ -25045,7 +25067,6 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  employee_code:editFields.code,
  full_name:editFields.name,
  position:editFields.position,
- pin:editFields.pin,
  daily_rate:Number(editFields.rate||0),
  has_sss:editFields.hasSss,
  has_pagibig:editFields.hasPagibig,
@@ -25088,6 +25109,18 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (error) {
  showToast(' Failed to save: '+error.message,'red')
  return
+ }
+
+ const replacementPin = String(editFields.pin || '').trim()
+ if (replacementPin) {
+  const { error:pinError } = await supabase.rpc('admin_set_employee_pin', {
+   p_employee_id:editingEmployeeId,
+   p_new_pin:replacementPin
+  })
+  if (pinError) {
+   showToast('Employee details saved, but PIN change failed: ' + pinError.message, 'red')
+   return
+  }
  }
 
  await logAudit('EMPLOYEE UPDATED','Admin',editFields.name,`Employee details updated | Regular holiday pay: ${editFields.regularHolidayEligible !== false ? 'Eligible' : 'Not eligible'} | Special holiday pay: ${editFields.specialHolidayEligible !== false ? 'Eligible' : 'Not eligible'} | Strict camera Time In: ${editFields.strictCameraTimeIn === true ? 'Enabled' : 'Disabled'}`)
@@ -25144,10 +25177,10 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  bank_account_name:f.bank_account_name||'',
  strict_camera_timein:false
  }
- let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select('*').single()
+ let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select(EMPLOYEE_SELECT_FIELDS).single()
  if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error) || isMissingStrictCameraTimeInColumnError(error))) {
  const fallbackEmployeeInsertPayload = stripUnsupportedEmployeeOptionalColumns(employeeInsertPayload, error)
- ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select('*').single())
+ ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select(EMPLOYEE_SELECT_FIELDS).single())
  if (!error) console.warn('Employee added with optional payroll/holiday/camera columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
  }
 
@@ -25200,10 +25233,20 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  }
 
  async function loadCashAdvanceRequests() {
+ if (!canAccess('cashRequests')) {
+  setCashAdvanceRequests([])
+  showToast('Cash advance requests are restricted to Owner and HR.', 'red')
+  return
+ }
  const { data } = await supabase.from('cash_advance_requests').select('*').eq('status', 'pending').order('created_at', { ascending:false })
  setCashAdvanceRequests(data || [])
  }
  async function loadResolvedCARequests() {
+ if (!canAccess('cashRequests')) {
+  setResolvedCARequests([])
+  showToast('Cash advance request history is restricted to Owner and HR.', 'red')
+  return
+ }
  const { data, error } = await supabase.from('cash_advance_requests').select('*').in('status', ['approved','disapproved']).order('created_at', { ascending:false })
  if (error) { showToast('Failed to load resolved CA requests: ' + error.message, 'red'); return }
  const requests = data || []
@@ -25250,6 +25293,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  setResolvedCARequests(requests.map(req => ({ ...req, cashAdvanceLedger: findLedgerForRequest(req) })))
  }
  async function updateCashAdvanceStatus(id, newStatus) {
+ if (!requireOwnerAction(`${String(newStatus || 'review').toUpperCase()} cash advance request`)) return
  const req = cashAdvanceRequests.find(r=>r.id===id); if (!req) return
 
  if (processingItems[`ca_${id}`]) return
@@ -25749,7 +25793,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   const employeeIds = Array.from(new Set((payrollRows || []).map(row => String(row.employee_id || '')).filter(Boolean)))
   let employeeRows = []
   if (employeeIds.length) {
-   const { data, error } = await supabase.from('employees').select('*').in('id', employeeIds)
+   const { data, error } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).in('id', employeeIds)
    if (error) throw error
    employeeRows = data || []
   }
@@ -27023,7 +27067,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (employeeIds.length > 0) {
    const { data:empRows, error:empError } = await supabase
    .from('employees')
-   .select('*')
+   .select(EMPLOYEE_SELECT_FIELDS)
    .in('id', employeeIds)
    if (!empError) {
     ;(empRows || []).forEach(emp => { employeeLookup[String(emp.id)] = emp })
@@ -29089,7 +29133,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const { data: logs } = await supabase.from('attendance_logs').select('*')
 .eq('employee_id', empId).gte('attendance_date', startDate).lte('attendance_date', endDate)
 .order('attendance_date')
- const { data: emp } = await supabase.from('employees').select('*').eq('id', empId).single()
+ const { data: emp } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('id', empId).single()
  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, startDate, endDate)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
  const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp || { id:empId, employee_code:empCode, full_name:empName })
@@ -29475,7 +29519,7 @@ async function computePayroll() {
   return
  }
 
- const { data:empList, error:empError } = await supabase.from('employees').select('*').eq('is_active', true)
+ const { data:empList, error:empError } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
  if (empError) throw empError
  if (!empList || empList.length === 0) {
   setPayrollResults([])
@@ -34949,6 +34993,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
  const handleTabClick = (key) => {
+      if (key !== 'documents' && !canAccess(key)) {
+        showToast('Your current role is not allowed to open this page.', 'red')
+        return
+      }
       if(key==='tomorrowForecast') {
         setActiveTab('tomorrowForecast')
         setSidebarOpen(false)
@@ -35125,14 +35173,20 @@ setActiveTab('sales')
  }
 
  // Open full employee portal from admin panel 
- const openAdminEmployeePortal = () => {
+ const openAdminEmployeePortal = async () => {
  if (!adminEmployee) { showToast('No employee record linked to your admin account. Ask owner to assign your employee profile.', 'red'); return }
+ const { data:secureSessionToken, error:sessionError } = await supabase.rpc('employee_cash_advance_session_for_linked_admin')
+ if (sessionError || !secureSessionToken) {
+  showToast('Secure employee portal session could not be created: ' + (sessionError?.message || 'Please log in again.'), 'red')
+  return
+ }
+ setEmployeeCashAdvanceSessionToken(secureSessionToken)
  setEmployee(adminEmployee)
  setProfilePhotoUrl(adminEmployee.profile_photo_url || null)
  loadTodayLog(adminEmployee)
  loadTodaySchedule(adminEmployee)
  loadMyPayslips(adminEmployee)
- loadMyCashAdvances(adminEmployee)
+ loadMyCashAdvances(adminEmployee, secureSessionToken)
  loadMyAttendanceHistory(adminEmployee)
  loadMyLeaveBalance(adminEmployee)
  loadMedicalCertificateLock(adminEmployee)
@@ -35469,7 +35523,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  [' Pending CA', dashboardData.pendingCA, dashboardData.pendingCA>0?'orange':'gray', 'cashRequests', null],
  [' Pending Attendance Requests', dashboardData.pendingOT, dashboardData.pendingOT>0?'orange':'gray', 'overtime', null],
  [' Disputes', dashboardData.pendingDisputes, dashboardData.pendingDisputes>0?'red':'gray', 'disputes', null],
- ].map(([label,value,color,tab,action])=>(
+ ].filter(([, , , tab]) => tab !== 'cashRequests' || canAccess('cashRequests')).map(([label,value,color,tab,action])=>(
  <div className="romas-dashboard-kpi" key={label} onClick={()=>{ if(action){ action() } else { setActiveTab(tab); if(tab==='leaveRequests')loadLeaveRequests(); if(tab==='cashRequests')loadCashAdvanceRequests(); if(tab==='overtime')loadTimeAdjRequests(); if(tab==='disputes')loadPayslipDisputes(); }}} style={{ '--metric-color':color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#94a3b8', background:'white', border:`2px solid ${color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#ddd'}`, borderRadius:'12px', padding:'16px', textAlign:'center', cursor:'pointer', userSelect:'none', transition:'all 0.15s' }} onMouseEnter={e=>{ e.currentTarget.style.transform='translateY(-2px)'; e.currentTarget.style.boxShadow='0 10px 22px rgba(0,0,0,0.24)' }} onMouseLeave={e=>{ e.currentTarget.style.transform='translateY(0)'; e.currentTarget.style.boxShadow='0 6px 16px rgba(0,0,0,0.18)' }}>
  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 6px' }}>{label}</p>
  <p style={{ fontWeight:'bold', fontSize:'26px', margin:'0 0 4px', color:color==='red'?'#ca1b1b':color==='green'?'#2d8a4e':color==='orange'?'#f5a623':color==='blue'?'#4a90d9':'#555' }}>{value}</p>
@@ -35887,14 +35941,14 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ display:'flex', gap:'6px', flexShrink:0, flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end', paddingTop:'2px' }}>
  <button style={{...btnBlack, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'11px' }} onClick={()=>printEmploymentContract(emp)}>PRINT CONTRACT</button>
  {getRegularizationStatus(emp).needsReview && <button style={{...btnGreen, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>approveRegularization(emp)}>APPROVE REGULAR</button>}
- <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:emp.pin||'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', bank_name:emp.bank_name||'', bank_account_number:emp.bank_account_number||'', bank_account_name:emp.bank_account_name||emp.full_name||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
+ <button style={btnYellow} onClick={()=>{ setEditingEmployeeId(emp.id); setEditFields({ code:emp.employee_code||'', name:emp.full_name||'', position:emp.position||'', pin:'', rate:emp.daily_rate||'', hasSss:emp.has_sss||false, hasPagibig:emp.has_pagibig||false, hasPhilhealth:emp.has_philhealth||false, regularHolidayEligible:emp.regular_holiday_pay_eligible !== false, specialHolidayEligible:emp.special_holiday_pay_eligible !== false, hireDate:emp.hire_date||today, sick:0, vacation:0, sil:safeNum(emp.sil_balance,0), payType:emp.pay_type||'daily', hourlyRate:emp.hourly_rate||0, gracePeriod:emp.grace_period_minutes||10, dob:emp.date_of_birth||'', gender:emp.gender||'', civil_status:emp.civil_status||'', address:emp.home_address||'', contact:emp.contact_number||'', emergency_name:emp.emergency_contact_name||'', emergency_contact:emp.emergency_contact_number||'', employment_type:emp.employment_type||'regular', payroll_cost_type:emp.payroll_cost_type||'auto', department:emp.department||'', sss_no:emp.sss_no||'', pagibig_no:emp.pagibig_no||'', philhealth_no:emp.philhealth_no||'', tin_no:emp.tin_no||'', work_location:emp.work_location||'', location_lat:emp.location_lat||'', location_lng:emp.location_lng||'', location_radius:emp.location_radius||'', bank_name:emp.bank_name||'', bank_account_number:emp.bank_account_number||'', bank_account_name:emp.bank_account_name||emp.full_name||'', admin_role:emp.admin_role||'', extra_roles:emp.extra_roles||'', strictCameraTimeIn:requiresStrictCameraTimeIn(emp) }) }}> EDIT</button>
  <button style={{...btnRed, width:'auto', padding:'6px 10px', marginTop:0, fontSize:'12px' }} onClick={()=>deactivateEmployee(emp.id, emp.full_name)}> </button>
  </div>
  </div>
  {editingEmployeeId===emp.id && (
  <div style={{ marginTop:'12px', background:'#f9f9f9', padding:'16px', borderRadius:'10px', border:'1px solid #ddd' }}>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', marginBottom:'8px' }}> Basic Information</p>
- {[['Employee Code','code'],['Full Name','name'],['Position','position'],['PIN','pin']].map(([pl,f])=>(
+ {[['Employee Code','code'],['Full Name','name'],['Position','position'],['New PIN (leave blank to keep current)','pin']].map(([pl,f])=>(
  <input key={f} placeholder={pl} value={editFields[f]||''} onChange={e=>setEditFields(p=>({...p,[f]:e.target.value}))} style={inputStyle} />
  ))}
  <label style={lblS}>Department:</label>
@@ -37424,7 +37478,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
  </div>
  <button style={{...btnGreen, marginBottom:'8px' }} onClick={async()=>{
- const { data:empList } = await supabase.from('employees').select('*').eq('is_active', true)
+ const { data:empList } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
  const r=[]
  for (const emp of empList||[]) {
  const { data:records } = await supabase.from('payroll_records').select('basic_pay,payroll_start,payroll_end').eq('employee_id', emp.id).gte('payroll_start', payrollStart).lte('payroll_end', payrollEnd).order('payroll_start')
@@ -37972,9 +38026,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
 
  {/* CA REQUESTS */}
- {activeTab==='cashRequests' && (
+ {activeTab==='cashRequests' && canAccess('cashRequests') && (
  <div>
  <h2 style={h2s}>Cash Advance Requests</h2>
+ {!isOwnerRole && <div style={{ background:'#eef6ff', border:'1px solid #b8d8ff', borderRadius:'10px', padding:'11px 12px', marginBottom:'14px', color:'#315b85', fontSize:'12px', fontWeight:'bold' }}>HR view-only access: you may review pending and resolved requests, but only the Owner can approve or disapprove.</div>}
  <button style={{...btnGreen, width:'auto', padding:'10px 18px', marginBottom:'15px' }} onClick={async()=>{ await loadCashAdvanceRequests(); showToast(' Cash advance requests refreshed!') }}>REFRESH</button>
  {cashAdvanceRequests.length===0 && <p style={{ color:'#888' }}>No pending requests.</p>}
  {cashAdvanceRequests.map(req=>{
@@ -38006,14 +38061,16 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   </div>
  ))}
  </div>
- <label style={lblS}>Number of Payroll Deductions:</label>
- <input type="number" min="1" max="24" value={deductionCount} onChange={e=>{ const v=parseInt(e.target.value)||1; setInstallmentCounts(p=>({...p,[req.id]:Math.max(1,v)})) }} style={{...inputStyle, marginBottom:'4px' }} />
- <p style={{ color:'#888', fontSize:'12px', marginBottom:'10px' }}>The employee will be deducted {php(perPayroll)} per payroll cutoff for {deductionCount} payroll cutoff(s), unless owner edits the CA ledger later.</p>
- <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+ {isOwnerRole ? <>
+  <label style={lblS}>Number of Payroll Deductions:</label>
+  <input type="number" min="1" max="24" value={deductionCount} onChange={e=>{ const v=parseInt(e.target.value)||1; setInstallmentCounts(p=>({...p,[req.id]:Math.max(1,v)})) }} style={{...inputStyle, marginBottom:'4px' }} />
+  <p style={{ color:'#888', fontSize:'12px', marginBottom:'10px' }}>The employee will be deducted {php(perPayroll)} per payroll cutoff for {deductionCount} payroll cutoff(s), unless owner edits the CA ledger later.</p>
+ </> : <p style={{ color:'#315b85', fontSize:'12px', marginBottom:'10px' }}>The Owner will set the payroll deduction schedule during approval.</p>}
+ {isOwnerRole && <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:caApprovalProcessing?0.6:1 }} disabled={caApprovalProcessing} onClick={()=>updateCashAdvanceStatus(req.id,'approved')}>{caApprovalProcessing?' Processing...':' APPROVE & CREATE CA LEDGER'}</button>
  <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={(e)=>{ e.stopPropagation(); setShowCADisapproveBox(p=>({...p,[req.id]:!p[req.id]})) }}> DISAPPROVE</button>
- </div>
- {showCADisapproveBox[req.id] && (
+ </div>}
+ {isOwnerRole && showCADisapproveBox[req.id] && (
  <div style={{ marginTop:'10px' }}>
  <textarea placeholder="Reason for disapproval (required)..." value={caDisapproveReason[req.id]||''} onChange={e=>setCaDisapproveReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
  <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0, opacity:processingItems['dis_'+req.id]?0.6:1 }} disabled={processingItems['dis_'+req.id]} onClick={async()=>{ setProcessingItems(p=>({...p,['dis_'+req.id]:true})); await updateCashAdvanceStatus(req.id,'disapproved'); setShowCADisapproveBox(p=>({...p,[req.id]:false})); setProcessingItems(p=>({...p,['dis_'+req.id]:false})) }}>{processingItems['dis_'+req.id]?' Processing...':'CONFIRM DISAPPROVE'}</button>
@@ -38095,7 +38152,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   </div>
  )}
  {ledger?.notes && <p style={{...cps, marginTop:'8px' }}>Ledger Notes: {ledger.notes}</p>}
- {!ledger && <p style={{...cps, marginTop:'8px', color:'#ca1b1b' }}>No linked CA ledger found. This may be an old approved request before the ledger-link update.</p>}
+ {!ledger && isOwnerRole && <p style={{...cps, marginTop:'8px', color:'#ca1b1b' }}>No linked CA ledger found. This may be an old approved request before the ledger-link update.</p>}
+ {!ledger && !isOwnerRole && <p style={{...cps, marginTop:'8px', color:'#315b85' }}>Payroll ledger and deduction details are restricted to Owner and Payroll.</p>}
  </div>
  )}
  {disapproved && req.admin_reason && <p style={{...cps, color:'#ca1b1b', marginTop:'10px' }}>Disapproval Reason: <em>"{req.admin_reason}"</em></p>}
@@ -47292,7 +47350,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </button>
  <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
  {cameFromAdmin && (
- <button style={{ background:'#FDD412', color:'#1a1a2e', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}> Admin</button>
+ <button style={{ background:'#FDD412', color:'#1a1a2e', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>{ clearEmployeeCashAdvanceSession(); setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}> Admin</button>
  )}
  <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.25)', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={cameFromAdmin?()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }:logout}>Logout</button>
  </div>
@@ -48209,7 +48267,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  )}
  {cameFromAdmin? (
  <div style={{ display:'flex', gap:'8px', marginTop:'16px' }}>
- <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px', flex:1, fontWeight:'bold', fontSize:'13px', cursor:'pointer', letterSpacing:'0.5px' }} onClick={()=>{ setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}> Admin Panel</button>
+ <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'10px', padding:'12px', flex:1, fontWeight:'bold', fontSize:'13px', cursor:'pointer', letterSpacing:'0.5px' }} onClick={()=>{ clearEmployeeCashAdvanceSession(); setEmployee(null); setProfilePhotoUrl(null); setCameFromAdmin(false); setAdminMode(true); setSidebarOpen(false); loadEmployees(); loadDashboard(); loadDashboardCharts() }}> Admin Panel</button>
  <button style={{ background:'#f0f0f0', color:'#555', border:'none', borderRadius:'10px', padding:'12px', flex:1, fontWeight:'bold', fontSize:'13px', cursor:'pointer' }} onClick={()=>{ logout(); setCameFromAdmin(false); setAdminEmployee(null); setAdminRole(null) }}>Logout</button>
  </div>
  ): (
