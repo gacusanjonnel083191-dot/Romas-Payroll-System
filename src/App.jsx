@@ -25667,9 +25667,29 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  if (!reason) { showToast(' Please enter admin response before resolving.','red'); return }
  const dispute = payslipDisputes.find(d=>d.id===id)
  const idsToResolve = Array.from(new Set([id, ...(dispute?.duplicate_ids || [])].filter(Boolean)))
- const updateQuery = supabase.from('payslip_disputes').update({ status:'resolved', admin_reason:reason })
- const { error } = idsToResolve.length > 1 ? await updateQuery.in('id', idsToResolve) : await updateQuery.eq('id', id)
+ const updateQuery = supabase.from('payslip_disputes').update({ status:'resolved', admin_reason:reason }).select('id,payroll_record_id')
+ const { data:resolvedRows, error } = idsToResolve.length > 1 ? await updateQuery.in('id', idsToResolve) : await updateQuery.eq('id', id)
  if (error) { showToast(' Failed: '+error.message,'red'); console.error(error); return }
+ const linkedPayrollRecordIds = Array.from(new Set((resolvedRows || []).map(row=>String(row.payroll_record_id || '').trim()).filter(Boolean)))
+ if (linkedPayrollRecordIds.length > 0) {
+  const { data:stillDisputed, error:syncCheckError } = await supabase.from('payroll_records')
+  .select('id')
+  .in('id', linkedPayrollRecordIds)
+  .eq('employee_acknowledgement', 'disputed')
+  .limit(100)
+  if (syncCheckError) {
+   showToast('Dispute was resolved, but payroll status verification failed: '+syncCheckError.message, 'red')
+   await logAudit('DISPUTE RESOLUTION PAYROLL SYNC CHECK FAILED','Admin','',`Dispute ID ${id} | ${syncCheckError.message}`)
+   loadPayslipDisputes(); loadResolvedDisputes()
+   return
+  }
+  if ((stillDisputed || []).length > 0) {
+   showToast('Dispute was resolved, but its payroll record is still marked disputed. Final payroll release remains blocked for safety.', 'red')
+   await logAudit('DISPUTE RESOLUTION PAYROLL SYNC FAILED','Admin','',`Dispute ID ${id} | Payroll rows still disputed: ${stillDisputed.length}`)
+   loadPayslipDisputes(); loadResolvedDisputes()
+   return
+  }
+ }
  await logAudit('DISPUTE RESOLVED','Admin','',`Dispute ID ${id}${idsToResolve.length>1?` plus ${idsToResolve.length-1} duplicate(s)`:''} ${reason}`)
  if (dispute) await createNotification(dispute.employee_id, dispute.employee_name, 'dispute', ' Dispute Resolved', `Your payslip dispute has been resolved. Response: ${reason}`)
  setDisputeAdminReason(p=>({...p,[id]:'' }))
