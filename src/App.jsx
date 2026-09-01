@@ -1944,6 +1944,100 @@ function getEmployeeHourlyRateInfo(emp = {}) {
  }
 }
 
+function buildReleasedTimeAdjustmentCorrectionPreview(req = {}, adminValidation = {}, employee = {}, payrollState = {}) {
+ const requestType = String(req?.request_type || '').trim().toLowerCase()
+ const releasedRecord = (payrollState?.records || []).find(isReleasedPayrollRecord) || null
+ const validation = adminValidation?.validation || {}
+ const sourceAttendanceDate = String(validation?.resolvedAttendanceDate || req?.attendance_date || '').slice(0, 10)
+ const primaryAttendanceLog = validation?.integrity?.completedLogs?.[0] || null
+ const rateInfo = getEmployeeHourlyRateInfo(employee || {})
+ const hourlyRate = Math.max(0, safeNum(rateInfo.hourlyRate, 0))
+ const minuteRate = hourlyRate / 60
+ const actualMinutes = requestType === 'overtime'
+  ? Math.max(0, Math.round(safeNum(adminValidation?.actualMinutes ?? validation?.actualOvertimeMinutes, 0)))
+  : requestType === 'undertime'
+   ? Math.max(0, Math.round(safeNum(adminValidation?.actualMinutes ?? validation?.actualUndertimeMinutes, 0)))
+   : 0
+ const base = {
+  ready:false,
+  requestType,
+  releasedRecord,
+  sourceAttendanceDate,
+  sourcePayrollStart:String(releasedRecord?.payroll_start || '').slice(0, 10),
+  sourcePayrollEnd:String(releasedRecord?.payroll_end || '').slice(0, 10),
+  primaryAttendanceLogId:primaryAttendanceLog?.id || null,
+  lateMinutes:Math.max(0, Math.round(safeNum(validation?.metrics?.lateMinutes, 0))),
+  verifiedMinutes:actualMinutes,
+  hourlyRate,
+  multiplier:1,
+  adjustmentType:'',
+  category:'',
+  amount:0,
+  formula:'No financial adjustment is required.',
+  message:''
+ }
+ if (!releasedRecord) return { ...base, message:'This request is not inside a released payroll period. Use the normal approval workflow.' }
+ if (!validation?.integrity?.isValidCompleted) return { ...base, message:adminValidation?.message || 'A complete attendance record is required.' }
+ if (!rateInfo.isConfigured) return { ...base, message:'The employee hourly rate cannot be verified. Correct the employee payroll rate first.' }
+ if (adminValidation?.alreadyApproved) return { ...base, message:'Another approved request already covers this attendance shift.' }
+ if (requestType !== 'meal_break' && adminValidation?.mealBreakPending) return { ...base, message:'Resolve the pending No Meal Break request first because it changes the final OT/UT minutes.' }
+
+ if (requestType === 'overtime') {
+  if (!employeeRuleEnabled(employee?.overtime_pay_eligible, true)) return { ...base, message:'This employee is not eligible for overtime pay.' }
+  const amount = moneyRound(actualMinutes * minuteRate * 1.25)
+  return {
+   ...base,
+   ready:true,
+   multiplier:1.25,
+   adjustmentType:amount > 0 ? 'addition' : '',
+   category:`Prior-Cutoff OT Correction - ${base.sourcePayrollStart} to ${base.sourcePayrollEnd}`,
+   amount,
+   formula:`${actualMinutes} verified OT minute(s) × ${php(minuteRate)} per minute × 1.25 = ${php(amount)}`,
+   message:amount > 0
+    ? `${php(amount)} will be added to the next uncomputed cutoff as prior-cutoff OT pay.`
+    : 'The request will be closed at 0 verified OT minutes with no payroll adjustment.'
+  }
+ }
+
+ if (requestType === 'undertime') {
+  return {
+   ...base,
+   ready:true,
+   category:`Prior-Cutoff UT Review - ${base.sourcePayrollStart} to ${base.sourcePayrollEnd}`,
+   formula:`${actualMinutes} attendance-detected UT minute(s) were already handled when the released payroll was computed.`,
+   message:'No second deduction will be created. The request will be documented as reviewed and already included in the released payroll.'
+  }
+ }
+
+ if (requestType === 'meal_break') {
+  const breakEvidence = getAttendanceBreakPunchEvidence(validation)
+  if (breakEvidence.hasBreakEvidence) return { ...base, message:getNoMealBreakBreakConflictMessage(breakEvidence, 'Next-cutoff resolution') }
+  if (adminValidation?.approvedTimeConflict) return { ...base, message:'Approved OT/UT already depends on the current break decision. Review that approved record before changing the meal-break treatment.' }
+  const currentMetrics = adminValidation?.currentMetrics || validation?.metrics || {}
+  const revisedMetrics = adminValidation?.revisedMetrics || getAttendanceDayWorkMetrics(validation?.integrity?.completedLogs || [], validation?.breakRowsByLogId || {}, 0)
+  const currentSplit = getPayrollAttendanceDeductionSplit(currentMetrics)
+  const revisedSplit = getPayrollAttendanceDeductionSplit(revisedMetrics)
+  const refundMinutes = employeeRuleEnabled(employee?.undertime_deduction_applicable, true)
+   ? Math.max(0, Math.round(safeNum(currentSplit.undertimeMinutes, 0) - safeNum(revisedSplit.undertimeMinutes, 0)))
+   : 0
+  const amount = moneyRound(refundMinutes * minuteRate)
+  return {
+   ...base,
+   ready:adminValidation?.canApprove !== false,
+   verifiedMinutes:0,
+   adjustmentType:amount > 0 ? 'addition' : '',
+   category:`Prior-Cutoff Break/UT Refund - ${base.sourcePayrollStart} to ${base.sourcePayrollEnd}`,
+   amount,
+   formula:`${refundMinutes} over-deducted UT minute(s) × ${php(minuteRate)} per minute = ${php(amount)}`,
+   message:amount > 0
+    ? `${php(amount)} will be refunded in the next uncomputed cutoff. Any resulting OT still requires its separate OT request to be resolved.`
+    : 'The No Meal Break decision will be documented, but it does not create a payroll amount. Any resulting OT still requires its separate OT request.'
+  }
+ }
+
+ return { ...base, message:'This request type cannot be resolved to the next cutoff.' }
+}
+
 function isMissingEmployeeHolidayEligibilityColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
  return msg.includes('regular_holiday_pay_eligible') || msg.includes('special_holiday_pay_eligible') || ((msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column')) && msg.includes('holiday'))
@@ -6421,6 +6515,8 @@ export default function App() {
  const [timeAdjView, setTimeAdjView] = useState('active')
  const [adjAdminReason, setAdjAdminReason] = useState({})
  const [timeAdjValidationById, setTimeAdjValidationById] = useState({})
+ const [timeAdjPayrollById, setTimeAdjPayrollById] = useState({})
+ const [timeAdjCarryForwardDateById, setTimeAdjCarryForwardDateById] = useState({})
  const [cashAdvanceRequests, setCashAdvanceRequests] = useState([])
  const [installmentCounts, setInstallmentCounts] = useState({})
  const [showResolvedCA, setShowResolvedCA] = useState(false)
@@ -20746,6 +20842,33 @@ if (role === 'owner') return true
   return
  }
 
+ const { data:pendingTimeAdjustments, error:pendingTimeAdjustmentError } = await supabase
+  .from('time_adjustment_requests')
+  .select('id,employee_name,attendance_date,request_type,status')
+  .eq('status', 'pending')
+  .in('request_type', ['overtime','undertime','meal_break'])
+  .gte('attendance_date', start)
+  .lte('attendance_date', end)
+  .limit(1000)
+ if (pendingTimeAdjustmentError) {
+  showToast('Final release blocked: pending OT/UT/No Meal Break requests could not be verified. Refresh and try again.', 'red')
+  await logAudit('PAYROLL RELEASE BLOCKED - ATTENDANCE REQUEST CHECK FAILED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | ${pendingTimeAdjustmentError.message}`)
+  return
+ }
+ if ((pendingTimeAdjustments || []).length > 0) {
+  const counts = (pendingTimeAdjustments || []).reduce((acc, row) => {
+   const type = String(row.request_type || '').toLowerCase()
+   if (type === 'overtime') acc.ot += 1
+   else if (type === 'undertime') acc.ut += 1
+   else if (type === 'meal_break') acc.break += 1
+   return acc
+  }, { ot:0, ut:0, break:0 })
+  const message = `${pendingTimeAdjustments.length} unresolved attendance request(s): OT ${counts.ot}, UT ${counts.ut}, No Meal Break ${counts.break}. Review them before releasing payroll.`
+  showToast(`Final release blocked. ${message}`, 'red')
+  await logAudit('PAYROLL RELEASE BLOCKED - PENDING OT UT BREAK', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | ${message}`)
+  return
+ }
+
  const readiness = await inspectPayrollReadiness(start, end, { silent:true })
  if (!readiness.ready) {
   const message = getPayrollReadinessBlockMessage(readiness)
@@ -24223,6 +24346,9 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  setTimeAdjValidationById(prev => ({ ...prev, [req.id]:{ loading:true, canApprove:false, message:'Calculating actual attendance...' } }))
  const result = await getTimeAdjAdminValidation(req)
  setTimeAdjValidationById(prev => ({ ...prev, [req.id]:result }))
+ const resolvedDate = String(result?.validation?.resolvedAttendanceDate || req?.attendance_date || '').slice(0, 10)
+ const payrollState = await checkTimeAdjPayrollStatus({ ...req, attendance_date:resolvedDate })
+ setTimeAdjPayrollById(prev => ({ ...prev, [req.id]:payrollState }))
  return result
  }
 
@@ -24240,9 +24366,17 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const loadingMap = {}
  adjustmentRows.forEach(req => { loadingMap[req.id] = { loading:true, canApprove:false, message:'Calculating actual attendance...' } })
  setTimeAdjValidationById(loadingMap)
+ setTimeAdjPayrollById({})
  if (adjustmentRows.length > 0) {
   const results = await Promise.all(adjustmentRows.map(async req => [req.id, await getTimeAdjAdminValidation(req)]))
-  setTimeAdjValidationById(Object.fromEntries(results))
+  const validationMap = Object.fromEntries(results)
+  setTimeAdjValidationById(validationMap)
+  const payrollResults = await Promise.all(adjustmentRows.map(async req => {
+   const validationResult = validationMap[req.id]
+   const resolvedDate = String(validationResult?.validation?.resolvedAttendanceDate || req?.attendance_date || '').slice(0, 10)
+   return [req.id, await checkTimeAdjPayrollStatus({ ...req, attendance_date:resolvedDate })]
+  }))
+  setTimeAdjPayrollById(Object.fromEntries(payrollResults))
  }
  }
 
@@ -24251,7 +24385,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (!req?.employee_id || !attendanceDate) return { released:false, computed:false, records:[] }
  const { data, error } = await supabase
 .from('payroll_records')
-.select('id,payroll_start,payroll_end,payroll_approved,approved_at')
+.select('id,employee_id,payroll_start,payroll_end,payroll_approved,approved_at,payroll_status,overtime_minutes,overtime_pay,undertime_minutes,undertime_deduction,late_minutes,late_deduction')
 .eq('employee_id', req.employee_id)
 .lte('payroll_start', attendanceDate)
 .gte('payroll_end', attendanceDate)
@@ -24961,6 +25095,117 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   timeAdjApprovalLockRef.current = false
  }
  }
+
+ async function resolveTimeAdjToNextCutoff(req) {
+ if (!requireOwnerOrPayrollAction('resolve a released-period attendance request to the next cutoff')) return
+ const actionKey = `time_adj_carry_forward_${req?.id}`
+ if (!req?.id || processingItems[actionKey]) return
+ const reviewNote = String(adjAdminReason[req.id] || '').trim()
+ if (!reviewNote) {
+  showToast('Enter the verification, supervisor confirmation, and business reason before resolving this request.', 'red')
+  return
+ }
+
+ setProcessingItems(prev => ({ ...prev, [actionKey]:true }))
+ try {
+  const { data:freshRows, error:freshError } = await supabase
+   .from('time_adjustment_requests')
+   .select('*')
+   .eq('id', req.id)
+   .limit(1)
+  if (freshError) throw freshError
+  const freshRequest = freshRows?.[0]
+  if (!freshRequest || String(freshRequest.status || '').toLowerCase() !== 'pending') {
+   showToast('This request is no longer pending. Refresh the list before continuing.', 'red')
+   await loadTimeAdjRequests(timeAdjView)
+   return
+  }
+
+  const validationResult = await getTimeAdjAdminValidation(freshRequest)
+  const sourceAttendanceDate = String(validationResult?.validation?.resolvedAttendanceDate || freshRequest.attendance_date || '').slice(0, 10)
+  const payrollState = await checkTimeAdjPayrollStatus({ ...freshRequest, attendance_date:sourceAttendanceDate })
+  if (payrollState.error) throw new Error(payrollState.error)
+
+  const employee = employees.find(item => String(item.id) === String(freshRequest.employee_id))
+   || (await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('id', freshRequest.employee_id).maybeSingle()).data
+  if (!employee) {
+   showToast('The employee payroll policy and rate could not be loaded.', 'red')
+   return
+  }
+
+  const preview = buildReleasedTimeAdjustmentCorrectionPreview(freshRequest, validationResult, employee, payrollState)
+  if (!preview.ready) {
+   showToast(preview.message || 'This request is not ready for next-cutoff resolution.', 'red')
+   await refreshTimeAdjAdminValidation(freshRequest)
+   return
+  }
+
+  const defaultTargetDate = addDaysToDateString(preview.sourcePayrollEnd, 1)
+  const targetDate = String(timeAdjCarryForwardDateById[req.id] || defaultTargetDate || today).slice(0, 10)
+  if (!targetDate || !parseLocalDate(targetDate) || targetDate <= preview.sourcePayrollEnd) {
+   showToast(`Choose an adjustment date after the released payroll end date, ${preview.sourcePayrollEnd}.`, 'red')
+   return
+  }
+
+  const amountLine = preview.amount > 0
+   ? `${preview.adjustmentType === 'addition' ? 'Addition / refund' : 'Deduction'}: ${php(preview.amount)}`
+   : 'Financial adjustment: None (documentation and attendance synchronization only)'
+  const confirmed = window.confirm(
+   `RESOLVE TO NEXT CUTOFF\n\n` +
+   `Employee: ${freshRequest.employee_name}\n` +
+   `Request: ${getTimeAdjustmentRequestLabel(preview.requestType)}\n` +
+   `Source attendance: ${preview.sourceAttendanceDate}\n` +
+   `Released payroll preserved: ${preview.sourcePayrollStart} to ${preview.sourcePayrollEnd}\n` +
+   `Target adjustment date: ${targetDate}\n` +
+   `Verified minutes: ${preview.verifiedMinutes}\n` +
+   `${amountLine}\n\n` +
+   `${preview.formula}\n\n` +
+   `The released payslip will not be edited. Continue?`
+  )
+  if (!confirmed) return
+
+  const auditNote = `${reviewNote} | RESOLVED TO NEXT CUTOFF: Source request ${freshRequest.id}; ${preview.requestType.toUpperCase()} on ${preview.sourceAttendanceDate}; released payroll ${preview.sourcePayrollStart} to ${preview.sourcePayrollEnd} preserved; target adjustment date ${targetDate}; verified ${preview.verifiedMinutes} minute(s); ${preview.formula}`
+  const { data:result, error:rpcError } = await supabase.rpc('resolve_time_adjustment_to_next_cutoff', {
+   p_request_id:Number(freshRequest.id),
+   p_source_attendance_date:preview.sourceAttendanceDate,
+   p_target_adjustment_date:targetDate,
+   p_verified_minutes:preview.verifiedMinutes,
+   p_adjustment_type:preview.adjustmentType || '',
+   p_adjustment_category:preview.category || `Prior-Cutoff ${getTimeAdjustmentRequestLabel(preview.requestType)} Review`,
+   p_adjustment_amount:preview.amount,
+   p_hourly_rate:preview.hourlyRate,
+   p_multiplier:preview.multiplier,
+   p_reviewer:currentAdminLabel,
+   p_review_note:auditNote,
+   p_attendance_log_id:preview.primaryAttendanceLogId,
+   p_late_minutes:preview.lateMinutes
+  })
+  if (rpcError) {
+   const cleanMessage = String(rpcError.message || rpcError).replace(/^[A-Z_]+:\s*/, '')
+   showToast('Next-cutoff resolution failed: ' + cleanMessage, 'red')
+   return
+  }
+
+  setAdjAdminReason(prev => ({ ...prev, [req.id]:'' }))
+  setTimeAdjCarryForwardDateById(prev => { const copy={...prev}; delete copy[req.id]; return copy })
+  await loadTimeAdjRequests(timeAdjView)
+  if (preview.amount > 0) {
+   setPayrollAdjustmentFrom(targetDate)
+   setPayrollAdjustmentTo(targetDate)
+   await loadPayrollAdjustmentHistory({ from:targetDate, to:targetDate, silent:true })
+  }
+  showToast(preview.amount > 0
+   ? `${getTimeAdjustmentRequestLabel(preview.requestType)} resolved. ${preview.adjustmentType === 'addition' ? 'Addition' : 'Deduction'} of ${php(preview.amount)} will enter the payroll covering ${targetDate}.`
+   : `${getTimeAdjustmentRequestLabel(preview.requestType)} resolved. No duplicate payroll amount was created.`, 'green')
+  return result
+ } catch(error) {
+  console.error('Resolve time adjustment to next cutoff failed:', error)
+  showToast('Next-cutoff resolution failed: ' + (error?.message || error), 'red')
+ } finally {
+  setProcessingItems(prev => { const copy={...prev}; delete copy[actionKey]; return copy })
+ }
+ }
+
  async function rejectTimeAdj(req) {
  const reason = adjAdminReason[req.id]
  if (!reason?.trim()) { showToast('Please enter a reason for rejection.','red'); return }
@@ -36608,9 +36853,18 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const actualTimeIn = verifiedWindow.actualTimeIn || adminValidation?.validation?.logs?.[0]?.time_in || otMeta.actualTimeIn || ''
  const actualTimeOut = verifiedWindow.actualTimeOut || adminValidation?.validation?.logs?.[0]?.time_out || otMeta.actualTimeOut || ''
  const approvalAlreadyExists = !!adminValidation?.alreadyApproved
- const approvalBlocked = approvalAlreadyExists || adminValidation?.canApprove === false
+ const payrollState = timeAdjPayrollById[req.id] || { released:false, computed:false, records:[] }
+ const releasedPayrollRecord = (payrollState.records || []).find(isReleasedPayrollRecord) || null
+ const releasedPayrollCovered = !!releasedPayrollRecord
+ const requestEmployee = employees.find(item => String(item.id) === String(req.employee_id)) || {}
+ const releasedCorrectionPreview = buildReleasedTimeAdjustmentCorrectionPreview(req, adminValidation || {}, requestEmployee, payrollState)
+ const defaultCarryForwardDate = addDaysToDateString(String(releasedPayrollRecord?.payroll_end || '').slice(0,10), 1)
+ const carryForwardDate = String(timeAdjCarryForwardDateById[req.id] || defaultCarryForwardDate || today).slice(0,10)
+ const approvalBlocked = approvalAlreadyExists || releasedPayrollCovered || adminValidation?.canApprove === false
  const validationBadgeLabel = adminValidation?.loading
   ? 'CALCULATING'
+  : releasedPayrollCovered
+   ? 'RELEASED PAYROLL'
   : approvalAlreadyExists
    ? 'ALREADY APPROVED'
    : isMealBreakRequest
@@ -36634,9 +36888,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    : 'linear-gradient(180deg,#fff8dc 0%,#ffffff 42%)'
  const typeLabel = isMealBreakRequest ? 'NO MEAL BREAK' : isOvertimeRequest ? 'OVERTIME' : 'UNDERTIME'
  const typeBadgeColor = isMealBreakRequest ? 'blue' : isOvertimeRequest ? 'green' : 'orange'
- const canConfirmNoBreakFromExistingRequest = !isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
+ const canConfirmNoBreakFromExistingRequest = !releasedPayrollCovered && !isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && !adminValidation?.mealBreakPending && ['pending','approved'].includes(String(req.status || '').toLowerCase())
  const approvalActionKey = `time_adj_approve_${req.id}`
  const approvalProcessing = !!processingItems[approvalActionKey]
+ const carryForwardActionKey = `time_adj_carry_forward_${req.id}`
+ const carryForwardProcessing = !!processingItems[carryForwardActionKey]
  return (
  <div key={req.id} style={{...cardS, border:`1.5px solid ${cardColor}`, borderTop:`6px solid ${cardColor}`, background:cardBackground, width:'100%', minWidth:0, margin:0, padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 7px 22px rgba(25,25,45,0.09)', boxSizing:'border-box', alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -36697,9 +36953,29 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <>
  <label style={lblS}>Admin Response / Reason {isMealBreakRequest && req.status==='pending' ? '(required for approval)' : req.status==='approved'? '(required for void / undo)' : '(required for rejection or void)'}</label>
  <textarea placeholder={req.status==='approved' ? `Enter reason for undoing this approved ${getTimeAdjustmentRequestLabel(requestType)}...` : isMealBreakRequest ? 'Document the operational reason, supervisor verification, and work performed during the meal period...' : 'Enter your response...'} value={adjAdminReason[req.id]||''} onChange={e=>setAdjAdminReason(p=>({...p,[req.id]:e.target.value}))} style={{...inputStyle, minHeight:'60px', resize:'none' }} />
+ {req.status==='pending' && releasedPayrollCovered && (
+  <div style={{ margin:'8px 0', padding:'12px', border:'2px solid #4a90d9', background:'#f5f9ff', borderRadius:'12px' }}>
+   <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'flex-start', flexWrap:'wrap' }}>
+    <div style={{ flex:1, minWidth:'220px' }}>
+     <strong style={{ color:'#1a1a2e' }}>Resolve to Next Cutoff</strong>
+     <p style={{ margin:'4px 0', color:'#555', fontSize:'11px', lineHeight:1.5 }}>Released payroll <strong>{releasedPayrollRecord.payroll_start} to {releasedPayrollRecord.payroll_end}</strong> stays unchanged. The system will create only the verified difference in a later uncomputed cutoff and permanently link it to request #{req.id}.</p>
+     <p style={{ margin:'4px 0', color:releasedCorrectionPreview.ready?'#2d8a4e':'#ca1b1b', fontSize:'11px', fontWeight:'800', lineHeight:1.5 }}>{releasedCorrectionPreview.message}</p>
+     <p style={{ margin:'4px 0', color:'#555', fontSize:'11px' }}>{releasedCorrectionPreview.formula}</p>
+    </div>
+    <div style={{ minWidth:'170px' }}>
+     <label style={lblS}>Next-Cutoff Adjustment Date</label>
+     <input type="date" value={carryForwardDate} min={defaultCarryForwardDate || undefined} onChange={e=>setTimeAdjCarryForwardDateById(prev=>({...prev,[req.id]:e.target.value}))} style={{...inputStyle, marginBottom:0}} />
+    </div>
+   </div>
+   <div style={{ marginTop:'8px', display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+    <span style={{ color:releasedCorrectionPreview.adjustmentType==='addition'?'#2d8a4e':releasedCorrectionPreview.adjustmentType==='deduction'?'#ca1b1b':'#555', fontWeight:'900', fontSize:'13px' }}>{releasedCorrectionPreview.amount>0 ? `${releasedCorrectionPreview.adjustmentType==='addition'?'ADDITION / REFUND':'DEDUCTION'} ${php(releasedCorrectionPreview.amount)}` : 'NO DUPLICATE PAYROLL AMOUNT'}</span>
+    <button disabled={!releasedCorrectionPreview.ready || carryForwardProcessing} style={{...btnBase, background:'#4a90d9', color:'white', width:'auto', padding:'9px 14px', marginTop:0, opacity:(!releasedCorrectionPreview.ready || carryForwardProcessing)?0.55:1, cursor:(!releasedCorrectionPreview.ready || carryForwardProcessing)?'not-allowed':'pointer'}} onClick={()=>resolveTimeAdjToNextCutoff(req)}>{carryForwardProcessing?'RESOLVING...':'RESOLVE TO NEXT CUTOFF'}</button>
+   </div>
+  </div>
+ )}
  <div style={{ display:'flex', gap:'8px', marginTop:'4px', flexWrap:'wrap' }}>
  {canConfirmNoBreakFromExistingRequest && <button style={{...btnBase, background:'#1a1a2e', color:'white', width:'auto', padding:'8px 14px', marginTop:0, boxShadow:'0 2px 8px rgba(26,26,46,0.24)' }} onClick={async(e)=>{ const btn=e.currentTarget; const original=btn.textContent; btn.disabled=true; btn.textContent=req.status==='approved'?'Reopening and applying no break...':'Applying no break...'; await confirmNoMealBreakFromExistingTimeAdj(req); btn.disabled=false; btn.textContent=original }}>{req.status==='approved'?'REOPEN + APPLY NO BREAK':'CONFIRM NO BREAK & RECALCULATE'}</button>}
- {req.status==='pending' && <button disabled={adminValidation?.loading || approvalBlocked || approvalProcessing} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked || approvalProcessing)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked || approvalProcessing)?'not-allowed':'pointer' }} onClick={async()=>{ if(approvalProcessing) return; setProcessingItems(prev=>({...prev,[approvalActionKey]:true})); try { await approveTimeAdj(req) } catch(error) { console.error('Attendance approval UI recovery:', error); showToast('The attendance request was checked, but the screen could not finish updating. Refresh the list to confirm its saved status.', 'red') } finally { setProcessingItems(prev=>{ const copy={...prev}; delete copy[approvalActionKey]; return copy }) } }}>{approvalProcessing?'Revalidating attendance...':approveButtonLabel}</button>}
+ {req.status==='pending' && !releasedPayrollCovered && <button disabled={adminValidation?.loading || approvalBlocked || approvalProcessing} style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, opacity:(adminValidation?.loading || approvalBlocked || approvalProcessing)?0.55:1, cursor:(adminValidation?.loading || approvalBlocked || approvalProcessing)?'not-allowed':'pointer' }} onClick={async()=>{ if(approvalProcessing) return; setProcessingItems(prev=>({...prev,[approvalActionKey]:true})); try { await approveTimeAdj(req) } catch(error) { console.error('Attendance approval UI recovery:', error); showToast('The attendance request was checked, but the screen could not finish updating. Refresh the list to confirm its saved status.', 'red') } finally { setProcessingItems(prev=>{ const copy={...prev}; delete copy[approvalActionKey]; return copy }) } }}>{approvalProcessing?'Revalidating attendance...':approveButtonLabel}</button>}
  {req.status==='pending' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await rejectTimeAdj(req); btn.disabled=false; btn.textContent='REJECT' }}>REJECT</button>}
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0 }} onClick={async(e)=>{ const btn=e.currentTarget; btn.disabled=true; btn.textContent='Processing...'; await voidTimeAdj(req); btn.disabled=false; btn.textContent=req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL' }}>{req.status==='approved'? `UNDO APPROVED ${typeLabel}`:'VOID / CANCEL'}</button>
  </div>
