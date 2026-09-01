@@ -407,6 +407,21 @@ const ROMAS_ADMIN_VISUAL_CSS = `
   border-radius:9px !important;
   box-shadow:0 6px 18px rgba(0,0,0,.14) !important;
  }
+ .romas-record-grid {
+  display:grid !important;
+  grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+  gap:10px !important;
+  align-items:start;
+  width:100%;
+ }
+ .romas-record-grid > * { min-width:0; margin:0 !important; }
+ .romas-record-card {
+  min-width:0;
+  padding:11px !important;
+  border-radius:11px !important;
+  box-shadow:0 4px 12px rgba(15,23,42,.08) !important;
+ }
+ .romas-record-card--expanded { grid-column:1 / -1; }
  .romas-chart-panel {
   min-width:0;
   overflow:hidden;
@@ -469,6 +484,7 @@ const ROMAS_ADMIN_VISUAL_CSS = `
 @media (max-width:1100px) {
  .romas-dashboard-kpis { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
  .romas-kpi-grid { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
+ .romas-record-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
 }
 @media (max-width:768px) {
  .romas-admin-tabs { grid-template-columns:repeat(2,minmax(0,1fr)); padding:7px 10px !important; }
@@ -491,6 +507,7 @@ const ROMAS_ADMIN_VISUAL_CSS = `
  .romas-kpi-grid > * { min-height:78px; }
  .romas-chart-grid,
  .romas-panel-grid { grid-template-columns:1fr !important; }
+ .romas-record-grid { grid-template-columns:1fr !important; }
 }
 `
 const lblS = { display:'block', marginBottom:'5px', fontWeight:'700', color:'#555', fontSize:'11px', textTransform:'uppercase', letterSpacing:'0.5px' }
@@ -7407,6 +7424,7 @@ export default function App() {
  const [cashAdvanceCoverageRows, setCashAdvanceCoverageRows] = useState([])
  const [cashAdvanceCoverageSummary, setCashAdvanceCoverageSummary] = useState(null)
  const [cashAdvanceCoverageLoading, setCashAdvanceCoverageLoading] = useState(false)
+ const [expandedCashAdvanceCoverageRows, setExpandedCashAdvanceCoverageRows] = useState({})
  const [remittancePeriod, setRemittancePeriod] = useState('')
  const [remittanceData, setRemittanceData] = useState(null)
  const [dtrEmployeeId, setDtrEmployeeId] = useState('')
@@ -37208,11 +37226,14 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  )}
 
- {!cashAdvanceCoverageLoading && cashAdvanceCoverageRows.map(row => {
+ {!cashAdvanceCoverageLoading && cashAdvanceCoverageRows.length>0 && (
+ <div className="romas-record-grid">
+ {cashAdvanceCoverageRows.map(row => {
  const settled = safeNum(row.totalBalance,0) <= 0 && safeNum(row.totalPaid,0) > 0
  const hasPayrollDeduction = safeNum(row.payrollDeduction,0) > 0
+ const isExpanded =!!expandedCashAdvanceCoverageRows[row.employeeId]
  return (
- <div key={row.employeeId} style={{...cardS, border:hasPayrollDeduction?'2px solid #ca1b1b':'1px solid #eee', marginBottom:'12px' }}>
+ <div key={row.employeeId} className={`romas-record-card${isExpanded?' romas-record-card--expanded':''}`} style={{...cardS, border:hasPayrollDeduction?'2px solid #ca1b1b':'1px solid #eee' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap' }}>
  <div>
  <p style={{ margin:'0 0 4px', color:'#ca1b1b', fontWeight:'bold', fontSize:'15px' }}>{row.employeeName}</p>
@@ -37232,7 +37253,13 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  </div>
 
- {row.caItems.length>0? (
+ <button
+ type="button"
+ style={{...btnBlack, width:'100%', padding:'7px 12px', marginTop:'9px', fontSize:'11px' }}
+ onClick={()=>setExpandedCashAdvanceCoverageRows(prev=>({...prev,[row.employeeId]:!prev[row.employeeId]}))}
+ >{isExpanded?'HIDE CA DETAILS':`VIEW ${row.caItems.length} CA DETAIL${row.caItems.length===1?'':'S'}`}</button>
+
+ {isExpanded && (row.caItems.length>0? (
  <div style={{ marginTop:'12px', overflowX:'auto' }}>
  <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'12px' }}>
  <thead>
@@ -37291,10 +37318,12 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  ): (
  <p style={{...cps, marginTop:'10px', color:'#ca1b1b' }}>Payroll has a cash advance deduction for this employee, but no matching cash advance account was found in the cash advance table.</p>
- )}
+ ))}
  </div>
  )
  })}
+ </div>
+ )}
  </div>
  )}
 
@@ -37317,10 +37346,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  {historyLoading && <p style={{ color:'#888' }}> Loading payroll history...</p>}
  {!historyLoading && payrollHistory.length===0 && <p style={{ color:'#888' }}>No payroll records found.</p>}
+ <div className="romas-record-grid">
  {payrollHistory
-.filter(p=>p.payroll_start.startsWith(historyYear))
-.map(period=>(
- <div key={period.payroll_start+period.payroll_end} style={{...cardS, border:'2px solid #ca1b1b', background:'white', cursor:'pointer' }} onClick={()=>loadHistoryRecords(period.payroll_start, period.payroll_end)}>
+ .filter(p=>p.payroll_start.startsWith(historyYear))
+ .map(period=>(
+ <div key={period.payroll_start+period.payroll_end} className="romas-record-card" style={{...cardS, border:'2px solid #ca1b1b', background:'white', cursor:'pointer' }} onClick={()=>loadHistoryRecords(period.payroll_start, period.payroll_end)}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px', margin:'0 0 4px' }}>
@@ -37338,6 +37368,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  ))
  }
+ </div>
  </div>
  )}
 
@@ -43501,11 +43532,12 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  {showOrdersPanel && pendingResellerOrders.length > 0 && (
  <div style={{ background:'#fff8f0', border:'2px solid #f5a623', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
  <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}> Pending Reseller Orders Requires Approval</h4>
+ <div className="romas-record-grid">
  {pendingResellerOrders.map(order=>{
  const credit = getResellerCreditBlockInfo(order.reseller_id)
  const orderCutoff = getOrderCutoffStatus(order.delivery_date)
  return (
- <div key={order.id} style={{ background:credit.blocked?'#fff5f5':'white', borderRadius:'10px', padding:'12px', marginBottom:'10px', border:`2px solid ${credit.blocked?'#ca1b1b':'#ffe0b2'}`, animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}>
+ <div key={order.id} className="romas-record-card" style={{ background:credit.blocked?'#fff5f5':'white', borderRadius:'10px', padding:'12px', border:`2px solid ${credit.blocked?'#ca1b1b':'#ffe0b2'}`, animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{order.reseller_name}</p>
@@ -43535,6 +43567,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </div>
  )
  })}
+ </div>
  </div>
  )}
 
@@ -43747,7 +43780,7 @@ onClick={async ()=>{
  </div>
  )
  }
- return visibleInvoices.map(inv=>{
+ return <div className="romas-record-grid">{visibleInvoices.map(inv=>{
 const balance = getInvoiceBalance(inv)
 const displayStatus = getInvoicePaymentStatus(inv)
 const deletionRequest = getPendingInvoiceDeletionRequest(inv.id)
@@ -43755,7 +43788,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  const isOverdue = displayStatus!=='paid' && balance > 0 && inv.due_date < today
  const statusColor = credit.blocked?'#ca1b1b':displayStatus==='paid'?'#2d8a4e':isOverdue?'#ca1b1b':'#f57c00'
  return (
- <div key={inv.id} style={{...cardS, border:`2px solid ${credit.blocked?'#ca1b1b':statusColor+'44'}`, marginBottom:'12px', animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}>
+ <div key={inv.id} className={`romas-record-card${showDriverReturnForm?.id===inv.id?' romas-record-card--expanded':''}`} style={{...cardS, border:`2px solid ${credit.blocked?'#ca1b1b':statusColor+'44'}`, animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', fontSize:'14px', color:'#333', margin:'0 0 2px' }}>{inv.invoice_number}</p>
@@ -43845,7 +43878,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {/* Payment form moved to Receivables tab */}
  </div>
  )
- })
+ })}</div>
  })()}
  </>
  )}
@@ -44243,13 +44276,13 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {invoiceFilter==='delivered' && <p style={{ fontSize:'12px' }}>Mark invoices as delivered in the Deliveries tab first.</p>}
  </div>
  )
- return filtered.map(inv=>{
+ return <div className="romas-record-grid">{filtered.map(inv=>{
  const balance = getInvoiceBalance(inv)
  const displayStatus = getNormalizedInvoiceStatus(inv)
  const isOverdue = displayStatus!=='paid' && balance>0 && inv.due_date < today
  const daysOverdue = isOverdue? Math.floor((new Date(today).getTime()-new Date(inv.due_date).getTime())/(1000*60*60*24)): 0
  return (
- <div key={inv.id} style={{ background:'white', borderRadius:'14px', padding:'14px', marginBottom:'10px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`2px solid ${isOverdue?'#ca1b1b33':displayStatus==='paid'?'#2d8a4e33':displayStatus==='delivered'?'#4a90d933':'#f5a62333'}` }}>
+ <div key={inv.id} className={`romas-record-card${showPaymentFormMap[inv.id]?' romas-record-card--expanded':''}`} style={{ background:'white', borderRadius:'14px', padding:'14px', boxShadow:'0 2px 8px rgba(0,0,0,0.07)', border:`2px solid ${isOverdue?'#ca1b1b33':displayStatus==='paid'?'#2d8a4e33':displayStatus==='delivered'?'#4a90d933':'#f5a62333'}` }}>
  {/* Invoice Header */}
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'10px' }}>
  <div>
@@ -44393,7 +44426,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  })()}
  </div>
  )
- })
+ })}</div>
  })()}
  </div>
  )}
@@ -44480,10 +44513,11 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  )}
  {dailySalesLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading...</p>}
  {!dailySalesLoading && dailySales.length===0 && <p style={{ color:'#aaa', textAlign:'center', padding:'30px', fontSize:'13px' }}>No sales encoded yet. Start encoding above.</p>}
+ <div className="romas-record-grid">
  {dailySales.map(sale=>{
  const posShiftMeta = parsePosShiftDailySalesMetadata(sale.notes || '')
  return (
- <div key={sale.id} style={{...cardS, border:posShiftMeta.isPosShiftClosing ? '2px solid #2d8a4e' : '2px solid #4a90d933', marginBottom:'10px', background:posShiftMeta.isPosShiftClosing ? '#f3fff7' : 'white' }}>
+ <div key={sale.id} className="romas-record-card" style={{...cardS, border:posShiftMeta.isPosShiftClosing ? '2px solid #2d8a4e' : '2px solid #4a90d933', background:posShiftMeta.isPosShiftClosing ? '#f3fff7' : 'white' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#333', fontSize:'14px', margin:'0 0 2px' }}> {sale.sale_date}</p>
@@ -44503,6 +44537,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {sale.notes && <p style={{...cps, color:'#888', marginTop:'6px' }}> {sale.notes}</p>}
  </div>
  )})}
+ </div>
  </div>
  )}
 
@@ -44920,8 +44955,9 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {adminRole==='owner' && dailyExpenses.filter(e=>e.status==='pending').length > 0 && (
  <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
  <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:'0 0 10px' }}> {dailyExpenses.filter(e=>e.status==='pending').length} Expense(s) Awaiting Your Approval</p>
+ <div className="romas-record-grid">
  {dailyExpenses.filter(e=>e.status==='pending').map(exp=>(
- <div key={exp.id} style={{ background:'white', borderRadius:'10px', padding:'12px', marginBottom:'8px', border:'1px solid #f5c518' }}>
+ <div key={exp.id} className={`romas-record-card${rejectingExpenseId===exp.id?' romas-record-card--expanded':''}`} style={{ background:'white', borderRadius:'10px', padding:'12px', border:'1px solid #f5c518' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{exp.category}</p>
@@ -44946,6 +44982,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  ))}
  </div>
+ </div>
  )}
  {(()=>{
  const monthTotal = dailyExpenses.filter(e=>e.expense_date?.startsWith(today.slice(0,7))).reduce((s,e)=>s+Number(e.amount||0),0)
@@ -44956,8 +44993,9 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )
  })()}
+ <div className="romas-record-grid">
  {dailyExpenses.filter(e=>e.status!=='pending'||adminRole==='owner').map(exp=>(
- <div key={exp.id} style={{...cardS, border:`1px solid ${exp.status==='rejected'?'#ffcdd2':exp.status==='pending'?'#f5c518':'#eee'}`, marginBottom:'8px', display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', background:exp.status==='rejected'?'#fff5f5':exp.status==='pending'?'#fffbf0':'white' }}>
+ <div key={exp.id} className="romas-record-card" style={{...cardS, border:`1px solid ${exp.status==='rejected'?'#ffcdd2':exp.status==='pending'?'#f5c518':'#eee'}`, display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', background:exp.status==='rejected'?'#fff5f5':exp.status==='pending'?'#fffbf0':'white' }}>
  <div style={{ flex:1 }}>
  <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
  <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{exp.category}</p>
@@ -44972,6 +45010,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  </div>
  ))}
+ </div>
  </div>
  )}
 
@@ -45005,10 +45044,10 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:'6px', fontSize:'12px' }} onClick={saveResellerAccount}> {editingResellerAccountId?'UPDATE MAIN ACCOUNT':'SAVE MAIN ACCOUNT'}</button>
  </div>
  )}
- {resellerAccountsLoading? <p style={{ color:'#888', fontSize:'12px' }}>Loading accounts...</p>: resellerAccounts.length===0? <p style={{ color:'#888', fontSize:'12px', margin:0 }}>No main reseller accounts yet. You can add one above, then link existing branch records.</p>: resellerAccounts.map(a=>{
+ {resellerAccountsLoading? <p style={{ color:'#888', fontSize:'12px' }}>Loading accounts...</p>: resellerAccounts.length===0? <p style={{ color:'#888', fontSize:'12px', margin:0 }}>No main reseller accounts yet. You can add one above, then link existing branch records.</p>: <div className="romas-record-grid">{resellerAccounts.map(a=>{
  const branches = getBranchesForAccount(a.id)
  return (
- <div key={a.id} style={{ background:'white', border:'1px solid #e0ecff', borderRadius:'10px', padding:'10px', marginBottom:'8px' }}>
+ <div key={a.id} className="romas-record-card" style={{ background:'white', border:'1px solid #e0ecff', borderRadius:'10px', padding:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
  <div>
  <strong style={{ color:'#1a1a2e', fontSize:'13px' }}>{a.account_name || a.owner_name}</strong>
@@ -45021,7 +45060,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  </div>
  )
- })}
+ })}</div>}
  </div>
  {showResellerForm && (
  <div id="reseller-form-panel" style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
@@ -45052,12 +45091,13 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )}
  {resellersLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading...</p>}
+ <div className="romas-record-grid">
  {resellers.map(r=>{
  const rInvoices = deliveryInvoices.filter(i=>i.reseller_id===r.id)
  const rAR = rInvoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
  const isEditingOrder = editingDefaultOrder===r.id
  return (
- <div key={r.id} style={{...cardS, border:`2px solid ${rAR>0?'#f5c51844':'#ca1b1b22'}`, marginBottom:'12px' }}>
+ <div key={r.id} className={`romas-record-card${isEditingOrder?' romas-record-card--expanded':''}`} style={{...cardS, border:`2px solid ${rAR>0?'#f5c51844':'#ca1b1b22'}` }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', fontSize:'15px', color:'#ca1b1b', margin:'0 0 2px' }}>{r.name}</p>
@@ -45144,6 +45184,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )
  }) }
+ </div>
  {resellers.length===0 &&!resellersLoading && (
  <div style={{ textAlign:'center', padding:'30px', color:'#888' }}>
  <p style={{ fontSize:'28px', margin:'0 0 10px' }}> </p>
@@ -46615,8 +46656,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div>
  <h3 style={h2s}> Reseller Disputes</h3>
  <button style={{...btnRed, width:'auto', padding:'8px 16px', marginBottom:'14px', marginTop:0 }} onClick={()=>{ supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data})=>setResellerDisputes(data||[])); checkSuspiciousPatterns() }}>REFRESH</button>
- {resellerDisputes.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No disputes filed yet.</p>:resellerDisputes.map(d=>(
- <div key={d.id} style={{...cardS, border:`2px solid ${d.status==='pending'?'#f5a623':d.status==='resolved'?'#2d8a4e':'#eee'}` }}>
+ {resellerDisputes.length===0?<p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No disputes filed yet.</p>:<div className="romas-record-grid">{resellerDisputes.map(d=>(
+ <div key={d.id} className={`romas-record-card${d.status==='pending'?' romas-record-card--expanded':''}`} style={{...cardS, border:`2px solid ${d.status==='pending'?'#f5a623':d.status==='resolved'?'#2d8a4e':'#eee'}` }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{d.reseller_name}</p>
@@ -46657,7 +46698,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  )}
  {d.admin_response && <p style={{ color:'#2d8a4e', fontSize:'11px', margin:'6px 0 0', padding:'6px 10px', background:'#e8f5e9', borderRadius:'6px' }}>Admin response: {d.admin_response}</p>}
  </div>
- ))}
+ ))}</div>}
  </div>
  )}
 
@@ -47292,8 +47333,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <p style={{ fontWeight:'bold', fontSize:'14px', color:'#555' }}>No franchise locations yet</p>
  <p style={{ fontSize:'12px' }}>Add your first franchise location above.</p>
  </div>
- ): franchises.map(f=>(
- <div key={f.id} style={{...cardS, border:`2px solid ${f.status==='active'?'#2d8a4e22':'#f5a62322'}` }}>
+ ): <div className="romas-record-grid">{franchises.map(f=>(
+ <div key={f.id} className="romas-record-card" style={{...cardS, border:`2px solid ${f.status==='active'?'#2d8a4e22':'#f5a62322'}` }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'14px', margin:'0 0 2px' }}>{f.branch_name}</p>
@@ -47309,7 +47350,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <span style={{ background:f.status==='active'?'#e8f5e9':'#fff3cd', color:f.status==='active'?'#2d8a4e':'#856404', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>{f.status?.toUpperCase()}</span>
  </div>
  </div>
- ))
+ ))}</div>
  }
  </div>
  )}
