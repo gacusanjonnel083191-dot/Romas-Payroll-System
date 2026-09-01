@@ -2579,6 +2579,30 @@ function addDaysToDateString(dateStr, days = 0) {
  return formatDateLocal(date)
 }
 
+function normalizeComputedPayrollPeriods(rows = []) {
+ const periods = {}
+ ;(rows || []).forEach(row => {
+  const start = String(row?.payroll_start || '').slice(0, 10)
+  const end = String(row?.payroll_end || '').slice(0, 10)
+  if (!parseLocalDate(start) || !parseLocalDate(end) || end < start) return
+  periods[`${start}|${end}`] = { payroll_start:start, payroll_end:end }
+ })
+ return Object.values(periods).sort((a, b) => a.payroll_start.localeCompare(b.payroll_start) || a.payroll_end.localeCompare(b.payroll_end))
+}
+
+function getFirstUncomputedPayrollDate(candidateDate = '', computedPeriods = []) {
+ let candidate = String(candidateDate || '').slice(0, 10)
+ if (!parseLocalDate(candidate)) return ''
+ const periods = normalizeComputedPayrollPeriods(computedPeriods)
+ for (let pass = 0; pass <= periods.length; pass += 1) {
+  const coveringPeriod = periods.find(period => period.payroll_start <= candidate && period.payroll_end >= candidate)
+  if (!coveringPeriod) return candidate
+  candidate = addDaysToDateString(coveringPeriod.payroll_end, 1)
+  if (!candidate) return ''
+ }
+ return candidate
+}
+
 function isAbsentAttendanceLog(log = {}) {
  return String(log?.status || '').trim().toLowerCase() === 'absent'
 }
@@ -6517,6 +6541,7 @@ export default function App() {
  const [timeAdjValidationById, setTimeAdjValidationById] = useState({})
  const [timeAdjPayrollById, setTimeAdjPayrollById] = useState({})
  const [timeAdjCarryForwardDateById, setTimeAdjCarryForwardDateById] = useState({})
+ const [timeAdjComputedPayrollPeriods, setTimeAdjComputedPayrollPeriods] = useState([])
  const [cashAdvanceRequests, setCashAdvanceRequests] = useState([])
  const [installmentCounts, setInstallmentCounts] = useState({})
  const [showResolvedCA, setShowResolvedCA] = useState(false)
@@ -24352,6 +24377,25 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  return result
  }
 
+ async function fetchComputedPayrollPeriods(fromDate = '') {
+ const normalizedFromDate = String(fromDate || '').slice(0, 10)
+ const pageSize = 1000
+ const rows = []
+ for (let from = 0; ; from += pageSize) {
+  let query = supabase
+   .from('payroll_records')
+   .select('payroll_start,payroll_end')
+   .order('payroll_start', { ascending:true })
+   .range(from, from + pageSize - 1)
+  if (parseLocalDate(normalizedFromDate)) query = query.gte('payroll_end', normalizedFromDate)
+  const { data, error } = await query
+  if (error) return { periods:[], error }
+  rows.push(...(data || []))
+  if ((data || []).length < pageSize) break
+ }
+ return { periods:normalizeComputedPayrollPeriods(rows), error:null }
+ }
+
  async function loadTimeAdjRequests(view = timeAdjView) {
  let query = supabase.from('time_adjustment_requests').select('*').order('created_at', { ascending:false })
  if (view === 'pending') query = query.eq('status', 'pending')
@@ -24361,6 +24405,17 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const { data, error } = await query.limit(view === 'history'? 100: 200)
  if (error) { showToast('Failed to load attendance adjustment requests: '+error.message, 'red'); return }
  const rows = data || []
+ const earliestRequestDate = rows.reduce((earliest, row) => {
+  const date = String(row?.attendance_date || '').slice(0, 10)
+  return parseLocalDate(date) && (!earliest || date < earliest) ? date : earliest
+ }, '')
+ const periodResult = await fetchComputedPayrollPeriods(earliestRequestDate)
+ if (periodResult.error) {
+  console.warn('Computed payroll period lookup failed:', periodResult.error)
+  setTimeAdjComputedPayrollPeriods([])
+ } else {
+  setTimeAdjComputedPayrollPeriods(periodResult.periods)
+ }
  setTimeAdjRequests(rows)
  const adjustmentRows = rows.filter(req => ['overtime','undertime','meal_break'].includes(String(req?.request_type || '').toLowerCase()))
  const loadingMap = {}
@@ -25140,12 +25195,17 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    return
   }
 
-  const defaultTargetDate = addDaysToDateString(preview.sourcePayrollEnd, 1)
-  const targetDate = String(timeAdjCarryForwardDateById[req.id] || defaultTargetDate || today).slice(0, 10)
+  const earliestTargetDate = addDaysToDateString(preview.sourcePayrollEnd, 1)
+  const periodResult = await fetchComputedPayrollPeriods(earliestTargetDate)
+  if (periodResult.error) throw new Error('The computed payroll periods could not be rechecked. Refresh and try again.')
+  const requestedTargetDate = String(timeAdjCarryForwardDateById[req.id] || earliestTargetDate || today).slice(0, 10)
+  const targetDate = getFirstUncomputedPayrollDate(requestedTargetDate, periodResult.periods)
   if (!targetDate || !parseLocalDate(targetDate) || targetDate <= preview.sourcePayrollEnd) {
    showToast(`Choose an adjustment date after the released payroll end date, ${preview.sourcePayrollEnd}.`, 'red')
    return
   }
+  const targetDateWasAdvanced = targetDate !== requestedTargetDate
+  if (targetDateWasAdvanced) setTimeAdjCarryForwardDateById(prev => ({ ...prev, [req.id]:targetDate }))
 
   const amountLine = preview.amount > 0
    ? `${preview.adjustmentType === 'addition' ? 'Addition / refund' : 'Deduction'}: ${php(preview.amount)}`
@@ -25157,6 +25217,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    `Source attendance: ${preview.sourceAttendanceDate}\n` +
    `Released payroll preserved: ${preview.sourcePayrollStart} to ${preview.sourcePayrollEnd}\n` +
    `Target adjustment date: ${targetDate}\n` +
+   `${targetDateWasAdvanced ? `Date automatically advanced from ${requestedTargetDate} because that payroll was already computed or released.\n` : ''}` +
    `Verified minutes: ${preview.verifiedMinutes}\n` +
    `${amountLine}\n\n` +
    `${preview.formula}\n\n` +
@@ -25181,7 +25242,14 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    p_late_minutes:preview.lateMinutes
   })
   if (rpcError) {
-   const cleanMessage = String(rpcError.message || rpcError).replace(/^[A-Z_]+:\s*/, '')
+   const rawMessage = String(rpcError.message || rpcError)
+   if (rawMessage.includes('TARGET_PAYROLL_ALREADY_COMPUTED')) {
+    const refreshedPeriods = await fetchComputedPayrollPeriods(earliestTargetDate)
+    if (!refreshedPeriods.error) setTimeAdjComputedPayrollPeriods(refreshedPeriods.periods)
+    showToast('That adjustment date is now covered by a computed or released payroll. The available date has been refreshed; review it and resolve again.', 'red')
+    return
+   }
+   const cleanMessage = rawMessage.replace(/^[A-Z_]+:\s*/, '')
    showToast('Next-cutoff resolution failed: ' + cleanMessage, 'red')
    return
   }
@@ -36858,8 +36926,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const releasedPayrollCovered = !!releasedPayrollRecord
  const requestEmployee = employees.find(item => String(item.id) === String(req.employee_id)) || {}
  const releasedCorrectionPreview = buildReleasedTimeAdjustmentCorrectionPreview(req, adminValidation || {}, requestEmployee, payrollState)
- const defaultCarryForwardDate = addDaysToDateString(String(releasedPayrollRecord?.payroll_end || '').slice(0,10), 1)
- const carryForwardDate = String(timeAdjCarryForwardDateById[req.id] || defaultCarryForwardDate || today).slice(0,10)
+ const earliestCarryForwardDate = addDaysToDateString(String(releasedPayrollRecord?.payroll_end || '').slice(0,10), 1)
+ const defaultCarryForwardDate = getFirstUncomputedPayrollDate(earliestCarryForwardDate, timeAdjComputedPayrollPeriods)
+ const requestedCarryForwardDate = String(timeAdjCarryForwardDateById[req.id] || defaultCarryForwardDate || today).slice(0,10)
+ const carryForwardDate = getFirstUncomputedPayrollDate(requestedCarryForwardDate, timeAdjComputedPayrollPeriods)
+ const skippedComputedPayroll = !!earliestCarryForwardDate && defaultCarryForwardDate !== earliestCarryForwardDate
  const approvalBlocked = approvalAlreadyExists || releasedPayrollCovered || adminValidation?.canApprove === false
  const validationBadgeLabel = adminValidation?.loading
   ? 'CALCULATING'
@@ -36961,6 +37032,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
      <p style={{ margin:'4px 0', color:'#555', fontSize:'11px', lineHeight:1.5 }}>Released payroll <strong>{releasedPayrollRecord.payroll_start} to {releasedPayrollRecord.payroll_end}</strong> stays unchanged. The system will create only the verified difference in a later uncomputed cutoff and permanently link it to request #{req.id}.</p>
      <p style={{ margin:'4px 0', color:releasedCorrectionPreview.ready?'#2d8a4e':'#ca1b1b', fontSize:'11px', fontWeight:'800', lineHeight:1.5 }}>{releasedCorrectionPreview.message}</p>
      <p style={{ margin:'4px 0', color:'#555', fontSize:'11px' }}>{releasedCorrectionPreview.formula}</p>
+     {skippedComputedPayroll && <p style={{ margin:'4px 0', color:'#b36b00', fontSize:'11px', fontWeight:'800', lineHeight:1.5 }}>Already-computed payroll periods were skipped automatically. First available adjustment date: {defaultCarryForwardDate}.</p>}
     </div>
     <div style={{ minWidth:'170px' }}>
      <label style={lblS}>Next-Cutoff Adjustment Date</label>
