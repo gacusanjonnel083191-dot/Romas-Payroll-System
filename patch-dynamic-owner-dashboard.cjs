@@ -85,10 +85,17 @@ if (!src.includes('OWNER_DASHBOARD_LOGIN_RESET_V2')) {
 }
 
 if (!src.includes('OWNER_DASHBOARD_NAV_RESET_V2')) {
-  const oldDashboardLoad = "if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }"
-  const newDashboardLoad = "if(key==='dashboard') { if (isOwnerRole) setOwnerDashboardMode('command'); /* OWNER_DASHBOARD_NAV_RESET_V2 */ loadDashboard(); loadDashboardCharts() }"
+  const dashboardLoadCandidates = [
+    "if(key==='dashboard') { loadDashboard(); loadDashboardCharts(); if (normalizeAdminRole(adminRole)==='owner') loadOwnerActionCenter() }",
+    "if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }",
+  ]
+  const oldDashboardLoad = dashboardLoadCandidates.find(candidate => src.includes(candidate))
+  if (!oldDashboardLoad) throw new Error('Dashboard navigation loader was not found.')
+  const ownerQueueRefresh = oldDashboardLoad.includes('loadOwnerActionCenter')
+    ? " if (normalizeAdminRole(adminRole)==='owner') loadOwnerActionCenter();"
+    : ''
+  const newDashboardLoad = `if(key==='dashboard') { if (isOwnerRole) setOwnerDashboardMode('command'); /* OWNER_DASHBOARD_NAV_RESET_V2 */ loadDashboard(); loadDashboardCharts();${ownerQueueRefresh} }`
   const dashboardLoadIndex = src.indexOf(oldDashboardLoad)
-  if (dashboardLoadIndex < 0) throw new Error('Dashboard navigation loader was not found.')
   src = replaceAt(src, dashboardLoadIndex, oldDashboardLoad, newDashboardLoad, 'owner dashboard navigation reset')
 }
 

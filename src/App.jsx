@@ -6729,6 +6729,8 @@ export default function App() {
  const [employeeCharges, setEmployeeCharges] = useState([])
  const [showChargesSection, setShowChargesSection] = useState(false)
  const [chargesLoading, setChargesLoading] = useState(false)
+ const [ownerActionCenterExpanded, setOwnerActionCenterExpanded] = useState(true)
+ const [ownerDocumentActionBusy, setOwnerDocumentActionBusy] = useState({})
  // Expiry Tracking 
  const [showExpirySection, setShowExpirySection] = useState(false)
  const [expiryItems, setExpiryItems] = useState([])
@@ -7153,6 +7155,7 @@ export default function App() {
  const [foundationMonth, setFoundationMonth] = useState(today.slice(0,7))
  const [foundationData, setFoundationData] = useState(null)
  const [foundationLoading, setFoundationLoading] = useState(false)
+ const [ownerDashboardMode, setOwnerDashboardMode] = useState('command') // OWNER_DASHBOARD_MODE_V2
  const [foundationAutoRefresh, setFoundationAutoRefresh] = useState(true)
  const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)
  const FOUNDATION_REFRESH_SECONDS = 60
@@ -7741,7 +7744,7 @@ setRequestingInvoiceDeletion(null)
  }, [adminMode, activeTab, adminRole])
 
  useEffect(() => {
- const canViewFoundation = activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')
+ const canViewFoundation = (activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')) || (activeTab === 'dashboard' && adminRole === 'owner') // OWNER_DASHBOARD_AUTO_REFRESH_V2
  if (!canViewFoundation ||!foundationAutoRefresh) return
 
  if (!foundationData &&!foundationLoading) {
@@ -10272,9 +10275,94 @@ Cancel = create batch record only for existing stock.`)
  }
  async function loadEmployeeCharges() {
  setChargesLoading(true)
- const { data } = await supabase.from('employee_charges').select('*').order('created_at', { ascending:false })
+ const { data, error } = await supabase.from('employee_charges').select('*').order('created_at', { ascending:false })
+ if (error) console.warn('loadEmployeeCharges:', error)
  setEmployeeCharges(data || [])
  setChargesLoading(false)
+ }
+ async function loadOwnerActionCenter() {
+  await Promise.all([loadCompanyDocumentRecords(), loadEmployeeCharges()])
+ }
+ async function createEmployeeChargeFromDocument(record) {
+  if (!record?.id || String(record.form_key || '').toUpperCase() !== 'FIN-CHARGE-SLIP') return
+  if (normalizeAdminRole(adminRole) !== 'owner') {
+   showToast('Only the Owner can approve and send an employee charge.', 'red')
+   return
+  }
+  if (!record.employee_id || !record.employee_name) {
+   showToast('This charge slip has no employee assigned.', 'red')
+   return
+  }
+  const amount = moneyRound(safeNum(record.amount, 0))
+  if (amount <= 0) {
+   showToast('This charge slip has no valid charge amount.', 'red')
+   return
+  }
+  const existing = (employeeCharges || []).find(charge => String(charge.company_document_record_id || '') === String(record.id))
+  if (existing) {
+   showToast('This charge slip has already been sent to the employee.', 'red')
+   return
+  }
+  if (!window.confirm(`Approve ${php(amount)} and send this charge to ${record.employee_name} for acknowledgment?`)) return
+
+  setOwnerDocumentActionBusy(prev => ({ ...prev, [record.id]:true }))
+  try {
+   const savedValues = getSavedDocumentValues(record)
+   const paymentMethod = String(savedValues?.customFields?.paymentMethod || '').trim()
+   const deductionPerCutoff = moneyRound(safeNum(record.deduction_per_cutoff, 0))
+   const notes = [
+    `Source document: ${record.document_no}`,
+    paymentMethod ? `Arrangement: ${paymentMethod}` : '',
+    deductionPerCutoff > 0 ? `Per cutoff: ${php(deductionPerCutoff)}` : '',
+    String(record.details || '').trim()
+   ].filter(Boolean).join(' | ')
+   const { error:chargeError } = await supabase.from('employee_charges').insert({
+    company_document_record_id:record.id,
+    employee_id:record.employee_id,
+    employee_name:record.employee_name,
+    item_name:String(record.items || record.document_type || 'Documented employee charge').trim(),
+    quantity:1,
+    unit:'documented charge',
+    total_cost:amount,
+    reason:String(record.subject || 'Approved employee charge').trim(),
+    notes:notes || null,
+    status:'pending_employee',
+    owner_approved_at:new Date().toISOString()
+   })
+   if (chargeError) {
+    if (chargeError.code === '23505' || String(chargeError.message || '').toLowerCase().includes('duplicate')) {
+     showToast('This charge slip was already processed. The duplicate charge was blocked.', 'red')
+     await loadOwnerActionCenter()
+     return
+    }
+    throw chargeError
+   }
+
+   const ownerLabel = currentAdminLabel || 'Owner'
+   const { error:documentError } = await supabase.from('company_document_records').update({
+    status:'served',
+    served_date:today,
+    approved_by:ownerLabel,
+    owner_approved_by:ownerLabel,
+    owner_approved_at:new Date().toISOString()
+   }).eq('id', record.id)
+   if (documentError) console.warn('Charge created but source document status update failed:', documentError)
+
+   await createNotification(
+    record.employee_id,
+    record.employee_name,
+    'employee_charge',
+    'Employee Charge Requires Your Response',
+    `${record.document_no}: ${php(amount)} was approved by the Owner. Open My Attendance to agree or dispute.`
+   )
+   await logAudit('DOCUMENT CHARGE APPROVED', ownerLabel, record.employee_name, `${record.document_no} | ${php(amount)} | Sent for employee acknowledgment`)
+   showToast(`Charge sent to ${record.employee_name} for acknowledgment.`)
+   await loadOwnerActionCenter()
+  } catch(error) {
+   showToast('Charge could not be created: ' + (error?.message || error), 'red')
+  } finally {
+   setOwnerDocumentActionBusy(prev => ({ ...prev, [record.id]:false }))
+  }
  }
  async function approveCharge(charge) {
  const { error } = await supabase.from('employee_charges').update({ status:'pending_employee', owner_approved_at: new Date().toISOString() }).eq('id', charge.id)
@@ -23628,6 +23716,7 @@ function openAdmin(role, empData) {
  return
  }
  setAdminMode(true); setAdminRole(safeRole); setEmployeeSearch(''); setSidebarOpen(false)
+ if (safeRole === 'owner') setOwnerDashboardMode('command') // OWNER_DASHBOARD_LOGIN_RESET_V2
  if (empData?.id) {
  setAdminEmployee(empData)
  loadTodayLog(empData); loadTodaySchedule(empData); loadTodayBreaks(null)
@@ -23639,6 +23728,7 @@ function openAdmin(role, empData) {
  setActiveTab(defaultTab)
  loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
  loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
+ if (safeRole === 'owner') loadOwnerActionCenter()
 loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); if (safeRole==='owner' || safeRole==='payroll') autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if (safeRole==='owner' || safeRole==='manager') loadFoundationData().catch(()=>{})
 void loadInvoiceDeletionAccess({ silent:true }).then(access => {
  if (access.can_request || access.can_review) return loadInvoiceDeletionRequests({ silent:true })
@@ -23670,6 +23760,12 @@ requestPushPermission()
  const { data:pendingCA } = await supabase.from('cash_advance_requests').select('id').eq('status', 'pending')
  const { data:pendingOT } = await supabase.from('time_adjustment_requests').select('id').eq('status', 'pending')
  const { data:pendingDisp } = await supabase.from('payslip_disputes').select('id').eq('status', 'pending')
+  // DYNAMIC_OWNER_BRIEFING_QUERY_V1
+  const { data:ownerBriefingRows } = await supabase.from('business_owner_briefings')
+   .select('briefing_date,headline,executive_summary,metrics,priorities,generated_at')
+   .order('generated_at', { ascending:false })
+   .limit(1)
+  const ownerBriefing = ownerBriefingRows?.[0] || null
  // Probationary employees due for regularization (hired 5-6 months ago, still probationary)
  const probDue = (emps||[]).filter(e => {
  if (e.employment_type!== 'probationary' ||!e.hire_date) return false
@@ -23691,6 +23787,7 @@ requestPushPermission()
  pendingCA: pendingCA?.length||0,
  pendingOT: pendingOT?.length||0,
  pendingDisputes: pendingDisp?.length||0,
+  ownerBriefing,
  probDue, birthdays, anniversaries
  })
  }
@@ -34428,6 +34525,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const selectedBatch1DocumentForm = findBatch1DocumentForm(documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS.find(form => !form.externalTab) || DOCUMENT_BATCH1A_FORMS[0]
  const activeBatch1FillableForms = DOCUMENT_BATCH1A_FORMS.filter(form => !form.externalTab)
  const isChargeSlipDocumentForm = selectedBatch1DocumentForm?.key === 'FIN-CHARGE-SLIP'
+ const ownerOpenDocumentRecords = (companyDocumentRecords || []).filter(record => !['closed','completed','voided','terminated','expired'].includes(String(record.status || 'draft').toLowerCase()))
+ const ownerPendingEmployeeCharges = (employeeCharges || []).filter(charge => ['pending_owner','disputed'].includes(String(charge.status || '').toLowerCase()))
+ const ownerLinkedChargeByDocumentId = (employeeCharges || []).reduce((map, charge) => {
+  if (charge.company_document_record_id) map[String(charge.company_document_record_id)] = charge
+  return map
+ }, {})
+ const ownerActionCenterCount = ownerOpenDocumentRecords.length + ownerPendingEmployeeCharges.length
  const ownerDeadlineSummary = getOwnerPaymentDeadlineAlerts()
     const payablesDeadlineKey = (ownerDeadlineSummary.warningRows || [])
       .map(r => String(r.source || '') + ':' + String(r.id || '') + ':' + String(r.due_date_effective || r.due_date || ''))
@@ -34834,6 +34938,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      resellerName || form.title,
      `${form.title} | ${docNo} | ${String(documentFormDraft?.customFields?.territory || '').trim() || 'No territory'}`
     )
+   } else {
+    await logAudit(
+     wasEditing ? 'DOCUMENT UPDATED' : 'DOCUMENT CREATED',
+     currentAdminLabel || adminRole || 'Admin',
+     emp?.full_name || form.title,
+     `${form.title} | ${docNo} | Saved to Owner Document & Action Center`
+    )
    }
    await loadCompanyDocumentRecords()
 
@@ -34859,6 +34970,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     .eq('id', record.id)
 
    if (error) throw error
+   await logAudit(
+    `DOCUMENT ${String(status).toUpperCase()}`,
+    currentAdminLabel || adminRole || 'Admin',
+    record.employee_name || record.reseller_name || record.document_no,
+    `${record.document_type || 'Company Document'} | ${record.document_no}`
+   )
    showToast('Document marked as ' + getCompanyDocumentRecordStatusLabel(status) + '.')
    await loadCompanyDocumentRecords()
   } catch (err) {
@@ -34878,6 +34995,12 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     .eq('id', record.id)
 
    if (error) throw error
+   await logAudit(
+    'DOCUMENT VOIDED',
+    currentAdminLabel || adminRole || 'Admin',
+    record.employee_name || record.reseller_name || record.document_no,
+    `${record.document_type || 'Company Document'} | ${record.document_no} | ${reason || 'No reason supplied'}`
+   )
    showToast('Document voided.')
    await loadCompanyDocumentRecords()
   } catch (err) {
@@ -35304,7 +35427,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='overtime') loadTimeAdjRequests()
  if(key==='holidays') loadHolidays()
  if(key==='announcements') loadAnnouncements()
- if(key==='dashboard') { loadDashboard(); loadDashboardCharts() }
+ if(key==='dashboard') { if (isOwnerRole) setOwnerDashboardMode('command'); /* OWNER_DASHBOARD_NAV_RESET_V2 */ loadDashboard(); loadDashboardCharts(); if (normalizeAdminRole(adminRole)==='owner') loadOwnerActionCenter(); }
  if(key==='auditTrail') loadAuditTrail()
  if(key==='payrollHistory') loadPayrollHistory()
  if(key==='cashAdvanceCoverage') { loadPayrollHistory(); loadCashAdvanceCoverage(payrollStart, payrollEnd) }
@@ -35674,7 +35797,288 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
 
  {/* DASHBOARD */}
- {activeTab==='dashboard' && (
+ {/* DYNAMIC_OWNER_COMMAND_CENTER_V2 */}
+{activeTab==='dashboard' && isOwnerRole && ownerDashboardMode==='command' && (() => {
+ const fd = foundationData || null
+ const executive = fd ? buildExecutiveCommandCenter(fd) : null
+ const briefing = dashboardData?.ownerBriefing || null
+ const kpis = executive?.kpiCards || []
+ const safeRows = value => Array.isArray(value) ? value : []
+ const toneFor = value => {
+  const status = String(value || '').toUpperCase()
+  if (status.includes('CRITICAL') || status.includes('ALERT') || status.includes('DO TODAY')) return { color:'#b42318', background:'#fff1f0' }
+  if (status.includes('WATCH') || status.includes('CHECK') || status.includes('REVIEW')) return { color:'#b56a00', background:'#fff8e7' }
+  if (status.includes('GOOD') || status.includes('HEALTHY') || status.includes('CLEAR') || status.includes('STABLE') || status.includes('EXCELLENT')) return { color:'#18794e', background:'#eefbf4' }
+  return { color:'#3568a8', background:'#eef5ff' }
+ }
+ const statusBadge = status => {
+  const tone = toneFor(status)
+  return <span style={{ display:'inline-flex', alignItems:'center', borderRadius:'999px', padding:'4px 8px', color:tone.color, background:tone.background, fontSize:'8px', lineHeight:1, fontWeight:'900', whiteSpace:'nowrap' }}>{status || 'CHECK'}</span>
+ }
+ const moduleFor = value => {
+  const name = String(value || '').toLowerCase()
+  if (name.includes('inventory') || name.includes('stock')) return 'inventory'
+  if (name.includes('payroll') || name.includes('salary')) return 'payroll'
+  if (name.includes('attendance') || name.includes('employee') || name.includes('document') || name.includes('approval')) return 'attendance'
+  if (name.includes('payable') || name.includes('pdc')) return 'payablesMain'
+  if (name.includes('product') || name.includes('food cost') || name.includes('production') || name.includes('wastage') || name.includes('cogs')) return 'costing'
+  if (name.includes('receivable') || name.includes('return') || name.includes('sales') || name.includes('cash')) return 'sales'
+  return 'foundation'
+ }
+ const metricDestination = label => {
+  if (label === 'Low Stock') return 'inventory'
+  if (label === 'Payroll Ratio') return 'payroll'
+  if (label === 'Food Cost' || label === 'Wastage' || label === 'Product Margin') return 'costing'
+  return 'foundation'
+ }
+ const openModule = value => handleTabClick(moduleFor(value))
+ const briefingActions = safeRows(briefing?.priorities).map(priority => ({
+  area:priority?.title || 'Owner priority',
+  value:safeNum(priority?.amount_exposure,0) > 0 ? php(priority.amount_exposure) : (priority?.module || 'Business control'),
+  target:priority?.module || 'Business',
+  status:String(priority?.severity || 'WATCH').toUpperCase(),
+  action:priority?.recommended_action || 'Review and resolve the source record.',
+  module:priority?.module || priority?.title || 'foundation',
+ }))
+ const actionRows = (briefingActions.length > 0 ? briefingActions : safeRows(executive?.topRisks)).slice(0,6)
+ const severityRank = status => {
+  const value = String(status || '').toUpperCase()
+  if (value.includes('CRITICAL') || value.includes('ALERT')) return 0
+  if (value.includes('WATCH')) return 1
+  return 2
+ }
+ const targetRows = [...safeRows(executive?.riskRows)].sort((a,b)=>severityRank(a.status)-severityRank(b.status))
+ const cashTrend = safeRows(fd?.cashFlowTrend).slice(-6)
+ const cashMax = Math.max(1,...cashTrend.flatMap(row=>[Math.abs(safeNum(row.cashIn,0)),Math.abs(safeNum(row.cashOut,0))]))
+ const agingRows = safeRows(fd?.arAging)
+ const agingMax = Math.max(1,...agingRows.map(row=>safeNum(row.total,0)))
+ const productRows = [...safeRows(fd?.productProfitabilityRows)].sort((a,b)=>safeNum(b.netRevenueAfterReturns,0)-safeNum(a.netRevenueAfterReturns,0)).slice(0,5)
+ const resellerRows = [...safeRows(fd?.resellerPerformanceRows)].sort((a,b)=>safeNum(b.sales,0)-safeNum(a.sales,0)).slice(0,5)
+ const lowStockCount = Array.isArray(fd?.lowStockItems) ? fd.lowStockItems.length : safeNum(fd?.lowStockItems,0)
+ const operationalRows = [
+  { label:'ON DUTY', value:safeNum(dashboardData?.timedIn,0), status:safeNum(dashboardData?.timedIn,0)>0?'ACTIVE':'CHECK', tab:'attendance' },
+  { label:'ABSENT TODAY', value:safeNum(dashboardData?.absent,0), status:safeNum(dashboardData?.absent,0)>0?'ALERT':'GOOD', tab:'attendance' },
+  { label:'PENDING APPROVALS', value:safeNum(fd?.totalPendingApprovals,0), status:safeNum(fd?.totalPendingApprovals,0)>0?'CHECK':'GOOD', tab:'foundation' },
+  { label:'PENDING DELIVERIES', value:safeNum(fd?.pendingDeliveries,0), status:safeNum(fd?.pendingDeliveries,0)>0?'ACTIVE':'CLEAR', tab:'sales' },
+  { label:'RETURN RATE', value:fd?`${safeNum(fd.returnsRate,0).toFixed(1)}%`:'—', status:safeNum(fd?.returnsRate,0)>5?'WATCH':'GOOD', tab:'sales' },
+  { label:'LOW STOCK', value:fd?lowStockCount:'—', status:lowStockCount>0?'CHECK':'GOOD', tab:'inventory' },
+ ]
+ const quickLinks = [
+  ['SAGS POS','posMonitor'],
+  ['SALES & COLLECTIONS','sales'],
+  ['INVENTORY','inventory'],
+  ['PAYROLL','payroll'],
+  ['FULL FOUNDATION REPORT','foundation'],
+ ]
+ const panel = (title, subtitle, content, extraStyle = {}) => (
+  <section style={{ background:'#fff', border:'1px solid #eee7db', borderRadius:'14px', padding:isMobile?'12px':'15px', minWidth:0, boxShadow:'0 3px 12px rgba(31,41,55,.05)', ...extraStyle }}>
+   <div style={{ marginBottom:'11px' }}>
+    <h3 style={{ color:'#172033', fontSize:'11px', letterSpacing:'.5px', margin:'0 0 3px', fontWeight:'900' }}>{title}</h3>
+    {subtitle && <p style={{ color:'#7b8390', fontSize:'9px', lineHeight:1.45, margin:0 }}>{subtitle}</p>}
+   </div>
+   {content}
+  </section>
+ )
+ const refreshOwnerDashboard = async() => {
+  await Promise.all([
+   loadDashboard(),
+   loadFoundationData(foundationMonth, { silent:false, showLoading:true }),
+  ])
+  showToast(' Owner Command Center refreshed!')
+ }
+
+ return (
+  <div className="romas-executive-dashboard">
+   <div className="romas-dashboard-header">
+    <div>
+     <p className="romas-dashboard-eyebrow">Owner management view</p>
+     <h2 className="romas-dashboard-title">OWNER COMMAND CENTER</h2>
+     <p className="romas-dashboard-subtitle">Profit, cash, targets, risks, and today&apos;s decisions in one place</p>
+    </div>
+    <div className="romas-dashboard-actions" style={{ alignItems:'center' }}>
+     <label style={{ color:'rgba(255,255,255,.76)', fontSize:'9px', fontWeight:'800' }}>
+      PERIOD
+      <input aria-label="Owner dashboard period" type="month" value={foundationMonth} onChange={event=>{ const month=event.target.value; setFoundationMonth(month); void loadFoundationData(month,{ silent:false, showLoading:true }) }} style={{ display:'block', width:'145px', height:'34px', margin:'4px 0 0', padding:'0 9px', border:'1px solid rgba(255,255,255,.3)', borderRadius:'8px', background:'#fff', color:'#172033', fontSize:'11px', fontWeight:'800', boxSizing:'border-box' }} />
+     </label>
+     <button type="button" style={{...btnYellow, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'10px' }} onClick={refreshOwnerDashboard} disabled={foundationLoading}>{foundationLoading?'REFRESHING...':'REFRESH'}</button>
+     <button type="button" style={{...btnBlack, width:'auto', padding:'9px 13px', marginTop:0, fontSize:'10px', border:'1px solid rgba(255,255,255,.24)' }} onClick={()=>setOwnerDashboardMode('operations')}>HR &amp; SITE CONTROLS</button>
+    </div>
+   </div>
+
+   <section id="owner-document-action-summary" style={{ background:'#fff', border:'1px solid #e8dfd2', borderLeft:`5px solid ${ownerActionCenterCount?'#ca1b1b':'#2d8a4e'}`, borderRadius:'12px', padding:isMobile?'12px':'14px', margin:'0 0 12px', boxShadow:'0 3px 12px rgba(31,41,55,.05)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+     <div style={{ flex:'1 1 320px', minWidth:0 }}>
+      <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'8px', fontWeight:'900', letterSpacing:'.7px' }}>DOCUMENT &amp; ACTION CENTER</p>
+      <h3 style={{ margin:'0 0 4px', color:'#172033', fontSize:'14px' }}>{ownerActionCenterCount > 0 ? `${ownerActionCenterCount} item${ownerActionCenterCount!==1?'s':''} need owner review` : 'No document action is waiting'}</h3>
+      <p style={{ margin:0, color:'#737b87', fontSize:'9px', lineHeight:1.45 }}>{ownerOpenDocumentRecords.length} open document{ownerOpenDocumentRecords.length!==1?'s':''} · {ownerPendingEmployeeCharges.length} charge decision{ownerPendingEmployeeCharges.length!==1?'s':''}. Open the queue to view, print, approve employee charges, serve, close, or void records.</p>
+     </div>
+     <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+      <button type="button" style={{...btnGray, width:'auto', padding:'8px 10px', marginTop:0, fontSize:'9px' }} disabled={companyDocumentRecordsLoading || chargesLoading} onClick={loadOwnerActionCenter}>{companyDocumentRecordsLoading || chargesLoading?'REFRESHING...':'REFRESH QUEUE'}</button>
+      <button type="button" style={{...btnRed, width:'auto', padding:'8px 11px', marginTop:0, fontSize:'9px' }} onClick={()=>setOwnerDashboardMode('operations')}>OPEN DOCUMENT ACTIONS</button>
+     </div>
+    </div>
+    {ownerOpenDocumentRecords.slice(0,3).map(record=><div key={record.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', marginTop:'8px', padding:'8px 9px', background:'#fafafa', border:'1px solid #eee7db', borderRadius:'8px' }}>
+     <div style={{ flex:'1 1 230px', minWidth:0 }}>
+      <strong style={{ display:'block', color:'#27303e', fontSize:'9px' }}>{record.document_type || 'Company Document'} · {record.document_no}</strong>
+      <span style={{ display:'block', color:'#858c96', fontSize:'8px', marginTop:'2px' }}>{record.employee_name || record.reseller_name || 'Company record'}{record.amount?` · ${php(record.amount)}`:''}</span>
+     </div>
+     <div style={{ display:'flex', gap:'5px', flexWrap:'wrap' }}>
+      <button type="button" style={{...btnGray, width:'auto', padding:'5px 8px', marginTop:0, fontSize:'8px' }} onClick={()=>viewCompanyDocumentRecord(record)}>VIEW</button>
+      <button type="button" style={{...btnBlack, width:'auto', padding:'5px 8px', marginTop:0, fontSize:'8px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
+     </div>
+    </div>)}
+   </section>
+
+   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', margin:'0 0 12px', padding:'9px 12px', background:'#fffdf8', border:'1px solid #eadfc9', borderRadius:'10px' }}>
+    <p style={{ margin:0, color:'#626b78', fontSize:'9px' }}>
+     Period: <strong style={{ color:'#172033' }}>{fd?.start || `${foundationMonth}-01`} to {fd?.end || foundationMonth}</strong>
+     {' · '}Last updated: <strong style={{ color:'#172033' }}>{formatFoundationLastUpdated(foundationLastUpdated || fd?.loadedAt)}</strong>
+    </p>
+    <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+     {quickLinks.map(([label,tab])=><button type="button" key={tab} onClick={()=>handleTabClick(tab)} style={{ border:'1px solid #e8dfd2', background:'#fff', color:'#515967', borderRadius:'7px', padding:'6px 8px', fontSize:'7.5px', fontWeight:'900', cursor:'pointer' }}>{label}</button>)}
+    </div>
+   </div>
+
+   {foundationLoading && fd && <div role="status" style={{ marginBottom:'10px', padding:'8px 11px', borderRadius:'9px', background:'#eef5ff', color:'#3568a8', fontSize:'9px', fontWeight:'800' }}>Refreshing the command center. Current verified figures remain visible until the new snapshot is ready.</div>}
+   {fd?.errors?.length > 0 && <div style={{ marginBottom:'10px', padding:'8px 11px', borderRadius:'9px', background:'#fff8e7', color:'#8b5a00', fontSize:'9px', fontWeight:'800' }}>{fd.errors.length} data source{fd.errors.length!==1?'s':''} could not be read. Available figures are shown; open the full Foundation report for details.</div>}
+
+   {!fd ? (
+    <div style={{ minHeight:'320px', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:'10px', background:'#fff', border:'1px solid #eee7db', borderRadius:'16px', padding:'30px', textAlign:'center' }}>
+     <div style={{ width:'54px', height:'54px', borderRadius:'50%', background:foundationLoading?'#eef5ff':'#fff8e7', color:foundationLoading?'#3568a8':'#b56a00', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'20px', fontWeight:'900' }}>{foundationLoading?'…':'!'}</div>
+     <h3 style={{ color:'#172033', margin:0, fontSize:'16px' }}>{foundationLoading?'Loading owner metrics…':'Owner metrics are not loaded yet'}</h3>
+     <p style={{ color:'#737b87', margin:0, maxWidth:'520px', fontSize:'11px', lineHeight:1.55 }}>The command center reads your existing sales, released payroll, approved expenses, production, inventory, returns, and collection records. It does not create or change financial transactions.</p>
+     {!foundationLoading && <button type="button" style={{...btnRed, width:'auto', padding:'9px 16px', marginTop:'4px' }} onClick={refreshOwnerDashboard}>LOAD COMMAND CENTER</button>}
+    </div>
+   ) : (
+    <>
+     <section style={{ background:'linear-gradient(135deg,#fffdf8 0%,#fff7e8 100%)', border:`1px solid ${executive.statusColor}55`, borderLeft:`5px solid ${executive.statusColor}`, borderRadius:'14px', padding:isMobile?'13px':'16px', marginBottom:'12px', boxShadow:'0 5px 16px rgba(31,41,55,.06)' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
+       <div style={{ flex:'1 1 420px' }}>
+        <p style={{ color:'#8b6d37', fontSize:'8px', fontWeight:'900', letterSpacing:'.8px', margin:'0 0 5px' }}>EXECUTIVE BRIEFING</p>
+        <h3 style={{ color:'#172033', fontSize:isMobile?'15px':'18px', lineHeight:1.3, margin:'0 0 7px', fontWeight:'900' }}>{briefing?.headline || executive.headline}</h3>
+        <p style={{ color:'#5f6672', fontSize:'10px', lineHeight:1.55, margin:0 }}><strong>Recommended next move:</strong> {executive.nextMove}</p>
+       </div>
+       <div style={{ display:'flex', alignItems:'center', gap:'7px', flexWrap:'wrap' }}>
+        {statusBadge(executive.status)}
+        <span style={{ borderRadius:'999px', padding:'4px 8px', color:'#b42318', background:'#fff1f0', fontSize:'8px', fontWeight:'900' }}>{executive.alertCount} ALERT</span>
+        <span style={{ borderRadius:'999px', padding:'4px 8px', color:'#b56a00', background:'#fff8e7', fontSize:'8px', fontWeight:'900' }}>{executive.watchCount} WATCH</span>
+       </div>
+      </div>
+     </section>
+
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(6,minmax(0,1fr))', gap:'9px', marginBottom:'12px' }}>
+      {kpis.map(kpi=><button type="button" key={kpi.label} aria-label={`Open details for ${kpi.label}`} onClick={()=>handleTabClick(metricDestination(kpi.label))} style={{ appearance:'none', textAlign:'left', background:'#fff', border:'1px solid #eee7db', borderTop:`4px solid ${kpi.color}`, borderRadius:'11px', padding:'11px', minWidth:0, cursor:'pointer', boxShadow:'0 3px 10px rgba(31,41,55,.04)' }}>
+       <span style={{ display:'block', color:'#7a818d', fontSize:'7.5px', fontWeight:'900', marginBottom:'6px' }}>{String(kpi.label).toUpperCase()}</span>
+       <strong style={{ display:'block', color:'#172033', fontSize:isMobile?'14px':'16px', lineHeight:1.15, overflowWrap:'anywhere' }}>{kpi.value}</strong>
+       <span style={{ display:'block', color:'#9096a0', fontSize:'7.5px', lineHeight:1.35, marginTop:'5px' }}>{kpi.note}</span>
+       <span style={{ display:'block', color:kpi.color, fontSize:'7px', fontWeight:'900', marginTop:'7px' }}>OPEN DETAILS →</span>
+      </button>)}
+     </div>
+
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(0,1.65fr) minmax(300px,.35fr)', gap:'12px', marginBottom:'12px' }}>
+      {panel('ACTION REQUIRED','The highest-priority issues from the latest owner briefing, with a verified Foundation fallback.',
+       actionRows.length===0 ? <div style={{ padding:'14px', borderRadius:'9px', background:'#eefbf4', color:'#18794e', fontSize:'10px', fontWeight:'800' }}>No critical owner action is currently detected.</div> :
+       <div style={{ overflowX:'auto' }}><table style={{ width:'100%', minWidth:'720px', borderCollapse:'collapse' }}>
+        <thead><tr style={{ background:'#faf7f1' }}>{['STATUS','ISSUE','VALUE / AREA','RECOMMENDED ACTION',''].map(heading=><th key={heading} style={{ textAlign:heading===''?'right':'left', padding:'8px', borderBottom:'1px solid #eee7db', color:'#7b7368', fontSize:'7.5px' }}>{heading}</th>)}</tr></thead>
+        <tbody>{actionRows.map((row,index)=><tr key={`${row.area}-${index}`} style={{ borderBottom:'1px solid #f1ede6' }}>
+         <td style={{ padding:'9px 8px', verticalAlign:'top' }}>{statusBadge(row.status)}</td>
+         <td style={{ padding:'9px 8px', color:'#27303e', fontSize:'9px', fontWeight:'900', verticalAlign:'top' }}>{row.area}</td>
+         <td style={{ padding:'9px 8px', color:'#5f6672', fontSize:'8.5px', verticalAlign:'top' }}><strong>{row.value}</strong><br/><span style={{ color:'#9297a0' }}>{row.target}</span></td>
+         <td style={{ padding:'9px 8px', color:'#5f6672', fontSize:'8.5px', lineHeight:1.45, verticalAlign:'top' }}>{row.action}</td>
+         <td style={{ padding:'9px 8px', textAlign:'right', verticalAlign:'top' }}><button type="button" onClick={()=>openModule(row.module || row.area)} style={{ border:'none', borderRadius:'7px', padding:'6px 9px', background:'#ca1b1b', color:'#fff', fontSize:'7px', fontWeight:'900', cursor:'pointer' }}>OPEN</button></td>
+        </tr>)}</tbody>
+       </table></div>
+      )}
+
+      {panel('TODAY\'S OPERATIONS','Compact live signals. Open any item to inspect its source module.',
+       <div style={{ display:'grid', gridTemplateColumns:'repeat(2,minmax(0,1fr))', gap:'7px' }}>
+        {operationalRows.map(row=><button type="button" key={row.label} onClick={()=>handleTabClick(row.tab)} style={{ appearance:'none', textAlign:'left', background:'#fafafa', border:'1px solid #f0ece5', borderRadius:'9px', padding:'9px', cursor:'pointer' }}>
+         <span style={{ display:'block', color:'#8c929c', fontSize:'6.8px', fontWeight:'900', marginBottom:'5px' }}>{row.label}</span>
+         <strong style={{ display:'block', color:'#202938', fontSize:'15px', marginBottom:'5px' }}>{row.value}</strong>
+         {statusBadge(row.status)}
+        </button>)}
+       </div>
+      )}
+     </div>
+
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(0,1.25fr) minmax(320px,.75fr)', gap:'12px', marginBottom:'12px' }}>
+      {panel('SIX-MONTH CASH FLOW TREND','Cash in versus cash out from the same Foundation snapshot. Net cash is shown below each month.',
+       cashTrend.length===0 ? <p style={{ color:'#9197a1', fontSize:'9px', margin:0 }}>No monthly cash-flow trend is available.</p> :
+       <div>
+        <div style={{ height:'190px', display:'flex', alignItems:'flex-end', gap:isMobile?'7px':'12px', padding:'8px 4px 0', borderBottom:'1px solid #e6e9ed', overflowX:'auto' }}>
+         {cashTrend.map(row=><div key={row.month} style={{ flex:'1 0 58px', height:'100%', display:'flex', flexDirection:'column', justifyContent:'flex-end', alignItems:'center', minWidth:0 }}>
+          <div style={{ flex:1, width:'100%', display:'flex', justifyContent:'center', alignItems:'flex-end', gap:'4px' }}>
+           <div title={`Cash in: ${php(row.cashIn)}`} style={{ width:'34%', height:`${Math.max(3,(Math.abs(safeNum(row.cashIn,0))/cashMax)*132)}px`, borderRadius:'4px 4px 0 0', background:'#58a87c' }}/>
+           <div title={`Cash out: ${php(row.cashOut)}`} style={{ width:'34%', height:`${Math.max(3,(Math.abs(safeNum(row.cashOut,0))/cashMax)*132)}px`, borderRadius:'4px 4px 0 0', background:'#d96b72' }}/>
+          </div>
+          <strong style={{ color:safeNum(row.netCashFlow,0)>=0?'#18794e':'#b42318', fontSize:'7px', marginTop:'5px' }}>{php(row.netCashFlow)}</strong>
+          <span style={{ color:'#838a95', fontSize:'7px', marginTop:'3px' }}>{row.label}</span>
+         </div>)}
+        </div>
+        <div style={{ display:'flex', gap:'14px', marginTop:'9px', color:'#68707d', fontSize:'8px' }}><span><i style={{ display:'inline-block', width:'8px', height:'8px', borderRadius:'2px', background:'#58a87c', marginRight:'5px' }}/>Cash in</span><span><i style={{ display:'inline-block', width:'8px', height:'8px', borderRadius:'2px', background:'#d96b72', marginRight:'5px' }}/>Cash out</span></div>
+       </div>
+      )}
+
+      {panel('RECEIVABLES AGING','Outstanding reseller balances grouped by age so collection work starts with the oldest money.',
+       agingRows.length===0 ? <p style={{ color:'#9197a1', fontSize:'9px', margin:0 }}>No receivables aging data is available.</p> :
+       <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+        {agingRows.map(row=><div key={row.label}>
+         <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', marginBottom:'4px' }}><span style={{ color:'#515967', fontSize:'8.5px', fontWeight:'800' }}>{row.label} <small style={{ color:'#969ba4' }}>({safeNum(row.count,0)})</small></span><strong style={{ color:safeNum(row.total,0)>0?'#b42318':'#18794e', fontSize:'8.5px' }}>{php(row.total)}</strong></div>
+         <div style={{ height:'8px', borderRadius:'8px', background:'#f0f1f3', overflow:'hidden' }}><div style={{ width:`${safeNum(row.total,0)>0?Math.max(4,(safeNum(row.total,0)/agingMax)*100):0}%`, height:'100%', borderRadius:'8px', background:String(row.label).includes('31')?'#b42318':'#e49a62' }}/></div>
+        </div>)}
+       </div>
+      )}
+     </div>
+
+     {panel('PERFORMANCE VS TARGET','Current results use the established Foundation formulas and business control targets—no duplicate financial calculations.',
+      <div style={{ overflowX:'auto' }}><table style={{ width:'100%', minWidth:'780px', borderCollapse:'collapse' }}>
+       <thead><tr style={{ background:'#1a1a2e', color:'#fff' }}>{['CONTROL','CURRENT','TARGET','STATUS','OWNER ACTION'].map(heading=><th key={heading} style={{ textAlign:'left', padding:'9px', fontSize:'7.5px' }}>{heading}</th>)}</tr></thead>
+       <tbody>{targetRows.map((row,index)=><tr key={row.area} style={{ background:index%2===0?'#fff':'#fbfbfa', borderBottom:'1px solid #eee' }}>
+        <td style={{ padding:'9px', color:'#27303e', fontSize:'9px', fontWeight:'900' }}>{row.area}</td>
+        <td style={{ padding:'9px', color:'#27303e', fontSize:'9px', fontWeight:'900' }}>{row.value}</td>
+        <td style={{ padding:'9px', color:'#69717d', fontSize:'8.5px' }}>{row.target}</td>
+        <td style={{ padding:'9px' }}>{statusBadge(row.status)}</td>
+        <td style={{ padding:'9px', color:'#5f6672', fontSize:'8.5px', lineHeight:1.4 }}>{row.action}</td>
+       </tr>)}</tbody>
+      </table></div>
+     , { marginBottom:'12px' })}
+
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'12px', marginBottom:'12px' }}>
+      {panel('TOP PRODUCTS','Ranked by net revenue after returns, with gross profit and margin from product profitability.',
+       productRows.length===0 ? <p style={{ color:'#9197a1', fontSize:'9px', margin:0 }}>Product rankings will appear when item-level sales and costing data are available.</p> :
+       <div style={{ overflowX:'auto' }}><table style={{ width:'100%', minWidth:'520px', borderCollapse:'collapse' }}>
+        <thead><tr style={{ background:'#faf7f1' }}>{['PRODUCT','NET SALES','GROSS PROFIT','MARGIN','STATUS'].map(heading=><th key={heading} style={{ textAlign:heading==='PRODUCT'?'left':'right', padding:'8px', color:'#7b7368', fontSize:'7px', borderBottom:'1px solid #eee7db' }}>{heading}</th>)}</tr></thead>
+        <tbody>{productRows.map(row=><tr key={row.name} style={{ borderBottom:'1px solid #f1ede6' }}><td style={{ padding:'8px', color:'#27303e', fontSize:'8.5px', fontWeight:'800' }}>{row.name}</td><td style={{ padding:'8px', textAlign:'right', color:'#515967', fontSize:'8.5px' }}>{php(row.netRevenueAfterReturns)}</td><td style={{ padding:'8px', textAlign:'right', color:safeNum(row.grossProfit,0)>=0?'#18794e':'#b42318', fontSize:'8.5px', fontWeight:'800' }}>{php(row.grossProfit)}</td><td style={{ padding:'8px', textAlign:'right', color:'#515967', fontSize:'8.5px' }}>{safeNum(row.marginPct,0).toFixed(1)}%</td><td style={{ padding:'8px', textAlign:'right' }}>{statusBadge(row.status)}</td></tr>)}</tbody>
+       </table></div>
+      )}
+
+      {panel('TOP RESELLERS','Ranked by net sales, with unpaid balance, returns, and the existing reseller performance score.',
+       resellerRows.length===0 ? <p style={{ color:'#9197a1', fontSize:'9px', margin:0 }}>Reseller rankings will appear when invoice data are available.</p> :
+       <div style={{ overflowX:'auto' }}><table style={{ width:'100%', minWidth:'520px', borderCollapse:'collapse' }}>
+        <thead><tr style={{ background:'#faf7f1' }}>{['RESELLER','NET SALES','UNPAID','RETURNS','SCORE'].map(heading=><th key={heading} style={{ textAlign:heading==='RESELLER'?'left':'right', padding:'8px', color:'#7b7368', fontSize:'7px', borderBottom:'1px solid #eee7db' }}>{heading}</th>)}</tr></thead>
+        <tbody>{resellerRows.map(row=><tr key={row.name} style={{ borderBottom:'1px solid #f1ede6' }}><td style={{ padding:'8px', color:'#27303e', fontSize:'8.5px', fontWeight:'800' }}>{row.name}</td><td style={{ padding:'8px', textAlign:'right', color:'#515967', fontSize:'8.5px' }}>{php(row.sales)}</td><td style={{ padding:'8px', textAlign:'right', color:safeNum(row.unpaid,0)>0?'#b42318':'#18794e', fontSize:'8.5px', fontWeight:'800' }}>{php(row.unpaid)}</td><td style={{ padding:'8px', textAlign:'right', color:'#515967', fontSize:'8.5px' }}>{safeNum(row.returnRatePct,0).toFixed(1)}%</td><td style={{ padding:'8px', textAlign:'right' }}>{statusBadge(`${safeNum(row.score,0).toFixed(0)}/100 ${row.status || ''}`)}</td></tr>)}</tbody>
+       </table></div>
+      )}
+     </div>
+
+     {panel('TODAY\'S OWNER CHECKLIST','A short decision list generated from the same target and exception logic used above.',
+      <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'8px' }}>
+       {safeRows(executive.dailyChecklist).map((item,index)=><div key={item.task} style={{ display:'grid', gridTemplateColumns:'28px 1fr auto', gap:'8px', alignItems:'start', padding:'10px', background:'#fafafa', border:'1px solid #f0ece5', borderRadius:'10px' }}>
+        <span style={{ width:'26px', height:'26px', borderRadius:'8px', background:index===0?'#fff1f0':'#fff8e7', color:index===0?'#b42318':'#8b6500', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'9px', fontWeight:'900' }}>{index+1}</span>
+        <div><strong style={{ display:'block', color:'#27303e', fontSize:'9px', marginBottom:'3px' }}>{item.task}</strong><span style={{ color:'#6f7783', fontSize:'8px', lineHeight:1.4 }}>{item.note}</span></div>
+        {statusBadge(item.status)}
+       </div>)}
+      </div>
+     )}
+
+     <p style={{ color:'#858c97', fontSize:'8px', lineHeight:1.5, margin:'11px 2px 0' }}>Source discipline: this dashboard only presents existing Foundation calculations. Sales, returns, released payroll, approved expenses, production, inventory, collections, and cash records remain governed by their current source modules.</p>
+    </>
+   )}
+  </div>
+ )
+})()}
+
+ {activeTab==='dashboard' && (!isOwnerRole || ownerDashboardMode==='operations') && (
  <div className="romas-executive-dashboard">
  <div className="romas-dashboard-header">
  <div>
@@ -35683,6 +36087,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <p className="romas-dashboard-subtitle">Roma's Donuts operational overview</p>
  </div>
  <div className="romas-dashboard-actions">
+ {isOwnerRole && <button type="button" style={{...btnYellow, width:'auto', padding:'8px 13px', marginTop:0, fontSize:'11px' }} onClick={()=>setOwnerDashboardMode('command')}>OWNER COMMAND CENTER</button>} {/* OWNER_DASHBOARD_RETURN_V2 */}
  <span className="romas-dashboard-date">{today}</span>
  <button style={{...btnYellow, width:'auto', padding:'8px 13px', marginTop:0, fontSize:'11px' }} onClick={async()=>{ await loadDashboard(); await loadDashboardCharts(); await loadDeliveryInvoices(); showToast(' Dashboard refreshed!') }}>REFRESH</button>
  {(adminRole==='owner'||adminRole==='hr') && (
@@ -35690,6 +36095,104 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
  </div>
  </div>
+
+ {/* OWNER DOCUMENT & ACTION CENTER */}
+ {isOwnerRole && (
+ <div id="owner-document-action-center" style={{ background:'white', border:'2px solid #1a1a2e', borderTop:'6px solid #FDD412', borderRadius:'16px', padding:isMobile?'13px':'17px', marginBottom:'20px', boxShadow:'0 8px 24px rgba(26,26,46,0.10)' }}>
+  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap' }}>
+   <div>
+    <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'10px', fontWeight:'900', letterSpacing:'0.8px' }}>OWNER CONTROL</p>
+    <h3 style={{ margin:'0 0 4px', color:'#1a1a2e', fontSize:'17px' }}>Document & Action Center</h3>
+    <p style={{ margin:0, color:'#666', fontSize:'11px', lineHeight:1.5 }}>Every saved NTE, charge slip, agreement, and company document appears here for review, printing, and controlled owner action.</p>
+   </div>
+   <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+    <button style={{...btnGray, width:'auto', padding:'7px 10px', marginTop:0, fontSize:'10px' }} disabled={companyDocumentRecordsLoading || chargesLoading} onClick={loadOwnerActionCenter}>{companyDocumentRecordsLoading || chargesLoading?'REFRESHING...':'REFRESH'}</button>
+    <button style={{...btnBlack, width:'auto', padding:'7px 10px', marginTop:0, fontSize:'10px' }} onClick={()=>{ setDocumentCenterView('records'); handleTabClick('documents') }}>VIEW FULL ARCHIVE</button>
+    <button style={{...btnYellow, width:'auto', padding:'7px 10px', marginTop:0, fontSize:'10px' }} onClick={()=>setOwnerActionCenterExpanded(prev=>!prev)}>{ownerActionCenterExpanded?'COLLAPSE':'OPEN QUEUE'}</button>
+   </div>
+  </div>
+
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(3,1fr)':'repeat(3,minmax(150px,220px))', gap:'8px', marginTop:'12px' }}>
+   {[
+    ['Open documents', ownerOpenDocumentRecords.length, '#4a90d9'],
+    ['Charge decisions', ownerPendingEmployeeCharges.length, ownerPendingEmployeeCharges.length?'#ca1b1b':'#2d8a4e'],
+    ['Total action items', ownerActionCenterCount, ownerActionCenterCount?'#f5a623':'#2d8a4e']
+   ].map(([label,value,color])=>(
+    <div key={label} style={{ border:`1px solid ${color}55`, borderLeft:`4px solid ${color}`, borderRadius:'10px', padding:'9px 10px', background:'#fafafa', minWidth:0 }}>
+     <p style={{ margin:0, color:'#777', fontSize:'9px', fontWeight:'800', textTransform:'uppercase' }}>{label}</p>
+     <p style={{ margin:'2px 0 0', color, fontSize:'20px', fontWeight:'900' }}>{value}</p>
+    </div>
+   ))}
+  </div>
+
+  {ownerActionCenterExpanded && (
+  <div style={{ marginTop:'14px' }}>
+   {(companyDocumentRecordsLoading || chargesLoading) && <p style={{ margin:0, color:'#777', fontSize:'11px' }}>Loading owner actions...</p>}
+   {!companyDocumentRecordsLoading && !chargesLoading && ownerActionCenterCount === 0 && (
+    <div style={{ background:'#f0fff4', border:'1px solid #b7e4c7', borderRadius:'10px', padding:'12px', color:'#2d8a4e', fontSize:'11px', fontWeight:'800' }}>No document or charge action is currently waiting.</div>
+   )}
+
+   {ownerPendingEmployeeCharges.length > 0 && (
+    <div style={{ marginBottom:'13px' }}>
+     <p style={{ margin:'0 0 7px', color:'#ca1b1b', fontSize:'11px', fontWeight:'900' }}>EMPLOYEE CHARGES REQUIRING OWNER DECISION</p>
+     {ownerPendingEmployeeCharges.map(charge => (
+      <div key={charge.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', border:'1px solid #f2b8b8', borderLeft:'5px solid #ca1b1b', borderRadius:'10px', padding:'10px 11px', marginBottom:'7px', background:'#fff8f8' }}>
+       <div style={{ flex:'1 1 240px', minWidth:0 }}>
+        <p style={{ margin:'0 0 3px', color:'#1a1a2e', fontSize:'12px', fontWeight:'900' }}>{charge.employee_name} — {php(charge.total_cost)}</p>
+        <p style={{ margin:0, color:'#666', fontSize:'10px' }}>{charge.item_name || 'Employee charge'} · {charge.reason || 'No reason provided'}</p>
+       </div>
+       <div style={{ display:'flex', gap:'5px', flexWrap:'wrap' }}>
+        <button style={{...btnBlack, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>printChargeForm(charge)}>PRINT</button>
+        {charge.status==='pending_owner' && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>approveCharge(charge)}>APPROVE & SEND</button>}
+        {charge.status==='pending_owner' && <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>dismissCharge(charge)}>DISMISS</button>}
+        {charge.status==='disputed' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>ownerFinalDecision(charge,'force_approve')}>ENFORCE</button>}
+        {charge.status==='disputed' && <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>ownerFinalDecision(charge,'dismiss')}>DISMISS</button>}
+       </div>
+      </div>
+     ))}
+    </div>
+   )}
+
+   {ownerOpenDocumentRecords.length > 0 && (
+    <div>
+     <p style={{ margin:'0 0 7px', color:'#1a1a2e', fontSize:'11px', fontWeight:'900' }}>OPEN DOCUMENTS — PRINT OR TAKE ACTION</p>
+     <div style={{ maxHeight:'560px', overflowY:'auto', paddingRight:'3px' }}>
+      {ownerOpenDocumentRecords.map(record => {
+       const linkedCharge = ownerLinkedChargeByDocumentId[String(record.id)]
+       const isChargeSlip = String(record.form_key || '').toUpperCase() === 'FIN-CHARGE-SLIP'
+       const isAgreement = isResellerAgreementFormKey(record.form_key)
+       const busy = !!ownerDocumentActionBusy[record.id]
+       return (
+        <div key={record.id} style={{ border:'1px solid #e2e5ea', borderLeft:`5px solid ${isChargeSlip?'#ca1b1b':'#4a90d9'}`, borderRadius:'10px', padding:'10px 11px', marginBottom:'7px', background:isChargeSlip?'#fffaf7':'white' }}>
+         <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'flex-start' }}>
+          <div style={{ flex:'1 1 260px', minWidth:0 }}>
+           <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap' }}>
+            <p style={{ margin:0, color:'#1a1a2e', fontSize:'12px', fontWeight:'900' }}>{record.document_type || 'Company Document'}</p>
+            <Badge label={getCompanyDocumentRecordStatusLabel(record.status)} color={getCompanyDocumentRecordStatusColor(record.status)} />
+            {linkedCharge && <Badge label={`Charge: ${String(linkedCharge.status || '').replace(/_/g,' ')}`} color={linkedCharge.status==='disputed'?'red':linkedCharge.status==='agreed'?'green':'yellow'} />}
+           </div>
+           <p style={{ margin:'3px 0 0', color:'#666', fontSize:'10px' }}>{record.document_no} · {record.employee_name || record.reseller_name || 'Company record'}{record.amount?` · ${php(record.amount)}`:''}</p>
+           <p style={{ margin:'2px 0 0', color:'#999', fontSize:'9px' }}>Created by {record.created_by || record.prepared_by || 'Admin'} · {new Date(record.created_at).toLocaleString('en-PH')}</p>
+          </div>
+          <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:'flex-end' }}>
+           <button style={{...btnGray, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9px' }} onClick={()=>viewCompanyDocumentRecord(record)}>VIEW</button>
+           <button style={{...btnBlack, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
+           {isChargeSlip && !linkedCharge && <button disabled={busy} style={{...btnGreen, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9px', opacity:busy?0.6:1 }} onClick={()=>createEmployeeChargeFromDocument(record)}>{busy?'SENDING...':'APPROVE & SEND CHARGE'}</button>}
+           {!isAgreement && !isChargeSlip && String(record.status || 'draft').toLowerCase()==='draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9px' }} onClick={()=>updateCompanyDocumentRecordStatus(record,'served')}>MARK SERVED</button>}
+           {!isAgreement && !['closed','completed'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9px' }} onClick={()=>updateCompanyDocumentRecordStatus(record,'closed')}>CLOSE</button>}
+           <button style={{...btnRed, width:'auto', padding:'6px 8px', marginTop:0, fontSize:'9px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>
+          </div>
+         </div>
+        </div>
+       )
+      })}
+     </div>
+    </div>
+   )}
+  </div>
+  )}
+ </div>
+ )}
 
  {/* TIMED IN MODAL */}
  {showTimedInModal && (
@@ -41499,16 +42002,17 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  )}
 
- {/* BASE DOUGH RECIPE */}
- <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'12px', alignItems:'start', marginBottom:'16px' }}>{/* COSTING_SHARED_RECIPE_GRID_V1 */}
+  {/* BASE DOUGH RECIPE */}
+ <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'12px', padding:'12px', marginBottom:0, minWidth:0 }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px', flexWrap:'wrap', gap:'6px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}> Base Dough Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Reusable shared formula. Products must explicitly link the exact grams used; this recipe is never auto-counted. Enter all quantities in grams (g) per batch.</p>
+ <p style={{ color:'#888', fontSize:'10px', margin:'0 0 5px', lineHeight:1.35 }}>Reusable shared formula. Products must explicitly link the exact grams used; this recipe is never auto-counted. Enter all quantities in grams (g) per batch.</p>
  {baseDoughIngredients.length > 0 && (() => {
  const { totalCost, totalGrams, costPerGram } = computeBaseDoughTotals()
  return (
- <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', fontSize:'12px', fontWeight:'800' }}>
+ <div style={{ display:'flex', gap:'7px 10px', flexWrap:'wrap', fontSize:'10px', fontWeight:'800' }}>
  <span style={{ color:'#ca1b1b' }}>Total batch cost: {php(totalCost)}</span>
  <span style={{ color:'#555' }}>Total batch weight: {totalGrams.toLocaleString('en-PH')}g</span>
  <span style={{ color:'#2d8a4e' }}>Cost per gram: ₱{costPerGram.toFixed(4)}/g</span>
@@ -41517,7 +42021,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  })()}
  </div>
  {selectedRecipeVariantId!== 'base'? (
- <button style={{...btnRed, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
+ <button style={{...btnRed, width:'auto', padding:'7px 11px', marginTop:0, fontSize:'10px' }} onClick={()=>{ setSelectedRecipeVariantId('base'); setEditingBaseDough(baseDoughIngredients.length>0?baseDoughIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT BASE DOUGH</button>
  ): (
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={saveBaseDough}>{savingRecipe?' Saving...':' SAVE'}</button>
@@ -41551,8 +42055,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {baseDoughIngredients.length === 0? (
  <p style={{ color:'#aaa', fontSize:'13px', fontStyle:'italic' }}>No base dough recipe set yet. Click Edit to define your base dough ingredients.</p>
  ): (
- <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#f9f9f9', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#888' }}>
+ <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', minWidth:0 }}>
+ <div style={{ display:'grid', gridTemplateColumns:'minmax(120px,2fr) .85fr .55fr .9fr', background:'#f9f9f9', padding:'5px 7px', fontSize:'9px', fontWeight:'bold', color:'#888', gap:'4px' }}>
  <span>Ingredient</span><span style={{ textAlign:'right' }}>Qty/batch</span><span style={{ textAlign:'right' }}>Unit</span><span style={{ textAlign:'right' }}>Cost/batch</span>
  </div>
  {baseDoughIngredients.map((r,i)=>{
@@ -41561,7 +42065,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const cost = inv? productionRecipeIngredientCost(r): 0
  const warning = inv? productionRecipeCostWarning(inv): ''
  return (
- <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <div key={r.id} style={{ display:'grid', gridTemplateColumns:'minmax(120px,2fr) .85fr .55fr .9fr', padding:'5px 7px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', gap:'4px', alignItems:'center' }}>
  <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ {warning}</div>:null}</span>
  <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
  <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
@@ -41577,15 +42081,15 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
 
  {/* POWDER BASE RECIPE */}
- <div style={{ background:'white', border:'2px solid #7b4f9e', borderRadius:'14px', padding:'18px', marginBottom:'16px' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
+ <div style={{ background:'white', border:'2px solid #7b4f9e', borderRadius:'12px', padding:'12px', marginBottom:0, minWidth:0 }}>
+ <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px', flexWrap:'wrap', gap:'6px' }}>
  <div>
  <h3 style={{ color:'#7b4f9e', margin:'0 0 4px', fontSize:'15px' }}> Powder Base Recipe</h3>
- <p style={{ color:'#888', fontSize:'12px', margin:'0 0 6px' }}>Reusable shared formula. Products must explicitly link the exact grams used; this recipe is never auto-counted. Enter all quantities in grams (g) per batch.</p>
+ <p style={{ color:'#888', fontSize:'10px', margin:'0 0 5px', lineHeight:1.35 }}>Reusable shared formula. Products must explicitly link the exact grams used; this recipe is never auto-counted. Enter all quantities in grams (g) per batch.</p>
  {powderBaseIngredients.length > 0 && (() => {
  const { totalCost, totalGrams, costPerGram } = computePowderBaseTotals()
  return (
- <div style={{ display:'flex', gap:'12px', flexWrap:'wrap', fontSize:'12px', fontWeight:'800' }}>
+ <div style={{ display:'flex', gap:'7px 10px', flexWrap:'wrap', fontSize:'10px', fontWeight:'800' }}>
  <span style={{ color:'#7b4f9e' }}>Total batch cost: {php(totalCost)}</span>
  <span style={{ color:'#555' }}>Total batch weight: {totalGrams.toLocaleString('en-PH')}g</span>
  <span style={{ color:'#2d8a4e' }}>Cost per gram: ₱{costPerGram.toFixed(4)}/g</span>
@@ -41594,7 +42098,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  })()}
  </div>
  {selectedRecipeVariantId!== 'powder_base'? (
- <button style={{...btnBlack, background:'#7b4f9e', width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setSelectedRecipeVariantId('powder_base'); setEditingPowderBase(powderBaseIngredients.length>0?powderBaseIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT POWDER BASE</button>
+ <button style={{...btnBlack, background:'#7b4f9e', width:'auto', padding:'7px 11px', marginTop:0, fontSize:'10px' }} onClick={()=>{ setSelectedRecipeVariantId('powder_base'); setEditingPowderBase(powderBaseIngredients.length>0?powderBaseIngredients.map(r=>({...r, quantity_per_batch:productionRecipeQuantityGrams(r), unit:'g'})):[{ item_name:'', inventory_item_id:'', quantity_per_batch:'', unit:'g', notes:'' }]) }}> EDIT POWDER BASE</button>
  ): (
  <div style={{ display:'flex', gap:'8px' }}>
  <button style={{...btnGreen, width:'auto', padding:'8px 16px', marginTop:0, fontSize:'12px', opacity:savingRecipe?0.6:1 }} disabled={savingRecipe} onClick={savePowderBase}>{savingRecipe?' Saving...':' SAVE'}</button>
@@ -41628,8 +42132,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {powderBaseIngredients.length === 0? (
  <p style={{ color:'#aaa', fontSize:'13px', fontStyle:'italic' }}>No powder base recipe set yet. Click Edit to define your powder base ingredients.</p>
  ): (
- <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
- <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', background:'#f9f9f9', padding:'6px 10px', fontSize:'10px', fontWeight:'bold', color:'#888' }}>
+ <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden', minWidth:0 }}>
+ <div style={{ display:'grid', gridTemplateColumns:'minmax(120px,2fr) .85fr .55fr .9fr', background:'#f9f9f9', padding:'5px 7px', fontSize:'9px', fontWeight:'bold', color:'#888', gap:'4px' }}>
  <span>Ingredient</span><span style={{ textAlign:'right' }}>Qty/batch</span><span style={{ textAlign:'right' }}>Unit</span><span style={{ textAlign:'right' }}>Cost/batch</span>
  </div>
  {powderBaseIngredients.map((r,i)=>{
@@ -41638,7 +42142,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const cost = inv? productionRecipeIngredientCost(r): 0
  const warning = inv? productionRecipeCostWarning(inv): ''
  return (
- <div key={r.id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr 1fr', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <div key={r.id} style={{ display:'grid', gridTemplateColumns:'minmax(120px,2fr) .85fr .55fr .9fr', padding:'5px 7px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0', gap:'4px', alignItems:'center' }}>
  <span style={{ fontSize:'12px' }}>{r.item_name}{inv?<span style={{ color:'#2d8a4e', fontSize:'10px' }}> linked</span>:<span style={{ color:'#aaa', fontSize:'10px' }}> (no inventory link)</span>}{warning?<div style={{ color:'#ca1b1b', fontSize:'10px', fontWeight:'800', marginTop:'2px' }}>⚠ {warning}</div>:null}</span>
  <span style={{ textAlign:'right', fontSize:'12px' }}>{qtyGrams}</span>
  <span style={{ textAlign:'right', fontSize:'12px' }}>g</span>
@@ -41652,7 +42156,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
  </div>
 
- {/* VARIANT RECIPES */}
+ </div>
+  {/* VARIANT RECIPES */}
  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'flex-end', margin:'4px 0 12px' }}>
   <div><h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'14px' }}>Product Recipe & Unit Cost</h3><p style={{ color:'#888', fontSize:'11px', margin:0, lineHeight:1.5 }}>Each product must explicitly link the exact grams of Base Dough, Powder Base, filling, topping, glaze, and frying fat used by one product batch. Shared recipes are reference formulas; they are never auto-counted.</p></div>
   <button style={{...btnGray, width:'auto', padding:'7px 12px', marginTop:0, fontSize:'10px' }} onClick={()=>setExpandedRecipeVariantId(null)}>COLLAPSE ALL</button>
@@ -41664,8 +42169,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const catColor = { Regular:'#ca1b1b', Filled:'#4a90d9', Premium:'#7b4f9e', 'Glaze Circlet':'#2d8a4e', Bites:'#f57c00', Giant:'#333' }[cat] || '#333'
   return <div key={cat} style={{ marginBottom:'14px' }}>
    <div style={{ background:catColor, color:'white', padding:'8px 12px', borderRadius:'9px 9px 0 0', display:'flex', justifyContent:'space-between', fontWeight:'900', fontSize:'12px' }}><span>{cat}</span><span style={{ opacity:0.8, fontWeight:'500' }}>{catVariants.length} product(s)</span></div>
-   <div style={{ border:`1px solid ${catColor}33`, borderTop:'none', borderRadius:'0 0 9px 9px', overflow:'hidden' }}>
-   {catVariants.map((v,index)=>{
+   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'9px', padding:'9px', background:'#f7f8fa', border:`1px solid ${catColor}33`, borderTop:'none', borderRadius:'0 0 9px 9px', overflow:'visible' }}>{/* COSTING_TWO_COLUMN_CARDS_V2 */} {catVariants.map((v,index)=>{
     const recipeRows = variantRecipes[v.id] || []
     const isEditingRecipe = selectedRecipeVariantId === v.id && selectedRecipeVariantId!=='base' && selectedRecipeVariantId!=='powder_base'
     const cost = computeVariantCost(v.id, v.pieces_per_batch)
@@ -41678,10 +42182,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
     const hasBaseLink = recipeRows.some(r=>String(r.inventory_item_id)===BASE_DOUGH_RECIPE_LINK_ID)
     const hasPowderLink = recipeRows.some(r=>String(r.inventory_item_id)===POWDER_BASE_RECIPE_LINK_ID)
     const statusColor = cost.statusCode==='healthy'?'green':cost.statusCode==='below_target'?'orange':'red'
-    return <div key={v.id} style={{ background:index%2===0?'white':'#fcfcfc', borderTop:index===0?'none':'1px solid #eee', padding:'10px 12px' }}>
-     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(220px,1.5fr) repeat(5,minmax(82px,0.7fr)) auto', gap:'8px', alignItems:'center' }}>
+    return <div key={v.id} style={{ background:'white', border:'1px solid #e5e7eb', borderRadius:'10px', padding:'8px 9px', minWidth:0, boxShadow:'0 1px 2px rgba(0,0,0,0.04)', alignSelf:'start' }}>
+     <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(155px,1.2fr) repeat(2,minmax(68px,0.8fr))', gap:'8px', alignItems:'center' }}>
       <div>
-       <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}><strong style={{ color:'#333', fontSize:'12px' }}>{v.name}</strong><Badge label={cost.statusLabel} color={statusColor}/>{hasBaseLink&&<Badge label="BASE" color="green"/>}{hasPowderLink&&<Badge label="POWDER" color="blue"/>}</div>
+       <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', alignItems:'center' }}>{/* COSTING_INLINE_MARGIN */}<strong style={{ color:'#333', fontSize:'12px' }}>{v.name}</strong>{(cost.statusCode==='incomplete'||cost.statusCode==='review')&&<Badge label={cost.statusLabel} color={statusColor}/>}<span style={{ color:!displayedRecipeCost.isCostReady?'#999':safeNum(displayedRecipeCost.currentResellerPrice,0)>0&&safeNum(displayedRecipeCost.currentResellerPrice,0)>=safeNum(displayedRecipeCost.totalCost,0)?'#2d8a4e':'#ca1b1b', fontSize:'9px', fontWeight:'900', whiteSpace:'nowrap' }}>Reseller {displayedRecipeCost.isCostReady&&safeNum(displayedRecipeCost.currentResellerPrice,0)>0?`${(((safeNum(displayedRecipeCost.currentResellerPrice,0)-safeNum(displayedRecipeCost.totalCost,0))/safeNum(displayedRecipeCost.currentResellerPrice,0))*100).toFixed(1)}%`:'—'}</span><span style={{ color:!displayedRecipeCost.isCostReady?'#999':safeNum(displayedRecipeCost.currentRetailPrice,0)>0&&safeNum(displayedRecipeCost.currentRetailPrice,0)>=safeNum(displayedRecipeCost.totalCost,0)?'#2d8a4e':'#ca1b1b', fontSize:'9px', fontWeight:'900', whiteSpace:'nowrap' }}>Retail {displayedRecipeCost.isCostReady&&safeNum(displayedRecipeCost.currentRetailPrice,0)>0?`${(((safeNum(displayedRecipeCost.currentRetailPrice,0)-safeNum(displayedRecipeCost.totalCost,0))/safeNum(displayedRecipeCost.currentRetailPrice,0))*100).toFixed(1)}%`:'—'}</span></div>
        <p style={{ color:'#999', fontSize:'9px', margin:'3px 0 0' }}>{safeNum(v.pieces_per_batch)} pcs/batch · EU {positiveNum(v.equivalent_unit_factor,1).toFixed(2)} · handling {safeNum(v.labor_handling_factor,0)>0?safeNum(v.labor_handling_factor).toFixed(2):'profile'} · normal mix {safeNum(v.normal_daily_pieces)} pcs/day · {recipeRows.length} linked component(s)</p>
       </div>
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>MATERIALS/PC</p><strong style={{ color:'#333', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.directMaterialCostPerPiece):'—'}</strong></div>
@@ -41689,7 +42193,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>COMPANY PRICE</p><strong style={{ color:'#555', fontSize:'11px' }}>{php(cost.currentResellerPrice)}</strong></div>
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>CURRENT SRP</p><strong style={{ color:'#555', fontSize:'11px' }}>{php(cost.currentRetailPrice)}</strong></div>
       <div style={{ textAlign:isMobile?'left':'right' }}><p style={{ color:'#999', fontSize:'8px', margin:'0 0 2px' }}>SUGGESTED SRP</p><strong style={{ color:'#2d8a4e', fontSize:'11px' }}>{displayedRecipeCost.isCostReady?php(displayedRecipeCost.recommendedRetailPrice):'—'}</strong></div>
-      <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end' }}>
+      <div style={{ display:'flex', gap:'5px', flexWrap:'wrap', justifyContent:isMobile?'flex-start':'flex-end', gridColumn:isMobile?'auto':'1 / -1', paddingTop:isMobile?0:'2px' }}>
        <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>setExpandedRecipeVariantId(isExpanded?null:v.id)}>{isExpanded?'HIDE':'DETAILS'}</button>
 	       <button style={{...btnYellow, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setEditingVariantId(v.id);setAdvancedCostOverrideVariantId(null);setEditVariantFields({ pieces_per_batch:v.pieces_per_batch, selling_price:v.selling_price, normal_daily_pieces:v.normal_daily_pieces || '', equivalent_unit_factor:v.equivalent_unit_factor || 1, equivalent_unit_note:v.equivalent_unit_note || '', packaging_profile_id:v.packaging_profile_id || getDefaultCostProfile('packaging')?.id || '', labor_profile_id:v.labor_profile_id || getDefaultCostProfile('labor')?.id || '', labor_handling_factor:v.labor_handling_factor ?? '', delivery_profile_id:v.delivery_profile_id || getDefaultCostProfile('delivery')?.id || '', packaging_cost_per_piece:v.packaging_cost_per_piece || '', labor_cost_per_piece_manual:safeNum(v.labor_cost_per_batch)>0?moneyRound(safeNum(v.labor_cost_per_batch)/positiveNum(v.pieces_per_batch,1)):'', delivery_cost_per_piece:v.delivery_cost_per_piece || '', cost_override_notes:v.cost_override_notes || '' })}}>PRODUCT SETUP</button>
        <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'9px' }} onClick={()=>{setSelectedRecipeVariantId(v.id);setExpandedRecipeVariantId(v.id);setEditingVariantRecipe(recipeRows.length?recipeRows.map(r=>({...r,quantity_per_batch:productionRecipeQuantityGrams(r),unit:'g'})):[{item_name:'',inventory_item_id:'',quantity_per_batch:'',unit:'g',ingredient_type:'topping',notes:''}])}}>{recipeRows.length?'EDIT RECIPE':'ADD RECIPE'}</button>
@@ -46806,7 +47310,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {(()=>{
  // Compute analytics from deliveryInvoices and dailyExpenses
  const paidInvoices = deliveryInvoices.filter(i=>i.status==='paid'||i.status==='partial')
- const allInvoices = deliveryInvoices
+ const allInvoices = deliveryInvoices.filter(inv=>!inv?.delivery_date || String(inv.delivery_date).slice(0,10) <= today) /* ANALYTICS_EXCLUDE_FUTURE_INVOICES_V1 */
 
  // Revenue by day (last 30 days)
  const last30 = Array.from({length:30},(_,i)=>{ const d=new Date(); d.setDate(d.getDate()-29+i); return d.toISOString().slice(0,10) })

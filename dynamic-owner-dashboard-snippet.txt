@@ -106,6 +106,30 @@
     </div>
    </div>
 
+   <section id="owner-document-action-summary" style={{ background:'#fff', border:'1px solid #e8dfd2', borderLeft:`5px solid ${ownerActionCenterCount?'#ca1b1b':'#2d8a4e'}`, borderRadius:'12px', padding:isMobile?'12px':'14px', margin:'0 0 12px', boxShadow:'0 3px 12px rgba(31,41,55,.05)' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+     <div style={{ flex:'1 1 320px', minWidth:0 }}>
+      <p style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'8px', fontWeight:'900', letterSpacing:'.7px' }}>DOCUMENT &amp; ACTION CENTER</p>
+      <h3 style={{ margin:'0 0 4px', color:'#172033', fontSize:'14px' }}>{ownerActionCenterCount > 0 ? `${ownerActionCenterCount} item${ownerActionCenterCount!==1?'s':''} need owner review` : 'No document action is waiting'}</h3>
+      <p style={{ margin:0, color:'#737b87', fontSize:'9px', lineHeight:1.45 }}>{ownerOpenDocumentRecords.length} open document{ownerOpenDocumentRecords.length!==1?'s':''} · {ownerPendingEmployeeCharges.length} charge decision{ownerPendingEmployeeCharges.length!==1?'s':''}. Open the queue to view, print, approve employee charges, serve, close, or void records.</p>
+     </div>
+     <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+      <button type="button" style={{...btnGray, width:'auto', padding:'8px 10px', marginTop:0, fontSize:'9px' }} disabled={companyDocumentRecordsLoading || chargesLoading} onClick={loadOwnerActionCenter}>{companyDocumentRecordsLoading || chargesLoading?'REFRESHING...':'REFRESH QUEUE'}</button>
+      <button type="button" style={{...btnRed, width:'auto', padding:'8px 11px', marginTop:0, fontSize:'9px' }} onClick={()=>setOwnerDashboardMode('operations')}>OPEN DOCUMENT ACTIONS</button>
+     </div>
+    </div>
+    {ownerOpenDocumentRecords.slice(0,3).map(record=><div key={record.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', marginTop:'8px', padding:'8px 9px', background:'#fafafa', border:'1px solid #eee7db', borderRadius:'8px' }}>
+     <div style={{ flex:'1 1 230px', minWidth:0 }}>
+      <strong style={{ display:'block', color:'#27303e', fontSize:'9px' }}>{record.document_type || 'Company Document'} · {record.document_no}</strong>
+      <span style={{ display:'block', color:'#858c96', fontSize:'8px', marginTop:'2px' }}>{record.employee_name || record.reseller_name || 'Company record'}{record.amount?` · ${php(record.amount)}`:''}</span>
+     </div>
+     <div style={{ display:'flex', gap:'5px', flexWrap:'wrap' }}>
+      <button type="button" style={{...btnGray, width:'auto', padding:'5px 8px', marginTop:0, fontSize:'8px' }} onClick={()=>viewCompanyDocumentRecord(record)}>VIEW</button>
+      <button type="button" style={{...btnBlack, width:'auto', padding:'5px 8px', marginTop:0, fontSize:'8px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
+     </div>
+    </div>)}
+   </section>
+
    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap', margin:'0 0 12px', padding:'9px 12px', background:'#fffdf8', border:'1px solid #eadfc9', borderRadius:'10px' }}>
     <p style={{ margin:0, color:'#626b78', fontSize:'9px' }}>
      Period: <strong style={{ color:'#172033' }}>{fd?.start || `${foundationMonth}-01`} to {fd?.end || foundationMonth}</strong>
