@@ -1980,7 +1980,7 @@ function buildReleasedTimeAdjustmentCorrectionPreview(req = {}, adminValidation 
  if (!validation?.integrity?.isValidCompleted) return { ...base, message:adminValidation?.message || 'A complete attendance record is required.' }
  if (!rateInfo.isConfigured) return { ...base, message:'The employee hourly rate cannot be verified. Correct the employee payroll rate first.' }
  if (adminValidation?.alreadyApproved) return { ...base, message:'Another approved request already covers this attendance shift.' }
- if (requestType !== 'meal_break' && adminValidation?.mealBreakPending) return { ...base, message:'Resolve the pending No Meal Break request first because it changes the final OT/UT minutes.' }
+ if (requestType !== 'meal_break' && adminValidation?.mealBreakPending) return { ...base, message:'Resolve the pending No Meal Break request first because it changes final OT eligibility and automatic UT minutes.' }
 
  if (requestType === 'overtime') {
   if (!employeeRuleEnabled(employee?.overtime_pay_eligible, true)) return { ...base, message:'This employee is not eligible for overtime pay.' }
@@ -2012,7 +2012,7 @@ function buildReleasedTimeAdjustmentCorrectionPreview(req = {}, adminValidation 
  if (requestType === 'meal_break') {
   const breakEvidence = getAttendanceBreakPunchEvidence(validation)
   if (breakEvidence.hasBreakEvidence) return { ...base, message:getNoMealBreakBreakConflictMessage(breakEvidence, 'Next-cutoff resolution') }
-  if (adminValidation?.approvedTimeConflict) return { ...base, message:'Approved OT/UT already depends on the current break decision. Review that approved record before changing the meal-break treatment.' }
+  if (adminValidation?.approvedTimeConflict) return { ...base, message:'Approved OT already depends on the current break decision. Review that approved record before changing the meal-break treatment.' }
   const currentMetrics = adminValidation?.currentMetrics || validation?.metrics || {}
   const revisedMetrics = adminValidation?.revisedMetrics || getAttendanceDayWorkMetrics(validation?.integrity?.completedLogs || [], validation?.breakRowsByLogId || {}, 0)
   const currentSplit = getPayrollAttendanceDeductionSplit(currentMetrics)
@@ -4369,7 +4369,7 @@ const DOCUMENT_BATCH1A_FORMS = [
  },
  {
   "key": "PAY-UT",
-  "title": "UT / Undertime Request Form",
+  "title": "Legacy UT Audit Record",
   "category": "Payroll & Salary",
   "refPrefix": "RD-UT",
   "purpose": "Document an employee request to leave before the scheduled end of shift and the payroll impact.",
@@ -5232,7 +5232,7 @@ const DOCUMENT_BATCH1A_FORMS = [
     "label": "Attendance Policy Text",
     "type": "textarea",
     "required": true,
-    "placeholder": "Employees must follow assigned schedules; personally record time in and time out; observe approved break limits; file leave, OT, and undertime requests through approved channels; and promptly report attendance errors. Falsification, buddy punching, and unauthorized time entries are prohibited. Payroll treatment follows approved company rules and documented exceptions.",
+    "placeholder": "Employees must follow assigned schedules; personally record time in and time out; observe approved break limits; file leave, OT, and No Meal Break requests through approved channels; and promptly report attendance errors. Undertime is attendance-detected and deducted automatically under the 30-minute block policy. Falsification, buddy punching, and unauthorized time entries are prohibited. Payroll treatment follows approved company rules and documented exceptions.",
     "span": "full"
    },
    {
@@ -5496,7 +5496,7 @@ const DOCUMENT_CENTER_CATALOG = [
  { code:'PAY-DEDUCTION-AUTH', name:'Salary Deduction Authorization Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Authorize deductions for CA, shortages, damages, lost items, or other approved charges.' },
  { code:'PAY-ADJUSTMENT', name:'Payroll Adjustment Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Record payroll additions, deductions, corrections, and reasons.' },
  { code:'PAY-OT', name:'OT Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document overtime request and approval.' },
- { code:'PAY-UT', name:'UT / Undertime Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Document undertime request, approval, and payroll impact.' },
+ { code:'PAY-UT', name:'Legacy UT Audit Record', category:'Payroll & Salary', batch:'Batch 1', priority:'Low', status:'Legacy / Read Only', purpose:'Retain historical UT request records for audit only. Current undertime is attendance-detected and deducted automatically.' },
  { code:'PAY-LEAVE', name:'Leave Request Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Track filed leaves and approval status.' },
  { code:'PAY-DTR-DISPUTE', name:'DTR Correction / Dispute Form', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Correct or dispute attendance records before payroll release.' },
  { code:'PAY-SIL', name:'SIL Conversion / Unused Leave Claim Form', category:'Payroll & Salary', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document unused service incentive leave conversion or claim.' },
@@ -18821,7 +18821,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  // shift end cannot erase an early Time Out and no shortage is double-classified.
  rawOvertimeMinutes = Math.max(0, Math.round(attendanceMetrics.paidWorkedMinutes - REQUIRED_PAID_WORK_MINUTES))
  overtimeMinutes = overtimePayEligible ? roundPayableOvertimeMinutes(rawOvertimeMinutes) : 0
- if (undertimeMinutes>0) status='Undertime - Pending Approval'
+ if (undertimeMinutes>0) status='Undertime - Automatic Deduction'
  else if (overtimeMinutes>0) status='Overtime - Pending Filing'
 
  // Auto-compute Night Shift Differential (10PM - 6AM), including next-day time-out 
@@ -18864,57 +18864,16 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   return
  }
 
- let autoUTRequestCreated = false
- let autoUTRequestSkipped = false
- let autoUTRequestError = ''
- if (undertimeMinutes > 0) {
-  try {
-   const { data:existingUTRequests, error:existingUTError } = await supabase
-    .from('time_adjustment_requests')
-    .select('id,status')
-    .eq('employee_id', employee.id)
-    .eq('attendance_date', activeAttendanceDate)
-    .eq('request_type', 'undertime')
-    .in('status', ['pending', 'approved'])
-    .limit(1)
-
-   if (existingUTError) throw existingUTError
-   if (existingUTRequests?.length) {
-    autoUTRequestSkipped = true
-   } else {
-    const { error:autoUTError } = await supabase.from('time_adjustment_requests').insert({
-     employee_id:employee.id,
-     employee_code:employee.employee_code,
-     employee_name:employee.full_name,
-     attendance_date:activeAttendanceDate,
-     request_type:'undertime',
-     minutes:undertimeMinutes,
-     employee_reason:'System auto-filed for admin review: attendance has a verified schedule shortage after the meal-break rule. Late arrival and early Time Out are schedule-anchored and cannot be offset by extra minutes outside the scheduled shift. Payroll will count only the attendance-verified minutes after approval.',
-     status:'pending'
-    })
-    if (autoUTError) throw autoUTError
-    autoUTRequestCreated = true
-   }
-  } catch(autoUTErr) {
-   autoUTRequestError = autoUTErr?.message || String(autoUTErr)
-   console.error('Auto undertime request failed:', autoUTErr)
-  }
- }
-
  setTodayLog(data); setCameraMode(null); setCapturedPhoto(null)
- await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}${autoUTRequestCreated?' | Auto UT request created':''}`)
+ await logAudit('TIME OUT', employee.full_name, employee.full_name, `Timed out at ${timeOut} for attendance date ${activeAttendanceDate}${nsdMinutes>0?' | NSD: '+nsdMinutes+' mins':''}${undertimeMinutes>0?` | Automatic UT: ${undertimeMinutes} mins from ${rawUndertimeMinutes} actual shortage mins`:''}`)
  let msg = ' Time Out saved successfully!'
  if (activeAttendanceDate!== today) msg += `\n\n Night shift time-out saved under attendance date: ${activeAttendanceDate}.`
  if (nsdMinutes > 0) msg += `\n\n Night Shift Differential: ${nsdMinutes} minutes (${(nsdMinutes/60).toFixed(1)} hrs) will be computed in payroll at 10% premium.`
  if (overtimeMinutes>0) msg += `\n\n ${rawOvertimeMinutes} actual OT minute(s) detected. ${overtimeMinutes} minute(s) are payable in completed ${OVERTIME_BLOCK_MINUTES}-minute blocks. Please file an OT request.`
- if (undertimeMinutes>0) {
-  if (autoUTRequestCreated) msg += `\n\n ${rawUndertimeMinutes} actual shortage minute(s) were detected and filed as ${undertimeMinutes} chargeable UT minute(s) under the ${UNDERTIME_BLOCK_MINUTES}-minute block policy. Payroll will count only the verified policy minutes after approval.`
-  else if (autoUTRequestSkipped) msg += `\n\n ${undertimeMinutes} min undertime was detected. An existing pending or approved UT request already covers this attendance date.`
-  else msg += `\n\n ${undertimeMinutes} min undertime was detected, but the approval request could not be created${autoUTRequestError?': '+autoUTRequestError:''}. Ask the admin to review the attendance record before payroll.`
- }
- if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No UT request or deduction was created.`
+ if (undertimeMinutes>0) msg += `\n\n ${rawUndertimeMinutes} actual shortage minute(s) were detected. The system recorded ${undertimeMinutes} chargeable UT minute(s) under the ${UNDERTIME_BLOCK_MINUTES}-minute block policy and will deduct them automatically in payroll. No UT request or admin approval is required.`
+ if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No automatic UT deduction was created.`
  if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break was recorded separately as Overbreak and was not rounded again into UT.`
- if (totalBreakMins===0) msg += `\n\n No meal break was recorded. The standard 60-minute deduction was applied. If you genuinely worked continuously without a meal break, file a No Meal Break exception for admin review before OT/UT approval.`
+ if (totalBreakMins===0) msg += `\n\n No meal break was recorded. The standard 60-minute deduction was applied. If you genuinely worked continuously without a meal break, file a No Meal Break exception for admin review before payroll; approval will recalculate automatic UT and any OT eligibility.`
   alert(msg)
  }
  async function toggleTimeAdjustmentFilingPanel() {
@@ -18963,17 +18922,17 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  const targetDate = String(dateValue || '').slice(0, 10)
  const requestType = String(typeValue || 'overtime').toLowerCase()
  const overtimePayEligible = employeeRuleEnabled(employee?.overtime_pay_eligible, true)
- const undertimeDeductionApplicable = employeeRuleEnabled(employee?.undertime_deduction_applicable, true)
- if (requestType === 'overtime' && !overtimePayEligible) {
-  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Overtime filing is disabled for your employee payroll policy. No OT pay is created for this attendance date.', code:'overtime_exempt' }
-  setTimeAdjPreview(exemptPreview)
+ if (requestType === 'undertime') {
+  const automaticPreview = { loading:false, canSubmit:false, minutes:0, message:`Undertime is attendance-detected and deducted automatically in ${UNDERTIME_BLOCK_MINUTES}-minute blocks. Employees do not file UT requests.`, code:'undertime_automatic' }
+  setTimeAdjPreview(automaticPreview)
+  setOtRequestType('overtime')
   setOtRequestMinutes('')
   setOtRequestFrom('')
   setOtRequestTo('')
-  return exemptPreview
+  return automaticPreview
  }
- if (requestType === 'undertime' && !undertimeDeductionApplicable) {
-  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Undertime filing is not required for your employee payroll policy because no UT deduction applies.', code:'undertime_exempt' }
+ if (requestType === 'overtime' && !overtimePayEligible) {
+  const exemptPreview = { loading:false, canSubmit:false, minutes:0, message:'Overtime filing is disabled for your employee payroll policy. No OT pay is created for this attendance date.', code:'overtime_exempt' }
   setTimeAdjPreview(exemptPreview)
   setOtRequestMinutes('')
   setOtRequestFrom('')
@@ -19003,7 +18962,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   const { integrity } = validation
   const canonicalDate = String(validation.resolvedAttendanceDate || targetDate).slice(0,10)
   const guardDates = Array.from(new Set([targetDate, canonicalDate].filter(Boolean)))
-  let minutes = requestType === 'overtime' ? validation.actualOvertimeMinutes : requestType === 'undertime' ? validation.actualUndertimeMinutes : 0
+  let minutes = requestType === 'overtime' ? validation.actualOvertimeMinutes : 0
   let canSubmit = false
   let message = ''
   let rangeValidation = null
@@ -19068,26 +19027,21 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
      .select('id,request_type,minutes,attendance_date')
      .eq('employee_id', employee.id)
      .in('attendance_date', guardDates)
-     .in('request_type', ['overtime','undertime'])
+     .eq('request_type', 'overtime')
      .eq('status', 'approved')
      .limit(10)
     if (approvedTimeError) throw approvedTimeError
     if (approvedTimeRows?.length) {
-     message = 'No Meal Break filing is blocked because OT or UT is already approved for this attendance shift. Ask the admin to undo that OT/UT approval first, then file the break exception so all minutes can be recalculated in the correct order.'
+     message = 'No Meal Break filing is blocked because OT is already approved for this attendance shift. Ask the admin to undo that OT approval first, then file the break exception so all minutes can be recalculated in the correct order.'
     } else {
      canSubmit = true
      message = `No break was recorded. The standard ${validation.metrics.deductedBreakMinutes}-minute deduction remains active unless this filing is approved. If approved, paid work becomes ${revisedMetrics.paidWorkedMinutes} minute(s), resulting in ${revisedOTMinutes} OT minute(s) and ${revisedUTMinutes} UT minute(s).`
     }
    }
   } else if (activeMealBreakRequests.some(row => row.status === 'pending')) {
-   message = 'OT/UT filing is blocked while a No Meal Break request is pending for this attendance shift. The break decision must be reviewed first because it changes the final paid-work, OT, and UT minutes.'
-  } else if (requestType === 'undertime' && !employeeRuleEnabled(employee.undertime_deduction_applicable, true)) {
-   minutes = 0
-   message = 'No undertime request is required because this employee is exempt from undertime deduction.'
+   message = 'OT filing is blocked while a No Meal Break request is pending for this attendance shift. The break decision must be reviewed first because it changes the final paid-work, OT, and automatic UT minutes.'
   } else if (requestType === 'overtime' && minutes <= 0) {
    message = 'No overtime can be filed. The attendance record has no payable minutes beyond eight paid work hours after the approved break treatment.'
-  } else if (requestType === 'undertime' && minutes <= 0) {
-   message = 'No undertime can be filed. The attendance record already contains at least eight paid work hours.'
   } else if (requestType === 'overtime') {
    const lockedFrom = normalizeTimeInputValue(validation?.overtimeWindow?.verifiedFrom)
    const lockedTo = normalizeTimeInputValue(validation?.overtimeWindow?.verifiedTo)
@@ -19099,11 +19053,6 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
    message = canSubmit
     ? `System-locked actual OT range: ${formatClockTimeForDisplay(lockedFrom)} to ${formatClockTimeForDisplay(lockedTo)} (${rangeValidation.filedRawMinutes} raw minute(s)). Payable OT is ${minutes} minute(s) in completed ${OVERTIME_BLOCK_MINUTES}-minute blocks. OT To is capped at the actual Time Out and cannot be extended.`
     : rangeValidation.message
-  } else {
-   setOtRequestFrom('')
-   setOtRequestTo('')
-   canSubmit = true
-   message = `${validation.metrics.rawUndertimeMinutes} actual shortage minute(s) are supported by attendance. Chargeable UT is ${minutes} minute(s) after rounding upward to the next ${UNDERTIME_BLOCK_MINUTES}-minute payroll block. Payroll will count only the verified policy minutes after admin approval.`
   }
 
   if (requestType === 'overtime' && !canSubmit) {
@@ -19129,6 +19078,11 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
 
  async function submitTimeAdjRequest() {
  if (timeAdjSubmitLockRef.current) return
+ if (otRequestType === 'undertime') {
+  alert(`Undertime cannot be filed. It is calculated from verified attendance and deducted automatically in ${UNDERTIME_BLOCK_MINUTES}-minute blocks.`)
+  setOtRequestType('overtime')
+  return
+ }
  if (!otRequestReason || !otRequestDate) { alert('Please select a date and enter a reason.'); return }
  if (otRequestType === 'meal_break' && !mealBreakAttestation) {
   alert('Please confirm that you actually worked continuously and did not take a meal break for this attendance shift.')
@@ -19178,12 +19132,12 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
     .select('id,request_type,attendance_date')
     .eq('employee_id', employee.id)
     .in('attendance_date', duplicateDates)
-    .in('request_type', ['overtime','undertime'])
+    .eq('request_type', 'overtime')
     .eq('status', 'approved')
     .limit(10)
-   if (approvedTimeError) { alert('Failed checking approved OT/UT: '+approvedTimeError.message); return }
+   if (approvedTimeError) { alert('Failed checking approved OT: '+approvedTimeError.message); return }
    if (approvedTimeRows?.length) {
-    alert('No Meal Break filing is blocked because OT or UT is already approved for this shift. Ask the admin to undo the approved OT/UT first, then file the break exception.')
+    alert('No Meal Break filing is blocked because OT is already approved for this shift. Ask the admin to undo the approved OT first, then file the break exception.')
     return
    }
   }
@@ -19249,9 +19203,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   }
   alert(otRequestType === 'overtime'
    ? `Overtime request filed for the system-locked actual range ${formatClockTimeForDisplay(lockedOTFrom)} to ${formatClockTimeForDisplay(lockedOTTo)}. ${safeNum(preview?.rangeValidation?.filedRawMinutes, exactMinutes)} actual minute(s) convert to ${exactMinutes} payable minute(s) under the completed ${OVERTIME_BLOCK_MINUTES}-minute policy, under attendance date ${canonicalAttendanceDate}.${canonicalAttendanceDate !== otRequestDate ? ` Your selected date ${otRequestDate} was correctly matched to the previous-day overnight shift.` : ''} OT To is capped at the actual Time Out. The request is waiting for admin approval.`
-   : otRequestType === 'undertime'
-    ? `Undertime request filed for ${exactMinutes} chargeable minute(s), based on ${safeNum(preview?.validation?.metrics?.rawUndertimeMinutes, exactMinutes)} actual shortage minute(s) and the ${UNDERTIME_BLOCK_MINUTES}-minute UT block policy. Waiting for admin approval.`
-    : `No Meal Break exception filed for attendance date ${canonicalAttendanceDate}. The standard 60-minute deduction remains active while the request is pending. If approved, the system will recalculate the exact OT or UT from actual attendance.`
+   : `No Meal Break exception filed for attendance date ${canonicalAttendanceDate}. The standard 60-minute deduction remains active while the request is pending. If approved, the system will recalculate automatic UT and any OT eligibility from actual attendance.`
   )
   setOtRequestReason('')
   setOtRequestReasonPreset('')
@@ -20871,12 +20823,12 @@ if (role === 'owner') return true
   .from('time_adjustment_requests')
   .select('id,employee_name,attendance_date,request_type,status')
   .eq('status', 'pending')
-  .in('request_type', ['overtime','undertime','meal_break'])
+  .in('request_type', ['overtime','meal_break'])
   .gte('attendance_date', start)
   .lte('attendance_date', end)
   .limit(1000)
  if (pendingTimeAdjustmentError) {
-  showToast('Final release blocked: pending OT/UT/No Meal Break requests could not be verified. Refresh and try again.', 'red')
+  showToast('Final release blocked: pending OT/No Meal Break requests could not be verified. Refresh and try again.', 'red')
   await logAudit('PAYROLL RELEASE BLOCKED - ATTENDANCE REQUEST CHECK FAILED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | ${pendingTimeAdjustmentError.message}`)
   return
  }
@@ -20884,13 +20836,12 @@ if (role === 'owner') return true
   const counts = (pendingTimeAdjustments || []).reduce((acc, row) => {
    const type = String(row.request_type || '').toLowerCase()
    if (type === 'overtime') acc.ot += 1
-   else if (type === 'undertime') acc.ut += 1
    else if (type === 'meal_break') acc.break += 1
    return acc
-  }, { ot:0, ut:0, break:0 })
-  const message = `${pendingTimeAdjustments.length} unresolved attendance request(s): OT ${counts.ot}, UT ${counts.ut}, No Meal Break ${counts.break}. Review them before releasing payroll.`
+  }, { ot:0, break:0 })
+  const message = `${pendingTimeAdjustments.length} unresolved attendance request(s): OT ${counts.ot}, No Meal Break ${counts.break}. Review them before releasing payroll. Automatic UT does not require approval.`
   showToast(`Final release blocked. ${message}`, 'red')
-  await logAudit('PAYROLL RELEASE BLOCKED - PENDING OT UT BREAK', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | ${message}`)
+  await logAudit('PAYROLL RELEASE BLOCKED - PENDING OT BREAK', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | ${message}`)
   return
  }
 
@@ -21286,7 +21237,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  { area:'Cash Flow', value:php(cashFlowValue), target:'Positive monthly cash flow', status:cashFlowValue >= 0? 'GOOD': 'ALERT', action:cashFlowValue >= 0? 'Cash flow is positive.': 'Delay non-critical expenses and prioritize collections.' },
  { area:'Receivables', value:php(overdueARValue), target:'Low overdue AR', status:overdueARValue <= 0? 'GOOD': arOverduePct <= 30? 'WATCH': 'CRITICAL', action:overdueARValue <= 0? 'No overdue AR detected.': 'Collect overdue reseller balances before increasing deliveries.' },
  { area:'Inventory Stock Risk', value:`${criticalStock} critical / ${reorderStock} reorder`, target:'0 critical items', status:criticalStock > 0? 'CRITICAL': reorderStock > 0? 'WATCH': 'GOOD', action:criticalStock > 0? 'Reorder critical ingredients/packaging immediately.': reorderStock > 0? 'Prepare purchase orders before stockout.': 'Inventory is stable.' },
- { area:'Approvals', value:`${pendingApprovalCount} pending`, target:'No aging approvals', status:pendingApprovalCount > 8? 'CRITICAL': pendingApprovalCount > 0? 'WATCH': 'GOOD', action:pendingApprovalCount > 0? 'Clear pending leave, CA, OT/UT, disputes, and expenses.': 'Approval queue is clear.' },
+ { area:'Approvals', value:`${pendingApprovalCount} pending`, target:'No aging approvals', status:pendingApprovalCount > 8? 'CRITICAL': pendingApprovalCount > 0? 'WATCH': 'GOOD', action:pendingApprovalCount > 0? 'Clear pending leave, CA, OT/No Meal Break, disputes, and expenses.': 'Approval queue is clear.' },
  { area:'Audit / Security', value:`${highRiskAudit} high-risk`, target:'0 high-risk actions', status:highRiskAudit > 0? 'ALERT': 'GOOD', action:highRiskAudit > 0? 'Review high-risk audit actions today.': 'No high-risk audit flags detected.' },
  { area:'Employee Documents', value:`${documentCompletion.toFixed(0)}% complete`, target:' 95% complete', status:documentCompletion >= 95? 'GOOD': documentCompletion >= 85? 'WATCH': 'ALERT', action:documentCompletion >= 95? 'HR documents are controlled.': 'Complete missing IDs, contracts, contacts, and government records.' },
  ]
@@ -23423,7 +23374,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const pendingApprovals = [
  { name:'Leave Requests', count:leaves.filter(r=>r.status==='pending').length },
  { name:'Cash Advances', count:caRequestsRows.filter(r=>r.status==='pending').length },
- { name:'OT/UT Requests', count:otRequestsRows.filter(r=>r.status==='pending').length },
+ { name:'OT / No Meal Break Requests', count:otRequestsRows.filter(r=>r.status==='pending' && ['overtime','meal_break'].includes(String(r.request_type || '').toLowerCase())).length },
  { name:'Payslip Disputes', count:disputesRows.filter(r=>r.status==='pending').length },
  { name:'Expenses', count:expenses.filter(r=>r.status==='pending').length },
  { name:'Reseller Disputes', count:resellerDisputesRows.filter(r=>r.status==='pending').length },
@@ -23483,7 +23434,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const approvalRows = [
 ...leaves.filter(r=>r.status==='pending').map(r=>({ type:'Leave', employee:r.employee_name || r.employee_code || '', date:r.created_at || r.leave_start || '', amount:0, reason:r.reason || '', id:r.id })),
 ...caRequestsRows.filter(r=>r.status==='pending').map(r=>({ type:'Cash Advance', employee:r.employee_name || r.employee_code || '', date:r.created_at || r.request_date || '', amount:safeNum(r.amount,0), reason:r.reason || '', id:r.id })),
-...otRequestsRows.filter(r=>r.status==='pending').map(r=>({ type:'OT/UT', employee:r.employee_name || r.employee_code || '', date:r.created_at || r.request_date || '', amount:0, reason:r.reason || '', id:r.id })),
+...otRequestsRows.filter(r=>r.status==='pending' && ['overtime','meal_break'].includes(String(r.request_type || '').toLowerCase())).map(r=>({ type:String(r.request_type || '').toLowerCase()==='meal_break'?'No Meal Break':'OT', employee:r.employee_name || r.employee_code || '', date:r.created_at || r.request_date || '', amount:0, reason:r.reason || '', id:r.id })),
 ...disputesRows.filter(r=>r.status==='pending').map(r=>({ type:'Payslip Dispute', employee:r.employee_name || r.employee_code || '', date:r.created_at || '', amount:0, reason:r.reason || r.dispute_reason || '', id:r.id })),
 ...expenses.filter(r=>r.status==='pending').map(r=>({ type:'Expense', employee:r.created_by || r.requested_by || '', date:r.created_at || r.expense_date || '', amount:safeNum(r.amount,0), reason:r.description || r.category || '', id:r.id })),
 ...resellerDisputesRows.filter(r=>r.status==='pending').map(r=>({ type:'Reseller Dispute', employee:r.reseller_name || r.customer_name || '', date:r.created_at || '', amount:0, reason:r.description || r.dispute_type || '', id:r.id })),
@@ -24190,7 +24141,7 @@ async function requestPushPermission() {
     .select('id,request_type,minutes,attendance_date,reviewed_by,reviewed_at')
     .eq('employee_id', req.employee_id)
     .in('attendance_date', approvalGuardDates)
-    .in('request_type', ['overtime','undertime'])
+    .eq('request_type', 'overtime')
     .eq('status', 'approved')
     .limit(10)
    if (approvedTimeError) throw approvedTimeError
@@ -24200,7 +24151,7 @@ async function requestPushPermission() {
    if (breakPunchEvidence.hasBreakEvidence) {
     message += getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval')
    } else if (approvedTimeConflict) {
-    message += `Approval blocked because ${getTimeAdjustmentRequestLabel(approvedTimeConflict.request_type)} is already approved for this shift. Undo that approval first, approve the break exception, then recalculate and approve OT/UT.`
+    message += `Approval blocked because OT is already approved for this shift. Undo that approval first, approve the break exception, then recalculate and approve OT.`
    } else {
     message += `If approved, the unpaid break deduction becomes 0 minute(s), paid work becomes ${revisedMetrics.paidWorkedMinutes} minute(s), OT becomes ${revisedOvertimeMinutes} minute(s), and UT becomes ${revisedUndertimeMinutes} minute(s).`
    }
@@ -24402,6 +24353,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  else if (view === 'approved') query = query.eq('status', 'approved')
  else if (view === 'history') query = query.in('status', ['approved','rejected','voided'])
  else query = query.in('status', ['pending','approved'])
+ if (view !== 'history') query = query.in('request_type', ['overtime','meal_break'])
  const { data, error } = await query.limit(view === 'history'? 100: 200)
  if (error) { showToast('Failed to load attendance adjustment requests: '+error.message, 'red'); return }
  const rows = data || []
@@ -24417,7 +24369,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   setTimeAdjComputedPayrollPeriods(periodResult.periods)
  }
  setTimeAdjRequests(rows)
- const adjustmentRows = rows.filter(req => ['overtime','undertime','meal_break'].includes(String(req?.request_type || '').toLowerCase()))
+ const adjustmentRows = rows.filter(req => ['overtime','meal_break'].includes(String(req?.request_type || '').toLowerCase()))
  const loadingMap = {}
  adjustmentRows.forEach(req => { loadingMap[req.id] = { loading:true, canApprove:false, message:'Calculating actual attendance...' } })
  setTimeAdjValidationById(loadingMap)
@@ -24495,13 +24447,13 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   .select('id,request_type,minutes,attendance_date,reviewed_by,reviewed_at')
   .eq('employee_id', req.employee_id)
   .in('attendance_date', duplicateDates)
-  .in('request_type', ['overtime','undertime'])
+  .eq('request_type', 'overtime')
   .eq('status', 'approved')
   .limit(10)
- if (approvedTimeError) { showToast('Failed checking approved OT/UT: '+approvedTimeError.message, 'red'); return }
+ if (approvedTimeError) { showToast('Failed checking approved OT: '+approvedTimeError.message, 'red'); return }
  if (approvedTimeRows?.length) {
   const conflict = approvedTimeRows[0]
-  showToast(`Approval blocked: ${getTimeAdjustmentRequestLabel(conflict.request_type)} is already approved for ${targetDate}. Undo it first, approve the No Meal Break exception, then recalculate OT/UT.`, 'red')
+  showToast(`Approval blocked: OT is already approved for ${targetDate}. Undo it first, approve the No Meal Break exception, then recalculate OT.`, 'red')
   return
  }
 
@@ -24634,8 +24586,8 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   const requestType = String(req?.request_type || '').toLowerCase()
   const currentStatus = String(req?.status || '').toLowerCase()
   const reviewNote = String(adjAdminReason[req?.id] || '').trim()
-  if (!['overtime','undertime'].includes(requestType)) {
-   showToast('This action is available only for an existing OT or UT request.', 'red')
+  if (requestType !== 'overtime') {
+   showToast('This action is available only for an existing OT request. Undertime is automatic and has no approval workflow.', 'red')
    return
   }
   if (!['pending','approved'].includes(currentStatus)) {
@@ -24688,12 +24640,12 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    .select('id,request_type,minutes,attendance_date')
    .eq('employee_id', req.employee_id)
    .in('attendance_date', guardDates)
-   .in('request_type', ['overtime','undertime'])
+   .eq('request_type', 'overtime')
    .eq('status', 'approved')
    .neq('id', req.id)
    .limit(10)
   if (otherApprovedTimeError) {
-   showToast('Failed checking approved OT/UT conflicts: ' + otherApprovedTimeError.message, 'red')
+   showToast('Failed checking approved OT conflicts: ' + otherApprovedTimeError.message, 'red')
    return
   }
   if (otherApprovedTimeRows?.length) {
@@ -24707,7 +24659,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    const confirmReopen = window.confirm(
     `Reopen this approved ${getTimeAdjustmentRequestLabel(requestType)} request and recalculate it as NO MEAL BREAK?\n\n` +
     `Employee: ${req.employee_name}\nAttendance date: ${targetDate}\nCurrent approved minutes: ${safeNum(req.minutes,0)}\n\n` +
-    `The existing approval will be returned to Pending, the old attendance OT/UT synchronization will be cleared, and the same request will be reused after the no-break decision. The employee will not file again.`
+    `The existing OT approval will be returned to Pending, its attendance synchronization will be cleared, and the same request will be reused after the no-break decision. The employee will not file again.`
    )
    if (!confirmReopen) return
 
@@ -24796,7 +24748,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
     return
    }
    mealBreakRequest = createdMealBreak
-   await logAudit('ADMIN-CREATED NO MEAL BREAK FROM EXISTING OT/UT', currentAdminLabel, req.employee_name, `${targetDate} | Source ${requestType.toUpperCase()} request ${req.id} | Reason: ${reviewNote}`)
+   await logAudit('ADMIN-CREATED NO MEAL BREAK FROM EXISTING OT', currentAdminLabel, req.employee_name, `${targetDate} | Source OT request ${req.id} | Reason: ${reviewNote}`)
   }
 
   await approveMealBreakExceptionRequest(
@@ -24832,6 +24784,10 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const reviewNote = adjAdminReason[req.id]||''
  const requestedAttendanceDate = String(req.attendance_date || '').slice(0,10)
  const requestType = String(req.request_type || '').toLowerCase()
+ if (requestType === 'undertime') {
+  showToast(`Undertime is deducted automatically from verified attendance in ${UNDERTIME_BLOCK_MINUTES}-minute blocks. Legacy UT records are audit-only and cannot be approved.`, 'orange')
+  return
+ }
 
  // Re-read the request before doing any approval work. This protects against a
  // stale admin screen where the same request was already approved, rejected, or
@@ -24851,7 +24807,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   return
  }
  if (String(freshRequest.status || '').toLowerCase() !== 'pending') {
-  showToast(`Approval blocked: this request is already ${String(freshRequest.status || 'processed').toLowerCase()}. Refresh the OT/UT list.`, 'red')
+  showToast(`Approval blocked: this request is already ${String(freshRequest.status || 'processed').toLowerCase()}. Refresh the OT / Break list.`, 'red')
   return
  }
 
@@ -24866,7 +24822,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const targetDate = String(validation.resolvedAttendanceDate || requestedAttendanceDate).slice(0,10)
  if (!validation.integrity.isValidCompleted) {
   showToast(`Approval cannot continue: ${validation.integrity.message} ${validation.resolutionMessage || ''} Correct the DTR first.`, 'red')
-  await logAudit('OT/UT APPROVAL REQUIRES DTR CORRECTION', currentAdminLabel, req.employee_name, `${requestType} requested ${requestedAttendanceDate} | ${validation.integrity.message}`)
+  await logAudit('OT APPROVAL REQUIRES DTR CORRECTION', currentAdminLabel, req.employee_name, `${requestType} requested ${requestedAttendanceDate} | ${validation.integrity.message}`)
   return
  }
 
@@ -24886,7 +24842,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   } else {
    showToast(`Approval blocked: ${targetDate} is inside already computed draft/review payroll (${periodText}). Undo that draft payroll first, process the attendance request, then recompute.`, 'red')
   }
-  await logAudit('OT/UT APPROVAL BLOCKED BY PAYROLL GUARD', currentAdminLabel, req.employee_name, `${requestType} ${req.minutes} min on ${targetDate} | Payroll: ${periodText}`)
+  await logAudit('OT APPROVAL BLOCKED BY PAYROLL GUARD', currentAdminLabel, req.employee_name, `${requestType} ${req.minutes} min on ${targetDate} | Payroll: ${periodText}`)
   return
  }
 
@@ -24895,7 +24851,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    `NO BREAK RECORD FOUND\n\nEmployee: ${req.employee_name}\nAttendance date: ${targetDate}\n\nThe current calculation still deducts the standard 60-minute meal break.\n\nOK = approve using the 60-minute deduction.\nCancel = do not approve yet; use CONFIRM NO BREAK & RECALCULATE after verifying the employee worked continuously.`
   )
   if (!keepStandardBreak) {
-   showToast('Approval paused. Verify the no-break claim and use CONFIRM NO BREAK & RECALCULATE before approving OT/UT.', 'orange')
+   showToast('Approval paused. Verify the no-break claim and use CONFIRM NO BREAK & RECALCULATE before approving OT.', 'orange')
    return
   }
  }
@@ -24910,13 +24866,13 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  .eq('status', 'approved')
  .neq('id', req.id)
  .limit(1)
- if (duplicateError) { showToast('Failed to check duplicate OT/UT: '+duplicateError.message, 'red'); return }
+ if (duplicateError) { showToast('Failed to check duplicate OT: '+duplicateError.message, 'red'); return }
  if (duplicateApproved && duplicateApproved.length > 0) {
   const existingApproval = duplicateApproved[0]
   const approvedByText = existingApproval.reviewed_by ? ` by ${existingApproval.reviewed_by}` : ''
   const approvedAtText = existingApproval.reviewed_at ? ` on ${new Date(existingApproval.reviewed_at).toLocaleString('en-PH')}` : ''
   showToast(`Approval blocked: this employee already has an approved ${requestType} request for the same attendance shift (${targetDate})${approvedByText}${approvedAtText}. Undo or void the existing approval before approving another request for this date.`, 'red')
-  await logAudit('DUPLICATE OT/UT APPROVAL BLOCKED', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | Existing approved request ${existingApproval.id} | ${existingApproval.minutes || 0} min`)
+  await logAudit('DUPLICATE OT APPROVAL BLOCKED', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | Existing approved request ${existingApproval.id} | ${existingApproval.minutes || 0} min`)
   return
  }
 
@@ -24935,7 +24891,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   .limit(1)
  if (pendingMealBreakError) { showToast('Failed checking pending No Meal Break request: '+pendingMealBreakError.message, 'red'); return }
  if (pendingMealBreakRows?.length) {
-  showToast(`Approval blocked: a No Meal Break exception is pending for ${targetDate}. Review it first because it changes the final OT/UT minutes.`, 'red')
+  showToast(`Approval blocked: a No Meal Break exception is pending for ${targetDate}. Review it first because it changes final OT eligibility and automatic UT minutes.`, 'red')
   return
  }
 
@@ -25003,7 +24959,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
     admin_reason:duplicateRollbackNote
    }).eq('id', req.id)
    showToast(`Approval blocked: another approved ${requestType} request already covers ${targetDate}. This duplicate remains pending for rejection or voiding.`, 'red')
-   await logAudit('CONCURRENT DUPLICATE OT/UT APPROVAL ROLLED BACK', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | Existing approved request ${approvedWinner?.id || ''}`)
+   await logAudit('CONCURRENT DUPLICATE OT APPROVAL ROLLED BACK', currentAdminLabel, req.employee_name, `${requestType} on ${targetDate} | Existing approved request ${approvedWinner?.id || ''}`)
    return
   }
  }
@@ -25017,7 +24973,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    reviewed_at:new Date().toISOString(),
    admin_reason:rollbackNote
   }).eq('id', req.id)
-  if (rollbackError) console.error('OT/UT approval rollback failed:', rollbackError)
+  if (rollbackError) console.error('OT approval rollback failed:', rollbackError)
  }
 
  const primaryAttendanceLog = validation.integrity.completedLogs[0]
@@ -25091,7 +25047,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   .neq('id', req.id)
   .limit(100)
  if (pendingDuplicateError) {
-  console.warn('Duplicate OT/UT cleanup lookup failed:', pendingDuplicateError)
+  console.warn('Duplicate OT cleanup lookup failed:', pendingDuplicateError)
  } else {
   autoVoidedDuplicateIds = (pendingDuplicateRows || []).map(row => row?.id).filter(Boolean)
   if (autoVoidedDuplicateIds.length > 0) {
@@ -25103,7 +25059,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
     admin_reason:duplicateVoidNote
    }).in('id', autoVoidedDuplicateIds)
    if (voidDuplicateError) {
-    console.warn('Duplicate OT/UT auto-void failed:', voidDuplicateError)
+    console.warn('Duplicate OT auto-void failed:', voidDuplicateError)
     autoVoidedDuplicateIds = []
    }
   }
@@ -25328,12 +25284,12 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
    .select('id,request_type,minutes,attendance_date')
    .eq('employee_id', req.employee_id)
    .in('attendance_date', guardDates)
-   .in('request_type', ['overtime','undertime'])
+   .eq('request_type', 'overtime')
    .eq('status', 'approved')
    .limit(10)
-  if (approvedTimeError) { showToast('Could not verify approved OT/UT: '+approvedTimeError.message, 'red'); return }
+  if (approvedTimeError) { showToast('Could not verify approved OT: '+approvedTimeError.message, 'red'); return }
   if (approvedTimeRows?.length) {
-   showToast('Undo blocked: approved OT/UT already depends on this meal-break decision. Undo the approved OT/UT first, then undo the No Meal Break exception.', 'red')
+   showToast('Undo blocked: approved OT already depends on this meal-break decision. Undo the approved OT first, then undo the No Meal Break exception.', 'red')
    return
   }
  }
@@ -30073,9 +30029,8 @@ async function computePayroll() {
   // - UT is attendance-driven. Once a valid Time In and Time Out exist, every
   //   chargeable shortage below 8 paid hours is deducted automatically even
   //   when no UT request was filed, approved, or reviewed.
-  // - UT filing remains a review/documentation workflow only; it does not create
-  //   or remove the payroll deduction. Attendance correction, approved No Meal
-  //   Break, grace rules, or an employee exemption are the only valid changes.
+  // - UT has no filing or approval workflow. Attendance correction, approved No
+  //   Meal Break, grace rules, or an employee exemption are the only valid changes.
   const overtimeMinutes = overtimePayEligible
    ? Object.entries(approvedOvertimeByDate).reduce((sum, [dateKey, approvedMinutes]) => {
       const actualMinutes = Math.max(0, safeNum(actualOvertimeCapacityByDate[dateKey], 0))
@@ -30630,13 +30585,12 @@ async function computePayroll() {
  const summary = {
   totalRows:rows.length,
   pendingOTCount:0,
-  pendingUTCount:0,
   approvedOTCount:0,
-  approvedUTCount:0,
+  legacyUTCount:0,
+  legacyUTMinutes:0,
   rejectedCount:0,
   voidedCount:0,
   totalApprovedOTMinutes:0,
-  totalApprovedUTMinutes:0,
   employeeMap:{},
   totalRegularBasisMinutes:0,
   topOT:[],
@@ -30655,9 +30609,14 @@ async function computePayroll() {
   const employeeCode = req?.employee_code || emp.employee_code || ''
   const attendanceDate = String(req?.attendance_date || '').slice(0, 10)
 
+  if (type === 'undertime') {
+   summary.legacyUTCount += 1
+   summary.legacyUTMinutes += minutes
+   return
+  }
+
   if (status === 'pending') {
    if (type === 'overtime') summary.pendingOTCount += 1
-   if (type === 'undertime') summary.pendingUTCount += 1
   } else if (status === 'approved') {
    if (!summary.employeeMap[employeeId]) {
     summary.employeeMap[employeeId] = { employeeId, employeeName, employeeCode, otMinutes:0, utMinutes:0, otCount:0, utCount:0, approvedDates:new Set(), regularBasisMinutes:0, otPct:0, utPct:0 }
@@ -30670,12 +30629,6 @@ async function computePayroll() {
     row.otMinutes += minutes
     row.otCount += 1
    }
-   if (type === 'undertime') {
-    summary.approvedUTCount += 1
-    summary.totalApprovedUTMinutes += minutes
-    row.utMinutes += minutes
-    row.utCount += 1
-   }
   } else if (status === 'rejected') summary.rejectedCount += 1
   else if (status === 'voided') summary.voidedCount += 1
  })
@@ -30687,19 +30640,16 @@ async function computePayroll() {
   const utPct = regularBasisMinutes > 0? moneyRound((row.utMinutes / regularBasisMinutes) * 100):0
   return { ...row, dateCount, regularBasisMinutes, otPct, utPct }
  })
- .sort((a,b)=>(b.otMinutes + b.utMinutes) - (a.otMinutes + a.utMinutes) || String(a.employeeName).localeCompare(String(b.employeeName)))
+ .sort((a,b)=>b.otMinutes - a.otMinutes || String(a.employeeName).localeCompare(String(b.employeeName)))
 
  summary.perEmployeeRows = perEmployeeRows
  summary.topOT = [...perEmployeeRows].filter(r=>r.otMinutes>0).sort((a,b)=>b.otMinutes-a.otMinutes).slice(0,5)
- summary.topUT = [...perEmployeeRows].filter(r=>r.utMinutes>0).sort((a,b)=>b.utMinutes-a.utMinutes).slice(0,5)
  summary.highOTRows = perEmployeeRows.filter(r=>r.otPct > 10)
  summary.totalRegularBasisMinutes = perEmployeeRows.reduce((sum,row)=>sum+safeNum(row.regularBasisMinutes,0),0)
  summary.totalOTPct = summary.totalRegularBasisMinutes > 0? moneyRound((summary.totalApprovedOTMinutes / summary.totalRegularBasisMinutes) * 100):0
- summary.totalUTPct = summary.totalRegularBasisMinutes > 0? moneyRound((summary.totalApprovedUTMinutes / summary.totalRegularBasisMinutes) * 100):0
  summary.highestOTEmployee = summary.topOT[0] || null
- summary.highestUTEmployee = summary.topUT[0] || null
- summary.pendingTotal = summary.pendingOTCount + summary.pendingUTCount
- summary.approvedTotal = summary.approvedOTCount + summary.approvedUTCount
+ summary.pendingTotal = summary.pendingOTCount
+ summary.approvedTotal = summary.approvedOTCount
  return summary
  })()
 
@@ -34351,7 +34301,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  tabs:[{key:'attendance',label:'Attendance'},{key:'employees',label:'Employees'},{key:'leaveRequests',label:'Leave \uD83D\uDD14'},{key:'announcements',label:'Announcements'},{key:'contracts',label:'Contracts'},{key:'performance',label:'Performance'},{key:'schedule',label:'Schedule'},{key:'holidays',label:'Holidays'},{key:'auditTrail',label:'Audit Trail'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
  { key:'payroll', icon:'\uD83D\uDCB0', label:'Payroll',
- tabs:[{key:'payroll',label:'Payroll'},{key:'cashAdvanceCoverage',label:'CA Coverage'},{key:'overtime',label:'OT / UT / Break'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'cashRequests',label:'Cash Adv \uD83D\uDD14'},{key:'disputes',label:'Disputes \uD83D\uDD14'}],
+ tabs:[{key:'payroll',label:'Payroll'},{key:'cashAdvanceCoverage',label:'CA Coverage'},{key:'overtime',label:'OT / Break'},{key:'adjustment',label:'Adjustment'},{key:'thirteenth',label:'13th Month'},{key:'finalpay',label:'Final Pay'},{key:'payrollHistory',label:'History'},{key:'remittance',label:'Remittance'},{key:'dtr',label:'DTR'},{key:'bankDisbursement',label:'Bank CSV'},{key:'cashRequests',label:'Cash Adv \uD83D\uDD14'},{key:'disputes',label:'Disputes \uD83D\uDD14'}],
  roles:['owner','manager','hr','payroll'] },
  { key:'inventory', icon:'\uD83D\uDCE6', label:'Inventory',
  tabs:[{key:'inventory',label:'Inventory'}],
@@ -36798,20 +36748,20 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  )}
 
- {/* OT/UT REQUESTS */}
+ {/* OT AND NO MEAL BREAK REQUESTS */}
  {activeTab==='overtime' && (
  <div>
- <h2 style={h2s}>Overtime / Undertime / Meal-Break Exceptions</h2>
+ <h2 style={h2s}>Overtime / Meal-Break Exceptions</h2>
  <div style={{ background:'linear-gradient(135deg,#fff8dc,#fffdf4)', border:'2px solid #FDD412', borderLeft:'6px solid #ca1b1b', borderRadius:'14px', padding:'14px', margin:'0 0 14px', width:'100%', boxSizing:'border-box', boxShadow:'0 4px 14px rgba(253,212,18,0.12)' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>Attendance Adjustment Control Center</strong>
- <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The standard 60-minute meal-break deduction remains active unless a verified No Meal Break filing is approved. Meal-break review must be completed before OT approval or final UT review because the break decision changes paid-work minutes. Payroll UT itself is always recalculated from verified attendance. Use <strong>Void / Undo</strong> before payroll release; use Payroll Adjustment after release.</p>
+ <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The standard 60-minute meal-break deduction remains active unless a verified No Meal Break filing is approved. No Meal Break review must be completed before OT approval because it changes paid-work minutes. Payroll undertime is attendance-detected and deducted automatically in {UNDERTIME_BLOCK_MINUTES}-minute blocks; it has no filing or approval step. Use <strong>Void / Undo</strong> for OT or No Meal Break before payroll release; use Payroll Adjustment after release.</p>
  </div>
 
  <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.20)', borderTop:'5px solid #ca1b1b', borderRadius:'16px', padding:'16px', margin:'0 0 16px', width:'100%', boxShadow:'0 5px 18px rgba(26,26,46,0.07)', boxSizing:'border-box' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>OT / UT Analytics</h3>
- <p style={{ margin:0, color:'#666', fontSize:'12px', lineHeight:1.5 }}>Based on the currently loaded OT/UT view. Official payroll totals count approved OT and automatic attendance-detected UT. The analytics below summarize the OT/UT request-review records currently loaded.</p>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>Overtime Approval Analytics</h3>
+ <p style={{ margin:0, color:'#666', fontSize:'12px', lineHeight:1.5 }}>These analytics summarize approved and pending OT requests in the current view. Automatic undertime belongs to attendance and payroll reporting, not the approval queue. Legacy UT records remain visible only in History for audit purposes.</p>
  </div>
  <Badge label={getOtUtWarningInfo(otUtAnalytics.totalOTPct).label} color={getOtUtWarningInfo(otUtAnalytics.totalOTPct).color} />
  </div>
@@ -36819,10 +36769,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div className="romas-kpi-grid" style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(6, 1fr)', gap:'10px', marginBottom:'14px' }}>
  {[
   {label:'Approved OT', value:`${Math.round((otUtAnalytics.totalApprovedOTMinutes/60)*10)/10}h`, note:`${otUtAnalytics.approvedOTCount} approved request(s)`, color:'#2d8a4e'},
-  {label:'Approved UT', value:`${Math.round((otUtAnalytics.totalApprovedUTMinutes/60)*10)/10}h`, note:`${otUtAnalytics.approvedUTCount} approved request(s)`, color:'#f5a623'},
   {label:'OT %', value:`${otUtAnalytics.totalOTPct}%`, note:getOtUtWarningInfo(otUtAnalytics.totalOTPct).message, color:otUtAnalytics.totalOTPct>10?'#ca1b1b':otUtAnalytics.totalOTPct>5?'#f5a623':'#2d8a4e'},
-  {label:'UT %', value:`${otUtAnalytics.totalUTPct}%`, note:'Approved undertime ratio', color:'#f5a623'},
-  {label:'Pending OT/UT', value:String(otUtAnalytics.pendingTotal), note:`OT ${otUtAnalytics.pendingOTCount} / UT ${otUtAnalytics.pendingUTCount}`, color:otUtAnalytics.pendingTotal>0?'#f5a623':'#2d8a4e'},
+  {label:'Pending OT', value:String(otUtAnalytics.pendingOTCount), note:'Requires admin review', color:otUtAnalytics.pendingOTCount>0?'#f5a623':'#2d8a4e'},
+  {label:'Automatic UT Rule', value:`${UNDERTIME_BLOCK_MINUTES} min`, note:'Attendance-detected; no request', color:'#4a90d9'},
+  {label:'Legacy UT Records', value:String(otUtAnalytics.legacyUTCount), note:'History/audit only', color:'#777'},
   {label:'High OT Warning', value:String(otUtAnalytics.highOTRows.length), note:'Employees above 10% OT', color:otUtAnalytics.highOTRows.length>0?'#ca1b1b':'#2d8a4e'}
  ].map(card=>(
   <div key={card.label} style={{ border:`2px solid ${card.color}`, borderRadius:'12px', padding:'12px', background:'#fff', minHeight:'88px' }}>
@@ -36846,16 +36796,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   ))}
  </div>
 
- <div style={{ border:'1px solid #fff0cf', borderRadius:'12px', overflow:'hidden' }}>
- <div style={{ background:'#fff8dc', color:'#b36b00', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Top 5 Employees With Most UT</div>
- {otUtAnalytics.topUT.length===0? <p style={{ margin:'12px', color:'#888', fontSize:'12px' }}>No approved UT review records in this view.</p>:
-  otUtAnalytics.topUT.map((row,idx)=>(
-   <div key={`toput-${row.employeeId}`} style={{ display:'grid', gridTemplateColumns:'32px 1fr auto', gap:'8px', alignItems:'center', padding:'9px 12px', borderTop:idx?'1px solid #eee':'none' }}>
-   <strong style={{ color:'#f5a623' }}>#{idx+1}</strong>
-   <div><strong style={{ color:'#333', fontSize:'12px' }}>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · {row.utCount} approved UT review request(s)</p></div>
-   <div style={{ textAlign:'right' }}><strong style={{ color:'#f5a623' }}>{Math.round((row.utMinutes/60)*10)/10}h</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.utPct}%</p></div>
-   </div>
-  ))}
+ <div style={{ border:'1px solid #dbe9f8', borderRadius:'12px', overflow:'hidden' }}>
+ <div style={{ background:'#eef6ff', color:'#1f5f99', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Automatic Undertime Policy</div>
+ <div style={{ padding:'12px', color:'#555', fontSize:'12px', lineHeight:1.6 }}>
+  Verified attendance shortage is rounded upward to the next {UNDERTIME_BLOCK_MINUTES}-minute block and deducted automatically during payroll computation. Approved No Meal Break changes the paid-work calculation first. OT remains a separate manual request.
+ </div>
  </div>
  </div>
 
@@ -36866,14 +36811,12 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <th style={{ padding:'9px', textAlign:'left', borderBottom:'1px solid #eee' }}>Employee</th>
  <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>OT</th>
  <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>OT %</th>
- <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>UT</th>
- <th style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #eee' }}>UT %</th>
  <th style={{ padding:'9px', textAlign:'center', borderBottom:'1px solid #eee' }}>Warning</th>
  </tr>
  </thead>
  <tbody>
  {otUtAnalytics.perEmployeeRows.length===0? (
-  <tr><td colSpan="6" style={{ padding:'12px', color:'#888', textAlign:'center' }}>No approved OT/UT records to calculate employee percentages.</td></tr>
+  <tr><td colSpan="4" style={{ padding:'12px', color:'#888', textAlign:'center' }}>No approved OT records to calculate employee percentages.</td></tr>
  ) : otUtAnalytics.perEmployeeRows.slice(0, 20).map(row=>{
   const warn = getOtUtWarningInfo(row.otPct)
   return (
@@ -36881,8 +36824,6 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    <td style={{ padding:'9px', borderBottom:'1px solid #f1f1f1' }}><strong>{row.employeeName}</strong><p style={{ margin:'2px 0 0', color:'#777', fontSize:'11px' }}>{row.employeeCode || 'No code'} · basis {Math.round(row.regularBasisMinutes/60)}h</p></td>
    <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1' }}>{row.otMinutes} min</td>
    <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1', color:row.otPct>10?'#ca1b1b':row.otPct>5?'#f5a623':'#2d8a4e', fontWeight:'800' }}>{row.otPct}%</td>
-   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1' }}>{row.utMinutes} min</td>
-   <td style={{ padding:'9px', textAlign:'right', borderBottom:'1px solid #f1f1f1', color:'#f5a623', fontWeight:'800' }}>{row.utPct}%</td>
    <td style={{ padding:'9px', textAlign:'center', borderBottom:'1px solid #f1f1f1' }}><Badge label={warn.label} color={warn.color} /></td>
    </tr>
   )
@@ -36904,6 +36845,24 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const isOvertimeRequest = requestType === 'overtime'
  const isUndertimeRequest = requestType === 'undertime'
  const isMealBreakRequest = requestType === 'meal_break'
+ if (isUndertimeRequest) {
+  return (
+   <div key={req.id} style={{...cardS, border:'1.5px solid #bbb', borderTop:'6px solid #777', background:'linear-gradient(180deg,#f7f7f7 0%,#ffffff 42%)', width:'100%', minWidth:0, margin:0, padding:isMobile?'12px':'16px', borderRadius:'16px', boxSizing:'border-box', alignSelf:'start' }}>
+    <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap', alignItems:'flex-start' }}>
+     <strong style={{ color:'#555', fontSize:'15px' }}>{req.employee_name}</strong>
+     <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+      <Badge label="LEGACY UT AUDIT" color="gray" />
+      <Badge label={String(req.status || '').toUpperCase()} color="gray" />
+     </div>
+    </div>
+    <p style={cps}>Attendance Date: <strong>{req.attendance_date}</strong> | Historical Recorded UT: <strong>{safeNum(req.minutes,0)} min</strong></p>
+    <div style={{ background:'#eef6ff', border:'1px solid #b8d8ff', borderRadius:'10px', padding:'10px', color:'#1f5f99', fontSize:'12px', lineHeight:1.55, fontWeight:'700' }}>
+     This is a read-only legacy UT request retained for audit history. It does not control payroll, cannot be approved or undone here, and will not create a second deduction. Current undertime is calculated directly from verified attendance and deducted automatically in {UNDERTIME_BLOCK_MINUTES}-minute blocks.
+    </div>
+    {req.admin_reason && <p style={{...cps, marginTop:'8px' }}>Historical Admin Note: <em>"{req.admin_reason}"</em></p>}
+   </div>
+  )
+ }
  const parsedTimeReason = parseTimeAdjustmentEmployeeReason(req.employee_reason || '')
  const parsedMealReason = parseMealBreakExceptionEmployeeReason(req.employee_reason || '')
  const displayReason = isMealBreakRequest ? parsedMealReason.cleanReason : parsedTimeReason.cleanReason
@@ -47919,7 +47878,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'11px', letterSpacing:'1px', textTransform:'uppercase', margin:'0 0 10px' }}>Quick Actions</p>
  <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'8px' }}>
  {[
- { label:'OT / UT / Break', icon:' ', action:toggleTimeAdjustmentFilingPanel, disabled:false },
+ { label:'OT / No Meal Break', icon:' ', action:toggleTimeAdjustmentFilingPanel, disabled:false },
  { label:getEmployeeLeaveInfo(employee).buttonLabel, icon:' ', action:()=>{ closeAllPanels(); setShowLeaveRequest(!showLeaveRequest) }, disabled:false },
  { label:'Cash Advance', icon:' ', action:()=>{ closeAllPanels(); setShowCashAdvanceRequest(!showCashAdvanceRequest) }, disabled:false },
  { label:'My Payslips', icon:' ', action:()=>{ closeAllPanels(); setShowPayslips(!showPayslips) }, disabled:false },
@@ -48014,9 +47973,9 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {showOTRequest && (
  <div style={{ background:'#f9f9f9', padding:'14px', borderRadius:'12px', border:'1px solid #ddd', marginBottom:'8px' }}>
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}> BACK</button>
- <h3 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'14px' }}>File OT / Undertime / No Meal Break</h3>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'14px' }}>File Overtime / No Meal Break</h3>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'9px 10px', marginBottom:'10px' }}>
-  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>Select the exact attendance date being filed. Late filing is allowed for a completed past attendance date, including filings submitted one or more days later. The standard 60-minute meal-break deduction remains active unless a No Meal Break request is approved.</p>
+  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>Select the exact attendance date being filed. OT and No Meal Break still require approval. Undertime cannot be filed because verified shortage is deducted automatically in {UNDERTIME_BLOCK_MINUTES}-minute blocks. The standard 60-minute meal-break deduction remains active unless a No Meal Break request is approved.</p>
  </div>
  <label style={lblS}>Attendance Date Being Filed:</label>
  <input
@@ -48050,7 +48009,6 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
   style={inputStyle}
  >
   <option value="overtime">Overtime</option>
-  <option value="undertime">Undertime</option>
   <option value="meal_break">No Meal Break Exception</option>
  </select>
  {otRequestType === 'overtime' ? (
@@ -48067,13 +48025,6 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
   Locked OT: {safeNum(timeAdjPreview?.rangeValidation?.filedMinutes,0)} minute(s)
  </div>
  </>
- ) : otRequestType === 'undertime' ? (
- <>
- <label style={lblS}>Attendance-Supported Minutes:</label>
- <div style={{...inputStyle, marginBottom:'6px', background:timeAdjPreview.canSubmit?'#eefaf1':timeAdjPreview.loading?'#f8f9fa':'#fff5f5', border:`1.5px solid ${timeAdjPreview.canSubmit?'#2d8a4e':timeAdjPreview.loading?'#ddd':'#ffd0d0'}`, color:timeAdjPreview.canSubmit?'#1f6d3b':'#8b0000', fontWeight:'900', fontSize:'18px' }}>
-  {timeAdjPreview.loading?'Checking...':`${safeNum(timeAdjPreview.minutes,0)} minute(s)`}
- </div>
- </>
  ) : (
  <div style={{ background:'white', border:`1.5px solid ${timeAdjPreview.canSubmit?'#1a1a2e':'#ffd0d0'}`, borderRadius:'12px', padding:'12px', marginBottom:'8px' }}>
   <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:'8px' }}>
@@ -48084,7 +48035,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
    <div><span style={lblS}>Current Break Deduction</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.currentDeductedBreakMinutes,0)} min</strong></div>
    <div><span style={lblS}>Requested Deduction</span><strong style={{ color:'#1a1a2e' }}>0 min</strong></div>
    <div><span style={lblS}>Revised Paid Work</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.revisedPaidWorkedMinutes,0)} min</strong></div>
-   <div><span style={lblS}>Revised OT / UT</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.revisedOTMinutes,0)} OT / {safeNum(timeAdjPreview?.mealBreakImpact?.revisedUTMinutes,0)} UT</strong></div>
+   <div><span style={lblS}>Revised OT / Automatic UT</span><strong>{safeNum(timeAdjPreview?.mealBreakImpact?.revisedOTMinutes,0)} OT / {safeNum(timeAdjPreview?.mealBreakImpact?.revisedUTMinutes,0)} automatic UT</strong></div>
   </div>
  </div>
  )}
@@ -48108,14 +48059,6 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <option value="Staff shortage / manpower gap">Staff shortage / manpower gap</option>
  <option value="Management request">Management request</option>
  <option value="Inventory or restocking task">Inventory or restocking task</option>
- </>
- ) : otRequestType === 'undertime' ? (
- <>
- <option value="Medical / health appointment">Medical / health appointment</option>
- <option value="Family emergency">Family emergency</option>
- <option value="Personal matter (pre-approved)">Personal matter (pre-approved)</option>
- <option value="Early release approved by supervisor">Early release approved by supervisor</option>
- <option value="School / educational obligation">School / educational obligation</option>
  </>
  ) : (
  <>
@@ -48142,7 +48085,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
   style={{ background:timeAdjPreview.canSubmit && !submittingTimeAdjRequest && (otRequestType!=='meal_break' || mealBreakAttestation)?'#1a1a2e':'#bbb', color:'white', padding:'12px', border:'none', borderRadius:'10px', width:'100%', cursor:timeAdjPreview.canSubmit && !submittingTimeAdjRequest && (otRequestType!=='meal_break' || mealBreakAttestation)?'pointer':'not-allowed', fontWeight:'bold', fontSize:'14px' }}
   onClick={submitTimeAdjRequest}
  >
-  {submittingTimeAdjRequest?'SUBMITTING REQUEST...':timeAdjPreview.loading?'VALIDATING ATTENDANCE...':otRequestType==='meal_break'?'SUBMIT NO MEAL BREAK EXCEPTION':'SUBMIT SYSTEM-LOCKED OT / UT REQUEST'}
+  {submittingTimeAdjRequest?'SUBMITTING REQUEST...':timeAdjPreview.loading?'VALIDATING ATTENDANCE...':otRequestType==='meal_break'?'SUBMIT NO MEAL BREAK EXCEPTION':'SUBMIT SYSTEM-LOCKED OT REQUEST'}
  </button>
  </div>
  )}
