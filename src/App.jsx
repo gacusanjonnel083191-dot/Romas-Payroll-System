@@ -1894,6 +1894,21 @@ function requiresStrictCameraTimeIn(emp = {}) {
  return employeeRuleEnabled(emp?.strict_camera_timein, false)
 }
 
+function buildAttendanceGuardIdentity(emp = {}, secureSessionToken = '') {
+ const sessionToken = String(secureSessionToken || '').trim()
+ if (emp?.id && sessionToken) {
+  return { employee_id:emp.id, session_token:sessionToken }
+ }
+
+ const employeeCode = String(emp?.employee_code || '').trim()
+ const employeePin = String(emp?.pin || '').trim()
+ if (employeeCode && employeePin) {
+  return { employee_code:employeeCode, pin:employeePin }
+ }
+
+ return null
+}
+
 function isMissingStrictCameraTimeInColumnError(error) {
  const msg = String(error?.message || error || '').toLowerCase()
  return msg.includes('strict_camera_timein') && (msg.includes('schema cache') || msg.includes('could not find') || msg.includes('column'))
@@ -18533,8 +18548,9 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  setMyAttendance(attachAttendanceEmployeePolicy(enrichedLogs, emp))
  }
 
- async function loadMedicalCertificateLock(emp) {
- if (!emp?.id || !emp?.employee_code || !emp?.pin) {
+ async function loadMedicalCertificateLock(emp, secureSessionToken = employeeCashAdvanceSessionToken) {
+ const guardIdentity = buildAttendanceGuardIdentity(emp, secureSessionToken)
+ if (!emp?.id || !guardIdentity) {
   const blocked = { checking:false, locked:true, verificationError:true, absenceStart:'', absenceEnd:'', absentDays:0, message:'Time In is temporarily locked because employee identity could not be verified.' }
   setMedicalCertLock(blocked)
   return blocked
@@ -18542,7 +18558,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  setMedicalCertLock({ checking:true, locked:true, verificationError:false, absenceStart:'', absenceEnd:'', absentDays:0, message:'Checking attendance eligibility...' })
  try {
   const { data, error } = await supabase.functions.invoke('attendance-medical-guard', {
-   body:{ action:'check', employee_code:emp.employee_code, pin:emp.pin, reference_date:today }
+   body:{ action:'check', ...guardIdentity, reference_date:today }
   })
   if (error || !data?.ok || !data?.lock) throw new Error(data?.message || error?.message || 'Attendance verification service did not return a valid result.')
   const lockInfo = {
@@ -18582,10 +18598,11 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
  setMedicalCertUploading(true)
  try {
+  const guardIdentity = buildAttendanceGuardIdentity(employee, employeeCashAdvanceSessionToken)
+  if (!guardIdentity) throw new Error('Secure employee session is unavailable. Please log out and log in again.')
   const form = new FormData()
   form.append('action', 'upload')
-  form.append('employee_code', employee.employee_code || '')
-  form.append('pin', employee.pin || '')
+  Object.entries(guardIdentity).forEach(([key, value]) => form.append(key, String(value || '')))
   form.append('reference_date', today)
   form.append('file', file, file.name || 'medical-certificate')
   const { data, error } = await supabase.functions.invoke('attendance-medical-guard', { body:form })
@@ -35593,7 +35610,7 @@ setActiveTab('sales')
  loadMyCashAdvances(adminEmployee, secureSessionToken)
  loadMyAttendanceHistory(adminEmployee)
  loadMyLeaveBalance(adminEmployee)
- loadMedicalCertificateLock(adminEmployee)
+ loadMedicalCertificateLock(adminEmployee, secureSessionToken)
  checkAnnouncements(adminEmployee)
  setCameFromAdmin(true)
  setAdminMode(false)

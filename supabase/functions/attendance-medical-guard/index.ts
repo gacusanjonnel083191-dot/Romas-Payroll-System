@@ -37,6 +37,8 @@ function credentials(source: Record<string, unknown>) {
   return {
     employeeCode: String(source.employee_code || "").trim().slice(0, 80),
     pin: String(source.pin || "").trim().slice(0, 120),
+    employeeId: String(source.employee_id || "").trim().slice(0, 80),
+    sessionToken: String(source.session_token || "").trim().slice(0, 120),
   }
 }
 
@@ -57,33 +59,48 @@ Deno.serve(async (req: Request) => {
     let action = "check"
     let employeeCode = ""
     let pin = ""
+    let employeeId = ""
+    let sessionToken = ""
     let referenceDate = ""
     let file: File | null = null
 
     if (contentType.includes("multipart/form-data")) {
       const form = await req.formData()
       action = String(form.get("action") || "upload").trim().toLowerCase()
-      ;({ employeeCode, pin } = credentials({ employee_code: form.get("employee_code"), pin: form.get("pin") }))
+      ;({ employeeCode, pin, employeeId, sessionToken } = credentials({
+        employee_code: form.get("employee_code"),
+        pin: form.get("pin"),
+        employee_id: form.get("employee_id"),
+        session_token: form.get("session_token"),
+      }))
       referenceDate = validDate(form.get("reference_date"))
       const candidate = form.get("file")
       file = candidate instanceof File ? candidate : null
     } else {
       const body = await req.json().catch(() => ({})) as Record<string, unknown>
       action = String(body.action || "check").trim().toLowerCase()
-      ;({ employeeCode, pin } = credentials(body))
+      ;({ employeeCode, pin, employeeId, sessionToken } = credentials(body))
       referenceDate = validDate(body.reference_date)
     }
 
-    if (!employeeCode || !pin) return reply(401, { ok: false, message: "Employee verification failed." })
-
-    const { data: employee, error: employeeError } = await admin
-      .from("employees")
-      .select("id,employee_code,full_name,is_active")
-      .eq("employee_code", employeeCode)
-      .eq("pin", pin)
-      .eq("is_active", true)
-      .maybeSingle()
-    if (employeeError || !employee?.id) return reply(401, { ok: false, message: "Employee verification failed." })
+    let employee: { id: string; employee_code: string; full_name: string; is_active: boolean } | null = null
+    if (employeeId && sessionToken) {
+      const { data: sessionEmployee, error: sessionError } = await admin.rpc("employee_attendance_session_identity", {
+        p_session_token: sessionToken,
+        p_employee_id: employeeId,
+      })
+      if (!sessionError && sessionEmployee?.id) employee = sessionEmployee
+    } else if (employeeCode && pin) {
+      const { data: pinEmployee, error: employeeError } = await admin
+        .from("employees")
+        .select("id,employee_code,full_name,is_active")
+        .eq("employee_code", employeeCode)
+        .eq("pin", pin)
+        .eq("is_active", true)
+        .maybeSingle()
+      if (!employeeError && pinEmployee?.id) employee = pinEmployee
+    }
+    if (!employee?.id) return reply(401, { ok: false, message: "Employee verification failed." })
 
     const loadLock = async () => {
       const { data, error } = await admin.rpc("employee_medical_lock_secure", {
