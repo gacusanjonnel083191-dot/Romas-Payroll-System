@@ -1,0 +1,32 @@
+elect('id,expense_date,category,amount,status').eq('status','approved').gte('expense_date',priorStart).lte('expense_date',priorEnd).order('expense_date')),
+   safeQuery('Payroll reconciliation',()=>supabase.from('payroll_records').select('id,employee_name,payroll_start,payroll_end,total_earnings,gross_pay,net_pay,payroll_released,payroll_status,released_at,payroll_cost_type,payroll_cost_label').or('payroll_released.eq.true,payroll_status.eq.released').gte('released_at',startTs).lte('released_at',endTs).order('released_at')),
+   safeQuery('Inventory snapshot',()=>supabase.from('inventory_items').select('id,name,category,unit,current_stock,cost_per_unit,buying_price,purchase_unit_cost,is_active').eq('is_active',true).order('name')),
+   safeQuery('Company payables',()=>supabase.from('company_payables').select('id,payable_date,due_date,payee_type,payee_name,category,amount,status,payment_type,payment_method,notes,created_at,paid_at').lte('payable_date',endDate).order('due_date')),
+   safeQuery('Delivery receivables',()=>supabase.from('delivery_invoices').select('id,invoice_number,reseller_name,customer_name,delivery_date,due_date,total_amount,paid_amount,returns_amount,status,paid_date').lte('delivery_date',endDate).neq('status','voided').order('delivery_date')),
+   safeQuery('Collections',()=>supabase.from('reseller_payments').select('id,reseller_name,invoice_id,amount,payment_date,payment_method,notes,recorded_by,created_at').gte('payment_date',startDate).lte('payment_date',endDate).order('payment_date')),
+   safeQuery('Bank deposits',()=>supabase.from('bank_deposits').select('id,deposit_date,amount,bank_name,deposit_slip_number,status,total_expected,variance,created_at').gte('deposit_date',startDate).lte('deposit_date',endDate).order('deposit_date')),
+   safeQuery('Purchase orders',()=>supabase.from('purchase_orders').select('id,po_number,supplier_name,status,total_amount,payment_terms,created_at').gte('created_at',startTs).lte('created_at',endTs).order('created_at')),
+   safeQuery('Latest sales coverage',()=>supabase.from('daily_sales').select('sale_date').order('sale_date',{ascending:false}).limit(1)),
+   safeQuery('COGS population',()=>supabase.from('daily_sales').select('id,total_cogs,gross_profit').gt('total_cogs',0).limit(1)),
+   safeQuery('Latest expense coverage',()=>supabase.from('daily_expenses').select('expense_date').eq('status','approved').order('expense_date',{ascending:false}).limit(1)),
+  ])
+  const byLabel=Object.fromEntries(queries.map(q=>[q.label,q]))
+  const sales=byLabel['Current sales'].data; const expenses=byLabel['Current expenses'].data
+  const priorSales=byLabel['Prior sales'].data; const priorExpenses=byLabel['Prior expenses'].data
+  const rawPl=fsPL(sales,expenses); const rawPriorPl=fsPL(priorSales,priorExpenses)
+  const cogsAvailable=byLabel['COGS population'].data.length>0
+  const pl=cogsAvailable?rawPl:{...rawPl,cogs:null,gross:null,stored:null,grossVariance:null,net:null}
+  const priorPl=cogsAvailable?rawPriorPl:{...rawPriorPl,cogs:null,gross:null,stored:null,grossVariance:null,net:null}
+  const expenseGroups=fsExpenseGroups(expenses)
+  const payroll=byLabel['Payroll reconciliation'].data
+  const payrollGross=payroll.reduce((sum,row)=>sum+(fsNum(row.total_earnings)||fsNum(row.gross_pay)),0)
+  const payrollExpensePosted=expenseGroups.filter(row=>/payroll|personnel/i.test(row.category)).reduce((s,row)=>s+row.amount,0)
+  const inventoryRows=[]; let inventoryValue=0; let missingInventoryCosts=0; let stockedItems=0
+  byLabel['Inventory snapshot'].data.forEach(item=>{ const stock=fsNum(item.current_stock); if(stock<=0)return; stockedItems++; const cost=fsNum(item.cost_per_unit)||fsNum(item.buying_price)||0; if(cost<=0)missingInventoryCosts++; const value=stock*cost; inventoryValue+=value; inventoryRows.push({...item,resolved_cost:cost,inventory_value:value,missing_cost:cost<=0}) })
+  const payables=byLabel['Company payables'].data.filter(row=>!['paid','voided'].includes(String(row.status||'').toLowerCase()))
+  const payableTotal=fsSum(payables,'amount')
+  const receivables=byLabel['Delivery receivables'].data.map(row=>({...row,balance:Math.max(0,fsNum(row.total_amount)-fsNum(row.paid_amount)-fsNum(row.returns_amount))})).filter(row=>row.balance>.005)
+  const receivableTotal=receivables.reduce((s,row)=>s+row.balance,0)
+  const latestSales=byLabel['Latest sales coverage'].data?.[0]?.sale_date||null
+  const latestExpense=byLabel['Latest expense coverage'].data?.[0]?.expense_date||null
+  const is

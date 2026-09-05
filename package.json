@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node patch-costing-margin-columns.cjs && node patch-remove-powder-badge.cjs && node patch-dynamic-owner-dashboard.cjs && vite build",
+    "build": "node patch-costing-margin-columns.cjs && node patch-remove-powder-badge.cjs && node patch-dynamic-owner-dashboard.cjs && node patch-financial-statements.cjs && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

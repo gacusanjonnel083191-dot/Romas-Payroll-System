@@ -1,0 +1,51 @@
+sues=[]
+  const sourceErrors=queries.filter(q=>q.error).map(q=>`${q.label}: ${q.error}`)
+  if(endDate>fsToday()) issues.push('Selected period extends into the future; future-dated figures are not final.')
+  if(!latestSales || latestSales<endDate) issues.push(`Sales coverage is incomplete for this period${latestSales?`; latest recorded sale is ${latestSales}`:''}. Revenue is provisional.`)
+  if(!cogsAvailable) issues.push('COGS is not populated in daily_sales. Gross Profit and Net Profit/Net Operating Result are unavailable and are not presented as final figures.')
+  if(missingInventoryCosts>0) issues.push(`${missingInventoryCosts} stocked inventory item${missingInventoryCosts===1?'':'s'} lack a usable unit cost. Inventory value is indicative, not final.`)
+  if(byLabel['Bank deposits'].data.length===0) issues.push('No bank-deposit records were found for this period; a formal Statement of Cash Flows is not supportable from current data.')
+  if(byLabel['Purchase orders'].data.length===0) issues.push('No purchase-order records were found for this period; purchasing is shown only as a data-coverage note.')
+  if(sourceErrors.length) issues.push(`${sourceErrors.length} source${sourceErrors.length===1?'':'s'} could not be read. Affected figures are not final.`)
+  setData({
+   start:startDate,end:endDate,priorStart,priorEnd,pl,priorPl,expenseGroups,sales,expenses,payroll,payrollGross,payrollExpensePosted,
+   inventoryRows,inventoryValue,missingInventoryCosts,stockedItems,payables,payableTotal,receivables,receivableTotal,
+   collections:byLabel['Collections'].data,bankDeposits:byLabel['Bank deposits'].data,purchaseOrders:byLabel['Purchase orders'].data,
+   latestSales,latestExpense,cogsAvailable,issues,sourceErrors,
+  })
+  setLastUpdated(new Date())
+  setLoading(false)
+ }
+
+ useEffect(()=>{ void loadFinancials() },[startDate,endDate,refreshNonce,isOwnerRole])
+ useEffect(()=>{
+  if(!isOwnerRole) return undefined
+  const refresh=()=>void loadFinancials({silent:true})
+  const onVisibility=()=>{ if(document.visibilityState==='visible') refresh() }
+  const onDataChange=()=>refresh()
+  window.addEventListener('focus',refresh)
+  document.addEventListener('visibilitychange',onVisibility)
+  window.addEventListener('romas-financial-data-changed',onDataChange)
+  const timer=setInterval(refresh,30000)
+  let channel=null
+  try {
+   channel=supabase.channel('romas-financial-statements-live-v1')
+   ;['daily_sales','daily_expenses','payroll_records','company_payables','inventory_items','delivery_invoices','reseller_payments','bank_deposits'].forEach(table=>{
+    channel=channel.on('postgres_changes',{event:'*',schema:'public',table},refresh)
+   })
+   channel.subscribe()
+  } catch(_) {}
+  return ()=>{ clearInterval(timer); window.removeEventListener('focus',refresh); document.removeEventListener('visibilitychange',onVisibility); window.removeEventListener('romas-financial-data-changed',onDataChange); if(channel) supabase.removeChannel(channel) }
+ },[isOwnerRole,startDate,endDate])
+
+ const openDrill=(title,rows,columns)=>setDrill({title,rows:rows||[],columns})
+ const compareCell=(key,current) => { if(current===null || data?.priorPl?.[key]===null) return <span style={{fontSize:'9px',color:'#8a9099'}}>Unavailable</span>; const prior=fsNum(data?.priorPl?.[key]); const delta=fsDelta(current,prior); return <span style={{fontSize:'9px',color:delta.delta>=0?'#18794e':'#b42318'}}>{delta.delta>=0?'+':''}{fsMoney(delta.delta)}{delta.pct===null?'':` (${delta.pct>=0?'+':''}${delta.pct.toFixed(1)}%)`}</span> }
+ const rowButton=(label,value,onClick,strong=false,comparisonKey=null) => <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr auto':'minmax(220px,1fr) 160px 180px',gap:'10px',alignItems:'center',padding:'10px 0',borderBottom:'1px solid #eee'}}>
+  <button type="button" onClick={onClick} style={{border:0,background:'transparent',padding:0,textAlign:'left',cursor:'pointer',fontWeight:strong?900:700,color:'#172033',fontSize:strong?'12px':'11px',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:'3px'}}>{label}</button>
+  <strong style={{textAlign:'right',fontSize:strong?'13px':'11px',color:value!==null&&value<0?'#b42318':'#172033'}}>{fsDisplayMoney(value)}</strong>
+  {!isMobile && <div style={{textAlign:'right'}}>{comparisonKey?compareCell(comparisonKey,value):<span style={{fontSize:'9px',color:'#8a9099'}}>—</span>}</div>}
+ </div>
+
+ const buildPrintHtml=()=>{
+  const d=data; if(!d)return ''
+  const expenseRows=d.expense

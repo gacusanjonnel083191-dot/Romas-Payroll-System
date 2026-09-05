@@ -1,0 +1,42 @@
+/* ROMAS_FINANCIAL_STATEMENTS_MODULE_V1 */
+function RomasFinancialStatementsModule({ supabase, isOwnerRole, isMobile, showToast, onClose }) {
+ const fsNum = value => { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : 0 }
+ const fsMoney = value => new Intl.NumberFormat('en-PH',{style:'currency',currency:'PHP',minimumFractionDigits:2,maximumFractionDigits:2}).format(fsNum(value))
+ const fsDisplayMoney = value => value===null || value===undefined ? 'Unavailable' : fsMoney(value)
+ const fsDate = date => { const y=date.getFullYear(); const m=String(date.getMonth()+1).padStart(2,'0'); const d=String(date.getDate()).padStart(2,'0'); return `${y}-${m}-${d}` }
+ const fsParseDate = value => { const [y,m,d]=String(value).slice(0,10).split('-').map(Number); return new Date(y,(m||1)-1,d||1) }
+ const fsToday = () => fsDate(new Date())
+ const fsPresets = () => { const t=new Date(); const today=new Date(t.getFullYear(),t.getMonth(),t.getDate()); const monday=new Date(today); monday.setDate(today.getDate()-((today.getDay()+6)%7)); return {today:[fsDate(today),fsDate(today)],week:[fsDate(monday),fsDate(today)],month:[fsDate(new Date(today.getFullYear(),today.getMonth(),1)),fsDate(today)]} }
+ const fsPrior = (start,end) => { const s=fsParseDate(start); const e=fsParseDate(end); const days=Math.max(1,Math.round((e-s)/86400000)+1); const pe=new Date(s); pe.setDate(pe.getDate()-1); const ps=new Date(pe); ps.setDate(pe.getDate()-days+1); return [fsDate(ps),fsDate(pe)] }
+ const fsSum = (rows,field) => (rows||[]).reduce((total,row)=>total+fsNum(row?.[field]),0)
+ const fsPL = (sales,expenses) => { const revenue=fsSum(sales,'total_revenue'); const cogs=fsSum(sales,'total_cogs'); const stored=fsSum(sales,'gross_profit'); const gross=revenue-cogs; const opex=fsSum(expenses,'amount'); return {revenue,cogs,gross,stored,grossVariance:stored-gross,opex,net:gross-opex} }
+ const fsExpenseGroups = rows => { const map={}; (rows||[]).forEach(row=>{ const key=String(row?.category||'Uncategorized').trim()||'Uncategorized'; map[key]=fsNum(map[key])+fsNum(row?.amount) }); return Object.entries(map).map(([category,amount])=>({category,amount})).sort((a,b)=>b.amount-a.amount) }
+ const fsDelta = (current,prior) => ({delta:fsNum(current)-fsNum(prior),pct:fsNum(prior)===0?null:((fsNum(current)-fsNum(prior))/Math.abs(fsNum(prior)))*100})
+ const fsCsvCell = value => `"${String(value??'').replaceAll('"','""')}"`
+ const presets=fsPresets()
+ const [preset,setPreset]=useState('month')
+ const [startDate,setStartDate]=useState(presets.month[0])
+ const [endDate,setEndDate]=useState(presets.month[1])
+ const [loading,setLoading]=useState(false)
+ const [data,setData]=useState(null)
+ const [error,setError]=useState('')
+ const [lastUpdated,setLastUpdated]=useState(null)
+ const [drill,setDrill]=useState(null)
+ const [activeView,setActiveView]=useState('profit')
+ const [refreshNonce,setRefreshNonce]=useState(0)
+
+ const applyPreset = key => { const p=fsPresets()[key]; setPreset(key); if(p){setStartDate(p[0]);setEndDate(p[1])} }
+ const safeQuery = async (label,builder) => { try { const result=await builder(); if(result.error) throw result.error; return {label,data:result.data||[],error:null} } catch(err) { return {label,data:[],error:err?.message||String(err)} } }
+
+ const loadFinancials = async({silent=false}={}) => {
+  if(!isOwnerRole) return
+  if(!startDate || !endDate || startDate>endDate){ setError('Choose a valid reporting period.'); return }
+  if(!silent) setLoading(true)
+  setError('')
+  const [priorStart,priorEnd]=fsPrior(startDate,endDate)
+  const startTs=`${startDate}T00:00:00`; const endTs=`${endDate}T23:59:59.999`
+  const queries=await Promise.all([
+   safeQuery('Current sales',()=>supabase.from('daily_sales').select('id,sale_date,total_walkin,total_messenger,total_reseller,total_revenue,total_cogs,gross_profit,notes,encoded_by,created_at').gte('sale_date',startDate).lte('sale_date',endDate).order('sale_date')),
+   safeQuery('Current expenses',()=>supabase.from('daily_expenses').select('id,expense_date,category,amount,description,status,approved_by,approved_at,encoded_by,created_at').eq('status','approved').gte('expense_date',startDate).lte('expense_date',endDate).order('expense_date')),
+   safeQuery('Prior sales',()=>supabase.from('daily_sales').select('id,sale_date,total_revenue,total_cogs,gross_profit').gte('sale_date',priorStart).lte('sale_date',priorEnd).order('sale_date')),
+   safeQuery('Prior expenses',()=>supabase.from('daily_expenses').s
