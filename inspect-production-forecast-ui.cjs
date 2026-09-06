@@ -1,0 +1,1 @@
+const fs=require('fs'); const s=fs.readFileSync('src/App.jsx','utf8'); const i=s.indexOf('Invoice Production Baseline'); console.log('FORECAST_UI_INSPECT_START',i); console.log(i>=0?s.slice(Math.max(0,i-1500),i+9000):'BASELINE NOT FOUND'); console.log('FORECAST_UI_INSPECT_END');
