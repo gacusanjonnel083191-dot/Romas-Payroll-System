@@ -24,7 +24,7 @@ const oldDims='width:800px;height:1200px;';const dimCount=region.split(oldDims).
 
 replaceOnce('margin-top:auto;padding-top:13px;border-top:1px solid #888;display:flex','margin-top:28px;padding-top:18px;border-top:2px solid #888;display:flex','bottom spacer')
 
-replaceOnce('<table style=\\"width:100%;border-collapse:collapse;table-layout:fixed;font-size:17px\\"','<table style=\\"width:86%;margin:0 auto;border-collapse:collapse;table-layout:fixed;font-size:22px\\"','table width')
+replaceOnce('width:100%;border-collapse:collapse;table-layout:fixed;font-size:17px','width:86%;margin:0 auto;border-collapse:collapse;table-layout:fixed;font-size:22px','table width')
 replaceOnce('padding:7px 9px;width:72%','padding:10px 14px;width:68%','variant header width')
 replaceOnce('padding:7px 9px;width:28%','padding:10px 14px;width:32%','pieces header width')
 
