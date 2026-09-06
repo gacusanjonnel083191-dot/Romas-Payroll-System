@@ -14,41 +14,49 @@ if (src.includes(marker)) {
 }
 
 function replaceOnce(from, to, label) {
-  const index = src.indexOf(from)
-  if (index < 0) throw new Error(`Production Forecast HD patch aborted safely: ${label} anchor not found.`)
-  if (src.indexOf(from, index + from.length) >= 0) throw new Error(`Production Forecast HD patch aborted safely: ${label} anchor is not unique.`)
-  src = src.slice(0, index) + to + src.slice(index + from.length)
+  const first = src.indexOf(from)
+  if (first < 0) throw new Error(`Production Forecast HD patch aborted safely: ${label} anchor not found.`)
+  if (src.indexOf(from, first + from.length) >= 0) throw new Error(`Production Forecast HD patch aborted safely: ${label} anchor is not unique.`)
+  src = src.slice(0, first) + to + src.slice(first + from.length)
 }
 
-// Render the same 4:6 layout at 600 DPI equivalent for crisp text and lines.
+// 800 x 1200 CSS layout rendered at scale 3 = 2400 x 3600 pixels,
+// equivalent to 600 DPI on a 4 x 6 inch output.
 replaceOnce(
   "const canvas=await html2canvas(node.firstElementChild,{scale:2,backgroundColor:'#fff',useCORS:true,logging:false,width:800,height:1200})",
   "const canvas=await html2canvas(node.firstElementChild,{scale:3,backgroundColor:'#fff',useCORS:true,logging:false,width:800,height:1200})",
   'HD canvas scale'
 )
 
-// Make the Word page explicitly 4 x 6 inches with narrow 0.05-inch margins.
-replaceOnce(
-  '<w:pgSz w:w=\\"5760\\" w:h=\\"8640\\"/><w:pgMar w:top=\\"144\\" w:right=\\"144\\" w:bottom=\\"144\\" w:left=\\"144\\"/>',
-  '<w:pgSz w:w=\\"5760\\" w:h=\\"8640\\" w:orient=\\"portrait\\"/><w:pgMar w:top=\\"72\\" w:right=\\"72\\" w:bottom=\\"72\\" w:left=\\"72\\" w:header=\\"0\\" w:footer=\\"0\\" w:gutter=\\"0\\"/>',
-  '4x6 page geometry'
-)
+// The existing DOCX already declares 5760 x 8640 twips = exactly 4 x 6 inches.
+// Tighten its margins from 0.10 inch to 0.05 inch while preserving Word's quote escaping.
+const pageRe = /<w:pgSz[^>]*\/><w:pgMar[^>]*\/>/
+const pageMatch = src.match(pageRe)
+if (!pageMatch) throw new Error('Production Forecast HD patch aborted safely: Word page geometry not found.')
+if (!pageMatch[0].includes('5760') || !pageMatch[0].includes('8640')) {
+  throw new Error('Production Forecast HD patch aborted safely: Word page is not the expected 4 x 6 geometry.')
+}
+const newPage = pageMatch[0].replace(/144/g, '72')
+src = src.replace(pageRe, newPage)
 
-// Force the embedded PNG to physically occupy the 3.9 x 5.9 inch printable area.
-replaceOnce(
-  '<wp:extent cx=\\"3474720\\" cy=\\"5212080\\"/><wp:docPr id=\\"1\\" name=\\"Production Forecast\\"/><a:graphic>',
-  '<wp:extent cx=\\"3566160\\" cy=\\"5394960\\"/><wp:effectExtent l=\\"0\\" t=\\"0\\" r=\\"0\\" b=\\"0\\"/><wp:docPr id=\\"1\\" name=\\"Production Forecast\\"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect=\\"1\\"/></wp:cNvGraphicFramePr><a:graphic>',
-  'inline image size'
-)
+// Enlarge Word's inline drawing box to 3.9 x 5.9 inches (0.05-inch margins).
+// 1 inch = 914400 EMU.
+const extentRe = /<wp:extent[^>]*cx=[^>]*cy=[^>]*\/>/
+const extentMatch = src.match(extentRe)
+if (!extentMatch || !extentMatch[0].includes('3474720') || !extentMatch[0].includes('5212080')) {
+  throw new Error('Production Forecast HD patch aborted safely: expected inline image extent not found.')
+}
+src = src.replace(extentRe, extentMatch[0].replace('3474720', '3566160').replace('5212080', '5394960'))
 
-// Word also needs the picture transform extent; without it, desktop Word may render the PNG at native/default size.
-replaceOnce(
-  '<pic:spPr><a:prstGeom prst=\\"rect\\"><a:avLst/></a:prstGeom></pic:spPr>',
-  '<pic:spPr><a:xfrm><a:off x=\\"0\\" y=\\"0\\"/><a:ext cx=\\"3566160\\" cy=\\"5394960\\"/></a:xfrm><a:prstGeom prst=\\"rect\\"><a:avLst/></a:prstGeom></pic:spPr>',
-  'picture transform'
-)
+// Critical Microsoft Word fix: define the picture transform itself.
+// Without a:xfrm Word may display the PNG at a small native/default size even when wp:extent is correct.
+const spPrRe = /<pic:spPr><a:prstGeom[^>]*><a:avLst\/><\/a:prstGeom><\/pic:spPr>/
+const spPrMatch = src.match(spPrRe)
+if (!spPrMatch) throw new Error('Production Forecast HD patch aborted safely: picture shape properties not found.')
+const escapedQuote = '\\' + '"'
+const xfrm = '<pic:spPr><a:xfrm><a:off x=' + escapedQuote + '0' + escapedQuote + ' y=' + escapedQuote + '0' + escapedQuote + '/><a:ext cx=' + escapedQuote + '3566160' + escapedQuote + ' cy=' + escapedQuote + '5394960' + escapedQuote + '/></a:xfrm><a:prstGeom prst=' + escapedQuote + 'rect' + escapedQuote + '><a:avLst/></a:prstGeom></pic:spPr>'
+src = src.replace(spPrRe, xfrm)
 
-// Add an explicit marker inside the export function for build verification.
 replaceOnce(
   `/* ${requiredMarker} */`,
   `/* ${requiredMarker} */\n /* ${marker} */`,
@@ -56,4 +64,4 @@ replaceOnce(
 )
 
 fs.writeFileSync(path, src, 'utf8')
-console.log('Production Forecast HD v3 applied: true 4x6 Word page, full-page image sizing, 600-DPI render.')
+console.log('Production Forecast HD v3 applied: exact 4x6 Word page, near-full-page image, 600-DPI render, Word picture transform fixed.')
