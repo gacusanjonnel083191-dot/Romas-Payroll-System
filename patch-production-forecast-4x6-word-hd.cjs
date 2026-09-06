@@ -5,63 +5,62 @@ let src = fs.readFileSync(path, 'utf8')
 const requiredMarker = 'PRODUCTION_FORECAST_4X6_WORD_SAFE_V2'
 const marker = 'PRODUCTION_FORECAST_4X6_WORD_HD_V3'
 
-if (!src.includes(requiredMarker)) {
-  throw new Error('Production Forecast HD patch aborted safely: safe v2 export is not present.')
-}
-if (src.includes(marker)) {
-  console.log('Production Forecast HD 4x6 patch already applied.')
-  process.exit(0)
-}
+const markerIndex = src.indexOf(requiredMarker)
+if (markerIndex < 0) throw new Error('Production Forecast HD patch aborted safely: safe v2 export is not present.')
+if (src.includes(marker)) { console.log('Production Forecast HD 4x6 patch already applied.'); process.exit(0) }
 
-function replaceOnce(from, to, label) {
-  const first = src.indexOf(from)
+// Scope every XML edit to the Production Forecast export function only.
+const regionStart = Math.max(0, markerIndex - 500)
+const regionEnd = Math.min(src.length, markerIndex + 30000)
+let region = src.slice(regionStart, regionEnd)
+
+function replaceOnceInRegion(from, to, label) {
+  const first = region.indexOf(from)
   if (first < 0) throw new Error(`Production Forecast HD patch aborted safely: ${label} anchor not found.`)
-  if (src.indexOf(from, first + from.length) >= 0) throw new Error(`Production Forecast HD patch aborted safely: ${label} anchor is not unique.`)
-  src = src.slice(0, first) + to + src.slice(first + from.length)
+  if (region.indexOf(from, first + from.length) >= 0) throw new Error(`Production Forecast HD patch aborted safely: ${label} anchor is not unique inside forecast export.`)
+  region = region.slice(0, first) + to + region.slice(first + from.length)
 }
 
-// 800 x 1200 CSS layout rendered at scale 3 = 2400 x 3600 pixels,
-// equivalent to 600 DPI on a 4 x 6 inch output.
-replaceOnce(
+// 800 x 1200 CSS layout rendered at scale 3 = 2400 x 3600 px (600 DPI at 4 x 6 inches).
+replaceOnceInRegion(
   "const canvas=await html2canvas(node.firstElementChild,{scale:2,backgroundColor:'#fff',useCORS:true,logging:false,width:800,height:1200})",
   "const canvas=await html2canvas(node.firstElementChild,{scale:3,backgroundColor:'#fff',useCORS:true,logging:false,width:800,height:1200})",
   'HD canvas scale'
 )
 
-// The existing DOCX already declares 5760 x 8640 twips = exactly 4 x 6 inches.
-// Tighten its margins from 0.10 inch to 0.05 inch while preserving Word's quote escaping.
+// The DOCX page is 5760 x 8640 twips = 4 x 6 inches. Tighten margins to 0.05 inch.
 const pageRe = /<w:pgSz[^>]*\/><w:pgMar[^>]*\/>/
-const pageMatch = src.match(pageRe)
-if (!pageMatch) throw new Error('Production Forecast HD patch aborted safely: Word page geometry not found.')
+const pageMatch = region.match(pageRe)
+if (!pageMatch) throw new Error('Production Forecast HD patch aborted safely: forecast Word page geometry not found.')
 if (!pageMatch[0].includes('5760') || !pageMatch[0].includes('8640')) {
-  throw new Error('Production Forecast HD patch aborted safely: Word page is not the expected 4 x 6 geometry.')
+  throw new Error('Production Forecast HD patch aborted safely: forecast Word page is not the expected 4 x 6 size.')
 }
-const newPage = pageMatch[0].replace(/144/g, '72')
-src = src.replace(pageRe, newPage)
+region = region.replace(pageRe, pageMatch[0].replace(/144/g, '72'))
 
-// Enlarge Word's inline drawing box to 3.9 x 5.9 inches (0.05-inch margins).
-// 1 inch = 914400 EMU.
-const extentRe = /<wp:extent[^>]*cx=[^>]*cy=[^>]*\/>/
-const extentMatch = src.match(extentRe)
-if (!extentMatch || !extentMatch[0].includes('3474720') || !extentMatch[0].includes('5212080')) {
-  throw new Error('Production Forecast HD patch aborted safely: expected inline image extent not found.')
+// Resize only the forecast image drawing box from 3.8 x 5.7 to 3.9 x 5.9 inches.
+const extentRe = /<wp:extent[^>]*\/>/
+const extentMatch = region.match(extentRe)
+if (!extentMatch) throw new Error('Production Forecast HD patch aborted safely: forecast inline image extent not found.')
+const resizedExtent = extentMatch[0].replace('3474720', '3566160').replace('5212080', '5394960')
+if (resizedExtent === extentMatch[0]) {
+  throw new Error('Production Forecast HD patch aborted safely: forecast inline extent values were unexpected: ' + extentMatch[0].slice(0,180))
 }
-src = src.replace(extentRe, extentMatch[0].replace('3474720', '3566160').replace('5212080', '5394960'))
+region = region.replace(extentRe, resizedExtent)
 
-// Critical Microsoft Word fix: define the picture transform itself.
-// Without a:xfrm Word may display the PNG at a small native/default size even when wp:extent is correct.
+// Critical desktop Word fix: add a picture transform matching the inline extent.
 const spPrRe = /<pic:spPr><a:prstGeom[^>]*><a:avLst\/><\/a:prstGeom><\/pic:spPr>/
-const spPrMatch = src.match(spPrRe)
-if (!spPrMatch) throw new Error('Production Forecast HD patch aborted safely: picture shape properties not found.')
-const escapedQuote = '\\' + '"'
-const xfrm = '<pic:spPr><a:xfrm><a:off x=' + escapedQuote + '0' + escapedQuote + ' y=' + escapedQuote + '0' + escapedQuote + '/><a:ext cx=' + escapedQuote + '3566160' + escapedQuote + ' cy=' + escapedQuote + '5394960' + escapedQuote + '/></a:xfrm><a:prstGeom prst=' + escapedQuote + 'rect' + escapedQuote + '><a:avLst/></a:prstGeom></pic:spPr>'
-src = src.replace(spPrRe, xfrm)
+const spPrMatch = region.match(spPrRe)
+if (!spPrMatch) throw new Error('Production Forecast HD patch aborted safely: forecast picture shape properties not found.')
+const eq = '\\' + '"'
+const xfrm = '<pic:spPr><a:xfrm><a:off x=' + eq + '0' + eq + ' y=' + eq + '0' + eq + '/><a:ext cx=' + eq + '3566160' + eq + ' cy=' + eq + '5394960' + eq + '/></a:xfrm><a:prstGeom prst=' + eq + 'rect' + eq + '><a:avLst/></a:prstGeom></pic:spPr>'
+region = region.replace(spPrRe, xfrm)
 
-replaceOnce(
+replaceOnceInRegion(
   `/* ${requiredMarker} */`,
   `/* ${requiredMarker} */\n /* ${marker} */`,
   'HD marker'
 )
 
+src = src.slice(0, regionStart) + region + src.slice(regionEnd)
 fs.writeFileSync(path, src, 'utf8')
-console.log('Production Forecast HD v3 applied: exact 4x6 Word page, near-full-page image, 600-DPI render, Word picture transform fixed.')
+console.log('Production Forecast HD v3 applied: exact 4x6 page, 3.9x5.9 image, 600-DPI PNG, desktop Word transform fixed.')
