@@ -15186,11 +15186,11 @@ function buildDeliveryInvoicePrintCSS() {
    setTimeout(() => URL.revokeObjectURL(url), 1500)
  }
 
- const DELIVERY_INVOICE_SOURCE_WIDTH_MM = 105
- const DELIVERY_INVOICE_SOURCE_HEIGHT_MM = 165
- const DELIVERY_INVOICE_PAGE_WIDTH_MM = 101.6
- const DELIVERY_INVOICE_PAGE_HEIGHT_MM = 152.4
- const DELIVERY_INVOICE_SAFE_MARGIN_MM = 3
+ const DELIVERY_INVOICE_SOURCE_WIDTH_MM = 100
+ const DELIVERY_INVOICE_SOURCE_HEIGHT_MM = 155
+ const DELIVERY_INVOICE_PAGE_WIDTH_MM = 110
+ const DELIVERY_INVOICE_PAGE_HEIGHT_MM = 165
+ const DELIVERY_INVOICE_SAFE_MARGIN_MM = 5
  const DELIVERY_INVOICE_EXPORT_DPI = 300
 
  function downloadGeneratedInvoiceFile(filename, blob) {
@@ -15328,9 +15328,26 @@ function buildDeliveryInvoicePrintCSS() {
 
  
  function buildDeliveryInvoiceWordImageDrawing(relId, drawingId) {
-   const widthEmu = 4 * 914400
-   const heightEmu = 6 * 914400
-   return `<w:r><w:drawing><wp:anchor xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251658240" behindDoc="0" locked="1" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="${drawingId}" name="Roma's Donuts Invoice ${drawingId}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${drawingId}" name="Invoice ${drawingId}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`
+   const widthEmu = Math.round((DELIVERY_INVOICE_PAGE_WIDTH_MM - (DELIVERY_INVOICE_SAFE_MARGIN_MM * 2)) * 36000)
+   const heightEmu = Math.round((DELIVERY_INVOICE_PAGE_HEIGHT_MM - (DELIVERY_INVOICE_SAFE_MARGIN_MM * 2)) * 36000)
+   const marginEmu = Math.round(DELIVERY_INVOICE_SAFE_MARGIN_MM * 36000)
+   return `<w:r><w:drawing><wp:anchor xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="251658240" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="0"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>${marginEmu}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>${marginEmu}</wp:posOffset></wp:positionV><wp:extent cx="${widthEmu}" cy="${heightEmu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="${drawingId}" name="Roma's Donuts Invoice ${drawingId}"/><wp:cNvGraphicFramePr><a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="${drawingId}" name="Invoice ${drawingId}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${widthEmu}" cy="${heightEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>`
+ }
+
+ function cropDeliveryInvoiceCanvasToPrintableArea(pageCanvas) {
+   const marginX = Math.round(pageCanvas.width * DELIVERY_INVOICE_SAFE_MARGIN_MM / DELIVERY_INVOICE_PAGE_WIDTH_MM)
+   const marginY = Math.round(pageCanvas.height * DELIVERY_INVOICE_SAFE_MARGIN_MM / DELIVERY_INVOICE_PAGE_HEIGHT_MM)
+   const width = Math.max(1, pageCanvas.width - (marginX * 2))
+   const height = Math.max(1, pageCanvas.height - (marginY * 2))
+   const contentCanvas = document.createElement('canvas')
+   contentCanvas.width = width
+   contentCanvas.height = height
+   const ctx = contentCanvas.getContext('2d')
+   if (!ctx) throw new Error('The browser could not prepare the Word invoice image.')
+   ctx.fillStyle = '#ffffff'
+   ctx.fillRect(0, 0, width, height)
+   ctx.drawImage(pageCanvas, marginX, marginY, width, height, 0, 0, width, height)
+   return contentCanvas
  }
 
  async function downloadDeliveryInvoiceWordImageFile(filename, invoices) {
@@ -15339,8 +15356,9 @@ function buildDeliveryInvoicePrintCSS() {
 
    const imageFiles = []
    for (let idx = 0; idx < invoiceList.length; idx++) {
-     const canvas = await renderDeliveryInvoicePageCanvas(invoiceList[idx])
-     const blob = await invoiceCanvasToBlob(canvas)
+     const pageCanvas = await renderDeliveryInvoicePageCanvas(invoiceList[idx])
+     const invoiceCanvas = cropDeliveryInvoiceCanvasToPrintableArea(pageCanvas)
+     const blob = await invoiceCanvasToBlob(invoiceCanvas)
      imageFiles.push(new Uint8Array(await blob.arrayBuffer()))
    }
 
@@ -15349,9 +15367,12 @@ function buildDeliveryInvoicePrintCSS() {
      return `<w:p><w:pPr>${pageBreak}<w:spacing w:before="0" w:after="0" w:line="1" w:lineRule="exact"/></w:pPr>${buildDeliveryInvoiceWordImageDrawing(`rIdInvoice${idx + 1}`, idx + 1)}</w:p>`
    }).join('')
 
-   // True 4 x 6 inch portrait pages. Each page contains one full-page PNG,
-   // so Microsoft Word cannot reflow the invoice table or crop its bottom rows.
-   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyXml}<w:sectPr><w:pgSz w:w="5760" w:h="8640"/><w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
+   // Exact 11 cm x 16.5 cm portrait pages with 0.5 cm margins. Each page
+   // contains one selectable PNG object sized to the 10 cm x 15.5 cm area.
+   const pageWidthTwips = Math.round((DELIVERY_INVOICE_PAGE_WIDTH_MM / 25.4) * 1440)
+   const pageHeightTwips = Math.round((DELIVERY_INVOICE_PAGE_HEIGHT_MM / 25.4) * 1440)
+   const marginTwips = Math.round((DELIVERY_INVOICE_SAFE_MARGIN_MM / 25.4) * 1440)
+   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${bodyXml}<w:sectPr><w:pgSz w:w="${pageWidthTwips}" w:h="${pageHeightTwips}"/><w:pgMar w:top="${marginTwips}" w:right="${marginTwips}" w:bottom="${marginTwips}" w:left="${marginTwips}" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:space="0"/><w:docGrid w:linePitch="360"/></w:sectPr></w:body></w:document>`
    const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>`
    const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`
    const imageRelationships = imageFiles.map((_, idx) => `<Relationship Id="rIdInvoice${idx + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/invoice-${idx + 1}.png"/>`).join('')
@@ -15650,10 +15671,9 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
      if (dayInvoices.length === 0) { showToast(' No saved invoices for this date.','red'); return }
      const invalid = dayInvoices.map(inv => ({ inv, error: validateDeliveryInvoiceForPrint(inv) })).find(row => row.error)
      if (invalid) { showToast(` Print blocked for ${invalid.inv?.invoice_number || 'invoice'}: ${invalid.error}`, 'red'); return }
-     showToast(` Preparing ${dayInvoices.length} branded 4x6 Word invoice page(s)...`)
-     const logoBytes = await fetchLogoImageBytes()
-     downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoices_4x6_${date}`, dayInvoices, logoBytes)
-     showToast(` Downloaded ${dayInvoices.length} verified invoice(s) as one branded 4x6 Word file.`)
+     showToast(` Preparing ${dayInvoices.length} invoice image page(s) for Word...`)
+     await downloadDeliveryInvoiceWordImageFile(`Romas_Donuts_Invoices_11x16.5cm_${date}`, dayInvoices)
+     showToast(` Downloaded ${dayInvoices.length} verified invoice(s) as one 11 x 16.5 cm Word file.`)
    } catch (err) {
      showToast(' Failed to fetch fresh invoices for printing: ' + (err?.message || err), 'red')
    }
@@ -15732,10 +15752,9 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
    const validationError = validateDeliveryInvoiceForPrint(freshInvoice)
    if (validationError) { showToast(` Print blocked: ${validationError}`, 'red'); return }
    const invoiceNumber = freshInvoice.invoice_number || freshInvoice.id || invoice.invoice_number || invoice.id || 'invoice'
-   showToast(' Preparing branded 4x6 Word invoice...')
-   const logoBytes = await fetchLogoImageBytes()
-   downloadDeliveryInvoiceDocxFile(`Romas_Donuts_Invoice_4x6_${invoiceNumber}`, [freshInvoice], logoBytes)
-   showToast(' Downloaded verified invoice as a branded 4x6 Word file.')
+   showToast(' Preparing invoice image for Word...')
+   await downloadDeliveryInvoiceWordImageFile(`Romas_Donuts_Invoice_11x16.5cm_${invoiceNumber}`, [freshInvoice])
+   showToast(' Downloaded verified invoice as an 11 x 16.5 cm Word file.')
  } catch (err) {
    showToast(' Print blocked: invoice could not be verified from database. Refresh invoices and try again. ' + (err?.message || err), 'red')
  }
