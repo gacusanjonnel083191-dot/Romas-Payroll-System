@@ -3,117 +3,56 @@ const fs = require('fs')
 const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
-const PATCH_MARKER = 'ROMAS_INVOICE_BRAND_V2_CURRENT_PALETTE'
 const fnMarker = 'function buildDeliveryInvoicePrintCSS()'
 const nextSectionMarker = 'const DELIVERY_INVOICE_SOURCE_WIDTH_MM'
-
 const fnStart = src.indexOf(fnMarker)
-if (fnStart < 0) {
-  throw new Error('Roma invoice branding patch aborted: buildDeliveryInvoicePrintCSS() was not found.')
-}
+if (fnStart < 0) throw new Error('Roma invoice branding patch aborted: buildDeliveryInvoicePrintCSS() was not found.')
 
 const sectionEnd = src.indexOf(nextSectionMarker, fnStart)
-if (sectionEnd < 0) {
-  throw new Error('Roma invoice branding patch aborted: invoice export section boundary was not found.')
+if (sectionEnd < 0) throw new Error('Roma invoice branding patch aborted: invoice export section boundary was not found.')
+
+let section = src.slice(fnStart, sectionEnd)
+
+// The invoice stylesheet may be stored as a template literal or an escaped string depending
+// on earlier build patches. Only make syntax-safe in-string edits: no new JS quotes, backticks,
+// template expressions, or literal line breaks are injected into the stylesheet string.
+section = section
+  .replace(/#cfe2f3/gi, '#ffffff')
+  .replace(/#b6d7a8/gi, '#FDD412')
+  .replace(/#d9d9d9/gi, '#CA1B1B')
+  .replace(/#000000/gi, '#1A1A2E')
+  .replace(/#000(?![0-9a-f])/gi, '#1A1A2E')
+
+function addDeclarations(selector, declarations, required = true) {
+  const selectorIndex = section.indexOf(selector)
+  if (selectorIndex < 0) {
+    if (required) throw new Error(`Roma invoice branding patch aborted: CSS selector not found: ${selector}`)
+    return
+  }
+
+  const open = section.indexOf('{', selectorIndex)
+  const close = section.indexOf('}', open + 1)
+  if (open < 0 || close < 0) {
+    throw new Error(`Roma invoice branding patch aborted: CSS rule boundary not found: ${selector}`)
+  }
+
+  const rule = section.slice(open + 1, close)
+  if (rule.includes(declarations)) return
+  section = section.slice(0, close) + declarations + section.slice(close)
 }
 
-const invoiceSection = src.slice(fnStart, sectionEnd)
-if (invoiceSection.includes(PATCH_MARKER)) {
-  console.log('Roma invoice branding already uses the current palette; no duplicate override added.')
-  process.exit(0)
-}
+// Current Roma's Donuts palette:
+// Red #CA1B1B | Gold #FDD412 | Navy #1A1A2E | White #FFFFFF.
+addDeclarations('.title-row td', 'background:#CA1B1B!important;color:#ffffff!important;border-color:#1A1A2E!important;')
+addDeclarations('.field-label', 'background:#FDD412!important;color:#1A1A2E!important;')
+addDeclarations('.header-row th', 'background:#1A1A2E!important;color:#ffffff!important;border-color:#1A1A2E!important;')
+addDeclarations('.total-label', 'background:#FDD412!important;color:#1A1A2E!important;')
+addDeclarations('.total-amount', 'background:#CA1B1B!important;color:#ffffff!important;')
+addDeclarations('.prepared-fill', 'background:#FDD412!important;color:#1A1A2E!important;', false)
+addDeclarations('.notes-row', 'background:#FDD412!important;color:#1A1A2E!important;', false)
+addDeclarations('.notes-fill', 'background:#FDD412!important;color:#1A1A2E!important;', false)
+addDeclarations('.notes-cell', 'background:#FDD412!important;color:#1A1A2E!important;', false)
 
-const styleClose = src.indexOf('</style>', fnStart)
-if (styleClose < 0 || styleClose >= sectionEnd) {
-  throw new Error('Roma invoice branding patch aborted: invoice print stylesheet closing tag was not found in the invoice section.')
-}
-
-// IMPORTANT: This is deliberately inserted by stable text anchors rather than by parsing
-// JavaScript braces. buildDeliveryInvoicePrintCSS() contains a template literal, so brace
-// parsing can corrupt the source when future invoice markup changes.
-const override = `
-
-        /* ${PATCH_MARKER}
-           Current Roma's Donuts palette: Red #CA1B1B | Gold #FDD412 | Navy #1A1A2E.
-           Invoice-only override. The Word export is an image of this HTML, so these rules
-           must remain in the rendered invoice stylesheet to prevent legacy colors returning. */
-        .invoice-page{
-          background:#ffffff!important;
-          color:#1A1A2E!important;
-        }
-
-        .invoice-table{
-          color:#1A1A2E!important;
-          border-color:#1A1A2E!important;
-        }
-
-        .invoice-table td,
-        .invoice-table th{
-          border-color:#1A1A2E!important;
-        }
-
-        .title-row td{
-          background:#CA1B1B!important;
-          color:#ffffff!important;
-          border-color:#1A1A2E!important;
-        }
-
-        .field-label{
-          background:#FDD412!important;
-          color:#1A1A2E!important;
-        }
-
-        .date-fill,
-        .customer-fill,
-        .address-fill,
-        .field-value{
-          background:#ffffff!important;
-          color:#1A1A2E!important;
-        }
-
-        .notes-row,
-        .notes-row td,
-        .notes-fill,
-        .notes-cell,
-        tr[class*="note"] td,
-        td[class*="note"]{
-          background:#FDD412!important;
-          color:#1A1A2E!important;
-        }
-
-        .header-row th{
-          background:#1A1A2E!important;
-          color:#ffffff!important;
-          border-color:#1A1A2E!important;
-        }
-
-        .product-row td,
-        .blank-row td{
-          background:#ffffff!important;
-          color:#1A1A2E!important;
-        }
-
-        .footer-row td{
-          background:#ffffff!important;
-          color:#1A1A2E!important;
-        }
-
-        .total-label{
-          background:#FDD412!important;
-          color:#1A1A2E!important;
-        }
-
-        .total-amount{
-          background:#CA1B1B!important;
-          color:#ffffff!important;
-        }
-
-        .prepared-fill{
-          background:#FDD412!important;
-          color:#1A1A2E!important;
-        }
-`
-
-src = src.slice(0, styleClose) + override + src.slice(styleClose)
+src = src.slice(0, fnStart) + section + src.slice(sectionEnd)
 fs.writeFileSync(path, src, 'utf8')
-console.log("Roma's Donuts invoice branding restored: #CA1B1B red, #FDD412 gold, #1A1A2E navy; legacy blue/green/yellow invoice fills overridden.")
+console.log("Roma's Donuts invoice branding applied safely: #CA1B1B red, #FDD412 gold, #1A1A2E navy; legacy blue/green/gray invoice fills removed.")
