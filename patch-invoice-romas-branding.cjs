@@ -4,75 +4,39 @@ const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
 const PATCH_MARKER = 'ROMAS_INVOICE_BRAND_V2_CURRENT_PALETTE'
+const fnMarker = 'function buildDeliveryInvoicePrintCSS()'
+const nextSectionMarker = 'const DELIVERY_INVOICE_SOURCE_WIDTH_MM'
 
-function findMatchingBrace(source, openIndex) {
-  let depth = 0
-  let state = 'code'
-  let quote = ''
-  let escaped = false
-
-  for (let i = openIndex; i < source.length; i++) {
-    const ch = source[i]
-    const next = source[i + 1]
-
-    if (state === 'line') {
-      if (ch === '\n') state = 'code'
-      continue
-    }
-    if (state === 'block') {
-      if (ch === '*' && next === '/') { state = 'code'; i++ }
-      continue
-    }
-    if (state === 'string') {
-      if (escaped) { escaped = false; continue }
-      if (ch === '\\') { escaped = true; continue }
-      if (ch === quote) state = 'code'
-      continue
-    }
-    if (state === 'template') {
-      if (escaped) { escaped = false; continue }
-      if (ch === '\\') { escaped = true; continue }
-      if (ch === '`') state = 'code'
-      continue
-    }
-
-    if (ch === '/' && next === '/') { state = 'line'; i++; continue }
-    if (ch === '/' && next === '*') { state = 'block'; i++; continue }
-    if (ch === '"' || ch === "'") { state = 'string'; quote = ch; continue }
-    if (ch === '`') { state = 'template'; continue }
-
-    if (ch === '{') depth++
-    if (ch === '}') {
-      depth--
-      if (depth === 0) return i
-    }
-  }
-  return -1
+const fnStart = src.indexOf(fnMarker)
+if (fnStart < 0) {
+  throw new Error('Roma invoice branding patch aborted: buildDeliveryInvoicePrintCSS() was not found.')
 }
 
-const fnMarker = 'function buildDeliveryInvoicePrintCSS()'
-const fnStart = src.indexOf(fnMarker)
-if (fnStart < 0) throw new Error('Roma invoice branding patch aborted: buildDeliveryInvoicePrintCSS() was not found.')
+const sectionEnd = src.indexOf(nextSectionMarker, fnStart)
+if (sectionEnd < 0) {
+  throw new Error('Roma invoice branding patch aborted: invoice export section boundary was not found.')
+}
 
-const openBrace = src.indexOf('{', fnStart)
-const closeBrace = findMatchingBrace(src, openBrace)
-if (openBrace < 0 || closeBrace < 0) throw new Error('Roma invoice branding patch aborted: could not determine invoice CSS function boundaries.')
-
-let fnText = src.slice(fnStart, closeBrace + 1)
-if (fnText.includes(PATCH_MARKER)) {
+const invoiceSection = src.slice(fnStart, sectionEnd)
+if (invoiceSection.includes(PATCH_MARKER)) {
   console.log('Roma invoice branding already uses the current palette; no duplicate override added.')
   process.exit(0)
 }
 
-const styleClose = fnText.lastIndexOf('</style>')
-if (styleClose < 0) throw new Error('Roma invoice branding patch aborted: invoice print stylesheet closing tag was not found.')
+const styleClose = src.indexOf('</style>', fnStart)
+if (styleClose < 0 || styleClose >= sectionEnd) {
+  throw new Error('Roma invoice branding patch aborted: invoice print stylesheet closing tag was not found in the invoice section.')
+}
 
+// IMPORTANT: This is deliberately inserted by stable text anchors rather than by parsing
+// JavaScript braces. buildDeliveryInvoicePrintCSS() contains a template literal, so brace
+// parsing can corrupt the source when future invoice markup changes.
 const override = `
 
         /* ${PATCH_MARKER}
            Current Roma's Donuts palette: Red #CA1B1B | Gold #FDD412 | Navy #1A1A2E.
-           Kept as an invoice-only override so legacy blue/green/yellow fills cannot return
-           when the Word export is rendered to an image. */
+           Invoice-only override. The Word export is an image of this HTML, so these rules
+           must remain in the rendered invoice stylesheet to prevent legacy colors returning. */
         .invoice-page{
           background:#ffffff!important;
           color:#1A1A2E!important;
@@ -150,8 +114,6 @@ const override = `
         }
 `
 
-fnText = fnText.slice(0, styleClose) + override + fnText.slice(styleClose)
-src = src.slice(0, fnStart) + fnText + src.slice(closeBrace + 1)
-
+src = src.slice(0, styleClose) + override + src.slice(styleClose)
 fs.writeFileSync(path, src, 'utf8')
 console.log("Roma's Donuts invoice branding restored: #CA1B1B red, #FDD412 gold, #1A1A2E navy; legacy blue/green/yellow invoice fills overridden.")
