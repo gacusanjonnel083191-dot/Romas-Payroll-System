@@ -30912,7 +30912,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [voidReceiptNo, setVoidReceiptNo] = useState(() => readSagsDraft('voidReceiptNo', ''))
  const [voidReason, setVoidReason] = useState(() => readSagsDraft('voidReason', ''))
  const [voidedBy, setVoidedBy] = useState(() => readSagsDraft('voidedBy', ''))
- const [voidAdminPin, setVoidAdminPin] = useState(() => readSagsDraft('voidAdminPin', ''))
  const [closingOpeningCash, setClosingOpeningCash] = useState(() => initialShiftClosingDraft.openingCash ?? '')
  const [closingActualCash, setClosingActualCash] = useState(() => initialShiftClosingDraft.actualCash ?? '')
  const [closingClosedBy, setClosingClosedBy] = useState(() => initialShiftClosingDraft.closedBy ?? '')
@@ -31000,19 +30999,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
  }
 
- async function findDuplicatePosPin(pin, excludeEmployeeId = '') {
-  let query = supabase
-   .from('pos_employees')
-   .select('id,full_name,role,is_active')
-   .eq('outlet_id', POS_OUTLET_ID)
-   .eq('pin', normalizePosPin(pin))
-   .limit(1)
-  if (excludeEmployeeId) query = query.neq('id', excludeEmployeeId)
-  const { data, error } = await query
-  if (error) throw error
-  return (data || [])[0] || null
- }
-
  async function createPosEmployeeAccount() {
   if (!canManagePosCredentials) {
    alert('Only the Owner, Manager, Admin, or SAGS POS Admin can create POS cashier accounts.')
@@ -31042,21 +31028,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   setPosEmployeeSavingId('new')
   try {
-   const duplicate = await findDuplicatePosPin(pin)
-   if (duplicate) {
-    alert(`That PIN is already assigned to ${duplicate.full_name || 'another POS user'}. Please use a different PIN.`)
-    return
-   }
    const { data, error } = await supabase
-    .from('pos_employees')
-    .insert([{
-     outlet_id: POS_OUTLET_ID,
-     full_name: fullName,
-     role,
-     pin,
-     is_active:true
-    }])
-    .select('id,outlet_id,full_name,role,is_active')
+    .rpc('pos_upsert_employee', {
+     p_employee_id:null,
+     p_outlet_id:POS_OUTLET_ID,
+     p_full_name:fullName,
+     p_role:role,
+     p_pin:pin,
+     p_is_active:true
+    })
     .single()
    if (error) throw error
    if (logAudit) {
@@ -31134,22 +31114,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   setPosEmployeeSavingId(employeeId)
   try {
-   if (newPin) {
-    const duplicate = await findDuplicatePosPin(newPin, employeeId)
-    if (duplicate) {
-     alert(`That PIN is already assigned to ${duplicate.full_name || 'another POS user'}. Please use a different PIN.`)
-     return
-    }
-   }
-
-   const payload = { full_name:fullName, role, is_active:isActive }
-   if (newPin) payload.pin = newPin
    const { data, error } = await supabase
-    .from('pos_employees')
-    .update(payload)
-    .eq('id', employeeId)
-    .eq('outlet_id', POS_OUTLET_ID)
-    .select('id,outlet_id,full_name,role,is_active')
+    .rpc('pos_upsert_employee', {
+     p_employee_id:employeeId,
+     p_outlet_id:POS_OUTLET_ID,
+     p_full_name:fullName,
+     p_role:role,
+     p_pin:newPin || null,
+     p_is_active:isActive
+    })
     .single()
    if (error) throw error
 
@@ -31762,6 +31735,45 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return rows
  }
 
+ async function fetchAllPosRows(queryFactory) {
+  const rows = []
+  const pageSize = 1000
+  for (let offset = 0; ; offset += pageSize) {
+   const { data, error } = await queryFactory().range(offset, offset + pageSize - 1)
+   if (error) throw error
+   const page = data || []
+   rows.push(...page)
+   if (page.length < pageSize) break
+  }
+  return rows
+ }
+
+ async function fetchPosRowsByValues(table, column, values = []) {
+  const uniqueValues = Array.from(new Set((values || []).map(value => String(value || '').trim()).filter(Boolean)))
+  if (!uniqueValues.length) return []
+  const rows = []
+  const chunkSize = 100
+  for (let index = 0; index < uniqueValues.length; index += chunkSize) {
+   const valueChunk = uniqueValues.slice(index, index + chunkSize)
+   rows.push(...await fetchAllPosRows(() => supabase
+    .from(table)
+    .select('*')
+    .in(column, valueChunk)
+    .order('created_at', { ascending:false })))
+  }
+  return rows
+ }
+
+ function dedupePosRows(rows = []) {
+  const seen = new Set()
+  return (rows || []).filter((row, index) => {
+   const key = String(row?.id || `${row?.sale_id || ''}|${row?.receipt_no || row?.reference_no || ''}|${row?.product_id || ''}|${row?.created_at || ''}|${index}`)
+   if (seen.has(key)) return false
+   seen.add(key)
+   return true
+  })
+ }
+
  function summarizeActivePosSales(rows = [], paymentRows = []) {
   const activeRows = (rows || []).filter(row => !isVoidedOrCancelledPosSale(row))
   const paymentsBySaleId = {}
@@ -32108,41 +32120,36 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   if (!silent) setPosLoading(true)
   setPosError('')
   try {
-   const start = posDate + 'T00:00:00'
-   const end = posDate + 'T23:59:59'
-
-   const [salesRes, itemsRes, movementsRes, productsRes] = await Promise.all([
+   const [salesRes, productsRes] = await Promise.all([
     supabase.from('pos_sales').select('*').eq('outlet_id', POS_OUTLET_ID).eq('business_date', posDate).order('created_at', { ascending:false }),
-    supabase.from('pos_sale_items').select('*').order('created_at', { ascending:false }).limit(500),
-    supabase.from('pos_inventory_movements').select('*').order('created_at', { ascending:false }).limit(1000),
     supabase.from('pos_products').select('*').order('product_name', { ascending:true })
    ])
 
    if (salesRes.error) throw salesRes.error
-   if (itemsRes.error) throw itemsRes.error
-   if (movementsRes.error) throw movementsRes.error
    if (productsRes.error) throw productsRes.error
 
    const salesData = salesRes.data || []
    const filteredSales = salesData.filter(row => String(row.business_date || '').slice(0,10) === posDate)
    const filteredSalePayments = await fetchPosSalePaymentsForSales(filteredSales)
-   const receiptSet = new Set(filteredSales.map(row => row.receipt_no))
+   const saleIds = filteredSales.map(row => row.id || row.sale_id)
+   const receiptNumbers = filteredSales.map(row => row.receipt_no)
+   const manilaDayStart = new Date(`${posDate}T00:00:00+08:00`)
+   const manilaNextDayStart = new Date(manilaDayStart.getTime() + 24 * 60 * 60 * 1000)
 
-   const filteredItems = (itemsRes.data || []).filter(row =>
-    receiptSet.has(row.receipt_no) || String(row.created_at || '').slice(0,10) === posDate
-   )
+   const [itemsBySale, itemsByReceipt, movementsByReceipt, movementsForDay] = await Promise.all([
+    fetchPosRowsByValues('pos_sale_items', 'sale_id', saleIds),
+    fetchPosRowsByValues('pos_sale_items', 'receipt_no', receiptNumbers),
+    fetchPosRowsByValues('pos_inventory_movements', 'reference_no', receiptNumbers),
+    fetchAllPosRows(() => supabase
+     .from('pos_inventory_movements')
+     .select('*')
+     .gte('created_at', manilaDayStart.toISOString())
+     .lt('created_at', manilaNextDayStart.toISOString())
+     .order('created_at', { ascending:false }))
+   ])
 
-   const filteredMovements = (movementsRes.data || []).filter(row =>
-    receiptSet.has(row.reference_no) || String(row.created_at || '').slice(0,10) === posDate
-   )
-
-   console.log('POS Monitor debug:', {
-    posDate,
-    totalSalesRows: salesData.length,
-    filteredSales: filteredSales.length,
-    filteredItems: filteredItems.length,
-    filteredMovements: filteredMovements.length
-   })
+   const filteredItems = dedupePosRows([...itemsBySale, ...itemsByReceipt])
+   const filteredMovements = dedupePosRows([...movementsByReceipt, ...movementsForDay])
 
    setPosSales(filteredSales)
    setPosSalePayments(filteredSalePayments)
@@ -33056,11 +33063,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
  }
 
- async function cleanVoidSaleWithAdminPin() {
+ async function cleanVoidSale() {
+  if (!canManagePosCredentials) {
+   alert('Only the Owner, Manager, Admin, or SAGS POS Admin can void a POS sale.')
+   return
+  }
   const receiptNo = String(voidReceiptNo || '').trim()
   const reason = String(voidReason || '').trim()
   const userName = String(voidedBy || '').trim()
-  const adminPin = String(voidAdminPin || '').trim()
 
   if (!receiptNo) {
    alert('Please enter the receipt number.')
@@ -33074,11 +33084,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   if (!userName) {
    alert('Please enter who voided this receipt.')
-   return
-  }
-
-  if (adminPin !== 'SAGS') {
-   alert('Invalid admin PIN.')
    return
   }
 
@@ -33098,69 +33103,21 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   try {
    const saleId = sale.id || sale.sale_id || receiptNo
-   const originalTotal = safeNum(sale.net_total || sale.total || sale.total_amount, 0)
+   const { data, error } = await supabase.rpc('pos_void_sale_atomic', {
+    p_outlet_id:POS_OUTLET_ID,
+    p_sale_id:String(saleId),
+    p_reason:reason,
+    p_voided_by:userName
+   })
+   if (error) throw error
+   const result = Array.isArray(data) ? data[0] : data
+   const originalTotal = safeNum(result?.original_total ?? sale.net_total ?? sale.total ?? sale.total_amount, 0)
+   const restoredItemCount = Math.max(0, Number(result?.restored_item_count || 0))
 
-   const relatedItems = posItems.filter(item =>
-    String(item.receipt_no || '') === receiptNo ||
-    String(item.sale_id || '') === String(saleId)
-   )
-
-   const { error: updateError } = await supabase
-    .from('pos_sales')
-    .update({
-     status: 'voided',
-     voided_at: new Date().toISOString(),
-     voided_by: userName,
-     void_reason: reason
-    })
-    .eq('receipt_no', receiptNo)
-
-   if (updateError) throw updateError
-
-   const { error: logError } = await supabase.from('pos_void_logs').insert([{
-    outlet_id: 'OUTLET-MALUED',
-    receipt_no: receiptNo,
-    sale_id: String(saleId),
-    business_date: posDate,
-    voided_by: userName,
-    void_reason: reason,
-    original_total: originalTotal
-   }])
-
-   if (logError) throw logError
-
-   const returnMovements = relatedItems.map(item => ({
-    outlet_id: 'OUTLET-MALUED',
-    product_id: item.product_id || '',
-    sku: item.sku || '',
-    barcode: item.barcode || '',
-    product_name: item.product_name || item.name || '',
-    movement_type: 'void_return',
-    qty: safeNum(item.qty, 0),
-    reference_no: 'VOID-' + receiptNo,
-    remarks: 'Void return for receipt ' + receiptNo + ' | Reason: ' + reason
-   })).filter(move => move.qty > 0)
-
-   if (returnMovements.length > 0) {
-    const { error: movementError } = await supabase
-     .from('pos_inventory_movements')
-     .insert(returnMovements)
-
-    if (movementError) throw movementError
-
-    // Actually give the stock back — logging the movement alone never
-    // changed what the POS shows as available, which meant a voided sale's
-    // items silently stayed "sold" forever from the register's point of view.
-    for (const move of returnMovements) {
-     if (!move.product_id) continue
-     const product = posProducts.find(p => String(p.id) === String(move.product_id))
-     if (!product) continue
-     const { error: stockError } = await supabase
-      .from('pos_products')
-      .update({ stock: safeNum(product.stock, 0) + move.qty })
-      .eq('id', move.product_id)
-     if (stockError) console.error('Stock restore failed for', move.product_id, stockError)
-    }
+   if (result?.already_voided) {
+    alert('This receipt is already voided.')
+    await Promise.all([loadPosMonitor(), loadShiftClosingMonitor({ silent:true })])
+    return
    }
 
    if (logAudit) {
@@ -33168,7 +33125,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      'POS SALE VOIDED',
      currentAdminLabel || userName || 'Admin',
      receiptNo,
-     `Voided receipt ${receiptNo} (₱${originalTotal.toFixed(2)}) | Reason: ${reason} | Stock restored for ${returnMovements.length} item(s)`
+     `Voided receipt ${receiptNo} (₱${originalTotal.toFixed(2)}) | Reason: ${reason} | Stock restored for ${restoredItemCount} item(s)`
     )
    }
 
@@ -33176,7 +33133,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    setVoidReceiptNo('')
    setVoidReason('')
    setVoidedBy('')
-   setVoidAdminPin('')
    await Promise.all([loadPosMonitor(), loadShiftClosingMonitor({ silent:true })])
   } catch (err) {
    console.error('Void sale failed:', err)
@@ -33312,7 +33268,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     voidReceiptNo,
     voidReason,
     voidedBy,
-    voidAdminPin,
     inventoryDrafts,
     showAddOutletItem,
     newOutletItem
@@ -33330,7 +33285,6 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   voidReceiptNo,
   voidReason,
   voidedBy,
-  voidAdminPin,
   inventoryDrafts,
   showAddOutletItem,
   newOutletItem
@@ -33855,10 +33809,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    <div style={{ background:'#ffffff', border:'1px solid #eee', borderRadius:'12px', padding:'10px 12px', marginBottom:'10px' }}>
     <h3 style={{ margin:'0 0 5px', color:'#ca1b1b', fontSize:'16px' }}>Void / Cancel Sale</h3>
     <p style={{ margin:'0 0 8px', color:'#555', fontSize:'12px' }}>
-     Void a receipt using admin PIN. The sale will be marked as void and inventory will be returned.
+     Void a receipt using your signed-in administrator account. The sale and inventory return are saved together.
     </p>
 
-    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 2fr 1fr 1fr auto', gap:'10px', alignItems:'end' }}>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile ? '1fr' : '1fr 2fr 1fr auto', gap:'10px', alignItems:'end' }}>
      <div>
       <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Receipt No.</label>
       <input value={voidReceiptNo} onChange={e=>setVoidReceiptNo(e.target.value)} placeholder="ROMA-..." style={{...inputStyle, marginBottom:0}} />
@@ -33874,13 +33828,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
       <input value={voidedBy} onChange={e=>setVoidedBy(e.target.value)} placeholder="Name" style={{...inputStyle, marginBottom:0}} />
      </div>
 
-     <div>
-      <label style={{ fontSize:'12px', fontWeight:'bold', color:'#555' }}>Admin PIN</label>
-      <input type="password" value={voidAdminPin} onChange={e=>setVoidAdminPin(e.target.value)} placeholder="PIN" style={{...inputStyle, marginBottom:0}} />
-     </div>
-
      <button
-      onClick={cleanVoidSaleWithAdminPin}
+      onClick={cleanVoidSale}
+      disabled={!canManagePosCredentials}
       style={{
        background:'#ca1b1b',
        color:'white',
@@ -33888,7 +33838,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
        borderRadius:'10px',
        padding:'12px 16px',
        fontWeight:'bold',
-       cursor:'pointer',
+       cursor:canManagePosCredentials ? 'pointer' : 'not-allowed',
+       opacity:canManagePosCredentials ? 1 : 0.6,
        whiteSpace:'nowrap'
       }}
      >
