@@ -16025,7 +16025,14 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  const lastDeposit = bankDeposits[0]
  const lastDepDate = lastDeposit?.deposit_date
  const isToday = lastDepDate === today
- if (!isToday) createNotification(null, 'System', 'deposit', ' Tuesday Deposit Reminder', `Today is deposit day! Please deposit this week\'s collections and record the bank deposit slip.`)
+ if (!isToday) void createNotification(
+  null,
+  'System',
+  'deposit',
+  ' Tuesday Deposit Reminder',
+  `Today is deposit day! Please deposit this week\'s collections and record the bank deposit slip.`,
+  { dedupeKey:`tuesday-deposit:${today}`, tag:`tuesday-deposit:${today}` }
+ )
  }
  }
 
@@ -23873,9 +23880,13 @@ requestPushPermission()
  showToast(` ${empName} reactivated!`)
  loadDeactivatedEmployees(); loadEmployees()
  }
- async function createNotification(employeeId, employeeName, type, title, message) {
- const { error } = await supabase.from('notifications').insert({ employee_id:employeeId, employee_name:employeeName, type, title, message })
+ async function createNotification(employeeId, employeeName, type, title, message, options = {}) {
+ const dedupeKey = String(options?.dedupeKey || '').trim() || null
+ const { error } = await supabase.from('notifications').insert({ employee_id:employeeId, employee_name:employeeName, type, title, message, dedupe_key:dedupeKey })
  if (error) {
+  // A duplicate dedupe key means this reminder was already saved and shown.
+  // Treat it as a successful no-op so reopening the app cannot stack alerts.
+  if (String(error?.code || '') === '23505' && dedupeKey) return false
   console.warn('createNotification database insert:', error.message)
   return false
  }
@@ -23890,11 +23901,13 @@ requestPushPermission()
     const registration = 'serviceWorker' in navigator
      ? await navigator.serviceWorker.getRegistration()
      : null
+    const notificationTag = String(options?.tag || dedupeKey || '').trim()
+    const notificationOptions = { body:message, icon:'/logo.png', ...(notificationTag ? { tag:notificationTag, renotify:false } : {}) }
     if (registration?.showNotification) {
-     await registration.showNotification(`Roma's Donuts ${title}`, { body:message, icon:'/logo.png' })
+     await registration.showNotification(`Roma's Donuts ${title}`, notificationOptions)
      return
     }
-    new Notification(`Roma's Donuts ${title}`, { body:message, icon:'/logo.png' })
+    new Notification(`Roma's Donuts ${title}`, notificationOptions)
    } catch(notificationError) {
     console.warn('Browser notification skipped:', notificationError)
    }
