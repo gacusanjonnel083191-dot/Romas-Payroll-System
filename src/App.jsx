@@ -43823,52 +43823,57 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const totalDryPremixG = safeNum((forecastRows || []).reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0),0)
  const totalDryPremixKg = (safeNum(totalDryPremixG,0)/1000).toFixed(2)
 
- const printForecast = () => {
- const pw = window.open('','_blank','width=700,height=900')
- pw.document.write(`<!DOCTYPE html><html><head><title>Production Forecast</title>
- <style>
- *{margin:0;padding:0;box-sizing:border-box;}
- body{font-family:Arial,sans-serif;font-size:10px;width:150mm;background:white;}
- @media print{@page{size:150mm 210mm;margin:5mm;}html,body{width:150mm;}.no-print{display:none!important;}}
-.wrap{padding:5mm 6mm;}
- h1{font-size:14px;color:#ca1b1b;}
- table{width:100%;border-collapse:collapse;margin-top:8px;}
- th{background:#ca1b1b;color:white;padding:5px 6px;text-align:left;font-size:9px;}
- td{padding:4px 6px;border-bottom:1px solid #eee;font-size:9px;}
-.total-row{background:#fff9e6;font-weight:bold;border-top:2px solid #ca1b1b;}
-.kg-box{background:#e8f5e9;border:2px solid #2d8a4e;border-radius:8px;padding:10px;text-align:center;margin:10px 0;}
- </style></head><body><div class="wrap">
- <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #ca1b1b;padding-bottom:6px;margin-bottom:8px;">
- <div><h1>Roma's Donuts</h1><div style="font-size:8px;color:#888;">Delivery Date: ${forecastDate}</div><div style="font-size:8px;color:#888;">Created: ${today}</div></div>
- <div style="text-align:right;font-size:11px;font-weight:bold;color:#ca1b1b;">PRODUCTION ORDER</div>
- </div>
- <!-- Big dry premix box -->
- <div class="kg-box">
- <div style="font-size:9px;color:#2d8a4e;font-weight:bold;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Total Dry Premix to Knead</div>
- <div style="font-size:36px;font-weight:bold;color:#2d8a4e;line-height:1;">${totalDryPremixKg}</div>
- <div style="font-size:14px;font-weight:bold;color:#2d8a4e;">kilograms</div>
- </div>
- <div style="text-align:center;background:#fff9e6;border:1px solid #ca1b1b;border-radius:6px;padding:6px;margin-bottom:8px;">
- <div style="font-size:8px;color:#888;">Total Pieces | ${forecastInvoices.length} Invoice(s)</div>
- <div style="font-size:20px;font-weight:bold;color:#ca1b1b;">${totalPieces.toLocaleString()} pcs</div>
- </div>
- <table>
- <tr><th>Variant</th><th style="text-align:right;">Pieces</th><th style="text-align:right;">Dry Premix</th><th style="text-align:center;">Actual</th></tr>
- ${forecastRows.map(r => {
- const pieces = getForecastRowTotal(r)
-const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
- const kgDisplay = grams>=1000? (grams/1000).toFixed(2)+' kg': grams.toFixed(0)+' g'
- return '<tr><td><strong>'+r.variant_name+'</strong></td><td style="text-align:right;font-weight:bold;">'+getForecastRowTotal(r).toLocaleString('en-PH')+'</td><td style="text-align:right;color:#2d8a4e;font-weight:bold;">'+kgDisplay+'</td><td style="text-align:center;border:1px solid #ddd;min-width:40px;">&nbsp;</td></tr>'
- }).join('')}
- <tr class="total-row"><td>TOTAL</td><td style="text-align:right;color:#ca1b1b;">${totalPieces.toLocaleString()}</td><td style="text-align:right;color:#2d8a4e;">${totalDryPremixKg} kg</td><td></td></tr>
- </table>
- <div style="margin-top:12px;display:flex;justify-content:space-between;gap:8px;">
- <div style="text-align:center;flex:1;"><div style="border-top:1px solid #000;padding-top:3px;font-size:8px;">Prepared by</div></div>
- <div style="text-align:center;flex:1;"><div style="border-top:1px solid #000;padding-top:3px;font-size:8px;">Checked by</div></div>
- </div>
- <div class="no-print" style="text-align:center;margin-top:14px;"><button onclick="window.print()" style="padding:8px 20px;background:#ca1b1b;color:white;border:none;border-radius:6px;font-size:12px;cursor:pointer;"> PRINT (150 210mm)</button><p style="font-size:9px;color:#888;margin-top:4px;">Set paper to custom 150 210mm. Uncheck headers/footers.</p></div>
- </div></body></html>`)
- pw.document.close(); setTimeout(()=>{ pw.focus(); pw.print() },600)
+ const printForecast = async () => {
+ /* PRODUCTION_FORECAST_HALF_LONG_BOND_REFERENCE_V8 */
+ let node = null
+ try {
+  const rows = Array.isArray(forecastRows) ? forecastRows : []
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))
+  const fmt = value => safeNum(value,0).toLocaleString('en-PH')
+  const rawDate = String(forecastDate || '').slice(0,10)
+  const dateParts = rawDate.split('-')
+  const dateText = dateParts.length === 3 ? dateParts[1]+' / '+dateParts[2]+' / '+dateParts[0] : rawDate
+  const rowHtml = rows.map(row => '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td></tr>').join('')
+
+  node = document.createElement('div')
+  node.style.cssText = 'position:fixed;left:-10000px;top:0;width:1300px;height:1700px;background:#fff;overflow:hidden;pointer-events:none;'
+  node.innerHTML = '<div style="width:1300px;height:1700px;padding:42px 54px 34px;background:#fff;color:#171717;font-family:Arial,sans-serif;box-sizing:border-box;display:flex;flex-direction:column">'+
+   '<div style="display:flex;justify-content:space-between;border-bottom:4px solid #d91c1c;padding-bottom:11px;margin-bottom:14px"><div><div style="font-size:34px;font-weight:900;color:#d91c1c">Roma\'s Donuts</div><div style="font-size:14px;margin-top:6px;font-weight:700">Delivery Date: '+esc(dateText)+'</div></div><div style="font-size:26px;font-weight:900;color:#d91c1c">PRODUCTION ORDER</div></div>'+
+   '<div style="border:3px solid #178b3d;border-radius:12px;padding:13px;text-align:center;background:#f0faf2;margin-bottom:11px"><div style="font-size:58px;line-height:1;font-weight:900;color:#178b3d">'+esc(totalDryPremixKg)+' KG</div></div>'+
+   '<div style="border:2px solid #e22;border-radius:9px;padding:6px;text-align:center;margin-bottom:11px"><div style="font-size:12px;font-weight:700">TOTAL PIECES</div><div style="font-size:38px;line-height:1;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+' pcs</div></div>'+
+   '<table style="width:86%;margin:0 auto;border-collapse:collapse;table-layout:fixed;font-size:22px"><thead><tr><th style="text-align:left;background:#d91c1c;color:white;padding:10px 14px;width:68%">VARIANT</th><th style="text-align:right;background:#d91c1c;color:white;padding:10px 14px;width:32%">PIECES</th></tr></thead><tbody>'+rowHtml+'</tbody><tfoot><tr><td style="border-top:3px solid #d91c1c;padding:8px 9px;font-weight:900">TOTAL</td><td style="border-top:3px solid #d91c1c;padding:8px 9px;text-align:right;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+'</td></tr></tfoot></table>'+
+   '<div style="margin-top:28px;padding-top:18px;border-top:2px solid #888;display:flex;justify-content:space-between;font-size:12px;font-weight:700"><span>Prepared by: __________________</span><span>Checked by: __________________</span></div></div>'
+  document.body.appendChild(node)
+  node.firstElementChild.querySelectorAll('tbody td').forEach(cell => { cell.style.padding='16px 16px'; cell.style.border='1.5px solid #a9a9a9'; cell.style.fontWeight='700'; cell.style.fontSize='24px'; cell.style.lineHeight='1.08' })
+  node.firstElementChild.querySelectorAll('tbody td.q').forEach(cell => { cell.style.textAlign='right'; cell.style.fontWeight='900'; cell.style.color='#d91c1c'; cell.style.borderLeft='2.5px solid #777'; cell.style.fontSize='25px' })
+
+  const canvas = await html2canvas(node.firstElementChild,{scale:3,backgroundColor:'#fff',useCORS:true,logging:false,width:1300,height:1700})
+  const base64 = canvas.toDataURL('image/png',1).split(',')[1]
+  const binary = atob(base64)
+  const png = new Uint8Array(binary.length)
+  for (let index=0; index<binary.length; index+=1) png[index] = binary.charCodeAt(index)
+  const { zipSync, strToU8 } = await import('fflate')
+  const contentTypes = '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>'
+  const rootRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>'
+  const documentRels = '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/forecast.png"/></Relationships>'
+  const documentXml = '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body><w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="5852160" cy="7680960"/><wp:docPr id="1" name="Production Order"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="production-order.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="5852160" cy="7680960"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><w:sectPr><w:pgSz w:w="9360" w:h="12240"/><w:pgMar w:top="72" w:right="72" w:bottom="72" w:left="72" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr></w:body></w:document>'
+  const archive = zipSync({'[Content_Types].xml':strToU8(contentTypes),'_rels/.rels':strToU8(rootRels),'word/document.xml':strToU8(documentXml),'word/_rels/document.xml.rels':strToU8(documentRels),'word/media/forecast.png':png},{level:6})
+  const blob = new Blob([archive],{type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'})
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'Romas_Production_Order_'+String(forecastDate || 'date').replace(/[^0-9-]/g,'')+'_6.5x8.5.docx'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(()=>URL.revokeObjectURL(url),1500)
+  showToast('Production order Word file downloaded (6.5 x 8.5 inches).','green')
+ } catch (error) {
+  console.error('Production order Word export failed:',error)
+  showToast('Could not create the production order Word file.','red')
+ } finally {
+  if (node?.parentNode) node.parentNode.removeChild(node)
+ }
  }
  return (
  <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
