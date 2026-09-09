@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node patch-invoice-romas-branding.cjs && vite build",
+    "build": "node patch-invoice-romas-branding.cjs && node patch-hr-admin-business-access.cjs && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
