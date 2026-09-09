@@ -85,14 +85,20 @@ function rewriteForecastPrintBlock(block) {
 
   const headerPattern = /<th\b[^>]*>\s*Dry Premix\s*<\/th>/gi
   const valueCellPattern = /<td\b[^>]*>\s*'\s*\+\s*kgDisplay\s*\+\s*'\s*<\/td>/gi
-  const headerMatches = block.match(headerPattern) || []
-  const cellMatches = block.match(valueCellPattern) || []
+  const duplicateTotalCellPattern = /<td\b[^>]*>\s*\$\{totalDryPremixKg\}\s*kg\s*<\/td>/gi
 
-  if (headerMatches.length > 1 || cellMatches.length > 1) {
-    throw new Error('Production Forecast print invariant failed: multiple per-variant premix columns were found.')
+  const headerMatches = block.match(headerPattern) || []
+  const valueCellMatches = block.match(valueCellPattern) || []
+  const duplicateTotalMatches = block.match(duplicateTotalCellPattern) || []
+
+  if (headerMatches.length > 1 || valueCellMatches.length > 1 || duplicateTotalMatches.length > 1) {
+    throw new Error('Production Forecast print invariant failed: multiple premix table columns/cells were found.')
   }
 
-  const next = block.replace(headerPattern, '').replace(valueCellPattern, '')
+  const next = block
+    .replace(headerPattern, '')
+    .replace(valueCellPattern, '')
+    .replace(duplicateTotalCellPattern, '')
 
   if (/<th\b[^>]*>\s*Dry Premix\s*<\/th>/i.test(next)) {
     throw new Error('Production Forecast print invariant failed: Dry Premix header still exists in print output.')
@@ -100,8 +106,14 @@ function rewriteForecastPrintBlock(block) {
   if (/<td\b[^>]*>\s*'\s*\+\s*kgDisplay\s*\+\s*'\s*<\/td>/i.test(next)) {
     throw new Error('Production Forecast print invariant failed: per-variant premix value still exists in print output.')
   }
+  if (/<td\b[^>]*>\s*\$\{totalDryPremixKg\}\s*kg\s*<\/td>/i.test(next)) {
+    throw new Error('Production Forecast print invariant failed: duplicate total premix cell still exists inside the table.')
+  }
   if (!/Total Dry Premix to Knead/i.test(next) || !/totalDryPremixKg/.test(next)) {
     throw new Error('Production Forecast print invariant failed: overall premix total was accidentally removed.')
+  }
+  if (!/>\s*Actual\s*<\/th>/i.test(next)) {
+    throw new Error('Production Forecast print invariant failed: Actual column was accidentally removed.')
   }
 
   return next
