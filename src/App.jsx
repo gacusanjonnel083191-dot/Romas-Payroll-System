@@ -26,10 +26,11 @@ const TIME_ADJ_OT_RANGE_CLOSE = ']END-OT-TIME-RANGE'
 const MEAL_BREAK_EXCEPTION_META_OPEN = 'MEAL-BREAK-EXCEPTION['
 const MEAL_BREAK_EXCEPTION_META_CLOSE = ']END-MEAL-BREAK-EXCEPTION'
 const RESELLER_CREDIT_GRACE_DAYS = 7
-const ORDER_CUTOFF_TIME = '12:00'
-const ORDER_CUTOFF_LABEL = '12:00 PM'
+const ORDER_CUTOFF_TIME = '13:00'
+const ORDER_CUTOFF_LABEL = '1:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
 const POS_SHIFT_DAILY_SALES_MARKER_PREFIX = 'SAGS-POS-SHIFT-CLOSING|'
+const RESELLER_AUTO_ORDER_WEEKDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
 
 function getPosShiftDailySalesMarker(outletId = '', businessDate = '') {
  return `${POS_SHIFT_DAILY_SALES_MARKER_PREFIX}${String(outletId || '').trim()}|${String(businessDate || '').slice(0, 10)}`
@@ -754,29 +755,33 @@ function getTomorrowOperationsForecastWindow(asOf = new Date()) {
 }
 
 function getOrderCutoffStatus(targetDeliveryDate = null, asOf = new Date()) {
- // Order cut-off has been completely removed.
- // Resellers and admins can create, edit, and approve orders/invoices anytime.
  const ph = getPHDateTimeParts(asOf)
  const tomorrowDate = getPHDateOffsetString(1, asOf)
  const targetDate = targetDeliveryDate? String(targetDeliveryDate).slice(0, 10): tomorrowDate
+ const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
+ const appliesToTomorrow = targetDate === tomorrowDate
+ const timeLocked = ph.totalMinutes >= cutoffMinutes
+ const locked = appliesToTomorrow && timeLocked
  return {
- locked:false,
- timeLocked:false,
- appliesToTomorrow:false,
+ locked,
+ timeLocked,
+ appliesToTomorrow,
  targetDate,
  tomorrowDate,
  date: ph.date,
  time: ph.time,
- cutoffTime:null,
- cutoffLabel:'No cut-off',
- message:'Order cut-off removed. Orders, invoices, quantity edits, and order approvals are allowed anytime.'
+ cutoffTime:ORDER_CUTOFF_TIME,
+ cutoffLabel:ORDER_CUTOFF_LABEL,
+ message:locked
+  ? `Tomorrow's reseller order is locked after ${ORDER_CUTOFF_LABEL} Philippine time. Staff may still review and approve orders already submitted.`
+  : `Tomorrow's reseller order remains editable until ${ORDER_CUTOFF_LABEL} Philippine time.`
  }
 }
 
 
 function getDefaultResellerOrderDeliveryDate(asOf = new Date()) {
- // No cut-off: tomorrow remains the default delivery date at any time of day.
- return getPHDateOffsetString(1, asOf)
+ const tomorrow = getPHDateOffsetString(1, asOf)
+ return getOrderCutoffStatus(tomorrow, asOf).locked? getPHDateOffsetString(2, asOf): tomorrow
 }
 
 function diffMinutesAcrossMidnight(startTime, endTime) {
@@ -6783,9 +6788,19 @@ export default function App() {
  const [submittingResellerReturn, setSubmittingResellerReturn] = useState(false)
  const [resellerNotices, setResellerNotices] = useState([])
  const [resellerPortalLoading, setResellerPortalLoading] = useState(false)
+ const [resellerAutoOrderSettings, setResellerAutoOrderSettings] = useState({ enabled:false, safety_buffer_pct:10, notify_on_generated:true, notify_on_adjusted:true, notify_on_approved:true })
+ const [resellerAutoOrderSchedules, setResellerAutoOrderSchedules] = useState([])
+ const [resellerAutoOrderEvents, setResellerAutoOrderEvents] = useState([])
+ const [resellerAutoOrderLoading, setResellerAutoOrderLoading] = useState(false)
+ const [resellerAutoOrderSaving, setResellerAutoOrderSaving] = useState(false)
+ const [resellerAutoOrderForm, setResellerAutoOrderForm] = useState(null)
+ const [resellerAutoOrderSkipDate, setResellerAutoOrderSkipDate] = useState('')
+ const [resellerAutoOrderSkipReason, setResellerAutoOrderSkipReason] = useState('')
  // Admin order management
  const [pendingResellerOrders, setPendingResellerOrders] = useState([])
  const [showOrdersPanel, setShowOrdersPanel] = useState(false)
+ const [staffOrderReasons, setStaffOrderReasons] = useState({})
+ const [staffOrderSaving, setStaffOrderSaving] = useState({})
  // Login type
  const [loginType, setLoginType] = useState('employee')
  const [passkeySupported, setPasskeySupported] = useState(false)
@@ -7600,7 +7615,7 @@ export default function App() {
  const currentDay = new Date().getDate()
  const showPayrollReminder = currentDay === 11 || currentDay === 26
  const [orderCutoffTick, setOrderCutoffTick] = useState(Date.now())
- const orderCutoffStatus = getOrderCutoffStatus(new Date(orderCutoffTick))
+ const orderCutoffStatus = getOrderCutoffStatus(null, new Date(orderCutoffTick))
 
  useEffect(() => {
   if (!adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
@@ -17084,6 +17099,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setResellerMode(true)
  setResellerPortalView('dashboard')
  await loadResellerPortalData(branches[0].id)
+ await loadResellerAutoOrderConfig(branches[0].id, { silent:true })
  setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
  await loadResellerOrderItems(branches[0].id)
  showToast(` Welcome, ${account.account_name || account.owner_name || 'Reseller'}!`)
@@ -17110,6 +17126,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setResellerMode(true)
  setResellerPortalView('dashboard')
  await loadResellerPortalData(data.id)
+ await loadResellerAutoOrderConfig(data.id, { silent:true })
 
  setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
  await loadResellerOrderItems(data.id)
@@ -17197,6 +17214,188 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setResellerOrderItems(allRows)
  }
 
+ function getResellerPortalCredentials() {
+ return {
+  p_access_code:String(resellerLoginCode || '').trim().toUpperCase(),
+  p_access_pin:String(resellerLoginPin || '').trim()
+ }
+ }
+
+ async function loadResellerAutoOrderConfig(resellerId = null, options = {}) {
+ const targetResellerId = resellerId || currentReseller?.id
+ if (!targetResellerId) return false
+ setResellerAutoOrderLoading(true)
+ try {
+  const { data, error } = await supabase.rpc('reseller_auto_order_get', {
+   p_reseller_id:targetResellerId,
+   ...getResellerPortalCredentials()
+  })
+  if (error) throw error
+  setResellerAutoOrderSettings({
+   enabled:data?.settings?.enabled === true,
+   safety_buffer_pct:safeNum(data?.settings?.safety_buffer_pct, 10),
+   notify_on_generated:data?.settings?.notify_on_generated !== false,
+   notify_on_adjusted:data?.settings?.notify_on_adjusted !== false,
+   notify_on_approved:data?.settings?.notify_on_approved !== false
+  })
+  setResellerAutoOrderSchedules(Array.isArray(data?.schedules)? data.schedules: [])
+  setResellerAutoOrderEvents(Array.isArray(data?.events)? data.events: [])
+  return true
+ } catch (err) {
+  console.warn('Automatic ordering configuration could not be loaded:', err)
+  setResellerAutoOrderSettings({ enabled:false, safety_buffer_pct:10, notify_on_generated:true, notify_on_adjusted:true, notify_on_approved:true })
+  setResellerAutoOrderSchedules([])
+  setResellerAutoOrderEvents([])
+  if (!options.silent) showToast(' Automatic ordering is unavailable. Please refresh or contact your Roma’s staff.', 'red')
+  return false
+ } finally {
+  setResellerAutoOrderLoading(false)
+ }
+ }
+
+ async function setResellerAutomaticOrderingEnabled(enabled) {
+ if (!currentReseller?.id || resellerAutoOrderSaving) return
+ if (enabled && resellerAutoOrderSchedules.filter(s=>s.enabled !== false).length === 0) {
+  showToast(' Create and save at least one active day template before enabling automatic ordering.', 'red')
+  return
+ }
+
+ setResellerAutoOrderSaving(true)
+ try {
+  const next = { ...resellerAutoOrderSettings, enabled:enabled === true }
+  const { error } = await supabase.rpc('reseller_auto_order_set_enabled', {
+   p_reseller_id:currentReseller.id,
+   ...getResellerPortalCredentials(),
+   p_enabled:next.enabled,
+   p_safety_buffer_pct:safeNum(next.safety_buffer_pct, 10),
+   p_notify_on_generated:next.notify_on_generated !== false,
+   p_notify_on_adjusted:next.notify_on_adjusted !== false,
+   p_notify_on_approved:next.notify_on_approved !== false
+  })
+  if (error) throw error
+  setResellerAutoOrderSettings(next)
+  showToast(enabled? ' Automatic ordering enabled.':' Automatic ordering disabled.')
+  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
+ } catch (err) {
+  showToast(' Could not update automatic ordering: ' + (err?.message || err), 'red')
+ } finally {
+  setResellerAutoOrderSaving(false)
+ }
+ }
+
+ async function saveResellerAutomaticOrderingSettings() {
+ if (!currentReseller?.id || resellerAutoOrderSaving) return
+ setResellerAutoOrderSaving(true)
+ try {
+  const { error } = await supabase.rpc('reseller_auto_order_set_enabled', {
+   p_reseller_id:currentReseller.id,
+   ...getResellerPortalCredentials(),
+   p_enabled:resellerAutoOrderSettings.enabled === true,
+   p_safety_buffer_pct:safeNum(resellerAutoOrderSettings.safety_buffer_pct, 10),
+   p_notify_on_generated:resellerAutoOrderSettings.notify_on_generated !== false,
+   p_notify_on_adjusted:resellerAutoOrderSettings.notify_on_adjusted !== false,
+   p_notify_on_approved:resellerAutoOrderSettings.notify_on_approved !== false
+  })
+  if (error) throw error
+  showToast(' Automatic-order settings saved.')
+  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
+ } catch (err) {
+  showToast(' Could not save automatic-order settings: ' + (err?.message || err), 'red')
+ } finally {
+  setResellerAutoOrderSaving(false)
+ }
+ }
+
+ async function startResellerAutoOrderTemplate(schedule = null, weekday = null) {
+ if (!schedule && weekday !== null) schedule = resellerAutoOrderSchedules.find(row=>Number(row.delivery_weekday)===weekday) || null
+ let variants = Array.isArray(donutVariants)? donutVariants: []
+ if (variants.length === 0) {
+  const { data, error } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
+  if (error) console.warn('Unable to load variants for automatic-order template:', error)
+  variants = data || []
+ }
+ const savedItems = Array.isArray(schedule?.items)? schedule.items: []
+ const savedMap = new Map(savedItems.map(item=>[String(item.variant_id), item]))
+ const items = sortDonutVariantsByGuide(variants.filter(variant=>variant?.is_active !== false)).map(variant=>{
+  const saved = savedMap.get(String(variant.id))
+  return {
+   variant_id:variant.id,
+   variant_name:variant.name,
+   template_quantity:saved?.template_quantity || '',
+   minimum_quantity:saved?.minimum_quantity ?? '',
+   maximum_quantity:saved?.maximum_quantity ?? ''
+  }
+ })
+ setResellerAutoOrderForm({
+  id:schedule?.id || null,
+  delivery_weekday:weekday ?? schedule?.delivery_weekday ?? 1,
+  template_name:schedule?.template_name || `${RESELLER_AUTO_ORDER_WEEKDAYS[weekday ?? 1]} Order`,
+  enabled:schedule?.enabled !== false,
+  effective_start_date:String(schedule?.effective_start_date || today).slice(0,10),
+  effective_end_date:String(schedule?.effective_end_date || '').slice(0,10),
+  items
+ })
+ }
+
+ async function saveResellerAutoOrderTemplate() {
+ if (!currentReseller?.id || !resellerAutoOrderForm || resellerAutoOrderSaving) return
+ const validItems = (resellerAutoOrderForm.items || []).filter(item=>safeNum(item.template_quantity,0)>0)
+ if (!String(resellerAutoOrderForm.template_name || '').trim()) { showToast(' Enter a template name.', 'red'); return }
+ if (validItems.length === 0) { showToast(' Add at least one product quantity.', 'red'); return }
+ setResellerAutoOrderSaving(true)
+ try {
+  const { error } = await supabase.rpc('reseller_auto_order_save_schedule', {
+   p_reseller_id:currentReseller.id,
+   ...getResellerPortalCredentials(),
+   p_delivery_weekday:Number(resellerAutoOrderForm.delivery_weekday),
+   p_template_name:String(resellerAutoOrderForm.template_name).trim(),
+   p_enabled:resellerAutoOrderForm.enabled !== false,
+   p_effective_start_date:resellerAutoOrderForm.effective_start_date || today,
+   p_effective_end_date:resellerAutoOrderForm.effective_end_date || null,
+   p_items:validItems.map(item=>({
+    variant_id:item.variant_id,
+    variant_name:item.variant_name,
+    template_quantity:Math.round(safeNum(item.template_quantity,0)),
+    minimum_quantity:item.minimum_quantity === ''? null: Math.max(0, Math.round(safeNum(item.minimum_quantity,0))),
+    maximum_quantity:item.maximum_quantity === ''? null: Math.max(1, Math.round(safeNum(item.maximum_quantity,0)))
+   }))
+  })
+  if (error) throw error
+  setResellerAutoOrderForm(null)
+  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
+  showToast(` ${RESELLER_AUTO_ORDER_WEEKDAYS[Number(resellerAutoOrderForm.delivery_weekday)]} automatic-order template saved.`)
+ } catch (err) {
+  showToast(' Could not save template: ' + (err?.message || err), 'red')
+ } finally {
+  setResellerAutoOrderSaving(false)
+ }
+ }
+
+ async function skipResellerAutomaticOrderDate() {
+ if (!currentReseller?.id || !resellerAutoOrderSkipDate || resellerAutoOrderSaving) {
+  if (!resellerAutoOrderSkipDate) showToast(' Select the delivery date to skip.', 'red')
+  return
+ }
+ setResellerAutoOrderSaving(true)
+ try {
+  const { error } = await supabase.rpc('reseller_auto_order_skip_date', {
+   p_reseller_id:currentReseller.id,
+   ...getResellerPortalCredentials(),
+   p_skip_date:resellerAutoOrderSkipDate,
+   p_reason:String(resellerAutoOrderSkipReason || '').trim() || null
+  })
+  if (error) throw error
+  showToast(` Automatic order skipped for ${resellerAutoOrderSkipDate}.`)
+  setResellerAutoOrderSkipDate('')
+  setResellerAutoOrderSkipReason('')
+  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
+ } catch (err) {
+  showToast(' Could not skip date: ' + (err?.message || err), 'red')
+ } finally {
+  setResellerAutoOrderSaving(false)
+ }
+ }
+
  async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', options = {}) {
  if (!sourceResellerId) {
  if (!options.silent) showToast(' Select a branch template first.', 'red')
@@ -17228,9 +17427,13 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  if (!branch) return
  setCurrentReseller(branch)
  setSelectedResellerBranchId(branch.id)
+ setResellerAutoOrderForm(null)
+ setResellerAutoOrderSkipDate('')
+ setResellerAutoOrderSkipReason('')
  setResellerOrderTemplateSourceId('')
  if (!keepCurrentView) setResellerPortalView('dashboard')
  await loadResellerPortalData(branch.id)
+ await loadResellerAutoOrderConfig(branch.id, { silent:true })
  await loadResellerOrderItems(branch.id)
  showToast(` Switched to ${branch.name}`)
  }
@@ -17331,6 +17534,10 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setResellerOrders([])
  setResellerReturns([])
  setResellerNotices([])
+ setResellerAutoOrderSettings({ enabled:false, safety_buffer_pct:10, notify_on_generated:true, notify_on_adjusted:true, notify_on_approved:true })
+ setResellerAutoOrderSchedules([])
+ setResellerAutoOrderEvents([])
+ setResellerAutoOrderForm(null)
  setEditingResellerOrderId(null)
  setUpdatingResellerOrder(false)
  setLastSubmittedOrderNotice('')
@@ -17417,7 +17624,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
 
  function canEditResellerOrder(order) {
  const status = String(order?.status || 'pending').toLowerCase()
- return status === 'pending' && !order?.invoice_id
+ return status === 'pending' && !order?.invoice_id && String(order?.order_source || 'manual').toLowerCase() !== 'automatic'
  }
 
  function resellerOrderBelongsToCurrentPortal(order) {
@@ -17881,10 +18088,45 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
  // Feature: Admin Order Management 
  async function loadPendingResellerOrders() {
- const { data } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').eq('status','pending').order('created_at',{ascending:false})
+ const { data } = await supabase.from('reseller_orders').select('*, reseller_order_items(*)').in('status',['pending','on_hold']).order('created_at',{ascending:false})
  setPendingResellerOrders(data||[])
  }
+ function updatePendingResellerOrderQuantity(orderId, itemId, quantity) {
+ setPendingResellerOrders(rows=>rows.map(order=>String(order.id)!==String(orderId)? order: {
+  ...order,
+  reseller_order_items:(order.reseller_order_items || []).map(item=>String(item.id)!==String(itemId)? item: { ...item, quantity:Math.max(0, Math.round(safeNum(quantity,0))) })
+ }))
+ }
+ async function reviewAutomaticResellerOrder(order, action, customItems, reasonOverride) {
+ const orderId = String(order?.id || '')
+ if (!orderId || approvingResellerOrderIdsRef.current.has(orderId)) return
+ const reason = String(reasonOverride ?? staffOrderReasons[orderId] ?? '').trim()
+ if (action !== 'approve' && !reason) { showToast(' Enter a reason before holding or rejecting this order.', 'red'); return }
+ approvingResellerOrderIdsRef.current.add(orderId)
+ setStaffOrderSaving(prev=>({...prev,[orderId]:true}))
+ try {
+  if (action === 'approve') {
+   const credit = await checkResellerCreditBlockFresh(order.reseller_id)
+   if (credit.blocked) showToast(` Credit warning: ${credit.message}`, 'red')
+  }
+  const { data, error } = await supabase.rpc('reseller_auto_order_review', {
+   p_order_id:orderId, p_action:action, p_reason:reason || null,
+   p_items:(customItems || order.reseller_order_items || []).map(item=>({ id:item.id, quantity:Math.max(0, Math.round(safeNum(item.quantity,0))) }))
+  })
+  if (error) throw error
+  showToast(action==='approve'?` Order approved! Invoice ${data.invoice_number} created.`:action==='hold'?' Order placed on hold.':' Order rejected.')
+  setStaffOrderReasons(prev=>{ const next={...prev}; delete next[orderId]; return next })
+  await loadPendingResellerOrders()
+  if (action==='approve') await loadDeliveryInvoices()
+ } catch (err) {
+  showToast(' Order review failed: ' + (err?.message || err), 'red')
+ } finally {
+  approvingResellerOrderIdsRef.current.delete(orderId)
+  setStaffOrderSaving(prev=>({...prev,[orderId]:false}))
+ }
+ }
  async function approveResellerOrder(order, customItems) {
+ if (order?.order_source === 'automatic') return reviewAutomaticResellerOrder(order, 'approve', customItems)
  const orderId = String(order?.id || '')
  if (!orderId) { showToast(' Order ID missing. Please refresh pending orders.', 'red'); return }
  if (approvingResellerOrderIdsRef.current.has(orderId)) {
@@ -17893,13 +18135,6 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
  approvingResellerOrderIdsRef.current.add(orderId)
  try {
- const cutoffStatus = getOrderCutoffStatus(order?.delivery_date)
- if (cutoffStatus.locked) {
- showToast(` Approval into invoice is locked for tomorrow's delivery after ${ORDER_CUTOFF_LABEL} PH time. Advance delivery dates are still allowed.`, 'red')
- await logAudit('ORDER APPROVAL BLOCKED - ORDER CUT-OFF', adminRole, order?.reseller_name || '', cutoffStatus.message)
- return
- }
-
  // Always re-read the order before approval. This prevents approving stale/duplicated UI data.
  const { data:freshOrder, error:freshOrderErr } = await supabase
  .from('reseller_orders')
@@ -17908,7 +18143,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  .maybeSingle()
  if (freshOrderErr) throw freshOrderErr
  if (!freshOrder) { showToast(' Order was not found. Please refresh pending orders.', 'red'); return }
- if (String(freshOrder.status || '').toLowerCase() !== 'pending' || freshOrder.invoice_id) {
+ if (!['pending','on_hold'].includes(String(freshOrder.status || '').toLowerCase()) || freshOrder.invoice_id) {
   showToast(' This order was already approved/rejected or already has an invoice. Please refresh.', 'red')
   await loadPendingResellerOrders()
   return
@@ -17973,7 +18208,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  .from('reseller_orders')
  .update({ status:'approved', approved_by:adminRole, approved_at:new Date().toISOString(), invoice_id:inv.id })
  .eq('id',orderId)
- .eq('status','pending')
+ .in('status',['pending','on_hold'])
  .is('invoice_id', null)
  .select('id')
  .maybeSingle()
@@ -17982,7 +18217,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   showToast(' Invoice was created, but order status changed before approval finished. Please check for duplicate invoices immediately.', 'red')
   await logAudit('ORDER APPROVAL WARNING - STATUS CHANGED AFTER INVOICE CREATE', adminRole, approvalOrder.reseller_name || '', invoiceNum)
  } else {
-  await createNotification(null,'System','order',` Order Approved: ${approvalOrder.reseller_name}`,`Your order for ${approvalOrder.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
+ await createNotification(null,'System','order',` Order Approved: ${approvalOrder.reseller_name}`,`Your order for ${approvalOrder.delivery_date} has been approved. Invoice ${invoiceNum} created.`)
   await logAudit('ORDER APPROVED', adminRole, approvalOrder.reseller_name, `${invoiceNum} ${php(subtotal)}`)
   showToast(` Order approved! Invoice ${invoiceNum} created.`)
  }
@@ -17993,10 +18228,31 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   approvingResellerOrderIdsRef.current.delete(orderId)
  }
  }
+ async function holdResellerOrder(order) {
+ if (order?.order_source === 'automatic') return reviewAutomaticResellerOrder(order, 'hold')
+ const orderId = String(order?.id || '')
+ const reason = String(staffOrderReasons[orderId] || '').trim()
+ if (!reason) { showToast(' Enter a reason before placing this order on hold.', 'red'); return }
+ setStaffOrderSaving(prev=>({...prev,[orderId]:true}))
+ try {
+  const { error } = await supabase.from('reseller_orders').update({ status:'on_hold', held_by:currentAdminLabel, held_at:new Date().toISOString(), staff_adjustment_reason:reason }).eq('id',orderId).eq('status','pending')
+  if (error) throw error
+  await createNotification(null,'System','order',` Order On Hold: ${order.reseller_name}`,`Your order for ${order.delivery_date} is on hold. Reason: ${reason}`)
+  await logAudit('RESELLER ORDER ON HOLD', adminRole, order.reseller_name || '', `${order.delivery_date} | ${reason}`)
+  showToast(' Order placed on hold.')
+  await loadPendingResellerOrders()
+ } catch(err) {
+  showToast(' Could not hold order: ' + (err?.message || err), 'red')
+ } finally {
+  setStaffOrderSaving(prev=>({...prev,[orderId]:false}))
+ }
+ }
  async function rejectResellerOrder(orderId, resellerName) {
- const reason = window.prompt('Reason for rejection:')
+ const pendingOrder = pendingResellerOrders.find(order=>String(order.id)===String(orderId))
+ const reason = String(staffOrderReasons[orderId] || '').trim() || window.prompt('Reason for rejection:')
  if (!reason) return
- await supabase.from('reseller_orders').update({ status:'rejected', approved_by:adminRole, approved_at:new Date().toISOString(), notes:reason }).eq('id',orderId)
+ if (pendingOrder?.order_source === 'automatic') return reviewAutomaticResellerOrder(pendingOrder, 'reject', null, reason)
+ await supabase.from('reseller_orders').update({ status:'rejected', approved_by:adminRole, approved_at:new Date().toISOString(), rejection_reason:reason }).eq('id',orderId)
  await createNotification(null,'System','order',` Order Rejected: ${resellerName}`,`Your order was rejected. Reason: ${reason}`)
  showToast('Order rejected.','red')
  loadPendingResellerOrders()
@@ -44340,7 +44596,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  {orderCutoffStatus.locked && (
  <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px', boxShadow:'0 4px 12px rgba(202,27,27,0.10)' }}>
  <h4 style={{ color:'#ca1b1b', margin:'0 0 6px', fontSize:'13px' }}> TOMORROW DELIVERY CUT-OFF REACHED {ORDER_CUTOFF_LABEL} PH TIME</h4>
- <p style={{ color:'#7a1a1a', margin:0, fontSize:'12px', lineHeight:1.5, fontWeight:'700' }}>Only orders/invoices dated tomorrow are locked. You can still create or submit advance orders for the following days.</p>
+ <p style={{ color:'#7a1a1a', margin:0, fontSize:'12px', lineHeight:1.5, fontWeight:'700' }}>New reseller submissions dated tomorrow are closed. Staff may still review and approve orders already submitted at the cutoff. Advance orders for later dates remain available.</p>
  </div>
  )}
 
@@ -44351,13 +44607,14 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  <div className="romas-record-grid">
  {pendingResellerOrders.map(order=>{
  const credit = getResellerCreditBlockInfo(order.reseller_id)
- const orderCutoff = getOrderCutoffStatus(order.delivery_date)
+ const isAutomaticOrder = String(order.order_source || '').toLowerCase()==='automatic'
  return (
  <div key={order.id} className="romas-record-card" style={{ background:credit.blocked?'#fff5f5':'white', borderRadius:'10px', padding:'12px', border:`2px solid ${credit.blocked?'#ca1b1b':'#ffe0b2'}`, animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'8px' }}>
  <div>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px', margin:'0 0 2px' }}>{order.reseller_name}</p>
  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Delivery: {order.delivery_date} Placed: {order.order_date}</p>
+ {isAutomaticOrder && <p style={{ color:'#7a4d00', fontSize:'10px', margin:'3px 0 0', fontWeight:'900' }}>AUTOMATIC ORDER · STAFF APPROVAL REQUIRED</p>}
  {order.notes && <p style={{ color:'#888', fontSize:'11px', margin:'2px 0 0' }}>Note: {order.notes}</p>}
  {credit.blocked && (
  <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'4px 0 0', fontWeight:'bold' }}>
@@ -44367,16 +44624,30 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </div>
  <div style={{ display:'flex', gap:'6px' }}>
  <button
- style={{...btnGreen, background:orderCutoff.locked?'#999':credit.blocked?'#ca1b1b':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', cursor:orderCutoff.locked?'not-allowed':'pointer', animation:credit.blocked && !orderCutoff.locked?'creditRiskFlash 1.15s infinite':'none' }}
- disabled={orderCutoff.locked}
- onClick={()=>approveResellerOrder(order)}
- >{orderCutoff.locked?' TOMORROW CUT-OFF':credit.blocked?' APPROVE WITH WARNING':' APPROVE'}</button>
+ style={{...btnGreen, background:credit.blocked?'#ca1b1b':'#2d8a4e', width:'auto', padding:'6px 14px', marginTop:0, fontSize:'11px', animation:credit.blocked?'creditRiskFlash 1.15s infinite':'none' }}
+ disabled={!!staffOrderSaving[order.id]}
+ onClick={()=>approveResellerOrder(order, order.reseller_order_items)}
+ >{credit.blocked?' APPROVE WITH WARNING':' APPROVE'}</button>
+ {isAutomaticOrder && String(order.status||'').toLowerCase()==='pending' && <button style={{ background:'#fff9e6', color:'#7a4d00', border:'1px solid #f5a623', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} disabled={!!staffOrderSaving[order.id]} onClick={()=>holdResellerOrder(order)}> HOLD</button>}
  <button style={{ background:'#fff5f5', color:'#ca1b1b', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }} onClick={()=>rejectResellerOrder(order.id, order.reseller_name)}> REJECT</button>
  </div>
  </div>
  <div style={{ fontSize:'11px', color:'#555', background:'#f8f7f5', borderRadius:'6px', padding:'6px 10px' }}>
  {(order.reseller_order_items||[]).filter(i=>Number(i.quantity)>0).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' ')}
  </div>
+ {isAutomaticOrder && (
+ <div style={{ marginTop:'9px', border:'1px solid #ead9a0', borderRadius:'9px', overflow:'hidden', background:'#fff' }}>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1.4fr .7fr .8fr':'1.5fr repeat(6,.7fr)', gap:'5px', padding:'7px 9px', background:'#fff4cf', color:'#6b5200', fontSize:'9px', fontWeight:'900' }}>
+   <span>PRODUCT</span>{!isMobile && <><span style={{textAlign:'right'}}>TEMPLATE</span><span style={{textAlign:'right'}}>AVG ORDERED</span><span style={{textAlign:'right'}}>EST. SOLD</span><span style={{textAlign:'right'}}>RETURNS</span></>}<span style={{textAlign:'right'}}>SUGGESTED</span><span style={{textAlign:'right'}}>STAFF FINAL</span>
+  </div>
+  {(order.reseller_order_items||[]).filter(item=>safeNum(item.template_quantity,0)>0 || safeNum(item.quantity,0)>0).map(item=>(
+   <div key={item.id} style={{ display:'grid', gridTemplateColumns:isMobile?'1.4fr .7fr .8fr':'1.5fr repeat(6,.7fr)', gap:'5px', padding:'7px 9px', alignItems:'center', borderBottom:'1px solid #f1eee4', fontSize:'10px' }}>
+    <strong>{item.variant_name}</strong>{!isMobile && <><span style={{textAlign:'right'}}>{safeNum(item.template_quantity,0)}</span><span style={{textAlign:'right'}}>{item.average_ordered_quantity==null?'—':safeNum(item.average_ordered_quantity,0).toFixed(1)}</span><span style={{textAlign:'right'}}>{item.average_sold_quantity==null?'—':safeNum(item.average_sold_quantity,0).toFixed(1)}</span><span style={{textAlign:'right'}}>{item.average_returned_quantity==null?'—':safeNum(item.average_returned_quantity,0).toFixed(1)}</span></>}<span style={{textAlign:'right',fontWeight:'900',color:'#ca1b1b'}}>{safeNum(item.suggested_quantity,item.quantity)}</span><input type="number" min="0" value={safeNum(item.quantity,0)} onChange={e=>updatePendingResellerOrderQuantity(order.id,item.id,e.target.value)} style={{...inputStyle,marginBottom:0,padding:'6px',textAlign:'center',fontWeight:'900',border:'1.5px solid #FDD412'}} />
+   </div>
+  ))}
+  <div style={{ padding:'8px 9px', background:'#fffdf5' }}><input type="text" value={staffOrderReasons[order.id] || ''} onChange={e=>setStaffOrderReasons(prev=>({...prev,[order.id]:e.target.value}))} placeholder="Reason required for quantity changes, hold, or rejection" style={{...inputStyle,marginBottom:0,fontSize:'10px'}} /></div>
+ </div>
+ )}
  <p style={{ color:'#2d8a4e', fontWeight:'bold', fontSize:'12px', margin:'6px 0 0', textAlign:'right' }}>
  Estimated: {php((order.reseller_order_items||[]).reduce((s,i)=>s+Number(i.quantity||0)*Math.round((i.retail_price||0)*0.80*100)/100,0))}
  </p>
@@ -49129,14 +49400,17 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  const paidInvoices = resellerInvoices.filter(i=>String(i.status||'').toLowerCase()==='paid')
  const creditStatus = buildResellerCreditStatus(currentReseller.id, resellerInvoices, today)
  const latestInvoice = resellerInvoices[0]
- const pendingOrders = resellerOrders.filter(o=>String(o.status||'').toLowerCase()==='pending')
+ const portalNotices = [...resellerNotices, ...resellerAutoOrderEvents.filter(event=>event.notify_reseller).map(event=>({
+  id:`auto-${event.id}`, title:'Automatic order update', message:event.message, created_at:event.created_at
+ }))].sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')))
+ const pendingOrders = resellerOrders.filter(o=>['pending','on_hold'].includes(String(o.status||'').toLowerCase()))
  const approvedOrders = resellerOrders.filter(o=>String(o.status||'').toLowerCase()==='approved')
  const rejectedOrders = resellerOrders.filter(o=>String(o.status||'').toLowerCase()==='rejected')
  const totalReturnAmount = resellerReturns.reduce((s,r)=>s+safeNum(r.total_returned_amount,0),0)
  const totalReturnQty = resellerReturns.reduce((s,r)=>s+(r.reseller_return_items||[]).reduce((a,it)=>a+safeNum(it.returned_quantity,0),0),0)
  const collectionRate = totalInvoiceAmount>0? (totalPaid/totalInvoiceAmount)*100: 100
  const navItems = [
- ['dashboard','\uD83D\uDCCA Dashboard'],['invoices',' Invoices'],['balances',' Balances'],['orders',' Orders'],['place_order',' Place Order'],['returns',' Returns'],['payments',' Payments'],['notices',' Notices']
+ ['dashboard','\uD83D\uDCCA Dashboard'],['invoices',' Invoices'],['balances',' Balances'],['orders',' Orders'],['place_order',' Place Order'],['automatic_orders',' Automatic Ordering'],['returns',' Returns'],['payments',' Payments'],['notices',' Notices']
  ]
  const portalCard = { background:'white', borderRadius:'16px', padding:'16px', boxShadow:'0 2px 12px rgba(0,0,0,0.08)', border:'1px solid #f3f3f3' }
  const kpiCard = (label, value, note, color='#ca1b1b') => (
@@ -49169,7 +49443,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?` ${b.area}`:''}</option>)}
  </select>
  )}
- <button style={{...btnYellow, padding:'9px 14px', fontSize:'12px' }} onClick={()=>loadResellerPortalData(currentReseller.id)} disabled={resellerPortalLoading}>{resellerPortalLoading?' Loading':' Refresh'}</button>
+ <button style={{...btnYellow, padding:'9px 14px', fontSize:'12px' }} onClick={async ()=>{ await loadResellerPortalData(currentReseller.id); await loadResellerAutoOrderConfig(currentReseller.id, { silent:true }) }} disabled={resellerPortalLoading || resellerAutoOrderLoading}>{resellerPortalLoading || resellerAutoOrderLoading?' Loading':' Refresh'}</button>
  <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.35)', borderRadius:'10px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={resellerLogout}> Logout</button>
  </div>
  </div>
@@ -49208,6 +49482,10 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  {resellerPortalView==='dashboard' && (
  <div>
+ <div style={{...portalCard, border:'1.5px solid #FDD412', marginBottom:'14px', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'12px' }}>
+  <div><p style={{ margin:'0 0 5px', color:'#ca1b1b', fontSize:'14px', fontWeight:'900' }}>Automatic ordering · {resellerAutoOrderSettings.enabled?'ON':'OFF'}</p><p style={{ margin:0, color:'#555', fontSize:'12px' }}>Daily cutoff: <strong>1:00 PM Philippine time</strong> · Staff approval required</p><p style={{ margin:'5px 0 0', color:'#777', fontSize:'11px' }}>Delivery days: {resellerAutoOrderSchedules.filter(row=>row.enabled).map(row=>RESELLER_AUTO_ORDER_WEEKDAYS[Number(row.delivery_weekday)]).join(', ') || 'No active templates'}</p></div>
+  <button style={{...btnYellow,width:'auto',marginTop:0,padding:'9px 14px',fontSize:'12px'}} onClick={()=>setResellerPortalView('automatic_orders')}>MANAGE AUTOMATIC ORDERING</button>
+ </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'16px' }}>
  {kpiCard('Outstanding Balance', php(totalBalance), `${openInvoices.length} open invoice(s)`, totalBalance>0?'#ca1b1b':'#2d8a4e')}
  {kpiCard('Collection Rate', `${collectionRate.toFixed(1)}%`, `${paidInvoices.length} fully paid invoice(s)`, collectionRate>=90?'#2d8a4e':'#f5a623')}
@@ -49229,7 +49507,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  <div style={portalCard}>
  <h2 style={{...h2s, fontSize:'18px' }}> Latest Notices</h2>
- {resellerNotices.length===0? <p style={{ color:'#aaa', margin:0, fontSize:'12px' }}>No notices yet.</p>: resellerNotices.slice(0,4).map(n=>(
+ {portalNotices.length===0? <p style={{ color:'#aaa', margin:0, fontSize:'12px' }}>No notices yet.</p>: portalNotices.slice(0,4).map(n=>(
  <div key={n.id} style={{ borderBottom:'1px solid #eee', padding:'8px 0' }}>
  <p style={{ margin:'0 0 2px', color:'#333', fontWeight:'bold', fontSize:'13px' }}>{n.title}</p>
  <p style={{ margin:0, color:'#777', fontSize:'11px' }}>{n.message || n.content || ''}</p>
@@ -49301,6 +49579,73 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )}
 
+ {resellerPortalView==='automatic_orders' && (
+ <div>
+ <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginBottom:'12px' }}>
+  <div><h2 style={{...h2s, marginBottom:'3px' }}> Automatic Ordering</h2><p style={{ color:'#777', fontSize:'11px', margin:0 }}>Orders are generated at the fixed 1:00 PM Philippine-time cutoff for the next delivery day, then wait for staff approval.</p></div>
+  <button style={{...btnYellow, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'11px' }} onClick={()=>startResellerAutoOrderTemplate(null, 1)}>+ CREATE DAY TEMPLATE</button>
+ </div>
+
+ <div style={{...portalCard, border:`2px solid ${resellerAutoOrderSettings.enabled?'#2d8a4e':'#ddd'}`, background:resellerAutoOrderSettings.enabled?'#f0fff4':'white', marginBottom:'12px' }}>
+  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+   <div><p style={{ margin:'0 0 4px', color:resellerAutoOrderSettings.enabled?'#2d8a4e':'#555', fontSize:'15px', fontWeight:'900' }}>{resellerAutoOrderSettings.enabled?'Automatic ordering is enabled':'Automatic ordering is disabled'}</p><p style={{ margin:0, color:'#777', fontSize:'11px' }}>{resellerAutoOrderSettings.enabled?'Active day templates will submit automatically at 1:00 PM.':'No new automatic orders will be generated until this is enabled. Existing submissions remain for staff review.'}</p></div>
+   <button style={{...btnGreen, width:'auto', marginTop:0, background:resellerAutoOrderSettings.enabled?'#ca1b1b':'#2d8a4e', padding:'9px 14px', fontSize:'11px' }} disabled={resellerAutoOrderSaving} onClick={()=>setResellerAutomaticOrderingEnabled(!resellerAutoOrderSettings.enabled)}>{resellerAutoOrderSettings.enabled?'DISABLE AUTO-ORDER':'ENABLE AUTO-ORDER'}</button>
+  </div>
+ </div>
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.15fr .85fr', gap:'12px', marginBottom:'12px' }}>
+  <div style={portalCard}>
+   <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', marginBottom:'10px' }}><div><h3 style={{ margin:'0 0 3px', fontSize:'14px', color:'#333' }}>Delivery-day templates</h3><p style={{ margin:0, color:'#777', fontSize:'10px' }}>One template per weekday. Template changes for tomorrow lock at 1:00 PM.</p></div><strong style={{ color:'#ca1b1b', fontSize:'11px' }}>{resellerAutoOrderSchedules.filter(s=>s.enabled!==false).length} ACTIVE</strong></div>
+   <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'10px' }}>
+    {RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=>{
+     const saved = resellerAutoOrderSchedules.find(schedule=>Number(schedule.delivery_weekday)===index)
+     return <button key={day} onClick={()=>startResellerAutoOrderTemplate(saved || null,index)} style={{ border:`1px solid ${saved?.enabled!==false && saved?'#ca1b1b':'#ddd'}`, background:saved?.enabled!==false && saved?'#ca1b1b':'white', color:saved?.enabled!==false && saved?'white':'#555', borderRadius:'9px', padding:'8px 10px', minWidth:'44px', fontWeight:'900', fontSize:'10px', cursor:'pointer' }}>{day.slice(0,3)}</button>
+    })}
+   </div>
+   {resellerAutoOrderSchedules.length===0? <p style={{ color:'#aaa', fontSize:'12px', margin:'18px 0', textAlign:'center' }}>No templates yet. Select a weekday to create the first template.</p>: resellerAutoOrderSchedules.map(schedule=>(
+    <div key={schedule.id} style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', padding:'9px 0', borderTop:'1px solid #eee' }}>
+     <div><p style={{ margin:'0 0 2px', fontSize:'12px', fontWeight:'900', color:'#333' }}>{schedule.template_name}</p><p style={{ margin:0, fontSize:'10px', color:'#777' }}>{RESELLER_AUTO_ORDER_WEEKDAYS[Number(schedule.delivery_weekday)]} · {(schedule.items||[]).length} products · {schedule.enabled===false?'Paused':'Active'}</p></div>
+     <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>startResellerAutoOrderTemplate(schedule)}>EDIT</button>
+    </div>
+   ))}
+  </div>
+
+  <div style={portalCard}>
+   <h3 style={{ margin:'0 0 3px', fontSize:'14px', color:'#333' }}>Skip one delivery date</h3><p style={{ margin:'0 0 10px', color:'#777', fontSize:'10px' }}>Skip a date without disabling your other schedules. Tomorrow can only be skipped before 1:00 PM.</p>
+   <label style={lblS}>Delivery date to skip</label><input type="date" min={getDefaultResellerOrderDeliveryDate()} value={resellerAutoOrderSkipDate} onChange={e=>setResellerAutoOrderSkipDate(e.target.value)} style={inputStyle} />
+   <label style={lblS}>Reason (optional)</label><input type="text" value={resellerAutoOrderSkipReason} onChange={e=>setResellerAutoOrderSkipReason(e.target.value)} placeholder="Example: school closed or outlet unavailable" style={inputStyle} />
+   <button style={{...btnGray, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={skipResellerAutomaticOrderDate}>SKIP THIS DATE</button>
+  </div>
+ </div>
+
+ {resellerAutoOrderForm && (
+ <div style={{...portalCard, border:'2px solid #FDD412', marginBottom:'12px' }}>
+  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginBottom:'12px' }}><div><h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'15px' }}>Edit automatic-order template</h3><p style={{ margin:0, color:'#777', fontSize:'10px' }}>Recommendations use delivered quantities minus recorded returns from the last four matching weekdays, plus the safety allowance, within your limits. With no history, the template is used.</p></div><button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>setResellerAutoOrderForm(null)}>CLOSE</button></div>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'9px' }}>
+   <div><label style={lblS}>Delivery day</label><select value={resellerAutoOrderForm.delivery_weekday} disabled={!!resellerAutoOrderForm.id} onChange={e=>startResellerAutoOrderTemplate(null,Number(e.target.value))} style={inputStyle}>{RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=><option key={day} value={index}>{day}</option>)}</select></div>
+   <div><label style={lblS}>Template name</label><input type="text" value={resellerAutoOrderForm.template_name} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,template_name:e.target.value}))} style={inputStyle} /></div>
+   <div><label style={lblS}>Template status</label><select value={resellerAutoOrderForm.enabled?'active':'paused'} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,enabled:e.target.value==='active'}))} style={inputStyle}><option value="active">Active</option><option value="paused">Paused</option></select></div>
+   <div><label style={lblS}>Effective start</label><input type="date" value={resellerAutoOrderForm.effective_start_date} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,effective_start_date:e.target.value}))} style={inputStyle} /></div>
+   <div><label style={lblS}>Optional end date</label><input type="date" value={resellerAutoOrderForm.effective_end_date} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,effective_end_date:e.target.value}))} style={inputStyle} /></div>
+   <div><label style={lblS}>Submission cutoff</label><input type="text" value="1:00 PM every day (fixed)" readOnly style={{...inputStyle,background:'#f5f5f5',fontWeight:'900'}} /></div>
+  </div>
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1.5fr repeat(3,.65fr)':'2fr repeat(3,1fr)', gap:'6px', padding:'7px 9px', background:'#1a1a2e', borderRadius:'9px', color:'white', fontSize:'9px', fontWeight:'900' }}><span>PRODUCT</span><span style={{textAlign:'center'}}>TEMPLATE</span><span style={{textAlign:'center'}}>MIN</span><span style={{textAlign:'center'}}>MAX</span></div>
+  <div style={{ maxHeight:'360px', overflowY:'auto' }}>
+   {(resellerAutoOrderForm.items||[]).map((item,index)=>(
+    <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:isMobile?'1.5fr repeat(3,.65fr)':'2fr repeat(3,1fr)', gap:'6px', padding:'6px 9px', alignItems:'center', background:index%2===0?'white':'#fafafa', borderBottom:'1px solid #eee' }}><span style={{ fontSize:'11px', fontWeight:'800' }}>{item.variant_name}</span>{['template_quantity','minimum_quantity','maximum_quantity'].map(field=><input key={field} type="number" min="0" value={item[field]??''} placeholder={field==='template_quantity'?'0':'Auto'} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,items:prev.items.map((row,rowIndex)=>rowIndex===index?{...row,[field]:e.target.value}:row)}))} style={{...inputStyle,marginBottom:0,padding:'7px',textAlign:'center',fontSize:'11px',border:field==='template_quantity'?'1.5px solid #FDD412':'1px solid #ddd'}} />)}</div>
+   ))}
+  </div>
+  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginTop:'10px' }}><p style={{ margin:0, color:'#777', fontSize:'10px' }}>Blank minimum/maximum values automatically use 80%–120% of the template quantity.</p><button style={{...btnRed, width:'auto', marginTop:0, padding:'9px 16px', fontSize:'11px' }} disabled={resellerAutoOrderSaving} onClick={saveResellerAutoOrderTemplate}>{resellerAutoOrderSaving?'SAVING...':'SAVE TEMPLATE'}</button></div>
+ </div>
+ )}
+
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'12px' }}>
+  <div style={portalCard}><h3 style={{ margin:'0 0 9px', color:'#333', fontSize:'14px' }}>Recommendation settings</h3><label style={lblS}>Safety allowance (%)</label><input type="number" min="0" max="50" value={resellerAutoOrderSettings.safety_buffer_pct} onChange={e=>setResellerAutoOrderSettings(prev=>({...prev,safety_buffer_pct:e.target.value}))} style={inputStyle} /><div style={{ display:'grid', gap:'7px', marginBottom:'10px' }}>{[['notify_on_generated','Order generated'],['notify_on_adjusted','Staff adjusted quantities'],['notify_on_approved','Order approved']].map(([key,label])=><label key={key} style={{ display:'flex', alignItems:'center', gap:'8px', color:'#555', fontSize:'11px', fontWeight:'700' }}><input type="checkbox" checked={resellerAutoOrderSettings[key]!==false} onChange={e=>setResellerAutoOrderSettings(prev=>({...prev,[key]:e.target.checked}))} /> Portal notice when: {label}</label>)}</div><button style={{...btnGreen, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={saveResellerAutomaticOrderingSettings}>SAVE SETTINGS</button></div>
+  <div style={portalCard}><h3 style={{ margin:'0 0 9px', color:'#333', fontSize:'14px' }}>Automatic-order activity</h3>{resellerAutoOrderEvents.length===0?<p style={{ color:'#aaa', fontSize:'11px', margin:0 }}>No automatic-order activity yet.</p>:resellerAutoOrderEvents.slice(0,8).map(event=><div key={event.id} style={{ padding:'7px 0', borderBottom:'1px solid #eee' }}><p style={{ margin:'0 0 2px', fontSize:'11px', fontWeight:'800', color:'#333' }}>{event.message}</p><p style={{ margin:0, fontSize:'9px', color:'#888' }}>{new Date(event.created_at).toLocaleString('en-PH',{timeZone:PH_TIME_ZONE})} · {event.performed_by}</p></div>)}</div>
+ </div>
+ </div>
+ )}
+
  {resellerPortalView==='orders' && (
  <div>
  <h2 style={h2s}> Order Requests</h2>
@@ -49315,12 +49660,14 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div>
  <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'14px', margin:'0 0 2px' }}>Order for {ord.delivery_date}</p>
  <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Placed: {ord.order_date || String(ord.created_at||'').slice(0,10)}</p>
+ {String(ord.order_source||'manual').toLowerCase()==='automatic' && <p style={{ color:'#7a4d00', fontSize:'10px', margin:'3px 0 0', fontWeight:'900' }}>AUTOMATIC ORDER · {safeNum(ord.original_suggested_qty,ord.total_qty)} ORIGINALLY SUGGESTED PIECES</p>}
  </div>
  <Badge label={String(ord.status||'PENDING').toUpperCase()} color={ord.status==='approved'?'green':ord.status==='rejected'?'red':'orange'} />
  </div>
  <p style={{ color:'#555', fontSize:'12px', margin:'8px 0 0' }}>{(ord.reseller_order_items||[]).map(i=>`${i.variant_name}: ${i.quantity} pcs`).join(' ')}</p>
  {ord.invoice_id && <p style={{ color:'#2d8a4e', fontSize:'11px', margin:'6px 0 0', fontWeight:'bold' }}>Invoice created by admin.</p>}
- {ord.status==='rejected' && ord.notes && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'6px 0 0' }}>Reason: {ord.notes}</p>}
+ {ord.status==='rejected' && (ord.rejection_reason || ord.notes) && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'6px 0 0' }}>Reason: {ord.rejection_reason || ord.notes}</p>}
+ {ord.staff_adjustment_reason && <p style={{ color:'#7a4d00', fontSize:'11px', margin:'6px 0 0' }}>Staff update: {ord.staff_adjustment_reason}</p>}
  {canEditResellerOrder(ord) && (
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'10px' }}>
  <button style={{...btnYellow, width:'auto', padding:'8px 12px', fontSize:'11px' }} onClick={()=>startEditResellerOrder(ord)}> EDIT PENDING ORDER</button>
@@ -49492,7 +49839,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div>
  <h2 style={h2s}> Notices & Reminders</h2>
  {creditStatus.blocked && <div style={{...portalCard, background:'#fff5f5', border:'2px solid #ca1b1b', marginBottom:'12px', animation:'creditRiskFlash 1.15s infinite' }}><h3 style={{ color:'#ca1b1b', margin:'0 0 6px' }}> Credit Warning Reminder</h3><p style={{ margin:0, color:'#7a1a1a', fontSize:'13px' }}>{creditStatus.message}</p></div>}
- {resellerNotices.length===0? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No admin notices yet.</p>: resellerNotices.map(n=>(
+ {portalNotices.length===0? <p style={{ color:'#aaa', textAlign:'center', padding:'30px' }}>No notices yet.</p>: portalNotices.map(n=>(
  <div key={n.id} style={{...portalCard, marginBottom:'10px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap' }}>
  <h3 style={{ margin:'0 0 6px', color:'#ca1b1b', fontSize:'15px' }}>{n.title}</h3>
