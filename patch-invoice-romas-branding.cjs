@@ -3,6 +3,7 @@ const fs = require('fs')
 const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
+// Keep this production build hook narrowly scoped to invoice export only.
 const fnMarker = 'function buildDeliveryInvoicePrintCSS()'
 const nextSectionMarker = 'const DELIVERY_INVOICE_SOURCE_WIDTH_MM'
 const fnStart = src.indexOf(fnMarker)
