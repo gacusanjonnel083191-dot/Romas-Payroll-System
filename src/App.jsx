@@ -17338,6 +17338,12 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
   effective_end_date:String(schedule?.effective_end_date || '').slice(0,10),
   items
  })
+ window.setTimeout(()=>{
+  const editor = document.getElementById('reseller-auto-order-template-editor')
+  if (!editor) return
+  editor.scrollIntoView({ behavior:'smooth', block:'start' })
+  editor.focus({ preventScroll:true })
+ }, 100)
  }
 
  async function copyLastOrderToResellerAutoOrderTemplate() {
@@ -49754,7 +49760,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
 
  {resellerAutoOrderForm && (
- <div style={{...portalCard, border:'2px solid #FDD412', marginBottom:'12px' }}>
+ <div id="reseller-auto-order-template-editor" tabIndex={-1} style={{...portalCard, border:'2px solid #FDD412', marginBottom:'12px', scrollMarginTop:'12px', outline:'none' }}>
   <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginBottom:'12px' }}><div><h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'15px' }}>Edit automatic-order template</h3><p style={{ margin:0, color:'#777', fontSize:'10px' }}>Recommendations use delivered quantities minus recorded returns from the last four matching weekdays, plus the safety allowance, within your limits. With no history, the template is used.</p></div><button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>setResellerAutoOrderForm(null)}>CLOSE</button></div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'9px' }}>
    <div><label style={lblS}>Delivery day</label><select value={resellerAutoOrderForm.delivery_weekday} disabled={!!resellerAutoOrderForm.id} onChange={e=>startResellerAutoOrderTemplate(null,Number(e.target.value))} style={inputStyle}>{RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=><option key={day} value={index}>{day}</option>)}</select></div>
