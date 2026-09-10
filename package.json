@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "node patch-invoice-romas-branding.cjs && node patch-hr-admin-business-access.cjs && vite build",
+    "test:attendance": "node --test tests/attendance-undertime-policy.test.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },

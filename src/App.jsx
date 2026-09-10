@@ -2,6 +2,7 @@ import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
+import { getChargeableEarlyOutMinutes } from './attendancePolicy.js'
 
 const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
 const supabaseKey = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlYmJ1bmxuemtsYXZra3VndHpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMTU5MDgsImV4cCI6MjA5NDU5MTkwOH0.mdgYJBoRvHQcf-Tn-1AbTN-rnB5pPxOCSTxGlUrgJpg`
@@ -1099,6 +1100,8 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
    rawLateMinutes:0,
    lateMinutes:0,
    earlyOutMinutes:0,
+   chargeableEarlyOutMinutes:0,
+   mealBreakScheduleCreditMinutes:0,
    scheduleBoundaryShortageMinutes:0,
    preShiftMinutes:0,
    postShiftMinutes:0,
@@ -1170,9 +1173,20 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
   ? Math.min(utEligiblePaidWorkShortageMinutes, Math.max(0, Math.round(scheduleMetrics.rawLateMinutes || 0)))
   : 0
  const nonLatePaidWorkShortageMinutes = Math.max(0, utEligiblePaidWorkShortageMinutes - lateShortageCoveredMinutes)
+ // When an approved No Meal Break reduces the unpaid break below the standard
+ // 60 minutes, remove that approved break credit from the clock-time early-out
+ // boundary. Otherwise an employee who works continuously for four hours is
+ // incorrectly paid for only three hours because the same meal hour is charged
+ // once through Early Out and again through the paid-work calculation.
+ const { mealBreakScheduleCreditMinutes, chargeableEarlyOutMinutes } = getChargeableEarlyOutMinutes({
+  earlyOutMinutes:scheduleMetrics.earlyOutMinutes,
+  deductedBreakMinutes,
+  breakOverrideApplied,
+  standardBreakMinutes:ALLOWED_BREAK_MINUTES
+ })
  const rawUndertimeMinutes = Math.max(
   nonLatePaidWorkShortageMinutes,
-  Math.max(0, Math.round(scheduleMetrics.earlyOutMinutes || 0))
+  chargeableEarlyOutMinutes
  )
  // UT policy: charge in 30-minute payroll blocks. Any partial shortage block
  // rounds upward, so extra unscheduled minutes cannot reduce chargeable UT.
@@ -1181,7 +1195,7 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  const undertimeRoundingMinutes = Math.max(0, undertimeMinutes - rawUndertimeMinutes)
  let undertimeBasis = 'none'
  if (rawUndertimeMinutes > 0) {
-  const earlyOutMinutes = Math.max(0, Math.round(scheduleMetrics.earlyOutMinutes || 0))
+  const earlyOutMinutes = chargeableEarlyOutMinutes
   if (earlyOutMinutes > nonLatePaidWorkShortageMinutes) undertimeBasis = 'early_time_out'
   else if (nonLatePaidWorkShortageMinutes > earlyOutMinutes) undertimeBasis = 'non_break_paid_work_shortage'
   else undertimeBasis = 'both'
@@ -1210,6 +1224,8 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
   rawLateMinutes:scheduleMetrics.rawLateMinutes,
   lateMinutes:scheduleMetrics.lateMinutes,
   earlyOutMinutes:scheduleMetrics.earlyOutMinutes,
+  chargeableEarlyOutMinutes,
+  mealBreakScheduleCreditMinutes,
   scheduleBoundaryShortageMinutes,
   preShiftMinutes:scheduleMetrics.preShiftMinutes,
   postShiftMinutes:scheduleMetrics.postShiftMinutes,
@@ -1343,6 +1359,34 @@ function buildPayrollAttendanceException(employee = {}, attendanceDate = '', day
   logIds:(dayLogs || []).map(log => log?.id).filter(Boolean),
   logCount:(dayLogs || []).length
  }
+}
+
+function buildPayrollMealBreakReviewException(employee = {}, attendanceDate = '', dayLogs = [], breakRowsByLogId = {}) {
+ const integrity = getAttendanceDayIntegrity(dayLogs)
+ if (!integrity.isValidCompleted) return null
+
+ const resolvedBreakRowsByLogId = { ...(breakRowsByLogId || {}) }
+ ;(dayLogs || []).forEach(log => {
+  const rows = Array.isArray(log?._breakRows) ? log._breakRows : []
+  if (log?.id && rows.length > 0 && !resolvedBreakRowsByLogId[String(log.id)]) {
+   resolvedBreakRowsByLogId[String(log.id)] = rows
+  }
+ })
+ const metrics = getAttendanceDayWorkMetrics(integrity.completedLogs, resolvedBreakRowsByLogId)
+ const breakEvidence = getAttendanceBreakPunchEvidence({ breakRowsByLogId:resolvedBreakRowsByLogId, metrics })
+ const isShortScheduledDay = metrics.rawSpanMinutes > 0
+  && metrics.rawSpanMinutes < REQUIRED_PAID_WORK_MINUTES + ALLOWED_BREAK_MINUTES
+ const requiresReview = !metrics.breakOverrideApplied
+  && !breakEvidence.hasBreakEvidence
+  && isShortScheduledDay
+  && metrics.undertimeMinutes > 0
+ if (!requiresReview) return null
+
+ return buildPayrollAttendanceException(employee, attendanceDate, dayLogs, {
+  ...integrity,
+  code:'meal_break_review',
+  message:`No break punch or approved No Meal Break exists on this short/early-out workday. Confirm No Meal Break or correct the DTR before payroll; the system will not silently charge a 60-minute meal that may not have occurred.`
+ })
 }
 
 function getAttendanceDayActualOvertimeMinutes(dayLogs = [], breakRowsByLogId = {}) {
@@ -2478,7 +2522,10 @@ function getPayrollAttendanceDeductionSplit(metrics = {}) {
   metrics?.utEligiblePaidWorkShortageMinutes,
   metrics?.paidWorkShortageMinutes
  )))
- const earlyOutMinutes = Math.max(0, Math.round(safeNum(metrics?.earlyOutMinutes, 0)))
+ const earlyOutMinutes = Math.max(0, Math.round(safeNum(
+  metrics?.chargeableEarlyOutMinutes,
+  metrics?.earlyOutMinutes
+ )))
  const rawLateArrivalMinutes = Math.max(0, Math.round(safeNum(metrics?.rawLateMinutes, 0)))
  const lateShortageCoveredMinutes = lateMinutes > 0
   ? Math.min(
@@ -27628,7 +27675,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   try {
    const { data:activeEmployees, error:employeeError } = await supabase
     .from('employees')
-    .select('id,employee_code,full_name,position,is_active')
+    .select('id,employee_code,full_name,position,is_active,shift_start,shift_end,grace_period_minutes')
     .eq('is_active', true)
     .order('full_name')
    if (employeeError) throw employeeError
@@ -27648,6 +27695,8 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     if (error) throw error
     attendanceRows = data || []
    }
+   attendanceRows = await hydrateAttendanceLogsWithScheduleFallback(attendanceRows, activeList, start, end)
+   attendanceRows = await enrichAttendanceLogsWithBreakRows(attendanceRows)
 
    const { data:payrollRows, error:payrollError } = await supabase
     .from('payroll_records')
@@ -27672,6 +27721,9 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
      const integrity = getAttendanceDayIntegrity(dayLogs)
      if (integrity.isIncomplete || integrity.isInvalidShortPunch) {
       attendanceExceptions.push(buildPayrollAttendanceException(emp, dateKey, dayLogs, integrity))
+     } else {
+      const mealBreakReview = buildPayrollMealBreakReviewException(emp, dateKey, dayLogs)
+      if (mealBreakReview) attendanceExceptions.push(mealBreakReview)
      }
     })
    })
@@ -30415,6 +30467,15 @@ async function computePayroll() {
      breakRowsByLogId[key].push(row)
     })
    }
+  }
+
+  const mealBreakReviewIssues = Object.entries(payrollLogsByDate)
+   .map(([dateKey, dayLogs]) => buildPayrollMealBreakReviewException(emp, dateKey, dayLogs, breakRowsByLogId))
+   .filter(Boolean)
+  if (mealBreakReviewIssues.length > 0) {
+   // Do not create a payslip that may silently deduct a meal break which was
+   // never taken. The DTR must first record the break or approve No Meal Break.
+   continue
   }
 
   const workedDays=workedDateKeys.length||0
