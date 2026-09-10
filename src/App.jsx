@@ -6796,7 +6796,7 @@ export default function App() {
  const [resellerAutoOrderCopying, setResellerAutoOrderCopying] = useState(false)
  const [resellerAutoOrderForm, setResellerAutoOrderForm] = useState(null)
  const [resellerAutoOrderSkipMode, setResellerAutoOrderSkipMode] = useState('date')
- const [resellerAutoOrderSkipWeekday, setResellerAutoOrderSkipWeekday] = useState(0)
+ const [resellerAutoOrderSkipWeekdays, setResellerAutoOrderSkipWeekdays] = useState([0])
  const [resellerAutoOrderSkipDate, setResellerAutoOrderSkipDate] = useState('')
  const [resellerAutoOrderSkipReason, setResellerAutoOrderSkipReason] = useState('')
  // Admin order management
@@ -17388,43 +17388,67 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
  }
 
- async function applyWeeklyAutoOrderSkip() {
+ function toggleResellerAutoOrderSkipWeekday(weekday) {
+ setResellerAutoOrderSkipWeekdays(current=>current.includes(weekday)
+  ? current.filter(value=>value!==weekday)
+  : [...current,weekday].sort((a,b)=>a-b))
+ }
+
+ async function applyWeeklyAutoOrderSkips() {
  if (!currentReseller?.id || resellerAutoOrderSaving) return
- const selectedWeekday = Number(resellerAutoOrderSkipWeekday)
- const selectedDayLabel = RESELLER_AUTO_ORDER_WEEKDAYS[selectedWeekday]
- const selectedSchedule = resellerAutoOrderSchedules.find(schedule=>Number(schedule.delivery_weekday)===selectedWeekday)
- if (!selectedSchedule || selectedSchedule.enabled === false) {
-  showToast(` ${selectedDayLabel} automatic orders are already skipped every week.`)
+ const selectedWeekdays = [...new Set(resellerAutoOrderSkipWeekdays.map(Number).filter(day=>day>=0 && day<=6))].sort((a,b)=>a-b)
+ if (selectedWeekdays.length === 0) {
+  showToast(' Select at least one delivery day to skip every week.', 'red')
   return
  }
- const selectedItems = (selectedSchedule.items || []).filter(item=>safeNum(item.template_quantity,0)>0)
- if (selectedItems.length === 0) {
-  showToast(` The ${selectedDayLabel} template has no saved product quantities. Open it and review the template first.`, 'red')
+ const activeSchedules = selectedWeekdays.map(weekday=>({
+  weekday,
+  dayLabel:RESELLER_AUTO_ORDER_WEEKDAYS[weekday],
+  schedule:resellerAutoOrderSchedules.find(row=>Number(row.delivery_weekday)===weekday)
+ })).filter(entry=>entry.schedule && entry.schedule.enabled !== false)
+ const invalidTemplate = activeSchedules.find(entry=>!(entry.schedule.items || []).some(item=>safeNum(item.template_quantity,0)>0))
+ if (invalidTemplate) {
+  showToast(` The ${invalidTemplate.dayLabel} template has no saved product quantities. Open it and review the template first.`, 'red')
+  return
+ }
+ if (activeSchedules.length === 0) {
+  showToast(` Automatic orders are already skipped every ${selectedWeekdays.map(day=>RESELLER_AUTO_ORDER_WEEKDAYS[day]).join(', ')}.`)
+  return
+ }
+ const tomorrowWeekday = new Date(`${getPHDateOffsetString(1)}T00:00:00+08:00`).getUTCDay()
+ if (getOrderCutoffStatus().locked && activeSchedules.some(entry=>entry.weekday===tomorrowWeekday)) {
+  showToast(` Tomorrow's ${RESELLER_AUTO_ORDER_WEEKDAYS[tomorrowWeekday]} template can no longer be changed after the 1:00 PM cutoff.`, 'red')
   return
  }
  setResellerAutoOrderSaving(true)
  try {
-  const { error } = await supabase.rpc('reseller_auto_order_save_schedule', {
-   p_reseller_id:currentReseller.id,
-   ...getResellerPortalCredentials(),
-   p_delivery_weekday:selectedWeekday,
-   p_template_name:String(selectedSchedule.template_name || `${selectedDayLabel} Order`).trim(),
-   p_enabled:false,
-   p_effective_start_date:String(selectedSchedule.effective_start_date || today).slice(0,10),
-   p_effective_end_date:selectedSchedule.effective_end_date? String(selectedSchedule.effective_end_date).slice(0,10):null,
-   p_items:selectedItems.map(item=>({
-    variant_id:item.variant_id,
-    variant_name:item.variant_name,
-    template_quantity:Math.round(safeNum(item.template_quantity,0)),
-    minimum_quantity:item.minimum_quantity == null? null:Math.max(0,Math.round(safeNum(item.minimum_quantity,0))),
-    maximum_quantity:item.maximum_quantity == null? null:Math.max(1,Math.round(safeNum(item.maximum_quantity,0)))
-   }))
-  })
-  if (error) throw error
+  const results = await Promise.all(activeSchedules.map(async ({ schedule,weekday,dayLabel })=>{
+   const selectedItems = (schedule.items || []).filter(item=>safeNum(item.template_quantity,0)>0)
+   const { error } = await supabase.rpc('reseller_auto_order_save_schedule', {
+    p_reseller_id:currentReseller.id,
+    ...getResellerPortalCredentials(),
+    p_delivery_weekday:weekday,
+    p_template_name:String(schedule.template_name || `${dayLabel} Order`).trim(),
+    p_enabled:false,
+    p_effective_start_date:String(schedule.effective_start_date || today).slice(0,10),
+    p_effective_end_date:schedule.effective_end_date? String(schedule.effective_end_date).slice(0,10):null,
+    p_items:selectedItems.map(item=>({
+     variant_id:item.variant_id,
+     variant_name:item.variant_name,
+     template_quantity:Math.round(safeNum(item.template_quantity,0)),
+     minimum_quantity:item.minimum_quantity == null? null:Math.max(0,Math.round(safeNum(item.minimum_quantity,0))),
+     maximum_quantity:item.maximum_quantity == null? null:Math.max(1,Math.round(safeNum(item.maximum_quantity,0)))
+    }))
+   })
+   return { dayLabel,error }
+  }))
+  const failures = results.filter(result=>result.error)
   await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
-  showToast(` ${selectedDayLabel} automatic orders will now be skipped every week. To resume, edit the ${selectedDayLabel} template and set it to Active.`)
+  if (failures.length > 0) throw new Error(`Could not update ${failures.map(result=>result.dayLabel).join(', ')}. Please try those days again.`)
+  const appliedDays = activeSchedules.map(entry=>entry.dayLabel).join(', ')
+  showToast(` Automatic orders will now be skipped every ${appliedDays}. To resume a day, edit its template and set it to Active.`)
  } catch (err) {
-  showToast(` Could not apply the weekly ${selectedDayLabel} skip: ` + (err?.message || err), 'red')
+  showToast(' Could not apply all selected weekly skips: ' + (err?.message || err), 'red')
  } finally {
   setResellerAutoOrderSaving(false)
  }
@@ -49715,12 +49739,16 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
     <label style={lblS}>Reason (optional)</label><input type="text" value={resellerAutoOrderSkipReason} onChange={e=>setResellerAutoOrderSkipReason(e.target.value)} placeholder="Example: school closed or outlet unavailable" style={inputStyle} />
     <button style={{...btnGray, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={skipResellerAutomaticOrderDate}>SKIP SELECTED DATE</button>
    </>:<>
-    <label style={lblS}>Delivery day to skip every week</label>
-    <select value={resellerAutoOrderSkipWeekday} onChange={e=>setResellerAutoOrderSkipWeekday(Number(e.target.value))} style={inputStyle}>
-     {RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=><option key={day} value={index}>{day}</option>)}
-    </select>
-    <button style={{...btnYellow, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={applyWeeklyAutoOrderSkip}>SKIP EVERY {RESELLER_AUTO_ORDER_WEEKDAYS[Number(resellerAutoOrderSkipWeekday)].toUpperCase()}</button>
-    <p style={{ margin:'8px 0 0', color:'#777', fontSize:'9px', lineHeight:1.4 }}>A weekly skip pauses the selected day’s template until you edit that template and set it back to Active.</p>
+    <label style={lblS}>Delivery days to skip every week</label>
+    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'7px', marginBottom:'10px' }}>
+     {RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=>{
+      const checked = resellerAutoOrderSkipWeekdays.includes(index)
+      const schedule = resellerAutoOrderSchedules.find(row=>Number(row.delivery_weekday)===index)
+      return <label key={day} style={{ display:'flex', alignItems:'center', gap:'8px', padding:'9px 10px', border:`1.5px solid ${checked?'#FDD412':'#ddd'}`, borderRadius:'9px', background:checked?'#fff9d9':'white', color:'#333', fontSize:'11px', fontWeight:'800', cursor:'pointer' }}><input type="checkbox" checked={checked} onChange={()=>toggleResellerAutoOrderSkipWeekday(index)} /> <span>{day}<small style={{ display:'block', color:schedule?.enabled===false?'#2d8a4e':'#888', fontSize:'8px', fontWeight:'700' }}>{!schedule || schedule.enabled===false?'Already skipped':'Active template'}</small></span></label>
+     })}
+    </div>
+    <button style={{...btnYellow, marginTop:0 }} disabled={resellerAutoOrderSaving || resellerAutoOrderSkipWeekdays.length===0} onClick={applyWeeklyAutoOrderSkips}>{resellerAutoOrderSaving?'APPLYING...':`APPLY WEEKLY SKIPS (${resellerAutoOrderSkipWeekdays.length})`}</button>
+    <p style={{ margin:'8px 0 0', color:'#777', fontSize:'9px', lineHeight:1.4 }}>Select one or several days. Each selected day’s template will be paused until you edit that template and set it back to Active.</p>
    </>}
   </div>
  </div>
