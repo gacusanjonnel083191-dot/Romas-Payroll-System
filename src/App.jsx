@@ -6793,6 +6793,7 @@ export default function App() {
  const [resellerAutoOrderEvents, setResellerAutoOrderEvents] = useState([])
  const [resellerAutoOrderLoading, setResellerAutoOrderLoading] = useState(false)
  const [resellerAutoOrderSaving, setResellerAutoOrderSaving] = useState(false)
+ const [resellerAutoOrderCopying, setResellerAutoOrderCopying] = useState(false)
  const [resellerAutoOrderForm, setResellerAutoOrderForm] = useState(null)
  const [resellerAutoOrderSkipDate, setResellerAutoOrderSkipDate] = useState('')
  const [resellerAutoOrderSkipReason, setResellerAutoOrderSkipReason] = useState('')
@@ -17335,6 +17336,94 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
   effective_end_date:String(schedule?.effective_end_date || '').slice(0,10),
   items
  })
+ }
+
+ async function copyLastOrderToResellerAutoOrderTemplate() {
+ if (!currentReseller?.id || !resellerAutoOrderForm || resellerAutoOrderCopying) return
+ setResellerAutoOrderCopying(true)
+ try {
+  let recentOrders = resellerOrders.filter(order=>
+   String(order?.reseller_id || '') === String(currentReseller.id)
+   && !['cancelled','canceled','void','voided','rejected','deleted'].includes(String(order?.status || '').toLowerCase())
+   && Array.isArray(order?.reseller_order_items)
+   && order.reseller_order_items.some(item=>safeNum(item?.quantity,0)>0)
+  )
+  if (recentOrders.length === 0) {
+   const { data, error } = await supabase
+    .from('reseller_orders')
+    .select('*, reseller_order_items(*)')
+    .eq('reseller_id', currentReseller.id)
+    .order('created_at',{ascending:false})
+    .limit(20)
+   if (error) throw error
+   recentOrders = (data || []).filter(order=>
+    !['cancelled','canceled','void','voided','rejected','deleted'].includes(String(order?.status || '').toLowerCase())
+    && Array.isArray(order?.reseller_order_items)
+    && order.reseller_order_items.some(item=>safeNum(item?.quantity,0)>0)
+   )
+  }
+  const lastOrder = recentOrders[0]
+  if (!lastOrder) {
+   showToast(' No previous order with product quantities was found for this reseller.', 'red')
+   return
+  }
+  const lastQuantityByVariant = new Map((lastOrder.reseller_order_items || []).map(item=>[
+   String(item.variant_id), Math.max(0,Math.round(safeNum(item.quantity,0)))
+  ]))
+  const copiedItems = (resellerAutoOrderForm.items || []).map(item=>{
+   if (!lastQuantityByVariant.has(String(item.variant_id))) return { ...item, template_quantity:'' }
+   const quantity = lastQuantityByVariant.get(String(item.variant_id))
+   return { ...item, template_quantity:quantity > 0? String(quantity):'' }
+  })
+  const copiedCount = copiedItems.filter(item=>safeNum(item.template_quantity,0)>0).length
+  setResellerAutoOrderForm(prev=>prev?{ ...prev, items:copiedItems }:prev)
+  const lastOrderDate = lastOrder.delivery_date || lastOrder.order_date || String(lastOrder.created_at || '').slice(0,10)
+  showToast(` Copied ${copiedCount} product quantities from the last order${lastOrderDate?` (${lastOrderDate})`:''}. Review and save the template.`)
+ } catch (err) {
+  showToast(' Could not copy the last order: ' + (err?.message || err), 'red')
+ } finally {
+  setResellerAutoOrderCopying(false)
+ }
+ }
+
+ async function applyEverySundayAutoOrderSkip() {
+ if (!currentReseller?.id || resellerAutoOrderSaving) return
+ const sundaySchedule = resellerAutoOrderSchedules.find(schedule=>Number(schedule.delivery_weekday)===0)
+ if (!sundaySchedule || sundaySchedule.enabled === false) {
+  showToast(' Sunday automatic orders are already skipped every week.')
+  return
+ }
+ const sundayItems = (sundaySchedule.items || []).filter(item=>safeNum(item.template_quantity,0)>0)
+ if (sundayItems.length === 0) {
+  showToast(' The Sunday template has no saved product quantities. Open it and review the template first.', 'red')
+  return
+ }
+ setResellerAutoOrderSaving(true)
+ try {
+  const { error } = await supabase.rpc('reseller_auto_order_save_schedule', {
+   p_reseller_id:currentReseller.id,
+   ...getResellerPortalCredentials(),
+   p_delivery_weekday:0,
+   p_template_name:String(sundaySchedule.template_name || 'Sunday Order').trim(),
+   p_enabled:false,
+   p_effective_start_date:String(sundaySchedule.effective_start_date || today).slice(0,10),
+   p_effective_end_date:sundaySchedule.effective_end_date? String(sundaySchedule.effective_end_date).slice(0,10):null,
+   p_items:sundayItems.map(item=>({
+    variant_id:item.variant_id,
+    variant_name:item.variant_name,
+    template_quantity:Math.round(safeNum(item.template_quantity,0)),
+    minimum_quantity:item.minimum_quantity == null? null:Math.max(0,Math.round(safeNum(item.minimum_quantity,0))),
+    maximum_quantity:item.maximum_quantity == null? null:Math.max(1,Math.round(safeNum(item.maximum_quantity,0)))
+   }))
+  })
+  if (error) throw error
+  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
+  showToast(' Sunday automatic orders will now be skipped every week. To resume, edit the Sunday template and set it to Active.')
+ } catch (err) {
+  showToast(' Could not apply the weekly Sunday skip: ' + (err?.message || err), 'red')
+ } finally {
+  setResellerAutoOrderSaving(false)
+ }
  }
 
  async function saveResellerAutoOrderTemplate() {
@@ -49614,20 +49703,27 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
    <h3 style={{ margin:'0 0 3px', fontSize:'14px', color:'#333' }}>Skip one delivery date</h3><p style={{ margin:'0 0 10px', color:'#777', fontSize:'10px' }}>Skip a date without disabling your other schedules. Tomorrow can only be skipped before 1:00 PM.</p>
    <label style={lblS}>Delivery date to skip</label><input type="date" min={getDefaultResellerOrderDeliveryDate()} value={resellerAutoOrderSkipDate} onChange={e=>setResellerAutoOrderSkipDate(e.target.value)} style={inputStyle} />
    <label style={lblS}>Reason (optional)</label><input type="text" value={resellerAutoOrderSkipReason} onChange={e=>setResellerAutoOrderSkipReason(e.target.value)} placeholder="Example: school closed or outlet unavailable" style={inputStyle} />
-   <button style={{...btnGray, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={skipResellerAutomaticOrderDate}>SKIP THIS DATE</button>
+   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'8px' }}>
+    <button style={{...btnGray, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={skipResellerAutomaticOrderDate}>SKIP THIS DATE</button>
+    <button style={{...btnYellow, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={applyEverySundayAutoOrderSkip}>APPLY EVERY SUNDAY</button>
+   </div>
+   <p style={{ margin:'8px 0 0', color:'#777', fontSize:'9px', lineHeight:1.4 }}>“Apply Every Sunday” pauses the Sunday template until you reactivate it.</p>
   </div>
  </div>
 
  {resellerAutoOrderForm && (
  <div style={{...portalCard, border:'2px solid #FDD412', marginBottom:'12px' }}>
   <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginBottom:'12px' }}><div><h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'15px' }}>Edit automatic-order template</h3><p style={{ margin:0, color:'#777', fontSize:'10px' }}>Recommendations use delivered quantities minus recorded returns from the last four matching weekdays, plus the safety allowance, within your limits. With no history, the template is used.</p></div><button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>setResellerAutoOrderForm(null)}>CLOSE</button></div>
-  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'9px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'9px' }}>
    <div><label style={lblS}>Delivery day</label><select value={resellerAutoOrderForm.delivery_weekday} disabled={!!resellerAutoOrderForm.id} onChange={e=>startResellerAutoOrderTemplate(null,Number(e.target.value))} style={inputStyle}>{RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=><option key={day} value={index}>{day}</option>)}</select></div>
    <div><label style={lblS}>Template name</label><input type="text" value={resellerAutoOrderForm.template_name} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,template_name:e.target.value}))} style={inputStyle} /></div>
    <div><label style={lblS}>Template status</label><select value={resellerAutoOrderForm.enabled?'active':'paused'} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,enabled:e.target.value==='active'}))} style={inputStyle}><option value="active">Active</option><option value="paused">Paused</option></select></div>
    <div><label style={lblS}>Effective start</label><input type="date" value={resellerAutoOrderForm.effective_start_date} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,effective_start_date:e.target.value}))} style={inputStyle} /></div>
    <div><label style={lblS}>Optional end date</label><input type="date" value={resellerAutoOrderForm.effective_end_date} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,effective_end_date:e.target.value}))} style={inputStyle} /></div>
    <div><label style={lblS}>Submission cutoff</label><input type="text" value="1:00 PM every day (fixed)" readOnly style={{...inputStyle,background:'#f5f5f5',fontWeight:'900'}} /></div>
+  </div>
+  <div style={{ display:'flex', justifyContent:'flex-end', margin:'0 0 9px' }}>
+   <button style={{...btnYellow, width:'auto', marginTop:0, padding:'8px 13px', fontSize:'10px' }} disabled={resellerAutoOrderCopying || resellerAutoOrderSaving} onClick={copyLastOrderToResellerAutoOrderTemplate}>{resellerAutoOrderCopying?'COPYING...':'COPY FROM LAST ORDER'}</button>
   </div>
   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1.5fr repeat(3,.65fr)':'2fr repeat(3,1fr)', gap:'6px', padding:'7px 9px', background:'#1a1a2e', borderRadius:'9px', color:'white', fontSize:'9px', fontWeight:'900' }}><span>PRODUCT</span><span style={{textAlign:'center'}}>TEMPLATE</span><span style={{textAlign:'center'}}>MIN</span><span style={{textAlign:'center'}}>MAX</span></div>
   <div style={{ maxHeight:'360px', overflowY:'auto' }}>
