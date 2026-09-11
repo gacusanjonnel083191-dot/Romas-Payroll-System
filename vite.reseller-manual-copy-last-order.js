@@ -56,7 +56,8 @@ const COPY_LAST_ORDER_HANDLER = ` async function copyLastOrderToManualOrder() {
   const copiedPieces = copiedItems.reduce((sum,item)=>sum+safeNum(item.quantity,0),0)
   setResellerOrderItems(copiedItems)
   const lastOrderDate = lastOrder.delivery_date || lastOrder.order_date || String(lastOrder.created_at || '').slice(0,10)
-  showToast(` Copied ${copiedCount} product quantities (${copiedPieces} pieces) from the last order${lastOrderDate?` (${lastOrderDate})`:''}. Review and edit before submitting.`)
+  const dateSuffix = lastOrderDate? ' (' + lastOrderDate + ')': ''
+  showToast(' Copied ' + copiedCount + ' product quantities (' + copiedPieces + ' pieces) from the last order' + dateSuffix + '. Review and edit before submitting.')
  } catch (err) {
   showToast(' Could not copy the last order: ' + (err?.message || err), 'red')
  } finally {
