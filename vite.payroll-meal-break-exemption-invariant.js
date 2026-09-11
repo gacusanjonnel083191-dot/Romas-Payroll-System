@@ -11,6 +11,9 @@ const MEAL_BREAK_REVIEW_FUNCTION_START_WITH_EXEMPTION = `function buildPayrollMe
 
  const integrity = getAttendanceDayIntegrity(dayLogs)`
 
+const PAYROLL_READINESS_EMPLOYEE_SELECT = `.select('id,employee_code,full_name,position,is_active,shift_start,shift_end,grace_period_minutes')`
+const PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES = `.select('id,employee_code,full_name,position,is_active,shift_start,shift_end,grace_period_minutes,overtime_pay_eligible,undertime_deduction_applicable,night_differential_pay_eligible')`
+
 function replaceExactlyOnce(source, from, to, label) {
   const firstIndex = source.indexOf(from)
   if (firstIndex < 0) throw new Error(`Payroll meal-break exemption invariant failed: ${label} was not found.`)
@@ -21,12 +24,19 @@ function replaceExactlyOnce(source, from, to, label) {
 
 export function enforcePayrollMealBreakExemptions(source, id = '') {
   if (!APP_MODULE_RE.test(id)) return source
-  return replaceExactlyOnce(
+  let transformed = replaceExactlyOnce(
     source,
     MEAL_BREAK_REVIEW_FUNCTION_START,
     MEAL_BREAK_REVIEW_FUNCTION_START_WITH_EXEMPTION,
     'buildPayrollMealBreakReviewException start'
   )
+  transformed = replaceExactlyOnce(
+    transformed,
+    PAYROLL_READINESS_EMPLOYEE_SELECT,
+    PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES,
+    'payroll readiness employee policy select'
+  )
+  return transformed
 }
 
 export function payrollMealBreakExemptionInvariant() {
