@@ -1,3 +1,4 @@
+import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
 import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
@@ -2212,16 +2213,15 @@ function buildCashAdvanceDeductionSnapshot(rows = [], appliedTotal = 0) {
  if (remaining <= 0) return []
  const candidates = (rows || [])
   .filter(row => !['cancelled','canceled','void','voided'].includes(String(row?.status || '').trim().toLowerCase()) && getCashAdvanceEffectiveBalance(row) > 0.009)
-  .sort((a, b) => String(a?.advance_date || a?.created_at || '').localeCompare(String(b?.advance_date || b?.created_at || '')))
+  .sort((a, b) => String(a?.advance_date || a?.created_at || '').localeCompare(String(b?.advance_date || b?.created_at || '')) || String(a?.id || '').localeCompare(String(b?.id || '')))
  const items = []
  for (const row of candidates) {
   if (remaining <= 0.009) break
   const balance = getCashAdvanceEffectiveBalance(row)
   const scheduled = safeNum(row?.per_payroll_deduction, 0) > 0 ? safeNum(row?.per_payroll_deduction, 0) : balance
   const requested = moneyRound(Math.min(balance, scheduled))
-  // Match the release routine exactly: the final capped CA amount is applied
-  // oldest-first against the actual remaining balances.
-  const applied = moneyRound(Math.min(balance, remaining))
+  // Allocate only this loan’s scheduled installment; persist its exact ID.
+  const applied = moneyRound(Math.min(requested, remaining))
   if (applied <= 0) continue
   items.push({
    id:row?.id || '',
@@ -5798,23 +5798,7 @@ function getCashAdvancePaidAmount(ca = {}) {
 function getCashAdvanceEffectiveBalance(ca = {}) {
  const amount = moneyRound(Math.max(0, safeNum(ca?.amount, 0)))
  const paid = moneyRound(Math.max(0, safeNum(ca?.amount_paid, 0)))
- const rawBalance = getCashAdvanceRawBalance(ca)
- const status = String(ca?.status || '').trim().toLowerCase()
-
- if (amount > 0) {
-  if (paid > 0) return moneyRound(Math.max(0, amount - paid))
-  if (rawBalance > 0.009) {
-   const perPayroll = safeNum(ca?.per_payroll_deduction, 0)
-   const totalInstallments = safeNum(ca?.installments_total, 0)
-   const remainingInstallments = safeNum(ca?.installments_remaining, 0)
-   const looksLikeNewInstallmentBalanceBug = totalInstallments > 1 && remainingInstallments >= totalInstallments && perPayroll > 0.009 && rawBalance < amount && rawBalance <= perPayroll + 0.01
-   return looksLikeNewInstallmentBalanceBug ? amount : rawBalance
-  }
-  if (status === 'paid' || status === 'settled') return 0
-  return amount
- }
-
- return rawBalance
+ return amount > 0 ? moneyRound(Math.max(0, amount - paid)) : getCashAdvanceRawBalance(ca)
 }
 
 function getCashAdvanceStatusForBalance(balance = 0, currentStatus = '') {
@@ -21066,193 +21050,15 @@ if (role === 'owner') return true
  }
 
  async function caPayrollDeductionsAlreadyApplied(start, end) {
- const tag = buildCADeductionTag(start, end)
- const { data:appliedRows, error:appliedError } = await supabase
-.from('audit_logs')
-.select('id, details, created_at')
-.eq('action', 'CA PAYROLL DEDUCTIONS APPLIED')
-.ilike('details', `%${tag}%`)
-.order('created_at', { ascending:false })
-.limit(5)
-
- if (appliedError) return { exists:false, error:appliedError.message }
- const applied = appliedRows || []
- if (applied.length === 0) return { exists:false, record:null }
-
- const { data:reversedRows, error:reversedError } = await supabase
-.from('audit_logs')
-.select('id, details, created_at')
-.eq('action', 'CA PAYROLL DEDUCTIONS REVERSED')
-.ilike('details', `%${tag}%`)
-.order('created_at', { ascending:false })
-.limit(1)
-
- if (reversedError) console.warn('CA reversal audit check skipped:', reversedError.message)
-
- const latestApplied = applied[0]
- const latestReverse = (reversedRows || [])[0] || null
- const appliedTime = latestApplied?.created_at? new Date(latestApplied.created_at).getTime(): 0
- const reverseTime = latestReverse?.created_at? new Date(latestReverse.created_at).getTime(): 0
- if (latestReverse && reverseTime >= appliedTime) {
-  return { exists:false, reversed:true, record:latestApplied, reverseRecord:latestReverse }
+ return runCashAdvancePayrollCommand(supabase, 'status', start, end)
  }
 
- return { exists:true, record:latestApplied }
+ async function applyCashAdvanceDeductionsForPayrollPeriod(start, end) {
+ return runCashAdvancePayrollCommand(supabase, 'release', start, end)
  }
 
- async function applyCashAdvanceDeductionsForPayrollPeriod(start, end, options = {}) {
- if (!start ||!end) return { applied:false, amount:0, error:'Missing payroll period.' }
-
- const existing = await caPayrollDeductionsAlreadyApplied(start, end)
- if (existing.exists) return { applied:false, existing:true, amount:0 }
-
- const { data:records, error:payrollError } = await supabase
-.from('payroll_records')
-.select('id, employee_id, employee_code, employee_name, cash_advance_deduction')
-.eq('payroll_start', start)
-.eq('payroll_end', end)
-
- if (payrollError) return { applied:false, amount:0, error:payrollError.message }
-
- const rows = (records || []).filter(r => safeNum(r.cash_advance_deduction, 0) > 0)
- if (rows.length === 0) return { applied:false, amount:0, none:true }
-
- let totalApplied = 0
- const warnings = []
-
- for (const row of rows) {
- let remaining = safeNum(row.cash_advance_deduction, 0)
- if (remaining <= 0) continue
-
- const { data:cas, error:caError } = await supabase
-.from('cash_advances')
-.select('*')
-.eq('employee_id', row.employee_id)
-.order('advance_date', { ascending:true })
-
- if (caError) return { applied:false, amount:totalApplied, error:caError.message }
-
- const openCAs = (cas || []).filter(isOutstandingCashAdvance)
- for (const ca of openCAs) {
- if (remaining <= 0) break
- const balance = getCashAdvanceEffectiveBalance(ca)
- if (balance <= 0.009) continue
-
- const deduction = moneyRound(Math.min(balance, remaining))
- const currentPaid = getCashAdvancePaidAmount(ca)
- const newPaid = moneyRound(currentPaid + deduction)
- const newBal = moneyRound(Math.max(0, balance - deduction))
- const newRem = getCashAdvanceRemainingInstallments({ ...ca, amount_paid:newPaid, balance:newBal })
- const newStatus = getCashAdvanceStatusForBalance(newBal, ca.status)
-
- const { error:updateError } = await supabase.from('cash_advances').update({
- amount_paid:newPaid,
- balance:newBal,
- installments_remaining:newRem,
- status:newStatus
- }).eq('id', ca.id)
-
- if (updateError) return { applied:false, amount:totalApplied, error:updateError.message }
-
- totalApplied += deduction
- remaining = Math.max(0, remaining - deduction)
- }
-
- if (remaining > 0.009) warnings.push(`${row.employee_name || row.employee_code}: ${php(remaining)} payroll CA deduction had no matching unpaid CA balance`)
- }
-
- await logAudit(
- 'CA PAYROLL DEDUCTIONS APPLIED',
- options.auto? 'System Auto': 'Admin',
- 'ALL',
- `${buildCADeductionTag(start, end)} | Applied: ${php(totalApplied)} | Employees: ${rows.length}${warnings.length? ' | Warnings: ' + warnings.join('; '): ''}`
- )
-
- return { applied:true, amount:totalApplied, warnings }
- }
-
- async function reverseCashAdvanceDeductionsForPayrollPeriod(start, end, options = {}) {
- if (!start ||!end) return { reversed:false, amount:0, error:'Missing payroll period.' }
- const tag = buildCADeductionTag(start, end)
-
- const { data:records, error:payrollError } = await supabase
-.from('payroll_records')
-.select('id, employee_id, employee_code, employee_name, cash_advance_deduction')
-.eq('payroll_start', start)
-.eq('payroll_end', end)
-.limit(1000)
-
- if (payrollError) return { reversed:false, amount:0, error:payrollError.message }
-
- const rows = (records || []).filter(r => safeNum(r.cash_advance_deduction, 0) > 0)
- if (rows.length === 0) return { reversed:false, amount:0, none:true }
-
- const byEmployee = {}
- rows.forEach(row => {
-  const key = String(row.employee_id || '')
-  if (!key) return
-  if (!byEmployee[key]) byEmployee[key] = { employee_id:row.employee_id, employee_code:row.employee_code || '', employee_name:row.employee_name || '', amount:0 }
-  byEmployee[key].amount += safeNum(row.cash_advance_deduction, 0)
- })
-
- let totalReversed = 0
- const warnings = []
-
- for (const employeeRow of Object.values(byEmployee)) {
-  let remaining = moneyRound(employeeRow.amount)
-  if (remaining <= 0) continue
-
-  const { data:cas, error:caError } = await supabase
-  .from('cash_advances')
-  .select('*')
-  .eq('employee_id', employeeRow.employee_id)
-  .lte('advance_date', end)
-
-  if (caError) return { reversed:false, amount:totalReversed, error:caError.message }
-
-  const caRows = (cas || [])
-  .filter(ca => {
-   const status = String(ca.status || '').trim().toLowerCase()
-   return status !== 'cancelled' && status !== 'void' && safeNum(ca.amount_paid, 0) > 0
-  })
-  .sort((a,b) => String(b.advance_date || b.created_at || '').localeCompare(String(a.advance_date || a.created_at || '')))
-
-  for (const ca of caRows) {
-   if (remaining <= 0.009) break
-   const paidNow = getCashAdvancePaidAmount(ca)
-   if (paidNow <= 0.009) continue
-
-   const reversal = moneyRound(Math.min(paidNow, remaining))
-   const totalAmount = safeNum(ca.amount, paidNow + getCashAdvanceEffectiveBalance(ca))
-   const newPaid = moneyRound(Math.max(0, paidNow - reversal))
-   const newBalance = moneyRound(Math.max(0, totalAmount - newPaid))
-   const restoredInstallments = getCashAdvanceRemainingInstallments({ ...ca, amount_paid:newPaid, balance:newBalance })
-   const newStatus = getCashAdvanceStatusForBalance(newBalance, ca.status)
-
-   const { error:updateError } = await supabase.from('cash_advances').update({
-    amount_paid:newPaid,
-    balance:newBalance,
-    installments_remaining:restoredInstallments,
-    status:newStatus
-   }).eq('id', ca.id)
-
-   if (updateError) return { reversed:false, amount:totalReversed, error:updateError.message }
-
-   totalReversed = moneyRound(totalReversed + reversal)
-   remaining = moneyRound(Math.max(0, remaining - reversal))
-  }
-
-  if (remaining > 0.009) warnings.push(`${employeeRow.employee_name || employeeRow.employee_code}: ${php(remaining)} CA reversal could not be matched to paid CA records`)
- }
-
- await logAudit(
-  'CA PAYROLL DEDUCTIONS REVERSED',
-  options.auto? 'System Auto': currentAdminLabel,
-  'ALL',
-  `${tag} | Reversed: ${php(totalReversed)} | Employees: ${Object.keys(byEmployee).length}${warnings.length? ' | Warnings: ' + warnings.join('; '): ''}`
- )
-
- return { reversed:true, amount:totalReversed, warnings }
+ async function reverseCashAdvanceDeductionsForPayrollPeriod(start, end) {
+ return runCashAdvancePayrollCommand(supabase, 'reopen', start, end)
  }
 
  async function reopenReleasedPayroll(start = payrollStart, end = payrollEnd) {
@@ -21290,44 +21096,9 @@ if (role === 'owner') return true
  ].join('\n')
  if (!window.confirm(warning)) return
 
- let caReverseResult = { reversed:false, amount:0, none:true }
- if (caTotal > 0.009) {
-  caReverseResult = await reverseCashAdvanceDeductionsForPayrollPeriod(start, end, { auto:false })
-  if (caReverseResult.error) {
-   showToast('Reopen stopped: CA reversal failed: '+caReverseResult.error, 'red')
-   await logAudit('REOPEN RELEASED PAYROLL FAILED - CA REVERSAL', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Error: ${caReverseResult.error}`)
-   return
-  }
- }
-
- const primaryUpdate = {
-  payroll_approved:false,
-  approved_by:null,
-  approved_at:null,
-  payroll_status:'draft',
-  employee_acknowledgement:'draft',
-  review_sent_at:null,
-  review_sent_by:null
- }
- let updateError = null
- const { error:firstUpdateError } = await supabase.from('payroll_records')
- .update(primaryUpdate)
- .eq('payroll_start', start)
- .eq('payroll_end', end)
-
- if (firstUpdateError && isMissingPayrollWorkflowColumnError(firstUpdateError)) {
-  const { error:fallbackError } = await supabase.from('payroll_records')
-  .update({ payroll_approved:false, approved_by:null, approved_at:null, employee_acknowledgement:'draft' })
-  .eq('payroll_start', start)
-  .eq('payroll_end', end)
-  updateError = fallbackError
- } else {
-  updateError = firstUpdateError
- }
-
- if (updateError) {
-  showToast('Reopen failed after CA reversal. Payroll status update failed: '+updateError.message, 'red')
-  await logAudit('REOPEN RELEASED PAYROLL FAILED - STATUS UPDATE', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Error: ${updateError.message}`)
+ const caReverseResult = await reverseCashAdvanceDeductionsForPayrollPeriod(start, end)
+ if (caReverseResult.error) {
+  showToast('Reopen stopped: ' + caReverseResult.error, 'red')
   return
  }
 
@@ -21438,41 +21209,17 @@ if (role === 'owner') return true
  }).length
  if (pendingCount > 0 && !window.confirm(`${pendingCount} payslip(s) are still pending employee acknowledgement. Continue final payroll release?`)) return
 
- const alreadyReleased = records.some(r => r.payroll_approved === true ||!!r.approved_at)
- if (alreadyReleased) {
-  const hasCADeductions = records.some(r => safeNum(r.cash_advance_deduction, 0) > 0)
-  const caExisting = hasCADeductions? await caPayrollDeductionsAlreadyApplied(start, end): { exists:true, none:true }
-  const expenseExisting = await payrollExpenseAlreadyPosted(start, end)
-
-  if ((!hasCADeductions || caExisting.exists) && expenseExisting.exists) {
-   showToast(' This payroll period is already fully released. Releasing it again is blocked to prevent duplicate CA deductions or expense posting.', 'red')
-   await logAudit('DUPLICATE PAYROLL RELEASE BLOCKED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end}`)
-   return
-  }
-
-  showToast(' Payroll was already marked released, but one release step is missing. The system will safely recover only the missing CA/expense step.', 'red')
-  await logAudit('PAYROLL RELEASE RECOVERY STARTED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | CA done: ${!hasCADeductions || caExisting.exists} | Expense done: ${expenseExisting.exists}`)
- } else {
-  let updatePayload = { payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString(), payroll_status:'released' }
-  const { error:firstUpdateError } = await supabase.from('payroll_records')
-  .update(updatePayload)
-  .eq('payroll_start', start).eq('payroll_end', end)
-  if (firstUpdateError && isMissingPayrollWorkflowColumnError(firstUpdateError)) {
-   const { error:fallbackUpdateError } = await supabase.from('payroll_records')
-   .update({ payroll_approved: true, approved_by: currentAdminLabel, approved_at: new Date().toISOString() })
-   .eq('payroll_start', start).eq('payroll_end', end)
-   if (fallbackUpdateError) { showToast('Failed: '+fallbackUpdateError.message,'red'); return }
-  } else if (firstUpdateError) { showToast('Failed: '+firstUpdateError.message,'red'); return }
- }
-
- const releasedSILCount = await markSILCashoutsReleasedForPayrollPeriod(start, end, { auto:true, silent:true })
- const caDeductionResult = await applyCashAdvanceDeductionsForPayrollPeriod(start, end, { auto:true, silent:true })
+ const caDeductionResult = await applyCashAdvanceDeductionsForPayrollPeriod(start, end)
  if (caDeductionResult.error) {
-  setPayrollApproved(true)
-  await logAudit('PAYROLL RELEASE CA DEDUCTION FAILED', currentAdminLabel, 'Payroll', `Period: ${start} to ${end} | Error: ${caDeductionResult.error}`)
-  showToast('Payroll was marked released, but CA deduction update failed: ' + caDeductionResult.error + '. Fix the database issue, then click RELEASE PAYROLL again to recover the missing step safely.', 'red')
+  showToast('Payroll release was not confirmed: ' + caDeductionResult.error, 'red')
   return
  }
+ if (caDeductionResult.existing) {
+  setPayrollApproved(true)
+  showToast('This payroll is already released. Cash-advance deductions were not repeated. If expense posting is missing, use the payroll expense posting action.', 'green')
+  return
+ }
+ const releasedSILCount = await markSILCashoutsReleasedForPayrollPeriod(start, end, { auto:true, silent:true })
 
  const expenseResult = await postPayrollToExpenses(start, end, { auto:true, silent:true })
 
@@ -21629,49 +21376,6 @@ if (role === 'owner') return true
  if (financialMonth === String(end).slice(0,7)) loadFinancialData()
  refreshFoundationAfterDataChange('payroll-expense-posted')
  return { posted:true, amount, record:data, summary }
- }
-
- async function autoPostApprovedPayrollExpenses(options = {}) {
- try {
- const { data, error } = await supabase
-.from('payroll_records')
-.select('payroll_start,payroll_end,payroll_approved,cash_advance_deduction')
-.eq('payroll_approved', true)
-.order('payroll_start', { ascending:false })
-.limit(300)
-
- if (error) return 0
-
- const periods = {}
-;(data || []).forEach(r => {
- if (!r.payroll_start ||!r.payroll_end) return
- const key = `${r.payroll_start}|${r.payroll_end}`
- if (!periods[key]) periods[key] = { start:r.payroll_start, end:r.payroll_end, hasCADeductions:false }
- if (safeNum(r.cash_advance_deduction, 0) > 0) periods[key].hasCADeductions = true
- })
-
- let posted = 0
- for (const p of Object.values(periods)) {
- if (p.hasCADeductions) {
- const caResult = await applyCashAdvanceDeductionsForPayrollPeriod(p.start, p.end, { auto:true, silent:true })
- if (caResult.error) {
- await logAudit('PAYROLL EXPENSE AUTO-POST SKIPPED', 'System Auto', 'ALL', `Period: ${p.start} to ${p.end} | CA deduction failed first: ${caResult.error}`)
- continue
- }
- }
- const result = await postPayrollToExpenses(p.start, p.end, { auto:true, silent:true })
- if (result.posted) posted++
- }
-
- if (posted > 0) {
- await logAudit('PAYROLL EXPENSE AUTO-POST CHECK', 'System Auto', 'ALL', `${posted} approved payroll period(s) auto-posted to expenses`)
- if (!options.silent) showToast(` ${posted} payroll expense record(s) auto-posted.`)
- }
- return posted
- } catch(e) {
- console.warn('Auto payroll expense post skipped:', e)
- return 0
- }
  }
 
  async function handleManualPayrollExpensePost(start, end) {
@@ -24198,7 +23902,7 @@ function openAdmin(role, empData) {
  loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
  loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
  if (safeRole === 'owner') loadOwnerActionCenter()
-loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); if (safeRole==='owner' || safeRole==='payroll') autoPostApprovedPayrollExpenses({ silent:true }).catch(()=>{}); if (safeRole==='owner' || safeRole==='manager') loadFoundationData().catch(()=>{})
+loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); if (safeRole==='owner' || safeRole==='manager') loadFoundationData().catch(()=>{})
 void loadInvoiceDeletionAccess({ silent:true }).then(access => {
  if (access.can_request || access.can_review) return loadInvoiceDeletionRequests({ silent:true })
  setInvoiceDeletionRequests([])
@@ -26261,41 +25965,8 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  }
 
  async function reopenCashAdvanceForPayrollDeduction(ca) {
- if (!ca?.id) return
- if (adminRole!== 'owner') {
- showToast('Owner access is required to reopen a cash advance balance.', 'red')
- return
- }
-
- const amount = Math.max(0, safeNum(ca.amount, 0))
- if (!amount) { showToast('Invalid cash advance amount.', 'red'); return }
-
- const installments = Math.max(1, safeNum(ca.installments_total, ca.installments_remaining || 1))
- const perPayroll = safeNum(ca.per_payroll_deduction, 0) > 0
-? safeNum(ca.per_payroll_deduction, 0)
-: Math.ceil((amount / installments) * 100) / 100
-
- if (!window.confirm(`Reopen this cash advance as ACTIVE/UNPAID?\n\nAmount: ${php(amount)}\nThis will set Paid/Deducted to PHP 0.00 and Balance to ${php(amount)} so it can be deducted in the next payroll release.`)) return
-
- const existingNotes = String(ca.notes || '').trim()
- const newNotes = `${existingNotes}${existingNotes? ' | ': ''}REOPENED AS ACTIVE CA BY OWNER ${new Date().toISOString().slice(0,10)}`
-
- const { error } = await supabase.from('cash_advances').update({
- amount_paid:0,
- balance:amount,
- per_payroll_deduction:perPayroll,
- installments_total:installments,
- installments_remaining:installments,
- status:'Unpaid',
- notes:newNotes
- }).eq('id', ca.id)
-
- if (error) { showToast('Failed to reopen cash advance: ' + error.message, 'red'); return }
-
- await logAudit('CA REOPENED AS ACTIVE', adminRole, ca.employee_name || ca.employee_code || 'Employee', `${php(amount)} reopened for payroll deduction. CA ID: ${ca.id}`)
- showToast(' Cash advance reopened as active/unpaid. It can now deduct in the next payroll release.')
- await loadCashAdvanceCoverage(payrollStart, payrollEnd)
- if (employee?.id) loadMyCashAdvances(employee)
+ if (!requireOwnerAction('review a cash advance balance')) return
+ showToast('Reopening by clearing all repayments is blocked. Reconcile the specific incorrect repayment entries so genuine payments remain preserved.', 'red')
  }
 
 
@@ -30423,7 +30094,7 @@ async function computePayroll() {
   if (leavesError) throw leavesError
   const leaves = (allLeaves || []).filter(leave => getLeaveOverlapDays(leave, payrollStart, payrollEnd) > 0)
   const holidayGuardPaidLeaves = (allLeaves || []).filter(isPaidLeaveRecord)
-  const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id)
+  const { data:cas, error:caError } = await supabase.from('cash_advances').select('*').eq('employee_id', emp.id).lte('advance_date', payrollEnd)
   if (caError) throw caError
   const { data:adjs, error:adjsError } = await supabase.from('payroll_adjustments').select('*').eq('employee_id', emp.id).gte('adjustment_date', payrollStart).lte('adjustment_date', payrollEnd)
   if (adjsError) throw adjsError
