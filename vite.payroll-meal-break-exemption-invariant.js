@@ -14,6 +14,11 @@ const MEAL_BREAK_REVIEW_FUNCTION_START_WITH_EXEMPTION = `function buildPayrollMe
 const PAYROLL_READINESS_EMPLOYEE_SELECT = `.select('id,employee_code,full_name,position,is_active,shift_start,shift_end,grace_period_minutes')`
 const PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES = `.select('id,employee_code,full_name,position,is_active,shift_start,shift_end,grace_period_minutes,overtime_pay_eligible,undertime_deduction_applicable,night_differential_pay_eligible')`
 
+const PAYROLL_READINESS_MISSING_EMPLOYEE_FILTER = `.filter(emp => !(payrollRowsByEmployee[String(emp.id)] || []).length)`
+const PAYROLL_READINESS_MISSING_EMPLOYEE_FILTER_EXCLUDING_HELD = `.filter(emp => !attendanceExceptions.some(item => String(item.employeeId || '') === String(emp.id)) && !(payrollRowsByEmployee[String(emp.id)] || []).length)`
+const PAYROLL_READINESS_READY_EMPLOYEE_COUNT = `readyPayrollEmployeeCount:activeList.length - missingEmployees.length,`
+const PAYROLL_READINESS_READY_EMPLOYEE_COUNT_EXCLUDING_HELD = `readyPayrollEmployeeCount:Math.max(0, activeList.length - missingEmployees.length - heldEmployeeIds.length),`
+
 function replaceExactlyOnce(source, from, to, label) {
   const firstIndex = source.indexOf(from)
   if (firstIndex < 0) throw new Error(`Payroll meal-break exemption invariant failed: ${label} was not found.`)
@@ -49,6 +54,22 @@ export function enforcePayrollMealBreakExemptions(source, id = '') {
       PAYROLL_READINESS_EMPLOYEE_SELECT,
       PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES,
       'payroll readiness employee policy select'
+    )
+  }
+  if (!transformed.includes(PAYROLL_READINESS_MISSING_EMPLOYEE_FILTER_EXCLUDING_HELD)) {
+    transformed = replaceExactlyOnce(
+      transformed,
+      PAYROLL_READINESS_MISSING_EMPLOYEE_FILTER,
+      PAYROLL_READINESS_MISSING_EMPLOYEE_FILTER_EXCLUDING_HELD,
+      'payroll readiness missing-employee hold classification'
+    )
+  }
+  if (!transformed.includes(PAYROLL_READINESS_READY_EMPLOYEE_COUNT_EXCLUDING_HELD)) {
+    transformed = replaceExactlyOnce(
+      transformed,
+      PAYROLL_READINESS_READY_EMPLOYEE_COUNT,
+      PAYROLL_READINESS_READY_EMPLOYEE_COUNT_EXCLUDING_HELD,
+      'payroll readiness ready-employee count'
     )
   }
   return transformed
