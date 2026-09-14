@@ -34,3 +34,8 @@ if (!verification || !verification[1].includes("'inventory'") || !verification[1
 
 fs.writeFileSync(path, src, 'utf8')
 console.log('HR Admin access patch applied: Inventory and Sales & Expenses enabled without widening owner/manager permissions.')
+
+// Keep the auth integrity patch in the existing build chain without changing the
+// dependency-install surface. This protects Owner/Payroll screens from stale admin UI
+// after a Supabase Auth session ends.
+require('./patch-admin-session-integrity.cjs')
