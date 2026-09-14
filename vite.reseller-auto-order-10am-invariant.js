@@ -13,12 +13,12 @@ const AUTO_ORDER_UI_REPLACEMENTS = [
   ],
   [
     'Daily cutoff: <strong>1:00 PM Philippine time</strong> · Staff approval required',
-    'Automatic submission: <strong>10:00 AM Philippine time</strong> · Manual order deadline: <strong>1:00 PM</strong> · Staff approval required',
+    'Automatic submission: <strong>10:00 AM Philippine time</strong> · Staff approval required',
     'reseller dashboard cutoff summary',
   ],
   [
     'Orders are generated at the fixed 1:00 PM Philippine-time cutoff for the next delivery day, then wait for staff approval.',
-    'Automatic orders are submitted at the fixed 10:00 AM Philippine-time cutoff for the next delivery day, then wait for staff approval. Manual orders remain open until 1:00 PM.',
+    'Automatic orders are submitted at the fixed 10:00 AM Philippine-time cutoff for the next delivery day, then wait for staff approval.',
     'automatic ordering page description',
   ],
   [
@@ -61,14 +61,6 @@ export function enforceResellerAutoOrder10am(source, id = '') {
   let transformed = source
   for (const [from, to, label] of AUTO_ORDER_UI_REPLACEMENTS) {
     transformed = replaceExactlyOnce(transformed, from, to, label)
-  }
-
-  // The manual-order workflow must remain at 1:00 PM.
-  if (!transformed.includes("const ORDER_CUTOFF_TIME = '13:00'")) {
-    throw new Error('Reseller auto-order 10 AM invariant failed: manual ORDER_CUTOFF_TIME must remain 13:00.')
-  }
-  if (!transformed.includes("const ORDER_CUTOFF_LABEL = '1:00 PM'")) {
-    throw new Error('Reseller auto-order 10 AM invariant failed: manual ORDER_CUTOFF_LABEL must remain 1:00 PM.')
   }
 
   return transformed

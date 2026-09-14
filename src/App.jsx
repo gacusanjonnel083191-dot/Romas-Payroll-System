@@ -765,10 +765,10 @@ function getOrderCutoffStatus(targetDeliveryDate = null, asOf = new Date()) {
  const ph = getPHDateTimeParts(asOf)
  const tomorrowDate = getPHDateOffsetString(1, asOf)
  const targetDate = targetDeliveryDate? String(targetDeliveryDate).slice(0, 10): tomorrowDate
- const cutoffMinutes = minutesFromTime(ORDER_CUTOFF_TIME)
  const appliesToTomorrow = targetDate === tomorrowDate
- const timeLocked = ph.totalMinutes >= cutoffMinutes
- const locked = appliesToTomorrow && timeLocked
+ // Manual orders remain open regardless of the Philippine time of day.
+ const timeLocked = false
+ const locked = false
  return {
  locked,
  timeLocked,
@@ -779,16 +779,14 @@ function getOrderCutoffStatus(targetDeliveryDate = null, asOf = new Date()) {
  time: ph.time,
  cutoffTime:ORDER_CUTOFF_TIME,
  cutoffLabel:ORDER_CUTOFF_LABEL,
- message:locked
-  ? `Tomorrow's reseller order is locked after ${ORDER_CUTOFF_LABEL} Philippine time. Staff may still review and approve orders already submitted.`
-  : `Tomorrow's reseller order remains editable until ${ORDER_CUTOFF_LABEL} Philippine time.`
+ message:''
  }
 }
 
 
 function getDefaultResellerOrderDeliveryDate(asOf = new Date()) {
  const tomorrow = getPHDateOffsetString(1, asOf)
- return getOrderCutoffStatus(tomorrow, asOf).locked? getPHDateOffsetString(2, asOf): tomorrow
+ return tomorrow
 }
 
 function diffMinutesAcrossMidnight(startTime, endTime) {
