@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import { runCashAdvancePayrollCommand } from '../src/cashAdvanceIntegrity.js'
+import { runEmployeeSeparationCommand } from '../src/employeeSeparationIntegrity.js'
 
 const source = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
 const between = (a,b) => source.slice(source.indexOf(a),source.indexOf(b,source.indexOf(a)))
@@ -50,4 +51,21 @@ test('network or migration failure never falls back to direct balance writes',as
 test('verified retry returns existing receipt without pretending a new repayment',async()=>{
   const client={auth:{getSession:async()=>({data:{session:{user:{id:'admin'}}}})},rpc:async()=>({data:{ok:true,existing:true,applied:false,amount:0}})}
   assert.equal((await runCashAdvancePayrollCommand(client,'release','2026-09-11','2026-09-25')).existing,true)
+})
+test('expired owner session stops before employee separation RPC',async()=>{
+  let called=false
+  const result=await runEmployeeSeparationCommand({auth:{getSession:async()=>({data:{session:null}})},rpc:async()=>{called=true}}, {})
+  assert.equal(result.ok,false);assert.equal(called,false)
+})
+test('employee separation RPC failure never falls back to direct deactivation or repayment writes',async()=>{
+  const client={auth:{getSession:async()=>({data:{session:{user:{id:'owner'}}}})},rpc:async()=>({error:{message:'Request timed out'}}),from:()=>{throw new Error('Forbidden fallback')}}
+  const result=await runEmployeeSeparationCommand(client,{p_employee_id:'employee'})
+  assert.equal(result.ok,false);assert.match(result.error,/Request timed out/)
+})
+test('final pay uses the verified separation command, not browser-side financial writes',()=>{
+  const finalPayBlock=between(' async function processFinalPay()', ' async function loadPayrollHistory()')
+  assert.ok(finalPayBlock.includes('runEmployeeSeparationCommand(supabase'))
+  assert.ok(!finalPayBlock.includes(".from('employees').update"))
+  assert.ok(!finalPayBlock.includes(".from('final_pay_records').insert"))
+  assert.ok(!finalPayBlock.includes(".from('cash_advances').update"))
 })

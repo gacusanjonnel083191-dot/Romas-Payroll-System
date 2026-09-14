@@ -1,4 +1,5 @@
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
+import { runEmployeeSeparationCommand } from './employeeSeparationIntegrity.js'
 import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
@@ -6561,6 +6562,10 @@ export default function App() {
  const [finalPayReason, setFinalPayReason] = useState('resigned')
  const [finalPayLastDate, setFinalPayLastDate] = useState(today)
  const [finalPayResult, setFinalPayResult] = useState(null)
+ const [finalPaySettleCashAdvance, setFinalPaySettleCashAdvance] = useState(false)
+ const [finalPaySettlementAuthorization, setFinalPaySettlementAuthorization] = useState('')
+ const [finalPayReceivableNote, setFinalPayReceivableNote] = useState('')
+ const [finalPayProcessing, setFinalPayProcessing] = useState(false)
  const [adminLogs, setAdminLogs] = useState([])
  const [notifications, setNotifications] = useState([])
  const [showNotifications, setShowNotifications] = useState(false)
@@ -25764,7 +25769,26 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  loadEmployees()
  }
  async function deactivateEmployee(empId, empName) {
- if (!window.confirm(`Deactivate ${empName}?`)) return
+ const { data: cashAdvances, error: cashAdvanceError } = await supabase
+  .from('cash_advances')
+  .select('amount,amount_paid,balance,status')
+  .eq('employee_id', empId)
+ if (cashAdvanceError) { showToast('Unable to verify cash-advance clearance: '+cashAdvanceError.message,'red'); return }
+ const outstanding = moneyRound((cashAdvances || [])
+  .filter(isOutstandingCashAdvance)
+  .reduce((sum, ca) => sum + getCashAdvanceEffectiveBalance(ca), 0))
+ if (outstanding > 0) {
+  setFinalPayEmployeeId(empId)
+  setFinalPayLastDate(today)
+  setFinalPayResult(null)
+  setFinalPaySettleCashAdvance(false)
+  setFinalPaySettlementAuthorization('')
+  setFinalPayReceivableNote('')
+  setActiveTab('finalpay')
+  showToast(`${empName} has ${php(outstanding)} outstanding cash advance. Complete the Final Pay / former-employee receivable decision before deactivation.`, 'red')
+  return
+ }
+ if (!window.confirm(`Deactivate ${empName}? No outstanding cash advance was found.`)) return
  const { error } = await supabase.from('employees').update({ is_active:false }).eq('id', empId)
  if (error) { showToast('Failed: '+error.message,'red'); return }
  await logAudit('EMPLOYEE DEACTIVATED','Admin',empName,'Employee deactivated')
@@ -27097,6 +27121,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const { data:cas } = await supabase.from('cash_advances').select('*').eq('employee_id', finalPayEmployeeId)
  const totalCA=(cas || []).filter(isOutstandingCashAdvance).reduce((s,c)=>s+getCashAdvanceEffectiveBalance(c),0)||0
  const lastSalary=unpaidDays*Number(activeEmp.daily_rate||0)
+ const grossFinalPay=moneyRound(lastSalary+proRated13th+silPay+separationPay)
 
  setFinalPayResult({
  employeeName:activeEmp.full_name,
@@ -27111,20 +27136,59 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  lastSalary,
  proRated13th,
  unusedSIL,
- silPay,
- separationPay,
- totalCA,
- totalFinalPay:lastSalary+proRated13th+silPay+separationPay-totalCA
+  silPay,
+  separationPay,
+  totalCA,
+ grossFinalPay,
+ totalFinalPay:grossFinalPay
  })
+ }
+ function getFinalPaySettlementPreview(result = finalPayResult) {
+  const gross = moneyRound(safeNum(result?.grossFinalPay, safeNum(result?.totalFinalPay,0)))
+  const outstanding = moneyRound(Math.max(0, safeNum(result?.totalCA,0)))
+  const cashAdvanceDeduction = finalPaySettleCashAdvance ? moneyRound(Math.min(gross, outstanding)) : 0
+  return {
+   grossFinalPay:gross,
+   cashAdvanceDeduction,
+   remainingCashAdvance:moneyRound(Math.max(0, outstanding-cashAdvanceDeduction)),
+   totalFinalPay:moneyRound(gross-cashAdvanceDeduction)
+  }
  }
  async function processFinalPay() {
  if (!finalPayResult) return
- if (!window.confirm(`Process final pay for ${finalPayResult.employeeName} and deactivate?`)) return
- await supabase.from('employees').update({ is_active:false, sil_balance:0, sick_leave_balance:0, vacation_leave_balance:0 }).eq('id', finalPayEmployeeId)
- try { await supabase.from('final_pay_records').insert({ employee_id:finalPayEmployeeId, employee_name:finalPayResult.employeeName, employee_code:finalPayResult.employeeCode, separation_reason:finalPayReason, last_working_date:finalPayLastDate, last_salary:finalPayResult.lastSalary, pro_rated_13th:finalPayResult.proRated13th, sil_pay:finalPayResult.silPay, separation_pay:finalPayResult.separationPay, cash_advance_deduction:finalPayResult.totalCA, total_final_pay:finalPayResult.totalFinalPay }) } catch(e) {}
- await logAudit('FINAL PAY PROCESSED','Admin',finalPayResult.employeeName,`Total: ${php(finalPayResult.totalFinalPay)}`)
- showToast(` Final pay processed. ${finalPayResult.employeeName} deactivated.`)
- setFinalPayResult(null); setFinalPayEmployeeId(''); loadEmployees()
+ const preview = getFinalPaySettlementPreview(finalPayResult)
+ if (finalPayResult.totalCA > 0 && finalPaySettleCashAdvance && !finalPaySettlementAuthorization.trim()) {
+  showToast('Enter the signed cash-advance or separation authorization reference before deducting from final pay.','red'); return
+ }
+ if (preview.remainingCashAdvance > 0 && !finalPayReceivableNote.trim()) {
+  showToast('Enter the former-employee receivable note and collection owner before deactivation.','red'); return
+ }
+ const confirmation = [
+  `Process final pay and deactivate ${finalPayResult.employeeName}?`,
+  `Gross final pay: ${php(preview.grossFinalPay)}`,
+  `Cash advance settled from final pay: ${php(preview.cashAdvanceDeduction)}`,
+  `Former-employee receivable: ${php(preview.remainingCashAdvance)}`,
+  `Final pay to release: ${php(preview.totalFinalPay)}`
+ ].join('\n')
+ if (!window.confirm(confirmation)) return
+ setFinalPayProcessing(true)
+ const result = await runEmployeeSeparationCommand(supabase, {
+  p_employee_id:finalPayEmployeeId,
+  p_reason:finalPayReason,
+  p_last_working_date:finalPayLastDate,
+  p_last_salary:moneyRound(finalPayResult.lastSalary),
+  p_pro_rated_13th:moneyRound(finalPayResult.proRated13th),
+  p_sil_pay:moneyRound(finalPayResult.silPay),
+  p_separation_pay:moneyRound(finalPayResult.separationPay),
+  p_settle_cash_advance:finalPaySettleCashAdvance,
+  p_authorization_reference:finalPaySettlementAuthorization.trim() || null,
+  p_receivable_note:finalPayReceivableNote.trim() || null
+ })
+ setFinalPayProcessing(false)
+ if (!result.ok) { showToast('Final pay was not processed: '+result.error,'red'); return }
+ showToast(`Final pay processed. CA settled: ${php(result.cash_advance_deduction)}. Former-employee receivable: ${php(result.former_employee_receivable)}.`)
+ setFinalPayResult(null); setFinalPayEmployeeId(''); setFinalPaySettleCashAdvance(false); setFinalPaySettlementAuthorization(''); setFinalPayReceivableNote('')
+ loadEmployees(); loadDeactivatedEmployees()
  }
  async function loadPayrollHistory() {
  setHistoryLoading(true)
@@ -27178,15 +27242,30 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
 
  if (caError) throw caError
 
+ const coverageEmployeeIds = Array.from(new Set([
+   ...(payrollRows || []).map(row => String(row.employee_id || '')).filter(Boolean),
+   ...(caRows || []).map(row => String(row.employee_id || '')).filter(Boolean)
+ ]))
+ const employeeActivityById = {}
+ if (coverageEmployeeIds.length > 0) {
+   const { data: coverageEmployees, error: coverageEmployeesError } = await supabase
+     .from('employees')
+     .select('id,is_active')
+     .in('id', coverageEmployeeIds)
+   if (coverageEmployeesError) throw coverageEmployeesError
+   ;(coverageEmployees || []).forEach(emp => { employeeActivityById[String(emp.id)] = emp.is_active !== false })
+ }
+
  const payrollByEmployee = {}
 ;(payrollRows || []).forEach(r => {
  const key = String(r.employee_id || '')
  if (!key) return
  if (!payrollByEmployee[key]) {
  payrollByEmployee[key] = {
- employee_id: r.employee_id,
- employee_code: r.employee_code || '',
- employee_name: r.employee_name || '',
+  employee_id: r.employee_id,
+  employee_code: r.employee_code || '',
+  employee_name: r.employee_name || '',
+  employee_is_active: employeeActivityById[key] !== false,
  cash_advance_deduction: 0,
  payroll_approved: r.payroll_approved === true,
  approved_at: r.approved_at || null,
@@ -27217,9 +27296,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  if (!key) return
  if (!grouped[key]) {
  grouped[key] = {
- employeeId: ca.employee_id,
- employeeCode: ca.employee_code || payrollByEmployee[key]?.employee_code || '',
- employeeName: ca.employee_name || payrollByEmployee[key]?.employee_name || 'Unknown Employee',
+  employeeId: ca.employee_id,
+  employeeCode: ca.employee_code || payrollByEmployee[key]?.employee_code || '',
+  employeeName: ca.employee_name || payrollByEmployee[key]?.employee_name || 'Unknown Employee',
+  employeeIsActive: employeeActivityById[key] !== false,
  payrollDeduction: safeNum(payrollByEmployee[key]?.cash_advance_deduction, 0),
  payrollApproved: payrollByEmployee[key]?.payroll_approved === true,
  payrollRecordCount: safeNum(payrollByEmployee[key]?.records, 0),
@@ -27248,9 +27328,10 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const key = String(r.employee_id || '')
  if (!key || grouped[key]) return
  grouped[key] = {
- employeeId: r.employee_id,
- employeeCode: r.employee_code || '',
- employeeName: r.employee_name || 'Unknown Employee',
+  employeeId: r.employee_id,
+  employeeCode: r.employee_code || '',
+  employeeName: r.employee_name || 'Unknown Employee',
+  employeeIsActive: employeeActivityById[key] !== false,
  payrollDeduction: safeNum(r.cash_advance_deduction, 0),
  payrollApproved: r.payroll_approved === true,
  payrollRecordCount: 1,
@@ -30627,7 +30708,7 @@ async function computePayroll() {
  ctx.textAlign = 'left'
  ctx.fillText('DEDUCTIONS', left + 22, y + 29)
  y += 66
- amountRow('Outstanding Cash Advance', money(fp.totalCA), y); y += 92
+ amountRow('Cash Advance Applied to Final Pay', money(fp.cashAdvanceDeduction), y); y += 92
 
  roundedRect(left, y, contentWidth, 104, 14, red)
  ctx.fillStyle = '#ffffff'
@@ -38158,10 +38239,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap' }}>
  <div>
  <p style={{ margin:'0 0 4px', color:'#ca1b1b', fontWeight:'bold', fontSize:'15px' }}>{row.employeeName}</p>
- <p style={cps}>{row.employeeCode || 'No code'} | CA account(s): {row.caItems.length}</p>
+ <p style={cps}>{row.employeeCode || 'No code'} | {row.employeeIsActive === false ? 'Former employee' : 'Active employee'} | CA account(s): {row.caItems.length}</p>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop:'6px' }}>
  {hasPayrollDeduction && <Badge label="DEDUCTED IN PAYROLL" color="red" />}
  {!hasPayrollDeduction && safeNum(row.totalBalance,0)>0 && <Badge label="OUTSTANDING" color="orange" />}
+ {row.employeeIsActive === false && safeNum(row.totalBalance,0)>0 && <Badge label="FORMER EMPLOYEE RECEIVABLE" color="red" />}
  {settled && <Badge label="SETTLED / PAID HISTORY" color="green" />}
  {row.payrollApproved && <Badge label="PAYROLL RELEASED" color="blue" />}
  </div>
@@ -38574,13 +38656,35 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <hr style={{ margin:'12px 0', borderColor:'#eee' }} />
  <p style={{ color:'#ca1b1b', fontWeight:'bold', marginBottom:'6px' }}>DEDUCTIONS</p>
  <div style={{ display:'flex', justifyContent:'space-between', padding:'4px 0' }}><span>Outstanding Cash Advance</span><span>{php(finalPayResult.totalCA)}</span></div>
+ {finalPayResult.totalCA > 0 && (
+ <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'12px', marginTop:'10px', fontSize:'12px', color:'#555', lineHeight:1.5 }}>
+ <label style={{ display:'flex', gap:'8px', alignItems:'flex-start', cursor:'pointer', fontWeight:'bold', color:'#7a5200' }}>
+ <input type="checkbox" checked={finalPaySettleCashAdvance} onChange={e=>setFinalPaySettleCashAdvance(e.target.checked)} style={{ marginTop:'3px' }} />
+ Apply cash advance against final pay only with the employee’s signed authorization.
+ </label>
+ {finalPaySettleCashAdvance && (
+ <>
+ <label style={{...lblS, marginTop:'10px' }}>Signed authorization / clearance reference</label>
+ <input value={finalPaySettlementAuthorization} onChange={e=>setFinalPaySettlementAuthorization(e.target.value)} placeholder="Example: CA Agreement RD-2026-018 or signed clearance" style={{...inputStyle, marginBottom:'8px' }} />
+ </>
+ )}
+ <div style={{ display:'flex', justifyContent:'space-between', marginTop:'7px' }}><span>CA settled from final pay</span><strong>{php(getFinalPaySettlementPreview(finalPayResult).cashAdvanceDeduction)}</strong></div>
+ <div style={{ display:'flex', justifyContent:'space-between', marginTop:'4px', color:getFinalPaySettlementPreview(finalPayResult).remainingCashAdvance>0?'#ca1b1b':'#2d8a4e' }}><span>Former-employee receivable</span><strong>{php(getFinalPaySettlementPreview(finalPayResult).remainingCashAdvance)}</strong></div>
+ {getFinalPaySettlementPreview(finalPayResult).remainingCashAdvance > 0 && (
+ <>
+ <label style={{...lblS, marginTop:'10px' }}>Receivable note and collection owner</label>
+ <input value={finalPayReceivableNote} onChange={e=>setFinalPayReceivableNote(e.target.value)} placeholder="Example: Payroll to collect by Sept 30; no final-pay deduction authorization" style={{...inputStyle, marginBottom:0 }} />
+ </>
+ )}
+ </div>
+ )}
  <div style={{ background:'#ca1b1b', color:'white', padding:'12px 16px', borderRadius:'8px', marginTop:'14px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
  <span style={{ fontWeight:'bold', fontSize:'14px' }}>TOTAL FINAL PAY</span>
- <span style={{ fontWeight:'bold', fontSize:'20px' }}>{php(finalPayResult.totalFinalPay)}</span>
+ <span style={{ fontWeight:'bold', fontSize:'20px' }}>{php(getFinalPaySettlementPreview(finalPayResult).totalFinalPay)}</span>
  </div>
  <div style={{ display:'flex', gap:'10px', marginTop:'16px', flexWrap:'wrap' }}>
- <button style={{...btnGreen, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={processFinalPay}> PROCESS & DEACTIVATE</button>
- <button style={{...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>printFinalPay(finalPayResult)}> PRINT</button>
+ <button disabled={finalPayProcessing} style={{...btnGreen, width:'auto', padding:'10px 20px', marginTop:0, opacity:finalPayProcessing?0.65:1 }} onClick={processFinalPay}>{finalPayProcessing?'PROCESSING...':'PROCESS & DEACTIVATE'}</button>
+ <button style={{...btnBlack, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>printFinalPay({...finalPayResult,...getFinalPaySettlementPreview(finalPayResult)})}> PRINT</button>
  <button style={{...btnGray, width:'auto', padding:'10px 20px', marginTop:0 }} onClick={()=>setFinalPayResult(null)}>CANCEL</button>
  </div>
  </div>
