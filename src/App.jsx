@@ -4,7 +4,11 @@ import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
-import { getChargeableEarlyOutMinutes } from './attendancePolicy.js'
+import {
+ getChargeableEarlyOutMinutes,
+ getUnconsumedApprovedTimeAdjustmentConflict,
+ isApprovedTimeAdjustmentConsumedByReleasedPayroll
+} from './attendancePolicy.js'
 
 const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
 const supabaseKey = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlYmJ1bmxuemtsYXZra3VndHpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMTU5MDgsImV4cCI6MjA5NDU5MTkwOH0.mdgYJBoRvHQcf-Tn-1AbTN-rnB5pPxOCSTxGlUrgJpg`
@@ -2079,6 +2083,10 @@ function buildReleasedTimeAdjustmentCorrectionPreview(req = {}, adminValidation 
   const breakEvidence = getAttendanceBreakPunchEvidence(validation)
   if (breakEvidence.hasBreakEvidence) return { ...base, message:getNoMealBreakBreakConflictMessage(breakEvidence, 'Next-cutoff resolution') }
   if (adminValidation?.approvedTimeConflict) return { ...base, message:'Approved OT already depends on the current break decision. Review that approved record before changing the meal-break treatment.' }
+  const consumedApprovedTimeRows = adminValidation?.releasedConsumedApprovedTimeRows || []
+  const consumedTimeNote = consumedApprovedTimeRows.length
+   ? ` Existing approved ${consumedApprovedTimeRows.map(row => String(row?.request_type || '').toUpperCase()).join('/')} record(s) are already locked in the released payroll and will stay as audit history.`
+   : ''
   const currentMetrics = adminValidation?.currentMetrics || validation?.metrics || {}
   const revisedMetrics = adminValidation?.revisedMetrics || getAttendanceDayWorkMetrics(validation?.integrity?.completedLogs || [], validation?.breakRowsByLogId || {}, 0)
   const currentSplit = getPayrollAttendanceDeductionSplit(currentMetrics)
@@ -2096,12 +2104,20 @@ function buildReleasedTimeAdjustmentCorrectionPreview(req = {}, adminValidation 
    amount,
    formula:`${refundMinutes} over-deducted UT minute(s) × ${php(minuteRate)} per minute = ${php(amount)}`,
    message:amount > 0
-    ? `${php(amount)} will be refunded in the next uncomputed cutoff. Any resulting OT still requires its separate OT request to be resolved.`
-    : 'The No Meal Break decision will be documented, but it does not create a payroll amount. Any resulting OT still requires its separate OT request.'
+    ? `${php(amount)} will be refunded in the next uncomputed cutoff.${consumedTimeNote} Any resulting OT still requires its separate OT request to be resolved.`
+    : `The No Meal Break decision will be documented, but it does not create a payroll amount.${consumedTimeNote} Any resulting OT still requires its separate OT request.`
   }
  }
 
  return { ...base, message:'This request type cannot be resolved to the next cutoff.' }
+}
+
+function getReleasedTimeAdjustmentActionLabel(preview = {}) {
+ const requestType = String(preview?.requestType || '').trim().toLowerCase()
+ if (requestType === 'meal_break' && preview?.adjustmentType === 'addition' && safeNum(preview?.amount, 0) > 0) {
+  return `APPROVE NO MEAL BREAK & REFUND ${php(preview.amount)} NEXT CUTOFF`
+ }
+ return 'RESOLVE TO NEXT CUTOFF'
 }
 
 function isMissingEmployeeHolidayEligibilityColumnError(error) {
@@ -5687,7 +5703,12 @@ function isProductionPayrollCostType(value) {
 }
 
 function isReleasedPayrollRecord(record = {}) {
- return record.payroll_approved === true || !!record.approved_at
+ const status = normalizePayrollStatus(record.payroll_status)
+ return record.payroll_approved === true
+  || record.payroll_released === true
+  || !!record.approved_at
+  || !!record.released_at
+  || ['released','approved'].includes(status)
 }
 
 function normalizePayrollAcknowledgement(value) {
@@ -24422,19 +24443,24 @@ async function requestPushPermission() {
     .select('id,request_type,minutes,attendance_date,reviewed_by,reviewed_at')
     .eq('employee_id', req.employee_id)
     .in('attendance_date', approvalGuardDates)
-    .eq('request_type', 'overtime')
+    .in('request_type', ['overtime','undertime'])
     .eq('status', 'approved')
     .limit(10)
    if (approvedTimeError) throw approvedTimeError
-   const approvedTimeConflict = approvedTimeRows?.[0] || null
+   const payrollState = await checkTimeAdjPayrollStatus({ ...req, attendance_date:resolvedAttendanceDate })
+   const releasedConsumedApprovedTimeRows = (approvedTimeRows || []).filter(row =>
+    isApprovedTimeAdjustmentConsumedByReleasedPayroll(row, payrollState.records, validation.integrity.completedLogs)
+   )
+   const approvedTimeConflict = getUnconsumedApprovedTimeAdjustmentConflict(approvedTimeRows || [], payrollState.records, validation.integrity.completedLogs)
    const canApprove = !breakPunchEvidence.hasBreakEvidence && !approvedTimeConflict
    let message = `Current rule: ${validation.metrics.rawSpanMinutes} raw minute(s) less ${validation.metrics.deductedBreakMinutes} unpaid break minute(s) = ${validation.metrics.paidWorkedMinutes} paid minute(s). `
    if (breakPunchEvidence.hasBreakEvidence) {
     message += getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval')
    } else if (approvedTimeConflict) {
-    message += `Approval blocked because OT is already approved for this shift. Undo that approval first, approve the break exception, then recalculate and approve OT.`
+    message += `Approval blocked because an approved ${String(approvedTimeConflict.request_type || 'OT/UT').toUpperCase()} record still depends on the current break decision. Undo that approval first, approve the break exception, then recalculate the final time.`
    } else {
     message += `If approved, the unpaid break deduction becomes 0 minute(s), paid work becomes ${revisedMetrics.paidWorkedMinutes} minute(s), OT becomes ${revisedOvertimeMinutes} minute(s), and UT becomes ${revisedUndertimeMinutes} minute(s).`
+    if (releasedConsumedApprovedTimeRows.length > 0) message += ` Existing approved OT/UT record(s) are already inside released payroll and will remain as historical audit evidence.`
    }
    if (validation.resolvedFromPreviousDay) message += ` ${validation.resolutionMessage}`
    return {
@@ -24453,6 +24479,7 @@ async function requestPushPermission() {
     revisedOvertimeMinutes,
     revisedUndertimeMinutes,
     approvedTimeConflict,
+    releasedConsumedApprovedTimeRows,
     breakCreditMinutes:Math.max(0, validation.metrics.deductedBreakMinutes),
     canApprove,
     message
@@ -24673,7 +24700,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (!req?.employee_id || !attendanceDate) return { released:false, computed:false, records:[] }
  const { data, error } = await supabase
 .from('payroll_records')
-.select('id,employee_id,payroll_start,payroll_end,payroll_approved,approved_at,payroll_status,overtime_minutes,overtime_pay,undertime_minutes,undertime_deduction,late_minutes,late_deduction')
+.select('id,employee_id,payroll_start,payroll_end,payroll_approved,payroll_released,approved_at,released_at,payroll_status,overtime_minutes,overtime_pay,undertime_minutes,undertime_deduction,late_minutes,late_deduction')
 .eq('employee_id', req.employee_id)
 .lte('payroll_start', attendanceDate)
 .gte('payroll_end', attendanceDate)
@@ -24682,7 +24709,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  if (error) return { released:false, computed:false, records:[], error:error.message }
  const records = data || []
  return {
- released: records.some(r => r.payroll_approved === true ||!!r.approved_at),
+ released: records.some(isReleasedPayrollRecord),
  computed: records.length > 0,
  records
  }
@@ -24728,13 +24755,13 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   .select('id,request_type,minutes,attendance_date,reviewed_by,reviewed_at')
   .eq('employee_id', req.employee_id)
   .in('attendance_date', duplicateDates)
-  .eq('request_type', 'overtime')
+  .in('request_type', ['overtime','undertime'])
   .eq('status', 'approved')
   .limit(10)
- if (approvedTimeError) { showToast('Failed checking approved OT: '+approvedTimeError.message, 'red'); return }
+ if (approvedTimeError) { showToast('Failed checking approved OT/UT: '+approvedTimeError.message, 'red'); return }
  if (approvedTimeRows?.length) {
   const conflict = approvedTimeRows[0]
-  showToast(`Approval blocked: OT is already approved for ${targetDate}. Undo it first, approve the No Meal Break exception, then recalculate OT.`, 'red')
+  showToast(`Approval blocked: ${String(conflict.request_type || 'OT/UT').toUpperCase()} is already approved for ${targetDate}. Undo it first, approve the No Meal Break exception, then recalculate the final time.`, 'red')
   return
  }
 
@@ -25447,8 +25474,9 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   const amountLine = preview.amount > 0
    ? `${preview.adjustmentType === 'addition' ? 'Addition / refund' : 'Deduction'}: ${php(preview.amount)}`
    : 'Financial adjustment: None (documentation and attendance synchronization only)'
+  const actionLabel = getReleasedTimeAdjustmentActionLabel(preview)
   const confirmed = window.confirm(
-   `RESOLVE TO NEXT CUTOFF\n\n` +
+   `${actionLabel}\n\n` +
    `Employee: ${freshRequest.employee_name}\n` +
    `Request: ${getTimeAdjustmentRequestLabel(preview.requestType)}\n` +
    `Source attendance: ${preview.sourceAttendanceDate}\n` +
@@ -37618,6 +37646,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const approvalProcessing = !!processingItems[approvalActionKey]
  const carryForwardActionKey = `time_adj_carry_forward_${req.id}`
  const carryForwardProcessing = !!processingItems[carryForwardActionKey]
+ const carryForwardButtonLabel = getReleasedTimeAdjustmentActionLabel(releasedCorrectionPreview)
  return (
  <div key={req.id} style={{...cardS, border:`1.5px solid ${cardColor}`, borderTop:`6px solid ${cardColor}`, background:cardBackground, width:'100%', minWidth:0, margin:0, padding:isMobile?'12px':'16px', borderRadius:'16px', boxShadow:'0 7px 22px rgba(25,25,45,0.09)', boxSizing:'border-box', alignSelf:'start' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
@@ -37695,7 +37724,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    </div>
    <div style={{ marginTop:'8px', display:'flex', justifyContent:'space-between', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
     <span style={{ color:releasedCorrectionPreview.adjustmentType==='addition'?'#2d8a4e':releasedCorrectionPreview.adjustmentType==='deduction'?'#ca1b1b':'#555', fontWeight:'900', fontSize:'13px' }}>{releasedCorrectionPreview.amount>0 ? `${releasedCorrectionPreview.adjustmentType==='addition'?'ADDITION / REFUND':'DEDUCTION'} ${php(releasedCorrectionPreview.amount)}` : 'NO DUPLICATE PAYROLL AMOUNT'}</span>
-    <button disabled={!releasedCorrectionPreview.ready || carryForwardProcessing} style={{...btnBase, background:'#4a90d9', color:'white', width:'auto', padding:'9px 14px', marginTop:0, opacity:(!releasedCorrectionPreview.ready || carryForwardProcessing)?0.55:1, cursor:(!releasedCorrectionPreview.ready || carryForwardProcessing)?'not-allowed':'pointer'}} onClick={()=>resolveTimeAdjToNextCutoff(req)}>{carryForwardProcessing?'RESOLVING...':'RESOLVE TO NEXT CUTOFF'}</button>
+    <button disabled={!releasedCorrectionPreview.ready || carryForwardProcessing} style={{...btnBase, background:'#4a90d9', color:'white', width:'auto', maxWidth:'100%', padding:'9px 14px', marginTop:0, opacity:(!releasedCorrectionPreview.ready || carryForwardProcessing)?0.55:1, cursor:(!releasedCorrectionPreview.ready || carryForwardProcessing)?'not-allowed':'pointer', whiteSpace:'normal', lineHeight:1.2, textAlign:'center'}} onClick={()=>resolveTimeAdjToNextCutoff(req)}>{carryForwardProcessing?'RESOLVING...':carryForwardButtonLabel}</button>
    </div>
   </div>
  )}

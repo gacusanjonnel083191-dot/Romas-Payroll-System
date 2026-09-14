@@ -1,7 +1,7 @@
 const APP_MODULE_RE = /[\\/]src[\\/]App\.jsx(?:\?.*)?$/
 
-const MEAL_BREAK_REVIEW_FUNCTION_START = `function buildPayrollMealBreakReviewException(employee = {}, attendanceDate = '', dayLogs = [], breakRowsByLogId = {}) {
- const integrity = getAttendanceDayIntegrity(dayLogs)`
+const MEAL_BREAK_REVIEW_FUNCTION_START_PATTERN =
+  /function buildPayrollMealBreakReviewException\(employee = \{\}, attendanceDate = '', dayLogs = \[\], breakRowsByLogId = \{\}\) \{\s*const integrity = getAttendanceDayIntegrity\(dayLogs\)/
 
 const MEAL_BREAK_REVIEW_FUNCTION_START_WITH_EXEMPTION = `function buildPayrollMealBreakReviewException(employee = {}, attendanceDate = '', dayLogs = [], breakRowsByLogId = {}) {
  const payrollExemptFromBreakSensitivePay = !employeeRuleEnabled(employee?.overtime_pay_eligible, true)
@@ -22,20 +22,35 @@ function replaceExactlyOnce(source, from, to, label) {
   return source.slice(0, firstIndex) + to + source.slice(firstIndex + from.length)
 }
 
+function replacePatternExactlyOnce(source, pattern, to, label) {
+  const firstIndex = source.search(pattern)
+  if (firstIndex < 0) throw new Error(`Payroll meal-break exemption invariant failed: ${label} was not found.`)
+  const remainingSource = source.slice(firstIndex + 1)
+  if (remainingSource.search(pattern) >= 0) {
+    throw new Error(`Payroll meal-break exemption invariant failed: ${label} matched more than once.`)
+  }
+  return source.replace(pattern, to)
+}
+
 export function enforcePayrollMealBreakExemptions(source, id = '') {
   if (!APP_MODULE_RE.test(id)) return source
-  let transformed = replaceExactlyOnce(
-    source,
-    MEAL_BREAK_REVIEW_FUNCTION_START,
-    MEAL_BREAK_REVIEW_FUNCTION_START_WITH_EXEMPTION,
-    'buildPayrollMealBreakReviewException start'
-  )
-  transformed = replaceExactlyOnce(
-    transformed,
-    PAYROLL_READINESS_EMPLOYEE_SELECT,
-    PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES,
-    'payroll readiness employee policy select'
-  )
+  let transformed = source
+  if (!transformed.includes('payrollExemptFromBreakSensitivePay')) {
+    transformed = replacePatternExactlyOnce(
+      transformed,
+      MEAL_BREAK_REVIEW_FUNCTION_START_PATTERN,
+      MEAL_BREAK_REVIEW_FUNCTION_START_WITH_EXEMPTION,
+      'buildPayrollMealBreakReviewException start'
+    )
+  }
+  if (!transformed.includes(PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES)) {
+    transformed = replaceExactlyOnce(
+      transformed,
+      PAYROLL_READINESS_EMPLOYEE_SELECT,
+      PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES,
+      'payroll readiness employee policy select'
+    )
+  }
   return transformed
 }
 

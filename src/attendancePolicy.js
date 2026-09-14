@@ -15,3 +15,54 @@ export function getChargeableEarlyOutMinutes({
   chargeableEarlyOutMinutes:Math.max(0, earlyOut - mealBreakScheduleCreditMinutes)
  }
 }
+
+function safePolicyNumber(value = 0) {
+ const numeric = Number(value)
+ return Number.isFinite(numeric) ? numeric : 0
+}
+
+function isReleasedPayrollRecordLike(record = {}) {
+ const status = String(record?.payroll_status || '').trim().toLowerCase()
+ return record?.payroll_approved === true
+  || record?.payroll_released === true
+  || !!record?.approved_at
+  || !!record?.released_at
+  || ['released', 'approved'].includes(status)
+}
+
+export function isApprovedTimeAdjustmentConsumedByReleasedPayroll(approvedTime = {}, payrollRecords = [], attendanceLogs = []) {
+ const requestType = String(approvedTime?.request_type || '').trim().toLowerCase()
+ const sourceDate = String(approvedTime?.attendance_date || '').slice(0, 10)
+ const minutes = Math.max(0, Math.round(safePolicyNumber(approvedTime?.minutes, 0)))
+ if (!sourceDate || !['overtime', 'undertime'].includes(requestType)) return false
+
+ const releasedPayroll = (payrollRecords || []).find(record => {
+  const start = String(record?.payroll_start || '').slice(0, 10)
+  const end = String(record?.payroll_end || '').slice(0, 10)
+  return isReleasedPayrollRecordLike(record) && start && end && start <= sourceDate && end >= sourceDate
+ })
+ if (!releasedPayroll) return false
+
+ if (requestType === 'undertime') {
+  const attendanceHasStoredMinutes = (attendanceLogs || []).some(log =>
+   String(log?.attendance_date || '').slice(0, 10) === sourceDate
+   && Math.max(0, Math.round(safePolicyNumber(log?.undertime_minutes, 0))) === minutes
+  )
+  return attendanceHasStoredMinutes
+   && Math.max(0, Math.round(safePolicyNumber(releasedPayroll?.undertime_minutes, 0))) >= minutes
+ }
+
+ const attendanceHasStoredMinutes = (attendanceLogs || []).some(log =>
+  String(log?.attendance_date || '').slice(0, 10) === sourceDate
+  && Math.max(0, Math.round(safePolicyNumber(log?.overtime_minutes, 0))) === minutes
+  && (log?.overtime_approved === true || String(log?.overtime_approved || '').trim().toLowerCase() === 'true')
+ )
+ return attendanceHasStoredMinutes
+  && Math.max(0, Math.round(safePolicyNumber(releasedPayroll?.overtime_minutes, 0))) >= minutes
+}
+
+export function getUnconsumedApprovedTimeAdjustmentConflict(approvedTimeRows = [], payrollRecords = [], attendanceLogs = []) {
+ return (approvedTimeRows || []).find(row =>
+  !isApprovedTimeAdjustmentConsumedByReleasedPayroll(row, payrollRecords, attendanceLogs)
+ ) || null
+}

@@ -3,6 +3,17 @@ const fs = require('fs')
 const path = 'src/App.jsx'
 let src = fs.readFileSync(path, 'utf8')
 
+function replacePatternOnce(source, pattern, replacement, label) {
+  const firstIndex = source.search(pattern)
+  if (firstIndex < 0) {
+    throw new Error(`Admin session integrity patch aborted: expected exactly 1 ${label}, found 0.`)
+  }
+  if (source.slice(firstIndex + 1).search(pattern) >= 0) {
+    throw new Error(`Admin session integrity patch aborted: expected exactly 1 ${label}, found more than 1.`)
+  }
+  return source.replace(pattern, replacement)
+}
+
 // Keep the visible admin/owner UI synchronized with the real Supabase Auth session.
 // Secure Payroll tables intentionally reject anonymous access, so stale owner UI state
 // must never survive after the authenticated session has ended.
@@ -29,11 +40,12 @@ setRequestingInvoiceDeletion(null)
 }`
 
 if (!src.includes('ADMIN_SESSION_INTEGRITY_V1')) {
-  const matches = src.split(authListenerOld).length - 1
-  if (matches !== 1) {
-    throw new Error(`Admin session integrity patch aborted: expected exactly 1 auth-listener target, found ${matches}.`)
-  }
-  src = src.replace(authListenerOld, authListenerNew)
+  src = replacePatternOnce(
+    src,
+    /if\s*\(!session\?\.user\)\s*\{\s*setAdminAuthUser\(null\)\s*setAdminAuthProfile\(null\)\s*setInvoiceDeletionAccess\(\{\s*can_request:false,\s*can_review:false,\s*admin_user_id:null,\s*admin_name:''\s*\}\)\s*setInvoiceDeletionRequests\(\[\]\)\s*setRequestingInvoiceDeletion\(null\)\s*\}/,
+    authListenerNew,
+    'auth-listener target'
+  )
 }
 
 // The company-device authorization flow performs a fresh owner password check. If an
@@ -55,11 +67,12 @@ const companyAuthStartNew = `  setCompanyDeviceAuthLoading(true)
    const { data:authData, error:authError } = await supabase.auth.signInWithPassword({ email, password:companyDeviceAuthPassword })`
 
 if (!src.includes('COMPANY_DEVICE_SESSION_PRESERVE_V1')) {
-  const matches = src.split(companyAuthStartOld).length - 1
-  if (matches !== 1) {
-    throw new Error(`Admin session integrity patch aborted: expected exactly 1 company-device auth target, found ${matches}.`)
-  }
-  src = src.replace(companyAuthStartOld, companyAuthStartNew)
+  src = replacePatternOnce(
+    src,
+    /setCompanyDeviceAuthLoading\(true\)\s*let temporaryAuthStarted = false\s*try\s*\{\s*const \{ data:authData, error:authError \} = await supabase\.auth\.signInWithPassword\(\{ email, password:companyDeviceAuthPassword \}\)/,
+    companyAuthStartNew,
+    'company-device auth target'
+  )
 }
 
 const companyAuthFinallyOld = `  } finally {
@@ -73,11 +86,12 @@ const companyAuthFinallyNew = `  } finally {
   }`
 
 if (!src.includes('temporaryAuthStarted && !hadExistingAdminSession')) {
-  const matches = src.split(companyAuthFinallyOld).length - 1
-  if (matches !== 1) {
-    throw new Error(`Admin session integrity patch aborted: expected exactly 1 company-device sign-out target, found ${matches}.`)
-  }
-  src = src.replace(companyAuthFinallyOld, companyAuthFinallyNew)
+  src = replacePatternOnce(
+    src,
+    /\}\s*finally\s*\{\s*if\s*\(temporaryAuthStarted\)\s*await supabase\.auth\.signOut\(\)\.catch\(\(\)=>\{\}\)\s*setCompanyDeviceAuthLoading\(false\)\s*\}/,
+    companyAuthFinallyNew,
+    'company-device sign-out target'
+  )
 }
 
 const requiredMarkers = [

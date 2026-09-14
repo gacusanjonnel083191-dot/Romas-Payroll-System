@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { getChargeableEarlyOutMinutes } from '../src/attendancePolicy.js'
+import {
+ getChargeableEarlyOutMinutes,
+ getUnconsumedApprovedTimeAdjustmentConflict,
+ isApprovedTimeAdjustmentConsumedByReleasedPayroll
+} from '../src/attendancePolicy.js'
 
 test('approved no-meal-break removes the unused meal hour from early-out shortage', () => {
  assert.deepEqual(getChargeableEarlyOutMinutes({
@@ -68,4 +72,48 @@ test('reconciled Sheryl and Myra short shifts produce the expected 30-minute UT 
   const roundedUndertime = Math.ceil(chargeableEarlyOutMinutes / 30) * 30
   assert.equal(roundedUndertime, expectedUndertime, `${employee} ${date}`)
  })
+})
+
+test('released-payroll approved UT can stay as audit history during no-meal-break refund', () => {
+ const approvedUT = { id:386, request_type:'undertime', attendance_date:'2026-08-20', minutes:300 }
+ const releasedPayroll = {
+  payroll_start:'2026-08-11',
+  payroll_end:'2026-08-25',
+  payroll_approved:true,
+  payroll_status:'released',
+  undertime_minutes:780
+ }
+ const attendanceLog = { attendance_date:'2026-08-20', undertime_minutes:300 }
+
+ assert.equal(isApprovedTimeAdjustmentConsumedByReleasedPayroll(approvedUT, [releasedPayroll], [attendanceLog]), true)
+ assert.equal(getUnconsumedApprovedTimeAdjustmentConflict([approvedUT], [releasedPayroll], [attendanceLog]), null)
+})
+
+test('approved UT still blocks no-meal-break approval when it is not in released payroll', () => {
+ const approvedUT = { id:501, request_type:'undertime', attendance_date:'2026-09-14', minutes:60 }
+ const draftPayroll = {
+  payroll_start:'2026-09-11',
+  payroll_end:'2026-09-25',
+  payroll_status:'draft',
+  undertime_minutes:60
+ }
+ const attendanceLog = { attendance_date:'2026-09-14', undertime_minutes:60 }
+
+ assert.equal(isApprovedTimeAdjustmentConsumedByReleasedPayroll(approvedUT, [draftPayroll], [attendanceLog]), false)
+ assert.equal(getUnconsumedApprovedTimeAdjustmentConflict([approvedUT], [draftPayroll], [attendanceLog]), approvedUT)
+})
+
+test('approved time blocks no-meal-break approval when released payroll does not contain the approved minutes', () => {
+ const approvedUT = { id:502, request_type:'undertime', attendance_date:'2026-09-01', minutes:300 }
+ const releasedPayroll = {
+  payroll_start:'2026-08-26',
+  payroll_end:'2026-09-10',
+  payroll_approved:true,
+  payroll_status:'released',
+  undertime_minutes:120
+ }
+ const attendanceLog = { attendance_date:'2026-09-01', undertime_minutes:300 }
+
+ assert.equal(isApprovedTimeAdjustmentConsumedByReleasedPayroll(approvedUT, [releasedPayroll], [attendanceLog]), false)
+ assert.equal(getUnconsumedApprovedTimeAdjustmentConflict([approvedUT], [releasedPayroll], [attendanceLog]), approvedUT)
 })
