@@ -3,42 +3,42 @@ const APP_MODULE_RE = /[\\/]src[\\/]App\.jsx(?:\?.*)?$/
 const AUTO_ORDER_UI_REPLACEMENTS = [
   [
     "if (getOrderCutoffStatus().locked && activeSchedules.some(entry=>entry.weekday===tomorrowWeekday)) {",
-    "if (getPHDateTimeParts().totalMinutes >= minutesFromTime('10:00') && activeSchedules.some(entry=>entry.weekday===tomorrowWeekday)) {",
+    "if (getPHDateTimeParts().totalMinutes >= minutesFromTime('08:00') && activeSchedules.some(entry=>entry.weekday===tomorrowWeekday)) {",
     'recurring skip client-side cutoff guard',
   ],
   [
     'after the 1:00 PM cutoff.',
-    'after the 10:00 AM automatic-order cutoff.',
+    'after the 8:00 AM automatic-order cutoff.',
     'recurring skip cutoff warning',
   ],
   [
     'Daily cutoff: <strong>1:00 PM Philippine time</strong> · Staff approval required',
-    'Automatic submission: <strong>10:00 AM Philippine time</strong> · Staff approval required',
+    'Automatic submission: <strong>8:00 AM Philippine time</strong> · Staff approval required',
     'reseller dashboard cutoff summary',
   ],
   [
     'Orders are generated at the fixed 1:00 PM Philippine-time cutoff for the next delivery day, then wait for staff approval.',
-    'Automatic orders are submitted at the fixed 10:00 AM Philippine-time cutoff for the next delivery day, then wait for staff approval.',
+    'Automatic orders are submitted at the fixed 8:00 AM Philippine-time cutoff for the next delivery day, then wait for staff approval.',
     'automatic ordering page description',
   ],
   [
     'Active day templates will submit automatically at 1:00 PM.',
-    'Active day templates will submit automatically at 10:00 AM.',
+    'Active day templates will submit automatically at 8:00 AM.',
     'automatic ordering enabled status',
   ],
   [
     'One template per weekday. Template changes for tomorrow lock at 1:00 PM.',
-    'One template per weekday. Template changes for tomorrow lock at 10:00 AM.',
+    'One template per weekday. Template changes for tomorrow lock at 8:00 AM.',
     'automatic template lock notice',
   ],
   [
     'Choose a one-time future date or a delivery day to skip every week. Tomorrow can only be changed before 1:00 PM.',
-    'Choose a one-time future date or a delivery day to skip every week. Tomorrow can only be changed before 10:00 AM.',
+    'Choose a one-time future date or a delivery day to skip every week. Tomorrow can only be changed before 8:00 AM.',
     'automatic skip lock notice',
   ],
   [
     'value="1:00 PM every day (fixed)"',
-    'value="10:00 AM every day (fixed)"',
+    'value="8:00 AM every day (fixed)"',
     'automatic template cutoff field',
   ],
 ]
@@ -46,16 +46,16 @@ const AUTO_ORDER_UI_REPLACEMENTS = [
 function replaceExactlyOnce(source, from, to, label) {
   const firstIndex = source.indexOf(from)
   if (firstIndex < 0) {
-    throw new Error(`Reseller auto-order 10 AM invariant failed: ${label} was not found.`)
+    throw new Error(`Reseller auto-order 8 AM invariant failed: ${label} was not found.`)
   }
   const secondIndex = source.indexOf(from, firstIndex + from.length)
   if (secondIndex >= 0) {
-    throw new Error(`Reseller auto-order 10 AM invariant failed: ${label} matched more than once.`)
+    throw new Error(`Reseller auto-order 8 AM invariant failed: ${label} matched more than once.`)
   }
   return source.slice(0, firstIndex) + to + source.slice(firstIndex + from.length)
 }
 
-export function enforceResellerAutoOrder10am(source, id = '') {
+export function enforceResellerAutoOrder8am(source, id = '') {
   if (!APP_MODULE_RE.test(id)) return source
 
   let transformed = source
@@ -66,16 +66,19 @@ export function enforceResellerAutoOrder10am(source, id = '') {
   return transformed
 }
 
-export function resellerAutoOrder10amInvariant() {
+export function resellerAutoOrder8amInvariant() {
   return {
-    name: 'romas-reseller-auto-order-10am-invariant',
+    name: 'romas-reseller-auto-order-8am-invariant',
     enforce: 'pre',
     transform(code, id) {
       if (!APP_MODULE_RE.test(id)) return null
       return {
-        code: enforceResellerAutoOrder10am(code, id),
+        code: enforceResellerAutoOrder8am(code, id),
         map: null,
       }
     },
   }
 }
+
+// Backward-compatible export used by vite.config.js; behavior is now 8:00 AM.
+export const resellerAutoOrder10amInvariant = resellerAutoOrder8amInvariant
