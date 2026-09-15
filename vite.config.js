@@ -6,6 +6,24 @@ import { resellerAutoOrder10amInvariant } from './vite.reseller-auto-order-10am-
 import { payrollMealBreakExemptionInvariant } from './vite.payroll-meal-break-exemption-invariant.js'
 import { employeeOTFilingInvariant } from './vite.employee-ot-filing-invariant.js'
 
+const buildId = process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || 'development'
+const releaseSummary = process.env.VERCEL_GIT_COMMIT_MESSAGE || 'General improvements and fixes.'
+const releasedAt = new Date().toISOString()
+
+const appUpdateMetadata = () => ({
+  name: 'app-update-metadata',
+  generateBundle() {
+    this.emitFile({
+      type: 'asset',
+      fileName: 'app-update.json',
+      source: JSON.stringify({ buildId, summary: releaseSummary, releasedAt }, null, 2),
+    })
+  },
+})
+
 export default defineConfig({
-  plugins: [payrollMealBreakExemptionInvariant(), employeeOTFilingInvariant(), resellerAutoOrder10amInvariant(), resellerManualCopyLastOrder(), productionForecastPrintInvariant(), react()],
+  define: {
+    __APP_BUILD_ID__: JSON.stringify(buildId),
+  },
+  plugins: [appUpdateMetadata(), payrollMealBreakExemptionInvariant(), employeeOTFilingInvariant(), resellerAutoOrder10amInvariant(), resellerManualCopyLastOrder(), productionForecastPrintInvariant(), react()],
 })

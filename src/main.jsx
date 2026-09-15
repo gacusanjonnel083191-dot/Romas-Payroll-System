@@ -5,8 +5,10 @@ import './cashAdvanceCompactLayout.css'
 import App from './App.jsx'
 import { installCashAdvanceCompactLayout } from './cashAdvanceCompactLayout.js'
 import { installApprovalProcessingGuard } from './approvalProcessingGuard.js'
+import { installAppUpdateNotice } from './appUpdateNotice.js'
 
 installApprovalProcessingGuard()
+installAppUpdateNotice()
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
