@@ -1,5 +1,9 @@
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
 import { runEmployeeSeparationCommand } from './employeeSeparationIntegrity.js'
+import {
+ filterProductionForecastInvoices,
+ isInvoiceExcludedFromProductionForecastPolicy
+} from './productionForecastPolicy.js'
 import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
@@ -37,7 +41,6 @@ const ORDER_CUTOFF_TIME = '13:00'
 const ORDER_CUTOFF_LABEL = '1:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
 const POS_SHIFT_DAILY_SALES_MARKER_PREFIX = 'SAGS-POS-SHIFT-CLOSING|'
-const RESELLER_AUTO_ORDER_WEEKDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
 
 function getPosShiftDailySalesMarker(outletId = '', businessDate = '') {
  return `${POS_SHIFT_DAILY_SALES_MARKER_PREFIX}${String(outletId || '').trim()}|${String(businessDate || '').slice(0, 10)}`
@@ -6611,7 +6614,7 @@ export default function App() {
  const [newHolidayName, setNewHolidayName] = useState('')
  const [newHolidayType, setNewHolidayType] = useState('regular')
  const [timeAdjRequests, setTimeAdjRequests] = useState([])
- const [timeAdjView, setTimeAdjView] = useState('active')
+ const [timeAdjView, setTimeAdjView] = useState('pending')
  const [adjAdminReason, setAdjAdminReason] = useState({})
  const [timeAdjValidationById, setTimeAdjValidationById] = useState({})
  const [timeAdjPayrollById, setTimeAdjPayrollById] = useState({})
@@ -6843,17 +6846,6 @@ export default function App() {
  const [submittingResellerReturn, setSubmittingResellerReturn] = useState(false)
  const [resellerNotices, setResellerNotices] = useState([])
  const [resellerPortalLoading, setResellerPortalLoading] = useState(false)
- const [resellerAutoOrderSettings, setResellerAutoOrderSettings] = useState({ enabled:false, safety_buffer_pct:10, notify_on_generated:true, notify_on_adjusted:true, notify_on_approved:true })
- const [resellerAutoOrderSchedules, setResellerAutoOrderSchedules] = useState([])
- const [resellerAutoOrderEvents, setResellerAutoOrderEvents] = useState([])
- const [resellerAutoOrderLoading, setResellerAutoOrderLoading] = useState(false)
- const [resellerAutoOrderSaving, setResellerAutoOrderSaving] = useState(false)
- const [resellerAutoOrderCopying, setResellerAutoOrderCopying] = useState(false)
- const [resellerAutoOrderForm, setResellerAutoOrderForm] = useState(null)
- const [resellerAutoOrderSkipMode, setResellerAutoOrderSkipMode] = useState('date')
- const [resellerAutoOrderSkipWeekdays, setResellerAutoOrderSkipWeekdays] = useState([0])
- const [resellerAutoOrderSkipDate, setResellerAutoOrderSkipDate] = useState('')
- const [resellerAutoOrderSkipReason, setResellerAutoOrderSkipReason] = useState('')
  // Admin order management
  const [pendingResellerOrders, setPendingResellerOrders] = useState([])
  const [showOrdersPanel, setShowOrdersPanel] = useState(false)
@@ -7072,6 +7064,8 @@ export default function App() {
  const [invoiceDeletionAccess, setInvoiceDeletionAccess] = useState({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
  const [invoiceDeletionRequests, setInvoiceDeletionRequests] = useState([])
  const [invoiceDeletionRequestsLoading, setInvoiceDeletionRequestsLoading] = useState(false)
+ const [productionForecastExcludedInvoiceIds, setProductionForecastExcludedInvoiceIds] = useState([])
+ const [productionForecastExclusionsLoading, setProductionForecastExclusionsLoading] = useState(false)
  const [requestingInvoiceDeletion, setRequestingInvoiceDeletion] = useState(null)
  const [invoiceDeletionReasonCategory, setInvoiceDeletionReasonCategory] = useState('')
  const [invoiceDeletionReasonDetail, setInvoiceDeletionReasonDetail] = useState('')
@@ -7244,9 +7238,10 @@ export default function App() {
  const [foundationData, setFoundationData] = useState(null)
  const [foundationLoading, setFoundationLoading] = useState(false)
  const [ownerDashboardMode, setOwnerDashboardMode] = useState('command') // OWNER_DASHBOARD_MODE_V2
- const [foundationAutoRefresh, setFoundationAutoRefresh] = useState(true)
+ const [foundationAutoRefresh, setFoundationAutoRefresh] = useState(false)
  const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)
- const FOUNDATION_REFRESH_SECONDS = 60
+ const foundationLoadInFlightRef = useRef(false)
+ const FOUNDATION_REFRESH_SECONDS = 15 * 60
  const EXPENSE_CATEGORIES = ['Payroll Expense','Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Ingredients and Supplies','Groceries','Mix Plant Inc.','Shopee/Lazada','Drinks','Meals','Utilities','Employee Benefits','Administrative Cost','Permits and Taxes','Loan Repayment','Car Installment','Miscellaneous']
  const PAYABLE_TYPES = ['Supplier','Payroll','Government Contributions','Rent','Utilities','Loan','Equipment','Packaging Supplier','Raw Material Supplier','Other']
  const PAYABLE_CATEGORIES = ['Supplier Payment','Payroll','SSS / PhilHealth / Pag-IBIG','Rent','Electricity','Water','Internet / Phone','Loan / Financing','Equipment Payable','Packaging Supplies','Raw Materials','Transportation/Fuel','Marketing/Promotion','Miscellaneous']
@@ -7789,10 +7784,17 @@ await loadAdminAuthProfile(user, { openPanel:true, silent:true })
  const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
  if (!mounted) return
 if (!session?.user) {
+// ADMIN_SESSION_INTEGRITY_V1: never leave an Owner/Admin screen active after Supabase Auth is gone.
 setAdminAuthUser(null)
 setAdminAuthProfile(null)
+setAdminMode(false)
+setAdminRole(null)
+setAdminEmployee(null)
+setAvailableRoles([])
+setCameFromAdmin(false)
 setInvoiceDeletionAccess({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
 setInvoiceDeletionRequests([])
+setProductionForecastExcludedInvoiceIds([])
 setRequestingInvoiceDeletion(null)
 }
  })
@@ -7832,7 +7834,7 @@ setRequestingInvoiceDeletion(null)
  }, [adminMode, activeTab, adminRole])
 
  useEffect(() => {
- const canViewFoundation = (activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager')) || (activeTab === 'dashboard' && adminRole === 'owner') // OWNER_DASHBOARD_AUTO_REFRESH_V2
+ const canViewFoundation = activeTab === 'foundation' && (adminRole === 'owner' || adminRole === 'manager') // EGRESS_SAFE_FOUNDATION_REFRESH_V1
  if (!canViewFoundation ||!foundationAutoRefresh) return
 
  if (!foundationData &&!foundationLoading) {
@@ -8212,9 +8214,13 @@ setRequestingInvoiceDeletion(null)
   const email = companyDeviceAuthEmail.trim()
   if (!email || !companyDeviceAuthPassword) { showToast('Enter the owner email and password.', 'red'); return }
 
-  setCompanyDeviceAuthLoading(true)
+    setCompanyDeviceAuthLoading(true)
   let temporaryAuthStarted = false
+  let hadExistingAdminSession = false
   try {
+   const { data:existingAuthData } = await supabase.auth.getSession()
+   hadExistingAdminSession = !!existingAuthData?.session?.user
+   // COMPANY_DEVICE_SESSION_PRESERVE_V1: a fresh password check must not destroy an already-active admin session.
    const { data:authData, error:authError } = await supabase.auth.signInWithPassword({ email, password:companyDeviceAuthPassword })
    if (authError) throw authError
    temporaryAuthStarted = true
@@ -8237,8 +8243,8 @@ setRequestingInvoiceDeletion(null)
    showToast('Company device authorized. Time In/Out is now active.', 'green')
   } catch (err) {
    showToast('Device authorization failed: ' + (err?.message || 'Please check the owner credentials.'), 'red')
-  } finally {
-   if (temporaryAuthStarted) await supabase.auth.signOut().catch(()=>{})
+    } finally {
+   if (temporaryAuthStarted && !hadExistingAdminSession) await supabase.auth.signOut().catch(()=>{})
    setCompanyDeviceAuthLoading(false)
   }
  }
@@ -8326,6 +8332,7 @@ setAvailableRoles(roles)
 const deletionAccess = await loadInvoiceDeletionAccess({ silent:options.silent })
 if (deletionAccess.can_request || deletionAccess.can_review) await loadInvoiceDeletionRequests({ silent:true })
 else setInvoiceDeletionRequests([])
+await loadProductionForecastExclusions({ silent:true })
 
  if (options.openPanel) {
  openAdmin(roles[0], linkedEmployee)
@@ -8356,6 +8363,7 @@ setAdminAuthUser(null)
 setAdminAuthProfile(null)
 setInvoiceDeletionAccess({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
 setInvoiceDeletionRequests([])
+setProductionForecastExcludedInvoiceIds([])
  await logAudit('ADMIN AUTH LOGIN FAILED', email || 'Unknown email', 'System Access', err?.message || 'Admin auth login failed.')
  alert('Admin login failed: ' + (err?.message || 'Please check your email/password and admin role setup.'))
  } finally {
@@ -8373,6 +8381,7 @@ setAdminAuthProfile(null)
 setAvailableRoles([])
 setInvoiceDeletionAccess({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
 setInvoiceDeletionRequests([])
+setProductionForecastExcludedInvoiceIds([])
 setRequestingInvoiceDeletion(null)
 setInvoiceDeletionReasonCategory('')
 setInvoiceDeletionReasonDetail('')
@@ -14307,6 +14316,30 @@ const normalizedBasic = await normalizePaidInvoiceRows((basic.data || []).filter
   }
  }
 
+ async function loadProductionForecastExclusions(options = {}) {
+  if (!options.silent) setProductionForecastExclusionsLoading(true)
+  try {
+   const { data, error } = await supabase.rpc('get_production_forecast_excluded_invoice_ids')
+   if (error) throw error
+   const ids = [...new Set((data || []).map(row => String(row?.invoice_id || row || '')).filter(Boolean))]
+   setProductionForecastExcludedInvoiceIds(ids)
+   return ids
+  } catch (error) {
+   if (!options.silent) console.warn('loadProductionForecastExclusions:', error?.message || error)
+   return productionForecastExcludedInvoiceIds
+  } finally {
+   if (!options.silent) setProductionForecastExclusionsLoading(false)
+  }
+ }
+
+ function isInvoiceExcludedFromProductionForecast(invoice = {}) {
+  return isInvoiceExcludedFromProductionForecastPolicy(invoice, productionForecastExcludedInvoiceIds)
+ }
+
+ function getProductionForecastInvoices(invoiceRows = deliveryInvoices, dateValue = forecastDate) {
+  return filterProductionForecastInvoices(invoiceRows, dateValue, productionForecastExcludedInvoiceIds)
+ }
+
  function openInvoiceDeletionCenter() {
   setActiveTab('sales')
   setSalesView('deliveries')
@@ -14356,7 +14389,12 @@ const normalizedBasic = await normalizePaidInvoiceRows((basic.data || []).filter
    setRequestingInvoiceDeletion(null)
    setInvoiceDeletionReasonCategory('')
    setInvoiceDeletionReasonDetail('')
-   await Promise.all([loadInvoiceDeletionRequests({ silent:true }), loadNotifications()])
+   setProductionForecastExcludedInvoiceIds(previous => [...new Set([...previous, String(invoice.id)])])
+   await Promise.all([
+    loadInvoiceDeletionRequests({ silent:true }),
+    loadProductionForecastExclusions({ silent:true }),
+    loadNotifications()
+   ])
    showToast(data?.message || `Deletion request for ${invoice.invoice_number} sent to the owner.`)
    window.setTimeout(() => document.getElementById('invoice-deletion-approval-center')?.scrollIntoView({ behavior:'smooth', block:'start' }), 120)
   } catch (error) {
@@ -14390,11 +14428,15 @@ const normalizedBasic = await normalizePaidInvoiceRows((basic.data || []).filter
     p_review_note:reviewNote || null
    })
    if (error) throw error
+   if (decision === 'reject') {
+    setProductionForecastExcludedInvoiceIds(previous => previous.filter(id => String(id) !== String(request.invoice_id)))
+   }
    setInvoiceDeletionReviewNotes(previous => ({...previous, [request.id]:''}))
    if (viewingInvoice?.id === request.invoice_id) setViewingInvoice(null)
    if (editingInvoice?.id === request.invoice_id) { setEditingInvoice(null); setEditInvoiceItems([]) }
    await Promise.all([
     loadInvoiceDeletionRequests({ silent:true }),
+    loadProductionForecastExclusions({ silent:true }),
     loadDeliveryInvoices(),
     loadNotifications(),
     loadFinancialData()
@@ -14472,7 +14514,7 @@ function buildDeliveryInvoicePrintCSS() {
     '  padding: 0 !important;',
     '  background: white !important;',
     '  font-family: Arial, sans-serif !important;',
-    '  color: #000 !important;',
+    '  color: #1A1A2E !important;',
     '}',
 
     '.no-print { display: none !important; }',
@@ -14491,18 +14533,18 @@ function buildDeliveryInvoicePrintCSS() {
     '  height: 100% !important;',
     '  border-collapse: collapse !important;',
     '  table-layout: fixed !important;',
-    '  border: 2px solid #000 !important;',
+    '  border: 2px solid #1A1A2E !important;',
     '  font-size: 13px !important;',
     '  line-height: 0.95 !important;',
     '}',
 
     '.invoice-table tr {',
-    '  border: 1px solid #000 !important;',
+    '  border: 1px solid #1A1A2E !important;',
     '}',
 
     '.invoice-table td, .invoice-table th {',
-    '  border: 1px solid #000 !important;',
-    '  border-color: #000 !important;',
+    '  border: 1px solid #1A1A2E !important;',
+    '  border-color: #1A1A2E !important;',
     '  padding: 0px 2px !important;',
     '  vertical-align: middle !important;',
     '  overflow: hidden !important;',
@@ -14514,14 +14556,14 @@ function buildDeliveryInvoicePrintCSS() {
     '  text-align: center !important;',
     '  font-weight: 700 !important;',
     '  font-size: 14px !important;',
-    '}',
+    'background:#CA1B1B!important;color:#ffffff!important;border-color:#1A1A2E!important;}',
 
     '.field-row td { height: 0.22in !important; font-size: 13px !important; }',
-    '.field-label { text-align: center !important; font-weight: 700 !important; }',
+    '.field-label { text-align: center !important; font-weight: 700 !important; background:#FDD412!important;color:#1A1A2E!important;}',
     '.field-value { font-weight: 500 !important; }',
 
-    '.date-fill, .customer-fill { background: #cfe2f3 !important; }',
-    '.address-fill, .prepared-fill { background: #b6d7a8 !important; }',
+    '.date-fill, .customer-fill { background: #ffffff !important; }',
+    '.address-fill, .prepared-fill { background: #FDD412 !important; background:#FDD412!important;color:#1A1A2E!important;}',
 
     '.blank-row td { height: 0.13in !important; }',
     '.note-row td { height: 0.36in !important; font-size: 13px !important; line-height: 1.05 !important; white-space: normal !important; }',
@@ -14532,7 +14574,7 @@ function buildDeliveryInvoicePrintCSS() {
     '  text-align: center !important;',
     '  font-weight: 700 !important;',
     '  font-size: 13px !important;',
-    '}',
+    'background:#1A1A2E!important;color:#ffffff!important;border-color:#1A1A2E!important;}',
 
     '.product-row td { height: 0.190in !important; font-size: 12px !important; }',
     '.product-name { text-align: center !important; font-weight: 600 !important; }',
@@ -14546,15 +14588,15 @@ function buildDeliveryInvoicePrintCSS() {
     '  text-align: center !important;',
     '  font-weight: 700 !important;',
     '  font-size: 16px !important;',
-    '}',
+    'background:#FDD412!important;color:#1A1A2E!important;}',
 
     '.total-amount {',
     '  text-align: right !important;',
     '  font-weight: 700 !important;',
-    '  background: #d9d9d9 !important;',
+    '  background: #CA1B1B !important;',
     '  font-size: 18px !important;',
-    '  color: #000 !important;',
-    '}',
+    '  color: #1A1A2E !important;',
+    'background:#CA1B1B!important;color:#ffffff!important;}',
 
     '@media screen {',
     '  html, body { width: auto !important; height: auto !important; min-height: 100vh !important; background: #ddd !important; display: flex !important; justify-content: center !important; align-items: flex-start !important; padding: 10px !important; }',
@@ -14635,7 +14677,7 @@ function buildDeliveryInvoicePrintCSS() {
 
     const rows = [
       { label:'Choco Balls', aliases:['Choco Balls'] },
-      { label:'', aliases:[] },
+      { label:'Matcha Pops', aliases:['Matcha Pops'] },
       { label:'Almond Glitz', aliases:['Almond Glitz'] },
       { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
       { label:'Oreo Dream', aliases:['Oreo Dream'] },
@@ -17157,7 +17199,6 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setResellerMode(true)
  setResellerPortalView('dashboard')
  await loadResellerPortalData(branches[0].id)
- await loadResellerAutoOrderConfig(branches[0].id, { silent:true })
  setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
  await loadResellerOrderItems(branches[0].id)
  showToast(` Welcome, ${account.account_name || account.owner_name || 'Reseller'}!`)
@@ -17184,7 +17225,6 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setResellerMode(true)
  setResellerPortalView('dashboard')
  await loadResellerPortalData(data.id)
- await loadResellerAutoOrderConfig(data.id, { silent:true })
 
  setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
  await loadResellerOrderItems(data.id)
@@ -17272,309 +17312,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setResellerOrderItems(allRows)
  }
 
- function getResellerPortalCredentials() {
- return {
-  p_access_code:String(resellerLoginCode || '').trim().toUpperCase(),
-  p_access_pin:String(resellerLoginPin || '').trim()
- }
- }
-
- async function loadResellerAutoOrderConfig(resellerId = null, options = {}) {
- const targetResellerId = resellerId || currentReseller?.id
- if (!targetResellerId) return false
- setResellerAutoOrderLoading(true)
- try {
-  const { data, error } = await supabase.rpc('reseller_auto_order_get', {
-   p_reseller_id:targetResellerId,
-   ...getResellerPortalCredentials()
-  })
-  if (error) throw error
-  setResellerAutoOrderSettings({
-   enabled:data?.settings?.enabled === true,
-   safety_buffer_pct:safeNum(data?.settings?.safety_buffer_pct, 10),
-   notify_on_generated:data?.settings?.notify_on_generated !== false,
-   notify_on_adjusted:data?.settings?.notify_on_adjusted !== false,
-   notify_on_approved:data?.settings?.notify_on_approved !== false
-  })
-  setResellerAutoOrderSchedules(Array.isArray(data?.schedules)? data.schedules: [])
-  setResellerAutoOrderEvents(Array.isArray(data?.events)? data.events: [])
-  return true
- } catch (err) {
-  console.warn('Automatic ordering configuration could not be loaded:', err)
-  setResellerAutoOrderSettings({ enabled:false, safety_buffer_pct:10, notify_on_generated:true, notify_on_adjusted:true, notify_on_approved:true })
-  setResellerAutoOrderSchedules([])
-  setResellerAutoOrderEvents([])
-  if (!options.silent) showToast(' Automatic ordering is unavailable. Please refresh or contact your Roma’s staff.', 'red')
-  return false
- } finally {
-  setResellerAutoOrderLoading(false)
- }
- }
-
- async function setResellerAutomaticOrderingEnabled(enabled) {
- if (!currentReseller?.id || resellerAutoOrderSaving) return
- if (enabled && resellerAutoOrderSchedules.filter(s=>s.enabled !== false).length === 0) {
-  showToast(' Create and save at least one active day template before enabling automatic ordering.', 'red')
-  return
- }
-
- setResellerAutoOrderSaving(true)
- try {
-  const next = { ...resellerAutoOrderSettings, enabled:enabled === true }
-  const { error } = await supabase.rpc('reseller_auto_order_set_enabled', {
-   p_reseller_id:currentReseller.id,
-   ...getResellerPortalCredentials(),
-   p_enabled:next.enabled,
-   p_safety_buffer_pct:safeNum(next.safety_buffer_pct, 10),
-   p_notify_on_generated:next.notify_on_generated !== false,
-   p_notify_on_adjusted:next.notify_on_adjusted !== false,
-   p_notify_on_approved:next.notify_on_approved !== false
-  })
-  if (error) throw error
-  setResellerAutoOrderSettings(next)
-  showToast(enabled? ' Automatic ordering enabled.':' Automatic ordering disabled.')
-  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
- } catch (err) {
-  showToast(' Could not update automatic ordering: ' + (err?.message || err), 'red')
- } finally {
-  setResellerAutoOrderSaving(false)
- }
- }
-
- async function saveResellerAutomaticOrderingSettings() {
- if (!currentReseller?.id || resellerAutoOrderSaving) return
- setResellerAutoOrderSaving(true)
- try {
-  const { error } = await supabase.rpc('reseller_auto_order_set_enabled', {
-   p_reseller_id:currentReseller.id,
-   ...getResellerPortalCredentials(),
-   p_enabled:resellerAutoOrderSettings.enabled === true,
-   p_safety_buffer_pct:safeNum(resellerAutoOrderSettings.safety_buffer_pct, 10),
-   p_notify_on_generated:resellerAutoOrderSettings.notify_on_generated !== false,
-   p_notify_on_adjusted:resellerAutoOrderSettings.notify_on_adjusted !== false,
-   p_notify_on_approved:resellerAutoOrderSettings.notify_on_approved !== false
-  })
-  if (error) throw error
-  showToast(' Automatic-order settings saved.')
-  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
- } catch (err) {
-  showToast(' Could not save automatic-order settings: ' + (err?.message || err), 'red')
- } finally {
-  setResellerAutoOrderSaving(false)
- }
- }
-
- async function startResellerAutoOrderTemplate(schedule = null, weekday = null) {
- if (!schedule && weekday !== null) schedule = resellerAutoOrderSchedules.find(row=>Number(row.delivery_weekday)===weekday) || null
- let variants = Array.isArray(donutVariants)? donutVariants: []
- if (variants.length === 0) {
-  const { data, error } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
-  if (error) console.warn('Unable to load variants for automatic-order template:', error)
-  variants = data || []
- }
- const savedItems = Array.isArray(schedule?.items)? schedule.items: []
- const savedMap = new Map(savedItems.map(item=>[String(item.variant_id), item]))
- const items = sortDonutVariantsByGuide(variants.filter(variant=>variant?.is_active !== false)).map(variant=>{
-  const saved = savedMap.get(String(variant.id))
-  return {
-   variant_id:variant.id,
-   variant_name:variant.name,
-   template_quantity:saved?.template_quantity || '',
-   minimum_quantity:saved?.minimum_quantity ?? '',
-   maximum_quantity:saved?.maximum_quantity ?? ''
-  }
- })
- setResellerAutoOrderForm({
-  id:schedule?.id || null,
-  delivery_weekday:weekday ?? schedule?.delivery_weekday ?? 1,
-  template_name:schedule?.template_name || `${RESELLER_AUTO_ORDER_WEEKDAYS[weekday ?? 1]} Order`,
-  enabled:schedule?.enabled !== false,
-  effective_start_date:String(schedule?.effective_start_date || today).slice(0,10),
-  effective_end_date:String(schedule?.effective_end_date || '').slice(0,10),
-  items
- })
- window.setTimeout(()=>{
-  const editor = document.getElementById('reseller-auto-order-template-editor')
-  if (!editor) return
-  editor.scrollIntoView({ behavior:'smooth', block:'start' })
-  editor.focus({ preventScroll:true })
- }, 100)
- }
-
- async function copyLastOrderToResellerAutoOrderTemplate() {
- if (!currentReseller?.id || !resellerAutoOrderForm || resellerAutoOrderCopying) return
- setResellerAutoOrderCopying(true)
- try {
-  let recentOrders = resellerOrders.filter(order=>
-   String(order?.reseller_id || '') === String(currentReseller.id)
-   && !['cancelled','canceled','void','voided','rejected','deleted'].includes(String(order?.status || '').toLowerCase())
-   && Array.isArray(order?.reseller_order_items)
-   && order.reseller_order_items.some(item=>safeNum(item?.quantity,0)>0)
-  )
-  if (recentOrders.length === 0) {
-   const { data, error } = await supabase
-    .from('reseller_orders')
-    .select('*, reseller_order_items(*)')
-    .eq('reseller_id', currentReseller.id)
-    .order('created_at',{ascending:false})
-    .limit(20)
-   if (error) throw error
-   recentOrders = (data || []).filter(order=>
-    !['cancelled','canceled','void','voided','rejected','deleted'].includes(String(order?.status || '').toLowerCase())
-    && Array.isArray(order?.reseller_order_items)
-    && order.reseller_order_items.some(item=>safeNum(item?.quantity,0)>0)
-   )
-  }
-  const lastOrder = recentOrders[0]
-  if (!lastOrder) {
-   showToast(' No previous order with product quantities was found for this reseller.', 'red')
-   return
-  }
-  const lastQuantityByVariant = new Map((lastOrder.reseller_order_items || []).map(item=>[
-   String(item.variant_id), Math.max(0,Math.round(safeNum(item.quantity,0)))
-  ]))
-  const copiedItems = (resellerAutoOrderForm.items || []).map(item=>{
-   if (!lastQuantityByVariant.has(String(item.variant_id))) return { ...item, template_quantity:'' }
-   const quantity = lastQuantityByVariant.get(String(item.variant_id))
-   return { ...item, template_quantity:quantity > 0? String(quantity):'' }
-  })
-  const copiedCount = copiedItems.filter(item=>safeNum(item.template_quantity,0)>0).length
-  setResellerAutoOrderForm(prev=>prev?{ ...prev, items:copiedItems }:prev)
-  const lastOrderDate = lastOrder.delivery_date || lastOrder.order_date || String(lastOrder.created_at || '').slice(0,10)
-  showToast(` Copied ${copiedCount} product quantities from the last order${lastOrderDate?` (${lastOrderDate})`:''}. Review and save the template.`)
- } catch (err) {
-  showToast(' Could not copy the last order: ' + (err?.message || err), 'red')
- } finally {
-  setResellerAutoOrderCopying(false)
- }
- }
-
- function toggleResellerAutoOrderSkipWeekday(weekday) {
- setResellerAutoOrderSkipWeekdays(current=>current.includes(weekday)
-  ? current.filter(value=>value!==weekday)
-  : [...current,weekday].sort((a,b)=>a-b))
- }
-
- async function applyWeeklyAutoOrderSkips() {
- if (!currentReseller?.id || resellerAutoOrderSaving) return
- const selectedWeekdays = [...new Set(resellerAutoOrderSkipWeekdays.map(Number).filter(day=>day>=0 && day<=6))].sort((a,b)=>a-b)
- if (selectedWeekdays.length === 0) {
-  showToast(' Select at least one delivery day to skip every week.', 'red')
-  return
- }
- const activeSchedules = selectedWeekdays.map(weekday=>({
-  weekday,
-  dayLabel:RESELLER_AUTO_ORDER_WEEKDAYS[weekday],
-  schedule:resellerAutoOrderSchedules.find(row=>Number(row.delivery_weekday)===weekday)
- })).filter(entry=>entry.schedule && entry.schedule.enabled !== false)
- const invalidTemplate = activeSchedules.find(entry=>!(entry.schedule.items || []).some(item=>safeNum(item.template_quantity,0)>0))
- if (invalidTemplate) {
-  showToast(` The ${invalidTemplate.dayLabel} template has no saved product quantities. Open it and review the template first.`, 'red')
-  return
- }
- if (activeSchedules.length === 0) {
-  showToast(` Automatic orders are already skipped every ${selectedWeekdays.map(day=>RESELLER_AUTO_ORDER_WEEKDAYS[day]).join(', ')}.`)
-  return
- }
- const tomorrowWeekday = new Date(`${getPHDateOffsetString(1)}T00:00:00+08:00`).getUTCDay()
- if (getOrderCutoffStatus().locked && activeSchedules.some(entry=>entry.weekday===tomorrowWeekday)) {
-  showToast(` Tomorrow's ${RESELLER_AUTO_ORDER_WEEKDAYS[tomorrowWeekday]} template can no longer be changed after the 1:00 PM cutoff.`, 'red')
-  return
- }
- setResellerAutoOrderSaving(true)
- try {
-  const results = await Promise.all(activeSchedules.map(async ({ schedule,weekday,dayLabel })=>{
-   const selectedItems = (schedule.items || []).filter(item=>safeNum(item.template_quantity,0)>0)
-   const { error } = await supabase.rpc('reseller_auto_order_save_schedule', {
-    p_reseller_id:currentReseller.id,
-    ...getResellerPortalCredentials(),
-    p_delivery_weekday:weekday,
-    p_template_name:String(schedule.template_name || `${dayLabel} Order`).trim(),
-    p_enabled:false,
-    p_effective_start_date:String(schedule.effective_start_date || today).slice(0,10),
-    p_effective_end_date:schedule.effective_end_date? String(schedule.effective_end_date).slice(0,10):null,
-    p_items:selectedItems.map(item=>({
-     variant_id:item.variant_id,
-     variant_name:item.variant_name,
-     template_quantity:Math.round(safeNum(item.template_quantity,0)),
-     minimum_quantity:item.minimum_quantity == null? null:Math.max(0,Math.round(safeNum(item.minimum_quantity,0))),
-     maximum_quantity:item.maximum_quantity == null? null:Math.max(1,Math.round(safeNum(item.maximum_quantity,0)))
-    }))
-   })
-   return { dayLabel,error }
-  }))
-  const failures = results.filter(result=>result.error)
-  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
-  if (failures.length > 0) throw new Error(`Could not update ${failures.map(result=>result.dayLabel).join(', ')}. Please try those days again.`)
-  const appliedDays = activeSchedules.map(entry=>entry.dayLabel).join(', ')
-  showToast(` Automatic orders will now be skipped every ${appliedDays}. To resume a day, edit its template and set it to Active.`)
- } catch (err) {
-  showToast(' Could not apply all selected weekly skips: ' + (err?.message || err), 'red')
- } finally {
-  setResellerAutoOrderSaving(false)
- }
- }
-
- async function saveResellerAutoOrderTemplate() {
- if (!currentReseller?.id || !resellerAutoOrderForm || resellerAutoOrderSaving) return
- const validItems = (resellerAutoOrderForm.items || []).filter(item=>safeNum(item.template_quantity,0)>0)
- if (!String(resellerAutoOrderForm.template_name || '').trim()) { showToast(' Enter a template name.', 'red'); return }
- if (validItems.length === 0) { showToast(' Add at least one product quantity.', 'red'); return }
- setResellerAutoOrderSaving(true)
- try {
-  const { error } = await supabase.rpc('reseller_auto_order_save_schedule', {
-   p_reseller_id:currentReseller.id,
-   ...getResellerPortalCredentials(),
-   p_delivery_weekday:Number(resellerAutoOrderForm.delivery_weekday),
-   p_template_name:String(resellerAutoOrderForm.template_name).trim(),
-   p_enabled:resellerAutoOrderForm.enabled !== false,
-   p_effective_start_date:resellerAutoOrderForm.effective_start_date || today,
-   p_effective_end_date:resellerAutoOrderForm.effective_end_date || null,
-   p_items:validItems.map(item=>({
-    variant_id:item.variant_id,
-    variant_name:item.variant_name,
-    template_quantity:Math.round(safeNum(item.template_quantity,0)),
-    minimum_quantity:item.minimum_quantity === ''? null: Math.max(0, Math.round(safeNum(item.minimum_quantity,0))),
-    maximum_quantity:item.maximum_quantity === ''? null: Math.max(1, Math.round(safeNum(item.maximum_quantity,0)))
-   }))
-  })
-  if (error) throw error
-  setResellerAutoOrderForm(null)
-  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
-  showToast(` ${RESELLER_AUTO_ORDER_WEEKDAYS[Number(resellerAutoOrderForm.delivery_weekday)]} automatic-order template saved.`)
- } catch (err) {
-  showToast(' Could not save template: ' + (err?.message || err), 'red')
- } finally {
-  setResellerAutoOrderSaving(false)
- }
- }
-
- async function skipResellerAutomaticOrderDate() {
- if (!currentReseller?.id || !resellerAutoOrderSkipDate || resellerAutoOrderSaving) {
-  if (!resellerAutoOrderSkipDate) showToast(' Select the delivery date to skip.', 'red')
-  return
- }
- setResellerAutoOrderSaving(true)
- try {
-  const { error } = await supabase.rpc('reseller_auto_order_skip_date', {
-   p_reseller_id:currentReseller.id,
-   ...getResellerPortalCredentials(),
-   p_skip_date:resellerAutoOrderSkipDate,
-   p_reason:String(resellerAutoOrderSkipReason || '').trim() || null
-  })
-  if (error) throw error
-  showToast(` Automatic order skipped for ${resellerAutoOrderSkipDate}.`)
-  setResellerAutoOrderSkipDate('')
-  setResellerAutoOrderSkipReason('')
-  await loadResellerAutoOrderConfig(currentReseller.id, { silent:true })
- } catch (err) {
-  showToast(' Could not skip date: ' + (err?.message || err), 'red')
- } finally {
-  setResellerAutoOrderSaving(false)
- }
- }
-
- async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', options = {}) {
+async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', options = {}) {
  if (!sourceResellerId) {
  if (!options.silent) showToast(' Select a branch template first.', 'red')
  return false
@@ -17605,13 +17343,9 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  if (!branch) return
  setCurrentReseller(branch)
  setSelectedResellerBranchId(branch.id)
- setResellerAutoOrderForm(null)
- setResellerAutoOrderSkipDate('')
- setResellerAutoOrderSkipReason('')
  setResellerOrderTemplateSourceId('')
  if (!keepCurrentView) setResellerPortalView('dashboard')
  await loadResellerPortalData(branch.id)
- await loadResellerAutoOrderConfig(branch.id, { silent:true })
  await loadResellerOrderItems(branch.id)
  showToast(` Switched to ${branch.name}`)
  }
@@ -17712,10 +17446,6 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setResellerOrders([])
  setResellerReturns([])
  setResellerNotices([])
- setResellerAutoOrderSettings({ enabled:false, safety_buffer_pct:10, notify_on_generated:true, notify_on_adjusted:true, notify_on_approved:true })
- setResellerAutoOrderSchedules([])
- setResellerAutoOrderEvents([])
- setResellerAutoOrderForm(null)
  setEditingResellerOrderId(null)
  setUpdatingResellerOrder(false)
  setLastSubmittedOrderNotice('')
@@ -19949,7 +19679,7 @@ if (role === 'owner') return true
  if (role === 'manager') return ['dashboard','tomorrowForecast','attendance','employees','schedule','holidays','leaveRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
  if (role === 'admin') return ['tomorrowForecast','posMonitor'].includes(tab)
  if (role === 'pos_admin') return ['posMonitor'].includes(tab)
- if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops','posMonitor'].includes(tab)
+ if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops','posMonitor','inventory','sales'].includes(tab)
  if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement','posMonitor'].includes(tab)
  if (role === 'supervisor') return ['dashboard','tomorrowForecast','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
  if (role === 'asst_supervisor') return ['dashboard','tomorrowForecast','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
@@ -22314,12 +22044,14 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
 
  function refreshFoundationAfterDataChange(reason = '') {
- const canRefresh = foundationData || activeTab === 'foundation'
+ const canRefresh = activeTab === 'foundation' && !!foundationData
  if (!canRefresh) return
- loadFoundationData(foundationMonth, { silent:true, showLoading:false, reason })
+ loadFoundationData(foundationMonth, { silent:true, showLoading:false, reason, force:true })
  }
 
  async function loadFoundationData(monthValue = foundationMonth, options = {}) {
+ if (foundationLoadInFlightRef.current) return
+ foundationLoadInFlightRef.current = true
  const showLoading = options.showLoading === true || (options.showLoading!== false && options.silent!== true)
  if (showLoading) setFoundationLoading(true)
  try {
@@ -23891,6 +23623,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if (!options.silent) showToast('Foundation dashboard failed to load: ' + e.message, 'red')
  } finally {
  if (showLoading) setFoundationLoading(false)
+ foundationLoadInFlightRef.current = false
  }
  }
 
@@ -23924,14 +23657,15 @@ function openAdmin(role, empData) {
  const defaultTab = (safeRole==='admin'||safeRole==='pos_admin')?'posMonitor':safeRole==='payroll'?'payroll':safeRole==='supervisor'||safeRole==='asst_supervisor'?'attendance':safeRole==='hr'?'employees':'dashboard'
  setActiveTab(defaultTab)
  loadEmployees(); loadAdminLogs(); loadLeaveRequests(); loadCashAdvanceRequests(); loadSILCashouts()
- loadHolidays(); loadTimeAdjRequests(); loadAnnouncements(); loadDashboard()
+ loadHolidays(); loadAnnouncements(); loadDashboard()
  if (safeRole === 'owner') loadOwnerActionCenter()
-loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{}); if (safeRole==='owner' || safeRole==='manager') loadFoundationData().catch(()=>{})
+loadDepartmentLocations(); loadDashboardCharts(); loadNotifications(); loadPendingResellerOrders(); loadBankDeposits(); loadSuspiciousAlerts(); autoAcknowledgeExpired().catch(()=>{})
 void loadInvoiceDeletionAccess({ silent:true }).then(access => {
  if (access.can_request || access.can_review) return loadInvoiceDeletionRequests({ silent:true })
  setInvoiceDeletionRequests([])
  return null
 })
+void loadProductionForecastExclusions({ silent:true })
 requestPushPermission()
  // Check Tuesday deposit reminder
  setTimeout(()=>checkTuesdayDepositReminder(), 2000)
@@ -24675,7 +24409,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   setTimeAdjComputedPayrollPeriods(periodResult.periods)
  }
  setTimeAdjRequests(rows)
- const adjustmentRows = rows.filter(req => ['overtime','meal_break'].includes(String(req?.request_type || '').toLowerCase()))
+ const adjustmentRows = rows.filter(req => String(req?.status || '').toLowerCase() === 'pending' && ['overtime','meal_break'].includes(String(req?.request_type || '').toLowerCase()))
  const loadingMap = {}
  adjustmentRows.forEach(req => { loadingMap[req.id] = { loading:true, canApprove:false, message:'Calculating actual attendance...' } })
  setTimeAdjValidationById(loadingMap)
@@ -28458,7 +28192,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  }
 
  function buildWeatherGuardRows(invoices = deliveryInvoices, dateValue = forecastDate) {
-  const invoiceRows = (invoices || []).filter(invoice => String(invoice?.delivery_date || '').slice(0,10) === String(dateValue || '').slice(0,10))
+  const invoiceRows = getProductionForecastInvoices(invoices, dateValue)
   const grouped = {}
 
   invoiceRows.forEach(invoice => {
@@ -28718,6 +28452,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     loadPagasaRegion1Weather({ force:forceWeather, silent:true }),
     loadResellers(),
     loadDeliveryInvoices(),
+    loadProductionForecastExclusions({ silent:true }),
     loadDonutVariants()
    ])
    const targetView = getTomorrowForecastPagasaView(weatherData, targetDate)
@@ -28777,7 +28512,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   const generatedAt = new Date().toLocaleString('en-PH', { timeZone:PH_TIME_ZONE, year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
   const classVerified = weatherGuardDraft.class_status !== 'unverified'
   const routeVerified = weatherGuardDraft.route_status !== 'unverified'
-  const invoiceCount = (deliveryInvoices || []).filter(invoice => String(invoice?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10)).length
+  const invoiceCount = getProductionForecastInvoices(deliveryInvoices, forecastDate).length
   const profiledCount = rows.filter(row => !row.reseller_id || weatherGuardProfiles.some(profile => String(profile.reseller_id) === String(row.reseller_id))).length
   const readiness = [
    ['Tomorrow invoices / orders', rows.length > 0 && summary.normal > 0, `${invoiceCount} invoice(s), ${summary.normal.toLocaleString()} pcs`],
@@ -29021,8 +28756,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  function prefillWeatherGuardOutcomeFromInvoices() {
   const rows = buildWeatherGuardRows()
   const delivered = rows.reduce((sum,row)=>sum+safeNum(row.invoice_qty,0),0)
-  const returns = (deliveryInvoices || [])
-   .filter(invoice => String(invoice?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10))
+  const returns = getProductionForecastInvoices(deliveryInvoices, forecastDate)
    .reduce((sum, invoice) => sum + Math.max(0, safeNum(invoice?.returns_qty,0)), 0)
   const finalReleased = getWeatherGuardSummary(rows).final
   const disposal = Math.max(0, safeNum(weatherGuardOutcome.disposal_qty,0))
@@ -30466,12 +30200,60 @@ async function computePayroll() {
   const sssDeductionRounded=moneyRound(sssDeduction)
   const pagibigDeductionRounded=moneyRound(pagibigDeduction)
   const philhealthDeductionRounded=moneyRound(philhealthDeduction)
-  const adjDeductionsRounded=moneyRound(adjDeductions+absenceDeductionRounded)
-  const nonCADeductions=moneyRound(lateDeductionRounded+undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+adjDeductionsRounded)
+  // Mandatory deductions remain in the current cutoff. Payroll-adjustment deductions
+  // (charges/other deductions) are deferrable: if the employee has insufficient earnings,
+  // move the whole unpaid adjustment to the next cutoff instead of creating a release blocker.
+  const mandatoryNonCADeductions=moneyRound(lateDeductionRounded+undertimeDeductionRounded+sssDeductionRounded+pagibigDeductionRounded+philhealthDeductionRounded+absenceDeductionRounded)
+  const nextPayrollStart=addDaysToDateString(payrollEnd,1)
+  let adjustmentCapacity=moneyRound(Math.max(0,totalEarnings-mandatoryNonCADeductions))
+  let deferRemainingAdjustments=false
+  const deferredAdjustmentIds=new Set()
+  let deferredAdjustmentTotal=0
+  const orderedDeductionAdjustments=[...adjustmentBreakdown]
+   .filter(item=>item.type!=='addition')
+   .sort((a,b)=>String(a.date||'').localeCompare(String(b.date||'')) || String(a.id||'').localeCompare(String(b.id||'')))
+
+  for (const item of orderedDeductionAdjustments) {
+   const amount=moneyRound(Number(item.amount||0))
+   if (amount<=0) continue
+   const sourceRow=(adjs||[]).find(row=>String(row?.id||'')===String(item?.id||''))
+   const fitsCurrentCutoff=!deferRemainingAdjustments && amount<=adjustmentCapacity+0.009
+   if (fitsCurrentCutoff || !sourceRow?.id || !nextPayrollStart) {
+    if (fitsCurrentCutoff) adjustmentCapacity=moneyRound(Math.max(0,adjustmentCapacity-amount))
+    else if (!fitsCurrentCutoff) deferRemainingAdjustments=true
+    continue
+   }
+
+   deferRemainingAdjustments=true
+   const originalDate=String(sourceRow.adjustment_date||item.date||'').slice(0,10)
+   const marker=`AUTO-DEFERRED FROM PAYROLL ${payrollStart} to ${payrollEnd} due insufficient earnings; original adjustment date ${originalDate}.`
+   const currentNotes=String(sourceRow.notes||'').trim()
+   const nextNotes=currentNotes.includes(marker)?currentNotes:[currentNotes,marker].filter(Boolean).join(' | ')
+   const { error:deferError }=await supabase.from('payroll_adjustments').update({ adjustment_date:nextPayrollStart, notes:nextNotes }).eq('id',sourceRow.id).eq('employee_id',emp.id).eq('adjustment_date',originalDate)
+   if (deferError) throw deferError
+   deferredAdjustmentIds.add(String(sourceRow.id))
+   deferredAdjustmentTotal=moneyRound(deferredAdjustmentTotal+amount)
+  }
+
+  const payableAdjustmentBreakdown=adjustmentBreakdown.filter(item=>item.type==='addition' || !deferredAdjustmentIds.has(String(item?.id||'')))
+  const appliedAdjustmentDeductions=moneyRound(payableAdjustmentBreakdown.filter(item=>item.type!=='addition').reduce((sum,item)=>sum+Number(item.amount||0),0))
+  const adjDeductionsRounded=moneyRound(appliedAdjustmentDeductions+absenceDeductionRounded)
+  const nonCADeductions=moneyRound(mandatoryNonCADeductions+appliedAdjustmentDeductions)
+
+  if (deferredAdjustmentIds.size>0) {
+   const { error:deferAuditError }=await supabase.from('audit_logs').insert([{
+    action:'PAYROLL ADJUSTMENT AUTO-DEFERRED',
+    performed_by:'Payroll System',
+    target_employee:emp.full_name||emp.employee_code||emp.id,
+    details:`${deferredAdjustmentIds.size} adjustment(s) totaling ${php(deferredAdjustmentTotal)} moved from payroll ${payrollStart} to ${payrollEnd} into next cutoff starting ${nextPayrollStart} because current earnings were insufficient.`
+   }])
+   if (deferAuditError) console.warn('Payroll adjustment deferral audit failed:',deferAuditError)
+  }
 
   // Payroll safety rule: deductions must never create negative net pay.
   // Cash advance is flexible and is always applied last. Any unpaid CA stays in the CA balance.
-  // If non-CA deductions alone exceed earnings, release is blocked until admin reviews/corrects it.
+  // Only mandatory non-CA deductions can now create a release blocker; deferrable payroll
+  // adjustments are automatically carried to the next cutoff as whole items.
   const nonCADeductionOverflow=moneyRound(Math.max(0, nonCADeductions-totalEarnings))
   const availableForCA=moneyRound(Math.max(0, totalEarnings-nonCADeductions))
   const rawCADeduction=moneyRound((cas||[]).filter(isOutstandingCashAdvance).reduce((s,ca)=>s+getCashAdvancePayrollDeduction(ca),0))
@@ -30484,7 +30266,7 @@ async function computePayroll() {
   const automaticUndertimeTrace = Object.entries(automaticUndertimeByDate).map(([date, minutes]) => ({ date, minutes }))
   const payrollCostType = getEmployeePayrollCostType(emp)
   const payrollCostInfo = getPayrollCostTypeInfo(payrollCostType)
-  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, adjustmentItems:adjustmentBreakdown, totalEarnings, cashAdvanceDeduction:caDeduction, cashAdvanceItems:cashAdvanceBreakdown, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:lateDeductionRounded, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, automaticUndertimeTrace, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
+  results.push({ employeeId:emp.id, employeeName:emp.full_name, employeeCode:emp.employee_code, position:emp.position||'', workedDays, absentDays, paidLeaveDays, unpaidLeaveDays, paidLeavePay, workedBasicPay, totalWorkedMinutes, regularPaidMinutes, hourlyRate, basicPay, birthdayPay, overtimePay, overtimeMinutes, nightDiffPay, nightDiffMinutes, holidayPay, holidayEligibilityNotes, adjustmentEarnings:adjEarnings, adjustmentItems:payableAdjustmentBreakdown, totalEarnings, cashAdvanceDeduction:caDeduction, cashAdvanceItems:cashAdvanceBreakdown, deferredCADeduction, requestedCashAdvanceDeduction:rawCADeduction, nonCADeductionOverflow, sssDeduction:sssDeductionRounded, pagibigDeduction:pagibigDeductionRounded, philhealthDeduction:philhealthDeductionRounded, lateDeduction:lateDeductionRounded, undertimeDeduction:undertimeDeductionRounded, adjustmentDeductions:adjDeductionsRounded, absenceDeduction:absenceDeductionRounded, totalDeductions, netPay, lateMinutes:lateMinutesInfo, undertimeMinutes:undertimeMinutesInfo, automaticUndertimeTrace, payrollBasis, monthlySalary, semiMonthlySalary, attendanceRequiredForPay, absenceDeductionApplicable, overtimePayEligible, undertimeDeductionApplicable, payrollCostType, payrollCostLabel:payrollCostInfo.shortLabel || payrollCostInfo.label, bankName:emp.bank_name||'', bankAccount:emp.bank_account_number||'', bankAccountName:emp.bank_account_name||'', mobileNumber:emp.contact_number||'', employeeAcknowledgement:'draft', payrollStatus:'draft' })
  } // end for emp
 
  const payrollPayload = results.map((pay, idx) => ({
@@ -35664,7 +35446,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='inventory') { loadInventoryItems(); loadInventoryTransactions(); loadSuppliers(); loadPurchaseOrders(); loadResellers(); loadDeliveryInvoices(); loadCrateMovements(); supabase.from('stock_adjustments').select('*').order('created_at',{ascending:false}).limit(20).then(({data})=>setStockAdjustments(data||[])) }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadCostProfiles(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
-if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadProductionForecastExclusions({ silent:true }); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
 if(key==='sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) loadInvoiceDeletionRequests({ silent:true })
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
  if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
@@ -43841,7 +43623,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {(()=>{
   const windowStatus = getTomorrowOperationsForecastWindow(new Date(tomorrowForecastTick))
   const targetIsTomorrow = forecastDate === windowStatus.targetDate
-  const targetInvoices = (deliveryInvoices || []).filter(invoice => String(invoice?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10))
+  const targetInvoices = getProductionForecastInvoices(deliveryInvoices, forecastDate)
   const targetInvoiceQty = targetInvoices.reduce((sum, invoice) => sum + getWeatherGuardInvoiceQuantity(invoice), 0)
   const targetPagasaView = getTomorrowForecastPagasaView(pagasaRegion1Data, forecastDate)
   const targetPagasaMunicipality = targetPagasaView?.pangasinan?.municipalities?.find(row => String(row?.name || '').toLowerCase() === String(pagasaSelectedMunicipality || '').toLowerCase())
@@ -43992,7 +43774,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   return 0
  }
 
- const forecastInvoices = deliveryInvoices.filter(i => i.delivery_date === forecastDate)
+ const forecastExcludedInvoices = (deliveryInvoices || []).filter(invoice => (
+  String(invoice?.delivery_date || '').slice(0,10) === String(forecastDate || '').slice(0,10)
+  && isInvoiceExcludedFromProductionForecast(invoice)
+ ))
+ const forecastInvoices = getProductionForecastInvoices(deliveryInvoices, forecastDate)
  const forecastMap = {}
 
  forecastInvoices.forEach(inv => {
@@ -44122,7 +43908,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'12px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}> Invoice Production Baseline</h3>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Exact product quantities and dry premix requirement from invoices for the selected delivery date</p>
+ <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Exact product quantities and dry premix requirement from active invoices for the selected delivery date. Invoices with pending deletion requests are excluded immediately.</p>
  </div>
  <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', flexWrap:'wrap' }}>
  <div>
@@ -44144,11 +43930,16 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </button>
  </div>
  </div>
+ {forecastExcludedInvoices.length > 0 && (
+ <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'9px', padding:'9px 11px', marginBottom:'10px', color:'#7a4d00', fontSize:'11px', fontWeight:'800' }}>
+ {forecastExcludedInvoices.length} invoice{forecastExcludedInvoices.length!==1?'s are':' is'} excluded from production because deletion approval is pending. If the owner rejects the request, the invoice will return to the forecast automatically.
+ </div>
+ )}
  {forecastInvoices.length === 0? (
  <div style={{ textAlign:'center', padding:'24px', color:'#aaa' }}>
  <p style={{ fontSize:'32px', margin:'0 0 8px' }}> </p>
- <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#555' }}>No invoices for {forecastDate}</p>
- <p style={{ fontSize:'11px', margin:0 }}>Create invoices with delivery date <strong>{forecastDate}</strong> and they will automatically appear here.</p>
+ <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#555' }}>No active production invoices for {forecastDate}</p>
+ <p style={{ fontSize:'11px', margin:0 }}>{productionForecastExclusionsLoading?'Checking deletion requests...':forecastExcludedInvoices.length>0?'All invoices for this date are pending deletion approval.':'Create invoices with this delivery date and they will automatically appear here.'}</p>
  </div>
  ): (
  <div>
@@ -46284,7 +46075,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <button style={{...btnGreen, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={()=>loadFoundationData(foundationMonth, { silent:false, showLoading:true })} disabled={foundationLoading}>{foundationLoading?' Loading...':' LOAD / REFRESH'}</button>
  <button style={{...btnRed, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={exportExecutiveSummaryCSV}> EXEC SUMMARY</button>
  <button style={{...btnGray, width:'auto', marginTop:0, padding:'10px 16px', background:foundationAutoRefresh?'#e8f5e9':'#fff5f5', color:foundationAutoRefresh?'#2d8a4e':'#ca1b1b', border:`1px solid ${foundationAutoRefresh?'#2d8a4e':'#ca1b1b'}` }} onClick={()=>setFoundationAutoRefresh(v=>!v)}>
- {foundationAutoRefresh? ` AUTO ${FOUNDATION_REFRESH_SECONDS}s`: ' AUTO OFF'}
+ {foundationAutoRefresh? ` AUTO ${Math.round(FOUNDATION_REFRESH_SECONDS / 60)}m`: ' AUTO OFF'}
  </button>
  <button style={{...btnBlack, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={printFoundationReport}> PRINT</button>
  <button style={{...btnYellow, width:'auto', marginTop:0, padding:'10px 16px' }} onClick={exportFoundationCSV}> CSV</button>
@@ -46297,7 +46088,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  Last updated: <strong>{formatFoundationLastUpdated(foundationLastUpdated || foundationData?.loadedAt)}</strong>
  </p>
  <p style={{ margin:0, color:foundationAutoRefresh?'#2d8a4e':'#ca1b1b', fontSize:'12px', fontWeight:'bold' }}>
- {foundationAutoRefresh? `Auto-refresh is ON. Dashboard reloads every ${FOUNDATION_REFRESH_SECONDS} seconds while this module is open.`: 'Auto-refresh is OFF. Use LOAD / REFRESH manually.'}
+ {foundationAutoRefresh? `Auto-refresh is ON. Foundation reloads every ${Math.round(FOUNDATION_REFRESH_SECONDS / 60)} minutes while this module is open.`: 'Auto-refresh is OFF. Use LOAD / REFRESH manually.'}
  </p>
  </div>
 
@@ -49386,9 +49177,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  const paidInvoices = resellerInvoices.filter(i=>String(i.status||'').toLowerCase()==='paid')
  const creditStatus = buildResellerCreditStatus(currentReseller.id, resellerInvoices, today)
  const latestInvoice = resellerInvoices[0]
- const portalNotices = [...resellerNotices, ...resellerAutoOrderEvents.filter(event=>event.notify_reseller).map(event=>({
-  id:`auto-${event.id}`, title:'Automatic order update', message:event.message, created_at:event.created_at
- }))].sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')))
+ const portalNotices = [...resellerNotices].sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')))
  const pendingOrders = resellerOrders.filter(o=>['pending','on_hold'].includes(String(o.status||'').toLowerCase()))
  const approvedOrders = resellerOrders.filter(o=>String(o.status||'').toLowerCase()==='approved')
  const rejectedOrders = resellerOrders.filter(o=>String(o.status||'').toLowerCase()==='rejected')
@@ -49396,7 +49185,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  const totalReturnQty = resellerReturns.reduce((s,r)=>s+(r.reseller_return_items||[]).reduce((a,it)=>a+safeNum(it.returned_quantity,0),0),0)
  const collectionRate = totalInvoiceAmount>0? (totalPaid/totalInvoiceAmount)*100: 100
  const navItems = [
- ['dashboard','\uD83D\uDCCA Dashboard'],['invoices',' Invoices'],['balances',' Balances'],['orders',' Orders'],['place_order',' Place Order'],['automatic_orders',' Automatic Ordering'],['returns',' Returns'],['payments',' Payments'],['notices',' Notices']
+ ['dashboard','\uD83D\uDCCA Dashboard'],['invoices',' Invoices'],['balances',' Balances'],['orders',' Orders'],['place_order',' Place Order'],['returns',' Returns'],['payments',' Payments'],['notices',' Notices']
  ]
  const portalCard = { background:'white', borderRadius:'16px', padding:'16px', boxShadow:'0 2px 12px rgba(0,0,0,0.08)', border:'1px solid #f3f3f3' }
  const kpiCard = (label, value, note, color='#ca1b1b') => (
@@ -49429,7 +49218,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {resellerPortalBranches.map(b=><option key={b.id} value={b.id}>{b.name} {b.area?` ${b.area}`:''}</option>)}
  </select>
  )}
- <button style={{...btnYellow, padding:'9px 14px', fontSize:'12px' }} onClick={async ()=>{ await loadResellerPortalData(currentReseller.id); await loadResellerAutoOrderConfig(currentReseller.id, { silent:true }) }} disabled={resellerPortalLoading || resellerAutoOrderLoading}>{resellerPortalLoading || resellerAutoOrderLoading?' Loading':' Refresh'}</button>
+ <button style={{...btnYellow, padding:'9px 14px', fontSize:'12px' }} onClick={()=>loadResellerPortalData(currentReseller.id)} disabled={resellerPortalLoading}>{resellerPortalLoading?' Loading':' Refresh'}</button>
  <button style={{ background:'rgba(255,255,255,0.12)', color:'white', border:'1px solid rgba(255,255,255,0.35)', borderRadius:'10px', padding:'9px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px' }} onClick={resellerLogout}> Logout</button>
  </div>
  </div>
@@ -49468,10 +49257,6 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  {resellerPortalView==='dashboard' && (
  <div>
- <div style={{...portalCard, border:'1.5px solid #FDD412', marginBottom:'14px', display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'12px' }}>
-  <div><p style={{ margin:'0 0 5px', color:'#ca1b1b', fontSize:'14px', fontWeight:'900' }}>Automatic ordering · {resellerAutoOrderSettings.enabled?'ON':'OFF'}</p><p style={{ margin:0, color:'#555', fontSize:'12px' }}>Daily cutoff: <strong>1:00 PM Philippine time</strong> · Staff approval required</p><p style={{ margin:'5px 0 0', color:'#777', fontSize:'11px' }}>Delivery days: {resellerAutoOrderSchedules.filter(row=>row.enabled).map(row=>RESELLER_AUTO_ORDER_WEEKDAYS[Number(row.delivery_weekday)]).join(', ') || 'No active templates'}</p></div>
-  <button style={{...btnYellow,width:'auto',marginTop:0,padding:'9px 14px',fontSize:'12px'}} onClick={()=>setResellerPortalView('automatic_orders')}>MANAGE AUTOMATIC ORDERING</button>
- </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(4,1fr)', gap:'12px', marginBottom:'16px' }}>
  {kpiCard('Outstanding Balance', php(totalBalance), `${openInvoices.length} open invoice(s)`, totalBalance>0?'#ca1b1b':'#2d8a4e')}
  {kpiCard('Collection Rate', `${collectionRate.toFixed(1)}%`, `${paidInvoices.length} fully paid invoice(s)`, collectionRate>=90?'#2d8a4e':'#f5a623')}
@@ -49565,95 +49350,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )}
 
- {resellerPortalView==='automatic_orders' && (
- <div>
- <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginBottom:'12px' }}>
-  <div><h2 style={{...h2s, marginBottom:'3px' }}> Automatic Ordering</h2><p style={{ color:'#777', fontSize:'11px', margin:0 }}>Orders are generated at the fixed 1:00 PM Philippine-time cutoff for the next delivery day, then wait for staff approval.</p></div>
-  <button style={{...btnYellow, width:'auto', marginTop:0, padding:'9px 14px', fontSize:'11px' }} onClick={()=>startResellerAutoOrderTemplate(null, 1)}>+ CREATE DAY TEMPLATE</button>
- </div>
-
- <div style={{...portalCard, border:`2px solid ${resellerAutoOrderSettings.enabled?'#2d8a4e':'#ddd'}`, background:resellerAutoOrderSettings.enabled?'#f0fff4':'white', marginBottom:'12px' }}>
-  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
-   <div><p style={{ margin:'0 0 4px', color:resellerAutoOrderSettings.enabled?'#2d8a4e':'#555', fontSize:'15px', fontWeight:'900' }}>{resellerAutoOrderSettings.enabled?'Automatic ordering is enabled':'Automatic ordering is disabled'}</p><p style={{ margin:0, color:'#777', fontSize:'11px' }}>{resellerAutoOrderSettings.enabled?'Active day templates will submit automatically at 1:00 PM.':'No new automatic orders will be generated until this is enabled. Existing submissions remain for staff review.'}</p></div>
-   <button style={{...btnGreen, width:'auto', marginTop:0, background:resellerAutoOrderSettings.enabled?'#ca1b1b':'#2d8a4e', padding:'9px 14px', fontSize:'11px' }} disabled={resellerAutoOrderSaving} onClick={()=>setResellerAutomaticOrderingEnabled(!resellerAutoOrderSettings.enabled)}>{resellerAutoOrderSettings.enabled?'DISABLE AUTO-ORDER':'ENABLE AUTO-ORDER'}</button>
-  </div>
- </div>
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1.15fr .85fr', gap:'12px', marginBottom:'12px' }}>
-  <div style={portalCard}>
-   <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', alignItems:'center', marginBottom:'10px' }}><div><h3 style={{ margin:'0 0 3px', fontSize:'14px', color:'#333' }}>Delivery-day templates</h3><p style={{ margin:0, color:'#777', fontSize:'10px' }}>One template per weekday. Template changes for tomorrow lock at 1:00 PM.</p></div><strong style={{ color:'#ca1b1b', fontSize:'11px' }}>{resellerAutoOrderSchedules.filter(s=>s.enabled!==false).length} ACTIVE</strong></div>
-   <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'10px' }}>
-    {RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=>{
-     const saved = resellerAutoOrderSchedules.find(schedule=>Number(schedule.delivery_weekday)===index)
-     return <button key={day} onClick={()=>startResellerAutoOrderTemplate(saved || null,index)} style={{ border:`1px solid ${saved?.enabled!==false && saved?'#ca1b1b':'#ddd'}`, background:saved?.enabled!==false && saved?'#ca1b1b':'white', color:saved?.enabled!==false && saved?'white':'#555', borderRadius:'9px', padding:'8px 10px', minWidth:'44px', fontWeight:'900', fontSize:'10px', cursor:'pointer' }}>{day.slice(0,3)}</button>
-    })}
-   </div>
-   {resellerAutoOrderSchedules.length===0? <p style={{ color:'#aaa', fontSize:'12px', margin:'18px 0', textAlign:'center' }}>No templates yet. Select a weekday to create the first template.</p>: resellerAutoOrderSchedules.map(schedule=>(
-    <div key={schedule.id} style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', padding:'9px 0', borderTop:'1px solid #eee' }}>
-     <div><p style={{ margin:'0 0 2px', fontSize:'12px', fontWeight:'900', color:'#333' }}>{schedule.template_name}</p><p style={{ margin:0, fontSize:'10px', color:'#777' }}>{RESELLER_AUTO_ORDER_WEEKDAYS[Number(schedule.delivery_weekday)]} · {(schedule.items||[]).length} products · {schedule.enabled===false?'Paused':'Active'}</p></div>
-     <button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>startResellerAutoOrderTemplate(schedule)}>EDIT</button>
-    </div>
-   ))}
-  </div>
-
-  <div style={portalCard}>
-   <h3 style={{ margin:'0 0 3px', fontSize:'14px', color:'#333' }}>Delivery skip settings</h3><p style={{ margin:'0 0 10px', color:'#777', fontSize:'10px' }}>Choose a one-time future date or a delivery day to skip every week. Tomorrow can only be changed before 1:00 PM.</p>
-   <label style={lblS}>Skip type</label>
-   <select value={resellerAutoOrderSkipMode} onChange={e=>setResellerAutoOrderSkipMode(e.target.value)} style={inputStyle}>
-    <option value="date">One specific future date</option>
-    <option value="weekday">Repeat every week</option>
-   </select>
-   {resellerAutoOrderSkipMode==='date'? <>
-    <label style={lblS}>Specific future delivery date</label><input type="date" min={getDefaultResellerOrderDeliveryDate()} value={resellerAutoOrderSkipDate} onChange={e=>setResellerAutoOrderSkipDate(e.target.value)} style={inputStyle} />
-    <label style={lblS}>Reason (optional)</label><input type="text" value={resellerAutoOrderSkipReason} onChange={e=>setResellerAutoOrderSkipReason(e.target.value)} placeholder="Example: school closed or outlet unavailable" style={inputStyle} />
-    <button style={{...btnGray, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={skipResellerAutomaticOrderDate}>SKIP SELECTED DATE</button>
-   </>:<>
-    <label style={lblS}>Delivery days to skip every week</label>
-    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'7px', marginBottom:'10px' }}>
-     {RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=>{
-      const checked = resellerAutoOrderSkipWeekdays.includes(index)
-      const schedule = resellerAutoOrderSchedules.find(row=>Number(row.delivery_weekday)===index)
-      return <label key={day} style={{ display:'flex', alignItems:'center', gap:'8px', padding:'9px 10px', border:`1.5px solid ${checked?'#FDD412':'#ddd'}`, borderRadius:'9px', background:checked?'#fff9d9':'white', color:'#333', fontSize:'11px', fontWeight:'800', cursor:'pointer' }}><input type="checkbox" checked={checked} onChange={()=>toggleResellerAutoOrderSkipWeekday(index)} /> <span>{day}<small style={{ display:'block', color:schedule?.enabled===false?'#2d8a4e':'#888', fontSize:'8px', fontWeight:'700' }}>{!schedule || schedule.enabled===false?'Already skipped':'Active template'}</small></span></label>
-     })}
-    </div>
-    <button style={{...btnYellow, marginTop:0 }} disabled={resellerAutoOrderSaving || resellerAutoOrderSkipWeekdays.length===0} onClick={applyWeeklyAutoOrderSkips}>{resellerAutoOrderSaving?'APPLYING...':`APPLY WEEKLY SKIPS (${resellerAutoOrderSkipWeekdays.length})`}</button>
-    <p style={{ margin:'8px 0 0', color:'#777', fontSize:'9px', lineHeight:1.4 }}>Select one or several days. Each selected day’s template will be paused until you edit that template and set it back to Active.</p>
-   </>}
-  </div>
- </div>
-
- {resellerAutoOrderForm && (
- <div id="reseller-auto-order-template-editor" tabIndex={-1} style={{...portalCard, border:'2px solid #FDD412', marginBottom:'12px', scrollMarginTop:'12px', outline:'none' }}>
-  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginBottom:'12px' }}><div><h3 style={{ margin:'0 0 3px', color:'#ca1b1b', fontSize:'15px' }}>Edit automatic-order template</h3><p style={{ margin:0, color:'#777', fontSize:'10px' }}>Recommendations use delivered quantities minus recorded returns from the last four matching weekdays, plus the safety allowance, within your limits. With no history, the template is used.</p></div><button style={{...btnGray, width:'auto', marginTop:0, padding:'7px 11px', fontSize:'10px' }} onClick={()=>setResellerAutoOrderForm(null)}>CLOSE</button></div>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'9px' }}>
-   <div><label style={lblS}>Delivery day</label><select value={resellerAutoOrderForm.delivery_weekday} disabled={!!resellerAutoOrderForm.id} onChange={e=>startResellerAutoOrderTemplate(null,Number(e.target.value))} style={inputStyle}>{RESELLER_AUTO_ORDER_WEEKDAYS.map((day,index)=><option key={day} value={index}>{day}</option>)}</select></div>
-   <div><label style={lblS}>Template name</label><input type="text" value={resellerAutoOrderForm.template_name} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,template_name:e.target.value}))} style={inputStyle} /></div>
-   <div><label style={lblS}>Template status</label><select value={resellerAutoOrderForm.enabled?'active':'paused'} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,enabled:e.target.value==='active'}))} style={inputStyle}><option value="active">Active</option><option value="paused">Paused</option></select></div>
-   <div><label style={lblS}>Effective start</label><input type="date" value={resellerAutoOrderForm.effective_start_date} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,effective_start_date:e.target.value}))} style={inputStyle} /></div>
-   <div><label style={lblS}>Optional end date</label><input type="date" value={resellerAutoOrderForm.effective_end_date} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,effective_end_date:e.target.value}))} style={inputStyle} /></div>
-   <div><label style={lblS}>Submission cutoff</label><input type="text" value="1:00 PM every day (fixed)" readOnly style={{...inputStyle,background:'#f5f5f5',fontWeight:'900'}} /></div>
-  </div>
-  <div style={{ display:'flex', justifyContent:'flex-end', margin:'0 0 9px' }}>
-   <button style={{...btnYellow, width:'auto', marginTop:0, padding:'8px 13px', fontSize:'10px' }} disabled={resellerAutoOrderCopying || resellerAutoOrderSaving} onClick={copyLastOrderToResellerAutoOrderTemplate}>{resellerAutoOrderCopying?'COPYING...':'COPY FROM LAST ORDER'}</button>
-  </div>
-  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1.5fr repeat(3,.65fr)':'2fr repeat(3,1fr)', gap:'6px', padding:'7px 9px', background:'#1a1a2e', borderRadius:'9px', color:'white', fontSize:'9px', fontWeight:'900' }}><span>PRODUCT</span><span style={{textAlign:'center'}}>TEMPLATE</span><span style={{textAlign:'center'}}>MIN</span><span style={{textAlign:'center'}}>MAX</span></div>
-  <div style={{ maxHeight:'360px', overflowY:'auto' }}>
-   {(resellerAutoOrderForm.items||[]).map((item,index)=>(
-    <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:isMobile?'1.5fr repeat(3,.65fr)':'2fr repeat(3,1fr)', gap:'6px', padding:'6px 9px', alignItems:'center', background:index%2===0?'white':'#fafafa', borderBottom:'1px solid #eee' }}><span style={{ fontSize:'11px', fontWeight:'800' }}>{item.variant_name}</span>{['template_quantity','minimum_quantity','maximum_quantity'].map(field=><input key={field} type="number" min="0" value={item[field]??''} placeholder={field==='template_quantity'?'0':'Auto'} onChange={e=>setResellerAutoOrderForm(prev=>({...prev,items:prev.items.map((row,rowIndex)=>rowIndex===index?{...row,[field]:e.target.value}:row)}))} style={{...inputStyle,marginBottom:0,padding:'7px',textAlign:'center',fontSize:'11px',border:field==='template_quantity'?'1.5px solid #FDD412':'1px solid #ddd'}} />)}</div>
-   ))}
-  </div>
-  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', alignItems:'center', flexWrap:'wrap', marginTop:'10px' }}><p style={{ margin:0, color:'#777', fontSize:'10px' }}>Blank minimum/maximum values automatically use 80%–120% of the template quantity.</p><button style={{...btnRed, width:'auto', marginTop:0, padding:'9px 16px', fontSize:'11px' }} disabled={resellerAutoOrderSaving} onClick={saveResellerAutoOrderTemplate}>{resellerAutoOrderSaving?'SAVING...':'SAVE TEMPLATE'}</button></div>
- </div>
- )}
-
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'12px' }}>
-  <div style={portalCard}><h3 style={{ margin:'0 0 9px', color:'#333', fontSize:'14px' }}>Recommendation settings</h3><label style={lblS}>Safety allowance (%)</label><input type="number" min="0" max="50" value={resellerAutoOrderSettings.safety_buffer_pct} onChange={e=>setResellerAutoOrderSettings(prev=>({...prev,safety_buffer_pct:e.target.value}))} style={inputStyle} /><div style={{ display:'grid', gap:'7px', marginBottom:'10px' }}>{[['notify_on_generated','Order generated'],['notify_on_adjusted','Staff adjusted quantities'],['notify_on_approved','Order approved']].map(([key,label])=><label key={key} style={{ display:'flex', alignItems:'center', gap:'8px', color:'#555', fontSize:'11px', fontWeight:'700' }}><input type="checkbox" checked={resellerAutoOrderSettings[key]!==false} onChange={e=>setResellerAutoOrderSettings(prev=>({...prev,[key]:e.target.checked}))} /> Portal notice when: {label}</label>)}</div><button style={{...btnGreen, marginTop:0 }} disabled={resellerAutoOrderSaving} onClick={saveResellerAutomaticOrderingSettings}>SAVE SETTINGS</button></div>
-  <div style={portalCard}><h3 style={{ margin:'0 0 9px', color:'#333', fontSize:'14px' }}>Automatic-order activity</h3>{resellerAutoOrderEvents.length===0?<p style={{ color:'#aaa', fontSize:'11px', margin:0 }}>No automatic-order activity yet.</p>:resellerAutoOrderEvents.slice(0,8).map(event=><div key={event.id} style={{ padding:'7px 0', borderBottom:'1px solid #eee' }}><p style={{ margin:'0 0 2px', fontSize:'11px', fontWeight:'800', color:'#333' }}>{event.message}</p><p style={{ margin:0, fontSize:'9px', color:'#888' }}>{new Date(event.created_at).toLocaleString('en-PH',{timeZone:PH_TIME_ZONE})} · {event.performed_by}</p></div>)}</div>
- </div>
- </div>
- )}
-
- {resellerPortalView==='orders' && (
+{resellerPortalView==='orders' && (
  <div>
  <h2 style={h2s}> Order Requests</h2>
  {lastSubmittedOrderNotice && (

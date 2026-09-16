@@ -22,6 +22,7 @@ setAdminAuthUser(null)
 setAdminAuthProfile(null)
 setInvoiceDeletionAccess({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
 setInvoiceDeletionRequests([])
+setProductionForecastExcludedInvoiceIds([])
 setRequestingInvoiceDeletion(null)
 }`
 
@@ -36,13 +37,14 @@ setAvailableRoles([])
 setCameFromAdmin(false)
 setInvoiceDeletionAccess({ can_request:false, can_review:false, admin_user_id:null, admin_name:'' })
 setInvoiceDeletionRequests([])
+setProductionForecastExcludedInvoiceIds([])
 setRequestingInvoiceDeletion(null)
 }`
 
 if (!src.includes('ADMIN_SESSION_INTEGRITY_V1')) {
   src = replacePatternOnce(
     src,
-    /if\s*\(!session\?\.user\)\s*\{\s*setAdminAuthUser\(null\)\s*setAdminAuthProfile\(null\)\s*setInvoiceDeletionAccess\(\{\s*can_request:false,\s*can_review:false,\s*admin_user_id:null,\s*admin_name:''\s*\}\)\s*setInvoiceDeletionRequests\(\[\]\)\s*setRequestingInvoiceDeletion\(null\)\s*\}/,
+    /if\s*\(!session\?\.user\)\s*\{\s*setAdminAuthUser\(null\)\s*setAdminAuthProfile\(null\)\s*setInvoiceDeletionAccess\(\{\s*can_request:false,\s*can_review:false,\s*admin_user_id:null,\s*admin_name:''\s*\}\)\s*setInvoiceDeletionRequests\(\[\]\)\s*setProductionForecastExcludedInvoiceIds\(\[\]\)\s*setRequestingInvoiceDeletion\(null\)\s*\}/,
     authListenerNew,
     'auth-listener target'
   )
