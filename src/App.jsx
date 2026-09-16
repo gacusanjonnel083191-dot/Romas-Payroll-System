@@ -3105,6 +3105,121 @@ const DOCUMENT_BATCH1A_FORMS = [
   "externalTab": "contracts"
  },
  {
+  "key": "HR-COE",
+  "aliases": [
+   "COE",
+   "CERTIFICATE-OF-EMPLOYMENT"
+  ],
+  "title": "Certificate of Employment (COE)",
+  "category": "HR & Employee",
+  "refPrefix": "RD-COE",
+  "purpose": "Prepare a branded, factual Certificate of Employment for an employee's personal, bank, visa, government, school, or other legitimate request.",
+  "employeeMode": "optional",
+  "employeeLabel": "Employee Record (optional — selecting one fills the COE details)",
+  "fields": [
+   {
+    "key": "employeeName",
+    "label": "Employee Full Name",
+    "type": "text",
+    "required": true,
+    "placeholder": "Enter the employee's full legal name",
+    "span": "full"
+   },
+   {
+    "key": "employeeCode",
+    "label": "Employee Code (Optional)",
+    "type": "text",
+    "placeholder": "Optional employee code"
+   },
+   {
+    "key": "employmentStatus",
+    "label": "Employment Status",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Regular",
+     "Probationary",
+     "Part-Time",
+     "Contractual",
+     "Current Employee",
+     "Former Employee"
+    ]
+   },
+   {
+    "key": "employmentStartDate",
+    "label": "Employment Start Date",
+    "type": "date",
+    "required": true,
+    "help": "Selecting an employee record fills this from the employee profile. You may correct it when necessary."
+   },
+   {
+    "key": "employmentEndDate",
+    "label": "Employment End Date (if former employee)",
+    "type": "date"
+   },
+   {
+    "key": "positionTitle",
+    "label": "Position / Role",
+    "type": "text",
+    "required": true,
+    "placeholder": "Example: Production Crew / Cashier / Driver"
+   },
+   {
+    "key": "assignedDepartment",
+    "label": "Department / Assignment (Optional)",
+    "type": "text",
+    "placeholder": "Example: Production / Sales / Delivery"
+   },
+   {
+    "key": "addressee",
+    "label": "Addressee",
+    "type": "text",
+    "defaultValue": "TO WHOM IT MAY CONCERN",
+    "span": "full"
+   },
+   {
+    "key": "certificatePurpose",
+    "label": "Purpose / Requested Use",
+    "type": "select",
+    "defaultValue": "General / Personal Record",
+    "options": [
+     "General / Personal Record",
+     "Bank / Loan Application",
+     "Visa / Travel",
+     "Government / Benefits",
+     "School / Scholarship",
+     "Other"
+    ]
+   },
+   {
+    "key": "compensationStatement",
+    "label": "Compensation Statement (Optional)",
+    "type": "textarea",
+    "placeholder": "Leave blank unless the employee specifically requests it and the authorized signatory approves its inclusion.",
+    "span": "full"
+   },
+   {
+    "key": "additionalCertification",
+    "label": "Additional Certification (Optional)",
+    "type": "textarea",
+    "placeholder": "Add only factual information that the company is authorized to certify.",
+    "span": "full"
+   },
+   {
+    "key": "signatoryTitle",
+    "label": "Signatory Title",
+    "type": "text",
+    "defaultValue": "Authorized Signatory"
+   }
+  ],
+  "reminder": "Issue only after matching the employee details to the current HR record. Do not include compensation or other confidential details unless the employee specifically requests it and the authorized signatory approves it.",
+  "signatureLabels": [
+   "Authorized Signatory",
+   "Employee / Recipient",
+   "Prepared By"
+  ]
+ },
+ {
   "key": "INV-WD",
   "title": "Company Inventory Withdrawal Slip",
   "category": "Inventory & Purchasing",
@@ -5480,10 +5595,22 @@ function findBatch1DocumentForm(formKey) {
 }
 
 const RESELLER_AGREEMENT_FORM_KEYS = ['RES-KIOSK','RES-CART']
+const CERTIFICATE_OF_EMPLOYMENT_FORM_KEY = 'HR-COE'
 
 function isResellerAgreementFormKey(formKey = '') {
  const form = findBatch1DocumentForm(formKey)
  return !!form && RESELLER_AGREEMENT_FORM_KEYS.includes(String(form.key || '').toUpperCase())
+}
+
+function isCertificateOfEmploymentFormKey(formKey = '') {
+ const form = findBatch1DocumentForm(formKey)
+ return String(form?.key || formKey || '').toUpperCase() === CERTIFICATE_OF_EMPLOYMENT_FORM_KEY
+}
+
+function getCertificateEmploymentStatus(employee) {
+ const type = String(employee?.employment_type || '').trim()
+ if (!type) return 'Current Employee'
+ return type.replace(/\b\w/g, letter => letter.toUpperCase())
 }
 
 function getResellerAgreementModel(formKey = '') {
@@ -5572,7 +5699,7 @@ const DOCUMENT_CENTER_CATALOG = [
  { code:'HR-REGULAR-CONFIRM', name:'Regular Employment Confirmation Letter', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm regular employment status and effective date.' },
  { code:'HR-RESIGN-ACCEPT', name:'Resignation Acceptance Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Acknowledge resignation, last day, turnover, and clearance requirements.' },
  { code:'HR-CLEARANCE', name:'Employee Clearance Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Track clearance before final pay release.' },
- { code:'HR-COE', name:'Certificate of Employment Request / Release Log', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Track employee COE requests, release dates, and receiving acknowledgment.' },
+ { code:'HR-COE', name:'Certificate of Employment (COE)', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Create a branded, factual COE, save its release record, print it, and download an A4 Word file.' },
  { code:'PAY-PAYSLIP', name:'Payslip Archive', category:'Payroll & Salary', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Centralize generated payslips and payroll release records.' },
  { code:'PAY-APPROVAL', name:'Payroll Summary Approval Sheet', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Approve payroll before release and prevent unauthorized changes.' },
  { code:'PAY-RELEASE', name:'Payroll Release Acknowledgment Slip', category:'Payroll & Salary', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm employee received salary or payroll release.' },
@@ -34525,6 +34652,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const selectedBatch1DocumentForm = findBatch1DocumentForm(documentFormDraft.formKey) || DOCUMENT_BATCH1A_FORMS.find(form => !form.externalTab) || DOCUMENT_BATCH1A_FORMS[0]
  const activeBatch1FillableForms = DOCUMENT_BATCH1A_FORMS.filter(form => !form.externalTab)
  const isChargeSlipDocumentForm = selectedBatch1DocumentForm?.key === 'FIN-CHARGE-SLIP'
+ const isCertificateOfEmploymentForm = isCertificateOfEmploymentFormKey(selectedBatch1DocumentForm?.key)
  const ownerOpenDocumentRecords = (companyDocumentRecords || []).filter(record => !['closed','completed','voided','terminated','expired'].includes(String(record.status || 'draft').toLowerCase()))
  const ownerPendingEmployeeCharges = (employeeCharges || []).filter(charge => ['pending_owner','disputed'].includes(String(charge.status || '').toLowerCase()))
  const ownerLinkedChargeByDocumentId = (employeeCharges || []).reduce((map, charge) => {
@@ -34597,6 +34725,25 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  const updateDocumentFormDraft = (field, value) => {
   setDocumentFormDraft(prev => {
+   if (field === 'employeeId' && isCertificateOfEmploymentFormKey(prev.formKey)) {
+    const employee = (employees || []).find(row => String(row.id) === String(value)) || null
+    if (employee) {
+     return {
+      ...prev,
+      employeeId:value,
+      customFields:{
+       ...(prev.customFields || {}),
+       employeeName:employee.full_name || '',
+       employeeCode:employee.employee_code || '',
+       employmentStatus:getCertificateEmploymentStatus(employee),
+       employmentStartDate:employee.hire_date || '',
+       employmentEndDate:'',
+       positionTitle:employee.position || '',
+       assignedDepartment:employee.department || ''
+      }
+     }
+    }
+   }
    if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(field)) return { ...prev, [field]:value }
    return { ...prev, customFields:{ ...(prev.customFields || {}), [field]:value } }
   })
@@ -34823,6 +34970,18 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
  const getDocumentRecordSummary = (form, values = {}) => {
+  if (isCertificateOfEmploymentFormKey(form?.key)) {
+   const purpose = String(getFormFieldValueFromValues(values, 'certificatePurpose') || '').trim()
+   const employeeName = String(getFormFieldValueFromValues(values, 'employeeName') || '').trim()
+   const position = String(getFormFieldValueFromValues(values, 'positionTitle') || '').trim()
+   const status = String(getFormFieldValueFromValues(values, 'employmentStatus') || '').trim()
+   const startDate = String(getFormFieldValueFromValues(values, 'employmentStartDate') || '').trim()
+   return {
+    subject:[form?.title || 'Certificate of Employment', purpose].filter(Boolean).join(' — '),
+    items:[employeeName, position, status].filter(Boolean).join(' | '),
+    details:startDate ? `Employment start: ${startDate}` : ''
+   }
+  }
   const preferredSubjectKeys = ['subject','payrollPeriod','policyVersion','adjustmentType','leaveType','disputeType','warningLevel','evaluationPeriod','clearanceReason','purpose']
   const preferredItemKeys = ['items','relatedDocument','referenceNumber','transactionReference','handbookVersion']
   const getFirst = keys => {
@@ -34876,7 +35035,13 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const emp = getDocumentFormEmployee()
   const docNo = getDocumentReferenceNumber(form)
   const isResellerAgreement = isResellerAgreementFormKey(form.key)
+  const isCertificateOfEmployment = isCertificateOfEmploymentFormKey(form.key)
   const agreementModel = getResellerAgreementModel(form.key)
+  const coeFields = isCertificateOfEmployment ? (documentFormDraft.customFields || {}) : {}
+  const coeEmployeeName = String(coeFields.employeeName || emp?.full_name || '').trim() || null
+  const coeEmployeeCode = String(coeFields.employeeCode || emp?.employee_code || '').trim() || null
+  const coePosition = String(coeFields.positionTitle || emp?.position || '').trim() || null
+  const coeDepartment = String(coeFields.assignedDepartment || emp?.department || '').trim() || null
   const selectedResellerId = isResellerAgreement ? String(documentFormDraft?.customFields?.resellerId || '').trim() : ''
   const selectedReseller = isResellerAgreement ? (resellers || []).find(row => String(row.id) === selectedResellerId) : null
   const resellerName = isResellerAgreement
@@ -34894,10 +35059,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    form_key:form.key,
    document_type:form.title,
    employee_id:isResellerAgreement ? null : (emp?.id || documentFormDraft.employeeId || null),
-   employee_name:isResellerAgreement ? null : (emp?.full_name || null),
-   employee_code:isResellerAgreement ? null : (emp?.employee_code || null),
-   position:isResellerAgreement ? null : (emp?.position || null),
-   department:isResellerAgreement ? null : (emp?.department || null),
+   employee_name:isResellerAgreement ? null : (isCertificateOfEmployment ? coeEmployeeName : (emp?.full_name || null)),
+   employee_code:isResellerAgreement ? null : (isCertificateOfEmployment ? coeEmployeeCode : (emp?.employee_code || null)),
+   position:isResellerAgreement ? null : (isCertificateOfEmployment ? coePosition : (emp?.position || null)),
+   department:isResellerAgreement ? null : (isCertificateOfEmployment ? coeDepartment : (emp?.department || null)),
    reseller_id:isResellerAgreement ? (selectedResellerId || null) : null,
    reseller_name:isResellerAgreement ? (resellerName || selectedReseller?.name || null) : null,
    agreement_model:isResellerAgreement ? agreementModel : null,
@@ -34942,7 +35107,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     await logAudit(
      wasEditing ? 'DOCUMENT UPDATED' : 'DOCUMENT CREATED',
      currentAdminLabel || adminRole || 'Admin',
-     emp?.full_name || form.title,
+     coeEmployeeName || emp?.full_name || form.title,
      `${form.title} | ${docNo} | Saved to Owner Document & Action Center`
     )
    }
@@ -35163,6 +35328,120 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
  }
 
+ const cleanCertificateFileName = value => {
+  const cleaned = String(value || '').trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0,70)
+  return cleaned || 'Certificate'
+ }
+
+ const buildCertificateOfEmploymentHtml = ({ form, values = documentFormDraft, record = null, wordMode = false }) => {
+  const cf = values?.customFields || {}
+  const selectedEmployee = (employees || []).find(row => String(row.id) === String(values?.employeeId || documentFormDraft?.employeeId || '')) || null
+  const employeeName = String(cf.employeeName || record?.employee_name || selectedEmployee?.full_name || '____________________________').trim()
+  const employeeCode = String(cf.employeeCode || record?.employee_code || selectedEmployee?.employee_code || '').trim()
+  const employmentStatus = String(cf.employmentStatus || getCertificateEmploymentStatus(selectedEmployee) || 'Current Employee').trim()
+  const employmentStartDate = cf.employmentStartDate || selectedEmployee?.hire_date || ''
+  const employmentEndDate = cf.employmentEndDate || ''
+  const positionTitle = String(cf.positionTitle || record?.position || selectedEmployee?.position || '____________________________').trim()
+  const assignedDepartment = String(cf.assignedDepartment || record?.department || selectedEmployee?.department || '').trim()
+  const addressee = String(cf.addressee || 'TO WHOM IT MAY CONCERN').trim().toUpperCase()
+  const certificatePurpose = String(cf.certificatePurpose || 'General / Personal Record').trim()
+  const compensationStatement = String(cf.compensationStatement || '').trim()
+  const additionalCertification = String(cf.additionalCertification || '').trim()
+  const signatoryName = String(record?.approved_by || values?.approvedBy || '____________________________').trim()
+  const signatoryTitle = String(cf.signatoryTitle || 'Authorized Signatory').trim()
+  const preparedBy = String(record?.prepared_by || values?.preparedBy || currentAdminLabel || 'Admin').trim()
+  const documentNo = record?.document_no || values?.documentNo || getDocumentReferenceNumber(form)
+  const issueDate = values?.documentDate || record?.document_date || today
+  const isFormerEmployee = employmentStatus.toLowerCase() === 'former employee'
+  const esc = escapeAgreementHtml
+  const formattedStartDate = employmentStartDate ? formatDateForDisplay(employmentStartDate) : '____________________________'
+  const formattedEndDate = employmentEndDate ? formatDateForDisplay(employmentEndDate) : ''
+  const employmentStatement = isFormerEmployee
+   ? 'This is to certify that <strong>' + esc(employeeName) + '</strong> was employed by <strong>Roma\'s Donuts</strong> as <strong>' + esc(positionTitle) + '</strong>' + (employeeCode ? ' (Employee Code: ' + esc(employeeCode) + ')' : '') + ' from <strong>' + esc(formattedStartDate) + '</strong>' + (formattedEndDate ? ' until <strong>' + esc(formattedEndDate) + '</strong>' : '') + '.'
+   : 'This is to certify that <strong>' + esc(employeeName) + '</strong> is currently employed by <strong>Roma\'s Donuts</strong> as <strong>' + esc(positionTitle) + '</strong>' + (employeeCode ? ' (Employee Code: ' + esc(employeeCode) + ')' : '') + ', under a <strong>' + esc(employmentStatus) + '</strong> employment status, effective <strong>' + esc(formattedStartDate) + '</strong>.'
+  const departmentStatement = assignedDepartment
+   ? 'The employee is assigned to <strong>' + esc(assignedDepartment) + '</strong>.'
+   : ''
+  const purposeStatement = certificatePurpose && certificatePurpose !== 'General / Personal Record'
+   ? 'This certificate is issued at the employee\'s request for <strong>' + esc(certificatePurpose) + '</strong>.'
+   : 'This certificate is issued at the employee\'s request for lawful purposes.'
+  const compensationHtml = compensationStatement
+   ? '<div class="optional-block"><div class="optional-label">COMPENSATION STATEMENT</div><p>' + esc(compensationStatement).replace(/\n/g, '<br/>') + '</p></div>'
+   : ''
+  const additionalHtml = additionalCertification
+   ? '<div class="optional-block"><div class="optional-label">ADDITIONAL CERTIFICATION</div><p>' + esc(additionalCertification).replace(/\n/g, '<br/>') + '</p></div>'
+   : ''
+  const officeNamespace = wordMode ? ' xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"' : ''
+  const pageClass = wordMode ? 'WordSection1' : 'page'
+
+  return [
+   '<!DOCTYPE html>',
+   '<html' + officeNamespace + '><head><meta charset="utf-8"><title>Certificate of Employment - ' + esc(employeeName) + '</title>',
+   '<style>',
+   '@page WordSection1{size:8.27in 11.69in;margin:.65in .70in .65in .70in;}',
+   'div.WordSection1{page:WordSection1;}',
+   '*{box-sizing:border-box;}',
+   'body{margin:0;background:' + (wordMode ? '#ffffff' : '#e8e8e8') + ';padding:' + (wordMode ? '0' : '12px') + ';font-family:Arial,sans-serif;color:#171717;font-size:11pt;line-height:1.55;}',
+   '.' + pageClass + '{width:' + (wordMode ? 'auto' : '210mm') + ';min-height:' + (wordMode ? 'auto' : '297mm') + ';margin:0 auto;background:#ffffff;padding:' + (wordMode ? '0' : '13mm 15mm') + ';box-shadow:' + (wordMode ? 'none' : '0 2px 12px rgba(0,0,0,.18)') + ';}',
+   '.brand{width:100%;border-collapse:collapse;border-bottom:3px solid #CA1B1B;margin:0 0 7px;}.brand td{vertical-align:top;padding:0 0 10px;}.brand-left{width:60%;}.brand-right{text-align:right;width:40%;}.company{font-size:22pt;line-height:1;color:#CA1B1B;font-weight:900;letter-spacing:.2px;}.company-sub{font-size:8.5pt;color:#555;margin-top:4px;}.tagline{font-size:8pt;color:#9b7900;margin-top:2px;font-style:italic;}.document-title{font-size:11.5pt;color:#1A1A2E;font-weight:900;text-transform:uppercase;letter-spacing:.7px;}.document-no{font-size:8.5pt;color:#666;margin-top:5px;}.gold-rule{height:5px;background:#FDD412;margin:0 0 19px;}.addressee{font-size:11pt;font-weight:900;margin:0 0 22px;text-transform:uppercase;}.letter-title{text-align:center;color:#1A1A2E;font-size:16pt;font-weight:900;letter-spacing:.7px;text-transform:uppercase;margin:0 0 22px;}.letter-body p{margin:0 0 15px;text-align:justify;}.optional-block{border:1px solid #F0D675;background:#FFFBE9;padding:9px 11px;margin:16px 0;}.optional-label{font-size:8.5pt;font-weight:900;color:#8a6700;letter-spacing:.5px;}.optional-block p{margin:5px 0 0;}.issue-line{margin-top:22px;}.signature-table{width:100%;border-collapse:collapse;margin-top:53px;}.signature-table td{width:50%;vertical-align:bottom;padding:0 18px 0 0;}.signature-table td+td{padding:0 0 0 18px;}.signature-space{height:45px;}.signature-line{border-top:1px solid #111;padding-top:5px;text-align:center;font-size:9.5pt;font-weight:700;}.signature-title{text-align:center;font-size:8.5pt;color:#555;margin-top:2px;}.document-control{margin-top:34px;border-top:1px solid #ddd;padding-top:7px;text-align:center;color:#777;font-size:8pt;line-height:1.35;}.no-print{text-align:center;margin:0 0 10px;}.no-print button{background:#CA1B1B;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:10pt;font-weight:700;cursor:pointer;}',
+   '@media print{@page{size:A4;margin:0;}body{background:#fff;padding:0;}.page{box-shadow:none;margin:0;}.no-print{display:none;}}',
+   '</style></head><body>',
+   wordMode ? '' : '<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>',
+   '<div class="' + pageClass + '">',
+   '<table class="brand"><tr><td class="brand-left"><div class="company">Roma\'s Donuts</div><div class="company-sub">Malued District, Dagupan City, Pangasinan</div><div class="tagline">Every bite is a little piece of heaven.</div></td><td class="brand-right"><div class="document-title">Certificate of Employment</div><div class="document-no">' + esc(documentNo) + '</div></td></tr></table>',
+   '<div class="gold-rule"></div>',
+   '<div class="addressee">' + esc(addressee) + '</div>',
+   '<div class="letter-title">Certificate of Employment</div>',
+   '<div class="letter-body">',
+   '<p>' + employmentStatement + '</p>',
+   departmentStatement ? '<p>' + departmentStatement + '</p>' : '',
+   compensationHtml,
+   additionalHtml,
+   '<p>' + purposeStatement + '</p>',
+   '<p class="issue-line">Issued this <strong>' + esc(formatDateForDisplay(issueDate)) + '</strong> at Dagupan City, Pangasinan, Philippines.</p>',
+   '<p>For <strong>Roma\'s Donuts</strong>:</p>',
+   '</div>',
+   '<table class="signature-table"><tr><td><div class="signature-space"></div><div class="signature-line">' + esc(preparedBy) + '</div><div class="signature-title">Prepared By</div></td><td><div class="signature-space"></div><div class="signature-line">' + esc(signatoryName) + '</div><div class="signature-title">' + esc(signatoryTitle) + '</div></td></tr></table>',
+   '<div class="document-control">Roma\'s Donuts • Certificate of Employment • ' + esc(documentNo) + '<br/>Generated from the Roma\'s Donuts Company Documents &amp; Forms Center on ' + esc(new Date().toLocaleString('en-PH')) + '.</div>',
+   '</div></body></html>'
+  ].join('')
+ }
+
+ const openCertificateOfEmploymentPreview = ({ form = getSelectedDocumentBatch1AForm(), values = documentFormDraft, record = null, autoPrint = false } = {}) => {
+  if (!form || !isCertificateOfEmploymentFormKey(form.key)) { showToast('Select a Certificate of Employment first.', 'red'); return }
+  const html = buildCertificateOfEmploymentHtml({ form, values, record, wordMode:false })
+  const pw = window.open('', '_blank', 'width=980,height=780')
+  if (!pw) { showToast('Popup blocked. Please allow popups to preview the Certificate of Employment.', 'red'); return }
+  pw.document.write(html)
+  pw.document.close()
+  pw.focus()
+  if (autoPrint) setTimeout(() => pw.print(), 350)
+ }
+
+ const downloadCertificateOfEmploymentWord = ({ form = getSelectedDocumentBatch1AForm(), values = documentFormDraft, record = null } = {}) => {
+  if (!form || !isCertificateOfEmploymentFormKey(form.key)) { showToast('Select a Certificate of Employment first.', 'red'); return }
+  if (!record && !validateCurrentDocumentForm(form)) return
+  const documentNo = record?.document_no || values?.documentNo || getDocumentReferenceNumber(form)
+  const employeeName = String(values?.customFields?.employeeName || record?.employee_name || getDocumentFormEmployee()?.full_name || 'Employee').trim()
+  if (!record && !documentFormDraft.documentNo) setDocumentFormDraft(prev => ({ ...prev, documentNo }))
+  const html = buildCertificateOfEmploymentHtml({ form, values:{ ...values, documentNo }, record, wordMode:true })
+  const fileName = ['Roma-COE', cleanCertificateFileName(employeeName), cleanCertificateFileName(documentNo)].join('_') + '.doc'
+  try {
+   const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' })
+   const url = URL.createObjectURL(blob)
+   const link = document.createElement('a')
+   link.href = url
+   link.download = fileName
+   document.body.appendChild(link)
+   link.click()
+   link.remove()
+   setTimeout(() => URL.revokeObjectURL(url), 1000)
+   showToast('Certificate of Employment Word file downloaded.')
+  } catch(error) {
+   showToast('Failed to download Certificate of Employment Word file: ' + (error?.message || error), 'red')
+  }
+ }
+
  const openDocumentPrintWindow = ({ form, rows, documentNo, status = '', autoPrint = false }) => {
   const escDoc = value => {
    const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }
@@ -35222,6 +35501,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const emp = getDocumentFormEmployee()
   const docNo = getDocumentReferenceNumber(form, forcedDocumentNo)
   if (!documentFormDraft.documentNo) setDocumentFormDraft(prev => ({ ...prev, documentNo:docNo }))
+  if (isCertificateOfEmploymentFormKey(form.key)) {
+   if (!validateCurrentDocumentForm(form)) return
+   openCertificateOfEmploymentPreview({ form, values:{ ...documentFormDraft, documentNo:docNo } })
+   return
+  }
   if (isResellerAgreementFormKey(form.key)) {
    if (!validateCurrentDocumentForm(form)) return
    openResellerAgreementPreview({ form, values:{ ...documentFormDraft, documentNo:docNo } })
@@ -35257,6 +35541,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const values = getSavedDocumentValues(record)
   if (isResellerAgreementFormKey(form.key)) {
    openResellerAgreementPreview({ form, values:getResellerAgreementRecordValues(record), record, autoPrint:true })
+   return
+  }
+  if (isCertificateOfEmploymentFormKey(form.key)) {
+   openCertificateOfEmploymentPreview({ form, values, record, autoPrint:true })
    return
   }
   const employeeInfo = {
@@ -35299,6 +35587,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const values = getSavedDocumentValues(record)
   if (isResellerAgreementFormKey(form.key)) {
    openResellerAgreementPreview({ form, values:getResellerAgreementRecordValues(record), record, autoPrint:false })
+   return
+  }
+  if (isCertificateOfEmploymentFormKey(form.key)) {
+   openCertificateOfEmploymentPreview({ form, values, record, autoPrint:false })
    return
   }
   const employeeInfo = {
@@ -39562,6 +39854,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>{editingCompanyDocumentRecordId?'UPDATE DRAFT':'SAVE AS DRAFT'}</button>
   <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
   <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>printBatch1ADocumentForm()}>{isResellerAgreementFormKey(selectedBatch1DocumentForm.key)?'PREVIEW / PRINT':'PRINT ONLY'}</button>
+  {isCertificateOfEmploymentForm && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadCertificateOfEmploymentWord()}>DOWNLOAD WORD (A4)</button>}
   {isResellerAgreementFormKey(selectedBatch1DocumentForm.key) && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadResellerAgreementWord()}>DOWNLOAD WORD</button>}
   <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={clearCurrentDocumentForm}>{editingCompanyDocumentRecordId?'CANCEL EDIT':'CLEAR FORM'}</button>
   <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Required fields are marked with <strong>*</strong>. Saved records remain in the Document Records & NTE Archive tab.</p>
@@ -39695,7 +39988,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
           <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>viewCompanyDocumentRecord(record)}>VIEW</button>
           <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
-          {isResellerAgreementFormKey(record.form_key) ? (
+          {isCertificateOfEmploymentFormKey(record.form_key) && <button style={{...btnBlack, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadCertificateOfEmploymentWord({ form:findBatch1DocumentForm(record.form_key), values:getSavedDocumentValues(record), record })}>WORD</button>}
+         {isResellerAgreementFormKey(record.form_key) ? (
            <>
             <button style={{...btnBlack, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadResellerAgreementWord({ form:findBatch1DocumentForm(record.form_key), values:getResellerAgreementRecordValues(record), record })}>WORD</button>
             {['draft','suspended'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>editCompanyDocumentRecord(record)}>EDIT</button>}
