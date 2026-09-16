@@ -1,0 +1,374 @@
+ const COE_SIGNATURE_BUCKET = 'coe-signatures'
+ const COE_SIGNATURE_FINAL_STATES = ['signed','released']
+ const COE_HASH_FIELDS = ['employeeName','employeeCode','employmentStatus','employmentStartDate','employmentEndDate','positionTitle','assignedDepartment','addressee','certificatePurpose','compensationStatement','additionalCertification','signatoryTitle']
+
+ const coeEsc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]))
+ const coeNormalizeRpcJson = value => Array.isArray(value) ? (value[0] ?? null) : value
+ const coeUpdateLocalStatus = (recordId, status) => {
+  try {
+   if (typeof setCompanyDocumentRecords === 'function') {
+    setCompanyDocumentRecords(prev => (prev || []).map(row => String(row.id) === String(recordId) ? { ...row, status } : row))
+   }
+  } catch(_) {}
+ }
+ const coeFormatSignedAt = value => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString('en-PH', { timeZone:'Asia/Manila', month:'long', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' })
+ }
+ const coeBlobToDataUrl = blob => new Promise((resolve, reject) => {
+  const reader = new FileReader()
+  reader.onload = () => resolve(String(reader.result || ''))
+  reader.onerror = () => reject(reader.error || new Error('Unable to read signature image.'))
+  reader.readAsDataURL(blob)
+ })
+ const coeDownloadSignatureBlob = async path => {
+  const cleanPath = String(path || '').trim()
+  if (!cleanPath) throw new Error('No e-signature image is attached to this COE.')
+  const { data, error } = await supabase.storage.from(COE_SIGNATURE_BUCKET).download(cleanPath)
+  if (error) throw error
+  return data
+ }
+ const coeDownloadSignatureDataUrl = async path => coeBlobToDataUrl(await coeDownloadSignatureBlob(path))
+
+ const coeGetHashPayload = ({ values = {}, record = null } = {}) => {
+  const cf = values?.customFields || values || {}
+  const fields = {}
+  COE_HASH_FIELDS.forEach(key => { fields[key] = String(cf?.[key] ?? values?.[key] ?? '').trim() })
+  return {
+   formKey:CERTIFICATE_OF_EMPLOYMENT_FORM_KEY,
+   documentRecordId:record?.id ? String(record.id) : '',
+   referenceNo:String(record?.reference_no || record?.document_no || values?.documentNo || '').trim(),
+   employeeId:String(record?.employee_id || values?.employeeId || '').trim(),
+   fields
+  }
+ }
+ const coeComputeDocumentHash = async ({ values = {}, record = null } = {}) => {
+  if (!globalThis.crypto?.subtle) throw new Error('Secure browser hashing is unavailable. Please use the app over HTTPS in a modern browser.')
+  const payload = JSON.stringify(coeGetHashPayload({ values, record }))
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload))
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')
+ }
+
+ const coeGetWorkflowState = async documentRecordId => {
+  if (!documentRecordId) return null
+  const { data, error } = await supabase.rpc('get_coe_signature_state', { p_document_record_id:String(documentRecordId) })
+  if (error) throw error
+  return coeNormalizeRpcJson(data)
+ }
+ const coeGetMySignatureProfile = async () => {
+  const { data, error } = await supabase.rpc('get_my_coe_signatory_profile')
+  if (error) throw error
+  return coeNormalizeRpcJson(data)
+ }
+ const coeGetActiveSignatories = async () => {
+  const { data, error } = await supabase.rpc('list_active_coe_signatories')
+  if (error) throw error
+  const normalized = coeNormalizeRpcJson(data)
+  return Array.isArray(normalized) ? normalized : (Array.isArray(normalized?.items) ? normalized.items : [])
+ }
+ const coeLoadSavedRecord = async documentRecordId => {
+  const { data, error } = await supabase.from('company_document_records').select('*').eq('id', String(documentRecordId)).single()
+  if (error) throw error
+  return data
+ }
+
+ const coeOpenModal = ({ title, subtitle = '', width = '920px' } = {}) => {
+  const existing = document.getElementById('coe-esign-modal-root')
+  if (existing) existing.remove()
+  const root = document.createElement('div')
+  root.id = 'coe-esign-modal-root'
+  root.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:rgba(10,10,20,.62);display:flex;align-items:flex-start;justify-content:center;padding:28px 14px;overflow:auto;'
+  const panel = document.createElement('div')
+  panel.style.cssText = `width:min(${width},96vw);max-height:calc(100vh - 56px);overflow:auto;background:#fff;border-radius:14px;box-shadow:0 22px 65px rgba(0,0,0,.28);border:1px solid #ddd;`
+  panel.innerHTML = `<div style="position:sticky;top:0;z-index:2;background:#fff;border-bottom:1px solid #eee;padding:16px 18px;display:flex;gap:12px;align-items:flex-start;justify-content:space-between"><div><div style="font-size:18px;font-weight:900;color:#1a1a2e">${coeEsc(title || 'COE E-Signature')}</div>${subtitle ? `<div style="font-size:12px;color:#666;margin-top:4px">${coeEsc(subtitle)}</div>` : ''}</div><button type="button" data-coe-close style="border:0;background:#f2f2f2;border-radius:8px;padding:8px 11px;font-weight:800;cursor:pointer">CLOSE</button></div><div data-coe-body style="padding:18px"></div>`
+  root.appendChild(panel)
+  document.body.appendChild(root)
+  const close = () => root.remove()
+  root.addEventListener('click', event => { if (event.target === root || event.target.closest('[data-coe-close]')) close() })
+  return { root, panel, body:panel.querySelector('[data-coe-body]'), close }
+ }
+ const coeActionButton = (label, variant = 'dark') => {
+  const palette = variant === 'red' ? '#CA1B1B' : variant === 'gold' ? '#9b7900' : variant === 'muted' ? '#666' : '#1A1A2E'
+  return `<button type="button" style="border:0;background:${palette};color:#fff;border-radius:9px;padding:10px 14px;font-weight:900;cursor:pointer">${coeEsc(label)}</button>`
+ }
+
+ const coeInvalidateChangedSignature = async ({ record, values, state, currentHash }) => {
+  if (!record?.id || !state || !COE_SIGNATURE_FINAL_STATES.includes(String(state.state || '').toLowerCase())) return state
+  if (!state.document_hash || state.document_hash === currentHash) return state
+  const { data, error } = await supabase.rpc('invalidate_coe_signature_if_changed', {
+   p_document_record_id:String(record.id),
+   p_current_document_hash:currentHash
+  })
+  if (error) throw error
+  const next = coeNormalizeRpcJson(data) || { ...state, state:'draft' }
+  coeUpdateLocalStatus(record.id, 'Draft')
+  return next
+ }
+
+ const coePrepareRenderContext = async ({ values, record, requireSigned = false } = {}) => {
+  if (!record?.id) {
+   if (requireSigned) throw new Error('Save this COE first, then send it for e-signature before final printing or downloading.')
+   return { signatureState:null, draftWatermark:true }
+  }
+  let state = await coeGetWorkflowState(record.id)
+  const currentHash = await coeComputeDocumentHash({ values, record })
+  state = await coeInvalidateChangedSignature({ record, values, state, currentHash })
+  const finalState = COE_SIGNATURE_FINAL_STATES.includes(String(state?.state || '').toLowerCase())
+  const hashMatches = !!state?.document_hash && state.document_hash === currentHash
+  if (!finalState || !hashMatches) {
+   if (requireSigned) {
+    const label = String(state?.state || 'draft').replace(/_/g, ' ')
+    throw new Error(`This COE is ${label} and cannot be issued as a final document until an authorized signatory signs the current version.`)
+   }
+   return { signatureState:state, draftWatermark:true }
+  }
+  const signatureImageDataUrl = await coeDownloadSignatureDataUrl(state.signed_signature_path)
+  return { signatureState:{ ...state, signature_image_data_url:signatureImageDataUrl }, draftWatermark:false }
+ }
+
+ const openCoeSignatureProfile = async () => {
+  try {
+   const profile = await coeGetMySignatureProfile()
+   if (!profile?.authorized) {
+    showToast('Your account is not enabled as an authorized COE signatory. Ask the Owner to enable it in Signatory Settings.', 'red')
+    return
+   }
+   const modal = coeOpenModal({ title:'My COE E-Signature', subtitle:'Draw or upload your signature. It is used only when you actively approve a COE.', width:'720px' })
+   modal.body.innerHTML = `<div style="background:#fff8d9;border:1px solid #edd56b;border-radius:10px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:#5c4a00"><strong>Security:</strong> saving a signature here does not automatically sign documents. Every COE still requires your explicit approval.</div><canvas data-coe-signature-canvas width="1200" height="360" style="display:block;width:100%;height:180px;border:2px dashed #bbb;border-radius:10px;background:#fff;touch-action:none"></canvas><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><label style="display:inline-flex;align-items:center;background:#f2f2f2;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer">UPLOAD IMAGE<input data-coe-signature-file type="file" accept="image/png,image/jpeg,image/webp" style="display:none"></label><button data-coe-signature-clear type="button" style="border:0;background:#666;color:#fff;border-radius:9px;padding:9px 12px;font-weight:800;cursor:pointer">CLEAR</button><button data-coe-signature-save type="button" style="border:0;background:#CA1B1B;color:#fff;border-radius:9px;padding:9px 14px;font-weight:900;cursor:pointer">SAVE E-SIGNATURE</button></div><div style="font-size:11px;color:#777;margin-top:9px">PNG, JPEG, or WEBP; maximum 2 MB. Uploaded images are converted to PNG.</div>`
+   const canvas = modal.body.querySelector('[data-coe-signature-canvas]')
+   const ctx = canvas.getContext('2d')
+   ctx.lineWidth = 5
+   ctx.lineCap = 'round'
+   ctx.lineJoin = 'round'
+   ctx.strokeStyle = '#111'
+   const clearCanvas = () => ctx.clearRect(0, 0, canvas.width, canvas.height)
+   const drawBlob = async blob => {
+    const url = URL.createObjectURL(blob)
+    try {
+     const image = new Image()
+     await new Promise((resolve, reject) => { image.onload = resolve; image.onerror = reject; image.src = url })
+     clearCanvas()
+     const scale = Math.min(canvas.width / image.width, canvas.height / image.height)
+     const width = image.width * scale
+     const height = image.height * scale
+     ctx.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height)
+    } finally { URL.revokeObjectURL(url) }
+   }
+   if (profile.signature_profile_path) {
+    try { await drawBlob(await coeDownloadSignatureBlob(profile.signature_profile_path)) } catch(_) {}
+   }
+   let drawing = false
+   let last = null
+   const point = event => {
+    const rect = canvas.getBoundingClientRect()
+    return { x:(event.clientX - rect.left) * (canvas.width / rect.width), y:(event.clientY - rect.top) * (canvas.height / rect.height) }
+   }
+   canvas.addEventListener('pointerdown', event => { drawing = true; last = point(event); canvas.setPointerCapture?.(event.pointerId) })
+   canvas.addEventListener('pointermove', event => { if (!drawing) return; const next = point(event); ctx.beginPath(); ctx.moveTo(last.x,last.y); ctx.lineTo(next.x,next.y); ctx.stroke(); last = next })
+   const stop = () => { drawing = false; last = null }
+   canvas.addEventListener('pointerup', stop); canvas.addEventListener('pointercancel', stop); canvas.addEventListener('pointerleave', stop)
+   modal.body.querySelector('[data-coe-signature-clear]').onclick = clearCanvas
+   modal.body.querySelector('[data-coe-signature-file]').onchange = async event => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) { showToast('Signature image must be 2 MB or smaller.', 'red'); return }
+    if (!['image/png','image/jpeg','image/webp'].includes(file.type)) { showToast('Use PNG, JPEG, or WEBP for the signature.', 'red'); return }
+    try { await drawBlob(file) } catch(error) { showToast('Unable to load signature image: ' + (error?.message || error), 'red') }
+   }
+   modal.body.querySelector('[data-coe-signature-save]').onclick = async event => {
+    const button = event.currentTarget
+    button.disabled = true
+    try {
+     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png', 0.95))
+     if (!blob || blob.size < 250) throw new Error('Draw or upload a signature before saving.')
+     const path = `profiles/${profile.admin_user_id}/signature.png`
+     const { error:uploadError } = await supabase.storage.from(COE_SIGNATURE_BUCKET).upload(path, blob, { contentType:'image/png', upsert:true, cacheControl:'0' })
+     if (uploadError) throw uploadError
+     const { error:profileError } = await supabase.rpc('set_my_coe_signature_profile', { p_signature_profile_path:path })
+     if (profileError) throw profileError
+     showToast('Your COE e-signature profile was saved.')
+     modal.close()
+    } catch(error) { showToast('Failed to save e-signature: ' + (error?.message || error), 'red') }
+    finally { button.disabled = false }
+   }
+  } catch(error) { showToast('Unable to open e-signature profile: ' + (error?.message || error), 'red') }
+ }
+
+ const openCoeSignatorySettings = async () => {
+  if (!isOwnerRole) { showToast('Only the Owner can manage authorized COE signatories.', 'red'); return }
+  try {
+   const { data, error } = await supabase.rpc('list_coe_signatory_candidates')
+   if (error) throw error
+   const normalized = coeNormalizeRpcJson(data)
+   const items = Array.isArray(normalized) ? normalized : (normalized?.items || [])
+   const modal = coeOpenModal({ title:'COE Authorized Signatories', subtitle:'Only enabled accounts can save a signature and approve COEs.', width:'820px' })
+   if (!items.length) { modal.body.innerHTML = '<div style="color:#666">No active admin accounts were found.</div>'; return }
+   modal.body.innerHTML = `<div style="display:grid;gap:10px">${items.map(item => `<div data-coe-candidate="${coeEsc(item.admin_user_id)}" style="display:grid;grid-template-columns:minmax(180px,1fr) minmax(170px,1fr) auto;gap:10px;align-items:center;border:1px solid #e5e5e5;border-radius:10px;padding:11px"><div><strong>${coeEsc(item.admin_name || 'Admin')}</strong><div style="font-size:11px;color:#777">${coeEsc(item.admin_role || '')}</div></div><input data-coe-title value="${coeEsc(item.signatory_title || 'Authorized Signatory')}" placeholder="Signatory title" style="border:1px solid #bbb;border-radius:8px;padding:9px"><label style="font-size:12px;font-weight:800;display:flex;gap:7px;align-items:center"><input data-coe-enabled type="checkbox" ${item.authorized ? 'checked' : ''}> AUTHORIZED</label></div>`).join('')}</div><div style="margin-top:14px;display:flex;justify-content:flex-end"><button data-coe-save-settings type="button" style="border:0;background:#CA1B1B;color:#fff;border-radius:9px;padding:10px 15px;font-weight:900;cursor:pointer">SAVE SETTINGS</button></div>`
+   modal.body.querySelector('[data-coe-save-settings]').onclick = async event => {
+    const button = event.currentTarget
+    button.disabled = true
+    try {
+     for (const row of modal.body.querySelectorAll('[data-coe-candidate]')) {
+      const adminUserId = row.getAttribute('data-coe-candidate')
+      const enabled = !!row.querySelector('[data-coe-enabled]')?.checked
+      const title = String(row.querySelector('[data-coe-title]')?.value || 'Authorized Signatory').trim()
+      const { error:saveError } = await supabase.rpc('set_coe_authorized_signatory', { p_admin_user_id:adminUserId, p_enabled:enabled, p_signatory_title:title })
+      if (saveError) throw saveError
+     }
+     showToast('COE authorized signatory settings saved.')
+     modal.close()
+    } catch(error) { showToast('Failed to save signatory settings: ' + (error?.message || error), 'red') }
+    finally { button.disabled = false }
+   }
+  } catch(error) { showToast('Unable to load COE signatory settings: ' + (error?.message || error), 'red') }
+ }
+
+ const sendCoeForSignature = async record => {
+  try {
+   if (!record?.id) throw new Error('Save this COE before sending it for signature.')
+   const values = getSavedDocumentValues(record)
+   const signatories = await coeGetActiveSignatories()
+   if (!signatories.length) throw new Error('No authorized COE signatory is configured. The Owner must enable at least one signatory first.')
+   const modal = coeOpenModal({ title:'Send COE for E-Signature', subtitle:`${record.reference_no || record.document_no || 'COE'} • ${record.employee_name || ''}`, width:'620px' })
+   modal.body.innerHTML = `<label style="display:block;font-size:12px;font-weight:900;margin-bottom:6px">AUTHORIZED SIGNATORY</label><select data-coe-signatory style="width:100%;border:1px solid #bbb;border-radius:9px;padding:11px;background:#fff">${signatories.map(item => `<option value="${coeEsc(item.admin_user_id)}">${coeEsc(item.admin_name)} — ${coeEsc(item.signatory_title || 'Authorized Signatory')}</option>`).join('')}</select><div style="background:#f7f7f8;border-radius:9px;padding:10px 12px;margin-top:12px;font-size:12px;color:#555">The current COE content will be fingerprinted. Any material change after signing invalidates the signature and requires a new approval.</div><div style="display:flex;justify-content:flex-end;margin-top:14px"><button data-coe-send type="button" style="border:0;background:#CA1B1B;color:#fff;border-radius:9px;padding:10px 15px;font-weight:900;cursor:pointer">SEND FOR SIGNATURE</button></div>`
+   modal.body.querySelector('[data-coe-send]').onclick = async event => {
+    const button = event.currentTarget
+    button.disabled = true
+    try {
+     const signatoryId = modal.body.querySelector('[data-coe-signatory]')?.value
+     const documentHash = await coeComputeDocumentHash({ values, record })
+     const { error } = await supabase.rpc('request_coe_signature', { p_document_record_id:String(record.id), p_signatory_admin_user_id:signatoryId, p_document_hash:documentHash })
+     if (error) throw error
+     coeUpdateLocalStatus(record.id, 'Pending Signature')
+     showToast('COE sent to the authorized signatory.')
+     modal.close()
+    } catch(error) { showToast('Failed to send COE for signature: ' + (error?.message || error), 'red') }
+    finally { button.disabled = false }
+   }
+  } catch(error) { showToast(error?.message || String(error), 'red') }
+ }
+
+ const approveCoeSignature = async ({ record, values, state, modal }) => {
+  let snapshotPath = ''
+  try {
+   const profile = await coeGetMySignatureProfile()
+   if (!profile?.authorized) throw new Error('Your account is not an authorized COE signatory.')
+   if (!profile?.signature_profile_path) {
+    await openCoeSignatureProfile()
+    throw new Error('Save your e-signature profile first, then reopen this COE to sign it.')
+   }
+   const documentHash = await coeComputeDocumentHash({ values, record })
+   if (state?.document_hash && state.document_hash !== documentHash) {
+    await coeInvalidateChangedSignature({ record, values, state, currentHash:documentHash })
+    throw new Error('The COE changed after it was sent for signature. It has been invalidated and must be sent again.')
+   }
+   const signatureBlob = await coeDownloadSignatureBlob(profile.signature_profile_path)
+   const randomPart = globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+   snapshotPath = `documents/${record.id}/${randomPart}.png`
+   const { error:uploadError } = await supabase.storage.from(COE_SIGNATURE_BUCKET).upload(snapshotPath, signatureBlob, { contentType:'image/png', upsert:false, cacheControl:'0' })
+   if (uploadError) throw uploadError
+   const { data, error } = await supabase.rpc('approve_coe_signature_request', { p_document_record_id:String(record.id), p_signature_storage_path:snapshotPath, p_document_hash:documentHash })
+   if (error) throw error
+   coeUpdateLocalStatus(record.id, 'Signed')
+   showToast('COE e-signed and approved successfully.')
+   modal?.close?.()
+   return coeNormalizeRpcJson(data)
+  } catch(error) {
+   if (snapshotPath) { try { await supabase.storage.from(COE_SIGNATURE_BUCKET).remove([snapshotPath]) } catch(_) {} }
+   showToast('Unable to e-sign COE: ' + (error?.message || error), 'red')
+   return null
+  }
+ }
+
+ const returnCoeForCorrection = async ({ record, modal }) => {
+  const reason = window.prompt('Reason for returning this COE for correction:')
+  if (reason === null) return
+  if (!String(reason).trim()) { showToast('Enter a correction reason before returning the COE.', 'red'); return }
+  try {
+   const { error } = await supabase.rpc('return_coe_signature_request', { p_document_record_id:String(record.id), p_reason:String(reason).trim() })
+   if (error) throw error
+   coeUpdateLocalStatus(record.id, 'Returned')
+   showToast('COE returned for correction.')
+   modal?.close?.()
+  } catch(error) { showToast('Failed to return COE: ' + (error?.message || error), 'red') }
+ }
+
+ const reviewCoeSignatureRequest = async documentRecordId => {
+  try {
+   const record = await coeLoadSavedRecord(documentRecordId)
+   const values = getSavedDocumentValues(record)
+   const state = await coeGetWorkflowState(record.id)
+   if (!state?.can_sign || String(state.state || '').toLowerCase() !== 'pending') throw new Error('This COE is no longer awaiting your signature.')
+   const modal = coeOpenModal({ title:'Review & E-Sign COE', subtitle:`${record.reference_no || record.document_no || ''} • ${record.employee_name || ''}`, width:'980px' })
+   const html = buildCertificateOfEmploymentHtml({ form:findBatch1DocumentForm(record.form_key), values, record, wordMode:false, signatureState:state, draftWatermark:true })
+   modal.body.innerHTML = `<iframe data-coe-review-frame title="COE review preview" style="display:block;width:100%;height:62vh;border:1px solid #ddd;border-radius:10px;background:#e8e8e8"></iframe><div style="display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap;margin-top:14px"><button data-coe-return type="button" style="border:0;background:#666;color:#fff;border-radius:9px;padding:10px 14px;font-weight:900;cursor:pointer">RETURN FOR CORRECTION</button><button data-coe-sign type="button" style="border:0;background:#CA1B1B;color:#fff;border-radius:9px;padding:10px 14px;font-weight:900;cursor:pointer">ADD E-SIGNATURE & APPROVE</button></div>`
+   modal.body.querySelector('[data-coe-review-frame]').srcdoc = html
+   modal.body.querySelector('[data-coe-return]').onclick = () => returnCoeForCorrection({ record, modal })
+   modal.body.querySelector('[data-coe-sign]').onclick = event => { event.currentTarget.disabled = true; approveCoeSignature({ record, values, state, modal }).finally(() => { if (event.currentTarget?.isConnected) event.currentTarget.disabled = false }) }
+  } catch(error) { showToast(error?.message || String(error), 'red') }
+ }
+
+ const openCoeSignatureInbox = async () => {
+  try {
+   const { data, error } = await supabase.rpc('list_my_coe_signature_inbox')
+   if (error) throw error
+   const normalized = coeNormalizeRpcJson(data)
+   const items = Array.isArray(normalized) ? normalized : (normalized?.items || [])
+   const modal = coeOpenModal({ title:'COE Signature Inbox', subtitle:'Certificates currently waiting for your review and e-signature.', width:'820px' })
+   if (!items.length) { modal.body.innerHTML = '<div style="padding:18px;text-align:center;color:#666">No COEs are waiting for your signature.</div>'; return }
+   modal.body.innerHTML = `<div style="display:grid;gap:10px">${items.map(item => `<div style="border:1px solid #e3e3e3;border-radius:10px;padding:12px;display:flex;gap:12px;align-items:center;justify-content:space-between"><div><div style="font-weight:900;color:#1a1a2e">${coeEsc(item.reference_no || 'COE')} — ${coeEsc(item.employee_name || '')}</div><div style="font-size:11px;color:#777;margin-top:3px">Sent ${coeEsc(coeFormatSignedAt(item.requested_at))} by ${coeEsc(item.requested_by_name || 'Admin')}</div></div><button data-coe-open-request="${coeEsc(item.document_record_id)}" type="button" style="border:0;background:#1A1A2E;color:#fff;border-radius:8px;padding:9px 12px;font-weight:900;cursor:pointer">OPEN COE</button></div>`).join('')}</div>`
+   modal.body.querySelectorAll('[data-coe-open-request]').forEach(button => { button.onclick = () => { const id = button.getAttribute('data-coe-open-request'); modal.close(); reviewCoeSignatureRequest(id) } })
+  } catch(error) { showToast('Unable to load signature inbox: ' + (error?.message || error), 'red') }
+ }
+
+ const openCurrentCoeEsignWorkflow = async () => {
+  try {
+   if (!editingCompanyDocumentRecordId) {
+    showToast('Save the COE as a draft first. Then reopen the saved record and use E-SIGN / SEND FOR SIGNATURE.', 'red')
+    return
+   }
+   const record = (companyDocumentRecords || []).find(row => String(row.id) === String(editingCompanyDocumentRecordId))
+   if (!record) throw new Error('The saved COE record could not be found. Refresh the document list and try again.')
+   await openCoeSignatureWorkflow(record)
+  } catch(error) { showToast('Unable to open COE e-signature workflow: ' + (error?.message || error), 'red') }
+ }
+
+ const openCoeSignatureWorkflow = async record => {
+  try {
+   if (!record?.id) throw new Error('Save the COE before starting the signature workflow.')
+   const values = getSavedDocumentValues(record)
+   let state = await coeGetWorkflowState(record.id)
+   if (state && COE_SIGNATURE_FINAL_STATES.includes(String(state.state || '').toLowerCase())) {
+    const currentHash = await coeComputeDocumentHash({ values, record })
+    state = await coeInvalidateChangedSignature({ record, values, state, currentHash })
+   }
+   const status = String(state?.state || 'draft').toLowerCase()
+   if (status === 'pending' && state?.can_sign) { await reviewCoeSignatureRequest(record.id); return }
+   if (status === 'pending') {
+    const modal = coeOpenModal({ title:'COE Pending Signature', subtitle:record.reference_no || record.document_no || '', width:'560px' })
+    modal.body.innerHTML = `<div style="line-height:1.6">This COE is waiting for <strong>${coeEsc(state?.assigned_signatory_name || 'the authorized signatory')}</strong>.<br><span style="color:#777;font-size:12px">Sent ${coeEsc(coeFormatSignedAt(state?.requested_at))}</span></div>`
+    return
+   }
+   if (status === 'signed' || status === 'released') {
+    const modal = coeOpenModal({ title:'COE Signed', subtitle:record.reference_no || record.document_no || '', width:'580px' })
+    modal.body.innerHTML = `<div style="line-height:1.65"><strong>Signed by:</strong> ${coeEsc(state?.signed_name || '')}<br><strong>Title:</strong> ${coeEsc(state?.signed_title || '')}<br><strong>Signed:</strong> ${coeEsc(coeFormatSignedAt(state?.signed_at))}<br><br>The clean final Print, PDF, and Word outputs are now unlocked.</div>${state?.can_request ? '<div style="margin-top:14px"><button data-coe-resend type="button" style="border:0;background:#666;color:#fff;border-radius:9px;padding:9px 12px;font-weight:900;cursor:pointer">SEND FOR NEW SIGNATURE</button></div>' : ''}`
+    const resend = modal.body.querySelector('[data-coe-resend]')
+    if (resend) resend.onclick = () => { modal.close(); sendCoeForSignature(record) }
+    return
+   }
+   if (status === 'returned') {
+    const modal = coeOpenModal({ title:'COE Returned for Correction', subtitle:record.reference_no || record.document_no || '', width:'620px' })
+    modal.body.innerHTML = `<div style="background:#fff3f3;border:1px solid #efb5b5;border-radius:9px;padding:11px"><strong>Reason:</strong> ${coeEsc(state?.return_reason || 'Correction requested')}</div><div style="font-size:12px;color:#666;margin-top:10px">Correct the COE, save the updated record, then send it again for signature.</div><div style="margin-top:14px"><button data-coe-resend type="button" style="border:0;background:#CA1B1B;color:#fff;border-radius:9px;padding:10px 14px;font-weight:900;cursor:pointer">SEND UPDATED COE</button></div>`
+    modal.body.querySelector('[data-coe-resend]').onclick = () => { modal.close(); sendCoeForSignature(record) }
+    return
+   }
+   await sendCoeForSignature(record)
+  } catch(error) { showToast('Unable to open COE signature workflow: ' + (error?.message || error), 'red') }
+ }
+
+ const coeLogFinalOutput = async (record, outputType) => {
+  if (!record?.id) return
+  try { await supabase.rpc('log_coe_signature_output', { p_document_record_id:String(record.id), p_output_type:String(outputType || 'OUTPUT').toUpperCase() }) } catch(_) {}
+ }
