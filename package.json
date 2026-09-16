@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node patch-invoice-romas-branding.cjs && node patch-hr-admin-business-access.cjs && node patch-supabase-egress-optimization.cjs && node patch-payroll-adjustment-deferral.cjs && vite build",
+    "build": "node patch-invoice-romas-branding.cjs && node patch-hr-admin-business-access.cjs && node patch-supabase-egress-optimization.cjs && node patch-payroll-adjustment-deferral.cjs && node patch-coe-a4-pdf.cjs && vite build",
     "test:attendance": "node --test tests/attendance-undertime-policy.test.js",
     "test:egress": "node --test tests/supabase-egress-optimizer.test.cjs",
     "test:payroll-deferral": "node --test tests/payroll-adjustment-deferral.test.cjs",
+    "test:coe-pdf": "node --test tests/coe-a4-pdf-patch.test.cjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },
