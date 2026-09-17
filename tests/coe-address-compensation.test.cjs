@@ -21,10 +21,17 @@ test('selected employee address is auto-filled when a supported address field ex
   assert.match(patched, /employeeAddress:employee\.address \|\| employee\.home_address \|\| employee\.residential_address \|\| employee\.current_address \|\| ''/)
 })
 
-test('employee address and compensation render in the certificate and are protected by the e-sign hash', () => {
+test('employee address and compensation render in the certificate', () => {
   const patched = applyCoeAddressCompensation(app)
-  assert.match(patched, /The employee\\'s address on record is <strong>/)
+  assert.match(patched, /const addressStatement = employeeAddress/)
+  assert.match(patched, /addressStatement \? '<p>' \+ addressStatement \+ '<\/p>' : ''/)
   assert.match(patched, />COMPENSATION<\/div>/)
-  assert.match(patched, /'assignedDepartment','employeeAddress','addressee'/)
+})
+
+test('new address-aware hashes preserve legacy signed COE hash behavior', () => {
+  const patched = applyCoeAddressCompensation(app)
+  assert.match(patched, /const COE_HASH_FIELDS = \['employeeName','employeeCode','employmentStatus','employmentStartDate','employmentEndDate','positionTitle','assignedDepartment','addressee'/)
+  assert.match(patched, /const COE_HASH_FIELDS_WITH_ADDRESS = \['employeeName','employeeCode','employmentStatus','employmentStartDate','employmentEndDate','positionTitle','assignedDepartment','employeeAddress','addressee'/)
+  assert.match(patched, /Object\.prototype\.hasOwnProperty\.call\(cf, 'employeeAddress'\) \? COE_HASH_FIELDS_WITH_ADDRESS : COE_HASH_FIELDS/)
   assert.equal(applyCoeAddressCompensation(patched), patched)
 })
