@@ -16,9 +16,11 @@ function verifyCoeAddressCompensation(source) {
     ['"label": "Compensation"', 'compensation field label'],
     ["employeeAddress:employee.address || employee.home_address || employee.residential_address || employee.current_address || ''", 'employee address auto-fill'],
     ["const employeeAddress = String(cf.employeeAddress || '').trim()", 'employee address render value'],
-    ["The employee\\'s address on record is <strong>", 'employee address document text'],
+    ['const addressStatement = employeeAddress', 'employee address document statement'],
+    ["addressStatement ? '<p>' + addressStatement + '</p>' : ''", 'employee address document placement'],
     ['>COMPENSATION</div>', 'compensation document label'],
-    ["'employeeAddress','addressee'", 'employee address signature-integrity field']
+    ['const COE_HASH_FIELDS_WITH_ADDRESS =', 'address-aware signature-integrity fields'],
+    ["Object.prototype.hasOwnProperty.call(cf, 'employeeAddress') ? COE_HASH_FIELDS_WITH_ADDRESS : COE_HASH_FIELDS", 'backward-compatible COE hash selection']
   ]
   for (const [needle, label] of required) {
     if (!source.includes(needle)) throw new Error(`COE address/compensation verification failed: ${label}.`)
@@ -87,7 +89,7 @@ function applyCoeAddressCompensation(source) {
    ? 'The employee is assigned to <strong>' + esc(assignedDepartment) + '</strong>.'
    : ''
   const addressStatement = employeeAddress
-   ? 'The employee\'s address on record is <strong>' + esc(employeeAddress) + '</strong>.'
+   ? 'The employee\\'s address on record is <strong>' + esc(employeeAddress) + '</strong>.'
    : ''
   const purposeStatement = certificatePurpose && certificatePurpose !== 'General / Personal Record'`,
     'employee address document sentence'
@@ -113,8 +115,19 @@ function applyCoeAddressCompensation(source) {
   app = replaceRequired(
     app,
     `const COE_HASH_FIELDS = ['employeeName','employeeCode','employmentStatus','employmentStartDate','employmentEndDate','positionTitle','assignedDepartment','addressee','certificatePurpose','compensationStatement','additionalCertification','signatoryTitle']`,
-    `const COE_HASH_FIELDS = ['employeeName','employeeCode','employmentStatus','employmentStartDate','employmentEndDate','positionTitle','assignedDepartment','employeeAddress','addressee','certificatePurpose','compensationStatement','additionalCertification','signatoryTitle']`,
-    'COE signed-content hash fields'
+    `const COE_HASH_FIELDS = ['employeeName','employeeCode','employmentStatus','employmentStartDate','employmentEndDate','positionTitle','assignedDepartment','addressee','certificatePurpose','compensationStatement','additionalCertification','signatoryTitle']
+ const COE_HASH_FIELDS_WITH_ADDRESS = ['employeeName','employeeCode','employmentStatus','employmentStartDate','employmentEndDate','positionTitle','assignedDepartment','employeeAddress','addressee','certificatePurpose','compensationStatement','additionalCertification','signatoryTitle']`,
+    'backward-compatible COE signed-content hash fields'
+  )
+
+  app = replaceRequired(
+    app,
+    `  const fields = {}
+  COE_HASH_FIELDS.forEach(key => { fields[key] = String(cf?.[key] ?? values?.[key] ?? '').trim() })`,
+    `  const fields = {}
+  const hashFields = Object.prototype.hasOwnProperty.call(cf, 'employeeAddress') ? COE_HASH_FIELDS_WITH_ADDRESS : COE_HASH_FIELDS
+  hashFields.forEach(key => { fields[key] = String(cf?.[key] ?? values?.[key] ?? '').trim() })`,
+    'backward-compatible COE hash selection'
   )
 
   verifyCoeAddressCompensation(app)
@@ -127,7 +140,7 @@ if (require.main === module) {
   const patched = applyCoeAddressCompensation(source)
   if (patched !== source) {
     fs.writeFileSync(appPath, patched, 'utf8')
-    console.log('COE address/compensation patch applied: employee address and compensation fields enabled and protected by signature integrity.')
+    console.log('COE address/compensation patch applied with backward-compatible signature integrity.')
   } else {
     console.log('COE address/compensation patch already present; verification passed.')
   }
