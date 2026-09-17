@@ -16,7 +16,7 @@ function verifyCoeAddressCompensation(source) {
     ['"label": "Compensation"', 'compensation field label'],
     ["employeeAddress:employee.address || employee.home_address || employee.residential_address || employee.current_address || ''", 'employee address auto-fill'],
     ["const employeeAddress = String(cf.employeeAddress || '').trim()", 'employee address render value'],
-    ["The employee's address on record is <strong>", 'employee address document text'],
+    ["The employee\\'s address on record is <strong>", 'employee address document text'],
     ['>COMPENSATION</div>', 'compensation document label'],
     ["'employeeAddress','addressee'", 'employee address signature-integrity field']
   ]
