@@ -31045,6 +31045,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const [closingRemarks, setClosingRemarks] = useState(() => initialShiftClosingDraft.remarks ?? '')
  const [existingShiftClosing, setExistingShiftClosing] = useState(null)
  const [shiftClosingRows, setShiftClosingRows] = useState([])
+ const [shiftHistoryView, setShiftHistoryView] = useState(false)
+ const [shiftHistoryMonth, setShiftHistoryMonth] = useState(initialPosBusinessDate.slice(0, 7))
  const [shiftClosingLoading, setShiftClosingLoading] = useState(false)
  const [shiftClosingSaving, setShiftClosingSaving] = useState(false)
  const [shiftClosingError, setShiftClosingError] = useState('')
@@ -32089,19 +32091,16 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   try {
    const todayDate = getPHDateTimeParts().date || getTodayDate()
    const startDate = addDaysToDateString(todayDate, -POS_SHIFT_MONITOR_DAYS)
-   const [salesRes, closingsRes, dailySalesRes] = await Promise.all([
-    supabase.from('pos_sales').select('*').eq('outlet_id', POS_OUTLET_ID).gte('business_date', startDate).lte('business_date', todayDate).order('business_date', { ascending:false }),
-    supabase.from('pos_shift_closings').select('*').eq('outlet_id', POS_OUTLET_ID).gte('business_date', startDate).lte('business_date', todayDate).order('created_at', { ascending:false }),
-    supabase.from('daily_sales').select('*').gte('sale_date', startDate).lte('sale_date', todayDate).order('created_at', { ascending:false })
+   const [salesRows, closingRows, dailySalesRows] = await Promise.all([
+    fetchAllPosRows(() => supabase.from('pos_sales').select('*').eq('outlet_id', POS_OUTLET_ID).gte('business_date', startDate).lte('business_date', todayDate).order('business_date', { ascending:false }).order('id', { ascending:false })),
+    fetchAllPosRows(() => supabase.from('pos_shift_closings').select('*').eq('outlet_id', POS_OUTLET_ID).gte('business_date', startDate).lte('business_date', todayDate).order('created_at', { ascending:false }).order('id', { ascending:false })),
+    fetchAllPosRows(() => supabase.from('daily_sales').select('*').gte('sale_date', startDate).lte('sale_date', todayDate).order('created_at', { ascending:false }).order('id', { ascending:false }))
    ])
-   if (salesRes.error) throw salesRes.error
-   if (closingsRes.error) throw closingsRes.error
-   if (dailySalesRes.error) throw dailySalesRes.error
 
-   const monitorPaymentRows = await fetchPosSalePaymentsForSales(salesRes.data || [])
+   const monitorPaymentRows = await fetchPosSalePaymentsForSales(salesRows)
 
    const salesByDate = {}
-   ;(salesRes.data || []).forEach(sale => {
+   salesRows.forEach(sale => {
     const outletId = String(sale?.outlet_id || POS_OUTLET_ID)
     if (outletId !== POS_OUTLET_ID) return
     const dateKey = String(sale?.business_date || '').slice(0, 10)
@@ -32110,14 +32109,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     salesByDate[dateKey].push(sale)
    })
    const closingsByDate = {}
-   ;(closingsRes.data || []).forEach(closing => {
+   closingRows.forEach(closing => {
     const dateKey = String(closing?.business_date || '').slice(0, 10)
     if (!dateKey) return
     if (!closingsByDate[dateKey]) closingsByDate[dateKey] = []
     closingsByDate[dateKey].push(closing)
    })
    const dailyByDate = {}
-   ;(dailySalesRes.data || []).forEach(row => {
+   dailySalesRows.forEach(row => {
     const dateKey = String(row?.sale_date || '').slice(0, 10)
     if (!dateKey) return
     if (!dailyByDate[dateKey]) dailyByDate[dateKey] = []
@@ -33655,6 +33654,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  const selectedShiftClosingRow = shiftClosingRows.find(row => row.date === posDate) || null
  const actionableShiftClosingRows = shiftClosingRows.filter(row => ['unclosed','closed_not_posted','review_required'].includes(row.statusCode))
+ const displayedShiftClosingRows = shiftHistoryView
+  ? shiftClosingRows.filter(row => row.date.startsWith(shiftHistoryMonth))
+  : actionableShiftClosingRows.slice(0, 20)
  const unclosedShiftCount = shiftClosingRows.filter(row => row.statusCode === 'unclosed').length
  const reviewShiftCount = shiftClosingRows.filter(row => ['closed_not_posted','review_required'].includes(row.statusCode)).length
  const selectedShiftStatus = getShiftClosingStatusPresentation(selectedShiftClosingRow?.statusCode || (posDate === (getPHDateTimeParts().date || getTodayDate()) && activePosSales.length > 0 ? 'in_progress' : 'no_sales'))
@@ -33711,8 +33713,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     {shiftClosingError && <div style={{ background:'#fff5f5', border:'1px solid #fecaca', color:'#b91c1c', borderRadius:'10px', padding:'9px 10px', marginBottom:'9px', fontSize:'11px', fontWeight:'750' }}>Shift closing error: {shiftClosingError}</div>}
     {shiftClosingSuccess && <div style={{ background:'#ecfdf5', border:'1px solid #bbf7d0', color:'#166534', borderRadius:'10px', padding:'9px 10px', marginBottom:'9px', fontSize:'11px', fontWeight:'800' }}>{shiftClosingSuccess}</div>}
 
-    {actionableShiftClosingRows.length === 0 ? (
-     <div style={{ background:'#ecfdf5', border:'1px solid #bbf7d0', color:'#166534', borderRadius:'10px', padding:'10px 12px', fontSize:'12px', fontWeight:'850' }}>No previous unclosed or unsynchronized POS shift was found in the last {POS_SHIFT_MONITOR_DAYS} days.</div>
+    <div style={{ display:'flex', gap:'7px', alignItems:'center', flexWrap:'wrap', marginBottom:'10px' }}>
+     <button onClick={()=>setShiftHistoryView(false)} aria-pressed={!shiftHistoryView} style={{...btnGray, width:'auto', marginTop:0, padding:'7px 10px', fontSize:'11px', fontWeight:'850', border:!shiftHistoryView?'2px solid #ca1b1b':undefined}}>Needs attention ({actionableShiftClosingRows.length})</button>
+     <button onClick={()=>setShiftHistoryView(true)} aria-pressed={shiftHistoryView} style={{...btnGray, width:'auto', marginTop:0, padding:'7px 10px', fontSize:'11px', fontWeight:'850', border:shiftHistoryView?'2px solid #ca1b1b':undefined}}>All shifts</button>
+     {shiftHistoryView && <label style={{ fontSize:'11px', fontWeight:'800' }}>Month <input type="month" value={shiftHistoryMonth} min={addDaysToDateString(getPHDateTimeParts().date || getTodayDate(), -POS_SHIFT_MONITOR_DAYS).slice(0, 7)} max={(getPHDateTimeParts().date || getTodayDate()).slice(0, 7)} onChange={e=>setShiftHistoryMonth(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0, marginLeft:'5px'}} /></label>}
+     {shiftHistoryView && <span style={{ fontSize:'11px', color:'#4b5563' }}>{displayedShiftClosingRows.length} shift date(s) in the 90-day monitor</span>}
+    </div>
+    {displayedShiftClosingRows.length === 0 ? (
+     <div style={{ background:'#ecfdf5', border:'1px solid #bbf7d0', color:'#166534', borderRadius:'10px', padding:'10px 12px', fontSize:'12px', fontWeight:'850' }}>{shiftHistoryView ? 'No POS shift dates found for this month within the last 90 days.' : `No previous unclosed or unsynchronized POS shift was found in the last ${POS_SHIFT_MONITOR_DAYS} days.`}</div>
     ) : (
      <div style={{ overflowX:'auto' }}>
       <table style={{ width:'100%', borderCollapse:'collapse', minWidth:'900px', fontSize:'11px' }}>
@@ -33726,7 +33734,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
         <th style={{ padding:'8px', textAlign:'center' }}>Action</th>
        </tr></thead>
        <tbody>
-        {actionableShiftClosingRows.slice(0, 20).map(row => {
+        {displayedShiftClosingRows.map(row => {
          const presentation = getShiftClosingStatusPresentation(row.statusCode)
          return (
           <tr key={row.date} style={{ background:row.date === posDate ? '#fffbea' : '#fff' }}>
@@ -33741,7 +33749,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
            </td>
            <td style={{ padding:'8px', borderBottom:'1px solid #eee', textAlign:'center' }}>
             <div style={{ display:'flex', gap:'5px', justifyContent:'center', flexWrap:'wrap' }}>
-             <button onClick={()=>openShiftClosingDate(row.date)} style={{...btnBlack, width:'auto', marginTop:0, padding:'7px 9px', fontSize:'10px' }}>{row.statusCode === 'unclosed' ? 'Open & Close' : 'Open Review'}</button>
+             <button onClick={()=>openShiftClosingDate(row.date)} style={{...btnBlack, width:'auto', marginTop:0, padding:'7px 9px', fontSize:'10px' }}>{row.statusCode === 'unclosed' ? 'Open & Close' : row.statusCode === 'closed' ? 'View Shift' : 'Open Review'}</button>
              {row.closing && row.closingMatchesSales && ['closed_not_posted','review_required'].includes(row.statusCode) && row.possibleLegacyCount === 0 && (
               <button onClick={()=>repairShiftClosingDailySales(row)} disabled={shiftClosingSaving} style={{...btnGreen, width:'auto', marginTop:0, padding:'7px 9px', fontSize:'10px'}}>Repair Posting</button>
              )}
