@@ -35148,6 +35148,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return `Romas-Donuts-ID-${employeeLabel}-${side}.png`
  }
 
+ function getEmployeeIdWordDownloadName() {
+  const employeeLabel = String(employeeIdDraft.fullName || employeeIdDraft.employeeCode || 'Employee')
+   .trim()
+   .replace(/[^a-z0-9]+/gi, '-')
+   .replace(/^-+|-+$/g, '')
+   .slice(0, 70) || 'Employee'
+  return `Romas-Donuts-ID-${employeeLabel}-front-and-back.doc`
+ }
+
  async function downloadEmployeeIdPng(side, options = {}) {
   if (side === 'front' && (!employeeIdDraft.fullName.trim() || !employeeIdDraft.employeeCode.trim())) {
    showToast('Select an employee or enter the employee name and ID number first.', 'red')
@@ -35171,12 +35180,45 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return true
  }
 
- async function downloadEmployeeIdBothSides() {
-  const frontDownloaded = await downloadEmployeeIdPng('front', { silent:true })
-  if (!frontDownloaded) return
-  await new Promise(resolve => window.setTimeout(resolve, 250))
-  const backDownloaded = await downloadEmployeeIdPng('back', { silent:true })
-  if (backDownloaded) showToast('Front and back Employee ID PNG images downloaded.')
+ async function downloadEmployeeIdWord() {
+  if (!employeeIdDraft.fullName.trim() || !employeeIdDraft.employeeCode.trim()) {
+   showToast('Select an employee or enter the employee name and ID number first.', 'red')
+   return false
+  }
+  if (!employeeIdPhotoDataUrl) {
+   showToast('Choose the employee photo before downloading the Employee ID.', 'red')
+   return false
+  }
+  const rendered = await renderEmployeeIdCanvases({ highResolution:true })
+  if (!rendered) return false
+  const frontCanvas = employeeIdFrontCanvasRef.current
+  const backCanvas = employeeIdBackCanvasRef.current
+  if (!frontCanvas || !backCanvas) return false
+  try {
+   const frontImage = frontCanvas.toDataURL('image/png')
+   const backImage = backCanvas.toDataURL('image/png')
+   const employeeName = String(employeeIdDraft.fullName || 'Employee').trim()
+   const html = [
+    '<!DOCTYPE html>',
+    '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">',
+    '<head><meta charset="utf-8"><title>Roma\'s Donuts Employee ID - ' + escapeHtml(employeeName) + '</title>',
+    '<style>',
+    '@page WordSection1{size:8.27in 11.69in;margin:.45in .55in;}',
+    'div.WordSection1{page:WordSection1;}body{margin:0;font-family:Arial,sans-serif;color:#111;}h1{margin:0 0 3px;color:#ca1b1b;font-size:15pt;}p{margin:0;color:#555;font-size:9pt;}.id-side{margin-top:12px;page-break-inside:avoid;}.id-label{font-weight:700;font-size:9pt;color:#1a1a2e;margin:0 0 4px;}.id-image{display:block;width:6.5cm;height:9.5cm;border:0;}',
+    '</style></head><body><div class="WordSection1">',
+    '<h1>Roma\'s Donuts Employee ID</h1><p>Employee: ' + escapeHtml(employeeName) + ' | ID No.: ' + escapeHtml(employeeIdDraft.employeeCode) + '</p>',
+    '<div class="id-side"><div class="id-label">FRONT</div><img class="id-image" src="' + frontImage + '" alt="Employee ID front"></div>',
+    '<div class="id-side"><div class="id-label">BACK</div><img class="id-image" src="' + backImage + '" alt="Employee ID back"></div>',
+    '</div></body></html>'
+   ].join('')
+   downloadBlobAsFile(new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' }), getEmployeeIdWordDownloadName())
+   showToast('Employee ID Word file downloaded with the front and back images.')
+   return true
+  } catch (error) {
+   console.error('Employee ID Word download failed:', error)
+   showToast('The Employee ID Word file could not be created: ' + (error?.message || error), 'red')
+   return false
+  }
  }
 
  async function loadCompanyDocumentRecords() {
@@ -40159,7 +40201,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
     <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>Employee ID Builder</h3>
     <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Create the official 6.5 × 9.5 cm Roma's Donuts employee ID using the approved front and back layout.</p>
    </div>
-   <Badge label="HIGH-RESOLUTION PNG" color="green" />
+   <Badge label="WORD FILE WITH ID IMAGES" color="green" />
   </div>
 
   <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(300px,0.9fr) minmax(520px,1.6fr)', gap:'16px', alignItems:'start' }}>
@@ -40193,7 +40235,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
      </div>
     </div>
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
-     <button type="button" disabled={employeeIdRendering} style={{...btnRed, width:'auto', flex:'1 1 160px', marginTop:0, padding:'10px 12px', opacity:employeeIdRendering?0.65:1}} onClick={downloadEmployeeIdBothSides}>{employeeIdRendering?'PREPARING...':'DOWNLOAD FRONT & BACK PNG'}</button>
+     <button type="button" disabled={employeeIdRendering} style={{...btnRed, width:'auto', flex:'1 1 160px', marginTop:0, padding:'10px 12px', opacity:employeeIdRendering?0.65:1}} onClick={downloadEmployeeIdWord}>{employeeIdRendering?'PREPARING...':'DOWNLOAD WORD (FRONT & BACK)'}</button>
      <button type="button" style={{...btnGray, width:'auto', marginTop:0, padding:'10px 12px'}} onClick={clearEmployeeIdBuilder}>CLEAR</button>
     </div>
     <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'8px' }}>
@@ -40214,7 +40256,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
      </div>
     </div>
     <div style={{ marginTop:'12px', padding:'10px 12px', background:'#f7f9fc', border:'1px solid #dfe5ec', borderRadius:'10px', color:'#596270', fontSize:'11px', lineHeight:1.5 }}>
-     Downloaded files are 2399 × 3506 pixels in portrait orientation, matching the approved 6.5 × 9.5 cm proportion. Employee photos stay in the browser for this ID-generation session and are not saved to the database.
+     The main download is a Word file containing the front and back ID images at the approved 6.5 × 9.5 cm size. Employee photos stay in the browser for this ID-generation session and are not saved to the database.
     </div>
    </div>
   </div>
