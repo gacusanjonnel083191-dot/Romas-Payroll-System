@@ -6575,6 +6575,9 @@ export default function App() {
  const videoRef = useRef(null)
  const canvasRef = useRef(null)
  const profilePhotoInputRef = useRef(null)
+ const employeeIdFrontCanvasRef = useRef(null)
+ const employeeIdBackCanvasRef = useRef(null)
+ const employeeIdPhotoInputRef = useRef(null)
  const resellerOrderSubmitLockRef = useRef(false)
  const resellerOrderRecentSubmitKeysRef = useRef(new Set())
  const approvingResellerOrderIdsRef = useRef(new Set())
@@ -6803,6 +6806,9 @@ export default function App() {
  const [documentCenterCategory, setDocumentCenterCategory] = useState('all')
  const [documentCenterBatch, setDocumentCenterBatch] = useState('all')
  const [documentCenterView, setDocumentCenterView] = useState('forms')
+ const [employeeIdDraft, setEmployeeIdDraft] = useState({ employeeId:'', fullName:'', position:'', employeeCode:'', dateIssued:today })
+ const [employeeIdPhotoDataUrl, setEmployeeIdPhotoDataUrl] = useState('')
+ const [employeeIdRendering, setEmployeeIdRendering] = useState(false)
  const [documentRecordSearch, setDocumentRecordSearch] = useState('')
  const [documentRecordStatusFilter, setDocumentRecordStatusFilter] = useState('all')
  const [documentRecordTypeFilter, setDocumentRecordTypeFilter] = useState('all')
@@ -7796,6 +7802,12 @@ export default function App() {
  const showPayrollReminder = currentDay === 11 || currentDay === 26
  const [orderCutoffTick, setOrderCutoffTick] = useState(Date.now())
  const orderCutoffStatus = getOrderCutoffStatus(null, new Date(orderCutoffTick))
+
+ useEffect(() => {
+  if (!adminMode || activeTab !== 'documents' || documentCenterView !== 'employee-id') return
+  const previewTimer = window.setTimeout(() => { void renderEmployeeIdCanvases() }, 120)
+  return () => window.clearTimeout(previewTimer)
+ }, [adminMode, activeTab, documentCenterView, employeeIdDraft, employeeIdPhotoDataUrl])
 
  useEffect(() => {
   if (!adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
@@ -34902,6 +34914,271 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   )
  }
 
+ function loadEmployeeIdAsset(src) {
+  return new Promise((resolve, reject) => {
+   const image = new Image()
+   image.onload = () => resolve(image)
+   image.onerror = () => reject(new Error('An Employee ID image asset could not be loaded.'))
+   image.src = src
+  })
+ }
+
+ function drawEmployeeIdCoverImage(ctx, image, x, y, width, height) {
+  const sourceWidth = image.naturalWidth || image.width || 1
+  const sourceHeight = image.naturalHeight || image.height || 1
+  const scale = Math.max(width / sourceWidth, height / sourceHeight)
+  const cropWidth = width / scale
+  const cropHeight = height / scale
+  const sourceX = Math.max(0, (sourceWidth - cropWidth) / 2)
+  const sourceY = Math.max(0, (sourceHeight - cropHeight) / 2)
+  ctx.drawImage(image, sourceX, sourceY, cropWidth, cropHeight, x, y, width, height)
+ }
+
+ function drawEmployeeIdDonutWatermark(ctx, x, y, radius, color) {
+  ctx.save()
+  ctx.globalAlpha = 0.12
+  ctx.strokeStyle = color
+  ctx.lineWidth = Math.max(7, radius * 0.045)
+  ctx.beginPath()
+  ctx.arc(x, y, radius, 0, Math.PI * 2)
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.arc(x, y, radius * 0.34, 0, Math.PI * 2)
+  ctx.stroke()
+  for (let index = 0; index < 12; index += 1) {
+   const angle = (Math.PI * 2 * index) / 12
+   const sprinkleRadius = radius * 0.66
+   const sx = x + Math.cos(angle) * sprinkleRadius
+   const sy = y + Math.sin(angle) * sprinkleRadius
+   ctx.save()
+   ctx.translate(sx, sy)
+   ctx.rotate(angle + Math.PI / 2)
+   ctx.beginPath()
+   ctx.moveTo(-radius * 0.055, 0)
+   ctx.lineTo(radius * 0.055, 0)
+   ctx.stroke()
+   ctx.restore()
+  }
+  ctx.restore()
+ }
+
+ function fitEmployeeIdText(ctx, text, maxWidth, startingSize, fontFamily = 'Arial Black, Arial, sans-serif') {
+  let size = startingSize
+  const safeText = String(text || '').trim()
+  while (size > 44) {
+   ctx.font = `900 ${size}px ${fontFamily}`
+   if (ctx.measureText(safeText).width <= maxWidth) break
+   size -= 4
+  }
+  return size
+ }
+
+ function formatEmployeeIdIssuedDate(value) {
+  const raw = String(value || '').slice(0, 10)
+  const parts = raw.split('-')
+  if (parts.length !== 3) return raw
+  return `${parts[1]}-${parts[2]}-${parts[0]}`
+ }
+
+ async function renderEmployeeIdCanvases(options = {}) {
+  const frontCanvas = employeeIdFrontCanvasRef.current
+  const backCanvas = employeeIdBackCanvasRef.current
+  if (!frontCanvas || !backCanvas) return false
+  setEmployeeIdRendering(true)
+  try {
+   const [frontHeader, backTemplate, employeePhoto] = await Promise.all([
+    loadEmployeeIdAsset('/employee-id-front-header.png'),
+    loadEmployeeIdAsset('/employee-id-back.png'),
+    employeeIdPhotoDataUrl ? loadEmployeeIdAsset(employeeIdPhotoDataUrl) : Promise.resolve(null)
+   ])
+   const width = 2399
+   const height = 3506
+   const outputWidth = options.highResolution ? width : 1200
+   const outputHeight = options.highResolution ? height : 1754
+   frontCanvas.width = outputWidth
+   frontCanvas.height = outputHeight
+   backCanvas.width = outputWidth
+   backCanvas.height = outputHeight
+
+   const ctx = frontCanvas.getContext('2d')
+   const backCtx = backCanvas.getContext('2d')
+   if (!ctx || !backCtx) throw new Error('Canvas image generation is not supported by this browser.')
+
+   ctx.imageSmoothingEnabled = true
+   ctx.imageSmoothingQuality = 'high'
+   ctx.setTransform(outputWidth / width, 0, 0, outputHeight / height, 0, 0)
+   ctx.fillStyle = '#ffd615'
+   ctx.fillRect(0, 0, width, 1625)
+   ctx.fillStyle = '#ffffff'
+   ctx.fillRect(0, 1625, width, height - 1625)
+   ctx.drawImage(frontHeader, 0, 0, width, 1250)
+
+   drawEmployeeIdDonutWatermark(ctx, 285, 1680, 245, '#aa8e05')
+   drawEmployeeIdDonutWatermark(ctx, 2100, 1740, 240, '#b7b7b7')
+   drawEmployeeIdDonutWatermark(ctx, 340, 2600, 220, '#b7b7b7')
+   drawEmployeeIdDonutWatermark(ctx, 1950, 2680, 260, '#b7b7b7')
+   drawEmployeeIdDonutWatermark(ctx, 480, 3360, 245, '#b7b7b7')
+   drawEmployeeIdDonutWatermark(ctx, 2050, 3400, 230, '#b7b7b7')
+
+   const photoX = 730
+   const photoY = 1280
+   const photoSize = 940
+   ctx.fillStyle = '#eef0f3'
+   ctx.fillRect(photoX, photoY, photoSize, photoSize)
+   if (employeePhoto) {
+    drawEmployeeIdCoverImage(ctx, employeePhoto, photoX, photoY, photoSize, photoSize)
+   } else {
+    ctx.save()
+    ctx.fillStyle = '#c9ced6'
+    ctx.beginPath()
+    ctx.arc(width / 2, photoY + 330, 145, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.beginPath()
+    ctx.ellipse(width / 2, photoY + 760, 315, 250, 0, Math.PI, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = '#68707c'
+    ctx.font = '700 48px Arial, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('SELECT EMPLOYEE PHOTO', width / 2, photoY + 890)
+    ctx.restore()
+   }
+   ctx.strokeStyle = '#ffffff'
+   ctx.lineWidth = 10
+   ctx.strokeRect(photoX, photoY, photoSize, photoSize)
+
+   const employeeName = String(employeeIdDraft.fullName || 'EMPLOYEE NAME').trim().toUpperCase()
+   const position = String(employeeIdDraft.position || 'POSITION').trim().toUpperCase()
+   const employeeCode = String(employeeIdDraft.employeeCode || '—').trim().toUpperCase()
+   const issuedDate = formatEmployeeIdIssuedDate(employeeIdDraft.dateIssued)
+
+   ctx.textAlign = 'center'
+   ctx.textBaseline = 'middle'
+   ctx.fillStyle = '#111111'
+   const nameSize = fitEmployeeIdText(ctx, employeeName, 2050, 142)
+   ctx.font = `900 ${nameSize}px Arial Black, Arial, sans-serif`
+   ctx.fillText(employeeName, width / 2, 2415)
+   ctx.fillStyle = '#d71920'
+   const positionSize = fitEmployeeIdText(ctx, position, 1700, 88, 'Arial, sans-serif')
+   ctx.font = `900 ${positionSize}px Arial, sans-serif`
+   ctx.fillText(position, width / 2, 2585)
+
+   ctx.textAlign = 'left'
+   ctx.fillStyle = '#111111'
+   ctx.font = '900 94px Arial Black, Arial, sans-serif'
+   ctx.fillText(`ID #: ${employeeCode}`, 375, 2965)
+   ctx.font = '400 78px Arial, sans-serif'
+   ctx.fillText('DATE ISSUED:', 375, 3155)
+   ctx.font = '400 72px Arial, sans-serif'
+   ctx.fillText(issuedDate || '—', 485, 3270)
+
+   ctx.strokeStyle = '#111111'
+   ctx.lineWidth = 8
+   ctx.beginPath()
+   ctx.moveTo(1290, 3135)
+   ctx.lineTo(2150, 3135)
+   ctx.stroke()
+   ctx.textAlign = 'center'
+   ctx.font = 'italic 66px Arial, sans-serif'
+   ctx.fillText('Signature', 1720, 3235)
+
+   backCtx.imageSmoothingEnabled = true
+   backCtx.imageSmoothingQuality = 'high'
+   backCtx.setTransform(outputWidth / width, 0, 0, outputHeight / height, 0, 0)
+   backCtx.fillStyle = '#ffd615'
+   backCtx.fillRect(0, 0, width, height)
+   backCtx.drawImage(backTemplate, 0, 0, width, height)
+   return true
+  } catch (error) {
+   console.error('Employee ID render failed:', error)
+   showToast('Employee ID preview failed: ' + (error?.message || error), 'red')
+   return false
+  } finally {
+   setEmployeeIdRendering(false)
+  }
+ }
+
+ function selectEmployeeForIdBuilder(employeeId) {
+  const selected = (employees || []).find(row => String(row.id) === String(employeeId)) || null
+  setEmployeeIdDraft(previous => ({
+   ...previous,
+   employeeId:String(employeeId || ''),
+   fullName:selected?.full_name || '',
+   position:selected?.position || selected?.department || '',
+   employeeCode:selected?.employee_code || ''
+  }))
+  setEmployeeIdPhotoDataUrl('')
+  if (employeeIdPhotoInputRef.current) employeeIdPhotoInputRef.current.value = ''
+ }
+
+ function updateEmployeeIdDraft(field, value) {
+  setEmployeeIdDraft(previous => ({ ...previous, [field]:value }))
+ }
+
+ function handleEmployeeIdPhotoSelection(event) {
+  const file = event.target.files?.[0]
+  if (!file) return
+  if (!String(file.type || '').startsWith('image/')) {
+   showToast('Please choose a JPG, PNG, or another valid image file.', 'red')
+   event.target.value = ''
+   return
+  }
+  if (file.size > 12 * 1024 * 1024) {
+   showToast('The employee photo must be 12 MB or smaller.', 'red')
+   event.target.value = ''
+   return
+  }
+  const reader = new FileReader()
+  reader.onload = () => setEmployeeIdPhotoDataUrl(String(reader.result || ''))
+  reader.onerror = () => showToast('The selected employee photo could not be read.', 'red')
+  reader.readAsDataURL(file)
+ }
+
+ function clearEmployeeIdBuilder() {
+  setEmployeeIdDraft({ employeeId:'', fullName:'', position:'', employeeCode:'', dateIssued:today })
+  setEmployeeIdPhotoDataUrl('')
+  if (employeeIdPhotoInputRef.current) employeeIdPhotoInputRef.current.value = ''
+ }
+
+ function getEmployeeIdDownloadName(side) {
+  const employeeLabel = String(employeeIdDraft.fullName || employeeIdDraft.employeeCode || 'Employee')
+   .trim()
+   .replace(/[^a-z0-9]+/gi, '-')
+   .replace(/^-+|-+$/g, '')
+   .slice(0, 70) || 'Employee'
+  return `Romas-Donuts-ID-${employeeLabel}-${side}.png`
+ }
+
+ async function downloadEmployeeIdPng(side, options = {}) {
+  if (side === 'front' && (!employeeIdDraft.fullName.trim() || !employeeIdDraft.employeeCode.trim())) {
+   showToast('Select an employee or enter the employee name and ID number first.', 'red')
+   return false
+  }
+  if (side === 'front' && !employeeIdPhotoDataUrl) {
+   showToast('Choose the employee photo before downloading the front ID.', 'red')
+   return false
+  }
+  const rendered = await renderEmployeeIdCanvases({ highResolution:true })
+  if (!rendered) return false
+  const canvas = side === 'back' ? employeeIdBackCanvasRef.current : employeeIdFrontCanvasRef.current
+  if (!canvas) return false
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+  if (!blob) {
+   showToast('The Employee ID PNG could not be created.', 'red')
+   return false
+  }
+  downloadBlobAsFile(blob, getEmployeeIdDownloadName(side))
+  if (!options.silent) showToast(`${side === 'back' ? 'Back' : 'Front'} Employee ID downloaded as a high-resolution PNG image.`)
+  return true
+ }
+
+ async function downloadEmployeeIdBothSides() {
+  const frontDownloaded = await downloadEmployeeIdPng('front', { silent:true })
+  if (!frontDownloaded) return
+  await new Promise(resolve => window.setTimeout(resolve, 250))
+  const backDownloaded = await downloadEmployeeIdPng('back', { silent:true })
+  if (backDownloaded) showToast('Front and back Employee ID PNG images downloaded.')
+ }
+
  async function loadCompanyDocumentRecords() {
   setCompanyDocumentRecordsLoading(true)
   try {
@@ -39789,6 +40066,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='forms'?'#ca1b1b':'#f4f4f4', color:documentCenterView==='forms'?'white':'#555', boxShadow:documentCenterView==='forms'?'0 2px 8px rgba(202,27,27,0.25)':'none' }}
   >FORMS & TEMPLATES</button>
   <button
+   onClick={()=>setDocumentCenterView('employee-id')}
+   style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='employee-id'?'#ca1b1b':'#f4f4f4', color:documentCenterView==='employee-id'?'white':'#555', boxShadow:documentCenterView==='employee-id'?'0 2px 8px rgba(202,27,27,0.25)':'none' }}
+  >EMPLOYEE ID BUILDER</button>
+  <button
    onClick={()=>{ setDocumentCenterView('records'); loadCompanyDocumentRecords() }}
    style={{ padding:'10px 16px', borderRadius:'10px', border:'none', cursor:'pointer', fontWeight:'900', fontSize:'12px', background:documentCenterView==='records'?'#1a1a2e':'#f4f4f4', color:documentCenterView==='records'?'white':'#555', boxShadow:documentCenterView==='records'?'0 2px 8px rgba(26,26,46,0.22)':'none', display:'inline-flex', alignItems:'center', gap:'8px' }}
   >DOCUMENT RECORDS & NTE ARCHIVE <span style={{ background:documentCenterView==='records'?'#FDD412':'#ddd', color:'#1a1a2e', borderRadius:'999px', minWidth:'24px', height:'20px', padding:'0 7px', display:'inline-flex', alignItems:'center', justifyContent:'center', fontSize:'10px' }}>{companyDocumentRecords.length}</span></button>
@@ -39869,6 +40150,75 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  </div>
  </>
+ )}
+
+ {documentCenterView==='employee-id' && (
+ <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'16px', padding:'16px', marginBottom:'16px' }}>
+  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap', marginBottom:'14px' }}>
+   <div>
+    <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'16px' }}>Employee ID Builder</h3>
+    <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Create the official 6.5 × 9.5 cm Roma's Donuts employee ID using the approved front and back layout.</p>
+   </div>
+   <Badge label="HIGH-RESOLUTION PNG" color="green" />
+  </div>
+
+  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'minmax(300px,0.9fr) minmax(520px,1.6fr)', gap:'16px', alignItems:'start' }}>
+   <div style={{ background:'#fffdf4', border:'1px solid #f2d66a', borderRadius:'14px', padding:'14px' }}>
+    <div style={{ marginBottom:'11px' }}>
+     <label style={lblS}>Employee</label>
+     <EmployeeSelect value={employeeIdDraft.employeeId} onChange={selectEmployeeForIdBuilder} employees={employees} />
+    </div>
+    <div style={{ marginBottom:'11px' }}>
+     <label style={lblS}>Employee Photo *</label>
+     <input ref={employeeIdPhotoInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleEmployeeIdPhotoSelection} style={{ display:'none' }} />
+     <button type="button" style={{...btnBlack, width:'100%', marginTop:0, padding:'10px 14px' }} onClick={()=>employeeIdPhotoInputRef.current?.click()}>{employeeIdPhotoDataUrl?'CHANGE EMPLOYEE PHOTO':'CHOOSE EMPLOYEE PHOTO'}</button>
+     <p style={{ margin:'5px 0 0', color:'#888', fontSize:'10px', lineHeight:1.4 }}>Use a clear, front-facing square or portrait photo. The image is centered and cropped automatically.</p>
+    </div>
+    <div style={{ marginBottom:'11px' }}>
+     <label style={lblS}>Full Name *</label>
+     <input value={employeeIdDraft.fullName} onChange={event=>updateEmployeeIdDraft('fullName', event.target.value)} placeholder="Employee full name" style={{...inputStyle, marginBottom:0}} />
+    </div>
+    <div style={{ marginBottom:'11px' }}>
+     <label style={lblS}>Position *</label>
+     <input value={employeeIdDraft.position} onChange={event=>updateEmployeeIdDraft('position', event.target.value)} placeholder="Production Crew" style={{...inputStyle, marginBottom:0}} />
+    </div>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginBottom:'12px' }}>
+     <div>
+      <label style={lblS}>ID Number *</label>
+      <input value={employeeIdDraft.employeeCode} onChange={event=>updateEmployeeIdDraft('employeeCode', event.target.value)} placeholder="RDP025" style={{...inputStyle, marginBottom:0}} />
+     </div>
+     <div>
+      <label style={lblS}>Date Issued *</label>
+      <input type="date" value={employeeIdDraft.dateIssued} onChange={event=>updateEmployeeIdDraft('dateIssued', event.target.value)} style={{...inputStyle, marginBottom:0}} />
+     </div>
+    </div>
+    <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+     <button type="button" disabled={employeeIdRendering} style={{...btnRed, width:'auto', flex:'1 1 160px', marginTop:0, padding:'10px 12px', opacity:employeeIdRendering?0.65:1}} onClick={downloadEmployeeIdBothSides}>{employeeIdRendering?'PREPARING...':'DOWNLOAD FRONT & BACK PNG'}</button>
+     <button type="button" style={{...btnGray, width:'auto', marginTop:0, padding:'10px 12px'}} onClick={clearEmployeeIdBuilder}>CLEAR</button>
+    </div>
+    <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginTop:'8px' }}>
+     <button type="button" disabled={employeeIdRendering} style={{...btnBlack, width:'auto', flex:1, marginTop:0, padding:'8px 10px', fontSize:'11px'}} onClick={()=>downloadEmployeeIdPng('front')}>FRONT ONLY</button>
+     <button type="button" disabled={employeeIdRendering} style={{...btnBlack, width:'auto', flex:1, marginTop:0, padding:'8px 10px', fontSize:'11px'}} onClick={()=>downloadEmployeeIdPng('back')}>BACK ONLY</button>
+    </div>
+   </div>
+
+   <div>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'14px' }}>
+     <div style={{ background:'#f3f4f6', border:'1px solid #d9dde3', borderRadius:'14px', padding:'12px', textAlign:'center' }}>
+      <p style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'11px', fontWeight:'900' }}>FRONT PREVIEW</p>
+      <canvas ref={employeeIdFrontCanvasRef} aria-label="Employee ID front preview" style={{ display:'block', width:'100%', maxWidth:'330px', aspectRatio:'6.5 / 9.5', margin:'0 auto', background:'#fff', borderRadius:'8px', boxShadow:'0 5px 18px rgba(0,0,0,0.16)' }} />
+     </div>
+     <div style={{ background:'#f3f4f6', border:'1px solid #d9dde3', borderRadius:'14px', padding:'12px', textAlign:'center' }}>
+      <p style={{ margin:'0 0 8px', color:'#1a1a2e', fontSize:'11px', fontWeight:'900' }}>BACK PREVIEW</p>
+      <canvas ref={employeeIdBackCanvasRef} aria-label="Employee ID back preview" style={{ display:'block', width:'100%', maxWidth:'330px', aspectRatio:'6.5 / 9.5', margin:'0 auto', background:'#fff', borderRadius:'8px', boxShadow:'0 5px 18px rgba(0,0,0,0.16)' }} />
+     </div>
+    </div>
+    <div style={{ marginTop:'12px', padding:'10px 12px', background:'#f7f9fc', border:'1px solid #dfe5ec', borderRadius:'10px', color:'#596270', fontSize:'11px', lineHeight:1.5 }}>
+     Downloaded files are 2399 × 3506 pixels in portrait orientation, matching the approved 6.5 × 9.5 cm proportion. Employee photos stay in the browser for this ID-generation session and are not saved to the database.
+    </div>
+   </div>
+  </div>
+ </div>
  )}
 
  {documentCenterView==='records' && (() => {
