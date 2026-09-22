@@ -4,6 +4,19 @@ export function toWholeQuantity(value) {
   return Math.floor(parsed)
 }
 
+export function buildResetQuantities(products = []) {
+  return Object.fromEntries(products.map(product => {
+    const key = String(product.variant_id || product.variant_name || '')
+    return [key, {
+      ordered: product.quantity === '' || product.quantity == null ? '' : String(toWholeQuantity(product.quantity)),
+      delivered: '',
+      added: '',
+      deducted: '',
+      unsold: '',
+    }]
+  }))
+}
+
 export function calculateResellerLine(line = {}) {
   const ordered = toWholeQuantity(line.ordered)
   const delivered = toWholeQuantity(line.delivered)
@@ -12,8 +25,8 @@ export function calculateResellerLine(line = {}) {
   const unsold = toWholeQuantity(line.unsold)
   const resellerPrice = Math.max(0, Number(line.resellerPrice) || 0)
   const retailPrice = Math.max(resellerPrice, Number(line.retailPrice) || 0)
-  const availableBeforeUnsold = Math.max(0, delivered + added - deducted)
-  const sold = Math.max(0, availableBeforeUnsold - unsold)
+  const accountable = Math.max(0, delivered + added - deducted)
+  const sold = Math.max(0, accountable - unsold)
   const amountDue = sold * resellerPrice
 
   return {
@@ -22,13 +35,14 @@ export function calculateResellerLine(line = {}) {
     added,
     deducted,
     unsold,
-    availableBeforeUnsold,
+    accountable,
+    availableBeforeUnsold: accountable,
     sold,
     amountDue,
     retailValue: sold * retailPrice,
     estimatedProfit: sold * Math.max(0, retailPrice - resellerPrice),
     hasDeductionError: deducted > delivered + added,
-    hasUnsoldError: unsold > availableBeforeUnsold,
+    hasUnsoldError: unsold > accountable,
   }
 }
 
@@ -40,6 +54,7 @@ export function calculateResellerTotals(lines = []) {
     totals.added += result.added
     totals.deducted += result.deducted
     totals.unsold += result.unsold
+    totals.accountable += result.accountable
     totals.sold += result.sold
     totals.amountDue += result.amountDue
     totals.retailValue += result.retailValue
@@ -52,6 +67,7 @@ export function calculateResellerTotals(lines = []) {
     added: 0,
     deducted: 0,
     unsold: 0,
+    accountable: 0,
     sold: 0,
     amountDue: 0,
     retailValue: 0,
@@ -59,4 +75,3 @@ export function calculateResellerTotals(lines = []) {
     hasErrors: false,
   })
 }
-
