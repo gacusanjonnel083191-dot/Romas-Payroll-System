@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calculateResellerLine, calculateResellerTotals, toWholeQuantity } from '../src/resellerCalculator.js'
+import { buildResetQuantities, calculateResellerLine, calculateResellerTotals, toWholeQuantity } from '../src/resellerCalculator.js'
 
 test('uses actual delivered, additions, deductions, and unsold to calculate settlement', () => {
   const result = calculateResellerLine({
@@ -13,6 +13,7 @@ test('uses actual delivered, additions, deductions, and unsold to calculate sett
     retailPrice: 25,
   })
 
+  assert.equal(result.accountable, 51)
   assert.equal(result.sold, 45)
   assert.equal(result.amountDue, 900)
   assert.equal(result.estimatedProfit, 225)
@@ -21,6 +22,7 @@ test('uses actual delivered, additions, deductions, and unsold to calculate sett
 test('never produces a negative sold quantity or payable', () => {
   const result = calculateResellerLine({ delivered: 3, deducted: 5, unsold: 8, resellerPrice: 20 })
 
+  assert.equal(result.accountable, 0)
   assert.equal(result.sold, 0)
   assert.equal(result.amountDue, 0)
   assert.equal(result.hasDeductionError, true)
@@ -39,6 +41,7 @@ test('totals multiple products and preserves ordered as informational', () => {
     added: totals.added,
     deducted: totals.deducted,
     unsold: totals.unsold,
+    accountable: totals.accountable,
     sold: totals.sold,
     amountDue: totals.amountDue,
     estimatedProfit: totals.estimatedProfit,
@@ -48,6 +51,7 @@ test('totals multiple products and preserves ordered as informational', () => {
     added: 1,
     deducted: 1,
     unsold: 3,
+    accountable: 14,
     sold: 11,
     amountDue: 190,
     estimatedProfit: 46,
@@ -60,3 +64,12 @@ test('normalizes invalid and decimal quantities to safe whole pieces', () => {
   assert.equal(toWholeQuantity('4.9'), 4)
 })
 
+test('reset preserves each ordered quantity while clearing daily actual fields', () => {
+  assert.deepEqual(buildResetQuantities([
+    { variant_id: 'ring', variant_name: 'Rings', quantity: 12 },
+    { variant_id: 'shell', variant_name: 'Shells', quantity: '' },
+  ]), {
+    ring: { ordered: '12', delivered: '', added: '', deducted: '', unsold: '' },
+    shell: { ordered: '', delivered: '', added: '', deducted: '', unsold: '' },
+  })
+})
