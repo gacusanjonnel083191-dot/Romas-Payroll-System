@@ -11,6 +11,7 @@
     <link rel="manifest" href="/manifest.json" />
     <script>
       if (new URLSearchParams(window.location.search).get('app') === 'reseller-calculator') {
+        document.documentElement.classList.add('reseller-calculator-app')
         document.querySelector('link[rel="manifest"]').setAttribute('href', '/reseller-calculator-manifest.json')
         document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute('content', "Roma's Calculator")
         document.querySelector('meta[name="description"]')?.setAttribute('content', "Roma's Donuts daily reseller sales and settlement calculator")
@@ -33,6 +34,8 @@
       html { height: 100%; }
       body { min-height: 100%; overflow-x: hidden; -webkit-tap-highlight-color: transparent; }
       #root { min-height: 100vh; }
+      .reseller-calculator-app .staff-chat-root,
+      .reseller-calculator-app #roma-ai-root { display: none !important; }
       @media print {
         @page { size: 145mm 210mm; margin: 0; }
         body > * { display: none !important; }
