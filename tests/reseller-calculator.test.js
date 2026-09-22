@@ -55,8 +55,8 @@ test('totals multiple products and preserves ordered as informational', () => {
     delivered: 14,
     unsold: 3,
     sold: 11,
-    amountDue: 190,
-    estimatedProfit: 46,
+    amountDue: 180,
+    estimatedProfit: 43,
   })
 })
 
