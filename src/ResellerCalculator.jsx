@@ -8,8 +8,6 @@ const PRODUCT_CACHE_KEY = 'romas-reseller-calculator-products-v2'
 const quantityFields = [
   ['ordered', 'Ordered'],
   ['delivered', 'Actual delivered'],
-  ['added', 'Added'],
-  ['deducted', 'Deducted'],
   ['unsold', 'Unsold'],
 ]
 
@@ -171,8 +169,6 @@ export default function ResellerCalculator({
       retailPrice: Number(product.retail_price) || Number(product.reseller_price) || 0,
       ordered: saved.ordered ?? quantityValue(product.quantity || ''),
       delivered: saved.delivered ?? '',
-      added: saved.added ?? '',
-      deducted: saved.deducted ?? '',
       unsold: saved.unsold ?? '',
     }
   }), [effectiveProducts, quantities])
@@ -197,8 +193,6 @@ export default function ResellerCalculator({
         ...current[row.key],
         ordered: row.ordered,
         delivered: quantityValue(row.ordered),
-        added: current[row.key]?.added ?? row.added,
-        deducted: current[row.key]?.deducted ?? row.deducted,
         unsold: current[row.key]?.unsold ?? row.unsold,
       },
     ])))
@@ -281,8 +275,7 @@ export default function ResellerCalculator({
       )}
 
       <div className="calculator-info-strip">
-        <span><strong>Accountable</strong> = Delivered + Added − Deducted</span>
-        <span><strong>Sold</strong> = Accountable − Unsold</span>
+        <span><strong>Sold</strong> = Actual Delivered − Unsold</span>
         <span><strong>Amount due</strong> = Sold × Reseller Price</span>
         <span className="calculator-local-save">Draft saves automatically on this device.</span>
       </div>
@@ -299,14 +292,13 @@ export default function ResellerCalculator({
                   <th>Retail</th>
                   <th>Reseller</th>
                   {quantityFields.map(([, label]) => <th key={label}>{label}</th>)}
-                  <th>Accountable</th>
                   <th>Sold</th>
                   <th>Amount due</th>
                 </tr>
               </thead>
               <tbody>
                 {calculatedRows.map(row => {
-                  const hasError = row.result.hasDeductionError || row.result.hasUnsoldError
+                  const hasError = row.result.hasUnsoldError
                   return (
                     <tr key={row.key} className={hasError ? 'has-error' : ''}>
                       <td className="product-column">
@@ -314,9 +306,7 @@ export default function ResellerCalculator({
                         <strong>{row.name}</strong>
                         {hasError && (
                           <small className="calculator-row-error">
-                            {row.result.hasDeductionError
-                              ? 'Deducted exceeds delivered + added.'
-                              : 'Unsold exceeds accountable quantity.'}
+                            Unsold cannot be more than Actual Delivered.
                           </small>
                         )}
                       </td>
@@ -336,7 +326,6 @@ export default function ResellerCalculator({
                           />
                         </td>
                       ))}
-                      <td className="result-cell">{row.result.accountable}</td>
                       <td className="result-cell sold-cell">{row.result.sold}</td>
                       <td className="amount-cell">{currency(row.result.amountDue)}</td>
                     </tr>
@@ -357,9 +346,6 @@ export default function ResellerCalculator({
         <div className="calculator-summary-metrics">
           <div><span>Ordered</span><strong>{totals.ordered}</strong></div>
           <div><span>Delivered</span><strong>{totals.delivered}</strong></div>
-          <div><span>Added</span><strong>{totals.added}</strong></div>
-          <div><span>Deducted</span><strong>{totals.deducted}</strong></div>
-          <div><span>Accountable</span><strong>{totals.accountable}</strong></div>
           <div><span>Unsold</span><strong>{totals.unsold}</strong></div>
           <div><span>Sold</span><strong>{totals.sold}</strong></div>
           <div><span>Est. reseller profit</span><strong className="profit-value">{currency(totals.estimatedProfit)}</strong></div>
