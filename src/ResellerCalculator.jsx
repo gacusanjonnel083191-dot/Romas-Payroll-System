@@ -87,6 +87,7 @@ export default function ResellerCalculator({
   onRefresh,
   refreshing = false,
   onLogout,
+  onBackToPortal,
 }) {
   const currentDraftKey = draftStorageKey(resellerName)
   const [initialDraft] = useState(() => readDraft(resellerName))
@@ -102,7 +103,9 @@ export default function ResellerCalculator({
   useEffect(() => {
     const manifest = document.querySelector('link[rel="manifest"]')
     const previousHref = manifest?.getAttribute('href') || '/manifest.json'
+    const hadCalculatorClass = document.documentElement.classList.contains('reseller-calculator-app')
     if (manifest) manifest.setAttribute('href', '/reseller-calculator-manifest.json')
+    document.documentElement.classList.add('reseller-calculator-app')
     document.documentElement.style.colorScheme = 'light'
 
     const handleInstallReady = () => setInstallPrompt(window.__romasInstallPrompt || null)
@@ -117,6 +120,7 @@ export default function ResellerCalculator({
 
     return () => {
       if (manifest) manifest.setAttribute('href', previousHref)
+      if (!hadCalculatorClass) document.documentElement.classList.remove('reseller-calculator-app')
       document.documentElement.style.removeProperty('color-scheme')
       window.removeEventListener('romasinstallready', handleInstallReady)
       window.removeEventListener('appinstalled', handleInstalled)
@@ -259,6 +263,7 @@ export default function ResellerCalculator({
           <button type="button" className="calculator-action secondary" onClick={onRefresh} disabled={refreshing}>{refreshing ? 'Refreshing…' : 'Refresh'}</button>
           {!isInstalled && <button type="button" className="calculator-action install" onClick={installApp}>Install app</button>}
           <button type="button" className="calculator-action secondary" onClick={resetCalculator}>Reset actuals</button>
+          {onBackToPortal && <button type="button" className="calculator-action secondary" onClick={onBackToPortal}>Back to portal</button>}
           <button type="button" className="calculator-action logout" onClick={onLogout}>Logout</button>
         </div>
       </section>
