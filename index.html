@@ -9,6 +9,17 @@
     <meta name="apple-mobile-web-app-title" content="Roma's Payroll" />
     <meta name="description" content="Roma's Donuts Payroll & Attendance System" />
     <link rel="manifest" href="/manifest.json" />
+    <script>
+      if (new URLSearchParams(window.location.search).get('app') === 'reseller-calculator') {
+        document.querySelector('link[rel="manifest"]').setAttribute('href', '/reseller-calculator-manifest.json')
+        document.title = "Roma's Donuts Reseller Calculator"
+      }
+      window.addEventListener('beforeinstallprompt', event => {
+        event.preventDefault()
+        window.__romasInstallPrompt = event
+        window.dispatchEvent(new CustomEvent('romasinstallready'))
+      })
+    </script>
     <link rel="apple-touch-icon" href="/logo.png" />
     <link rel="icon" type="image/png" href="/logo.png" />
     <link rel="stylesheet" href="/roma-ai.css?v=2026.08.12.14-resilient" />

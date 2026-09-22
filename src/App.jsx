@@ -8,6 +8,7 @@ import { Component, useEffect, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
+import ResellerCalculator from './ResellerCalculator.jsx'
 import {
  getChargeableEarlyOutMinutes,
  getUnconsumedApprovedTimeAdjustmentConflict,
@@ -41,6 +42,11 @@ const ORDER_CUTOFF_TIME = '13:00'
 const ORDER_CUTOFF_LABEL = '1:00 PM'
 const PH_TIME_ZONE = 'Asia/Manila'
 const POS_SHIFT_DAILY_SALES_MARKER_PREFIX = 'SAGS-POS-SHIFT-CLOSING|'
+
+function getRequestedResellerPortalView() {
+ if (typeof window === 'undefined') return 'dashboard'
+ return new URLSearchParams(window.location.search).get('app') === 'reseller-calculator' ? 'calculator' : 'dashboard'
+}
 
 function getPosShiftDailySalesMarker(outletId = '', businessDate = '') {
  return `${POS_SHIFT_DAILY_SALES_MARKER_PREFIX}${String(outletId || '').trim()}|${String(businessDate || '').slice(0, 10)}`
@@ -6961,7 +6967,7 @@ export default function App() {
  const [currentReseller, setCurrentReseller] = useState(null)
  const [resellerLoginCode, setResellerLoginCode] = useState('')
  const [resellerLoginPin, setResellerLoginPin] = useState('')
- const [resellerPortalView, setResellerPortalView] = useState('dashboard')
+ const [resellerPortalView, setResellerPortalView] = useState(getRequestedResellerPortalView)
  const [resellerInvoices, setResellerInvoices] = useState([])
  const [resellerPaymentHistory, setResellerPaymentHistory] = useState([])
  const [resellerOrderItems, setResellerOrderItems] = useState([])
@@ -6985,7 +6991,10 @@ export default function App() {
  const [staffOrderReasons, setStaffOrderReasons] = useState({})
  const [staffOrderSaving, setStaffOrderSaving] = useState({})
  // Login type
- const [loginType, setLoginType] = useState('employee')
+ const [loginType, setLoginType] = useState(() => {
+  if (typeof window === 'undefined') return 'employee'
+  return new URLSearchParams(window.location.search).get('app') === 'reseller-calculator' ? 'reseller' : 'employee'
+ })
  const [passkeySupported, setPasskeySupported] = useState(false)
  const [passkeyLoading, setPasskeyLoading] = useState(false)
  // Franchise
@@ -17336,7 +17345,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setCurrentReseller(branches[0])
  setSelectedResellerBranchId(branches[0].id)
  setResellerMode(true)
- setResellerPortalView('dashboard')
+ setResellerPortalView(getRequestedResellerPortalView())
  await loadResellerPortalData(branches[0].id)
  setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
  await loadResellerOrderItems(branches[0].id)
@@ -17362,7 +17371,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setSelectedResellerBranchId(data.id)
  setCurrentReseller(data)
  setResellerMode(true)
- setResellerPortalView('dashboard')
+ setResellerPortalView(getRequestedResellerPortalView())
  await loadResellerPortalData(data.id)
 
  setResellerOrderDeliveryDate(getDefaultResellerOrderDeliveryDate())
@@ -17408,6 +17417,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  return {
  variant_id:v.id,
  variant_name:v.name || saved?.variant_name || 'Product',
+ category:v.category || saved?.category || 'Donuts',
  quantity:saved?.default_quantity? String(saved.default_quantity): '',
  retail_price:retail,
  reseller_price:price
@@ -17423,6 +17433,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  rows.push({
  variant_id:saved.variant_id,
  variant_name:saved.variant_name || 'Archived Product',
+ category:saved.category || 'Archived',
  quantity:saved?.default_quantity? String(saved.default_quantity): '',
  retail_price:retail,
  reseller_price:price
@@ -49881,7 +49892,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  const totalReturnQty = resellerReturns.reduce((s,r)=>s+(r.reseller_return_items||[]).reduce((a,it)=>a+safeNum(it.returned_quantity,0),0),0)
  const collectionRate = totalInvoiceAmount>0? (totalPaid/totalInvoiceAmount)*100: 100
  const navItems = [
- ['dashboard','\uD83D\uDCCA Dashboard'],['invoices',' Invoices'],['balances',' Balances'],['orders',' Orders'],['place_order',' Place Order'],['returns',' Returns'],['payments',' Payments'],['notices',' Notices']
+ ['dashboard','\uD83D\uDCCA Dashboard'],['calculator',' Calculator'],['invoices',' Invoices'],['balances',' Balances'],['orders',' Orders'],['place_order',' Place Order'],['returns',' Returns'],['payments',' Payments'],['notices',' Notices']
  ]
  const portalCard = { background:'white', borderRadius:'16px', padding:'16px', boxShadow:'0 2px 12px rgba(0,0,0,0.08)', border:'1px solid #f3f3f3' }
  const kpiCard = (label, value, note, color='#ca1b1b') => (
@@ -49990,6 +50001,10 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  </div>
  </div>
+ )}
+
+ {resellerPortalView==='calculator' && (
+ <ResellerCalculator products={resellerOrderItems} resellerName={currentReseller.name} />
  )}
 
  {resellerPortalView==='invoices' && (

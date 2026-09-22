@@ -13,6 +13,12 @@
       ]
     },
     {
+      "source": "/reseller-calculator-manifest.json",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-cache" }
+      ]
+    },
+    {
       "source": "/assets/(.*)",
       "headers": [
         { "key": "Cache-Control", "value": "max-age=31536000, immutable" }
