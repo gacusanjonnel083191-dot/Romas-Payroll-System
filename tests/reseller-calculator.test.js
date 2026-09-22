@@ -66,10 +66,10 @@ test('normalizes invalid and decimal quantities to safe whole pieces', () => {
 
 test('reset preserves each ordered quantity while clearing daily actual fields', () => {
   assert.deepEqual(buildResetQuantities([
-    { variant_id: 'ring', variant_name: 'Rings', quantity: 12 },
+    { key: 'ring', variant_id: 'ring', variant_name: 'Rings', quantity: 12, ordered: '18' },
     { variant_id: 'shell', variant_name: 'Shells', quantity: '' },
   ]), {
-    ring: { ordered: '12', delivered: '', added: '', deducted: '', unsold: '' },
+    ring: { ordered: '18', delivered: '', added: '', deducted: '', unsold: '' },
     shell: { ordered: '', delivered: '', added: '', deducted: '', unsold: '' },
   })
 })
