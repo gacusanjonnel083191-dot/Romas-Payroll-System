@@ -49877,6 +49877,25 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  // Reseller Portal 
  if (resellerMode && currentReseller) {
+ if (getRequestedResellerPortalView() === 'calculator') {
+  return (
+   <div className="reseller-calculator-page">
+    {toast && <div style={{ position:'fixed', top:'calc(env(safe-area-inset-top, 0px) + 12px)', left:'50%', transform:'translateX(-50%)', zIndex:99999, background:toast.color==='red'?'#ca1b1b':'#2d8a4e', color:'white', padding:'12px 20px', borderRadius:'12px', fontWeight:'bold', lineHeight:1.4, boxShadow:'0 6px 18px rgba(0,0,0,0.25)', width:'max-content', maxWidth:'calc(100vw - 24px)', boxSizing:'border-box', whiteSpace:'normal', overflowWrap:'anywhere', textAlign:'center', pointerEvents:'none' }}>{toast.msg}</div>}
+    {renderAppUpdateBanner()}
+    <ResellerCalculator
+     products={resellerOrderItems}
+     resellerName={currentReseller.name}
+     resellerArea={currentReseller.area || ''}
+     branches={resellerPortalBranches}
+     selectedBranchId={selectedResellerBranchId || currentReseller.id}
+     onBranchChange={switchResellerPortalBranch}
+     onRefresh={()=>loadResellerPortalData(currentReseller.id)}
+     refreshing={resellerPortalLoading}
+     onLogout={resellerLogout}
+    />
+   </div>
+  )
+ }
  const totalInvoiceAmount = resellerInvoices.reduce((s,i)=>s+safeNum(i.total_amount,0),0)
  const totalPaid = resellerInvoices.reduce((s,i)=>s+safeNum(i.paid_amount,0),0)
  const totalBalance = resellerInvoices.reduce((s,i)=>s+getInvoiceBalance(i),0)
