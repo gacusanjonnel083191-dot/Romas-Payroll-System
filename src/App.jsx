@@ -44400,14 +44400,16 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  {/* PRODUCTION FORECAST */}
  {(()=>{
- // Dry premix weight per piece (grams) after 10% reduction
+ // Owner-approved permanent rule: all six bite-size dough variants use
+ // 7g of dry premix per piece unless the owner explicitly changes it.
+ const BITE_SIZE_DRY_PREMIX_GRAMS = 7
  const DRY_PREMIX_GRAMS = {
-  'Choco Balls': 9.45,
-  'Matcha Pops': 0,
-  'Taro Pops': 9.45,
-  'Strawberry Pops': 9.45,
-  'Bavarian Pops': 9.45,
-  'Bavarian Bites': 9.45,
+  'Choco Balls': BITE_SIZE_DRY_PREMIX_GRAMS,
+  'Matcha Pops': BITE_SIZE_DRY_PREMIX_GRAMS,
+  'Taro Pops': BITE_SIZE_DRY_PREMIX_GRAMS,
+  'Strawberry Pops': BITE_SIZE_DRY_PREMIX_GRAMS,
+  'Bavarian Pops': BITE_SIZE_DRY_PREMIX_GRAMS,
+  'Bavarian Bites': BITE_SIZE_DRY_PREMIX_GRAMS,
   'Choco Lollisticks': 0,
   'Glazed Circlets': 11.7,
   'Cinnamon Rolls': 27,
