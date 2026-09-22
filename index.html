@@ -12,6 +12,8 @@
     <script>
       if (new URLSearchParams(window.location.search).get('app') === 'reseller-calculator') {
         document.querySelector('link[rel="manifest"]').setAttribute('href', '/reseller-calculator-manifest.json')
+        document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute('content', "Roma's Calculator")
+        document.querySelector('meta[name="description"]')?.setAttribute('content', "Roma's Donuts daily reseller sales and settlement calculator")
         document.title = "Roma's Donuts Reseller Calculator"
       }
       window.addEventListener('beforeinstallprompt', event => {
