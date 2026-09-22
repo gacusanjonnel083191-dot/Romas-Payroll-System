@@ -6,9 +6,10 @@ export function toWholeQuantity(value) {
 
 export function buildResetQuantities(products = []) {
   return Object.fromEntries(products.map(product => {
-    const key = String(product.variant_id || product.variant_name || '')
+    const key = String(product.key || product.variant_id || product.variant_name || '')
+    const orderedValue = product.ordered ?? product.quantity
     return [key, {
-      ordered: product.quantity === '' || product.quantity == null ? '' : String(toWholeQuantity(product.quantity)),
+      ordered: orderedValue === '' || orderedValue == null ? '' : String(toWholeQuantity(orderedValue)),
       delivered: '',
       added: '',
       deducted: '',
