@@ -68,7 +68,8 @@
 }
 
 .calculator-install,
-.calculator-summary-title button {
+.calculator-summary-title button,
+.calculator-secondary-action {
   min-height: 44px;
   border: 0;
   border-radius: 12px;
@@ -88,6 +89,7 @@
 
 .calculator-install-help,
 .calculator-safety-note,
+.calculator-cache-note,
 .calculator-formula {
   margin-bottom: 12px;
   border-radius: 14px;
@@ -106,6 +108,12 @@
   color: #255e39;
   border: 1px solid #aad6b8;
   background: #effaf2;
+}
+
+.calculator-cache-note {
+  color: #684600;
+  border: 1px solid #e5bd4a;
+  background: #fff7d9;
 }
 
 .calculator-meta {
@@ -131,7 +139,7 @@
 .calculator-inputs span,
 .calculator-product footer span,
 .calculator-summary span,
-.calculator-price span {
+.calculator-price-list span {
   color: var(--roma-muted);
   font-size: .72rem;
   font-weight: 800;
@@ -161,6 +169,34 @@
   color: #5a4100;
   border-left: 5px solid var(--roma-yellow);
   background: var(--roma-cream);
+}
+
+.calculator-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.calculator-actions span {
+  color: var(--roma-muted);
+  font-size: .78rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.calculator-secondary-action {
+  flex: 0 0 auto;
+  padding: 0 14px;
+  color: var(--roma-red-dark);
+  border: 1px solid #e8b8bc;
+  background: #fff;
+}
+
+.calculator-secondary-action:disabled {
+  opacity: .5;
+  cursor: not-allowed;
 }
 
 .calculator-products {
@@ -208,20 +244,23 @@
   line-height: 1.25;
 }
 
-.calculator-price {
+.calculator-price-list {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 12px;
   flex: 0 0 auto;
   text-align: right;
 }
 
-.calculator-price span,
-.calculator-price strong {
+.calculator-price-list span,
+.calculator-price-list strong {
   display: block;
 }
 
-.calculator-price strong {
+.calculator-price-list strong {
   margin-top: 2px;
   color: var(--roma-red);
-  font-size: 1rem;
+  font-size: .95rem;
 }
 
 .calculator-inputs {
@@ -271,7 +310,7 @@
 
 .calculator-product footer {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   background: #eadfe0;
 }
@@ -288,6 +327,7 @@
 .calculator-product footer strong {
   color: var(--roma-red-dark);
   font-size: .95rem;
+  text-align: right;
 }
 
 .calculator-empty {
@@ -417,18 +457,39 @@
   }
 
   .calculator-summary-grid {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .calculator-product footer {
+    grid-template-columns: 1fr;
+  }
+
+  .calculator-product footer div {
+    min-height: 46px;
   }
 }
 
 @media (max-width: 520px) {
-  .calculator-intro {
+  .calculator-intro,
+  .calculator-actions {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .calculator-install {
+  .calculator-install,
+  .calculator-secondary-action {
     width: 100%;
+  }
+
+  .calculator-actions span {
+    text-align: left;
+  }
+
+  .calculator-price-list {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 }
 
