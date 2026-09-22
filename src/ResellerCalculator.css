@@ -245,7 +245,7 @@
 
 .calculator-table {
   width: 100%;
-  min-width: 1210px;
+  min-width: 900px;
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
@@ -345,21 +345,19 @@
   width: 88px;
 }
 
-.calculator-table th:nth-child(n+4):nth-child(-n+8),
-.calculator-table td:nth-child(n+4):nth-child(-n+8) {
-  width: 86px;
+.calculator-table th:nth-child(n+4):nth-child(-n+6),
+.calculator-table td:nth-child(n+4):nth-child(-n+6) {
+  width: 110px;
 }
 
-.calculator-table th:nth-child(9),
-.calculator-table th:nth-child(10),
-.calculator-table td:nth-child(9),
-.calculator-table td:nth-child(10) {
-  width: 88px;
+.calculator-table th:nth-child(7),
+.calculator-table td:nth-child(7) {
+  width: 90px;
 }
 
-.calculator-table th:nth-child(11),
-.calculator-table td:nth-child(11) {
-  width: 112px;
+.calculator-table th:nth-child(8),
+.calculator-table td:nth-child(8) {
+  width: 120px;
 }
 
 .input-cell input {
@@ -458,7 +456,7 @@
 
 .calculator-summary-metrics {
   display: grid;
-  grid-template-columns: repeat(8, minmax(74px, 1fr));
+  grid-template-columns: repeat(5, minmax(90px, 1fr));
 }
 
 .calculator-summary-metrics div {
