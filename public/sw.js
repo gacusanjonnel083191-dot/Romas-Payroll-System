@@ -1,7 +1,8 @@
 // Roma's Donuts - Service Worker
-const CACHE_NAME = 'romas-business-v3-reseller-calculator-20260922'
+const CACHE_NAME = 'romas-business-v4-reseller-calculator-20260922'
 const STATIC_ASSETS = [
   '/',
+  '/?app=reseller-calculator',
   '/index.html',
   '/logo.png',
   '/manifest.json',
