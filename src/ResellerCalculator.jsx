@@ -185,7 +185,7 @@ export default function ResellerCalculator({ products = [], resellerName = '' })
   }
 
   function resetCalculator() {
-    setQuantities(buildResetQuantities(effectiveProducts))
+    setQuantities(buildResetQuantities(rows))
     setCalculationDate(localDateValue())
   }
 
