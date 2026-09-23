@@ -132,13 +132,46 @@ button.download-btn:has(+ .full-payslip-pdf) {
   margin-top: auto !important;
 }
 
-/* Keep Payroll OT / No Meal Break review cards level within each two-column row. */
+/* Payroll OT / No Meal Break review: compact three-card desktop layout only. */
+div[style*='display: grid'][style*='width: 100%']:has(
+    > div[style*='border-top: 6px solid'][style*='border-radius: 16px'] textarea
+  ) {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 10px !important;
+  align-items: stretch !important;
+}
+
 div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-sizing: border-box'][style*='width: 100%']:has(
     textarea
   ) {
   align-self: stretch !important;
   display: flex !important;
   flex-direction: column;
+  height: 100%;
+  min-width: 0 !important;
+  padding: 10px !important;
+  border-radius: 12px !important;
+  line-height: 1.3;
+  box-shadow: 0 4px 12px rgba(25, 25, 45, 0.08) !important;
+}
+
+div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-sizing: border-box'][style*='width: 100%']:has(
+    textarea
+  ) textarea {
+  min-height: 44px !important;
+  padding: 7px 8px !important;
+  box-sizing: border-box;
+  font-size: 10px !important;
+  line-height: 1.25 !important;
+}
+
+div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-sizing: border-box'][style*='width: 100%']:has(
+    textarea
+  ) button {
+  max-width: 100%;
+  padding: 6px 8px !important;
+  font-size: 9px !important;
+  line-height: 1.15 !important;
 }
 
 div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-sizing: border-box'][style*='width: 100%']:has(
@@ -146,5 +179,29 @@ div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-si
   )
   > div:last-child {
   margin-top: auto !important;
-  padding-top: 8px;
+  padding-top: 6px;
+  gap: 6px !important;
+}
+
+@media (max-width: 1450px) {
+  div[style*='display: grid'][style*='width: 100%']:has(
+      > div[style*='border-top: 6px solid'][style*='border-radius: 16px'] textarea
+    ) {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 768px) {
+  div[style*='display: grid'][style*='width: 100%']:has(
+      > div[style*='border-top: 6px solid'][style*='border-radius: 16px'] textarea
+    ) {
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+  }
+
+  div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-sizing: border-box'][style*='width: 100%']:has(
+      textarea
+    ) {
+    padding: 10px !important;
+  }
 }
