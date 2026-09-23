@@ -114,3 +114,37 @@ code {
 button.download-btn:has(+ .full-payslip-pdf) {
   display: none !important;
 }
+
+/* Keep delivered invoice cards aligned without changing other record-card modules. */
+.romas-record-card:not(.romas-record-card--expanded):has(
+    > div > p > button[style*='text-decoration: underline']
+  ) {
+  align-self: stretch !important;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.romas-record-card:not(.romas-record-card--expanded):has(
+    > div > p > button[style*='text-decoration: underline']
+  )
+  > div:has(> p > button[style*='text-decoration: underline']) {
+  margin-top: auto !important;
+}
+
+/* Keep Payroll OT / No Meal Break review cards level within each two-column row. */
+div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-sizing: border-box'][style*='width: 100%']:has(
+    textarea
+  ) {
+  align-self: stretch !important;
+  display: flex !important;
+  flex-direction: column;
+}
+
+div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-sizing: border-box'][style*='width: 100%']:has(
+    textarea
+  )
+  > div:last-child {
+  margin-top: auto !important;
+  padding-top: 8px;
+}
