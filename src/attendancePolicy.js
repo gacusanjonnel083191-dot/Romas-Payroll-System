@@ -16,6 +16,19 @@ export function getChargeableEarlyOutMinutes({
  }
 }
 
+export function getAppliedPaidWorkGraceMinutes({
+ rawPaidWorkShortageMinutes = 0,
+ hasSchedule = true,
+ scheduleGraceAppliedMinutes = 0,
+ gracePeriodMinutes = 0
+} = {}) {
+ const shortage = Math.max(0, Math.round(Number(rawPaidWorkShortageMinutes) || 0))
+ const scheduleGrace = Math.max(0, Math.round(Number(scheduleGraceAppliedMinutes) || 0))
+ const configuredGrace = Math.max(0, Math.round(Number(gracePeriodMinutes) || 0))
+ const applicableGrace = hasSchedule ? scheduleGrace : configuredGrace
+ return Math.min(shortage, applicableGrace)
+}
+
 function safePolicyNumber(value = 0) {
  const numeric = Number(value)
  return Number.isFinite(numeric) ? numeric : 0

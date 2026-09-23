@@ -4,6 +4,7 @@ import { productionForecastPrintInvariant } from './vite.production-forecast-pri
 import { resellerManualCopyLastOrder } from './vite.reseller-manual-copy-last-order.js'
 import { payrollMealBreakExemptionInvariant } from './vite.payroll-meal-break-exemption-invariant.js'
 import { employeeOTFilingInvariant } from './vite.employee-ot-filing-invariant.js'
+import { noScheduleGraceInvariant } from './vite.no-schedule-grace-invariant.js'
 
 const buildId = process.env.VERCEL_GIT_COMMIT_SHA || process.env.GITHUB_SHA || 'development'
 const releaseSummary = process.env.VERCEL_GIT_COMMIT_MESSAGE || 'General improvements and fixes.'
@@ -24,5 +25,5 @@ export default defineConfig({
   define: {
     __APP_BUILD_ID__: JSON.stringify(buildId),
   },
-  plugins: [appUpdateMetadata(), payrollMealBreakExemptionInvariant(), employeeOTFilingInvariant(), resellerManualCopyLastOrder(), productionForecastPrintInvariant(), react()],
+  plugins: [appUpdateMetadata(), payrollMealBreakExemptionInvariant(), employeeOTFilingInvariant(), noScheduleGraceInvariant(), resellerManualCopyLastOrder(), productionForecastPrintInvariant(), react()],
 })

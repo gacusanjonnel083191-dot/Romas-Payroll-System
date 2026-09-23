@@ -1,10 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+ getAppliedPaidWorkGraceMinutes,
  getChargeableEarlyOutMinutes,
  getUnconsumedApprovedTimeAdjustmentConflict,
  isApprovedTimeAdjustmentConsumedByReleasedPayroll
 } from '../src/attendancePolicy.js'
+import { enforceNoScheduleGraceBehavior } from '../vite.no-schedule-grace-invariant.js'
 
 test('approved no-meal-break removes the unused meal hour from early-out shortage', () => {
  assert.deepEqual(getChargeableEarlyOutMinutes({
@@ -116,4 +118,82 @@ test('approved time blocks no-meal-break approval when released payroll does not
 
  assert.equal(isApprovedTimeAdjustmentConsumedByReleasedPayroll(approvedUT, [releasedPayroll], [attendanceLog]), false)
  assert.equal(getUnconsumedApprovedTimeAdjustmentConflict([approvedUT], [releasedPayroll], [attendanceLog]), approvedUT)
+})
+
+test('Marynessa no-schedule 2-minute shortage is fully covered by the 10-minute grace', () => {
+ const rawPaidWorkShortageMinutes = 2
+ const graceApplied = getAppliedPaidWorkGraceMinutes({
+  rawPaidWorkShortageMinutes,
+  hasSchedule:false,
+  scheduleGraceAppliedMinutes:0,
+  gracePeriodMinutes:10
+ })
+ const remainingShortage = Math.max(0, rawPaidWorkShortageMinutes - graceApplied)
+ assert.equal(graceApplied, 2)
+ assert.equal(remainingShortage, 0)
+})
+
+test('no-schedule grace preserves the 10-minute threshold and charges the 11th minute', () => {
+ const withinGrace = getAppliedPaidWorkGraceMinutes({
+  rawPaidWorkShortageMinutes:10,
+  hasSchedule:false,
+  gracePeriodMinutes:10
+ })
+ const beyondGrace = getAppliedPaidWorkGraceMinutes({
+  rawPaidWorkShortageMinutes:11,
+  hasSchedule:false,
+  gracePeriodMinutes:10
+ })
+ assert.equal(10 - withinGrace, 0)
+ assert.equal(11 - beyondGrace, 1)
+ assert.equal(Math.ceil((11 - beyondGrace) / 30) * 30, 30)
+})
+
+test('scheduled attendance still uses only verified schedule grace, not a generic shortage allowance', () => {
+ assert.equal(getAppliedPaidWorkGraceMinutes({
+  rawPaidWorkShortageMinutes:8,
+  hasSchedule:true,
+  scheduleGraceAppliedMinutes:0,
+  gracePeriodMinutes:10
+ }), 0)
+ assert.equal(getAppliedPaidWorkGraceMinutes({
+  rawPaidWorkShortageMinutes:8,
+  hasSchedule:true,
+  scheduleGraceAppliedMinutes:7,
+  gracePeriodMinutes:10
+ }), 7)
+})
+
+const noScheduleGraceFixture = `import {
+ getChargeableEarlyOutMinutes,
+ getUnconsumedApprovedTimeAdjustmentConflict,
+ isApprovedTimeAdjustmentConsumedByReleasedPayroll
+} from './attendancePolicy.js'
+
+function getAttendanceDayWorkMetrics() {
+ const rawPaidWorkShortageMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - paidWorkedMinutes)
+ const scheduleMetrics = getScheduleAnchoredAttendanceMetrics(completedLogs)
+
+ // Apply the grace period to UT, not only to the Late label. Credit only the
+ // verified within-grace arrival minutes, capped by the raw paid-work shortage.
+ // This prevents 1-10 minute arrivals from becoming Automatic UT. Grace never
+ // creates OT.
+ const graceAppliedMinutes = Math.min(
+  rawPaidWorkShortageMinutes,
+  Math.max(0, Math.round(scheduleMetrics.graceAppliedMinutes || 0))
+ )
+ const paidWorkShortageMinutes = Math.max(0, rawPaidWorkShortageMinutes - graceAppliedMinutes)
+ return paidWorkShortageMinutes
+}`
+
+test('no-schedule Vite invariant wires the policy helper into App.jsx exactly once', () => {
+ const transformed = enforceNoScheduleGraceBehavior(noScheduleGraceFixture, '/repo/src/App.jsx')
+ assert.match(transformed, /getAppliedPaidWorkGraceMinutes,/)
+ assert.match(transformed, /hasSchedule:scheduleMetrics\.hasSchedule/)
+ assert.match(transformed, /gracePeriodMinutes:scheduleMetrics\.gracePeriodMinutes/)
+ assert.equal(enforceNoScheduleGraceBehavior(transformed, '/repo/src/App.jsx'), transformed)
+})
+
+test('no-schedule Vite invariant leaves unrelated modules unchanged', () => {
+ assert.equal(enforceNoScheduleGraceBehavior(noScheduleGraceFixture, '/repo/src/Other.jsx'), noScheduleGraceFixture)
 })
