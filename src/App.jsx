@@ -1664,7 +1664,7 @@ async function hydrateAttendanceLogsWithScheduleFallback(logs = [], employeeSour
  const missingEmployeeIds = logEmployeeIds.filter(id => !employeeById[id])
  if (missingEmployeeIds.length > 0) {
   const { data:employeeRows, error:employeeError } = await supabase
-   .from('employees')
+   .from('employee_access')
    .select('id,employee_code,full_name,shift_start,shift_end,grace_period_minutes')
    .in('id', missingEmployeeIds)
   if (employeeError) throw employeeError
@@ -8466,7 +8466,7 @@ setRequestingInvoiceDeletion(null)
  let linkedEmployee = null
  if (profile.employee_id) {
  const { data: empData, error: empError } = await supabase
-.from('employees')
+.from('employee_access')
 .select(EMPLOYEE_SELECT_FIELDS)
 .eq('id', profile.employee_id)
 .eq('is_active', true)
@@ -8755,9 +8755,26 @@ setInvoiceDeletionReviewNotes({})
  // Employee Contracts 
  async function loadContracts() {
  setContractsLoading(true)
- const { data } = await supabase.from('employee_contracts').select('*').order('created_at', { ascending:false })
+ const { data } = await supabase.from('employee_contract_access').select('*').order('created_at', { ascending:false })
  setContracts(data || [])
  setContractsLoading(false)
+ }
+ async function openContractPdf(contract) {
+  if (normalizeAdminRole(adminRole) === 'supervisor') {
+   showToast('Pay-bearing employment contracts are restricted for supervisors.', 'red')
+   return
+  }
+  const path = contract?.file_name || String(contract?.file_url || '').split('/Contracts/').pop()
+  if (!path) { showToast('This contract has no saved PDF file.', 'red'); return }
+  const previewWindow = window.open('about:blank', '_blank')
+  const { data, error } = await supabase.storage.from('Contracts').createSignedUrl(path, 120)
+  if (error || !data?.signedUrl) {
+   previewWindow?.close()
+   showToast('The contract PDF could not be opened: ' + (error?.message || 'No signed link was returned.'), 'red')
+   return
+  }
+  if (previewWindow) previewWindow.location.href = data.signedUrl
+  else window.location.href = data.signedUrl
  }
  async function uploadContract() {
  if (!contractEmployeeId ||!contractType ||!contractStart) {
@@ -8779,8 +8796,7 @@ setInvoiceDeletionReviewNotes({})
  fileName = `${safeCode}_${contractType}_${contractStart}_${Date.now()}.pdf`
  const { error: uploadError } = await supabase.storage.from('Contracts').upload(fileName, contractFile, { upsert: false })
  if (uploadError) throw uploadError
- const { data: urlData } = supabase.storage.from('Contracts').getPublicUrl(fileName)
- fileUrl = urlData.publicUrl
+ fileUrl = fileName
  }
  const isExpired = contractEnd && contractEnd < today
  const status = isExpired? 'expired': 'active'
@@ -8810,6 +8826,10 @@ setInvoiceDeletionReviewNotes({})
  setContractUploading(false)
  }
  async function deleteContract(contract) {
+ if (normalizeAdminRole(adminRole) === 'supervisor') {
+  showToast('Contract deletion is restricted for supervisors.', 'red')
+  return
+ }
  if (!window.confirm(`Delete contract for ${contract.employee_name}? This cannot be undone.`)) return
  try {
  await supabase.storage.from('Contracts').remove([contract.file_name])
@@ -9011,7 +9031,7 @@ setInvoiceDeletionReviewNotes({})
  const type = contractKind || getRecommendedContractTypeForEmployee(emp)
  const existingStatuses = ['active','draft','for_review','completed']
  const { data:existing, error:existingError } = await supabase
- .from('employee_contracts')
+ .from('employee_contract_access')
  .select('*')
  .eq('employee_id', emp.id)
  .eq('contract_type', type)
@@ -9035,7 +9055,7 @@ setInvoiceDeletionReviewNotes({})
  file_name: null,
  storage_type: 'system_generated',
  physical_location: status === 'for_review'? 'System-generated regular contract draft for owner/admin approval': 'System-generated printable contract'
- }).select('*').single()
+ }).select('id,employee_id,employee_code,employee_name,contract_type,start_date,end_date,status,storage_type,created_at').single()
  if (error) throw error
  await logAudit('CONTRACT AUTO-GENERATED', currentAdminLabel || 'System', emp.full_name || '', `${type} contract ${status}`)
  return data
@@ -9045,8 +9065,8 @@ setInvoiceDeletionReviewNotes({})
  setAutoContractGenerating(true)
  try {
  const [{ data:employeeRows, error:empError }, { data:contractRows, error:contractError }] = await Promise.all([
- supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true).order('full_name'),
- supabase.from('employee_contracts').select('*')
+ supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true).order('full_name'),
+ supabase.from('employee_contract_access').select('*')
  ])
  if (empError) throw empError
  if (contractError) throw contractError
@@ -9099,6 +9119,10 @@ setInvoiceDeletionReviewNotes({})
  }
  }
  function printEmploymentContract(emp, contractKind = null) {
+ if (normalizeAdminRole(adminRole) === 'supervisor') {
+  showToast('Existing employment contracts may contain compensation and are restricted for supervisors.', 'red')
+  return
+ }
  if (!emp) { showToast('Employee not found.', 'red'); return }
  const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]))
  const cleanFileName = value => String(value || '').trim().replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 70)
@@ -12532,7 +12556,7 @@ Cancel = create batch record only for existing stock.`)
   setTimeout(()=>{ pw.focus(); pw.print() },600)
  }
  async function loadAnnouncementViews(annId) {
- const { data:all } = await supabase.from('employees').select('id,full_name,employee_code').eq('is_active', true)
+ const { data:all } = await supabase.from('employee_access').select('id,full_name,employee_code').eq('is_active', true)
  const { data:views } = await supabase.from('announcement_views').select('employee_id').eq('announcement_id', annId)
  const viewedIds = new Set(views?.map(v => v.employee_id) || [])
  setAnnouncementViews((all || []).map(e => ({...e, viewed:viewedIds.has(e.id) })))
@@ -18580,7 +18604,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  supabase.from('delivery_invoices').select('*, delivery_invoice_items(*)').gte('delivery_date', monthStart).lte('delivery_date', monthEnd),
  supabase.from('reseller_returns').select('*, reseller_return_items(*)').gte('return_date', monthStart).lte('return_date', monthEnd),
  supabase.from('payroll_records').select('*').gte('payroll_start', monthStart).lte('payroll_end', monthEnd),
- supabase.from('employees').select('id,employee_code,full_name,position,department,payroll_cost_type'),
+ supabase.from('employee_access').select('id,employee_code,full_name,position,department,payroll_cost_type'),
  supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
  ])
  if (salesRes.error) console.warn('daily_sales query failed:', salesRes.error)
@@ -18753,7 +18777,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  const { data } = await supabase.from('break_logs').select('*').eq('attendance_log_id', logId).order('created_at')
  setTodayBreaks(data || [])
  }
- async function enrichPayrollRecordsWithPayslipBreakdowns(records = []) {
+ async function enrichPayrollRecordsWithPayslipBreakdowns(records = [], secureSessionToken = null) {
  const sourceRows = (records || []).filter(Boolean)
  if (sourceRows.length === 0) return []
  const employeeIds = [...new Set(sourceRows.map(row => row?.employee_id || row?.employeeId).filter(Boolean))]
@@ -18764,25 +18788,31 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  const adjustmentRowsByEmployee = {}
  const cashAdvanceRowsByEmployee = {}
  if (employeeIds.length > 0 && minStart && maxEnd) {
-  const { data:adjustmentRows, error:adjustmentError } = await supabase
-   .from('payroll_adjustments')
-   .select('id,employee_id,employee_code,employee_name,adjustment_date,adjustment_type,category,amount,notes,created_at')
-   .in('employee_id', employeeIds)
-   .gte('adjustment_date', minStart)
-   .lte('adjustment_date', maxEnd)
-   .order('adjustment_date', { ascending:true })
+  const { data:adjustmentRows, error:adjustmentError } = secureSessionToken
+   ? await supabase.rpc('employee_payslip_adjustments', {
+    p_session_token:secureSessionToken, p_start:minStart, p_end:maxEnd
+   })
+   : await supabase
+    .from('payroll_adjustments')
+    .select('id,employee_id,employee_code,employee_name,adjustment_date,adjustment_type,category,amount,notes,created_at')
+    .in('employee_id', employeeIds)
+    .gte('adjustment_date', minStart)
+    .lte('adjustment_date', maxEnd)
+    .order('adjustment_date', { ascending:true })
   if (adjustmentError) console.warn('Payslip adjustment-detail enrichment skipped:', adjustmentError)
   ;(adjustmentRows || []).forEach(row => {
    const key = String(row?.employee_id || '')
    if (!adjustmentRowsByEmployee[key]) adjustmentRowsByEmployee[key] = []
    adjustmentRowsByEmployee[key].push(row)
   })
-  const { data:cashAdvanceRows, error:cashAdvanceError } = await supabase
-   .from('cash_advances')
-   .select('*')
-   .in('employee_id', employeeIds)
-   .lte('advance_date', maxEnd)
-   .order('advance_date', { ascending:true })
+  const { data:cashAdvanceRows, error:cashAdvanceError } = secureSessionToken
+   ? await supabase.rpc('employee_cash_advance_ledgers', { p_session_token:secureSessionToken })
+   : await supabase
+    .from('cash_advances')
+    .select('*')
+    .in('employee_id', employeeIds)
+    .lte('advance_date', maxEnd)
+    .order('advance_date', { ascending:true })
   if (cashAdvanceError) console.warn('Payslip cash-advance detail enrichment skipped:', cashAdvanceError)
   ;(cashAdvanceRows || []).forEach(row => {
    const key = String(row?.employee_id || '')
@@ -18823,18 +18853,20 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  })
  }
 
- async function loadMyPayslips(emp) {
- const { data, error } = await supabase
- .from('payroll_records')
- .select('*')
- .eq('employee_id', emp.id)
- .order('payroll_start', { ascending:false })
+ async function loadMyPayslips(emp, secureSessionToken = employeeCashAdvanceSessionToken) {
+ if (!emp?.id || !secureSessionToken) {
+  setMyPayslips([])
+  return
+ }
+ const { data, error } = await supabase.rpc('employee_payslips', {
+  p_session_token:secureSessionToken
+ })
  if (error) {
   console.error('Payslip load failed:', error)
   setMyPayslips([])
   return
  }
- const enrichedPayslips = await enrichPayrollRecordsWithPayslipBreakdowns(data || [])
+ const enrichedPayslips = await enrichPayrollRecordsWithPayslipBreakdowns(data || [], secureSessionToken)
  const visiblePayslips = enrichedPayslips.filter(pay => !isDraftPayrollRecord(pay))
  setMyPayslips(visiblePayslips)
  }
@@ -19768,7 +19800,11 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
  }
  async function agreePayslip(payId) {
- const { error } = await supabase.from('payroll_records').update({ employee_acknowledgement:'agreed' }).eq('id', payId)
+ const { error } = await supabase.rpc('employee_acknowledge_payslip', {
+  p_session_token:employeeCashAdvanceSessionToken,
+  p_payroll_record_id:payId,
+  p_acknowledgement:'agreed'
+ })
  if (error) { alert('Failed: '+error.message); return }
  alert('Payslip acknowledged!'); loadMyPayslips(employee)
  }
@@ -19779,38 +19815,12 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  if (!reason?.trim()) { alert('Please enter your reason.'); return }
  setSubmittingPayslipDisputes(p=>({...p,[payId]:true}))
  try {
-  const { data:existing, error:existingError } = await supabase
-   .from('payslip_disputes')
-   .select('id,status')
-   .eq('payroll_record_id', String(payId))
-   .eq('employee_id', employee.id)
-   .eq('status','pending')
-   .limit(1)
-
-  if (existingError) console.warn('Existing payslip dispute check failed:', existingError)
-
-  if ((existing || []).length > 0 || normalizePayrollAcknowledgement(pay.employee_acknowledgement) === 'disputed') {
-   await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', payId)
-   alert('Dispute already submitted. It is now waiting for admin review.')
-   setShowDisputeBox(p=>({...p,[payId]:false}))
-   setDisputeReasons(p=>({...p,[payId]:''}))
-   setDisputeReasonPresets(p=>({...p,[payId]:''}))
-   loadMyPayslips(employee)
-   return
-  }
-
-  const { error } = await supabase.from('payslip_disputes').insert({
-   employee_id:employee.id,
-   employee_code:employee.employee_code,
-   employee_name:employee.full_name,
-   payroll_record_id:String(payId),
-   payroll_start:pay.payroll_start,
-   payroll_end:pay.payroll_end,
-   reason,
-   status:'pending'
+  const { error } = await supabase.rpc('employee_submit_payslip_dispute', {
+   p_session_token:employeeCashAdvanceSessionToken,
+   p_payroll_record_id:payId,
+   p_reason:reason
   })
   if (error) { alert('Failed: '+error.message); return }
-  await supabase.from('payroll_records').update({ employee_acknowledgement:'disputed' }).eq('id', payId)
   alert('Dispute submitted. Waiting for admin review.')
   setShowDisputeBox(p=>({...p,[payId]:false}))
   setDisputeReasons(p=>({...p,[payId]:''}))
@@ -20751,7 +20761,7 @@ if (role === 'owner') return true
  }
 
  const { data:freshEmp } = await supabase
-.from('employees')
+.from('employee_access')
 .select(EMPLOYEE_SELECT_FIELDS)
 .eq('id', emp.id)
 .maybeSingle()
@@ -20770,7 +20780,7 @@ if (role === 'owner') return true
  }
 
  async function autoApplySIL() {
- const { data:emps, error } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
+ const { data:emps, error } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
 
  if (error) {
  showToast('Failed to check SIL: ' + error.message, 'red')
@@ -20885,7 +20895,7 @@ if (role === 'owner') return true
  }, { onConflict: 'department' })
  // Auto-apply to all employees in this department
  if (loc.lat && loc.lng) {
- const { data: deptEmps } = await supabase.from('employees')
+ const { data: deptEmps } = await supabase.from('employee_access')
 .select('id')
 .eq('department', dept)
 .eq('is_active', true)
@@ -21205,7 +21215,7 @@ if (role === 'owner') return true
  const employeeIds = Array.from(new Set(records.map(r=>r.employee_id).filter(Boolean)))
  let payrollEmployees = []
  if (employeeIds.length > 0) {
- const empRes = await supabase.from('employees').select('id,employee_code,full_name,position,department,payroll_cost_type').in('id', employeeIds)
+ const empRes = await supabase.from('employee_access').select('id,employee_code,full_name,position,department,payroll_cost_type').in('id', employeeIds)
  if (!empRes.error) payrollEmployees = empRes.data || []
  }
  const classified = classifyPayrollRecords(records, payrollEmployees, { includeUnreleased:true })
@@ -23824,7 +23834,7 @@ requestPushPermission()
  const yesterday = getDateOffsetString(-1)
  const now = new Date()
 
- const { data:emps } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
+ const { data:emps } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
 
  // Night-shift-safe dashboard: include open logs from yesterday because
  // production shifts can start before midnight and time out after 12AM.
@@ -23903,11 +23913,11 @@ requestPushPermission()
  setShowTimedOutModal(true)
  }
  async function loadEmployees() {
- const { data } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true).order('full_name')
+ const { data } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true).order('full_name')
  setEmployees(data || [])
  }
  async function loadDeactivatedEmployees() {
- const { data } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', false).order('full_name')
+ const { data } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', false).order('full_name')
  setDeactivatedEmployees(data || [])
  }
  async function reactivateEmployee(empId, empName) {
@@ -25328,7 +25338,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   if (payrollState.error) throw new Error(payrollState.error)
 
   const employee = employees.find(item => String(item.id) === String(freshRequest.employee_id))
-   || (await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('id', freshRequest.employee_id).maybeSingle()).data
+   || (await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('id', freshRequest.employee_id).maybeSingle()).data
   if (!employee) {
    showToast('The employee payroll policy and rate could not be loaded.', 'red')
    return
@@ -25655,14 +25665,22 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  bank_account_name:f.bank_account_name||'',
  strict_camera_timein:false
  }
- let { data:newEmployee, error } = await supabase.from('employees').insert(employeeInsertPayload).select(EMPLOYEE_SELECT_FIELDS).single()
+ let { error } = await supabase.from('employees').insert(employeeInsertPayload)
  if (error && (isMissingPayrollCostColumnError(error) || isMissingEmployeeHolidayEligibilityColumnError(error) || isMissingStrictCameraTimeInColumnError(error))) {
  const fallbackEmployeeInsertPayload = stripUnsupportedEmployeeOptionalColumns(employeeInsertPayload, error)
- ;({ data:newEmployee, error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload).select(EMPLOYEE_SELECT_FIELDS).single())
+ ;({ error } = await supabase.from('employees').insert(fallbackEmployeeInsertPayload))
  if (!error) console.warn('Employee added with optional payroll/holiday/camera columns skipped. Run the latest Supabase employee columns SQL to enable all fields.')
  }
 
  if (error) { showToast('Failed: '+error.message,'red'); return }
+
+ const { data:newEmployee, error:readError } = await supabase.from('employee_access')
+  .select(EMPLOYEE_SELECT_FIELDS).eq('employee_code', employeeInsertPayload.employee_code).single()
+ if (readError || !newEmployee) {
+  showToast('Employee saved, but the new record could not be reloaded for contract creation.', 'red')
+  await loadEmployees()
+  return
+ }
 
  await logAudit('EMPLOYEE ADDED','Admin',f.name,`New employee ${f.code}`)
  showToast(' Employee added successfully!')
@@ -26257,7 +26275,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   const employeeIds = Array.from(new Set((payrollRows || []).map(row => String(row.employee_id || '')).filter(Boolean)))
   let employeeRows = []
   if (employeeIds.length) {
-   const { data, error } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).in('id', employeeIds)
+   const { data, error } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).in('id', employeeIds)
    if (error) throw error
    employeeRows = data || []
   }
@@ -27159,7 +27177,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const employeeActivityById = {}
  if (coverageEmployeeIds.length > 0) {
    const { data: coverageEmployees, error: coverageEmployeesError } = await supabase
-     .from('employees')
+     .from('employee_access')
      .select('id,is_active')
      .in('id', coverageEmployeeIds)
    if (coverageEmployeesError) throw coverageEmployeesError
@@ -27336,7 +27354,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   if (updateState) setPayrollReadinessLoading(true)
   try {
    const { data:activeEmployees, error:employeeError } = await supabase
-    .from('employees')
+    .from('employee_access')
     .select('id,employee_code,full_name,position,is_active,shift_start,shift_end,grace_period_minutes')
     .eq('is_active', true)
     .order('full_name')
@@ -27592,7 +27610,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   let employeeLookup = {}
   if (employeeIds.length > 0) {
    const { data:empRows, error:empError } = await supabase
-   .from('employees')
+   .from('employee_access')
    .select(EMPLOYEE_SELECT_FIELDS)
    .in('id', employeeIds)
    if (!empError) {
@@ -27750,7 +27768,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   setEmployeeBankLoading(true)
   try {
    const { data, error } = await supabase
-    .from('employees')
+    .from('employee_access')
     .select('id,employee_code,full_name,position,department,contact_number,bank_name,bank_account_name,bank_account_number')
     .eq('is_active', true)
     .order('full_name', { ascending:true })
@@ -27792,17 +27810,22 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     .from('employees')
     .update(payload)
     .eq('id', row.id)
-    .select('id,employee_code,full_name,position,department,contact_number,bank_name,bank_account_name,bank_account_number')
+    .select('id')
     .single()
    if (error) throw error
 
-   setEmployeeBankRows(prev => prev.map(item => String(item.id) === String(row.id) ? { ...item, ...data } : item))
-   setEmployeeBankDrafts(prev => ({ ...prev, [String(row.id)]:buildEmployeeBankDraft({ ...row, ...data }) }))
+   const { data:savedRow, error:readError } = await supabase.from('employee_access')
+    .select('id,employee_code,full_name,position,department,contact_number,bank_name,bank_account_name,bank_account_number')
+    .eq('id', data.id).single()
+   if (readError) throw readError
+
+   setEmployeeBankRows(prev => prev.map(item => String(item.id) === String(row.id) ? { ...item, ...savedRow } : item))
+   setEmployeeBankDrafts(prev => ({ ...prev, [String(row.id)]:buildEmployeeBankDraft({ ...row, ...savedRow }) }))
    setPayrollResults(prev => prev.map(item => String(item.employeeId) === String(row.id) ? {
     ...item,
-    bankName:data.bank_name || '',
-    bankAccount:data.bank_account_number || '',
-    bankAccountName:data.bank_account_name || data.full_name || item.employeeName || ''
+    bankName:savedRow.bank_name || '',
+    bankAccount:savedRow.bank_account_number || '',
+    bankAccountName:savedRow.bank_account_name || savedRow.full_name || item.employeeName || ''
    } : item))
 
    if (!options.silent) {
@@ -27870,7 +27893,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
    let employeeLookup = {}
    if (employeeIds.length > 0) {
     const { data:employeeRows, error:employeeError } = await supabase
-     .from('employees')
+     .from('employee_access')
      .select('id,employee_code,full_name,position,department,contact_number,bank_name,bank_account_name,bank_account_number')
      .in('id', employeeIds)
     if (employeeError) throw employeeError
@@ -29659,7 +29682,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  const { data: logs } = await supabase.from('attendance_logs').select('*')
 .eq('employee_id', empId).gte('attendance_date', startDate).lte('attendance_date', endDate)
 .order('attendance_date')
- const { data: emp } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('id', empId).single()
+ const { data: emp } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('id', empId).single()
  const scheduledLogs = await hydrateAttendanceLogsWithScheduleFallback(logs || [], emp, startDate, endDate)
  const enrichedLogs = await enrichAttendanceLogsWithBreakRows(scheduledLogs)
  const policyLogs = attachAttendanceEmployeePolicy(enrichedLogs, emp || { id:empId, employee_code:empCode, full_name:empName })
@@ -30045,7 +30068,7 @@ async function computePayroll() {
   return
  }
 
- const { data:empList, error:empError } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
+ const { data:empList, error:empError } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
  if (empError) throw empError
  if (!empList || empList.length === 0) {
   setPayrollResults([])
@@ -36220,7 +36243,7 @@ setActiveTab('sales')
  setProfilePhotoUrl(adminEmployee.profile_photo_url || null)
  loadTodayLog(adminEmployee)
  loadTodaySchedule(adminEmployee)
- loadMyPayslips(adminEmployee)
+ loadMyPayslips(adminEmployee, secureSessionToken)
  loadMyCashAdvances(adminEmployee, secureSessionToken)
  loadMyAttendanceHistory(adminEmployee)
  loadMyLeaveBalance(adminEmployee)
@@ -38956,7 +38979,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div><label style={lblS}>To:</label><input type="date" value={payrollEnd} onChange={e=>setPayrollEnd(e.target.value)} style={{...inputStyle, width:'auto', marginBottom:0 }} /></div>
  </div>
  <button style={{...btnGreen, marginBottom:'8px' }} onClick={async()=>{
- const { data:empList } = await supabase.from('employees').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
+ const { data:empList } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', true)
  const r=[]
  for (const emp of empList||[]) {
  const { data:records } = await supabase.from('payroll_records').select('basic_pay,payroll_start,payroll_end').eq('employee_id', emp.id).gte('payroll_start', payrollStart).lte('payroll_end', payrollEnd).order('payroll_start')
@@ -40083,11 +40106,9 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  <button style={{...btnBlack, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>printContractSummary(c)}> PRINT SUMMARY</button>
- <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ const emp = employees.find(e=>String(e.id)===String(c.employee_id)); if(emp) printEmploymentContract(emp, String(c.contract_type||'').toLowerCase().includes('regular')?'regular':'probationary'); else showToast('Employee record not loaded. Click Refresh first.', 'red') }}> PRINT CONTRACT</button>
- {c.storage_type==='digital' && c.file_url && (
- <a href={c.file_url} target="_blank" rel="noopener noreferrer" style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px', textDecoration:'none', display:'inline-block', textAlign:'center' }}>
- VIEW PDF
- </a>
+ {adminRole!=='supervisor' && <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>{ const emp = employees.find(e=>String(e.id)===String(c.employee_id)); if(emp) printEmploymentContract(emp, String(c.contract_type||'').toLowerCase().includes('regular')?'regular':'probationary'); else showToast('Employee record not loaded. Click Refresh first.', 'red') }}> PRINT CONTRACT</button>}
+ {adminRole!=='supervisor' && c.storage_type==='digital' && c.file_name && (
+ <button type="button" onClick={()=>openContractPdf(c)} style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }}>VIEW PDF</button>
  )}
  {c.status==='active' && (
  <button style={{...btnGray, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>updateContractStatus(c.id,'terminated')}> TERMINATE</button>
@@ -40095,7 +40116,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {c.status!=='active' && (
  <button style={{...btnGreen, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>updateContractStatus(c.id,'active')}> REACTIVATE</button>
  )}
- <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>deleteContract(c)}> DELETE</button>
+ {adminRole!=='supervisor' && <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>deleteContract(c)}> DELETE</button>}
  </div>
  </div>
  )
