@@ -183,7 +183,8 @@ div[style*='border-top: 6px solid'][style*='border-radius: 16px'][style*='box-si
   gap: 6px !important;
 }
 
-@media (max-width: 1450px) {
+/* Keep three review cards visible on standard desktop widths, including Windows display scaling. */
+@media (max-width: 1024px) {
   div[style*='display: grid'][style*='width: 100%']:has(
       > div[style*='border-top: 6px solid'][style*='border-radius: 16px'] textarea
     ) {
