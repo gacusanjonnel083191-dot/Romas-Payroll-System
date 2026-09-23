@@ -1,5 +1,5 @@
 // Roma's Donuts - Service Worker
-const CACHE_NAME = 'romas-business-v7-mobile-sticky-summary-20260922'
+const CACHE_NAME = 'romas-business-v8-break-punch-integrity-20260923'
 const STATIC_ASSETS = [
   '/',
   '/?app=reseller-calculator',
@@ -9,6 +9,7 @@ const STATIC_ASSETS = [
   '/reseller-calculator-manifest.json',
   '/icon-192x192.png',
   '/icon-512x512.png',
+  '/break-punch-request-guard.js?v=2026.09.23.1',
   '/roma-ai-agent-upgrade.js?v=2026.08.13.4-general-agent-auth',
   '/roma-ai-diagnostics.js?v=2026.08.13.3-general-agent',
 ]
