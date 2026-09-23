@@ -19831,7 +19831,7 @@ if (role === 'owner') return true
  if (role === 'pos_admin') return ['posMonitor'].includes(tab)
  if (role === 'hr') return ['dashboard','attendance','employees','schedule','holidays','leaveRequests','cashRequests','overtime','disputes','announcements','contracts','sops','posMonitor','inventory','sales'].includes(tab)
  if (role === 'payroll') return ['dashboard','payroll','cashAdvanceCoverage','thirteenth','finalpay','adjustment','payrollHistory','remittance','dtr','bankDisbursement','posMonitor'].includes(tab)
- if (role === 'supervisor') return ['dashboard','tomorrowForecast','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
+ if (role === 'supervisor') return ['dashboard','tomorrowForecast','attendance','employees','leaveRequests','announcements','contracts','performance','schedule','holidays','auditTrail','overtime','inventory','sops','posMonitor'].includes(tab)
  if (role === 'asst_supervisor') return ['dashboard','tomorrowForecast','attendance','overtime','schedule','inventory','sops','posMonitor'].includes(tab)
  return false
  }
@@ -35209,6 +35209,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const frontImage = frontCanvas.toDataURL('image/png')
    const backImage = backCanvas.toDataURL('image/png')
    const employeeName = String(employeeIdDraft.fullName || 'Employee').trim()
+   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[character])
    const html = [
     '<!DOCTYPE html>',
     '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">',
@@ -37174,6 +37175,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {activeTab==='employees' && (
  <div>
  <h2 style={h2s}>Employees</h2>
+ {adminRole!=='supervisor' && <>
  <input placeholder="Search name, code, or position..." value={employeeSearch} onChange={e=>setEmployeeSearch(e.target.value)} style={inputStyle} />
  {employeeSearch.trim() && employees.filter(emp=>`${emp.full_name} ${emp.employee_code} ${emp.position}`.toLowerCase().includes(employeeSearch.toLowerCase())).map(emp=>(
  <div key={emp.id} style={{...cardS, border:'1px solid rgba(202,27,27,0.24)', borderTop:'5px solid #ca1b1b', background:'linear-gradient(180deg,#fffdf4,#ffffff)', width:'100%', margin:'0 0 12px', boxShadow:'0 5px 18px rgba(35,20,20,0.08)' }}>
@@ -37231,6 +37233,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </table>
  </div>
  </div>
+ </>}
 
  <h3 style={{ color:'#ca1b1b', marginTop:'16px', marginBottom:'10px' }}> Add New Employee</h3>
  <div style={{ background:'#f9f9f9', borderRadius:'12px', padding:'16px', margin:'0 auto 16px', maxWidth:'960px', border:'1px solid #eee', boxSizing:'border-box' }}>
@@ -37332,6 +37335,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  <button style={btnGreen} onClick={addEmployee}> ADD EMPLOYEE</button>
 
+ {adminRole!=='supervisor' && <>
  <h3 style={{ color:'#ca1b1b', marginTop:'24px', marginBottom:'10px' }}> Employee List ({employees.length})</h3>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))', gap:'14px', alignItems:'start' }}>
  {employees.map((emp,i)=>(
@@ -37495,6 +37499,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  ))}
  </div>
+ </>}
  </div>
  )}
 
