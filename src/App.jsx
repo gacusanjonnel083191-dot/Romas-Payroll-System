@@ -6663,6 +6663,9 @@ export default function App() {
  const [adminAuthPassword, setAdminAuthPassword] = useState('')
  const [adminAuthUser, setAdminAuthUser] = useState(null)
  const [adminAuthProfile, setAdminAuthProfile] = useState(null)
+ const [returnsMonitorData, setReturnsMonitorData] = useState(null)
+ const [returnsMonitorLoading, setReturnsMonitorLoading] = useState(false)
+ const [returnsMonitorError, setReturnsMonitorError] = useState('')
  const [showAdminPasswordForm, setShowAdminPasswordForm] = useState(false)
  const [newAdminPassword, setNewAdminPassword] = useState('')
  const [confirmAdminPassword, setConfirmAdminPassword] = useState('')
@@ -7843,6 +7846,10 @@ export default function App() {
  const isOwnerRole = normalizedAdminRole === 'owner'
  const isPayrollRole = normalizedAdminRole === 'payroll'
  const currentAdminLabel = adminEmployee?.full_name || adminAuthProfile?.full_name || adminAuthUser?.email || (adminRole? String(adminRole).toUpperCase(): 'Admin')
+ // Sheryl's active Supabase Auth account is linked to this employee record.
+ const canViewSherylReturns = !!(adminAuthUser?.id && adminAuthProfile?.is_active &&
+  String(adminAuthProfile?.auth_user_id) === String(adminAuthUser.id) &&
+  String(adminAuthProfile?.employee_id) === '808fc582-d57b-40b8-9879-9df153f37df5')
 
  function normalizeAdminRole(role) {
  const r = String(role || '').trim().toLowerCase()
@@ -19834,6 +19841,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  // Admin Functions 
 function canAccess(tab) {
 const role = normalizeAdminRole(adminRole)
+if (tab === 'returnsMonitor' && canViewSherylReturns) return true
 if (tab === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) return true
 if (role === 'owner') return true
  if (role === 'manager') return ['dashboard','tomorrowForecast','attendance','employees','schedule','holidays','leaveRequests','overtime','disputes','announcements','auditTrail','contracts','inventory','sops','recipes','sales','analytics','foundation','franchise','posMonitor'].includes(tab)
@@ -21340,6 +21348,110 @@ This recovery button creates one approved expense record using GROSS payroll ear
  } catch(e) {
  return { data:[], error:`${table}: ${e.message}` }
  }
+ }
+
+ // Dedicated, read-only returns query. It does not load Foundation's payroll, HR or expense records.
+ async function loadSherylReturnsMonitor(monthValue = foundationMonth) {
+  if (!canViewSherylReturns) return
+  setReturnsMonitorLoading(true)
+  setReturnsMonitorError('')
+  try {
+   const months = getRecentFoundationMonths(monthValue, 6)
+   const { end } = getMonthRange(monthValue)
+   const from = months[0].start
+   const readAll = async (table, columns, dateColumn) => {
+    const rows = []
+    for (let offset = 0; ; offset += 500) {
+     const { data, error } = await supabase.from(table).select(columns)
+      .gte(dateColumn, from).lte(dateColumn, end).order('id').range(offset, offset + 499)
+     if (error) throw new Error(`${table}: ${error.message}`)
+     rows.push(...(data || []))
+     if ((data || []).length < 500) return rows
+    }
+   }
+   const [allInvoices, allReturns, allDailySales, allOnline] = await Promise.all([
+    readAll('delivery_invoices', '*, delivery_invoice_items(*)', 'delivery_date'),
+    readAll('reseller_returns', '*, reseller_return_items(*)', 'return_date'),
+    readAll('daily_sales', 'sale_date,total_revenue,total_walkin,total_messenger', 'sale_date'),
+    readAll('daily_sales_online_payments', 'payment_date,amount,count_as_revenue,status', 'payment_date')
+   ])
+   const getMonthData = key => {
+    const invoices = allInvoices.filter(i => String(i.delivery_date || '').startsWith(key) && isSalesSummaryInvoiceCounted(i))
+    const returns = allReturns.filter(r => String(r.return_date || '').startsWith(key))
+    const daily = allDailySales.filter(r => String(r.sale_date || '').startsWith(key))
+    const online = allOnline.filter(r => String(r.payment_date || '').startsWith(key) && r.status !== 'void')
+    const records = new Map()
+    const products = new Map()
+    for (const ret of returns) {
+     const key = String(ret.invoice_id || `return-${ret.id}`)
+     const items = ret.reseller_return_items || []
+     const amount = safeNum(ret.total_returned_amount ?? ret.returns_amount ?? ret.amount,
+      items.reduce((sum, item) => sum + safeNum(item.total_credit ?? item.total_amount, safeNum(item.returned_quantity ?? item.returned_qty,0) * safeNum(item.reseller_price ?? item.unit_price,0)), 0))
+     const qty = items.reduce((sum, item) => sum + safeNum(item.returned_quantity ?? item.returned_qty, 0), 0)
+     const row = records.get(key) || { invoiceId:ret.invoice_id || '', invoiceNumber:ret.invoice_number || '', reseller:ret.reseller_name || 'Unassigned', date:ret.return_date || '', amount:0, qty:0, grossSales:0, netSales:0, sources:new Set() }
+     row.amount += amount; row.qty += qty; row.sources.add(ret.recorded_by || ret.source || 'Returns Table')
+     records.set(key, row)
+     for (const item of items) {
+      const name = item.variant_name || item.product_name || item.item_name || 'Unassigned Product'
+      const p = products.get(name) || { name, qty:0, amount:0 }
+      p.qty += safeNum(item.returned_quantity ?? item.returned_qty, 0)
+      p.amount += safeNum(item.total_credit ?? item.total_amount, safeNum(item.returned_quantity ?? item.returned_qty,0) * safeNum(item.reseller_price ?? item.unit_price,0))
+      products.set(name, p)
+     }
+    }
+    const outlets = new Map()
+    for (const inv of invoices) {
+     const key = String(inv.id || inv.invoice_number || '')
+     const row = records.get(key) || { invoiceId:inv.id || '', invoiceNumber:inv.invoice_number || '', reseller:inv.reseller_name || 'Unassigned', date:inv.delivery_date, amount:0, qty:0, sources:new Set() }
+     row.invoiceId = row.invoiceId || inv.id || ''
+     row.invoiceNumber = row.invoiceNumber || inv.invoice_number || ''
+     row.reseller = inv.reseller_name || row.reseller
+     row.date = row.date || inv.delivery_date
+     row.amount = Math.max(row.amount, safeNum(inv.returns_amount, 0))
+     row.qty = Math.max(row.qty, safeNum(inv.returns_qty, 0))
+     if (safeNum(inv.returns_amount,0) > 0 || safeNum(inv.returns_qty,0) > 0) row.sources.add('Invoice Returns')
+     row.netSales = safeNum(inv.total_amount, 0)
+     row.grossSales = safeNum(inv.original_amount ?? inv.gross_amount ?? inv.subtotal_amount, 0) || row.netSales + safeNum(inv.returns_amount, 0)
+     if (row.amount || row.qty) records.set(key, row)
+     const outlet = outlets.get(row.reseller) || { name:row.reseller, grossSales:0, netSales:0, returnsAmount:0, returnsQty:0, invoices:0 }
+     outlet.grossSales += row.grossSales; outlet.netSales += row.netSales
+     outlet.returnsAmount += row.amount; outlet.returnsQty += row.qty; outlet.invoices += 1
+     outlets.set(row.reseller, outlet)
+    }
+    const returnRecords = [...records.values()].filter(r => r.amount > 0 || r.qty > 0)
+    const totalReturnsAmount = returnRecords.reduce((sum,r)=>sum+r.amount,0)
+    const totalReturnsQty = returnRecords.reduce((sum,r)=>sum+r.qty,0)
+    const resellerGross = [...outlets.values()].reduce((sum,r)=>sum+r.grossSales,0)
+    const dailyGross = daily.reduce((sum,r)=>sum+safeNum(r.total_walkin,0)+safeNum(r.total_messenger,0),0) + sumDailySalesOnlineRows(online)
+    const grossSales = resellerGross + dailyGross
+    const rate = grossSales > 0 ? totalReturnsAmount / grossSales * 100 : 0
+    const returnResellerRows = [...outlets.values()].map(r=>({ ...r, returnRatePct:r.grossSales > 0 ? r.returnsAmount / r.grossSales * 100 : 0 }))
+     .sort((a,b)=>b.returnsAmount-a.returnsAmount)
+    const returnProductRows = [...products.values()].map(r=>({ ...r, avgCredit:r.qty ? r.amount/r.qty : 0, sharePct:totalReturnsAmount ? r.amount/totalReturnsAmount*100 : 0 }))
+     .sort((a,b)=>b.amount-a.amount)
+    return { returnRecords, returnResellerRows, returnProductRows, totalReturnsAmount, totalReturnsQty, grossSales, rate }
+   }
+   const current = getMonthData(monthValue)
+   const status = getReturnsStatus(current.rate, current.totalReturnsQty, current.totalReturnsAmount, current.grossSales)
+   const trend = months.map(m => {
+    const invoiceRows = allInvoices.filter(i=>String(i.delivery_date || '').startsWith(m.key) && isSalesSummaryInvoiceCounted(i))
+    const returnRows = allReturns.filter(r=>String(r.return_date || '').startsWith(m.key))
+    const tableAmount = returnRows.reduce((sum,r)=>sum+safeNum(r.total_returned_amount ?? r.returns_amount ?? r.amount,
+     (r.reseller_return_items || []).reduce((a,it)=>a+safeNum(it.total_credit ?? it.total_amount, safeNum(it.returned_quantity ?? it.returned_qty,0)*safeNum(it.reseller_price ?? it.unit_price,0)),0)),0)
+    const totalReturnsAmount = Math.max(tableAmount, invoiceRows.reduce((sum,i)=>sum+safeNum(i.returns_amount,0),0))
+    const totalReturnsQty = Math.max(
+     returnRows.reduce((sum,r)=>sum+(r.reseller_return_items || []).reduce((a,it)=>a+safeNum(it.returned_quantity ?? it.returned_qty,0),0),0),
+     invoiceRows.reduce((sum,i)=>sum+safeNum(i.returns_qty,0),0))
+    const grossSales = allDailySales.filter(r=>String(r.sale_date || '').startsWith(m.key))
+     .reduce((sum,r)=>sum+safeNum(r.total_revenue,0),0)
+     + invoiceRows.reduce((sum,i)=>sum+(safeNum(i.original_amount ?? i.gross_amount ?? i.subtotal_amount,0) || safeNum(i.total_amount,0)+safeNum(i.returns_amount,0)),0)
+    return { key:m.key, label:m.label, totalReturnsAmount, totalReturnsQty, grossSales, rate:grossSales>0?totalReturnsAmount/grossSales*100:0 }
+   })
+   setReturnsMonitorData({ ...current, month:monthValue, status, trend })
+  } catch (error) {
+   setReturnsMonitorData(null)
+   setReturnsMonitorError(error.message || String(error))
+  } finally { setReturnsMonitorLoading(false) }
  }
 
  function groupSum(rows, keyFn, valueFn) {
@@ -34603,8 +34715,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  tabs:[{key:'analytics',label:'Analytics'}],
  roles:['owner'] },
  { key:'foundation', icon:'\uD83E\uDDF1', label:'Foundation',
- tabs:[{key:'foundation',label:'Foundation'}],
- roles:['owner','manager'] },
+  tabs:[{key:'foundation',label:'Foundation'}],
+  roles:['owner','manager'] },
+ { key:'returnsMonitor', icon:'\uD83D\uDCCA', label:'Returns Monitor',
+  tabs:[{key:'returnsMonitor',label:'Returns Monitor'}],
+  roles:[] },
  { key:'payablesMain', icon:String.fromCodePoint(0x1F4C5), label:'Payables / PDC',
         tabs:[{key:'payablesMain',label:'Payables / PDC'}],
         roles:['owner'] },
@@ -34613,7 +34728,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  tabs:[{key:'franchise',label:'Franchise'}],
  roles:['owner'] },
  ]
- const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner') || (s.key === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)))
+ const visibleSections = SECTIONS.filter(s => s.roles.includes(adminRole||'owner') || (s.key === 'sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) || (s.key === 'returnsMonitor' && canViewSherylReturns))
  const currentSection = visibleSections.find(s => s.tabs.some(t => t.key === activeTab)) || visibleSections[0]
  const visibleSubTabs = currentSection.tabs.filter(t => t.key === 'documents' || canAccess(t.key))
  const adminDataDenseTabs = new Set(['posMonitor','tomorrowForecast','attendance','payroll','payrollHistory','remittance','dtr','bankDisbursement','inventory','sales','analytics','payablesMain'])
@@ -36103,6 +36218,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadProductionForecastExclusions({ silent:true }); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
 if(key==='sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) loadInvoiceDeletionRequests({ silent:true })
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
+ if(key==='returnsMonitor') void loadSherylReturnsMonitor(foundationMonth)
  if(key==='foundation') { loadFoundationData(); loadFinancialData(); loadDailyExpenses(); loadCompanyPayables(); loadDeliveryInvoices(); loadDailySales(); loadInventoryItems(); loadPayrollHistory() }
  if(key==='franchise') { loadFranchises() }
  if(key==='sops') { setSopView('dashboard'); refreshSopLibrary({ silent:true }) }
@@ -46794,6 +46910,42 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )}
 
+
+ {/* Sheryl's read-only returns view; never mount the rest of Foundation for this access. */}
+ {activeTab==='returnsMonitor' && canViewSherylReturns && (
+ <div style={{ maxWidth:'1100px', margin:'0 auto' }}>
+  <h2 style={h2s}>Returns & Unsold Donut Analysis</h2>
+  <p style={{ color:'#666', fontSize:'12px' }}>Monthly return value divided by gross sales before returns. Outlet percentages use each outlet's gross invoice value.</p>
+  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center', marginBottom:'14px' }}>
+   <input aria-label="Returns month" type="month" value={foundationMonth} onChange={e=>{ setFoundationMonth(e.target.value); void loadSherylReturnsMonitor(e.target.value) }} style={{...inputStyle, width:'165px', margin:0 }} />
+   <button style={{...btnGreen, width:'auto', margin:0 }} disabled={returnsMonitorLoading} onClick={()=>loadSherylReturnsMonitor(foundationMonth)}>{returnsMonitorLoading?'Loading...':'Refresh Returns'}</button>
+   {returnsMonitorData && <button style={{...btnYellow, width:'auto', margin:0 }} onClick={()=>downloadTextFile(`returns-monitor-${returnsMonitorData.month}.csv`, rowsToCSV(returnsMonitorData.returnResellerRows.map(r=>({ outlet:r.name, returns_amount:r.returnsAmount, returns_pieces:r.returnsQty, gross_sales:r.grossSales, return_rate_pct:r.returnRatePct.toFixed(2), invoice_count:r.invoices }))), 'text/csv')}>Export Outlet Returns</button>}
+  </div>
+  {returnsMonitorError && <p role="alert" style={{ color:'#ca1b1b' }}>Could not load returns: {returnsMonitorError}</p>}
+  {returnsMonitorLoading && <p>Loading returns for {foundationMonth}...</p>}
+  {!returnsMonitorLoading && returnsMonitorData && (()=>{
+   const d = returnsMonitorData
+   const cards = [
+    ['Total Return Rate', `${d.rate.toFixed(1)}%`, d.status.label],
+    ['Returned / Unsold', `${d.totalReturnsQty} pcs`, php(d.totalReturnsAmount)],
+    ['Gross Sales Basis', php(d.grossSales), 'Before returns'],
+    ['Above 5% Target', php(Math.max(0,d.totalReturnsAmount-d.grossSales*0.05)), 'Potential avoidable return value']
+   ]
+   return <>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,minmax(0,1fr))':'repeat(4,minmax(0,1fr))', gap:'10px', marginBottom:'14px' }}>
+     {cards.map(([label,value,note])=><div key={label} style={{ background:'#fffdf6', border:'1px solid #f0d9d9', borderRadius:'12px', padding:'12px', minWidth:0 }}><small>{label}</small><strong style={{ display:'block', color:'#a21b1b', fontSize:'18px', overflowWrap:'anywhere' }}>{value}</strong><small>{note}</small></div>)}
+    </div>
+    <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}><strong>Returns Action Plan</strong><p style={{ marginBottom:0 }}>{d.status.message} {d.returnResellerRows[0]?.returnsAmount>0 ? `${d.returnResellerRows[0].name} has the highest return value (${php(d.returnResellerRows[0].returnsAmount)}). Review its delivery quantity and product mix.` : ''}</p></div>
+    <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'12px' }}>
+     <section style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'14px' }}><h3>6-Month Returns Trend</h3>{d.trend.map(r=><p key={r.key} style={{ borderBottom:'1px solid #eee', paddingBottom:'8px' }}><b>{r.label}: {r.rate.toFixed(1)}%</b><br/><small>Returns {php(r.totalReturnsAmount)} / {r.totalReturnsQty} pcs · Gross {php(r.grossSales)}</small></p>)}</section>
+     <section style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'14px' }}><h3>High-Return Invoice Watchlist</h3>{d.returnRecords.filter(r=>r.grossSales>0).sort((a,b)=>b.amount/b.grossSales-a.amount/a.grossSales).slice(0,8).map((r,i)=><p key={`${r.invoiceId}-${i}`} style={{ borderBottom:'1px solid #eee', paddingBottom:'8px' }}><b>{r.invoiceNumber || r.invoiceId}: {(r.amount/r.grossSales*100).toFixed(1)}%</b><br/><small>{r.reseller} · {r.date} · {r.qty} pcs · {php(r.amount)}</small></p>)}</section>
+     <section style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'14px' }}><h3>Outlet / Reseller Return Ranking</h3>{d.returnResellerRows.length ? d.returnResellerRows.map(r=><p key={r.name} style={{ borderBottom:'1px solid #eee', paddingBottom:'8px' }}><b>{r.name}: {r.returnRatePct.toFixed(1)}%</b><br/><small>Returns {php(r.returnsAmount)} / {r.returnsQty} pcs · Gross {php(r.grossSales)} · {r.invoices} invoices</small></p>) : <p>No outlet invoices found this month.</p>}</section>
+     <section style={{ background:'white', border:'1px solid #eee', borderRadius:'12px', padding:'14px' }}><h3>Product Return Ranking</h3>{d.returnProductRows.length ? d.returnProductRows.map(r=><p key={r.name} style={{ borderBottom:'1px solid #eee', paddingBottom:'8px' }}><b>{r.name}: {r.qty} pcs</b><br/><small>{php(r.amount)} · {r.sharePct.toFixed(1)}% of return value</small></p>) : <p>No product-level return details found this month.</p>}</section>
+    </div>
+   </>
+  })()}
+ </div>
+ )}
 
  {/* FOUNDATION CONTROL CENTER Owner / Manager */}
  {activeTab==='foundation' && (adminRole==='owner' || adminRole==='manager') && (
