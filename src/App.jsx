@@ -46502,8 +46502,9 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  {salesView==='expenses' && (
  <div>
- <div style={{ background:'#fff', border:'1px solid #e3e7ee', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
- <h3 style={{ color:'#1a1a2e', margin:'0 0 12px', fontSize:'16px' }}>Add Expense</h3>
+ <details className="expense-ledger-create">
+ <summary>Add Expense</summary>
+ <div className="expense-ledger-create__body">
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
  <div><label style={lblS}>Date:</label><input type="date" value={expenseForm.expense_date} onChange={e=>setExpenseForm(p=>({...p,expense_date:e.target.value}))} style={inputStyle} /></div>
  <div><label style={lblS}>Category:</label>
@@ -46516,6 +46517,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  <button style={{...btnYellow, width:'auto', padding:'10px 20px', marginTop:'4px', opacity:savingExpense?0.6:1 }} disabled={savingExpense} onClick={saveExpense}>{savingExpense?' Saving...':' ADD EXPENSE'}</button>
  </div>
+ </details>
  <ExpenseLedger expenses={dailyExpenses} loading={expensesLoading} isOwner={adminRole==='owner'} today={today} rejectingId={rejectingExpenseId} rejectionReason={rejectExpenseReason} setRejectingId={setRejectingExpenseId} setRejectionReason={setRejectExpenseReason} approve={approveExpense} reject={rejectExpense} voidExpense={deleteExpense} />
  {/* CASH RECONCILIATION */}
  {(()=>{
