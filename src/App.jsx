@@ -6585,6 +6585,7 @@ export default function App() {
  const employeeIdFrontCanvasRef = useRef(null)
  const employeeIdBackCanvasRef = useRef(null)
  const employeeIdPhotoInputRef = useRef(null)
+ const breakOutPendingRef = useRef(false)
  const resellerOrderSubmitLockRef = useRef(false)
  const resellerOrderRecentSubmitKeysRef = useRef(new Set())
  const approvingResellerOrderIdsRef = useRef(new Set())
@@ -19103,6 +19104,9 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  setCapturedPhoto(null); setCameraMode('timeout')
  }
  async function initiateBreakOut() {
+ if (breakOutPendingRef.current) return
+ breakOutPendingRef.current = true
+ try {
  if (!isAttendanceLogEligibleForActiveShift(todayLog)) { alert('You must have a valid Time In before taking a break. Absent or incomplete attendance records cannot use Break Out.'); return }
  // Only 1 break per attendance log/shift
  if (todayBreaks.length > 0) { showToast(' You have already taken your break for this shift. Only 1 break is allowed per shift.','red'); return }
@@ -19123,6 +19127,13 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   showToast(`Break Out blocked: a ${activeStatus} No Meal Break exception already covers this attendance shift. Ask the admin to void or undo it first.`, 'red')
   return
  }
+ const { data:existingBreakRows, error:existingBreakError } = await supabase
+  .from('break_logs')
+  .select('id')
+  .eq('attendance_log_id', todayLog.id)
+  .limit(1)
+ if (existingBreakError) { showToast('Break Out verification failed: '+existingBreakError.message,'red'); return }
+ if (existingBreakRows?.length) { showToast('You have already taken your break for this shift. Only 1 break is allowed per shift.','red'); await loadTodayBreaks(todayLog.id); return }
  const { error } = await supabase.from('break_logs').insert({ attendance_log_id:todayLog.id, employee_id:employee.id, employee_name:employee.full_name, attendance_date:activeAttendanceDate, break_out:nowTime() })
  if (error) {
   showToast(isNoMealBreakBreakGuardError(error)
@@ -19130,7 +19141,10 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
    : 'Failed: '+error.message,'red')
   return
  }
- loadTodayBreaks(todayLog.id); showToast(' Break started!')
+ await loadTodayBreaks(todayLog.id); showToast(' Break started!')
+ } finally {
+  breakOutPendingRef.current = false
+ }
  }
  async function initiateBreakIn() {
  const openBreak = todayBreaks.find(b=>!b.break_in)
