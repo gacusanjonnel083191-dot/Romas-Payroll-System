@@ -9,6 +9,7 @@ import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
 import ResellerCalculator from './ResellerCalculator.jsx'
+import ExpenseLedger from './ExpenseLedger.jsx'
 import {
  getChargeableEarlyOutMinutes,
  getUnconsumedApprovedTimeAdjustmentConflict,
@@ -43523,7 +43524,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
  <div>
-  <h2 style={h2s}>{activeTab==='tomorrowForecast' ? " Tomorrow's Operations Forecast" : ' Sales & Resellers'}</h2>
+  <h2 style={h2s}>{activeTab==='tomorrowForecast' ? " Tomorrow's Operations Forecast" : salesView==='expenses' ? 'Sales & Expenses' : ' Sales & Resellers'}</h2>
   {activeTab==='tomorrowForecast' && <p style={{ color:'#777', fontSize:'11px', margin:'4px 0 0' }}>Prepare between 8:00–11:00 AM for tonight's production and tomorrow's 5:00 AM delivery start.</p>}
  </div>
  {salesView==='financial' && financialData && <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printPLReport}> PRINT P&L</button>}
@@ -46501,6 +46502,21 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  {salesView==='expenses' && (
  <div>
+ <div style={{ background:'#fff', border:'1px solid #e3e7ee', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
+ <h3 style={{ color:'#1a1a2e', margin:'0 0 12px', fontSize:'16px' }}>Add Expense</h3>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
+ <div><label style={lblS}>Date:</label><input type="date" value={expenseForm.expense_date} onChange={e=>setExpenseForm(p=>({...p,expense_date:e.target.value}))} style={inputStyle} /></div>
+ <div><label style={lblS}>Category:</label>
+ <select value={expenseForm.category} onChange={e=>setExpenseForm(p=>({...p,category:e.target.value}))} style={inputStyle}>
+ {EXPENSE_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+ </select>
+ </div>
+ <div><label style={lblS}>Amount (₱):</label><input type="number" value={expenseForm.amount} onChange={e=>setExpenseForm(p=>({...p,amount:e.target.value}))} style={inputStyle} min="0" step="0.01" placeholder="0.00" /></div>
+ <div><label style={lblS}>Description:</label><input type="text" value={expenseForm.description} onChange={e=>setExpenseForm(p=>({...p,description:e.target.value}))} style={inputStyle} placeholder="e.g. Fuel for delivery to resellers" /></div>
+ </div>
+ <button style={{...btnYellow, width:'auto', padding:'10px 20px', marginTop:'4px', opacity:savingExpense?0.6:1 }} disabled={savingExpense} onClick={saveExpense}>{savingExpense?' Saving...':' ADD EXPENSE'}</button>
+ </div>
+ <ExpenseLedger expenses={dailyExpenses} loading={expensesLoading} isOwner={adminRole==='owner'} today={today} rejectingId={rejectingExpenseId} rejectionReason={rejectExpenseReason} setRejectingId={setRejectingExpenseId} setRejectionReason={setRejectExpenseReason} approve={approveExpense} reject={rejectExpense} voidExpense={deleteExpense} />
  {/* CASH RECONCILIATION */}
  {(()=>{
  const dayInvoices = deliveryInvoices.filter(i=>i.delivery_date===reconciliationDate||i.paid_date===reconciliationDate)
@@ -46647,83 +46663,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )
  })()}
- <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'14px' }}> Daily Expenses</h3>
- <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
- <h4 style={{ color:'#f57c00', margin:'0 0 12px', fontSize:'13px' }}> Add Expense</h4>
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px' }}>
- <div><label style={lblS}>Date:</label><input type="date" value={expenseForm.expense_date} onChange={e=>setExpenseForm(p=>({...p,expense_date:e.target.value}))} style={inputStyle} /></div>
- <div><label style={lblS}>Category:</label>
- <select value={expenseForm.category} onChange={e=>setExpenseForm(p=>({...p,category:e.target.value}))} style={inputStyle}>
- {EXPENSE_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
- </select>
- </div>
- <div><label style={lblS}>Amount ( ):</label><input type="number" value={expenseForm.amount} onChange={e=>setExpenseForm(p=>({...p,amount:e.target.value}))} style={inputStyle} min="0" step="0.01" placeholder="0.00" /></div>
- <div><label style={lblS}>Description:</label><input type="text" value={expenseForm.description} onChange={e=>setExpenseForm(p=>({...p,description:e.target.value}))} style={inputStyle} placeholder="e.g. Fuel for delivery to resellers" /></div>
- </div>
- <button style={{...btnYellow, width:'auto', padding:'10px 20px', marginTop:'4px', opacity:savingExpense?0.6:1 }} disabled={savingExpense} onClick={saveExpense}>{savingExpense?' Saving...':' ADD EXPENSE'}</button>
- </div>
- {expensesLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading...</p>}
- {!expensesLoading && dailyExpenses.length===0 && <p style={{ color:'#aaa', textAlign:'center', padding:'20px', fontSize:'13px' }}>No expenses recorded yet.</p>}
- {/* Pending approval banner for owner */}
- {adminRole==='owner' && dailyExpenses.filter(e=>e.status==='pending').length > 0 && (
- <div style={{ background:'#fff8dc', border:'2px solid #f5c518', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}>
- <p style={{ fontWeight:'bold', color:'#f57c00', fontSize:'13px', margin:'0 0 10px' }}> {dailyExpenses.filter(e=>e.status==='pending').length} Expense(s) Awaiting Your Approval</p>
- <div className="romas-record-grid">
- {dailyExpenses.filter(e=>e.status==='pending').map(exp=>(
- <div key={exp.id} className={`romas-record-card${rejectingExpenseId===exp.id?' romas-record-card--expanded':''}`} style={{ background:'white', borderRadius:'10px', padding:'12px', border:'1px solid #f5c518' }}>
- <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'8px' }}>
- <div>
- <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{exp.category}</p>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{exp.expense_date} {exp.description||'No description'} by {exp.encoded_by}</p>
- </div>
- <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'16px', margin:0 }}>{php(exp.amount)}</p>
- </div>
- {rejectingExpenseId===exp.id? (
- <div>
- <input value={rejectExpenseReason} onChange={e=>setRejectExpenseReason(e.target.value)} placeholder="Reason for rejection..." style={{...inputStyle, marginBottom:'6px' }} />
- <div style={{ display:'flex', gap:'8px' }}>
- <button style={{...btnRed, flex:1, marginTop:0, padding:'8px' }} onClick={()=>rejectExpense(exp.id)}> CONFIRM REJECT</button>
- <button style={{...btnGray, flex:1, marginTop:0, padding:'8px' }} onClick={()=>{ setRejectingExpenseId(null); setRejectExpenseReason('') }}>Cancel</button>
- </div>
- </div>
- ): (
- <div style={{ display:'flex', gap:'8px' }}>
- <button style={{...btnGreen, flex:1, marginTop:0, padding:'8px', fontSize:'12px' }} onClick={()=>approveExpense(exp.id)}> APPROVE</button>
- <button style={{...btnRed, flex:1, marginTop:0, padding:'8px', fontSize:'12px' }} onClick={()=>setRejectingExpenseId(exp.id)}> REJECT</button>
- </div>
- )}
- </div>
- ))}
- </div>
- </div>
- )}
- {(()=>{
- const monthTotal = dailyExpenses.filter(e=>e.expense_date?.startsWith(today.slice(0,7))).reduce((s,e)=>s+Number(e.amount||0),0)
- return monthTotal > 0 && (
- <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'10px', padding:'12px', marginBottom:'12px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>This Month's Total Expenses:</span>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'18px' }}>{php(monthTotal)}</span>
- </div>
- )
- })()}
- <div className="romas-record-grid">
- {dailyExpenses.filter(e=>e.status!=='pending'||adminRole==='owner').map(exp=>(
- <div key={exp.id} className="romas-record-card" style={{...cardS, border:`1px solid ${exp.status==='rejected'?'#ffcdd2':exp.status==='pending'?'#f5c518':'#eee'}`, display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', flexWrap:'wrap', background:exp.status==='rejected'?'#fff5f5':exp.status==='pending'?'#fffbf0':'white' }}>
- <div style={{ flex:1 }}>
- <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
- <p style={{ fontWeight:'bold', fontSize:'13px', color:'#333', margin:'0 0 2px' }}>{exp.category}</p>
- <Badge label={exp.status==='approved'?' Approved':exp.status==='pending'?' Pending':exp.status==='rejected'?' Rejected':' '} color={exp.status==='approved'?'green':exp.status==='pending'?'yellow':'red'} />
- </div>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{exp.expense_date} {exp.description?` ${exp.description}`:''}</p>
- {exp.status==='rejected' && exp.rejection_reason && <p style={{ color:'#ca1b1b', fontSize:'11px', margin:'2px 0 0' }}>Rejected: {exp.rejection_reason}</p>}
- </div>
- <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>{php(exp.amount)}</span>
- {adminRole==='owner' && <button onClick={()=>deleteExpense(exp.id)} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'5px 8px', cursor:'pointer', fontSize:'12px' }}> </button>}
- </div>
- </div>
- ))}
- </div>
+
  </div>
  )}
 
