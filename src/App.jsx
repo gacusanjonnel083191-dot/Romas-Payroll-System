@@ -42489,6 +42489,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  {/* CRATES CONTROL */}
  {activeTab==='crates' && <CrateRollingControl supabase={supabase} resellers={resellers} movements={crateMovements} movementsReady={crateMovementsLoaded} today={today} adminRole={adminRole} recordedBy={currentAdminLabel} />}
+ {activeTab==='crates' && <details style={{ background:'#fff', border:'1px solid #e6e6e6', borderRadius:12, padding:'12px 14px', marginBottom:14 }}>
+ <summary style={{ cursor:'pointer', fontWeight:700, color:'#333' }}>Record dispatch / collection and view detailed history</summary>
  {/* Crates Inventory / Reseller Variance View */}
  {activeTab==='crates' && (() => {
  const crateData = getCrateDashboardData()
@@ -42800,6 +42802,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  )
  })()}
+ </details>}
 
 
  {/* COSTING OWNER ONLY */}
