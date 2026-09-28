@@ -1,3 +1,5 @@
+const UNIVERSAL_UNDERTIME_GRACE_MINUTES = 10
+
 export function getChargeableEarlyOutMinutes({
  earlyOutMinutes = 0,
  deductedBreakMinutes = 0,
@@ -17,16 +19,10 @@ export function getChargeableEarlyOutMinutes({
 }
 
 export function getAppliedPaidWorkGraceMinutes({
- rawPaidWorkShortageMinutes = 0,
- hasSchedule = true,
- scheduleGraceAppliedMinutes = 0,
- gracePeriodMinutes = 0
+ rawPaidWorkShortageMinutes = 0
 } = {}) {
  const shortage = Math.max(0, Math.round(Number(rawPaidWorkShortageMinutes) || 0))
- const scheduleGrace = Math.max(0, Math.round(Number(scheduleGraceAppliedMinutes) || 0))
- const configuredGrace = Math.max(0, Math.round(Number(gracePeriodMinutes) || 0))
- const applicableGrace = hasSchedule ? scheduleGrace : configuredGrace
- return Math.min(shortage, applicableGrace)
+ return shortage <= UNIVERSAL_UNDERTIME_GRACE_MINUTES ? shortage : 0
 }
 
 function safePolicyNumber(value = 0) {

@@ -120,48 +120,58 @@ test('approved time blocks no-meal-break approval when released payroll does not
  assert.equal(getUnconsumedApprovedTimeAdjustmentConflict([approvedUT], [releasedPayroll], [attendanceLog]), approvedUT)
 })
 
-test('Marynessa no-schedule 2-minute shortage is fully covered by the 10-minute grace', () => {
+test('Marynessa no-schedule 2-minute shortage is fully covered even when schedule grace is missing', () => {
  const rawPaidWorkShortageMinutes = 2
  const graceApplied = getAppliedPaidWorkGraceMinutes({
   rawPaidWorkShortageMinutes,
   hasSchedule:false,
   scheduleGraceAppliedMinutes:0,
-  gracePeriodMinutes:10
+  gracePeriodMinutes:0
  })
  const remainingShortage = Math.max(0, rawPaidWorkShortageMinutes - graceApplied)
  assert.equal(graceApplied, 2)
  assert.equal(remainingShortage, 0)
 })
 
-test('no-schedule grace preserves the 10-minute threshold and charges the 11th minute', () => {
+test('all employees receive the same 10-minute undertime grace threshold', () => {
  const withinGrace = getAppliedPaidWorkGraceMinutes({
   rawPaidWorkShortageMinutes:10,
-  hasSchedule:false,
-  gracePeriodMinutes:10
+  hasSchedule:true,
+  scheduleGraceAppliedMinutes:0,
+  gracePeriodMinutes:0
  })
  const beyondGrace = getAppliedPaidWorkGraceMinutes({
   rawPaidWorkShortageMinutes:11,
   hasSchedule:false,
+  scheduleGraceAppliedMinutes:0,
+  gracePeriodMinutes:0
+ })
+ const thirtyOneMinuteShortage = getAppliedPaidWorkGraceMinutes({
+  rawPaidWorkShortageMinutes:31,
+  hasSchedule:true,
+  scheduleGraceAppliedMinutes:10,
   gracePeriodMinutes:10
  })
  assert.equal(10 - withinGrace, 0)
- assert.equal(11 - beyondGrace, 1)
+ assert.equal(beyondGrace, 0)
  assert.equal(Math.ceil((11 - beyondGrace) / 30) * 30, 30)
+ assert.equal(thirtyOneMinuteShortage, 0)
+ assert.equal(Math.ceil((31 - thirtyOneMinuteShortage) / 30) * 30, 60)
 })
 
-test('scheduled attendance still uses only verified schedule grace, not a generic shortage allowance', () => {
+test('scheduled attendance uses the universal 10-minute UT grace even without schedule-specific grace', () => {
  assert.equal(getAppliedPaidWorkGraceMinutes({
   rawPaidWorkShortageMinutes:8,
   hasSchedule:true,
   scheduleGraceAppliedMinutes:0,
+  gracePeriodMinutes:0
+ }), 8)
+ assert.equal(getAppliedPaidWorkGraceMinutes({
+  rawPaidWorkShortageMinutes:11,
+  hasSchedule:true,
+  scheduleGraceAppliedMinutes:10,
   gracePeriodMinutes:10
  }), 0)
- assert.equal(getAppliedPaidWorkGraceMinutes({
-  rawPaidWorkShortageMinutes:8,
-  hasSchedule:true,
-  scheduleGraceAppliedMinutes:7,
-  gracePeriodMinutes:10
- }), 7)
 })
 
 const noScheduleGraceFixture = `import {
