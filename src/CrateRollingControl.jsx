@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { latestApprovedOutletCounts, projectedOutletBalance } from './crateReconciliation'
+import { latestApprovedOutletCounts, outletMovementSummary, projectedOutletBalance } from './crateReconciliation'
 
 const field = { padding:'8px', border:'1px solid #ccc', borderRadius:6, boxSizing:'border-box', width:'100%' }
 const cell = { padding:'9px 10px', borderBottom:'1px solid #eee', whiteSpace:'nowrap', textAlign:'left' }
@@ -97,7 +97,8 @@ export default function CrateRollingControl({ supabase, resellers, movements, mo
     const count = latest.get(String(r.id))
     const crates = movementsReady ? projectedOutletBalance(count, movements, 'crate') : null
     const covers = movementsReady ? projectedOutletBalance(count, movements, 'cover') : null
-    return { outlet:r, count, crates, covers, pending:pendingByOutlet.get(String(r.id)) || [] }
+    const movement = movementsReady ? outletMovementSummary(r.id, movements, count) : null
+    return { outlet:r, count, crates, covers, movement, pending:pendingByOutlet.get(String(r.id)) || [] }
   })
   const verified = (resellers || []).filter(r => latest.has(String(r.id))).length
   const otherCounts = counts.filter(c => c.location_type !== 'outlet' && c.status === 'approved')
@@ -105,10 +106,11 @@ export default function CrateRollingControl({ supabase, resellers, movements, mo
   const otherPending = pending.filter(c => c.location_type !== 'outlet')
 
   function exportSummary() {
-    const header = ['Outlet','Area','Last approved count date','Counted crates','Counted covers','Later crate change','Later cover change','Expected crates','Expected covers','Status']
-    const data = rows.map(({ outlet:r, count:c, crates, covers, pending:waiting }) => [
-      r.name, r.area || '', c?.count_date || '', c?.crate_qty ?? '', c?.cover_qty ?? '',
-      crates?.changes ?? '', covers?.changes ?? '', crates?.expected ?? '', covers?.expected ?? '',
+    const header = ['Outlet','Area','Latest delivered date','Latest delivered crates','Latest delivered covers','Latest returned date','Latest returned crates','Latest returned covers','Last approved count date','Counted crates','Counted covers','Later crate change','Later cover change','Expected crates','Expected covers','Status']
+    const data = rows.map(({ outlet:r, count:c, crates, covers, movement:m, pending:waiting }) => [
+      r.name, r.area || '', m?.delivered.date || '', m?.delivered.crates || '', m?.delivered.covers || '',
+      m?.returned.date || '', m?.returned.crates || '', m?.returned.covers || '',
+      c?.count_date || '', c?.crate_qty ?? '', c?.cover_qty ?? '', crates?.changes ?? '', covers?.changes ?? '', crates?.expected ?? '', covers?.expected ?? '',
       waiting.length ? 'Pending owner review' : c ? (movementsReady ? 'Verified count; handovers provisional' : 'Movement ledger unavailable') : 'Awaiting physical count'
     ])
     const content = [header, ...data].map(line => line.map(csvCell).join(',')).join('\r\n')
@@ -129,21 +131,24 @@ export default function CrateRollingControl({ supabase, resellers, movements, mo
   return <section style={{ background:'#fff', border:'1px solid #e6e6e6', borderRadius:12, padding:14, marginBottom:14 }}>
     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap' }}>
       <div><h2 style={{ color:'#ca1b1b', margin:'0 0 3px', fontSize:20 }}>Crates inventory summary</h2>
-        <p style={{ color:'#666', fontSize:12, margin:0 }}>One row per outlet. Enter each count on the day it was actually taken, even when the reply arrives later.</p></div>
-      <button type="button" onClick={exportSummary} disabled={!loaded} style={button}>Download Excel CSV</button>
+        <p style={{ color:'#666', fontSize:12, margin:0 }}>One row per outlet. Dispatches and returns come from saved crate movements, including invoice settlements.</p></div>
+      <button type="button" onClick={exportSummary} disabled={!loaded || !movementsReady} style={button}>Download Excel CSV</button>
     </div>
     <p style={{ fontSize:13, margin:'12px 0' }}><strong>{verified}</strong> of <strong>{(resellers || []).length}</strong> outlets counted and approved · <strong>{pending.length}</strong> counts awaiting owner review</p>
     {error && <p role="alert" style={{ color:'#a21515', background:'#fff5f5', padding:9 }}>{error}</p>}
     {!movementsReady && <p role="status" style={{ color:'#8a5300', fontSize:12 }}>Movement records are unavailable. Expected balances are hidden until they load.</p>}
     <input aria-label="Search outlets" placeholder="Search outlet…" value={search} onChange={e=>setSearch(e.target.value)} style={{ ...field, maxWidth:280, marginBottom:10 }} />
     {!loaded ? <p role="status">Loading physical counts…</p> : <div style={{ overflowX:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'collapse', minWidth:780, fontSize:12 }}>
-        <thead><tr style={{ background:'#f6f6f8' }}>{['Outlet','Count date','Counted crates','Counted covers','Expected crates','Expected covers','Status',''].map((h,i)=><th key={i} style={cell}>{h}</th>)}</tr></thead>
-        <tbody>{rows.map(({ outlet:r, count:c, crates, covers, pending:waiting }) => <tr key={r.id}>
+      <table style={{ width:'100%', borderCollapse:'collapse', minWidth:1020, fontSize:12 }}>
+        <thead><tr style={{ background:'#f6f6f8' }}>{['Outlet','Latest delivered','Latest returned','Approved count','Crates balance','Covers balance','Status',''].map((h,i)=><th key={i} style={cell}>{h}</th>)}</tr></thead>
+        <tbody>{rows.map(({ outlet:r, count:c, crates, covers, movement:m, pending:waiting }) => <tr key={r.id}>
           <td style={{ ...cell, fontWeight:700 }}>{r.name}{r.area && <div style={{ color:'#777', fontWeight:400 }}>{r.area}</div>}</td>
-          <td style={cell}>{c?.count_date || '—'}</td><td style={cell}>{c?.crate_qty ?? '—'}</td><td style={cell}>{c?.cover_qty ?? '—'}</td>
-          <td style={{ ...cell, fontWeight:700 }}>{crates?.expected ?? '—'}</td><td style={{ ...cell, fontWeight:700 }}>{covers?.expected ?? '—'}</td>
-          <td style={{ ...cell, color:waiting.length ? '#9a5b00' : c ? '#276b42' : '#9a5b00' }}>{waiting.length ? 'Pending review' : c ? 'Count approved' : 'Awaiting count'}</td>
+          <td style={cell}>{m?.delivered.date || '—'}{m?.delivered.date && <div>{m.delivered.crates} crates / {m.delivered.covers} covers</div>}</td>
+          <td style={cell}>{m?.returned.date || '—'}{m?.returned.date && <div>{m.returned.crates} crates / {m.returned.covers} covers</div>}</td>
+          <td style={cell}>{c?.count_date || '—'}{c && <div>{c.crate_qty} crates / {c.cover_qty} covers</div>}</td>
+          <td style={{ ...cell, fontWeight:700 }}>{!movementsReady ? '—' : crates?.expected ?? m?.ledgerNet.crates ?? '—'}</td>
+          <td style={{ ...cell, fontWeight:700 }}>{!movementsReady ? '—' : covers?.expected ?? m?.ledgerNet.covers ?? '—'}</td>
+          <td style={{ ...cell, color:waiting.length || !c ? '#9a5b00' : '#276b42' }}>{waiting.length ? 'Pending review' : c ? 'Count approved; later handovers provisional' : 'Unverified ledger balance'}</td>
           <td style={cell}>{maySubmit && <button type="button" style={button} onClick={()=>edit(r.id)}>{c ? 'Update count' : 'Enter count'}</button>}</td>
         </tr>).flatMap(row => {
           const id = String(row.key)
@@ -162,7 +167,7 @@ export default function CrateRollingControl({ supabase, resellers, movements, mo
       </table>
       {rows.length === 0 && <p style={{ padding:12 }}>No outlets match this search.</p>}
     </div>}
-    <p style={{ fontSize:11, color:'#777', margin:'12px 0 0' }}>Expected = last approved physical count + recorded dispatches − recorded collections after that date. It is provisional until all handovers are entered. Blank means no approved count yet.</p>
+    <p style={{ fontSize:11, color:'#777', margin:'12px 0 0' }}>Latest delivered/returned shows the last recorded date and total handovers on that date. Balance uses the approved end-of-day count plus later recorded movements; without a count it shows the unverified ledger net. Corrections also affect the balance. Do not enter an invoice settlement handover again in the manual forms below.</p>
     <details style={{ marginTop:12, borderTop:'1px solid #eee', paddingTop:10 }}>
       <summary style={{ cursor:'pointer', fontWeight:600, fontSize:12 }}>Bakery and vehicle counts</summary>
       {otherCounts.map(c=><p key={c.id} style={{ fontSize:12 }}>{c.location_label}: {c.crate_qty} crates / {c.cover_qty} covers · {c.count_date} (physical snapshot)</p>)}

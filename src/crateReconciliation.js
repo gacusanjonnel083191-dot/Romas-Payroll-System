@@ -27,3 +27,35 @@ export function latestApprovedOutletCounts(counts) {
   }
   return latest
 }
+
+// The crate movement ledger includes manual handovers and invoice settlements.
+// Donut quantities on invoices are never used as a proxy for crate quantities.
+export function outletMovementSummary(resellerId, movements, count = null) {
+  const result = { delivered:{ date:'', crates:0, covers:0 }, returned:{ date:'', crates:0, covers:0 },
+    sinceCount:{ cratesDelivered:0, cratesReturned:0, coversDelivered:0, coversReturned:0 },
+    ledgerNet:{ crates:0, covers:0 } }
+  for (const m of movements || []) {
+    if (m.is_deleted === true || String(m.reseller_id) !== String(resellerId) ||
+      String(m.movement_type || '').toLowerCase().startsWith('company_') ||
+      String(m.reseller_name || '').toLowerCase() === 'company inventory') continue
+    const type = String(m.movement_type || '').toLowerCase()
+    const direction = String(m.direction || '').toLowerCase()
+    const event = ['dispatch','released','settlement_dispatch'].includes(type) ? 'delivered' :
+      ['collection','returned','return','settlement_collection'].includes(type) ? 'returned' : null
+    const qty = Number(m.quantity)
+    if (!Number.isFinite(qty) || qty <= 0) continue
+    const asset = String(m.asset_type || 'crate').toLowerCase() === 'cover' ? 'covers' : 'crates'
+    const sign = ['out','increase_balance'].includes(direction) ? 1 :
+      ['in','reduce_balance'].includes(direction) ? -1 : event === 'delivered' ? 1 : -1
+    result.ledgerNet[asset] += sign * qty
+    if (!event) continue
+    const date = String(m.movement_date || '').slice(0,10)
+    if (date > result[event].date) result[event] = { date, crates:0, covers:0 }
+    if (date === result[event].date) result[event][asset] += qty
+    if (count?.status === 'approved' && date > count.count_date) {
+      const key = asset + (event === 'delivered' ? 'Delivered' : 'Returned')
+      result.sinceCount[key] += qty
+    }
+  }
+  return result
+}
