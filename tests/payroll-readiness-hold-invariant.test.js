@@ -5,7 +5,19 @@ import { enforcePayrollMealBreakExemptions } from '../vite.payroll-meal-break-ex
 const fixture = `
 function buildPayrollMealBreakReviewException(employee = {}, attendanceDate = '', dayLogs = [], breakRowsByLogId = {}) {
  const integrity = getAttendanceDayIntegrity(dayLogs)
- return integrity
+ if (!integrity.isValidCompleted) return null
+
+ const resolvedBreakRowsByLogId = { ...(breakRowsByLogId || {}) }
+ const metrics = getAttendanceDayWorkMetrics(integrity.completedLogs, resolvedBreakRowsByLogId)
+ const breakEvidence = getAttendanceBreakPunchEvidence({ breakRowsByLogId:resolvedBreakRowsByLogId, metrics })
+ const isShortScheduledDay = metrics.rawSpanMinutes > 0
+  && metrics.rawSpanMinutes < REQUIRED_PAID_WORK_MINUTES + ALLOWED_BREAK_MINUTES
+ const requiresReview = !metrics.breakOverrideApplied
+  && !breakEvidence.hasBreakEvidence
+  && isShortScheduledDay
+  && metrics.undertimeMinutes > 0
+ if (!requiresReview) return null
+ return buildPayrollAttendanceException(employee, attendanceDate, dayLogs, { code:'meal_break_review' })
 }
 async function inspectPayrollReadiness() {
  const { data:activeEmployees } = await supabase
@@ -28,6 +40,13 @@ async function inspectPayrollReadiness() {
  }
  return readiness
 }`
+
+test('missing break punches use the standard 60-minute deduction and do not create a payroll hold', () => {
+ const transformed = enforcePayrollMealBreakExemptions(fixture, '/repo/src/App.jsx')
+ assert.match(transformed, /DEFAULT_60_MIN_BREAK_ASSUMPTION/)
+ assert.match(transformed, /const requiresReview = false/)
+ assert.doesNotMatch(transformed, /!breakEvidence\.hasBreakEvidence\s*\n\s*&& isShortScheduledDay/)
+})
 
 test('payroll readiness does not double-count held employees as missing payroll rows', () => {
  const transformed = enforcePayrollMealBreakExemptions(fixture, '/repo/src/App.jsx')

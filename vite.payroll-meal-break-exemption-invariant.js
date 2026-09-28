@@ -11,6 +11,18 @@ const MEAL_BREAK_REVIEW_FUNCTION_START_WITH_EXEMPTION = `function buildPayrollMe
 
  const integrity = getAttendanceDayIntegrity(dayLogs)`
 
+const MEAL_BREAK_REVIEW_HOLD_BLOCK = ` const isShortScheduledDay = metrics.rawSpanMinutes > 0
+  && metrics.rawSpanMinutes < REQUIRED_PAID_WORK_MINUTES + ALLOWED_BREAK_MINUTES
+ const requiresReview = !metrics.breakOverrideApplied
+  && !breakEvidence.hasBreakEvidence
+  && isShortScheduledDay
+  && metrics.undertimeMinutes > 0`
+
+const MEAL_BREAK_REVIEW_DEFAULT_BREAK_POLICY = ` // DEFAULT_60_MIN_BREAK_ASSUMPTION: when an employee has no break punch,
+ // payroll uses the standard 60-minute unpaid meal break already applied by
+ // getAttendanceDayWorkMetrics. Missing break punches must not block payroll.
+ const requiresReview = false`
+
 const PAYROLL_READINESS_EMPLOYEE_SELECT = `.select('id,employee_code,full_name,position,is_active,shift_start,shift_end,grace_period_minutes')`
 const PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES = `.select('id,employee_code,full_name,position,is_active,shift_start,shift_end,grace_period_minutes,overtime_pay_eligible,undertime_deduction_applicable,night_differential_pay_eligible')`
 
@@ -46,6 +58,14 @@ export function enforcePayrollMealBreakExemptions(source, id = '') {
       MEAL_BREAK_REVIEW_FUNCTION_START_PATTERN,
       MEAL_BREAK_REVIEW_FUNCTION_START_WITH_EXEMPTION,
       'buildPayrollMealBreakReviewException start'
+    )
+  }
+  if (!transformed.includes('DEFAULT_60_MIN_BREAK_ASSUMPTION')) {
+    transformed = replaceExactlyOnce(
+      transformed,
+      MEAL_BREAK_REVIEW_HOLD_BLOCK,
+      MEAL_BREAK_REVIEW_DEFAULT_BREAK_POLICY,
+      'missing-break payroll hold'
     )
   }
   if (!transformed.includes(PAYROLL_READINESS_EMPLOYEE_SELECT_WITH_PAY_RULES)) {
