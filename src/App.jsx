@@ -11,7 +11,7 @@ import { createClient } from '@supabase/supabase-js'
 import ResellerCalculator from './ResellerCalculator.jsx'
 import CrateRollingControl from './CrateRollingControl.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
-import { fetchResellerReceivables } from './resellerReceivables.js'
+import { fetchResellerReceivables, summarizeResellerReceivables } from './resellerReceivables.js'
 import {
  getChargeableEarlyOutMinutes,
  getUnconsumedApprovedTimeAdjustmentConflict,
@@ -7336,6 +7336,8 @@ export default function App() {
  const [returnItems, setReturnItems] = useState({})
  const [savingReturn, setSavingReturn] = useState(false)
  const [invoiceFilter, setInvoiceFilter] = useState('active')
+ const [receivableOutlet, setReceivableOutlet] = useState(null)
+ const [invoiceLoadError, setInvoiceLoadError] = useState('')
  const [invoiceDayFilter, setInvoiceDayFilter] = useState(today)
  const [markingDelivered, setMarkingDelivered] = useState({})
  const [showPaymentFormMap, setShowPaymentFormMap] = useState({})
@@ -13537,16 +13539,18 @@ for (const inv of todayInvs.filter(i => !['delivered','paid','cancelled','voided
  return { data:Array.from(rowsById.values()), error:null }
  }
 
- async function loadDeliveryInvoices() {
+ async function loadDeliveryInvoices({ readOnly = false } = {}) {
  setInvoicesLoading(true)
+ setInvoiceLoadError('')
  try {
- await autoMarkTodayDelivered()
+ if (!readOnly) await autoMarkTodayDelivered()
 
  // Load every saved invoice in pages. The previous .limit(500) silently hid
  // older records once the database exceeded 500 invoices.
  const withItems = await fetchAllDeliveryInvoiceRows('*, delivery_invoice_items(*)')
 if (!withItems.error) {
-const normalized = await normalizePaidInvoiceRows((withItems.data || []).filter(isSalesSummaryInvoiceCounted))
+const counted = (withItems.data || []).filter(isSalesSummaryInvoiceCounted)
+const normalized = readOnly ? counted : await normalizePaidInvoiceRows(counted)
  const withReturns = await attachReturnsToDeliveryInvoices(normalized)
  setDeliveryInvoices(withReturns.sort(sortDeliveryInvoicesNewestFirst))
  return
@@ -13557,15 +13561,18 @@ const normalized = await normalizePaidInvoiceRows((withItems.data || []).filter(
  if (basic.error) {
  console.warn('delivery_invoices basic query failed:', basic.error)
  setDeliveryInvoices([])
+ setInvoiceLoadError('Unable to load invoices. Please retry.')
  return
  }
 
-const normalizedBasic = await normalizePaidInvoiceRows((basic.data || []).filter(isSalesSummaryInvoiceCounted))
+const countedBasic = (basic.data || []).filter(isSalesSummaryInvoiceCounted)
+const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows(countedBasic)
  const basicWithReturns = await attachReturnsToDeliveryInvoices(normalizedBasic)
  setDeliveryInvoices(basicWithReturns.sort(sortDeliveryInvoicesNewestFirst))
  } catch(e) {
  console.warn('loadDeliveryInvoices:', e)
  setDeliveryInvoices([])
+ setInvoiceLoadError('Unable to load invoices. Please retry.')
  } finally {
  setInvoicesLoading(false)
  }
@@ -36264,7 +36271,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='crates') { loadCrateMovements(); loadResellers(); loadDeliveryInvoices() }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadCostProfiles(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
-if(key==='sales') { setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadProductionForecastExclusions({ silent:true }); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+if(key==='sales') { setReceivableOutlet(null); setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadProductionForecastExclusions({ silent:true }); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
 if(key==='sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) loadInvoiceDeletionRequests({ silent:true })
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
  if(key==='returnsMonitor') void loadSherylReturnsMonitor(foundationMonth)
@@ -36385,7 +36392,25 @@ function renderVoidedInvoicesRegister() {
  )
 }
 
+ function openResellerUnpaidInvoices(reseller) {
+ setReceivableOutlet({ id:reseller.id, name:reseller.name })
+ setInvoiceFilter('active')
+ setInvoiceSearchTerm('')
+ setInvoiceDayFilter('all')
+ setSalesView('receivables')
+ loadDeliveryInvoices({ readOnly:true })
+ requestAnimationFrame(()=>document.querySelector('.romas-admin-content')?.scrollTo({ top:0, behavior:'smooth' }))
+ }
+
+ function invoiceMatchesReceivableOutlet(invoice) {
+ if (!receivableOutlet) return true
+ if (String(invoice.reseller_id || '') !== String(receivableOutlet.id)) return false
+ // Use the badge's balance rules, including partial payments and settlement tolerance.
+ return invoiceFilter !== 'active' || !!summarizeResellerReceivables([invoice])[receivableOutlet.id]?.unpaidCount
+ }
+
  const openAnalyticsInvoiceStatus = (status) => {
+ setReceivableOutlet(null)
 setActiveTab('sales')
  setSalesView('receivables')
  setInvoiceFilter(status)
@@ -43590,7 +43615,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {activeTab!=='tomorrowForecast' && (
  <div className="romas-module-tabs" style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletSummary','\uD83C\uDFEA Outlet Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
- <button key={v} onClick={()=>{ setSalesView(v); if(v==='resellers') refreshResellerReceivables(); if(v==='receivables' && invoiceFilter==='voided') setInvoiceFilter('active'); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
+ <button key={v} onClick={()=>{ setSalesView(v); setReceivableOutlet(null); if(v==='resellers') refreshResellerReceivables(); if(v==='receivables' && invoiceFilter==='voided') setInvoiceFilter('active'); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
  )}
@@ -46033,12 +46058,22 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  ))}
  </div>
  {renderInvoiceSearchBox('Search Receivables / Payments', 'Search all invoices before recording payments by customer/reseller, invoice number, delivery date, address, contact, or product.')}
+ {receivableOutlet && (
+ <div style={{ background:'#fff9e6', border:'1px solid #f5c518', borderRadius:'12px', padding:'10px 14px', marginBottom:'12px', display:'flex', alignItems:'center', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
+ <span style={{ fontSize:'12px', color:'#555' }}><strong>{receivableOutlet.name}</strong>{invoiceFilter==='active' ? ' — Unpaid invoices, including partial payments · All dates' : ' · All dates'}</span>
+ <button type="button" onClick={()=>setReceivableOutlet(null)} style={{...btnGray, width:'auto', marginTop:0, padding:'10px 14px', minHeight:'44px', fontSize:'12px' }}>CLEAR OUTLET FILTER</button>
+ </div>
+ )}
+ {invoicesLoading && <p role="status" style={{ color:'#888', fontSize:'13px' }}>Loading invoices...</p>}
+ {invoiceLoadError && <p role="alert" style={{ color:'#ca1b1b', fontSize:'13px' }}>{invoiceLoadError} <button type="button" onClick={()=>loadDeliveryInvoices({ readOnly:true })} style={{...btnGray, width:'auto', marginTop:0 }}>RETRY</button></p>}
  {/* Invoice List */}
  {(()=>{
+ if (invoicesLoading || invoiceLoadError) return null
  let filtered = deliveryInvoices
+   .filter(invoiceMatchesReceivableOutlet)
    .filter(i=>invoiceMatchesFilter(i, invoiceFilter))
    .filter(i=>invoiceMatchesSearch(i))
- if (invoiceFilter==='overdue') filtered = deliveryInvoices.filter(i=>getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today&&invoiceMatchesSearch(i))
+ if (invoiceFilter==='overdue') filtered = deliveryInvoices.filter(i=>invoiceMatchesReceivableOutlet(i)&&getInvoicePaymentStatus(i)!=='paid'&&getInvoiceBalance(i)>0&&i.due_date<today&&invoiceMatchesSearch(i))
  if (filtered.length===0) return (
  <div style={{ textAlign:'center', padding:'30px', color:'#aaa' }}>
  <p style={{ fontSize:'32px', margin:'0 0 8px' }}>{invoiceFilter==='delivered'?' ':invoiceFilter==='paid'?' ':' '}</p>
@@ -46825,7 +46860,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  <div style={{ textAlign:'right' }}>
  <div style={{ marginBottom:'4px' }}><Badge label={resellerReceivables?`AR: ${php(rAR)}`:'AR: unavailable'} color={rAR>0?'yellow':'gray'} /></div>
- <Badge label={resellerReceivables?`${rSummary.unpaidCount} unpaid invoice(s)`:'Unpaid count: unavailable'} color="gray" />
+ <button type="button" onClick={()=>openResellerUnpaidInvoices(r)} aria-label={`View unpaid invoices for ${r.name}`} title={`View unpaid and partially paid invoices for ${r.name}`} style={{ background:'#777', color:'white', border:'none', padding:'8px 10px', minHeight:'44px', borderRadius:'20px', fontSize:'12px', fontWeight:'bold', fontFamily:'inherit', cursor:'pointer' }}>{resellerReceivables?`${rSummary.unpaidCount} unpaid invoice(s)`:'Unpaid count: unavailable'}</button>
  </div>
  </div>
  {/* Default order */}

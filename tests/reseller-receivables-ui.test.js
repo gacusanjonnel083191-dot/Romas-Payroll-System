@@ -23,6 +23,7 @@ export function renderResellers(overrides = {}) {
     resellersLoading: false, editingDefaultOrder: null, resellerDefaultOrders: {},
     btnGreen: {}, btnRed: {}, btnBlack: {}, btnYellow: {}, cardS: {}, lblS: {}, inputStyle: {},
     refreshResellerReceivables: noop,
+    openResellerUnpaidInvoices: noop,
     php: amount => `₱${amount.toFixed(2)}`,
     Badge: ({ label }) => React.createElement('span', null, label),
     ...overrides,
@@ -34,6 +35,7 @@ test('actual reseller cards show outlet balances and unpaid counts, including ze
   const html = renderResellers({ resellerReceivables: { 'branch-a': { balance: 123.45, unpaidCount: 2 } } })
   assert.match(html, /AR: ₱123.45/)
   assert.match(html, /2 unpaid invoice\(s\)/)
+  assert.match(html, /<button[^>]*aria-label="View unpaid invoices for Test Outlet"/)
   const zero = renderResellers({ resellerReceivables: {} })
   assert.match(zero, /AR: ₱0.00/)
   assert.match(zero, /0 unpaid invoice\(s\)/)
