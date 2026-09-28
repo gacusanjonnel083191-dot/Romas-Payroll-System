@@ -10,6 +10,7 @@ import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
 import ResellerCalculator from './ResellerCalculator.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
+import { fetchResellerReceivables } from './resellerReceivables.js'
 import {
  getChargeableEarlyOutMinutes,
  getUnconsumedApprovedTimeAdjustmentConflict,
@@ -7231,6 +7232,11 @@ export default function App() {
  const [savingDailySalesOnlinePayment, setSavingDailySalesOnlinePayment] = useState(false)
  const [dailySalesOnlinePaymentForm, setDailySalesOnlinePaymentForm] = useState({ payment_date:today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'', count_as_revenue:true })
  const [invoicesLoading, setInvoicesLoading] = useState(false)
+ const [resellerReceivables, setResellerReceivables] = useState(null)
+ const [resellerReceivablesLoading, setResellerReceivablesLoading] = useState(false)
+ const [resellerReceivablesError, setResellerReceivablesError] = useState('')
+ const [resellerReceivablesUpdatedAt, setResellerReceivablesUpdatedAt] = useState(null)
+ const resellerReceivablesInFlight = useRef(false)
  const [showCreateInvoice, setShowCreateInvoice] = useState(false)
  const [invoiceResellerId, setInvoiceResellerId] = useState('')
  const [invoiceCustomerType, setInvoiceCustomerType] = useState('reseller')
@@ -12572,6 +12578,23 @@ Cancel = create batch record only for existing stock.`)
  }
 
  // Phase 3: Reseller Functions 
+ async function refreshResellerReceivables() {
+ if (resellerReceivablesInFlight.current) return
+ resellerReceivablesInFlight.current = true
+ setResellerReceivablesLoading(true)
+ setResellerReceivablesError('')
+ try {
+ const summaries = await fetchResellerReceivables(supabase)
+ setResellerReceivables(summaries)
+ setResellerReceivablesUpdatedAt(new Date())
+ } catch {
+ setResellerReceivablesError('Unable to refresh invoice balances. Check your connection and click Refresh to retry.')
+ } finally {
+ resellerReceivablesInFlight.current = false
+ setResellerReceivablesLoading(false)
+ }
+ }
+
  async function loadResellers() {
  setResellersLoading(true)
  const { data, error } = await supabase.from('resellers').select('*').eq('is_active', true).order('name')
@@ -43548,7 +43571,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {activeTab!=='tomorrowForecast' && (
  <div className="romas-module-tabs" style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
  {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletSummary','\uD83C\uDFEA Outlet Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
- <button key={v} onClick={()=>{ setSalesView(v); if(v==='receivables' && invoiceFilter==='voided') setInvoiceFilter('active'); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
+ <button key={v} onClick={()=>{ setSalesView(v); if(v==='resellers') refreshResellerReceivables(); if(v==='receivables' && invoiceFilter==='voided') setInvoiceFilter('active'); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
  )}
@@ -46688,10 +46711,17 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <h3 style={{ color:'#ca1b1b', margin:0, fontSize:'14px' }}> Reseller Management ({resellers.length})</h3>
+ <div style={{ display:'flex', flexWrap:'wrap', gap:'8px' }}>
+ <button style={{...btnGreen, width:'auto', padding:'9px 16px', minHeight:'44px', marginTop:0, fontSize:'12px' }} onClick={refreshResellerReceivables} disabled={resellerReceivablesLoading}>{resellerReceivablesLoading?'REFRESHING...':'REFRESH BALANCES'}</button>
  <button style={{...btnRed, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>{ setShowResellerForm(!showResellerForm); setEditingResellerId(null); setResellerForm({ name:'', area:'', contact_person:'', phone:'', address:'', delivery_day:'Monday', access_code:'', access_pin:'', reseller_account_id:'' }) }}>
  {showResellerForm?' CANCEL':'+ ADD RESELLER'}
  </button>
  </div>
+ </div>
+ <p role="status" aria-live="polite" style={{ color:resellerReceivablesError?'#ca1b1b':'#666', fontSize:'12px', margin:'0 0 14px' }}>
+ {resellerReceivablesLoading?'Fetching current invoice balances...':resellerReceivablesError || 'Balances and unpaid counts come directly from saved invoices, including partial payments and delivered invoices.'}
+ {resellerReceivablesUpdatedAt && ` ${resellerReceivablesError || resellerReceivablesLoading?'Showing previous figures. ':''}Last updated: ${resellerReceivablesUpdatedAt.toLocaleString('en-PH', { timeZone:'Asia/Manila' })} (Manila).`}
+ </p>
  <div style={{ background:'#f8fbff', border:'2px solid #4a90d9', borderRadius:'14px', padding:'14px', marginBottom:'16px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap', alignItems:'center', marginBottom:'10px' }}>
  <div>
@@ -46762,8 +46792,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {resellersLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading...</p>}
  <div className="romas-record-grid">
  {resellers.map(r=>{
- const rInvoices = deliveryInvoices.filter(i=>i.reseller_id===r.id)
- const rAR = rInvoices.filter(i=>i.status!=='paid').reduce((s,i)=>s+Number(i.total_amount||0)-Number(i.paid_amount||0),0)
+ const rSummary = resellerReceivables?.[r.id] || { balance:0, unpaidCount:0 }
+ const rAR = rSummary.balance
  const isEditingOrder = editingDefaultOrder===r.id
  return (
  <div key={r.id} className={`romas-record-card${isEditingOrder?' romas-record-card--expanded':''}`} style={{...cardS, border:`2px solid ${rAR>0?'#f5c51844':'#ca1b1b22'}` }}>
@@ -46775,8 +46805,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {r.reseller_account_id && <p style={{ color:'#4a90d9', fontSize:'11px', margin:0, fontWeight:'bold' }}>Main Account: {getResellerAccountName(r.reseller_account_id)}</p>}
  </div>
  <div style={{ textAlign:'right' }}>
- {rAR > 0 && <div style={{ marginBottom:'4px' }}><Badge label={`AR: ${php(rAR)}`} color="yellow" /></div>}
- <Badge label={`${rInvoices.length} invoice(s)`} color="gray" />
+ <div style={{ marginBottom:'4px' }}><Badge label={resellerReceivables?`AR: ${php(rAR)}`:'AR: unavailable'} color={rAR>0?'yellow':'gray'} /></div>
+ <Badge label={resellerReceivables?`${rSummary.unpaidCount} unpaid invoice(s)`:'Unpaid count: unavailable'} color="gray" />
  </div>
  </div>
  {/* Default order */}
