@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 import { productionForecastPrintInvariant } from './vite.production-forecast-print-invariant.js'
 import { resellerManualCopyLastOrder } from './vite.reseller-manual-copy-last-order.js'
 import { payrollMealBreakExemptionInvariant } from './vite.payroll-meal-break-exemption-invariant.js'
+import { payrollAdjustmentDedupInvariant } from './vite.payroll-adjustment-dedup-invariant.js'
 import { employeeOTFilingInvariant } from './vite.employee-ot-filing-invariant.js'
 import { noScheduleGraceInvariant } from './vite.no-schedule-grace-invariant.js'
 
@@ -25,5 +26,5 @@ export default defineConfig({
   define: {
     __APP_BUILD_ID__: JSON.stringify(buildId),
   },
-  plugins: [appUpdateMetadata(), payrollMealBreakExemptionInvariant(), employeeOTFilingInvariant(), noScheduleGraceInvariant(), resellerManualCopyLastOrder(), productionForecastPrintInvariant(), react()],
+  plugins: [appUpdateMetadata(), payrollMealBreakExemptionInvariant(), payrollAdjustmentDedupInvariant(), employeeOTFilingInvariant(), noScheduleGraceInvariant(), resellerManualCopyLastOrder(), productionForecastPrintInvariant(), react()],
 })
