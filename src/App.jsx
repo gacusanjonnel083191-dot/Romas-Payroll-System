@@ -38763,6 +38763,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  )}
  {payrollResults.length>0 && <input placeholder=" Search employee..." value={payrollSearch} onChange={e=>setPayrollSearch(e.target.value)} style={{...inputStyle, marginBottom:'16px' }} />}
+ <div className="romas-payroll-payslip-grid">
  {filteredResults.map((pay,idx)=>(
  <div key={pay.savedRecordId || pay.employeeCode} className="romas-payroll-payslip" style={{...cardS, marginBottom:0, padding:0, border:'1px solid #ddd' }}>
  <div style={{ padding:'12px', fontSize:'11px', lineHeight:1.4 }}>
@@ -38816,6 +38817,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  </div>
  ))}
+ </div>
  </div>
  )}
 
@@ -39216,7 +39218,6 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <span style="font-weight:bold;font-size:12px;">13TH MONTH PAY</span>
  <span style="font-weight:bold;font-size:16px;">PHP ${pay.thirteenthMonth.toFixed(2)}</span>
  </div>
- <div className="romas-payroll-payslip-grid">
  <div style="margin-top:16px;display:flex;justify-content:space-between;">
  <div style="text-align:center;"><div style="border-top:1px solid #000;width:100px;padding-top:3px;font-size:9px;">Employee Signature</div></div>
  <div style="text-align:center;"><div style="border-top:1px solid #000;width:100px;padding-top:3px;font-size:9px;">Authorized By</div></div>
@@ -39271,7 +39272,6 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <tr style="background:#f5f5f5;"><td style="padding:4px 8px;font-size:10px;">Computation</td><td style="padding:4px 8px;text-align:right;font-size:10px;">PHP ${pay.totalBasic.toFixed(2)} 12 months</td></tr>
  </table>
  <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;">
- </div>
  <span style="font-weight:bold;font-size:12px;">13TH MONTH PAY</span>
  <span style="font-weight:bold;font-size:16px;">PHP ${pay.thirteenthMonth.toFixed(2)}</span>
  </div>
