@@ -393,6 +393,14 @@ const ROMAS_ADMIN_VISUAL_CSS = `
   gap:8px !important;
   margin-bottom:12px !important;
  }
+ .romas-payroll-payslip-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px;
+  align-items:start;
+ }
+ .romas-payroll-payslip { min-width:0; overflow-wrap:anywhere; }
+ .romas-payroll-payslip span:last-child { flex-shrink:0; white-space:nowrap; }
  .romas-kpi-grid > * {
   position:relative;
   min-width:0;
@@ -502,11 +510,13 @@ const ROMAS_ADMIN_VISUAL_CSS = `
  }
 }
 @media (max-width:1100px) {
+ .romas-payroll-payslip-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
  .romas-dashboard-kpis { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
  .romas-kpi-grid { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
  .romas-record-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
 }
 @media (max-width:768px) {
+ .romas-payroll-payslip-grid { grid-template-columns:1fr; }
  .romas-admin-tabs { grid-template-columns:repeat(2,minmax(0,1fr)); padding:7px 10px !important; }
  .romas-admin-tabs button { white-space:normal !important; line-height:1.2; }
  .romas-admin-content { padding:10px !important; }
@@ -38754,17 +38764,17 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
  {payrollResults.length>0 && <input placeholder=" Search employee..." value={payrollSearch} onChange={e=>setPayrollSearch(e.target.value)} style={{...inputStyle, marginBottom:'16px' }} />}
  {filteredResults.map((pay,idx)=>(
- <div key={pay.savedRecordId || pay.employeeCode} style={{...cardS, marginBottom:'20px', border:'1px solid #ddd' }}>
- <div style={{ padding:'16px', fontSize:'13px' }}>
- <div style={{ textAlign:'center', marginBottom:'10px', borderBottom:'2px solid #ca1b1b', paddingBottom:'8px' }}>
- <img src="/logo.png" alt="" style={{ width:'44px', height:'44px', objectFit:'contain' }} />
- <div style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'15px' }}>Roma's Donuts</div>
+ <div key={pay.savedRecordId || pay.employeeCode} className="romas-payroll-payslip" style={{...cardS, marginBottom:0, padding:0, border:'1px solid #ddd' }}>
+ <div style={{ padding:'12px', fontSize:'11px', lineHeight:1.4 }}>
+ <div style={{ textAlign:'center', marginBottom:'8px', borderBottom:'2px solid #ca1b1b', paddingBottom:'6px' }}>
+ <img src="/logo.png" alt="" style={{ width:'32px', height:'32px', objectFit:'contain' }} />
+ <div style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>Roma's Donuts</div>
  <div style={{ fontWeight:'bold' }}>EMPLOYEE PAYSLIP</div>
  <div style={{ color:'#666', fontSize:'11px' }}>Serial: {pay.payslipSerial || genSerial(payrollStart,payrollResults.indexOf(pay))} | {payrollStart} to {payrollEnd}</div>
  </div>
- <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'8px', padding:'10px', marginBottom:'10px' }}>
- <div style={{ fontSize:'16px', fontWeight:'bold', color:'#ca1b1b' }}>{pay.employeeName}</div>
- <div style={{ fontSize:'13px', fontWeight:'bold', color:'#555' }}>{pay.position}</div>
+ <div style={{ background:'#fff8dc', border:'2px solid #ca1b1b', borderRadius:'8px', padding:'8px', marginBottom:'8px' }}>
+ <div style={{ fontSize:'13px', fontWeight:'bold', color:'#ca1b1b' }}>{pay.employeeName}</div>
+ <div style={{ fontSize:'11px', fontWeight:'bold', color:'#555' }}>{pay.position}</div>
  <div style={{ fontSize:'11px', color:'#888' }}>Code: {pay.employeeCode} | Worked: {pay.workedDays}d | Absent: {pay.absentDays}d</div>
  </div>
  <div style={{ color:'#2d8a4e', fontWeight:'bold', marginBottom:'4px' }}>EARNINGS</div>
@@ -38798,9 +38808,9 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {getPayslipUnitemizedAdjustmentAmount(pay,'deduction')>0&&<div style={{ display:'flex', justifyContent:'space-between', color:'#7a5200' }}><span>Other Deduction (unitemized legacy amount)</span><span>{php(getPayslipUnitemizedAdjustmentAmount(pay,'deduction'))}</span></div>}
  <div style={{ display:'flex', justifyContent:'space-between', fontWeight:'bold', borderTop:'1px solid #eee', marginTop:'4px', paddingTop:'4px' }}><span>Total Deductions</span><span style={{ color:'#ca1b1b' }}>{php(pay.totalDeductions)}</span></div>
  {(pay.nonCADeductionOverflow||0)>0&&<div style={{ marginTop:'6px', padding:'8px', border:'1px solid #ca1b1b', borderRadius:'8px', background:'#fff5f5', color:'#ca1b1b', fontWeight:'bold', fontSize:'12px' }}>⚠ Deductions exceed earnings by {php(pay.nonCADeductionOverflow)}. Final payroll release is blocked until this is corrected.</div>}
- <div style={{ background:'#ca1b1b', color:'white', padding:'10px 14px', borderRadius:'8px', marginTop:'10px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
- <span style={{ fontWeight:'bold', fontSize:'14px' }}>NET PAY</span>
- <span style={{ fontWeight:'bold', fontSize:'18px' }}>{php(pay.netPay)}</span>
+ <div style={{ background:'#ca1b1b', color:'white', padding:'8px 10px', borderRadius:'8px', marginTop:'8px', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+ <span style={{ fontWeight:'bold', fontSize:'12px' }}>NET PAY</span>
+ <span style={{ fontWeight:'bold', fontSize:'15px' }}>{php(pay.netPay)}</span>
  </div>
  <button style={{...btnBlack, width:'auto', padding:'8px 16px', marginTop:'10px', fontSize:'12px' }} onClick={()=>printSinglePayslip(pay, payrollResults.indexOf(pay))}> PRINT THIS PAYSLIP</button>
  </div>
@@ -39206,6 +39216,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <span style="font-weight:bold;font-size:12px;">13TH MONTH PAY</span>
  <span style="font-weight:bold;font-size:16px;">PHP ${pay.thirteenthMonth.toFixed(2)}</span>
  </div>
+ <div className="romas-payroll-payslip-grid">
  <div style="margin-top:16px;display:flex;justify-content:space-between;">
  <div style="text-align:center;"><div style="border-top:1px solid #000;width:100px;padding-top:3px;font-size:9px;">Employee Signature</div></div>
  <div style="text-align:center;"><div style="border-top:1px solid #000;width:100px;padding-top:3px;font-size:9px;">Authorized By</div></div>
@@ -39260,6 +39271,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <tr style="background:#f5f5f5;"><td style="padding:4px 8px;font-size:10px;">Computation</td><td style="padding:4px 8px;text-align:right;font-size:10px;">PHP ${pay.totalBasic.toFixed(2)} 12 months</td></tr>
  </table>
  <div style="background:#ca1b1b;color:white;padding:8px 12px;border-radius:6px;display:flex;justify-content:space-between;">
+ </div>
  <span style="font-weight:bold;font-size:12px;">13TH MONTH PAY</span>
  <span style="font-weight:bold;font-size:16px;">PHP ${pay.thirteenthMonth.toFixed(2)}</span>
  </div>
