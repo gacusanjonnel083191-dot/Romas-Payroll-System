@@ -13368,7 +13368,7 @@ const outstanding = related
 
  function getInvoiceViewItemRows(invoice) {
  const items = Array.isArray(invoice?.delivery_invoice_items) ? invoice.delivery_invoice_items : []
- return items.map(item => {
+ return sortDeliveryInvoiceItems(items).map(item => {
  const deliveredQty = getInvoiceItemDeliveredQty(item)
  const unsoldQty = Math.min(deliveredQty, getInvoiceItemUnsoldQuantity(invoice, item))
  const soldQty = Math.max(0, deliveredQty - unsoldQty)
@@ -14903,25 +14903,7 @@ function buildDeliveryInvoicePrintCSS() {
     const preparedBy = '';
     const productionDispatchNote = getInvoiceProductionDispatchNote(invoice);
 
-    const rows = [
-      { label:'Choco Balls', aliases:['Choco Balls'] },
-      { label:'Matcha Pops', aliases:['Matcha Pops'] },
-      { label:'Almond Glitz', aliases:['Almond Glitz'] },
-      { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
-      { label:'Oreo Dream', aliases:['Oreo Dream'] },
-      { label:'Lotus Cloud', aliases:['Lotus Cloud'] },
-      { label:'Rings', aliases:['Rings'] },
-      { label:'Shells', aliases:['Shells'] },
-      { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
-      { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
-      { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
-      { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
-      { label:'Strawberry Pops', aliases:['Strawberry Pops'] },
-      { label:'Taro Pops', aliases:['Taro Pops'] },
-      { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
-      { label:'Biscoreo', aliases:['Biscoreo'] },
-      { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] }
-    ];
+    const rows = DELIVERY_INVOICE_PRODUCT_ORDER;
 
     const getQty = item => safeNum(item?.delivered_quantity ?? item?.actual_quantity ?? item?.quantity, 0);
     const getPrice = item => safeNum(item?.reseller_price ?? item?.unit_price ?? item?.price ?? item?.selling_price, 0);
@@ -15063,6 +15045,41 @@ function buildDeliveryInvoicePrintCSS() {
  }
 
 
+  // Invoice screens and every export follow the approved printed invoice sequence.
+  const DELIVERY_INVOICE_PRODUCT_ORDER = [
+      { label:'Choco Balls', aliases:['Choco Balls'] },
+      { label:'Matcha Pops', aliases:['Matcha Pops'] },
+      { label:'Almond Glitz', aliases:['Almond Glitz'] },
+      { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
+      { label:'Oreo Dream', aliases:['Oreo Dream'] },
+      { label:'Lotus Cloud', aliases:['Lotus Cloud'] },
+      { label:'Rings', aliases:['Rings'] },
+      { label:'Shells', aliases:['Shells'] },
+      { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
+      { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
+      { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
+      { label:'Bavarian Pops', aliases:['Bavarian Pops'] },
+      { label:'Strawberry Pops', aliases:['Strawberry Pops'] },
+      { label:'Taro Pops', aliases:['Taro Pops'] },
+      { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
+      { label:'Biscoreo', aliases:['Biscoreo'] },
+      { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] }
+    ];
+
+  function sortDeliveryInvoiceItems(items) {
+    const order = new Map();
+    DELIVERY_INVOICE_PRODUCT_ORDER.forEach((row, index) => {
+      [row.label, ...row.aliases].forEach(name => order.set(normalizeDonutVariantName(name), index));
+    });
+    const nameOf = item => item?.variant_name || item?.product_name || item?.name || '';
+    return [...(Array.isArray(items) ? items : [])].sort((a, b) => {
+      const ai = order.get(normalizeDonutVariantName(nameOf(a))) ?? Number.MAX_SAFE_INTEGER;
+      const bi = order.get(normalizeDonutVariantName(nameOf(b))) ?? Number.MAX_SAFE_INTEGER;
+      if (ai !== bi) return ai - bi;
+      return ai === Number.MAX_SAFE_INTEGER ? nameOf(a).localeCompare(nameOf(b)) : 0;
+    });
+  }
+
   // MASTER DONUT VARIETY ORDER - use this everywhere for uniform display.
   const DONUT_VARIANT_DISPLAY_ORDER = [
     { label:'Choco Balls', aliases:['Choco Balls'] },
@@ -15126,7 +15143,7 @@ function buildDeliveryInvoicePrintCSS() {
   }
 
   function buildInvoiceProductTemplateFromGuide() {
-    return DONUT_VARIANT_DISPLAY_ORDER.map(row => ({
+    return DELIVERY_INVOICE_PRODUCT_ORDER.map(row => ({
       label: row.label,
       aliases: row.aliases || [row.label]
     }));
@@ -16635,7 +16652,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
 
  function buildInvoiceSettlementRows(inv) {
  const items = inv?.delivery_invoice_items || []
- return items.map(item => {
+ return sortDeliveryInvoiceItems(items).map(item => {
  const qty = Math.max(0, safeNum(item.quantity, 0))
  const price = moneyRound(item.reseller_price ?? item.unit_price ?? 0)
  return { item_id:item.id || null, variant_id:item.variant_id || '', variant_name:item.variant_name || 'Unknown Variant', original_quantity:qty, actual_quantity:qty, returned_quantity:0, reseller_price:price, retail_price:moneyRound(item.retail_price ?? price) }
@@ -45617,7 +45634,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {/* Items preview */}
  {(inv.delivery_invoice_items||[]).length > 0 && (
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'8px' }}>
- {inv.delivery_invoice_items.map(item=>(
+ {sortDeliveryInvoiceItems(inv.delivery_invoice_items).map(item=>(
  <div key={item.id} style={{ background:'#f5f5f5', borderRadius:'6px', padding:'3px 8px', fontSize:'11px' }}>
  <strong>{item.variant_name}</strong>: {item.quantity} pcs {php(item.reseller_price)} = {php(item.total_price)}
  </div>
