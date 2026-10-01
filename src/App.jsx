@@ -35408,7 +35408,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    showToast('The Employee ID PNG could not be created.', 'red')
    return false
   }
-  downloadBlobAsFile(blob, getEmployeeIdDownloadName(side))
+  downloadGeneratedInvoiceFile(getEmployeeIdDownloadName(side), blob)
   if (!options.silent) showToast(`${side === 'back' ? 'Back' : 'Front'} Employee ID downloaded as a high-resolution PNG image.`)
   return true
  }
@@ -35445,7 +35445,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     '<div class="id-side"><div class="id-label">BACK</div><img class="id-image" src="' + backImage + '" alt="Employee ID back"></div>',
     '</div></body></html>'
    ].join('')
-   downloadBlobAsFile(new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' }), getEmployeeIdWordDownloadName())
+   downloadGeneratedInvoiceFile(getEmployeeIdWordDownloadName(), new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' }))
    showToast('Employee ID Word file downloaded with the front and back images.')
    return true
   } catch (error) {
