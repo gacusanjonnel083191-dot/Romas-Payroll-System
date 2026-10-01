@@ -9,6 +9,7 @@ const functionNames = [
   'buildInvoiceProductTemplateFromGuide', 'getDeliveryInvoicePrintData',
   'buildDeliveryInvoicePrintPage', 'getInvoiceViewItemRows',
   'buildInvoiceSettlementRows', 'updateSettlementRow', 'getSettlementSummary',
+  'wordXmlText', 'wordRun', 'wordParagraph', 'wordCell', 'wordRow', 'buildDeliveryInvoiceDocxTable',
 ]
 const nextMarkers = {
   normalizeDonutVariantName: '  const DONUT_VARIANT_ORDER_INDEX',
@@ -20,6 +21,12 @@ const nextMarkers = {
   buildInvoiceSettlementRows: ' async function openInvoiceSettlement',
   updateSettlementRow: ' function updateSettlementCrates',
   getSettlementSummary: ' async function saveInvoiceSettlement',
+  wordXmlText: ' function wordRun',
+  wordRun: ' function wordParagraph',
+  wordParagraph: ' function wordCell',
+  wordCell: ' function wordRow',
+  wordRow: ' function buildLogoDrawingRun',
+  buildDeliveryInvoiceDocxTable: ' function buildDeliveryInvoicesDocxDocument',
 }
 const extractFunction = name => {
   const start = source.indexOf(`function ${name}(`)
@@ -42,11 +49,34 @@ vm.runInContext(constant + '\n' + functionNames.map(extractFunction).join('\n'),
 const plain = value => JSON.parse(JSON.stringify(value))
 const expected = ['Choco Balls', 'Matcha Pops', 'Almond Glitz', 'Fanfans', 'Oreo Dream',
   'Lotus Cloud', 'Rings', 'Shells', 'Bav. Midnight', 'Circlets', 'Bavarian Bites',
-  'Bavarian Pops', 'Strawberry Pops', 'Taro Pops', 'Cinnamon Rolls', 'Biscoreo', 'Choco Lollisticks']
+  'Bavarian Pops', 'Strawberry Pops', 'Taro Pops', 'Cinnamon Rolls', 'Biscoreo', 'Choco Lollisticks', 'Giant Donut']
 const names = [...expected].reverse().map(name => name === 'Circlets' ? 'Glazed Circlets' : name === 'Bav. Midnight' ? 'Bavarian Midnight' : name)
 const invoice = { id: 'test-invoice', total_amount: 5406.4, paid_amount: 100,
   delivery_invoice_items: names.map((variant_name, i) => ({ id: `item-${i}`, variant_name,
     quantity: i + 2, reseller_price: 4.8, total_price: (i + 2) * 4.8, unsold_quantity: i % 2 })) }
+
+test('three Giant Donuts appear in HTML and Word with the saved 525.60 total', () => {
+  const saved = { id:'giant-invoice', customer_type:'non_reseller', delivery_date:'2026-10-02',
+    total_amount:525.6, delivery_invoice_items:[{ id:'giant-line', variant_name:'Giant Donut',
+      quantity:3, reseller_price:175.2, total_price:525.6 }] }
+  const original = JSON.stringify(saved)
+  const data = context.getDeliveryInvoicePrintData(saved)
+  const giant = data.productRows.find(row => row.product === 'Giant Donut')
+  assert.deepEqual(plain(giant), { product:'Giant Donut', delivered:'3', price:'₱175.20',
+    amount:'₱525.60', unsold:'', _ordered:true })
+  assert.equal(data.total, '₱525.60')
+  const html = context.buildDeliveryInvoicePrintPage(saved)
+  const htmlRow = html.match(/<tr class="product-row">\s*<td class="product-name">Giant Donut<\/td>[\s\S]*?<\/tr>/)[0]
+  assert.match(htmlRow, />3<\/td>/)
+  assert.match(htmlRow, /₱175\.20/)
+  assert.match(htmlRow, /₱525\.60/)
+  const xml = context.buildDeliveryInvoiceDocxTable(saved, false)
+  const xmlRow = [...xml.matchAll(/<w:tr>[\s\S]*?<\/w:tr>/g)].find(match => match[0].includes('Giant Donut'))[0]
+  assert.match(xmlRow, />3<\/w:t>/)
+  assert.match(xmlRow, /₱175\.20/)
+  assert.match(xmlRow, /₱525\.60/)
+  assert.equal(JSON.stringify(saved), original)
+})
 
 test('HTML print, Word/image data, invoice view, and settlement share the printed sequence', () => {
   assert.deepEqual(plain(context.buildInvoiceProductTemplateFromGuide()).map(row => row.label), expected)

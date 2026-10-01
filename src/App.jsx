@@ -15064,7 +15064,8 @@ function buildDeliveryInvoicePrintCSS() {
       { label:'Taro Pops', aliases:['Taro Pops'] },
       { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
       { label:'Biscoreo', aliases:['Biscoreo'] },
-      { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] }
+      { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] },
+      { label:'Giant Donut', aliases:['Giant Donut'] }
     ];
 
   function sortDeliveryInvoiceItems(items) {
