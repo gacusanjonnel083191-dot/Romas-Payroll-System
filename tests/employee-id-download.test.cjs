@@ -12,13 +12,18 @@ const functions = [
  extract(' function sanitizeWordFileName(', '  // Invoice screens'),
  extract(' function downloadGeneratedInvoiceFile(', ' function invoiceCanvasToBlob('),
  extract(' function getEmployeeIdDownloadName(', ' async function loadCompanyDocumentRecords(')
-].join('\n')
+].join('\n').replace('import.meta.env.BASE_URL', JSON.stringify('/'))
 
-function fixture(role = 'owner') {
+async function fixture(role = 'owner') {
+ const { buildEmployeeIdWordBlob } = await import('../src/employeeIdWord.js')
  const downloads = [], messages = [], timers = [], blobs = []
  let link
  const context = vm.createContext({
-  Blob, console, adminRole:role,
+  Blob, console, Uint8Array, buildEmployeeIdWordBlob, adminRole:role,
+  fetch:async url => {
+   assert.equal(url, '/employee-id-a4-template.docx')
+   return {ok:true,arrayBuffer:async () => fs.readFileSync(require('node:path').join(__dirname, '../public/employee-id-a4-template.docx'))}
+  },
   employeeIdDraft:{ fullName:'Sample Employee', employeeCode:'EMP-TEST' },
   employeeIdPhotoDataUrl:'data:image/png;base64,cGhvdG8=',
   employeeIdFrontCanvasRef:{ current:{ toDataURL:() => 'data:image/png;base64,ZnJvbnQ=', toBlob:cb => cb(new Blob(['front'], {type:'image/png'})) } },
@@ -34,20 +39,22 @@ function fixture(role = 'owner') {
 }
 
 for (const role of ['owner','supervisor']) {
- test(`${role} can download the Word file with both printable 6.5 x 9.5cm images`, async () => {
-  const f = fixture(role)
+ test(`${role} can download the Word file with the reference A4 layout and both embedded images`, async () => {
+  const f = await fixture(role)
   assert.equal(await f.context.downloadEmployeeIdWord(), true)
-  assert.deepEqual(f.downloads, ['Romas-Donuts-ID-Sample-Employee-front-and-back.doc'])
-  assert.equal(f.blobs[0].type, 'application/msword;charset=utf-8')
-  const html = await f.blobs[0].text()
-  assert.match(html,/width:6\.5cm;height:9\.5cm/)
-  assert.match(html,/data:image\/png;base64,ZnJvbnQ=/)
-  assert.match(html,/data:image\/png;base64,YmFjaw==/)
+  assert.deepEqual(f.downloads, ['Romas-Donuts-ID-Sample-Employee-front-and-back.docx'])
+  assert.equal(f.blobs[0].type, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  const {unzipSync,strFromU8} = require('fflate')
+  const files = unzipSync(new Uint8Array(await f.blobs[0].arrayBuffer()))
+  const template = unzipSync(fs.readFileSync(require('node:path').join(__dirname, '../public/employee-id-a4-template.docx')))
+  assert.equal(strFromU8(files['word/document.xml']),strFromU8(template['word/document.xml']))
+  assert.equal(strFromU8(files['word/media/image2.png']),'front')
+  assert.equal(strFromU8(files['word/media/image1.png']),'back')
   assert.equal(f.timers[0].delay, 2000)
   assert.ok(!f.messages.some(row => row.color === 'red'))
  })
  test(`${role} can download front and back PNGs without a POS component dependency`, async () => {
-  const f = fixture(role)
+  const f = await fixture(role)
   assert.equal(await f.context.downloadEmployeeIdPng('front'), true)
   assert.equal(await f.context.downloadEmployeeIdPng('back'), true)
   assert.deepEqual(f.downloads, ['Romas-Donuts-ID-Sample-Employee-front.png','Romas-Donuts-ID-Sample-Employee-back.png'])
@@ -56,7 +63,7 @@ for (const role of ['owner','supervisor']) {
 }
 
 test('missing photo or failed render does not download an incomplete ID', async () => {
- const f = fixture()
+ const f = await fixture()
  f.context.employeeIdPhotoDataUrl = ''
  assert.equal(await f.context.downloadEmployeeIdWord(), false)
  assert.equal(await f.context.downloadEmployeeIdPng('front'), false)
@@ -80,4 +87,13 @@ test('supervisor can open Documents Center and load employees for ID selection',
  vm.runInContext(extract(' const handleTabClick =', 'function renderInvoiceDeletionApprovalCenter()') + '\nthis.openTab=handleTabClick', context)
  context.openTab('documents')
  assert.deepEqual(events,['documents','employees'])
+})
+
+
+test('template loading failure is reported without downloading a broken document', async () => {
+ const f = await fixture('supervisor')
+ f.context.fetch = async () => ({ok:false})
+ assert.equal(await f.context.downloadEmployeeIdWord(),false)
+ assert.equal(f.downloads.length,0)
+ assert.ok(f.messages.some(row => row.color === 'red'))
 })

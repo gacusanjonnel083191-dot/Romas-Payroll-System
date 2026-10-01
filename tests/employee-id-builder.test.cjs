@@ -25,8 +25,8 @@ test('Word download embeds the generated front and back ID images', () => {
  assert.match(appSource, /async function downloadEmployeeIdWord\(\)/)
  assert.match(appSource, /frontCanvas\.toDataURL\('image\/png'\)/)
  assert.match(appSource, /backCanvas\.toDataURL\('image\/png'\)/)
- assert.match(appSource, /application\/msword;charset=utf-8/)
- assert.match(appSource, /width:6\.5cm;height:9\.5cm/)
+ assert.match(appSource, /buildEmployeeIdWordBlob\(\{/)
+ assert.match(appSource, /employee-id-a4-template\.docx/)
 })
 
 test('ID reference assets have the expected dimensions and contain no employee photo in the front source asset', () => {

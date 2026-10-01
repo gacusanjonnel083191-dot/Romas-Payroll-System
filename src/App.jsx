@@ -1,3 +1,4 @@
+import { buildEmployeeIdWordBlob } from './employeeIdWord.js'
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
 import { runEmployeeSeparationCommand } from './employeeSeparationIntegrity.js'
 import {
@@ -35387,7 +35388,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    .replace(/[^a-z0-9]+/gi, '-')
    .replace(/^-+|-+$/g, '')
    .slice(0, 70) || 'Employee'
-  return `Romas-Donuts-ID-${employeeLabel}-front-and-back.doc`
+  return `Romas-Donuts-ID-${employeeLabel}-front-and-back.docx`
  }
 
  async function downloadEmployeeIdPng(side, options = {}) {
@@ -35430,23 +35431,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   try {
    const frontImage = frontCanvas.toDataURL('image/png')
    const backImage = backCanvas.toDataURL('image/png')
-   const employeeName = String(employeeIdDraft.fullName || 'Employee').trim()
-   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[character])
-   const html = [
-    '<!DOCTYPE html>',
-    '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">',
-    '<head><meta charset="utf-8"><title>Roma\'s Donuts Employee ID - ' + escapeHtml(employeeName) + '</title>',
-    '<style>',
-    '@page WordSection1{size:8.27in 11.69in;margin:.45in .55in;}',
-    'div.WordSection1{page:WordSection1;}body{margin:0;font-family:Arial,sans-serif;color:#111;}h1{margin:0 0 3px;color:#ca1b1b;font-size:15pt;}p{margin:0;color:#555;font-size:9pt;}.id-side{margin-top:12px;page-break-inside:avoid;}.id-label{font-weight:700;font-size:9pt;color:#1a1a2e;margin:0 0 4px;}.id-image{display:block;width:6.5cm;height:9.5cm;border:0;}',
-    '</style></head><body><div class="WordSection1">',
-    '<h1>Roma\'s Donuts Employee ID</h1><p>Employee: ' + escapeHtml(employeeName) + ' | ID No.: ' + escapeHtml(employeeIdDraft.employeeCode) + '</p>',
-    '<div class="id-side"><div class="id-label">FRONT</div><img class="id-image" src="' + frontImage + '" alt="Employee ID front"></div>',
-    '<div class="id-side"><div class="id-label">BACK</div><img class="id-image" src="' + backImage + '" alt="Employee ID back"></div>',
-    '</div></body></html>'
-   ].join('')
-   downloadGeneratedInvoiceFile(getEmployeeIdWordDownloadName(), new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' }))
-   showToast('Employee ID Word file downloaded with the front and back images.')
+   const response = await fetch(`${import.meta.env.BASE_URL}employee-id-a4-template.docx`)
+   if (!response.ok) throw new Error('The Employee ID A4 template could not be loaded.')
+   const blob = buildEmployeeIdWordBlob({
+    templateBytes:new Uint8Array(await response.arrayBuffer()),
+    frontImage,
+    backImage
+   })
+   downloadGeneratedInvoiceFile(getEmployeeIdWordDownloadName(), blob)
+   showToast('Employee ID Word file downloaded in the reference A4 layout with signature space on the right.')
    return true
   } catch (error) {
    console.error('Employee ID Word download failed:', error)
