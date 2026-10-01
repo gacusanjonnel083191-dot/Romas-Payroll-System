@@ -7121,8 +7121,9 @@ export default function App() {
  { name:'Oreo Dream', category:'Premium', selling_price:33, pieces_per_batch:10 },
  { name:'Almond Glitz', category:'Premium', selling_price:35, pieces_per_batch:10 },
  { name:'Lotus Cloud', category:'Premium', selling_price:35, pieces_per_batch:10 },
+ { name:'Giant Donut', category:'Giant', selling_price:219, pieces_per_batch:null },
  ]
- const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium'])
+ const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium','Giant'])
  // Phase 3: Sales & Resellers 
  const [salesView, setSalesView] = useState('dashboard')
  const [resellers, setResellers] = useState([])
@@ -44684,7 +44685,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   'Fanfans': 31.5,
   'Oreo Dream': 31.5,
   'Almond Glitz': 31.5,
-  'Lotus Cloud': 31.5
+  'Lotus Cloud': 31.5,
+  'Giant Donut': 170
  }
 
  const forecastNameKey = (value) => {
