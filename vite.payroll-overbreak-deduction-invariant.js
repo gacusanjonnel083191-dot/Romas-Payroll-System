@@ -2,9 +2,9 @@ const APP_MODULE_RE = /[\\/]src[\\/]App\.jsx(?:\?.*)?$/
 
 function replaceExactlyOnce(source, from, to, label) {
   const firstIndex = source.indexOf(from)
-  if (firstIndex < 0) throw new Error(\`Payroll overbreak invariant failed: \${label} was not found.\`)
+  if (firstIndex < 0) throw new Error(`Payroll overbreak invariant failed: ${label} was not found.`)
   const secondIndex = source.indexOf(from, firstIndex + from.length)
-  if (secondIndex >= 0) throw new Error(\`Payroll overbreak invariant failed: \${label} matched more than once.\`)
+  if (secondIndex >= 0) throw new Error(`Payroll overbreak invariant failed: ${label} matched more than once.`)
   return source.slice(0, firstIndex) + to + source.slice(firstIndex + from.length)
 }
 
