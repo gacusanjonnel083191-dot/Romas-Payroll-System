@@ -38,12 +38,12 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
   const report = raw && loadedDate === date ? buildOwnerDailyReceipts(raw, date) : null
   const totals = report?.totals || {}
   const cards = [
-    ['Cash received', totals.cash, '#176b3a'],
-    ['GCash received', totals.gcash, '#1459a5'],
-    ['Other online received', totals.otherOnline, '#5d4aaf'],
-    ['Total confirmed received', totals.totalReceived, '#1a1a2e'],
+    ['Cash payments recorded', totals.cash, '#176b3a'],
+    ['GCash payments recorded', totals.gcash, '#1459a5'],
+    ['Other online payments recorded', totals.otherOnline, '#5d4aaf'],
+    ['Total payments recorded', totals.totalReceived, '#1a1a2e'],
     ['From resellers', totals.resellerReceived, '#aa5618'],
-    ['Actual cash on hand', report?.actualCashCount, '#1a1a2e'],
+    ['Actual company cash counted', report?.actualCashCount, '#1a1a2e'],
     ['Sales entered today', totals.salesEntered, '#ca1b1b'],
     ['Delivered, still unpaid', report?.deliveredUnpaid, '#a45b00']
   ]
@@ -52,7 +52,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10, flexWrap:'wrap', marginBottom:12 }}>
       <div>
         <h3 style={{ margin:'0 0 4px', color:'#1a1a2e', fontSize:18 }}>Owner daily receipts</h3>
-        <p style={{ margin:0, color:'#666', fontSize:12 }}>Money received is grouped by payment date. Sales entered is grouped by Manila entry date.</p>
+        <p style={{ margin:0, color:'#666', fontSize:12 }}>Recorded payments follow payment date. Sales entered follows Manila entry date.</p>
       </div>
       <div style={{ display:'flex', gap:8, alignItems:'center' }}>
         <input aria-label="Daily receipts date" type="date" value={date} max={today} onChange={event=>setDate(event.target.value)} style={{ padding:8, minHeight:40, border:'1px solid #ccc', borderRadius:7 }} />
@@ -69,10 +69,10 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
         </div>)}
       </div>
       <p style={{ background:'#eaf3ff', border:'1px solid #c9def6', borderRadius:8, padding:'10px 12px', margin:'0 0 12px', color:'#263b59', fontSize:12 }}>
-        <strong>Why these totals can differ:</strong> Confirmed received includes payments collected for sales from earlier dates. Sales entered today includes newly encoded invoices even if they are still unpaid, plus backdated sales encoded today. They are separate totals and are not expected to match.
+        <strong>Why these totals can differ:</strong> Payments recorded today can settle sales from earlier dates. Sales entered today includes newly encoded invoices even if they are still unpaid, plus backdated sales encoded today. They are separate totals and are not expected to match.
       </p>
       <p style={{ fontSize:11, color:'#555', margin:'4px 0 12px' }}>
-        Cash and online totals include recorded payments only. Delivered but unpaid invoices are excluded. Actual cash on hand is the latest submitted physical cash count for this date; receipts are not a substitute for a cash count.
+        Payment totals come from recorded tenders and collections; they do not prove cash was physically handed to the owner. Delivered but unpaid invoices are excluded. Actual company cash counted is shown only after a Cash Reconciliation is submitted for this date. POS drawer counts are outlet-specific and include opening cash.
       </p>
       {(totals.unknown > 0 || totals.unpaid > 0 || totals.trackingOnly > 0) && <div style={{ ...card, background:'#fff8e7', marginBottom:12, fontSize:12 }}>
         <strong>Needs review:</strong> {peso(totals.unknown)} sales or payments with no confirmed payment method · {peso(totals.unpaid)} Daily Sales marked unpaid · {peso(totals.trackingOnly)} legacy online records without a duplicate-receipt choice. These are excluded from confirmed cash and online totals to avoid guessing or double-counting.
