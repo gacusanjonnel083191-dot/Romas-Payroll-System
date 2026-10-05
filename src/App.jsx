@@ -36074,7 +36074,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
   return [
    '<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>' + esc(documentNo || form?.title || 'Employee NDA') + '</title><style>' + css + '</style></head><body>',
-   wordMode ? '' : '<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>',
+   wordMode ? '' : '<div class="no-print"><button onclick="window.print()">Print NDA / Save as PDF</button></div>',
    '<div class="' + pageClass + '">',
    '<table class="brand"><tr><td class="brand-left"><div class="company">ROMA\'S DONUTS</div></td><td class="brand-right"><div class="confidential">CONFIDENTIAL • HR</div></td></tr></table>',
    '<div class="title">EMPLOYEE NON-DISCLOSURE &amp; CONFIDENTIALITY AGREEMENT</div>',
