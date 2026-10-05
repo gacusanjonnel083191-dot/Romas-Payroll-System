@@ -11,6 +11,7 @@ import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
 import ResellerCalculator from './ResellerCalculator.jsx'
 import CrateRollingControl from './CrateRollingControl.jsx'
+import OwnerDailyReceipts from './OwnerDailyReceipts.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
 import { fetchResellerReceivables, summarizeResellerReceivables } from './resellerReceivables.js'
 import {
@@ -7243,7 +7244,7 @@ export default function App() {
  const [dailySalesOnlinePaymentsMonth, setDailySalesOnlinePaymentsMonth] = useState(today.slice(0,7))
  const [dailySalesOnlinePaymentsSearch, setDailySalesOnlinePaymentsSearch] = useState('')
  const [savingDailySalesOnlinePayment, setSavingDailySalesOnlinePayment] = useState(false)
- const [dailySalesOnlinePaymentForm, setDailySalesOnlinePaymentForm] = useState({ payment_date:today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'', count_as_revenue:true })
+ const [dailySalesOnlinePaymentForm, setDailySalesOnlinePaymentForm] = useState({ payment_date:today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'', count_as_revenue:true, receipt_already_counted:null })
  const [invoicesLoading, setInvoicesLoading] = useState(false)
  const [resellerReceivables, setResellerReceivables] = useState(null)
  const [resellerReceivablesLoading, setResellerReceivablesLoading] = useState(false)
@@ -7313,6 +7314,7 @@ export default function App() {
  const [salesEntries, setSalesEntries] = useState([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }])
  const [otherSalesEntries, setOtherSalesEntries] = useState([])
  const [salesNotes, setSalesNotes] = useState('')
+ const [salesReceiptSplit, setSalesReceiptSplit] = useState({ cash:'', gcash:'', otherOnline:'', unpaid:'' })
  const [savingSales, setSavingSales] = useState(false)
  const [dailyExpenses, setDailyExpenses] = useState([])
  const [companyPayables, setCompanyPayables] = useState([])
@@ -13743,6 +13745,7 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  if (!form.payment_date) { showToast(' Please select payment date.', 'red'); return }
  if (!amt || amt <= 0) { showToast(' Please enter a valid payment amount.', 'red'); return }
  if (!form.payment_method) { showToast(' Please select payment method.', 'red'); return }
+ if (form.count_as_revenue === false && typeof form.receipt_already_counted !== 'boolean') { showToast('Specify whether this payment was already included in the Daily Sales payment split.','red'); return }
  if (['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Debit/Credit Card','QR PH'].includes(form.payment_method) && !String(form.reference_number || '').trim()) {
  showToast(' Please enter reference number for non-cash payment tracking.', 'red')
  return
@@ -13759,12 +13762,13 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  notes:String(form.notes || '').trim() || null,
  recorded_by:currentAdminLabel || adminRole || adminEmployee?.full_name || 'Admin',
  count_as_revenue:form.count_as_revenue !== false,
+ receipt_already_counted:form.count_as_revenue === false ? form.receipt_already_counted : false,
  status:'active'
  })
  if (error) throw error
  await logAudit('DAILY SALES ONLINE PAYMENT RECORDED', adminRole, 'Daily Sales', `${form.payment_date} ${form.payment_method} ${php(amt)} Ref: ${form.reference_number || '-'}`)
  showToast(` Daily Sales ${form.payment_method} payment recorded: ${php(amt)}`)
- setDailySalesOnlinePaymentForm({ payment_date:form.payment_date || today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'', count_as_revenue:true })
+ setDailySalesOnlinePaymentForm({ payment_date:form.payment_date || today, sales_channel:'Messenger / Online Order', payment_method:'GCash', reference_number:'', customer_name:'', amount:'', notes:'', count_as_revenue:true, receipt_already_counted:null })
  loadDailySalesOnlinePayments(String(form.payment_date || today).slice(0,7))
  loadDailySales()
  loadCashReconciliations()
@@ -16317,12 +16321,19 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  const messengerTotal = donutMessengerTotal + otherMessengerTotal
  const resellerInvoicesDay = deliveryInvoices.filter(i=>i.delivery_date===salesDate).reduce((s,i)=>s+Number(i.total_amount||0),0)
  const totalRevenue = walkinTotal + messengerTotal + resellerInvoicesDay
+ const split = ['cash','gcash','otherOnline','unpaid'].map(key => Number(salesReceiptSplit[key] || 0))
+ if (split.some(value => !Number.isFinite(value) || value < 0) || split.reduce((sum,value)=>sum+Math.round(value*100),0) !== Math.round((walkinTotal + messengerTotal)*100)) {
+ showToast('Cash, GCash, other online, and unpaid must add up to the Daily Sales amount, excluding reseller invoices.','red')
+ setSavingSales(false)
+ return
+ }
  const otherSalesNote = validOtherSales.length
 ? `Other Sales: ${validOtherSales.map(e=>`${getOtherSalesCategory(e.category).label} ${php(e.amount)}${e.description? ` (${e.description})`: ''}`).join('; ')} | Other Sales Total: ${php(otherSalesTotal)}`
 : ''
  const combinedNotes = [String(salesNotes || '').trim(), otherSalesNote].filter(Boolean).join(' | ')
  const { data:saleData, error:sErr } = await supabase.from('daily_sales').insert({
  sale_date:salesDate, total_walkin:walkinTotal, total_messenger:messengerTotal,
+ cash_received:split[0], gcash_received:split[1], other_online_received:split[2], unpaid_amount:split[3],
  total_reseller:resellerInvoicesDay, total_revenue:totalRevenue,
  notes:combinedNotes||null, encoded_by:currentAdminLabel
  }).select().single()
@@ -16338,7 +16349,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
  await logAudit('DAILY SALES ENCODED', adminRole, 'Sales', `${salesDate} ${php(totalRevenue)}${otherSalesTotal>0? ` | Other Sales: ${php(otherSalesTotal)}`: ''}`)
  showToast(` Sales for ${salesDate} saved! Total: ${php(totalRevenue)}`)
- setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setOtherSalesEntries([]); setSalesNotes('')
+ setShowSalesForm(false); setSalesEntries([{ variant_id:'', variant_name:'', channel:'walkin', quantity:'', unit_price:'' }]); setOtherSalesEntries([]); setSalesNotes(''); setSalesReceiptSplit({ cash:'', gcash:'', otherOnline:'', unpaid:'' })
  loadDailySales()
  refreshFoundationAfterDataChange('daily-sales-saved')
  } catch(err) { showToast(' Failed: '+err.message,'red') }
@@ -43838,6 +43849,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {/* FINANCIAL DASHBOARD */}
  {salesView==='dashboard' && (
  <div>
+ {activeTab==='sales' && adminRole==='owner' && <OwnerDailyReceipts supabase={supabase} today={today} adminRole={adminRole} />}
  {/* SUSPICIOUS ALERTS PANEL */}
  {suspiciousAlerts.filter(a=>!a.is_read).length > 0 && (
  <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px' }}>
@@ -46340,6 +46352,13 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  )
  })()}
+ <div style={{ background:'#f3f8ff', border:'1px solid #b9d5f3', borderRadius:10, padding:12, margin:'12px 0' }}>
+ <strong style={{ fontSize:12, color:'#1a1a2e' }}>How was this Daily Sales amount received?</strong>
+ <p style={{ fontSize:11, color:'#555', margin:'5px 0 10px' }}>Enter the payment split for walk-in and messenger sales only. Reseller invoices are collected separately when paid.</p>
+ <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))', gap:8 }}>
+ {[['cash','Cash received'],['gcash','GCash received'],['otherOnline','Other online received'],['unpaid','Not yet paid']].map(([key,label])=><label key={key} style={{ fontSize:11, fontWeight:700 }}>{label}<input type="number" min="0" step="0.01" value={salesReceiptSplit[key]} onChange={e=>setSalesReceiptSplit(prev=>({...prev,[key]:e.target.value}))} style={{...inputStyle, marginBottom:0}} placeholder="0.00" /></label>)}
+ </div>
+ </div>
  <label style={lblS}>Notes:</label>
  <input type="text" value={salesNotes} onChange={e=>setSalesNotes(e.target.value)} placeholder="e.g. Rainy day, slow sales" style={inputStyle} />
  <button style={{...btnGreen, opacity:savingSales?0.6:1 }} disabled={savingSales} onClick={saveDailySales}>{savingSales?' Saving...':' SAVE DAILY SALES'}</button>
@@ -46548,7 +46567,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  <div style={{ background:'#fff8dc', border:'2px solid #FDD412', borderRadius:'14px', padding:'14px', marginBottom:'14px' }}>
  <p style={{ color:'#8a6d00', fontWeight:'900', fontSize:'12px', margin:'0 0 4px' }}>Important recording rule</p>
- <p style={{ color:'#555', fontSize:'11px', margin:0 }}>Use this tab to trace daily sales paid through GCash, Maya, bank transfer, QR, or card. Checked records are added to sales revenue and dashboards; unchecked records are tracking-only to avoid double-counting a sale already encoded in Daily Sales.</p>
+ <p style={{ color:'#555', fontSize:'11px', margin:0 }}>Record the online payment date and method. Count it as new sales revenue only when the sale was not already encoded. For an earlier unpaid sale, keep revenue unchecked and say the receipt was not previously counted.</p>
  </div>
 
  <div style={{ background:'#f0fff4', border:'2px solid #2d8a4e', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
@@ -46563,8 +46582,14 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div style={{ gridColumn:isMobile?'auto':'1 / span 3' }}><label style={lblS}>Notes:</label><input value={dailySalesOnlinePaymentForm.notes} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,notes:e.target.value}))} placeholder="Any remarks, order details, or verification note" style={{...inputStyle, marginBottom:0 }} /></div>
  <label style={{ display:'flex', gap:'8px', alignItems:'center', gridColumn:isMobile?'auto':'1 / span 3', background:'#f8f7f5', border:'1px solid #eee', borderRadius:'10px', padding:'10px', fontSize:'12px', color:'#333', fontWeight:'700' }}>
  <input type="checkbox" checked={dailySalesOnlinePaymentForm.count_as_revenue !== false} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,count_as_revenue:e.target.checked}))} />
- Add this amount to Daily Sales revenue and dashboards. Uncheck only if this is a payment-tracking duplicate of a sale already encoded in Daily Sales.
+ Add this amount to Daily Sales revenue. Uncheck when the sale was already encoded, including a later payment of an unpaid sale.
  </label>
+ {dailySalesOnlinePaymentForm.count_as_revenue === false && <label style={{ gridColumn:isMobile?'auto':'1 / span 3', fontSize:'12px', fontWeight:'700', color:'#333' }}>
+ Was this receipt already included in the Daily Sales payment split?
+ <select value={dailySalesOnlinePaymentForm.receipt_already_counted === null ? '' : String(dailySalesOnlinePaymentForm.receipt_already_counted)} onChange={e=>setDailySalesOnlinePaymentForm(p=>({...p,receipt_already_counted:e.target.value === '' ? null : e.target.value === 'true'}))} style={{...inputStyle, marginBottom:0 }}>
+ <option value="">Choose one</option><option value="true">Yes — tracking duplicate, do not count receipt again</option><option value="false">No — money received now for an earlier sale</option>
+ </select>
+ </label>}
  </div>
  <button disabled={savingDailySalesOnlinePayment} style={{...btnGreen, opacity:savingDailySalesOnlinePayment?0.6:1, marginTop:'12px' }} onClick={saveDailySalesOnlinePayment}>{savingDailySalesOnlinePayment?'SAVING...':'SAVE DAILY SALES ONLINE PAYMENT'}</button>
  </div>
