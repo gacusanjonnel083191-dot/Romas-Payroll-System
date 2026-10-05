@@ -8025,6 +8025,17 @@ setRequestingInvoiceDeletion(null)
  }, [activeTab])
 
  useEffect(() => {
+  if (!adminMode || activeTab !== 'attendance' || adminDate !== today) return undefined
+
+  // Today's Attendance view doubles as a live floor-status monitor.
+  // Refresh the attendance rows and open break_logs so supervisors can see
+  // Break Out / Break In changes without manually pressing LOAD.
+  void loadAdminLogs()
+  const timer = window.setInterval(() => { void loadAdminLogs() }, 30 * 1000)
+  return () => window.clearInterval(timer)
+ }, [adminMode, activeTab, adminDate])
+
+ useEffect(() => {
  const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
  if (isOwnerSide) loadDeliveryInvoices()
  }, [adminMode, adminRole])
@@ -24315,8 +24326,46 @@ async function requestPushPermission() {
  }
  }
  async function loadAdminLogs() {
- const { data } = await supabase.from('attendance_logs').select('*').eq('attendance_date', adminDate).order('employee_name')
- setAdminLogs(data || [])
+ const { data, error } = await supabase.from('attendance_logs').select('*').eq('attendance_date', adminDate).order('employee_name')
+ if (error) {
+  console.warn('loadAdminLogs:', error)
+  setAdminLogs([])
+  return
+ }
+
+ const logs = data || []
+ const logIds = logs.map(log => log.id).filter(Boolean)
+ if (!logIds.length) {
+  setAdminLogs(logs)
+  return
+ }
+
+ const { data:openBreakRows, error:openBreakError } = await supabase
+  .from('break_logs')
+  .select('id,attendance_log_id,break_out,break_in,created_at')
+  .in('attendance_log_id', logIds)
+  .is('break_in', null)
+  .not('break_out', 'is', null)
+  .order('created_at', { ascending:false })
+
+ if (openBreakError) {
+  console.warn('loadAdminLogs active break lookup:', openBreakError)
+  setAdminLogs(logs)
+  return
+ }
+
+ const activeBreakByLogId = {}
+ ;(openBreakRows || []).forEach(row => {
+  const key = String(row.attendance_log_id || '')
+  if (key && !activeBreakByLogId[key]) activeBreakByLogId[key] = row
+ })
+
+ setAdminLogs(logs.map(log => ({
+  ...log,
+  _activeBreak: log.time_in && !log.time_out && !isAbsentAttendanceLog(log)
+   ? (activeBreakByLogId[String(log.id || '')] || null)
+   : null
+ })))
  }
  async function markAbsent() {
  if (!absentEmployeeId||!absentDate) { showToast('Please select employee and date.','red'); return }
@@ -37547,10 +37596,19 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  }
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>{log.employee_name}</strong>
  </div>
+ <div style={{ display:'flex', gap:'6px', alignItems:'center', justifyContent:'flex-end', flexWrap:'wrap' }}>
+ {log._activeBreak && <Badge label="ON BREAK" color="orange" />}
  <Badge label={log.status||' '} color={log.status==='Absent'?'red':log.status==='Late'?'orange':log.status?.includes('Overtime')||log.status==='On Time'?'green':'gray'} />
+ </div>
  </div>
  <p style={cps}>Schedule: {log.shift_start||'None'} {log.shift_end||'None'}</p>
  <p style={cps}>In: <strong>{log.time_in||' '}</strong> | Out: <strong>{log.time_out||' '}</strong> | Late: {log.late_minutes||0}m | Break: {log.total_break_minutes||0}m</p>
+ {log._activeBreak && (
+ <div style={{ marginTop:'7px', padding:'7px 9px', borderRadius:'8px', background:'#fff4df', border:'1px solid #f5a623', color:'#8a4f00', fontSize:'11px', fontWeight:'700', display:'flex', gap:'6px', alignItems:'center', flexWrap:'wrap' }}>
+ <span>Currently on break</span>
+ <span style={{ fontWeight:'600' }}>Started {log._activeBreak.break_out} • {Math.max(0, diffMinutesAcrossMidnight(log._activeBreak.break_out, nowTime()))} min elapsed</span>
+ </div>
+ )}
  <div style={{ display:'flex', gap:'10px', marginTop:'8px', flexWrap:'wrap' }}>
  {log.selfie_in_url && <div style={{ textAlign:'center' }}><p style={{...cps, marginBottom:'3px', fontWeight:'bold' }}> Time In</p><img src={log.selfie_in_url} alt="In" style={{ width:'68px', height:'68px', objectFit:'cover', borderRadius:'8px', border:'2px solid #2d8a4e', cursor:'pointer' }} onClick={()=>window.open(log.selfie_in_url,'_blank')} /><p style={{ fontSize:'9px', color:'#aaa' }}>click to enlarge</p></div>}
  {log.selfie_out_url && <div style={{ textAlign:'center' }}><p style={{...cps, marginBottom:'3px', fontWeight:'bold' }}> Time Out</p><img src={log.selfie_out_url} alt="Out" style={{ width:'68px', height:'68px', objectFit:'cover', borderRadius:'8px', border:'2px solid #ca1b1b', cursor:'pointer' }} onClick={()=>window.open(log.selfie_out_url,'_blank')} /><p style={{ fontSize:'9px', color:'#aaa' }}>click to enlarge</p></div>}
