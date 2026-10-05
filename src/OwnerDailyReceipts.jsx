@@ -4,7 +4,9 @@ import { buildOwnerDailyReceipts } from './ownerDailyReceipts'
 const peso = amount => '₱' + Number(amount || 0).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })
 const card = { background:'#fff', border:'1px solid #e7e7e7', borderRadius:12, padding:'12px 14px' }
 const th = { textAlign:'left', padding:'9px 10px', color:'#fff', fontSize:11, whiteSpace:'nowrap' }
-const td = { padding:'9px 10px', borderBottom:'1px solid #eee', fontSize:12, verticalAlign:'top' }
+const td = { textAlign:'left', padding:'9px 10px', borderBottom:'1px solid #eee', fontSize:12, verticalAlign:'top' }
+const amountTh = { ...th, textAlign:'right' }
+const amountTd = { ...td, textAlign:'right', fontWeight:700, whiteSpace:'nowrap' }
 const timestamp = value => value ? new Date(value).toLocaleString('en-PH', { timeZone:'Asia/Manila', dateStyle:'medium', timeStyle:'short' }) : '—'
 
 export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
@@ -66,6 +68,9 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
           <strong style={{ color, fontSize:18 }}>{value === null || value === undefined ? 'Not counted' : peso(value)}</strong>
         </div>)}
       </div>
+      <p style={{ background:'#eaf3ff', border:'1px solid #c9def6', borderRadius:8, padding:'10px 12px', margin:'0 0 12px', color:'#263b59', fontSize:12 }}>
+        <strong>Why these totals can differ:</strong> Confirmed received includes payments collected for sales from earlier dates. Sales entered today includes newly encoded invoices even if they are still unpaid, plus backdated sales encoded today. They are separate totals and are not expected to match.
+      </p>
       <p style={{ fontSize:11, color:'#555', margin:'4px 0 12px' }}>
         Cash and online totals include recorded payments only. Delivered but unpaid invoices are excluded. Actual cash on hand is the latest submitted physical cash count for this date; receipts are not a substitute for a cash count.
       </p>
@@ -82,8 +87,8 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
         <summary style={{ fontWeight:700, cursor:'pointer' }}>Payments received on {date} ({report.receipts.length})</summary>
         <div style={{ overflowX:'auto', marginTop:10 }}>
           <table style={{ width:'100%', borderCollapse:'collapse', minWidth:650 }}>
-            <thead style={{ background:'#1a1a2e' }}><tr>{['Source','Customer / outlet','Method','Amount','Entered'].map(label=><th key={label} style={th}>{label}</th>)}</tr></thead>
-            <tbody>{report.receipts.map(row=><tr key={row.id}><td style={td}>{row.source}</td><td style={td}>{row.description}</td><td style={td}>{row.method}</td><td style={{ ...td, fontWeight:700 }}>{peso(row.amount)}</td><td style={td}>{timestamp(row.enteredAt)}</td></tr>)}</tbody>
+            <thead style={{ background:'#1a1a2e' }}><tr>{['Source','Customer / outlet','Method','Amount','Entered'].map(label=><th key={label} style={label === 'Amount' ? amountTh : th}>{label}</th>)}</tr></thead>
+            <tbody>{report.receipts.map(row=><tr key={row.id}><td style={td}>{row.source}</td><td style={td}>{row.description}</td><td style={td}>{row.method}</td><td style={amountTd}>{peso(row.amount)}</td><td style={td}>{timestamp(row.enteredAt)}</td></tr>)}</tbody>
           </table>
           {report.receipts.length === 0 && <p style={{ fontSize:12, color:'#777', padding:8 }}>No receipts recorded for this date.</p>}
         </div>
@@ -93,8 +98,8 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
         <p style={{ color:'#666', fontSize:11 }}>Includes backdated entries made on this date. This activity list is separate from the received-money totals.</p>
         <div style={{ overflowX:'auto' }}>
           <table style={{ width:'100%', borderCollapse:'collapse', minWidth:620 }}>
-            <thead style={{ background:'#1a1a2e' }}><tr>{['Entry','Customer / outlet','Business date','Amount','Entered'].map(label=><th key={label} style={th}>{label}</th>)}</tr></thead>
-            <tbody>{report.entered.map(row=><tr key={row.id}><td style={td}>{row.source}</td><td style={td}>{row.description}</td><td style={td}>{row.businessDate || '—'}</td><td style={td}>{peso(row.amount)}</td><td style={td}>{timestamp(row.enteredAt)}</td></tr>)}</tbody>
+            <thead style={{ background:'#1a1a2e' }}><tr>{['Entry','Customer / outlet','Business date','Amount','Entered'].map(label=><th key={label} style={label === 'Amount' ? amountTh : th}>{label}</th>)}</tr></thead>
+            <tbody>{report.entered.map(row=><tr key={row.id}><td style={td}>{row.source}</td><td style={td}>{row.description}</td><td style={td}>{row.businessDate || '—'}</td><td style={amountTd}>{peso(row.amount)}</td><td style={td}>{timestamp(row.enteredAt)}</td></tr>)}</tbody>
           </table>
           {report.entered.length === 0 && <p style={{ fontSize:12, color:'#777', padding:8 }}>No sales or payment entries recorded on this date.</p>}
         </div>
