@@ -74,7 +74,7 @@ test('owner receipt migration compiles and its RPC denies a non-owner', async ()
       create table cash_reconciliations (id uuid, reconciliation_date date, created_at timestamptz, actual_cash numeric, submitted_by text);
       create table bank_deposits (id uuid, deposit_date date, created_at timestamptz, amount numeric, bank_name text, status text);
       create table daily_expenses (id uuid, expense_date date, created_at timestamptz, amount numeric, category text, status text);`)
-    const migration = new URL('../supabase/migrations/20261005094847_owner_daily_receipts.sql', import.meta.url)
+    const migration = new URL('../supabase/migrations/20261005103351_owner_daily_receipts.sql', import.meta.url)
     await db.exec(await readFile(migration, 'utf8'))
     await assert.rejects(db.query('select public.owner_daily_receipts($1)', [date]), /Owner access required/)
     await db.exec('set role anon')
