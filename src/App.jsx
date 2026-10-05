@@ -36112,7 +36112,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   pw.document.write(html)
   pw.document.close()
   pw.focus()
-  if (autoPrint) setTimeout(() => pw.print(), 350)
+  if (autoPrint) setTimeout(() => { pw.print() }, 350)
  }
 
  const downloadEmployeeNdaWord = ({ form = getSelectedDocumentBatch1AForm(), values = documentFormDraft, record = null } = {}) => {
