@@ -19,7 +19,7 @@ test('COE PDF export stays A4 and remains available for current and saved certif
   const patched = applyCoeA4PdfFix(source)
   assert.match(patched, /new jsPDF\(\{ orientation:'portrait', unit:'mm', format:'a4', compress:true \}\)/)
   assert.match(patched, /pdf\.addImage\([^\n]+0, 0, 210, Math\.min\(imageHeightMm, 297\)/)
-  assert.match(patched, /DOWNLOAD PDF \(A4\)/)
+  assert.match(patched, /DOWNLOAD PDF \(A4\)|openCurrentCoeEsignWorkflow/)
   assert.match(patched, />PDF<\/button>/)
   assert.match(patched, /The COE content exceeds one A4 page/)
 })
@@ -27,7 +27,7 @@ test('COE PDF export stays A4 and remains available for current and saved certif
 test('COE document polish preserves the existing Word path while improving formal output', () => {
   const patched = applyCoeA4PdfFix(source)
   assert.match(patched, /const downloadCertificateOfEmploymentWord =/)
-  assert.match(patched, /DOWNLOAD WORD \(A4\)/)
+  assert.match(patched, /DOWNLOAD WORD \(A4\)|openCurrentCoeEsignWorkflow/)
   assert.match(patched, /month:'long', day:'numeric', year:'numeric'/)
   assert.match(patched, /Issued on <strong>/)
   assert.match(patched, /timeZone:'Asia\/Manila'/)

@@ -55,6 +55,13 @@ test('is idempotent', () => {
   assert.equal(twice, once)
 })
 
+test('Windows CRLF input preserves the same egress guards and supports repeated patching', () => {
+  const expected = applyEgressOptimization(fixture())
+  const windowsInput = fixture().replace(/\r?\n/g, '\r\n')
+  assert.equal(applyEgressOptimization(windowsInput), expected)
+  assert.equal(applyEgressOptimization(expected.replace(/\n/g, '\r\n')), expected)
+})
+
 test('fails closed if the target application no longer has the expected Supabase anchor', () => {
   assert.throws(() => applyEgressOptimization('const x = 1'), /Supabase client anchor was not found/)
 })

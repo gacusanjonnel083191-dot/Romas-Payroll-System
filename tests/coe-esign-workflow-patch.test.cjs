@@ -119,3 +119,12 @@ test('signatory review uses an isolated preview frame before approval', () => {
   assert.match(patched, /data-coe-review-frame/)
   assert.match(patched, /\.srcdoc = html/)
 })
+
+test('Windows CRLF app and runtime produce LF anchors for downstream COE list patches', () => {
+  const expected = applyCoeEsignWorkflow(fixture())
+  const patched = applyCoeEsignWorkflow(fixture().replace(/\r?\n/g, '\r\n'))
+  assert.equal(patched, expected)
+  assert.equal(patched.includes('\r\n'), false)
+  assert.match(patched, /coeGetActiveSignatories = async \(\) => \{\n/)
+  assert.equal(applyCoeEsignWorkflow(patched.replace(/\n/g, '\r\n')), expected)
+})

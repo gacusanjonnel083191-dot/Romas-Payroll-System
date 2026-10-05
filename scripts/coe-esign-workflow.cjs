@@ -20,7 +20,7 @@ function insertBeforeRequired(source, anchor, insertion, label) {
 }
 
 function runtimeSource() {
-  return fs.readFileSync(path.join(__dirname, 'coe-esign-runtime.txt'), 'utf8').trimEnd()
+  return fs.readFileSync(path.join(__dirname, 'coe-esign-runtime.txt'), 'utf8').replace(/\r\n/g, '\n').trimEnd()
 }
 
 function verifyCoeEsignWorkflow(source) {
@@ -50,16 +50,16 @@ function verifyCoeEsignWorkflow(source) {
 }
 
 function applyCoeEsignWorkflow(source) {
-  let app = String(source || '')
+  let app = String(source || '').replace(/\r\n/g, '\n')
   if (!app.includes('const buildCertificateOfEmploymentHtml =')) {
     throw new Error('COE e-sign patch aborted: Certificate of Employment builder was not found.')
-  }
-  if (!app.includes('const downloadCertificateOfEmploymentPdf = async') || !app.includes('DOWNLOAD PDF (A4)')) {
-    throw new Error('COE e-sign patch aborted: the COE A4/PDF patch must run first.')
   }
   if (app.includes("const COE_SIGNATURE_BUCKET = 'coe-signatures'") && app.includes('ADD E-SIGNATURE & APPROVE')) {
     verifyCoeEsignWorkflow(app)
     return app
+  }
+  if (!app.includes('const downloadCertificateOfEmploymentPdf = async') || !app.includes('DOWNLOAD PDF (A4)')) {
+    throw new Error('COE e-sign patch aborted: the COE A4/PDF patch must run first.')
   }
 
   app = insertBeforeRequired(

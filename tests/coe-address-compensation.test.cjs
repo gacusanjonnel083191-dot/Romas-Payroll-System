@@ -5,8 +5,11 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 const { applyCoeAddressCompensation, verifyCoeAddressCompensation } = require('../patch-coe-address-compensation.cjs')
+const { applyCoeA4PdfFix } = require('../scripts/coe-a4-pdf.cjs')
+const { applyCoeEsignWorkflow } = require('../scripts/coe-esign-workflow.cjs')
 
-const app = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8')
+// Exercise the same prerequisites as the build, even from a fresh checkout.
+const app = applyCoeEsignWorkflow(applyCoeA4PdfFix(fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8')))
 
 test('COE patch adds employee address and professional compensation fields', () => {
   const patched = applyCoeAddressCompensation(app)

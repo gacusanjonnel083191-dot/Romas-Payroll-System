@@ -12,7 +12,7 @@ function verifyCoeA4PdfFix(source) {
   const required = [
     ['const downloadCertificateOfEmploymentPdf = async', 'direct PDF exporter'],
     ["format:'a4'", 'A4 PDF format'],
-    ['DOWNLOAD PDF (A4)', 'builder PDF button'],
+    [source.includes("const COE_SIGNATURE_BUCKET = 'coe-signatures'") ? 'openCurrentCoeEsignWorkflow' : 'DOWNLOAD PDF (A4)', 'builder PDF action'],
     ['Certificate of Employment PDF downloaded.', 'PDF success feedback'],
     ["month:'long', day:'numeric', year:'numeric'", 'full formal dates'],
     ['Issued on <strong>', 'professional issuance wording'],
@@ -25,11 +25,11 @@ function verifyCoeA4PdfFix(source) {
 }
 
 function applyCoeA4PdfFix(source) {
-  let app = String(source || '')
+  let app = String(source || '').replace(/\r\n/g, '\n')
   if (!app.includes('const buildCertificateOfEmploymentHtml =')) {
     throw new Error('COE A4 PDF patch aborted: Certificate of Employment builder was not found.')
   }
-  if (app.includes('const downloadCertificateOfEmploymentPdf = async') && app.includes('DOWNLOAD PDF (A4)')) {
+  if (app.includes('const downloadCertificateOfEmploymentPdf = async') && (app.includes('DOWNLOAD PDF (A4)') || app.includes("const COE_SIGNATURE_BUCKET = 'coe-signatures'"))) {
     verifyCoeA4PdfFix(app)
     return app
   }

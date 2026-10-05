@@ -31,7 +31,7 @@ function assertNotContains(src, needle, label) {
 }
 
 function applyEgressOptimization(source) {
-  let src = String(source || '')
+  let src = String(source || '').replace(/\r\n/g, '\n')
   if (!src.includes("const supabase = createClient(supabaseUrl, supabaseKey)")) {
     throw new Error("Supabase egress optimization aborted: Roma's Supabase client anchor was not found.")
   }
