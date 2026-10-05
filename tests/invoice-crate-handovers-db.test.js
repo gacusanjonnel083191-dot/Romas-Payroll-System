@@ -6,7 +6,7 @@ import { outletMovementSummary, projectedOutletBalance } from '../src/crateRecon
 
 const invoiceId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const resellerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-const migration = new URL('../supabase/migrations/20261005043436_reconcile_invoice_crate_handovers.sql', import.meta.url)
+const migration = new URL('../supabase/migrations/20261005093552_reconcile_invoice_crate_handovers.sql', import.meta.url)
 
 async function active(db) {
  const result = await db.query(`select asset_type, movement_type, direction, quantity::integer as quantity
