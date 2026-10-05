@@ -126,11 +126,11 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
   const deposits = (data.bank_deposits || []).filter(row => row.deposit_date === date &&
     String(row.status || '').toLowerCase() === 'deposited')
   const expenses = (data.expenses || []).filter(row => row.expense_date === date && row.status === 'approved')
-  const approvedCashExpenses = cashExpenseRows.filter(row => row.status === 'approved' &&
+  const confirmedCashExpenses = cashExpenseRows.filter(row =>
     row.payment_method === 'cash' && row.paid_date === date)
   const expensesNeedingReview = cashExpenseRows.filter(row => row.status === 'approved' &&
     row.expense_date === date && !row.payment_method)
-  const cashExpensesPaid = approvedCashExpenses.reduce((total, row) =>
+  const cashExpensesPaid = confirmedCashExpenses.reduce((total, row) =>
     total + cents(row.classified_amount), 0)
   const cashDeposited = sum(deposits,'amount')
   receipts.sort((a,b) => String(b.enteredAt).localeCompare(String(a.enteredAt)))

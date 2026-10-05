@@ -61,7 +61,7 @@ test('daily cash movement deducts only owner-confirmed cash expense payments and
     expenses:[{ id:'today', expense_date:date, amount:90, status:'approved' }]
   }
   const rows = [
-    { id:'cash-expense', expense_date:'2026-10-04', amount:30, classified_amount:30, status:'approved', payment_method:'cash', paid_date:date },
+    { id:'cash-expense', expense_date:'2026-10-04', amount:30, classified_amount:30, status:'voided', payment_method:'cash', paid_date:date },
     { id:'online-expense', expense_date:date, amount:20, classified_amount:20, status:'approved', payment_method:'gcash', paid_date:date },
     { id:'unknown-expense', expense_date:date, amount:70, status:'approved', payment_method:null, paid_date:null },
     { id:'pending-expense', expense_date:date, amount:60, status:'pending', payment_method:null, paid_date:null }
