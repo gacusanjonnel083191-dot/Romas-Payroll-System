@@ -36076,11 +36076,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    '<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>' + esc(documentNo || form?.title || 'Employee NDA') + '</title><style>' + css + '</style></head><body>',
    wordMode ? '' : '<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>',
    '<div class="' + pageClass + '">',
-   '<table class="brand"><tr><td class="brand-left"><div class="company">ROMA\\'S DONUTS</div></td><td class="brand-right"><div class="confidential">CONFIDENTIAL • HR</div></td></tr></table>',
+   '<table class="brand"><tr><td class="brand-left"><div class="company">ROMA\'S DONUTS</div></td><td class="brand-right"><div class="confidential">CONFIDENTIAL • HR</div></td></tr></table>',
    '<div class="title">EMPLOYEE NON-DISCLOSURE &amp; CONFIDENTIALITY AGREEMENT</div>',
-   '<div class="sub">Roma\\'s Donuts • Dagupan City, Pangasinan • Philippines • ' + esc(documentNo) + '</div>',
+   '<div class="sub">Roma\'s Donuts • Dagupan City, Pangasinan • Philippines • ' + esc(documentNo) + '</div>',
    '<table class="meta">' + employeeDetails + '</table>',
-   '<p class="intro">This Agreement is between <strong>Roma\\'s Donuts</strong> (“Company”) and the employee named above (“Employee”). Its purpose is to protect genuine non-public business information and personal data that Employee may access because of work.</p>',
+   '<p class="intro">This Agreement is between <strong>Roma\'s Donuts</strong> (“Company”) and the employee named above (“Employee”). Its purpose is to protect genuine non-public business information and personal data that Employee may access because of work.</p>',
    '<div class="section">1. Confidential Information</div>',
    '<div class="body">“Confidential Information” means non-public information the Company reasonably protects because unauthorized disclosure or use could harm the Company, its workers, customers, resellers, suppliers, or other persons. It includes:<ul>',
    '<li>recipes, formulas, ingredient ratios, production methods, product specifications, shelf-life/R&amp;D work, SOPs and quality-control methods;</li>',
@@ -36099,7 +36099,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    '<div class="body">This Agreement is governed by Philippine law and supplements, but does not replace, the employment contract, Company policies or rights provided by law. If any provision is held invalid, the remaining lawful provisions remain effective. No provision is intended to waive a right that cannot legally be waived.</div>',
    '<div class="ack"><div class="ack-title">EMPLOYEE ACKNOWLEDGMENT</div>I confirm that I have read and understood this Agreement, had the opportunity to ask questions, and agree to follow it. I acknowledge receipt of a copy.</div>',
    '<table class="sig-table"><tr><td><div class="sig-line">Employee Signature over Printed Name</div><div class="date-line">Date: ____________________</div></td><td><div class="sig-line">Authorized Company Representative</div><div class="date-line">Date: ____________________</div></td></tr></table>',
-   '<div class="footer">Roma\\'s Donuts • Employee NDA • Long Coupon 8.5 × 13 in • Generated ' + esc(generatedStamp) + '</div>',
+   '<div class="footer">Roma\'s Donuts • Employee NDA • Long Coupon 8.5 × 13 in • Generated ' + esc(generatedStamp) + '</div>',
    '</div></body></html>'
   ].join('')
  }
@@ -36124,7 +36124,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const html = buildEmployeeNdaHtml({ form, values:{ ...values, documentNo }, record, wordMode:true })
   const fileName = ['Romas-Donuts-Employee-NDA', cleanEmployeeNdaFileName(employeeName), cleanEmployeeNdaFileName(documentNo)].filter(Boolean).join('_') + '.doc'
   try {
-   const blob = new Blob(['\\ufeff', html], { type:'application/msword;charset=utf-8' })
+   const blob = new Blob(['\ufeff', html], { type:'application/msword;charset=utf-8' })
    const url = URL.createObjectURL(blob)
    const link = document.createElement('a')
    link.href = url
