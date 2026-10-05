@@ -3106,6 +3106,9 @@ const PAYROLL_COST_TYPES = [
 
 
 
+const HR_CHECKLIST_STATUS_OPTIONS = ['Pending','Completed','Not Applicable']
+const HR_INTERVIEW_RATING_OPTIONS = ['1 - Poor','2 - Below Expectations','3 - Acceptable','4 - Strong','5 - Excellent']
+
 const DOCUMENT_BATCH1A_FORMS = [
  {
   "key": "HR-EMP-CONTRACT",
@@ -3124,6 +3127,492 @@ const DOCUMENT_BATCH1A_FORMS = [
    "Approved By"
   ],
   "externalTab": "contracts"
+ },
+ {
+  "key": "HR-INTERVIEW",
+  "aliases": [
+   "INTERVIEW",
+   "CANDIDATE-INTERVIEW",
+   "HIRING-INTERVIEW"
+  ],
+  "title": "Candidate Interview & Hiring Evaluation",
+  "category": "HR & Employee",
+  "refPrefix": "RD-INT",
+  "purpose": "Run a consistent hiring interview, record job-related answers and ratings, document any practical or reference check, and make an auditable hiring decision.",
+  "employeeMode": "none",
+  "fields": [
+   {
+    "key": "items",
+    "label": "Candidate Full Name",
+    "type": "text",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "subject",
+    "label": "Position Applied For",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "candidatePhone",
+    "label": "Candidate Contact Number",
+    "type": "text"
+   },
+   {
+    "key": "applicationSource",
+    "label": "Application Source",
+    "type": "select",
+    "options": [
+     "Walk-in",
+     "Referral",
+     "Facebook / Social Media",
+     "Reseller / Outlet Referral",
+     "PEDAI / Business Network",
+     "Other"
+    ]
+   },
+   {
+    "key": "interviewDate",
+    "label": "Interview Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "interviewer",
+    "label": "Interviewer",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "processStage",
+    "label": "Hiring Process Stage",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Initial Screening",
+     "Structured Interview",
+     "Practical / Role Trial",
+     "Reference / Requirement Check",
+     "Final Decision"
+    ]
+   },
+   {
+    "key": "availabilityDate",
+    "label": "Earliest Available Start Date",
+    "type": "date"
+   },
+   {
+    "key": "scheduleAvailability",
+    "label": "Schedule / Commute Availability",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "Confirm whether the candidate can reliably report for the required shift, including early, late, weekend, or holiday work when the role requires it.",
+    "span": "full"
+   },
+   {
+    "key": "qWorkHistory",
+    "label": "1. Tell us about your recent work experience and why you left your last job.",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qWhyRomas",
+    "label": "2. Why do you want this job, and what do you understand about the role?",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qAttendance",
+    "label": "3. Give an example of how you make sure you arrive on time and avoid unplanned absences.",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qFoodSafety",
+    "label": "4. What would you do to keep food, tools, your hands, uniform, and work area clean and safe?",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qPressure",
+    "label": "5. How do you work when production or customer demand becomes very busy and repetitive?",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qQuality",
+    "label": "6. If a supervisor asks you to follow an exact recipe, portion, count, or procedure, how do you make sure you follow it correctly?",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qAccountability",
+    "label": "7. Tell us about a mistake, shortage, damaged item, or work error you made. What did you do after you noticed it?",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qTeamwork",
+    "label": "8. How do you handle disagreement with a coworker or correction from a supervisor?",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qCustomerOrRoleScenario",
+    "label": "9. Role scenario: how would you handle an upset customer, an incorrect order, a production defect, or another problem relevant to this position?",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "qSafety",
+    "label": "10. What would you do if you saw an unsafe practice, contamination risk, missing cash/item, or rule violation?",
+    "type": "textarea",
+    "required": true,
+    "span": "full"
+   },
+   {
+    "key": "reliabilityRating",
+    "label": "Reliability / Attendance Rating",
+    "type": "select",
+    "required": true,
+    "options": HR_INTERVIEW_RATING_OPTIONS
+   },
+   {
+    "key": "attitudeRating",
+    "label": "Attitude / Coachability Rating",
+    "type": "select",
+    "required": true,
+    "options": HR_INTERVIEW_RATING_OPTIONS
+   },
+   {
+    "key": "foodSafetyRating",
+    "label": "Food Safety / Hygiene Mindset",
+    "type": "select",
+    "required": true,
+    "options": HR_INTERVIEW_RATING_OPTIONS
+   },
+   {
+    "key": "accountabilityRating",
+    "label": "Honesty / Accountability Rating",
+    "type": "select",
+    "required": true,
+    "options": HR_INTERVIEW_RATING_OPTIONS
+   },
+   {
+    "key": "teamworkRating",
+    "label": "Teamwork / Communication Rating",
+    "type": "select",
+    "required": true,
+    "options": HR_INTERVIEW_RATING_OPTIONS
+   },
+   {
+    "key": "roleFitRating",
+    "label": "Role Fit / Practical Ability Rating",
+    "type": "select",
+    "required": true,
+    "options": HR_INTERVIEW_RATING_OPTIONS
+   },
+   {
+    "key": "practicalTrial",
+    "label": "Practical / Role Trial",
+    "type": "select",
+    "options": [
+     "Not Required",
+     "Pending",
+     "Passed",
+     "Needs Review",
+     "Failed"
+    ]
+   },
+   {
+    "key": "referenceCheck",
+    "label": "Reference / Requirement Check",
+    "type": "select",
+    "options": [
+     "Not Required",
+     "Pending",
+     "Completed - Satisfactory",
+     "Completed - Needs Review",
+     "Unable to Verify"
+    ]
+   },
+   {
+    "key": "strengths",
+    "label": "Candidate Strengths",
+    "type": "textarea",
+    "span": "full"
+   },
+   {
+    "key": "risks",
+    "label": "Concerns / Risks to Verify",
+    "type": "textarea",
+    "span": "full"
+   },
+   {
+    "key": "finalDecision",
+    "label": "Hiring Recommendation",
+    "type": "select",
+    "required": true,
+    "options": [
+     "Strong Hire",
+     "Hire",
+     "For Second Interview",
+     "For Practical / Role Trial",
+     "Hold / Pending Requirements",
+     "Do Not Hire"
+    ]
+   },
+   {
+    "key": "nextActionDate",
+    "label": "Next Action / Follow-up Date",
+    "type": "date"
+   },
+   {
+    "key": "details",
+    "label": "Hiring Decision Notes / Next Step",
+    "type": "textarea",
+    "required": true,
+    "placeholder": "State the reason for the recommendation and the next approved action.",
+    "span": "full"
+   }
+  ],
+  "reminder": "Recommended process: initial screening → structured interview → practical/role trial when relevant → reference/requirements check → final decision → approved job offer. Ask only job-related questions. Do not ask about religion, political affiliation, pregnancy, family plans, disability details unrelated to essential job functions, or other personal characteristics that are not necessary to assess the work.",
+  "signatureLabels": [
+   "Interviewer / Date",
+   "HR / Supervisor Review",
+   "Final Hiring Approval"
+  ]
+ },
+ {
+  "key": "HR-ONBOARDING",
+  "aliases": [
+   "ONBOARDING",
+   "NEW-HIRE-ONBOARDING"
+  ],
+  "title": "New Hire Onboarding Checklist",
+  "category": "HR & Employee",
+  "refPrefix": "RD-ONB",
+  "purpose": "Track a newly hired employee from pre-start requirements through Day 1, first-week training, system setup, document acknowledgments, and probationary follow-up.",
+  "employeeMode": "required",
+  "employeeLabel": "Newly Hired Employee",
+  "fields": [
+   {
+    "key": "subject",
+    "label": "Overall Onboarding Status",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pre-start / Requirements",
+    "options": [
+     "Pre-start / Requirements",
+     "Ready for Day 1",
+     "Day 1 In Progress",
+     "First Week In Progress",
+     "Awaiting Requirements",
+     "Complete"
+    ]
+   },
+   {
+    "key": "startDate",
+    "label": "Employment Start Date",
+    "type": "date",
+    "required": true
+   },
+   {
+    "key": "assignedSupervisor",
+    "label": "Assigned Supervisor / Trainer",
+    "type": "text",
+    "required": true
+   },
+   {
+    "key": "workAssignment",
+    "label": "Department / Work Assignment",
+    "type": "text"
+   },
+   {
+    "key": "employmentTerms",
+    "label": "Job Offer / Employment Terms Confirmed",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "employeeInfo",
+    "label": "Employee Information / Emergency Contact Verified",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "governmentRequirements",
+    "label": "Government / Payroll Requirements Recorded",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "payrollSetup",
+    "label": "Payroll / Bank or Approved Payment Method Set Up",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "dataPrivacy",
+    "label": "Data Privacy Consent Completed",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "handbook",
+    "label": "Handbook / Company Rules Orientation Completed",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "nda",
+    "label": "NDA / Confidentiality Agreement Completed",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "attendanceSetup",
+    "label": "Attendance Login / PIN / Authorized Device Setup",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "scheduleSetup",
+    "label": "Initial Work Schedule / Shift Explained and Assigned",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "employeeId",
+    "label": "Employee ID Prepared / Issued",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "uniformPpe",
+    "label": "Uniform / PPE Issued and Rules Explained",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "propertyAccess",
+    "label": "Company Property / Keys / Access Issued if Applicable",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "foodSafetyOrientation",
+    "label": "Food Safety / Hygiene / Contamination Orientation",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "roleTraining",
+    "label": "Role-Specific SOP / Production / Sales / Delivery Training",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "safetyOrientation",
+    "label": "Emergency / Safety / Incident Reporting Orientation",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "firstWeekCheckIn",
+    "label": "First-Week Supervisor Check-in",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "thirtyDayCheckIn",
+    "label": "30-Day Check-in",
+    "type": "select",
+    "required": true,
+    "defaultValue": "Pending",
+    "options": HR_CHECKLIST_STATUS_OPTIONS
+   },
+   {
+    "key": "probationaryReviewDate",
+    "label": "Probationary Review Target Date",
+    "type": "date"
+   },
+   {
+    "key": "roleRequiredDocuments",
+    "label": "Role-Required Medical / Food-Handling / License Documents",
+    "type": "select",
+    "defaultValue": "Not Applicable",
+    "options": HR_CHECKLIST_STATUS_OPTIONS,
+    "help": "Use only when a requirement actually applies to the employee's role."
+   },
+   {
+    "key": "pendingItems",
+    "label": "Pending Requirements / Follow-up Owner",
+    "type": "textarea",
+    "placeholder": "List incomplete items, who is responsible, and the target completion date.",
+    "span": "full"
+   },
+   {
+    "key": "details",
+    "label": "Onboarding Notes / Training Observations",
+    "type": "textarea",
+    "span": "full"
+   },
+   {
+    "key": "completionDate",
+    "label": "Onboarding Completion Date",
+    "type": "date"
+   }
+  ],
+  "reminder": "Recommended process: complete pre-start requirements → prepare attendance/schedule/access → conduct Day 1 orientation → complete role and food-safety training → first-week check-in → 30-day follow-up → probationary review. Keep the record editable until all mandatory items are Completed or Not Applicable, then close the document record.",
+  "signatureLabels": [
+   "Employee / Date",
+   "Supervisor / Trainer",
+   "HR / Admin Review",
+   "Management Approval"
+  ]
  },
  {
   "key": "HR-NDA",
@@ -5640,6 +6129,12 @@ function findBatch1DocumentForm(formKey) {
 const RESELLER_AGREEMENT_FORM_KEYS = ['RES-KIOSK','RES-CART']
 const CERTIFICATE_OF_EMPLOYMENT_FORM_KEY = 'HR-COE'
 const EMPLOYEE_NDA_FORM_KEY = 'HR-NDA'
+const HR_WORKFLOW_FORM_KEYS = ['HR-INTERVIEW','HR-ONBOARDING']
+
+function isHRWorkflowFormKey(formKey = '') {
+ const form = findBatch1DocumentForm(formKey)
+ return !!form && HR_WORKFLOW_FORM_KEYS.includes(String(form.key || '').toUpperCase())
+}
 
 function isResellerAgreementFormKey(formKey = '') {
  const form = findBatch1DocumentForm(formKey)
@@ -5736,6 +6231,8 @@ const DOCUMENT_CENTER_CATALOG = [
   { code:'INV-WD', name:'Company Inventory Withdrawal Slip', category:'Inventory & Purchasing', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Records withdrawal of raw materials, packaging, supplies, finished goods like donuts, tools, equipment, crates, crate covers, and other company property.' },
  { code:'HR-EMP-CONTRACT', name:'Employment Contract', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Generate, print, upload, and track employee contracts and regularization records.' },
  { code:'HR-JOB-OFFER', name:'Job Offer / Hiring Approval Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Approve hiring details before adding a new employee to payroll.' },
+ { code:'HR-INTERVIEW', name:'Candidate Interview & Hiring Evaluation', category:'HR & Employee', batch:'Batch 2', priority:'High', status:'Existing Module', purpose:'Run a consistent job-related interview, score role fit, document practical/reference checks, and record the hiring recommendation.' },
+ { code:'HR-ONBOARDING', name:'New Hire Onboarding Checklist', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Track pre-start requirements, Day 1 setup, policy acknowledgments, food-safety and role training, and probationary follow-up.' },
  { code:'HR-INFO-SHEET', name:'Employee Information Sheet', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Collect employee profile, emergency contact, government IDs, and payroll details.' },
  { code:'HR-DATA-PRIVACY', name:'Data Privacy Consent Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Document employee consent for storing and processing records inside the system.' },
  { code:'HR-HANDBOOK-ACK', name:'Employee Handbook Acknowledgment', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm employee received and accepted company rules and policies.' },
@@ -35176,16 +35673,19 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const editCompanyDocumentRecord = record => {
   if (!record?.id) return
   const form = findBatch1DocumentForm(record.form_key)
-  if (!form || !isResellerAgreementFormKey(form.key)) {
-   showToast('Editing is currently enabled for the reseller agreements.', 'red')
+  const isResellerAgreement = !!form && isResellerAgreementFormKey(form.key)
+  const isEditableHRWorkflow = !!form && isHRWorkflowFormKey(form.key)
+  if (!form || (!isResellerAgreement && !isEditableHRWorkflow)) {
+   showToast('Editing is currently enabled for reseller agreements and the interview/onboarding workflow records.', 'red')
    return
   }
-  const values = getResellerAgreementRecordValues(record)
+  const values = isResellerAgreement ? getResellerAgreementRecordValues(record) : getSavedDocumentValues(record)
   setDocumentFormDraft({
    ...createDocumentFormDraft(form.key, record.document_date || today, record.prepared_by || currentAdminLabel || 'Admin'),
    ...values,
    documentNo:record.document_no || values.documentNo || '',
    formKey:form.key,
+   employeeId:isEditableHRWorkflow ? (record.employee_id || '') : (values.employeeId || ''),
    documentDate:record.document_date || values.documentDate || today,
    effectiveDate:record.effective_date || values.effectiveDate || today,
    preparedBy:record.prepared_by || values.preparedBy || currentAdminLabel || 'Admin',
@@ -35194,9 +35694,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   })
   setEditingCompanyDocumentRecordId(record.id)
   setDocumentCenterView('forms')
-  if (!(resellers || []).length) loadResellers()
+  if (isResellerAgreement && !(resellers || []).length) loadResellers()
+  if (isEditableHRWorkflow && !employees.length && form.employeeMode !== 'none') loadEmployees()
   setTimeout(()=>document.getElementById('document-batch1a-form-builder')?.scrollIntoView({ behavior:'smooth', block:'start' }),100)
-  showToast('Agreement draft opened for editing.')
+  showToast((isResellerAgreement ? 'Agreement' : form.title) + ' record opened for editing.')
  }
 
  const renderDocumentFormField = (field) => {
@@ -40624,7 +41125,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'15px' }}>Company Documents Builder</h3>
- <p style={{ color:'#666', fontSize:'12px', margin:0 }}>Batch 1 forms remain active, with integrated Kiosk and Rolling/Mobile Cart Reseller Agreements from Batch 3.</p>
+ <p style={{ color:'#666', fontSize:'12px', margin:0 }}>HR hiring and onboarding workflows, Batch 1 forms, and integrated Kiosk / Rolling-Mobile Cart Reseller Agreements are available here.</p>
  </div>
  <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
   <Badge label={DOCUMENT_BATCH1A_FORMS.length + ' ACTIVE FORMS'} color="green" />
@@ -40653,7 +41154,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   ) : (
    <div style={{ background:'#f7f9fc', border:'1px solid #d9e2ec', borderRadius:'10px', padding:'10px 12px' }}>
     <p style={{ margin:'0 0 3px', color:'#555', fontSize:'10px', fontWeight:'900', textTransform:'uppercase' }}>Document Scope</p>
-    <p style={{ margin:0, color:'#1a1a2e', fontSize:'12px', fontWeight:'800' }}>{isResellerAgreementFormKey(selectedBatch1DocumentForm.key) ? 'Reseller Agreement Record' : 'Company / Payroll-Level Record'}</p>
+    <p style={{ margin:0, color:'#1a1a2e', fontSize:'12px', fontWeight:'800' }}>{isResellerAgreementFormKey(selectedBatch1DocumentForm.key) ? 'Reseller Agreement Record' : isHRWorkflowFormKey(selectedBatch1DocumentForm.key) ? 'Candidate / Recruitment Record' : 'Company / Payroll-Level Record'}</p>
    </div>
   )}
   <div>
@@ -40681,7 +41182,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   </div>
  </div>
 
- {editingCompanyDocumentRecordId && <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderLeft:'5px solid #ca1b1b', borderRadius:'10px', padding:'9px 11px', marginBottom:'10px', color:'#1a1a2e', fontSize:'11px', fontWeight:'800' }}>Editing a saved reseller agreement. Saving will update the existing Document Records entry.</div>}
+ {editingCompanyDocumentRecordId && <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderLeft:'5px solid #ca1b1b', borderRadius:'10px', padding:'9px 11px', marginBottom:'10px', color:'#1a1a2e', fontSize:'11px', fontWeight:'800' }}>Editing a saved {isResellerAgreementFormKey(selectedBatch1DocumentForm.key)?'reseller agreement':'HR workflow record'}. Saving will update the existing Document Records entry.</div>}
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
   <button disabled={documentRecordSaving} style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0, opacity:documentRecordSaving?0.65:1 }} onClick={()=>saveCurrentDocumentRecord('draft')}>{documentRecordSaving?'SAVING...':(editingCompanyDocumentRecordId?'UPDATE DRAFT':'SAVE AS DRAFT')}</button>
   <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
@@ -40909,6 +41410,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
            </>
           ) : (
            <>
+            {isHRWorkflowFormKey(record.form_key) && !['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>editCompanyDocumentRecord(record)}>EDIT</button>}
             {String(record.status || '').toLowerCase() === 'draft' && <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'served')}>MARK SERVED</button>}
             {!['closed','voided'].includes(String(record.status || '').toLowerCase()) && <button style={{...btnGreen, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>updateCompanyDocumentRecordStatus(record, 'closed')}>CLOSE</button>}
             {String(record.status || '').toLowerCase() !== 'voided' && <button style={{...btnRed, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>voidCompanyDocumentRecord(record)}>VOID</button>}
