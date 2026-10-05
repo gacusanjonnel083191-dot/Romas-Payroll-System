@@ -6885,6 +6885,7 @@ export default function App() {
  const [companyDocumentRecords, setCompanyDocumentRecords] = useState([])
  const [companyDocumentRecordsLoading, setCompanyDocumentRecordsLoading] = useState(false)
  const [documentRecordSaving, setDocumentRecordSaving] = useState(false)
+ const documentRecordSavingRef = useRef(false)
  const [editingCompanyDocumentRecordId, setEditingCompanyDocumentRecordId] = useState(null)
  const [signedAgreementUploadingId, setSignedAgreementUploadingId] = useState(null)
 
@@ -35686,7 +35687,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
  async function saveCurrentDocumentRecord(status = 'draft', options = {}) {
-  if (documentRecordSaving) return null
+  if (documentRecordSavingRef.current) return null
   const form = getSelectedDocumentBatch1AForm()
   if (!form || form.externalTab) {
    showToast('Select a fillable document form.', 'red')
@@ -35694,6 +35695,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
   if (!validateCurrentDocumentForm(form)) return null
 
+  documentRecordSavingRef.current = true
   setDocumentRecordSaving(true)
   const emp = getDocumentFormEmployee()
   let docNo = getDocumentReferenceNumber(form)
@@ -35791,6 +35793,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    showToast('Failed to save document: ' + (err?.message || err), 'red')
    return null
   } finally {
+   documentRecordSavingRef.current = false
    setDocumentRecordSaving(false)
   }
  }
@@ -40681,7 +40684,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {editingCompanyDocumentRecordId && <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderLeft:'5px solid #ca1b1b', borderRadius:'10px', padding:'9px 11px', marginBottom:'10px', color:'#1a1a2e', fontSize:'11px', fontWeight:'800' }}>Editing a saved reseller agreement. Saving will update the existing Document Records entry.</div>}
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
   <button disabled={documentRecordSaving} style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0, opacity:documentRecordSaving?0.65:1 }} onClick={()=>saveCurrentDocumentRecord('draft')}>{documentRecordSaving?'SAVING...':(editingCompanyDocumentRecordId?'UPDATE DRAFT':'SAVE AS DRAFT')}</button>
-  <button disabled={documentRecordSaving} style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0, opacity:documentRecordSaving?0.65:1 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>{documentRecordSaving?'SAVING...':'SAVE & PRINT'}</button>
+  <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
   <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>printBatch1ADocumentForm()}>{isResellerAgreementFormKey(selectedBatch1DocumentForm.key)?'PREVIEW / PRINT':'PRINT ONLY'}</button>
   {isCertificateOfEmploymentForm && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadCertificateOfEmploymentWord()}>DOWNLOAD WORD (A4)</button>}
   {isEmployeeNdaForm && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadEmployeeNdaWord()}>DOWNLOAD WORD (LONG COUPON)</button>}
