@@ -11,13 +11,15 @@ const csvCell = value => {
   return '"' + safe.replaceAll('"', '""') + '"'
 }
 
-export default function CrateRollingControl({ supabase, resellers, movements, movementsReady, today, adminRole, recordedBy }) {
+export default function CrateRollingControl({ supabase, resellers, movements, movementsReady, today, adminRole, recordedBy, onMovementSaved }) {
   const [counts, setCounts] = useState([])
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState('')
+  const [adjusting, setAdjusting] = useState('')
+  const [adjustment, setAdjustment] = useState({ action:'add', asset:'crate', quantity:'', date:today, reason:'' })
   const [form, setForm] = useState(blank)
   const [other, setOther] = useState({ location_type:'bakery', location_label:'', ...blank() })
   const owner = String(adminRole).toLowerCase() === 'owner'
@@ -39,9 +41,51 @@ export default function CrateRollingControl({ supabase, resellers, movements, mo
   useEffect(() => { void load() }, [])
 
   function edit(id) {
+    setAdjusting('')
     setEditing(String(id))
     setForm({ ...blank(), count_date:today })
     setError('')
+  }
+
+  function editAdjustment(id, action) {
+    setEditing('')
+    setAdjusting(String(id))
+    setAdjustment({ action, asset:'crate', quantity:'', date:today, reason:'' })
+    setError('')
+  }
+
+  async function saveAdjustment(event, outlet, currentBalance, approvedCount) {
+    event.preventDefault()
+    if (busy || !owner) return
+    const quantity = Number(adjustment.quantity)
+    if (!Number.isSafeInteger(quantity) || quantity <= 0 || !adjustment.date || adjustment.date > today || adjustment.reason.trim().length < 3) {
+      setError('Enter a positive whole number, a valid date, and a reason of at least three characters.')
+      return
+    }
+    if (approvedCount?.count_date && adjustment.date <= approvedCount.count_date) {
+      setError('This date is already covered by an approved end-of-day count. Enter a newer count for this outlet.')
+      return
+    }
+    if (adjustment.action === 'deduct' && Number.isFinite(currentBalance) && quantity > currentBalance) {
+      setError(`Cannot deduct ${quantity}; only ${currentBalance} ${adjustment.asset === 'cover' ? 'covers' : 'crates'} are recorded at this outlet.`)
+      return
+    }
+    setBusy(true); setError('')
+    const adding = adjustment.action === 'add'
+    const { error:saveError } = await supabase.from('crate_movements').insert({
+      movement_date:adjustment.date, related_delivery_date:null,
+      reseller_id:outlet.id, reseller_name:outlet.name || '', invoice_id:null, invoice_number:'',
+      movement_type:adding ? 'adjustment_add' : 'adjustment_reduce',
+      direction:adding ? 'out' : 'in', quantity, asset_type:adjustment.asset,
+      dispatcher_name:'', driver_name:'', recorded_by:recordedBy || adminRole || 'Owner',
+      notes:adjustment.reason.trim(), is_deleted:false
+    })
+    if (saveError) setError(saveError.message)
+    else {
+      setAdjusting('')
+      await onMovementSaved?.()
+    }
+    setBusy(false)
   }
 
   async function submit(event, locationType, resellerId, values) {
@@ -149,14 +193,26 @@ export default function CrateRollingControl({ supabase, resellers, movements, mo
           <td style={{ ...cell, fontWeight:700 }}>{!movementsReady ? '—' : crates?.expected ?? m?.ledgerNet.crates ?? '—'}</td>
           <td style={{ ...cell, fontWeight:700 }}>{!movementsReady ? '—' : covers?.expected ?? m?.ledgerNet.covers ?? '—'}</td>
           <td style={{ ...cell, color:waiting.length || !c ? '#9a5b00' : '#276b42' }}>{waiting.length ? 'Pending review' : c ? 'Count approved; later handovers provisional' : 'Unverified ledger balance'}</td>
-          <td style={cell}>{maySubmit && <button type="button" style={button} onClick={()=>edit(r.id)}>{c ? 'Update count' : 'Enter count'}</button>}</td>
+          <td style={cell}>{maySubmit && <button type="button" style={button} onClick={()=>edit(r.id)}>{c ? 'Update count' : 'Enter count'}</button>}{owner && <> <button type="button" style={button} disabled={!movementsReady || busy} onClick={()=>editAdjustment(r.id,'add')}>Add</button> <button type="button" style={button} disabled={!movementsReady || busy} onClick={()=>editAdjustment(r.id,'deduct')}>Deduct</button></>}</td>
         </tr>).flatMap(row => {
           const id = String(row.key)
+          const entry = rows.find(item => String(item.outlet.id) === id)
           const waiting = pendingByOutlet.get(id) || []
-          const details = editing === id || waiting.length > 0
+          const details = editing === id || adjusting === id || waiting.length > 0
           if (!details) return [row]
           return [row, <tr key={id + '-entry'}><td colSpan={8} style={{ padding:'10px 14px', background:'#fafafa', borderBottom:'1px solid #ddd', whiteSpace:'normal' }}>
             {waiting.map(c => <div key={c.id} style={{ marginBottom:7 }}>Count for {c.count_date}: <strong>{c.crate_qty} crates / {c.cover_qty} covers</strong> · {c.counted_by_name} · {c.confirmation_reference} {owner && <span><button type="button" disabled={busy} style={button} onClick={()=>review(c,true)}>Approve</button> <button type="button" disabled={busy} style={button} onClick={()=>review(c,false)}>Reject</button></span>}</div>)}
+            {adjusting === id && <form onSubmit={e=>saveAdjustment(e, entry.outlet, adjustment.asset === 'cover' ? (entry.covers?.expected ?? entry.movement?.ledgerNet.covers) : (entry.crates?.expected ?? entry.movement?.ledgerNet.crates), entry.count)}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:8, marginBottom:10 }}>
+                <label>Action<select style={field} value={adjustment.action} onChange={e=>setAdjustment(a=>({...a,action:e.target.value}))}><option value="add">Add to outlet</option><option value="deduct">Deduct from outlet</option></select></label>
+                <label>Item<select style={field} value={adjustment.asset} onChange={e=>setAdjustment(a=>({...a,asset:e.target.value}))}><option value="crate">Crates</option><option value="cover">Covers</option></select></label>
+                <label>Quantity<input type="number" min="1" step="1" required style={field} value={adjustment.quantity} onChange={e=>setAdjustment(a=>({...a,quantity:e.target.value}))} /></label>
+                <label>Date<input type="date" max={today} required style={field} value={adjustment.date} onChange={e=>setAdjustment(a=>({...a,date:e.target.value}))} /></label>
+                <label>Reason<input required minLength={3} style={field} value={adjustment.reason} onChange={e=>setAdjustment(a=>({...a,reason:e.target.value}))} /></label>
+              </div>
+              <button type="submit" disabled={busy} style={{ ...button, background:'#ca1b1b', color:'#fff', border:0 }}>{busy ? 'Saving...' : 'Save adjustment'}</button>{' '}
+              <button type="button" style={button} onClick={()=>setAdjusting('')}>Cancel</button>
+            </form>}
             {editing === id && <form onSubmit={e=>submit(e,'outlet',id,form)}>
               {countFields(form,(name,value)=>setForm(f=>({ ...f, [name]:value })))}
               <button type="submit" disabled={busy} style={{ ...button, background:'#ca1b1b', color:'#fff', border:0 }}>{busy ? 'Saving…' : 'Submit for owner review'}</button>{' '}

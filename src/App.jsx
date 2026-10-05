@@ -7352,6 +7352,7 @@ export default function App() {
  const [invoiceLoadError, setInvoiceLoadError] = useState('')
  const [invoiceDayFilter, setInvoiceDayFilter] = useState(today)
  const [markingDelivered, setMarkingDelivered] = useState({})
+ const [confirmingInvoiceCrates, setConfirmingInvoiceCrates] = useState({})
  const [showPaymentFormMap, setShowPaymentFormMap] = useState({})
  const [paymentNotes, setPaymentNotes] = useState({})
  const [settlementRows, setSettlementRows] = useState({})
@@ -9728,13 +9729,14 @@ Cancel = create batch record only for existing stock.`)
  .order('id', { ascending:false }).range(start, start + 499)
  if (error) throw error
  all.push(...(data || []))
- if ((data || []).length < 500) { setCrateMovements(all); setCrateMovementsLoaded(true); return }
+ if ((data || []).length < 500) { setCrateMovements(all); setCrateMovementsLoaded(true); return all }
  }
  throw new Error('Crate movement safety limit reached; totals cannot be trusted.')
  } catch (err) {
  console.warn('loadCrateMovements:', err)
  setCrateMovements([])
  setCratesLoadError('Crate movements could not be fully loaded. Totals are unavailable; refresh or contact the owner.')
+ return null
  } finally {
  setCratesLoading(false)
  }
@@ -14289,6 +14291,7 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
 
  const validItems = invoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
  if (validItems.length === 0) { showToast('Please add at least one item with quantity.','red'); return }
+ try { wholeCrateQuantity(invoiceCrates, 'Crates Used') } catch (validationError) { showToast(validationError.message,'red'); return }
 
  if (customerType === 'reseller') {
  const visibleCreditStatus = getResellerCreditBlockInfo(invoiceResellerId)
@@ -14426,6 +14429,7 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  }
  const validItems = editInvoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
  if (validItems.length === 0) { showToast(' Please add at least one item.','red'); return }
+ try { wholeCrateQuantity(editingInvoice.crates_used, 'Crates Used') } catch (validationError) { showToast(validationError.message,'red'); return }
  setSavingEditInvoice(true)
  try {
  // Recalculate totals using the selected invoice discount.
@@ -16664,6 +16668,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
 
  async function openInvoiceSettlement(inv) {
  if (showPaymentFormMap[inv.id]) { setShowPaymentFormMap(p=>({...p,[inv.id]:false})); return }
+ const crateLedgerAvailable = !!(await loadCrateMovements())
  let rows = buildInvoiceSettlementRows(inv)
  try {
  const { data } = await supabase.from('reseller_returns').select('id, reseller_return_items(*)').eq('invoice_id', inv.id)
@@ -16678,13 +16683,15 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  })
  } catch(e) { console.warn('openInvoiceSettlement existing returns:', e) }
  let crateDefaults = {
- delivered:safeNum(inv.crates_used ?? inv.crates ?? inv.crate_count ?? inv.total_crates, 0) || '',
+ delivered:'',
  returned:'',
  coverDelivered:'',
  coverReturned:'',
  dispatcher:'',
  driver:'',
- notes:''
+ notes:'',
+ confirmed:false,
+ ledgerAvailable:crateLedgerAvailable
  }
  try {
  const { data:invoiceCrates, error:crateErr } = await supabase
@@ -16712,7 +16719,9 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  coverReturned:coverReturned || '',
  dispatcher:latestReleased.dispatcher_name || '',
  driver:latestCollected.driver_name || '',
- notes:[latestReleased.notes, latestCollected.notes].filter(Boolean).join(' | ').slice(0, 180)
+ notes:[latestReleased.notes, latestCollected.notes].filter(Boolean).join(' | ').slice(0, 180),
+ confirmed:false,
+ ledgerAvailable:crateLedgerAvailable
  }
  }
  } catch(e) { console.warn('openInvoiceSettlement existing crates:', e) }
@@ -16739,7 +16748,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
 
  function updateSettlementCrates(invoiceId, field, value) {
  setSettlementCrates(prev => {
- const current = prev[invoiceId] || { delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'' }
+ const current = prev[invoiceId] || { delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'', confirmed:false }
  return {...prev, [invoiceId]:{...current, [field]:value }}
  })
  }
@@ -16781,83 +16790,40 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
  }
 
- async function syncInvoiceSettlementCrates(inv) {
- const data = settlementCrates[inv.id] || {}
- const summary = getSettlementCrateSummary(inv)
- if (!summary.hasEntry) return { ok:true, saved:false }
- if (!inv.reseller_id && !inv.reseller_name) return { ok:false, saved:false, error:'Invoice has no reseller link.' }
- const reseller = getResellerRecordById(inv.reseller_id) || { id:inv.reseller_id || null, name:inv.reseller_name || 'Customer' }
- const deliveryDate = String(inv.delivery_date || inv.invoice_date || today).slice(0,10)
- const staffName = adminEmployee?.full_name || adminRole || 'Admin'
- const baseNotes = String(data.notes || '').trim()
- const replaceNote = `Replaced by one-click settlement on ${today}`
-
- const { error:oldErr } = await supabase
- .from('crate_movements')
- .update({ is_deleted:true, notes:replaceNote })
- .eq('invoice_id', inv.id)
- .in('movement_type', ['dispatch','collection','released','returned','return','settlement_dispatch','settlement_collection'])
- .eq('is_deleted', false)
- if (oldErr) throw oldErr
-
- const base = {
- related_delivery_date:deliveryDate,
- reseller_id:reseller.id || null,
- reseller_name:reseller.name || inv.reseller_name || '',
- invoice_id:inv.id,
- invoice_number:inv.invoice_number || '',
- recorded_by:staffName,
- is_deleted:false
+ function wholeCrateQuantity(value, label) {
+ const number = Number(value || 0)
+ if (!Number.isSafeInteger(number) || number < 0) throw new Error(`${label} must be a whole number of zero or more.`)
+ return number
  }
- const payloads = []
- if (summary.delivered > 0) payloads.push({
- ...base,
- movement_date:deliveryDate,
- movement_type:'settlement_dispatch',
- direction:'out',
- quantity:summary.delivered,
- asset_type:'crate',
- dispatcher_name:String(data.dispatcher || '').trim(),
- driver_name:'',
- notes:[`One-click settlement: crates delivered/released for ${inv.invoice_number || 'invoice'}.`, baseNotes].filter(Boolean).join(' ')
+
+ async function reconcileInvoiceCrateHandovers(inv, quantities, notes = '') {
+ const { data, error } = await supabase.rpc('crate_reconcile_invoice_handovers', {
+ p_invoice_id:inv.id,
+ p_crates_delivered:quantities.delivered ?? null,
+ p_crates_collected:quantities.returned ?? null,
+ p_covers_delivered:quantities.coverDelivered ?? null,
+ p_covers_collected:quantities.coverReturned ?? null,
+ p_dispatcher_name:quantities.dispatcher || '',
+ p_driver_name:quantities.driver || '',
+ p_recorded_by:currentAdminLabel || adminRole || 'Admin',
+ p_notes:String(notes || '').trim()
  })
- if (summary.returned > 0) payloads.push({
- ...base,
- movement_date:today,
- movement_type:'settlement_collection',
- direction:'in',
- quantity:summary.returned,
- asset_type:'crate',
- dispatcher_name:'',
- driver_name:String(data.driver || '').trim(),
- notes:[`One-click settlement: crates returned/collected for ${inv.invoice_number || 'invoice'}.`, baseNotes].filter(Boolean).join(' ')
- })
- if (summary.coverDelivered > 0) payloads.push({
- ...base,
- movement_date:deliveryDate,
- movement_type:'settlement_dispatch',
- direction:'out',
- quantity:summary.coverDelivered,
- asset_type:'cover',
- dispatcher_name:String(data.dispatcher || '').trim(),
- driver_name:'',
- notes:[`One-click settlement: crate covers delivered/released for ${inv.invoice_number || 'invoice'}.`, baseNotes].filter(Boolean).join(' ')
- })
- if (summary.coverReturned > 0) payloads.push({
- ...base,
- movement_date:today,
- movement_type:'settlement_collection',
- direction:'in',
- quantity:summary.coverReturned,
- asset_type:'cover',
- dispatcher_name:'',
- driver_name:String(data.driver || '').trim(),
- notes:[`One-click settlement: crate covers returned/collected for ${inv.invoice_number || 'invoice'}.`, baseNotes].filter(Boolean).join(' ')
- })
- if (!payloads.length) return { ok:true, saved:false }
- const { error:insertErr } = await supabase.from('crate_movements').insert(payloads)
- if (insertErr) throw insertErr
- return { ok:true, saved:true, summary }
+ if (error) throw error
+ await loadCrateMovements()
+ return data || { changed:false }
+ }
+
+ async function syncInvoiceSettlementCrates(inv) {
+ const entry = settlementCrates[inv.id] || {}
+ const result = await reconcileInvoiceCrateHandovers(inv, {
+ delivered:wholeCrateQuantity(entry.delivered, 'Crates delivered'),
+ returned:wholeCrateQuantity(entry.returned, 'Crates collected'),
+ coverDelivered:wholeCrateQuantity(entry.coverDelivered, 'Covers delivered'),
+ coverReturned:wholeCrateQuantity(entry.coverReturned, 'Covers collected'),
+ dispatcher:String(entry.dispatcher || '').trim(),
+ driver:String(entry.driver || '').trim()
+ }, entry.notes || 'Confirmed in invoice settlement')
+ return { ok:true, saved:result.changed === true, summary:getSettlementCrateSummary(inv) }
  }
 
  function getSettlementSummary(inv, rowsArg = null) {
@@ -16897,11 +16863,22 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  if (!rows.length) { showToast(' No invoice items found for settlement.', 'red'); return }
  const summary = getSettlementSummary(inv, rows)
  const crateSummary = getSettlementCrateSummary(inv)
+ const crateEntry = settlementCrates[inv.id] || {}
  if (summary.cashReceived - summary.dueBeforeCash > 0.01) { showToast(` Cash received exceeds final balance of ${php(summary.dueBeforeCash)}.`, 'red'); return }
+ if (crateEntry.confirmed) {
+ if (crateEntry.ledgerAvailable === false) { showToast('Crate records could not be verified. Save payment without crate confirmation, or refresh and retry.','red'); return }
+ try {
+ wholeCrateQuantity(crateEntry.delivered, 'Crates delivered')
+ wholeCrateQuantity(crateEntry.returned, 'Crates collected')
+ wholeCrateQuantity(crateEntry.coverDelivered, 'Covers delivered')
+ wholeCrateQuantity(crateEntry.coverReturned, 'Covers collected')
+ } catch (validationError) { showToast(validationError.message, 'red'); return }
+ }
  setSettlementSaving(p=>({...p,[inv.id]:true}))
  let paymentId = null
  let crateSyncResult = { ok:true, saved:false }
  try {
+ if (crateEntry.confirmed) crateSyncResult = await syncInvoiceSettlementCrates(inv)
  const { data:oldReturns } = await supabase.from('reseller_returns').select('id').eq('invoice_id', inv.id)
  const oldIds = (oldReturns || []).map(r => r.id).filter(Boolean)
  if (oldIds.length) { await supabase.from('reseller_return_items').delete().in('return_id', oldIds); await supabase.from('reseller_returns').delete().in('id', oldIds) }
@@ -16930,26 +16907,17 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  ;({ error:invoiceErr } = await supabase.from('delivery_invoices').update(fallback).eq('id', inv.id))
  }
  if (invoiceErr) throw invoiceErr
- if (crateSummary.hasEntry) {
- try {
- crateSyncResult = await syncInvoiceSettlementCrates(inv)
- } catch(crateErr) {
- console.warn('syncInvoiceSettlementCrates:', crateErr)
- crateSyncResult = { ok:false, saved:false, error:crateErr?.message || String(crateErr) }
- }
- }
- const crateAuditText = crateSummary.hasEntry ? `, crates delivered ${crateSummary.delivered}, crates returned ${crateSummary.returned}, crate variance ${crateSummary.variance}` : ''
- await logAudit('INVOICE SETTLED', adminRole, inv.reseller_name, `${inv.invoice_number} actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final ${php(summary.finalTotal)}, cash ${php(summary.cashReceived)}, balance ${php(summary.finalBalance)}, status ${summary.newStatus}${crateAuditText}${crateSyncResult.ok === false ? ', CRATES NOT SYNCED' : ''}`)
+ const crateAuditText = crateEntry.confirmed ? `, crates delivered ${crateSummary.delivered}, crates returned ${crateSummary.returned}, crate variance ${crateSummary.variance}` : ''
+ await logAudit('INVOICE SETTLED', adminRole, inv.reseller_name, `${inv.invoice_number} actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final ${php(summary.finalTotal)}, cash ${php(summary.cashReceived)}, balance ${php(summary.finalBalance)}, status ${summary.newStatus}${crateAuditText}`)
  const settlementMessage = summary.newStatus === 'paid' ? ` Settlement saved. ${inv.reseller_name} is fully paid.` : ` Settlement saved. Remaining balance: ${php(summary.finalBalance)}`
- const crateMessage = crateSyncResult.saved ? ` Crates inventory updated: delivered ${crateSummary.delivered}, returned ${crateSummary.returned}, variance ${crateSummary.variance}.` : crateSyncResult.ok === false ? ' Payment saved, but crates inventory was not updated. Please check crate_movements SQL setup.' : ''
- showToast(settlementMessage + crateMessage, crateSyncResult.ok === false ? 'orange' : 'green')
+ const crateMessage = crateEntry.confirmed ? ` Crate handover confirmed: delivered ${crateSummary.delivered}, collected ${crateSummary.returned}.` : ''
+ showToast(settlementMessage + crateMessage, 'green')
  setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
  setPaymentAmount(p=>({...p,[inv.id]:''}))
  setPaymentMethod(p=>({...p,[inv.id]:'Cash'}))
  setPaymentNotes(p=>({...p,[inv.id]:''}))
  setSettlementRows(p=>({...p,[inv.id]:[]}))
- setSettlementCrates(p=>({...p,[inv.id]:{ delivered:'', returned:'', dispatcher:'', driver:'', notes:'' }}))
- if (crateSyncResult.saved) loadCrateMovements()
+ setSettlementCrates(p=>({...p,[inv.id]:{ delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'', confirmed:false }}))
  if (summary.newStatus === 'paid') setInvoiceFilter('paid')
  else if (summary.newStatus === 'partial') setInvoiceFilter('partial')
  await loadDeliveryInvoices()
@@ -16957,7 +16925,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  refreshFoundationAfterDataChange('invoice-settlement-saved')
  } catch(err) {
  if (paymentId) await supabase.from('reseller_payments').delete().eq('id', paymentId)
- showToast(' Settlement was not saved: '+(err?.message || err), 'red')
+ showToast((crateSyncResult.saved ? 'Crate handover was saved, but the financial settlement failed: ' : 'Settlement was not saved: ') + (err?.message || err), 'red')
  } finally { setSettlementSaving(p=>({...p,[inv.id]:false})) }
  }
 
@@ -17091,10 +17059,39 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setShowReturnForm(p=>({...p,[invoice.id]:true}))
  }
  // Mark Invoice as Delivered 
+ async function confirmInvoiceCrateDispatch(inv, quiet = false) {
+ if (confirmingInvoiceCrates[inv.id]) return false
+ try {
+ const quantity = wholeCrateQuantity(inv.crates_used, 'Crates Used')
+ if (quantity <= 0 || !inv.reseller_id || String(inv.container_type || 'Crates').toLowerCase() !== 'crates') {
+ if (!quiet) showToast('Enter the actual crate quantity on a reseller invoice before confirming dispatch.','red')
+ return false
+ }
+ setConfirmingInvoiceCrates(p=>({...p,[inv.id]:true}))
+ const result = await reconcileInvoiceCrateHandovers(inv, { delivered:quantity }, 'Physical crate dispatch confirmed')
+ try {
+ await logAudit('INVOICE CRATE DISPATCH CONFIRMED', adminRole, inv.reseller_name, `${inv.invoice_number}: ${quantity} crates; ledger ${result.changed ? 'updated' : 'already matched'}`)
+ } catch (auditError) { console.warn('Invoice crate dispatch audit:', auditError) }
+ if (!quiet) showToast(`${quantity} dispatched crates confirmed for ${inv.reseller_name}.`)
+ return true
+ } catch (err) {
+ console.warn('confirmInvoiceCrateDispatch:', err)
+ showToast('Crate dispatch was not confirmed: '+(err?.message || err),'red')
+ return false
+ } finally {
+ setConfirmingInvoiceCrates(p=>({...p,[inv.id]:false}))
+ }
+ }
+
  async function markAsDelivered(inv) {
  setMarkingDelivered(p=>({...p,[inv.id]:true}))
+ const shouldConfirmCrates = !!inv.reseller_id && String(inv.container_type || 'Crates').toLowerCase() === 'crates' && Number(inv.crates_used || 0) > 0
+ if (shouldConfirmCrates && !(await confirmInvoiceCrateDispatch(inv, true))) {
+ setMarkingDelivered(p=>({...p,[inv.id]:false}))
+ return
+ }
  const { error } = await supabase.from('delivery_invoices').update({ status:'delivered', delivered_at:new Date().toISOString() }).eq('id', inv.id)
- if (error) { showToast(' Failed: '+error.message,'red'); setMarkingDelivered(p=>({...p,[inv.id]:false})); return }
+ if (error) { showToast((shouldConfirmCrates ? 'Crates were recorded, but the invoice status failed: ' : 'Failed: ') + error.message,'red'); setMarkingDelivered(p=>({...p,[inv.id]:false})); return }
  await logAudit('INVOICE DELIVERED', adminRole, inv.reseller_name, `${inv.invoice_number} marked as delivered`)
  showToast(` ${inv.invoice_number} marked as delivered!`)
  setMarkingDelivered(p=>({...p,[inv.id]:false}))
@@ -42537,7 +42534,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
 
  {/* CRATES CONTROL */}
- {activeTab==='crates' && <CrateRollingControl supabase={supabase} resellers={resellers} movements={crateMovements} movementsReady={crateMovementsLoaded} today={today} adminRole={adminRole} recordedBy={currentAdminLabel} />}
+ {activeTab==='crates' && <CrateRollingControl supabase={supabase} resellers={resellers} movements={crateMovements} movementsReady={crateMovementsLoaded} today={today} adminRole={adminRole} recordedBy={currentAdminLabel} onMovementSaved={loadCrateMovements} />}
  {activeTab==='crates' && <details style={{ background:'#fff', border:'1px solid #e6e6e6', borderRadius:12, padding:'12px 14px', marginBottom:14 }}>
  <summary style={{ cursor:'pointer', fontWeight:700, color:'#333' }}>Record dispatch / collection and view detailed history</summary>
  {/* Crates Inventory / Reseller Variance View */}
@@ -45494,8 +45491,8 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 </select>
 </div>
 <div>
-<label style={lblS}>Qty Used:</label>
-<input type="number" value={invoiceCrates} onChange={e=>setInvoiceCrates(e.target.value)} placeholder="0" min="0" style={inputStyle} />
+<label style={lblS}>{String(invoiceContainerType || 'Crates').toLowerCase() === 'crates' ? 'Crates planned (confirm at dispatch):' : 'Boxes used:'}</label>
+<input type="number" value={invoiceCrates} onChange={e=>setInvoiceCrates(e.target.value)} placeholder="0" min="0" step="1" style={inputStyle} />
 </div>
 </div>
 </div>
@@ -45643,6 +45640,9 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>viewDeliveryInvoice(inv)}> VIEW</button>
  {inv.status==='unpaid' && (
  <button style={{...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px', background:'#4a90d9' }} onClick={()=>markAsDelivered(inv)} disabled={markingDelivered[inv.id]}> {markingDelivered[inv.id]?'Saving...':'MARK DELIVERED'}</button>
+ )}
+ {inv.reseller_id && Number(inv.crates_used || 0) > 0 && String(inv.container_type || 'Crates').toLowerCase() === 'crates' && ['delivered','partial','paid'].includes(String(inv.status || '').toLowerCase()) && (
+ <button type="button" style={{...btnGreen, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>confirmInvoiceCrateDispatch(inv)} disabled={!!confirmingInvoiceCrates[inv.id]}>{confirmingInvoiceCrates[inv.id]?'SYNCING CRATES...':'CONFIRM CRATES DISPATCHED'}</button>
  )}
  {inv.status==='unpaid' && (
  <button style={{...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={()=>{ setEditingInvoice({...inv}); setEditInvoiceItems((inv.delivery_invoice_items||[]).map(i=>({...i}))) }}> EDIT</button>
@@ -45914,7 +45914,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  <div><label style={lblS}>Dispatcher:</label><input value={editingInvoice.prepared_by||''} onChange={e=>setEditingInvoice(p=>({...p,prepared_by:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Delivery Personnel:</label><input value={editingInvoice.dispatched_by||''} onChange={e=>setEditingInvoice(p=>({...p,dispatched_by:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
- <div><label style={lblS}>Crates Used:</label><input type="number" value={editingInvoice.crates_used||0} onChange={e=>setEditingInvoice(p=>({...p,crates_used:e.target.value}))} style={{...inputStyle, marginBottom:0 }} min="0" /></div>
+ <div><label style={lblS}>{String(editingInvoice.container_type || 'Crates').toLowerCase() === 'crates' ? 'Crates planned (confirm at dispatch):' : 'Boxes used:'}</label><input type="number" value={editingInvoice.crates_used||0} onChange={e=>setEditingInvoice(p=>({...p,crates_used:e.target.value}))} style={{...inputStyle, marginBottom:0 }} min="0" step="1" /></div>
  <div><label style={lblS}>Notes:</label><input value={editingInvoice.notes||''} onChange={e=>setEditingInvoice(p=>({...p,notes:e.target.value}))} style={{...inputStyle, marginBottom:0 }} /></div>
  </div>
  {/* Line items */}
@@ -46153,7 +46153,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  {showPaymentFormMap[inv.id] && (()=>{
  const rows = settlementRows[inv.id] || buildInvoiceSettlementRows(inv)
  const summary = getSettlementSummary(inv, rows)
- const crateEntry = settlementCrates[inv.id] || { delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'' }
+ const crateEntry = settlementCrates[inv.id] || { delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'', confirmed:false }
  const crateSummary = getSettlementCrateSummary(inv)
  const cashTooHigh = summary.cashReceived - summary.dueBeforeCash > 0.01
  return (
@@ -46235,7 +46235,11 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div><label style={lblS}>Driver / Collected By:</label><input value={crateEntry.driver || ''} onChange={e=>updateSettlementCrates(inv.id, 'driver', e.target.value)} placeholder="Name or initials" style={{...inputStyle, marginBottom:0 }} /></div>
  <div><label style={lblS}>Crate / Cover Notes:</label><input value={crateEntry.notes || ''} onChange={e=>updateSettlementCrates(inv.id, 'notes', e.target.value)} placeholder="e.g. 2 crates and 1 cover left at reseller, 1 old crate returned" style={{...inputStyle, marginBottom:0 }} /></div>
  </div>
- <p style={{ color:'#666', fontSize:'11px', margin:'8px 0 0' }}>This same settlement updates Inventory → Crates Inventory automatically for crates and covers when saved.</p>
+ <label style={{ display:'flex', alignItems:'center', gap:'8px', color:'#333', fontSize:'12px', fontWeight:'bold', marginTop:'10px' }}>
+ <input type="checkbox" checked={crateEntry.confirmed === true} disabled={crateEntry.ledgerAvailable === false || !inv.reseller_id || String(inv.container_type || 'Crates').toLowerCase() !== 'crates'} onChange={e=>updateSettlementCrates(inv.id, 'confirmed', e.target.checked)} />
+ I confirm these crate and cover quantities were physically dispatched or collected.
+ </label>
+ <p style={{ color:'#666', fontSize:'11px', margin:'8px 0 0' }}>Only confirmed handovers update Crates Inventory. Enter zero and confirm to clear an incorrect invoice handover.</p>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5, 1fr)', gap:'8px', marginBottom:'12px' }}>
  <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Actual Delivered</p><p style={{ color:'#1a1a2e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.adjustedGross)}</p></div>
@@ -46250,7 +46254,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div><label style={lblS}>Notes / Reference #:</label><input value={paymentNotes[inv.id]||''} onChange={e=>setPaymentNotes(p=>({...p,[inv.id]:e.target.value}))} placeholder="GCash ref, slip #, return note, etc." style={{...inputStyle, marginBottom:0 }} /></div>
  </div>
  {cashTooHigh && <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'10px 0 0' }}>Cash received is higher than the final balance. Please check amount before saving.</p>}
- <button disabled={!!settlementSaving[inv.id] || cashTooHigh} style={{...btnGreen, fontSize:'14px', fontWeight:'bold', opacity:settlementSaving[inv.id] || cashTooHigh?0.55:1 }} onClick={()=>saveInvoiceSettlement(inv)}>{settlementSaving[inv.id]?' SAVING SETTLEMENT...':' SAVE PAYMENT / RETURNS / ACTUAL DELIVERY / CRATES & COVERS'}</button>
+ <button disabled={!!settlementSaving[inv.id] || cashTooHigh} style={{...btnGreen, fontSize:'14px', fontWeight:'bold', opacity:settlementSaving[inv.id] || cashTooHigh?0.55:1 }} onClick={()=>saveInvoiceSettlement(inv)}>{settlementSaving[inv.id]?' SAVING SETTLEMENT...':' SAVE PAYMENT / RETURNS / ACTUAL DELIVERY'}</button>
  </div>
  )
  })()}
