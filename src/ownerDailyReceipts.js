@@ -24,7 +24,7 @@ export function paymentBucket(method) {
   return 'unknown'
 }
 
-export function buildOwnerDailyReceipts(data = {}, date) {
+export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
   const sales = data.daily_sales || []
   const online = data.daily_online || []
   const reseller = data.reseller_payments || []
@@ -124,15 +124,25 @@ export function buildOwnerDailyReceipts(data = {}, date) {
   const counts = (data.cash_counts || []).filter(row => row.reconciliation_date === date)
     .sort((a,b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
   const deposits = (data.bank_deposits || []).filter(row => row.deposit_date === date &&
-    !['void','voided','cancelled'].includes(String(row.status || '').toLowerCase()))
+    String(row.status || '').toLowerCase() === 'deposited')
   const expenses = (data.expenses || []).filter(row => row.expense_date === date && row.status === 'approved')
+  const approvedCashExpenses = cashExpenseRows.filter(row => row.status === 'approved' &&
+    row.payment_method === 'cash' && row.paid_date === date)
+  const expensesNeedingReview = cashExpenseRows.filter(row => row.status === 'approved' &&
+    row.expense_date === date && !row.payment_method)
+  const cashExpensesPaid = approvedCashExpenses.reduce((total, row) =>
+    total + cents(row.classified_amount), 0)
+  const cashDeposited = sum(deposits,'amount')
   receipts.sort((a,b) => String(b.enteredAt).localeCompare(String(a.enteredAt)))
   entered.sort((a,b) => String(b.enteredAt).localeCompare(String(a.enteredAt)))
   totals.totalReceived = totals.cash + totals.gcash + totals.otherOnline
   return {
     totals:Object.fromEntries(Object.entries(totals).map(([key,value]) => [key,money(value)])),
     receipts, entered, deliveredUnpaid:money(deliveredUnpaid),
-    bankDeposits:money(sum(deposits,'amount')), approvedExpenses:money(sum(expenses,'amount')),
+    bankDeposits:money(cashDeposited), approvedExpenses:money(sum(expenses,'amount')),
+    cashExpenseRows, cashExpensesPaid:money(cashExpensesPaid),
+    expensesNeedingReview, netRecordedCash:money(totals.cash - cashExpensesPaid - cashDeposited),
+    cashExpectedComplete:expensesNeedingReview.length === 0,
     actualCashCount:counts.length ? Number(counts[0].actual_cash) : null,
     cashCountAt:counts[0]?.created_at || ''
   }

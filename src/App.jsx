@@ -43849,7 +43849,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {/* FINANCIAL DASHBOARD */}
  {salesView==='dashboard' && (
  <div>
- {activeTab==='sales' && adminRole==='owner' && <OwnerDailyReceipts supabase={supabase} today={today} adminRole={adminRole} />}
+ {activeTab==='sales' && adminRole==='owner' && <OwnerDailyReceipts supabase={supabase} today={today} adminRole={adminRole} onOpenExpenses={()=>setSalesView('expenses')} />}
  {/* SUSPICIOUS ALERTS PANEL */}
  {suspiciousAlerts.filter(a=>!a.is_read).length > 0 && (
  <div style={{ background:'#fff5f5', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'14px', marginBottom:'16px' }}>

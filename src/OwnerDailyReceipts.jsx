@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { buildOwnerDailyReceipts } from './ownerDailyReceipts'
+import OwnerCashExpenses from './OwnerCashExpenses'
 
 const peso = amount => '₱' + Number(amount || 0).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })
 const card = { background:'#fff', border:'1px solid #e7e7e7', borderRadius:12, padding:'12px 14px' }
@@ -9,7 +10,7 @@ const amountTh = { ...th, textAlign:'right' }
 const amountTd = { ...td, textAlign:'right', fontWeight:700, whiteSpace:'nowrap' }
 const timestamp = value => value ? new Date(value).toLocaleString('en-PH', { timeZone:'Asia/Manila', dateStyle:'medium', timeStyle:'short' }) : '—'
 
-export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
+export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenExpenses }) {
   const [date, setDate] = useState(today)
   const [raw, setRaw] = useState(null)
   const [loadedDate, setLoadedDate] = useState('')
@@ -23,10 +24,14 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
     const requestId = ++requestRef.current
     setLoading(true); setError('')
     try {
-      const { data, error:requestError } = await supabase.rpc('owner_daily_receipts', { p_day:selectedDate })
+      const [receiptResult, expenseResult] = await Promise.all([
+        supabase.rpc('owner_daily_receipts', { p_day:selectedDate }),
+        supabase.rpc('owner_cash_expenses_for_day', { p_day:selectedDate })
+      ])
       if (requestId !== requestRef.current) return
+      const requestError = receiptResult.error || expenseResult.error
       if (requestError) { setRaw(null); setError('Daily receipts could not be loaded: ' + requestError.message) }
-      else { setRaw(data || {}); setLoadedDate(selectedDate) }
+      else { setRaw({ ...(receiptResult.data || {}), cash_expenses:expenseResult.data || [] }); setLoadedDate(selectedDate) }
     } catch (requestError) {
       if (requestId === requestRef.current) { setRaw(null); setError('Daily receipts could not be loaded: ' + (requestError?.message || requestError)) }
     } finally {
@@ -35,7 +40,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
   }, [owner, supabase])
   useEffect(() => { if (owner) queueMicrotask(() => void load(date)) }, [date, owner, load])
   if (!owner) return null
-  const report = raw && loadedDate === date ? buildOwnerDailyReceipts(raw, date) : null
+  const report = raw && loadedDate === date ? buildOwnerDailyReceipts(raw, date, raw.cash_expenses || []) : null
   const totals = report?.totals || {}
   const cards = [
     ['Cash payments recorded', totals.cash, '#176b3a'],
@@ -74,15 +79,34 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole }) {
       <p style={{ fontSize:11, color:'#555', margin:'4px 0 12px' }}>
         Payment totals come from recorded tenders and collections; they do not prove cash was physically handed to the owner. Delivered but unpaid invoices are excluded. Actual company cash counted is shown only after a Cash Reconciliation is submitted for this date. POS drawer counts are outlet-specific and include opening cash.
       </p>
+      <div style={{ ...card, background:report.cashExpectedComplete ? '#edf8ef' : '#fff8e7', marginBottom:12 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:12, flexWrap:'wrap', alignItems:'center' }}>
+          <div>
+            <strong style={{ color:'#1a1a2e', fontSize:14 }}>Cash expected from this day’s recorded activity</strong>
+            <div style={{ color:'#555', fontSize:11, marginTop:4 }}>Cash payments recorded − owner-confirmed cash expenses paid − bank deposits. This is a daily movement, not the cash balance on hand.</div>
+          </div>
+          <strong style={{ color:report.cashExpectedComplete ? '#176b3a' : '#9a5b00', fontSize:20 }}>{report.cashExpectedComplete ? peso(report.netRecordedCash) : 'Pending expense review'}</strong>
+        </div>
+        <div style={{ display:'flex', gap:16, flexWrap:'wrap', fontSize:12, marginTop:10 }}>
+          <span>Cash payments: <strong>{peso(totals.cash)}</strong></span>
+          <span>Cash expenses paid: <strong>−{peso(report.cashExpensesPaid)}</strong></span>
+          <span>Bank deposits: <strong>−{peso(report.bankDeposits)}</strong></span>
+          <span>Current calculation: <strong>{peso(report.netRecordedCash)}</strong></span>
+        </div>
+        {!report.cashExpectedComplete && <p style={{ color:'#8a5300', fontSize:12, margin:'9px 0 0' }}>
+          {report.expensesNeedingReview.length} approved expense{report.expensesNeedingReview.length === 1 ? '' : 's'} dated this day have no confirmed payment method. Review them below before treating the cash figure as final.
+        </p>}
+      </div>
       {(totals.unknown > 0 || totals.unpaid > 0 || totals.trackingOnly > 0) && <div style={{ ...card, background:'#fff8e7', marginBottom:12, fontSize:12 }}>
         <strong>Needs review:</strong> {peso(totals.unknown)} sales or payments with no confirmed payment method · {peso(totals.unpaid)} Daily Sales marked unpaid · {peso(totals.trackingOnly)} legacy online records without a duplicate-receipt choice. These are excluded from confirmed cash and online totals to avoid guessing or double-counting.
       </div>}
       {totals.duplicateTracked > 0 && <p style={{ fontSize:11, color:'#666' }}>{peso(totals.duplicateTracked)} online tracking entries are already included in a Daily Sales payment split and are not counted twice.</p>}
       <div style={{ display:'flex', flexWrap:'wrap', gap:12, marginBottom:12, fontSize:12 }}>
         <span>Bank deposits recorded: <strong>{peso(report.bankDeposits)}</strong></span>
-        <span>Approved expenses: <strong>{peso(report.approvedExpenses)}</strong> (payment method not recorded)</span>
+        <span>Approved expenses dated this day: <strong>{peso(report.approvedExpenses)}</strong></span>
         {report.cashCountAt && <span>Cash count submitted: <strong>{timestamp(report.cashCountAt)}</strong></span>}
       </div>
+      <OwnerCashExpenses rows={report.cashExpenseRows} date={date} today={today} supabase={supabase} onSaved={()=>load(date)} onOpenExpenses={onOpenExpenses} />
       <details open style={{ ...card, marginBottom:10 }}>
         <summary style={{ fontWeight:700, cursor:'pointer' }}>Payments received on {date} ({report.receipts.length})</summary>
         <div style={{ overflowX:'auto', marginTop:10 }}>

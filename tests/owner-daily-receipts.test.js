@@ -37,7 +37,7 @@ test('daily receipts count actual payment dates and methods without unpaid invoi
     invoices:[{ id:'unpaid', created_at:at, delivery_date:date, status:'delivered',
       delivered_at:at, total_amount:500, paid_amount:0 }],
     cash_counts:[{ id:'count', reconciliation_date:date, created_at:at, actual_cash:240 }],
-    bank_deposits:[{ id:'deposit', deposit_date:date, amount:50 }],
+    bank_deposits:[{ id:'deposit', deposit_date:date, amount:50, status:'deposited' }],
     expenses:[{ id:'expense', expense_date:date, amount:15, status:'approved' }]
   }, date)
   assert.deepEqual(report.totals, {
@@ -49,6 +49,32 @@ test('daily receipts count actual payment dates and methods without unpaid invoi
   assert.equal(report.approvedExpenses,15)
   assert.ok(report.entered.some(row => row.id === 'reseller-payment-later'))
   assert.ok(!report.receipts.some(row => row.id.startsWith('Reseller payment-later-')))
+})
+
+test('daily cash movement deducts only owner-confirmed cash expense payments and deposits', () => {
+  const data = {
+    reseller_payments:[{ id:'cash', payment_date:date, created_at:at, amount:200, payment_method:'Cash' }],
+    bank_deposits:[
+      { id:'deposit', deposit_date:date, amount:40, status:'deposited' },
+      { id:'pending', deposit_date:date, amount:500, status:'pending' }
+    ],
+    expenses:[{ id:'today', expense_date:date, amount:90, status:'approved' }]
+  }
+  const rows = [
+    { id:'cash-expense', expense_date:'2026-10-04', amount:30, classified_amount:30, status:'approved', payment_method:'cash', paid_date:date },
+    { id:'online-expense', expense_date:date, amount:20, classified_amount:20, status:'approved', payment_method:'gcash', paid_date:date },
+    { id:'unknown-expense', expense_date:date, amount:70, status:'approved', payment_method:null, paid_date:null },
+    { id:'pending-expense', expense_date:date, amount:60, status:'pending', payment_method:null, paid_date:null }
+  ]
+  const report = buildOwnerDailyReceipts(data, date, rows)
+  assert.equal(report.cashExpensesPaid, 30)
+  assert.equal(report.bankDeposits, 40)
+  assert.equal(report.netRecordedCash, 130)
+  assert.equal(report.cashExpectedComplete, false)
+  assert.deepEqual(report.expensesNeedingReview.map(row=>row.id), ['unknown-expense'])
+  const reconciled = buildOwnerDailyReceipts(data, date, rows.map(row=>row.id === 'unknown-expense' ? { ...row, payment_method:'unpaid' } : row))
+  assert.equal(reconciled.cashExpectedComplete, true)
+  assert.equal(reconciled.netRecordedCash, 130)
 })
 
 test('owner receipt migration compiles and its RPC denies a non-owner', async () => {
@@ -73,7 +99,7 @@ test('owner receipt migration compiles and its RPC denies a non-owner', async ()
         delivery_date date, reseller_name text, total_amount numeric, paid_amount numeric, status text, delivered_at timestamptz);
       create table cash_reconciliations (id uuid, reconciliation_date date, created_at timestamptz, actual_cash numeric, submitted_by text);
       create table bank_deposits (id uuid, deposit_date date, created_at timestamptz, amount numeric, bank_name text, status text);
-      create table daily_expenses (id uuid, expense_date date, created_at timestamptz, amount numeric, category text, status text);`)
+      create table daily_expenses (id uuid primary key, expense_date date, created_at timestamptz, amount numeric, category text, description text, status text);`)
     const migration = new URL('../supabase/migrations/20261005103351_owner_daily_receipts.sql', import.meta.url)
     await db.exec(await readFile(migration, 'utf8'))
     await assert.rejects(db.query('select public.owner_daily_receipts($1)', [date]), /Owner access required/)
@@ -86,5 +112,23 @@ test('owner receipt migration compiles and its RPC denies a non-owner', async ()
     assert.deepEqual(result.rows[0].report.daily_sales,[])
     await db.exec("insert into daily_sales(sale_date,total_walkin,total_messenger,cash_received,gcash_received,other_online_received,unpaid_amount) values ('2026-10-05',100,0,90,10,0,0)")
     await assert.rejects(db.exec("insert into daily_sales(sale_date,total_walkin,total_messenger,cash_received,gcash_received,other_online_received,unpaid_amount) values ('2026-10-05',100,0,100,10,0,0)"), /daily_sales_receipt_split_valid/)
+    await db.exec('create or replace function public.business_control_has_role(text[]) returns boolean language sql as $$ select false $$')
+    const cashMigration = new URL('../supabase/migrations/20261005115845_owner_expense_cash_tracking.sql', import.meta.url)
+    await db.exec(await readFile(cashMigration, 'utf8'))
+    await assert.rejects(db.query('select public.owner_cash_expenses_for_day($1)', [date]), /Owner access required/)
+    await db.exec('set role anon')
+    await assert.rejects(db.query('select public.owner_record_expense_payment($1,$2,$3,$4)', ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','cash',date,null]), /permission denied/)
+    await db.exec('reset role')
+    await db.exec('create or replace function public.business_control_has_role(text[]) returns boolean language sql as $$ select true $$')
+    await db.exec("insert into daily_expenses(id,expense_date,created_at,amount,category,status) values ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','2026-10-04',now(),25,'Fuel','approved')")
+    await db.query('select public.owner_record_expense_payment($1,$2,$3,$4)', ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','cash',date,null])
+    await assert.rejects(db.query('select public.owner_record_expense_payment($1,$2,$3,$4)', ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','cash',date,null]), /already recorded/)
+    await assert.rejects(db.query('select public.owner_record_expense_payment($1,$2,$3,$4)', ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','unpaid',null,null]), /correction note is required/)
+    const paid = await db.query('select public.owner_cash_expenses_for_day($1) as expenses', [date])
+    assert.equal(paid.rows[0].expenses[0].payment_method, 'cash')
+    assert.equal(Number(paid.rows[0].expenses[0].classified_amount), 25)
+    await db.query('select public.owner_record_expense_payment($1,$2,$3,$4)', ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','unpaid',null,'Corrected payment status'])
+    const audit = await db.query('select count(*)::int as events from public.owner_expense_payment_events')
+    assert.equal(audit.rows[0].events, 2)
   } finally { await db.close() }
 })
