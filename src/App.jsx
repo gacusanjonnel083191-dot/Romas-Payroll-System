@@ -3126,6 +3126,28 @@ const DOCUMENT_BATCH1A_FORMS = [
   "externalTab": "contracts"
  },
  {
+  "key": "HR-NDA",
+  "title": "Employee Non-Disclosure & Confidentiality Agreement",
+  "category": "HR & Employee",
+  "refPrefix": "RD-NDA",
+  "purpose": "Protect genuine non-public Roma's Donuts business information, trade secrets, personal data, and internal systems while preserving lawful employee rights and disclosures.",
+  "employeeMode": "required",
+  "employeeLabel": "Employee",
+  "fields": [
+   {
+    "key": "effectiveDate",
+    "label": "Effective Date",
+    "type": "date",
+    "required": true
+   }
+  ],
+  "reminder": "Use this agreement only for legitimate confidential business information. It does not prohibit lawful reporting, legal advice, compliance with legal process, or employee rights protected by Philippine law.",
+  "signatureLabels": [
+   "Employee Signature",
+   "Company Representative"
+  ]
+ },
+ {
   "key": "HR-COE",
   "aliases": [
    "COE",
@@ -5617,6 +5639,7 @@ function findBatch1DocumentForm(formKey) {
 
 const RESELLER_AGREEMENT_FORM_KEYS = ['RES-KIOSK','RES-CART']
 const CERTIFICATE_OF_EMPLOYMENT_FORM_KEY = 'HR-COE'
+const EMPLOYEE_NDA_FORM_KEY = 'HR-NDA'
 
 function isResellerAgreementFormKey(formKey = '') {
  const form = findBatch1DocumentForm(formKey)
@@ -5626,6 +5649,11 @@ function isResellerAgreementFormKey(formKey = '') {
 function isCertificateOfEmploymentFormKey(formKey = '') {
  const form = findBatch1DocumentForm(formKey)
  return String(form?.key || formKey || '').toUpperCase() === CERTIFICATE_OF_EMPLOYMENT_FORM_KEY
+}
+
+function isEmployeeNdaFormKey(formKey = '') {
+ const form = findBatch1DocumentForm(formKey)
+ return String(form?.key || formKey || '').toUpperCase() === EMPLOYEE_NDA_FORM_KEY
 }
 
 function getCertificateEmploymentStatus(employee) {
@@ -5711,7 +5739,7 @@ const DOCUMENT_CENTER_CATALOG = [
  { code:'HR-INFO-SHEET', name:'Employee Information Sheet', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Collect employee profile, emergency contact, government IDs, and payroll details.' },
  { code:'HR-DATA-PRIVACY', name:'Data Privacy Consent Form', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Document employee consent for storing and processing records inside the system.' },
  { code:'HR-HANDBOOK-ACK', name:'Employee Handbook Acknowledgment', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Confirm employee received and accepted company rules and policies.' },
- { code:'HR-NDA', name:'NDA / Confidentiality Agreement', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Protect recipes, suppliers, costing, reseller terms, and internal systems.' },
+ { code:'HR-NDA', name:'NDA / Confidentiality Agreement', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Existing Module', purpose:'Create, save, print, and download the employee NDA covering recipes, costing, suppliers, reseller/customer information, personal data, and internal systems.' },
  { code:'HR-PPE-ISSUE', name:'Uniform / PPE Issuance Slip', category:'HR & Employee', batch:'Batch 1', priority:'High', status:'Template Listed', purpose:'Track issued shirts, aprons, caps, shoes, hairnets, and other PPE.' },
  { code:'HR-PROPERTY-ISSUE', name:'Company Property Issuance Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Record keys, tools, devices, vehicle items, and company assets issued to employees.' },
  { code:'HR-TRAINING-COMPLETE', name:'Training Completion Form', category:'HR & Employee', batch:'Batch 2', priority:'Medium', status:'Template Listed', purpose:'Document completed training for sanitation, production, delivery, cashier, and system rules.' },
@@ -34915,6 +34943,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  const activeBatch1FillableForms = DOCUMENT_BATCH1A_FORMS.filter(form => !form.externalTab)
  const isChargeSlipDocumentForm = selectedBatch1DocumentForm?.key === 'FIN-CHARGE-SLIP'
  const isCertificateOfEmploymentForm = isCertificateOfEmploymentFormKey(selectedBatch1DocumentForm?.key)
+ const isEmployeeNdaForm = isEmployeeNdaFormKey(selectedBatch1DocumentForm?.key)
  const ownerOpenDocumentRecords = (companyDocumentRecords || []).filter(record => !['closed','completed','voided','terminated','expired'].includes(String(record.status || 'draft').toLowerCase()))
  const ownerPendingEmployeeCharges = (employeeCharges || []).filter(charge => ['pending_owner','disputed'].includes(String(charge.status || '').toLowerCase()))
  const ownerLinkedChargeByDocumentId = (employeeCharges || []).reduce((map, charge) => {
@@ -36004,6 +36033,112 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
  }
 
+
+ const cleanEmployeeNdaFileName = value => String(value || '').trim().replace(/[^a-z0-9]+/gi,'-').replace(/^-+|-+$/g,'').slice(0,70)
+
+ const buildEmployeeNdaHtml = ({ form = getSelectedDocumentBatch1AForm(), values = documentFormDraft, record = null, wordMode = false } = {}) => {
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch] || ch))
+  const currentEmployee = record ? null : getDocumentFormEmployee()
+  const employeeName = String(record?.employee_name || currentEmployee?.full_name || '____________________________').trim()
+  const employeeCode = String(record?.employee_code || currentEmployee?.employee_code || '________________').trim()
+  const position = String(record?.position || currentEmployee?.position || '________________').trim()
+  const department = String(record?.department || currentEmployee?.department || '________________').trim()
+  const effectiveDate = values?.effectiveDate || record?.effective_date || values?.documentDate || record?.document_date || today
+  const documentNo = record?.document_no || values?.documentNo || getDocumentReferenceNumber(form)
+  const pageClass = wordMode ? 'WordSection1' : 'page'
+  const generatedStamp = new Date().toLocaleString('en-PH')
+  const employeeDetails = [
+   ['Employee', employeeName],
+   ['Effective Date', formatDateForDisplay(effectiveDate)],
+   ['Position / Department', position + ' / ' + department],
+   ['Employee ID', employeeCode]
+  ].map(([label,value]) => '<tr><td class="field-label">' + esc(label) + ':</td><td>' + esc(value) + '</td></tr>').join('')
+
+  const css = [
+   wordMode ? '@page WordSection1{size:8.5in 13in;margin:0.42in 0.50in 0.42in 0.50in;}div.WordSection1{page:WordSection1;}' : '@page{size:8.5in 13in;margin:0;}',
+   '*{box-sizing:border-box}',
+   'body{font-family:Arial,sans-serif;color:#151515;margin:0;background:' + (wordMode ? '#fff' : '#e5e5e5') + ';font-size:10.4pt;line-height:1.22;}',
+   '.page,.WordSection1{width:8.5in;min-height:13in;background:#fff;margin:0 auto;padding:0.42in 0.50in 0.42in 0.50in;}',
+   '.page{box-shadow:0 2px 12px rgba(0,0,0,.16)}',
+   '.brand{width:100%;border-collapse:collapse;margin:0 0 8px}.brand td{border:none;padding:9px 10px}.brand-left{background:#c62828;color:#fff;width:70%}.brand-right{background:#f4c430;color:#4b3200;text-align:right;font-weight:700}',
+   '.company{font-family:Arial Black,Arial,sans-serif;font-size:17pt;font-weight:900}.confidential{font-size:10pt;font-weight:800}',
+   '.title{text-align:center;font-size:14pt;font-weight:900;color:#3b3b3b;margin:6px 0 2px}.sub{text-align:center;font-size:9pt;font-style:italic;color:#666;border-bottom:2px solid #f4c430;padding-bottom:6px;margin-bottom:7px}',
+   '.meta{width:100%;border-collapse:collapse;margin:0 0 5px}.meta td{border:none;padding:2px 4px;font-size:10pt}.field-label{font-weight:700;width:19%;white-space:nowrap}',
+   '.intro{margin:4px 0 5px}.section{font-size:10.7pt;font-weight:900;color:#9c1c1c;margin:5px 0 2px}.body{margin:0 0 4px;text-align:justify}.body ul{margin:2px 0 4px 18px;padding:0}.body li{margin:0 0 1px}',
+   '.ack{background:#f7f7f7;border:1px solid #e4e4e4;padding:7px 8px;margin-top:5px}.ack-title{font-weight:900;color:#9c1c1c;margin-bottom:3px}',
+   '.sig-table{width:100%;border-collapse:collapse;margin-top:13px}.sig-table td{border:none;width:50%;padding:18px 12px 0;text-align:center;font-size:9.4pt}.sig-line{border-top:1px solid #222;padding-top:4px;font-weight:700}.date-line{margin-top:6px}',
+   '.footer{text-align:center;color:#777;font-size:7.8pt;margin-top:9px;border-top:1px solid #eee;padding-top:4px}',
+   '.no-print{text-align:center;margin:0 0 10px}.no-print button{background:#c62828;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-weight:800;cursor:pointer}',
+   wordMode ? '' : '@media print{body{background:#fff}.page{box-shadow:none;margin:0}.no-print{display:none}}'
+  ].join('')
+
+  return [
+   '<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"><title>' + esc(documentNo || form?.title || 'Employee NDA') + '</title><style>' + css + '</style></head><body>',
+   wordMode ? '' : '<div class="no-print"><button onclick="window.print()">Print / Save as PDF</button></div>',
+   '<div class="' + pageClass + '">',
+   '<table class="brand"><tr><td class="brand-left"><div class="company">ROMA\\'S DONUTS</div></td><td class="brand-right"><div class="confidential">CONFIDENTIAL • HR</div></td></tr></table>',
+   '<div class="title">EMPLOYEE NON-DISCLOSURE &amp; CONFIDENTIALITY AGREEMENT</div>',
+   '<div class="sub">Roma\\'s Donuts • Dagupan City, Pangasinan • Philippines • ' + esc(documentNo) + '</div>',
+   '<table class="meta">' + employeeDetails + '</table>',
+   '<p class="intro">This Agreement is between <strong>Roma\\'s Donuts</strong> (“Company”) and the employee named above (“Employee”). Its purpose is to protect genuine non-public business information and personal data that Employee may access because of work.</p>',
+   '<div class="section">1. Confidential Information</div>',
+   '<div class="body">“Confidential Information” means non-public information the Company reasonably protects because unauthorized disclosure or use could harm the Company, its workers, customers, resellers, suppliers, or other persons. It includes:<ul>',
+   '<li>recipes, formulas, ingredient ratios, production methods, product specifications, shelf-life/R&amp;D work, SOPs and quality-control methods;</li>',
+   '<li>costing, margins, internal pricing rules, supplier prices/terms, purchasing, inventory, production, forecasting and internal financial records;</li>',
+   '<li>reseller/customer lists, contacts, balances, orders, invoices, sales/returns data, delivery plans and non-public commercial terms;</li>',
+   '<li>employee, payroll, HR and other personal data that are not intended for public disclosure; and</li>',
+   '<li>software/app source code, databases, credentials, access permissions, system configurations, report logic, internal business plans, negotiations and unpublished marketing/product plans.</li>',
+   '</ul>It does not include information that is lawfully public without breach of this Agreement, was lawfully known to Employee before disclosure, was independently developed without Company Confidential Information, or was lawfully received from a third party without a duty of confidentiality.</div>',
+   '<div class="section">2. Employee Duties</div>',
+   '<div class="body">Employee shall use Confidential Information only for authorized Company work and only to the extent needed for assigned duties; shall not copy, photograph, download, upload, post, send, sell, disclose or use it for personal benefit or for another person/business without authorization; shall protect passwords, devices, files and printed records; shall not store Company information in personal email/cloud accounts unless authorized; and shall promptly report any suspected loss, leak, unauthorized access or mistaken disclosure.</div>',
+   '<div class="section">3. Lawful Disclosures and Employee Rights</div>',
+   '<div class="body">Nothing in this Agreement prohibits Employee from complying with law, subpoena or court order; reporting suspected legal, labor, safety, privacy or regulatory violations to DOLE, NLRC, National Privacy Commission, courts, law-enforcement or another competent authority; seeking confidential legal advice; exercising rights protected by law; or discussing Employee’s own wages, benefits or working conditions to the extent protected by law. Where legally permitted, Employee should disclose only what is reasonably necessary and notify the Company before disclosure.</div>',
+   '<div class="section">4. Duration, Return of Records and Remedies</div>',
+   '<div class="body">These duties apply during employment and continue after separation for as long as the information remains legitimately confidential or protected by law. Upon request or separation, Employee shall return Company property and records and shall not keep unauthorized copies. A suspected breach may be investigated under Company procedures. Any discipline, including dismissal where legally justified, remains subject to applicable Philippine labor law and due process. The Company may also seek lawful civil remedies, including recovery of proven damages or appropriate injunctive relief.</div>',
+   '<div class="section">5. Governing Terms</div>',
+   '<div class="body">This Agreement is governed by Philippine law and supplements, but does not replace, the employment contract, Company policies or rights provided by law. If any provision is held invalid, the remaining lawful provisions remain effective. No provision is intended to waive a right that cannot legally be waived.</div>',
+   '<div class="ack"><div class="ack-title">EMPLOYEE ACKNOWLEDGMENT</div>I confirm that I have read and understood this Agreement, had the opportunity to ask questions, and agree to follow it. I acknowledge receipt of a copy.</div>',
+   '<table class="sig-table"><tr><td><div class="sig-line">Employee Signature over Printed Name</div><div class="date-line">Date: ____________________</div></td><td><div class="sig-line">Authorized Company Representative</div><div class="date-line">Date: ____________________</div></td></tr></table>',
+   '<div class="footer">Roma\\'s Donuts • Employee NDA • Long Coupon 8.5 × 13 in • Generated ' + esc(generatedStamp) + '</div>',
+   '</div></body></html>'
+  ].join('')
+ }
+
+ const openEmployeeNdaPreview = ({ form = getSelectedDocumentBatch1AForm(), values = documentFormDraft, record = null, autoPrint = false } = {}) => {
+  if (!form || !isEmployeeNdaFormKey(form.key)) { showToast('Select the Employee NDA first.', 'red'); return }
+  const html = buildEmployeeNdaHtml({ form, values, record, wordMode:false })
+  const pw = window.open('', '_blank', 'width=980,height=820')
+  if (!pw) { showToast('Popup blocked. Please allow popups to preview the Employee NDA.', 'red'); return }
+  pw.document.write(html)
+  pw.document.close()
+  pw.focus()
+  if (autoPrint) setTimeout(() => pw.print(), 350)
+ }
+
+ const downloadEmployeeNdaWord = ({ form = getSelectedDocumentBatch1AForm(), values = documentFormDraft, record = null } = {}) => {
+  if (!form || !isEmployeeNdaFormKey(form.key)) { showToast('Select the Employee NDA first.', 'red'); return }
+  if (!record && !validateCurrentDocumentForm(form)) return
+  const documentNo = record?.document_no || values?.documentNo || getDocumentReferenceNumber(form)
+  const employeeName = String(record?.employee_name || getDocumentFormEmployee()?.full_name || 'Employee').trim()
+  if (!record && !documentFormDraft.documentNo) setDocumentFormDraft(prev => ({ ...prev, documentNo }))
+  const html = buildEmployeeNdaHtml({ form, values:{ ...values, documentNo }, record, wordMode:true })
+  const fileName = ['Romas-Donuts-Employee-NDA', cleanEmployeeNdaFileName(employeeName), cleanEmployeeNdaFileName(documentNo)].filter(Boolean).join('_') + '.doc'
+  try {
+   const blob = new Blob(['\\ufeff', html], { type:'application/msword;charset=utf-8' })
+   const url = URL.createObjectURL(blob)
+   const link = document.createElement('a')
+   link.href = url
+   link.download = fileName
+   document.body.appendChild(link)
+   link.click()
+   link.remove()
+   setTimeout(() => URL.revokeObjectURL(url), 1000)
+   showToast('Employee NDA Word file downloaded in long coupon format.')
+  } catch(error) {
+   showToast('Failed to download Employee NDA Word file: ' + (error?.message || error), 'red')
+  }
+ }
+
  const openDocumentPrintWindow = ({ form, rows, documentNo, status = '', autoPrint = false }) => {
   const escDoc = value => {
    const map = { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }
@@ -36068,6 +36203,11 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    openCertificateOfEmploymentPreview({ form, values:{ ...documentFormDraft, documentNo:docNo } })
    return
   }
+  if (isEmployeeNdaFormKey(form.key)) {
+   if (!validateCurrentDocumentForm(form)) return
+   openEmployeeNdaPreview({ form, values:{ ...documentFormDraft, documentNo:docNo } })
+   return
+  }
   if (isResellerAgreementFormKey(form.key)) {
    if (!validateCurrentDocumentForm(form)) return
    openResellerAgreementPreview({ form, values:{ ...documentFormDraft, documentNo:docNo } })
@@ -36101,6 +36241,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
 
   const values = getSavedDocumentValues(record)
+  if (isEmployeeNdaFormKey(form.key)) {
+   openEmployeeNdaPreview({ form, values, record, autoPrint:true })
+   return
+  }
   if (isResellerAgreementFormKey(form.key)) {
    openResellerAgreementPreview({ form, values:getResellerAgreementRecordValues(record), record, autoPrint:true })
    return
@@ -36147,6 +36291,10 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    ]
   }
   const values = getSavedDocumentValues(record)
+  if (isEmployeeNdaFormKey(form.key)) {
+   openEmployeeNdaPreview({ form, values, record, autoPrint:false })
+   return
+  }
   if (isResellerAgreementFormKey(form.key)) {
    openResellerAgreementPreview({ form, values:getResellerAgreementRecordValues(record), record, autoPrint:false })
    return
@@ -40445,6 +40593,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
   <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>printBatch1ADocumentForm()}>{isResellerAgreementFormKey(selectedBatch1DocumentForm.key)?'PREVIEW / PRINT':'PRINT ONLY'}</button>
   {isCertificateOfEmploymentForm && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadCertificateOfEmploymentWord()}>DOWNLOAD WORD (A4)</button>}
+  {isEmployeeNdaForm && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadEmployeeNdaWord()}>DOWNLOAD WORD (LONG COUPON)</button>}
   {isResellerAgreementFormKey(selectedBatch1DocumentForm.key) && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadResellerAgreementWord()}>DOWNLOAD WORD</button>}
   <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={clearCurrentDocumentForm}>{editingCompanyDocumentRecordId?'CANCEL EDIT':'CLEAR FORM'}</button>
   <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Required fields are marked with <strong>*</strong>. Saved records remain in the Document Records & NTE Archive tab.</p>
@@ -40648,6 +40797,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
           <button style={{...btnGray, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>viewCompanyDocumentRecord(record)}>VIEW</button>
           <button style={{...btnBlack, background:'#1a1a2e', width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>printCompanyDocumentRecord(record)}>PRINT</button>
           {isCertificateOfEmploymentFormKey(record.form_key) && <button style={{...btnBlack, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadCertificateOfEmploymentWord({ form:findBatch1DocumentForm(record.form_key), values:getSavedDocumentValues(record), record })}>WORD</button>}
+          {isEmployeeNdaFormKey(record.form_key) && <button style={{...btnBlack, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadEmployeeNdaWord({ form:findBatch1DocumentForm(record.form_key), values:getSavedDocumentValues(record), record })}>WORD</button>}
          {isResellerAgreementFormKey(record.form_key) ? (
            <>
             <button style={{...btnBlack, width:'auto', padding:'6px 9px', marginTop:0, fontSize:'11px' }} onClick={()=>downloadResellerAgreementWord({ form:findBatch1DocumentForm(record.form_key), values:getResellerAgreementRecordValues(record), record })}>WORD</button>
