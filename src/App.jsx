@@ -6884,6 +6884,7 @@ export default function App() {
  })
  const [companyDocumentRecords, setCompanyDocumentRecords] = useState([])
  const [companyDocumentRecordsLoading, setCompanyDocumentRecordsLoading] = useState(false)
+ const [documentRecordSaving, setDocumentRecordSaving] = useState(false)
  const [editingCompanyDocumentRecordId, setEditingCompanyDocumentRecordId] = useState(null)
  const [signedAgreementUploadingId, setSignedAgreementUploadingId] = useState(null)
 
@@ -35065,11 +35066,14 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  const updateDocumentFormDraft = (field, value) => {
   setDocumentFormDraft(prev => {
+   const employeeChanged = field === 'employeeId' && String(prev.employeeId || '') !== String(value || '')
+   const resetDocumentNo = employeeChanged && !editingCompanyDocumentRecordId
    if (field === 'employeeId' && isCertificateOfEmploymentFormKey(prev.formKey)) {
     const employee = (employees || []).find(row => String(row.id) === String(value)) || null
     if (employee) {
      return {
       ...prev,
+      documentNo:resetDocumentNo ? '' : prev.documentNo,
       employeeId:value,
       customFields:{
        ...(prev.customFields || {}),
@@ -35084,7 +35088,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      }
     }
    }
-   if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(field)) return { ...prev, [field]:value }
+   if (DOCUMENT_FORM_CORE_FIELD_KEYS.includes(field)) {
+    return { ...prev, [field]:value, ...(resetDocumentNo ? { documentNo:'' } : {}) }
+   }
    return { ...prev, customFields:{ ...(prev.customFields || {}), [field]:value } }
   })
  }
@@ -35129,18 +35135,22 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
 
  const applyResellerToDocumentDraft = resellerId => {
   const reseller = (resellers || []).find(row => String(row.id) === String(resellerId)) || null
-  setDocumentFormDraft(prev => ({
-   ...prev,
-   customFields:{
-    ...(prev.customFields || {}),
-    resellerId:resellerId || '',
-    resellerName:reseller?.contact_person || reseller?.name || '',
-    resellerBusinessName:reseller?.name || '',
-    resellerPhone:reseller?.phone || '',
-    resellerAddress:reseller?.address || '',
-    territory:reseller?.area || ''
+  setDocumentFormDraft(prev => {
+   const resellerChanged = String(prev?.customFields?.resellerId || '') !== String(resellerId || '')
+   return {
+    ...prev,
+    documentNo:resellerChanged && !editingCompanyDocumentRecordId ? '' : prev.documentNo,
+    customFields:{
+     ...(prev.customFields || {}),
+     resellerId:resellerId || '',
+     resellerName:reseller?.contact_person || reseller?.name || '',
+     resellerBusinessName:reseller?.name || '',
+     resellerPhone:reseller?.phone || '',
+     resellerAddress:reseller?.address || '',
+     territory:reseller?.area || ''
+    }
    }
-  }))
+  })
  }
 
  const getResellerAgreementPartyName = (values = documentFormDraft, record = null) =>
@@ -35589,11 +35599,22 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   return (employees || []).find(e => String(e.id) === String(documentFormDraft.employeeId)) || null
  }
 
+ const createFreshDocumentReferenceNumber = (form = getSelectedDocumentBatch1AForm()) => {
+  const cleanDate = String(documentFormDraft.documentDate || today).replace(/-/g, '')
+  const timePart = String(Date.now()).slice(-7)
+  const entropy = Math.random().toString(36).slice(2, 6).toUpperCase().padEnd(4, '0')
+  return String(form?.refPrefix || 'RD-DOC') + '-' + cleanDate + '-' + timePart + '-' + entropy
+ }
+
  const getDocumentReferenceNumber = (form = getSelectedDocumentBatch1AForm(), forcedDocumentNo = '') => {
   if (forcedDocumentNo) return forcedDocumentNo
   if (documentFormDraft.documentNo) return documentFormDraft.documentNo
-  const cleanDate = String(documentFormDraft.documentDate || today).replace(/-/g, '')
-  return String(form?.refPrefix || 'RD-DOC') + '-' + cleanDate + '-' + String(Date.now()).slice(-5)
+  return createFreshDocumentReferenceNumber(form)
+ }
+
+ const isDocumentNumberDuplicateError = error => {
+  const message = String(error?.message || '') + ' ' + String(error?.details || '') + ' ' + String(error?.hint || '')
+  return error?.code === '23505' && /document_no|company_document_records_document_no_key/i.test(message)
  }
 
  const getFormFieldValueFromValues = (values = {}, fieldKey = '') => {
@@ -35665,6 +35686,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  }
 
  async function saveCurrentDocumentRecord(status = 'draft', options = {}) {
+  if (documentRecordSaving) return null
   const form = getSelectedDocumentBatch1AForm()
   if (!form || form.externalTab) {
    showToast('Select a fillable document form.', 'red')
@@ -35672,8 +35694,9 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   }
   if (!validateCurrentDocumentForm(form)) return null
 
+  setDocumentRecordSaving(true)
   const emp = getDocumentFormEmployee()
-  const docNo = getDocumentReferenceNumber(form)
+  let docNo = getDocumentReferenceNumber(form)
   const isResellerAgreement = isResellerAgreementFormKey(form.key)
   const isCertificateOfEmployment = isCertificateOfEmploymentFormKey(form.key)
   const agreementModel = getResellerAgreementModel(form.key)
@@ -35725,9 +35748,17 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   try {
    const wasEditing = !!editingCompanyDocumentRecordId
    const updatePayload = wasEditing ? (() => { const { created_by, ...rest } = payload; return rest })() : payload
-   const result = wasEditing
+   let result = wasEditing
     ? await supabase.from('company_document_records').update(updatePayload).eq('id', editingCompanyDocumentRecordId).select().single()
     : await supabase.from('company_document_records').insert(updatePayload).select().single()
+
+   if (!wasEditing && result.error && isDocumentNumberDuplicateError(result.error)) {
+    docNo = createFreshDocumentReferenceNumber(form)
+    payload.document_no = docNo
+    payload.remarks = encodeCompanyDocumentFormData(form.key, { ...documentFormDraft, documentNo:docNo })
+    result = await supabase.from('company_document_records').insert(payload).select().single()
+   }
+
    const { data, error } = result
    if (error) throw error
 
@@ -35759,6 +35790,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    console.warn('saveCurrentDocumentRecord:', err)
    showToast('Failed to save document: ' + (err?.message || err), 'red')
    return null
+  } finally {
+   setDocumentRecordSaving(false)
   }
  }
 
@@ -40647,8 +40680,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  {editingCompanyDocumentRecordId && <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderLeft:'5px solid #ca1b1b', borderRadius:'10px', padding:'9px 11px', marginBottom:'10px', color:'#1a1a2e', fontSize:'11px', fontWeight:'800' }}>Editing a saved reseller agreement. Saving will update the existing Document Records entry.</div>}
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
-  <button style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft')}>{editingCompanyDocumentRecordId?'UPDATE DRAFT':'SAVE AS DRAFT'}</button>
-  <button style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>SAVE & PRINT</button>
+  <button disabled={documentRecordSaving} style={{...btnBlack, background:'#4a90d9', width:'auto', padding:'10px 16px', marginTop:0, opacity:documentRecordSaving?0.65:1 }} onClick={()=>saveCurrentDocumentRecord('draft')}>{documentRecordSaving?'SAVING...':(editingCompanyDocumentRecordId?'UPDATE DRAFT':'SAVE AS DRAFT')}</button>
+  <button disabled={documentRecordSaving} style={{...btnGreen, width:'auto', padding:'10px 16px', marginTop:0, opacity:documentRecordSaving?0.65:1 }} onClick={()=>saveCurrentDocumentRecord('draft', { printAfter:true })}>{documentRecordSaving?'SAVING...':'SAVE & PRINT'}</button>
   <button style={{...btnGray, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>printBatch1ADocumentForm()}>{isResellerAgreementFormKey(selectedBatch1DocumentForm.key)?'PREVIEW / PRINT':'PRINT ONLY'}</button>
   {isCertificateOfEmploymentForm && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadCertificateOfEmploymentWord()}>DOWNLOAD WORD (A4)</button>}
   {isEmployeeNdaForm && <button style={{...btnBlack, width:'auto', padding:'10px 16px', marginTop:0 }} onClick={()=>downloadEmployeeNdaWord()}>DOWNLOAD WORD (LONG COUPON)</button>}
