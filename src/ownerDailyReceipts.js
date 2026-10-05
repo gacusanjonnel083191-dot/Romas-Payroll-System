@@ -123,6 +123,8 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
     .reduce((total, row) => total + Math.max(0, cents(row.total_amount) - cents(row.paid_amount)), 0)
   const counts = (data.cash_counts || []).filter(row => row.reconciliation_date === date)
     .sort((a,b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+  const handover = (data.cash_handovers || []).filter(row => row.business_date === date)
+    .sort((a,b) => b.revision - a.revision)[0]
   const deposits = (data.bank_deposits || []).filter(row => row.deposit_date === date &&
     String(row.status || '').toLowerCase() === 'deposited')
   const expenses = (data.expenses || []).filter(row => row.expense_date === date && row.status === 'approved')
@@ -143,7 +145,7 @@ export function buildOwnerDailyReceipts(data = {}, date, cashExpenseRows = []) {
     cashExpenseRows, cashExpensesPaid:money(cashExpensesPaid),
     expensesNeedingReview, netRecordedCash:money(totals.cash - cashExpensesPaid - cashDeposited),
     cashExpectedComplete:expensesNeedingReview.length === 0,
-    actualCashCount:counts.length ? Number(counts[0].actual_cash) : null,
-    cashCountAt:counts[0]?.created_at || ''
+    actualCashCount:handover ? (handover.owner_physical_count == null ? null : Number(handover.owner_physical_count)) : counts.length ? Number(counts[0].actual_cash) : null,
+    cashCountAt:handover ? handover.owner_count_at || '' : counts[0]?.created_at || ''
   }
 }

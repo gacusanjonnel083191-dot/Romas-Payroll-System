@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { buildOwnerDailyReceipts } from './ownerDailyReceipts'
 import OwnerCashExpenses from './OwnerCashExpenses'
+import CashHandover from './CashHandover.jsx'
 
 const peso = amount => '₱' + Number(amount || 0).toLocaleString('en-PH', { minimumFractionDigits:2, maximumFractionDigits:2 })
 const card = { background:'#fff', border:'1px solid #e7e7e7', borderRadius:12, padding:'12px 14px' }
@@ -16,6 +17,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
   const [loadedDate, setLoadedDate] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [handoverError, setHandoverError] = useState('')
   const requestRef = useRef(0)
   const owner = String(adminRole || '').toLowerCase() === 'owner'
 
@@ -24,14 +26,18 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
     const requestId = ++requestRef.current
     setLoading(true); setError('')
     try {
-      const [receiptResult, expenseResult] = await Promise.all([
+      const [receiptResult, expenseResult, handoverResult] = await Promise.all([
         supabase.rpc('owner_daily_receipts', { p_day:selectedDate }),
-        supabase.rpc('owner_cash_expenses_for_day', { p_day:selectedDate })
+        supabase.rpc('owner_cash_expenses_for_day', { p_day:selectedDate }),
+        supabase.from('cash_handover_events').select('*').eq('business_date', selectedDate).order('revision', { ascending:false })
       ])
       if (requestId !== requestRef.current) return
       const requestError = receiptResult.error || expenseResult.error
       if (requestError) { setRaw(null); setError('Daily receipts could not be loaded: ' + requestError.message) }
-      else { setRaw({ ...(receiptResult.data || {}), cash_expenses:expenseResult.data || [] }); setLoadedDate(selectedDate) }
+      else {
+        setHandoverError(handoverResult.error ? 'Cash handover history could not be loaded. Saving is unavailable: ' + handoverResult.error.message : '')
+        setRaw({ ...(receiptResult.data || {}), cash_expenses:expenseResult.data || [], cash_handovers:handoverResult.error ? [] : handoverResult.data || [] }); setLoadedDate(selectedDate)
+      }
     } catch (requestError) {
       if (requestId === requestRef.current) { setRaw(null); setError('Daily receipts could not be loaded: ' + (requestError?.message || requestError)) }
     } finally {
@@ -70,14 +76,14 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(155px,1fr))', gap:9, marginBottom:12 }}>
         {cards.map(([label,value,color])=><div key={label} style={card}>
           <div style={{ fontSize:11, color:'#666', marginBottom:5 }}>{label}</div>
-          <strong style={{ color, fontSize:18 }}>{value === null || value === undefined ? 'Not counted' : peso(value)}</strong>
+          <strong style={{ color, fontSize:18 }}>{label === 'Actual company cash counted' && handoverError ? 'Unavailable' : value === null || value === undefined ? 'Not counted' : peso(value)}</strong>
         </div>)}
       </div>
       <p style={{ background:'#eaf3ff', border:'1px solid #c9def6', borderRadius:8, padding:'10px 12px', margin:'0 0 12px', color:'#263b59', fontSize:12 }}>
         <strong>Why these totals can differ:</strong> Payments recorded today can settle sales from earlier dates. Sales entered today includes newly encoded invoices even if they are still unpaid, plus backdated sales encoded today. They are separate totals and are not expected to match.
       </p>
       <p style={{ fontSize:11, color:'#555', margin:'4px 0 12px' }}>
-        Payment totals come from recorded tenders and collections; they do not prove cash was physically handed to the owner. Delivered but unpaid invoices are excluded. Actual company cash counted is shown only after a Cash Reconciliation is submitted for this date. POS drawer counts are outlet-specific and include opening cash.
+        Payment totals come from recorded tenders and collections; they do not prove cash was physically handed to the owner. Delivered but unpaid invoices are excluded. Actual company cash counted shows the latest reconciled owner physical count for this date, with legacy Cash Reconciliation counts used only when no handover exists. POS drawer counts are outlet-specific and include opening cash.
       </p>
       <div style={{ ...card, background:report.cashExpectedComplete ? '#edf8ef' : '#fff8e7', marginBottom:12 }}>
         <div style={{ display:'flex', justifyContent:'space-between', gap:12, flexWrap:'wrap', alignItems:'center' }}>
@@ -97,6 +103,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
           {report.expensesNeedingReview.length} approved expense{report.expensesNeedingReview.length === 1 ? '' : 's'} dated this day have no confirmed payment method. Review them below before treating the cash figure as final.
         </p>}
       </div>
+      {handoverError ? <p role="alert" style={{ color:'#a11' }}>{handoverError}</p> : <CashHandover key={date} date={date} report={report} rows={raw.cash_handovers || []} supabase={supabase} onSaved={()=>load(date)} disabled={loading || Boolean(error)} />}
       {(totals.unknown > 0 || totals.unpaid > 0 || totals.trackingOnly > 0) && <div style={{ ...card, background:'#fff8e7', marginBottom:12, fontSize:12 }}>
         <strong>Needs review:</strong> {peso(totals.unknown)} sales or payments with no confirmed payment method · {peso(totals.unpaid)} Daily Sales marked unpaid · {peso(totals.trackingOnly)} legacy online records without a duplicate-receipt choice. These are excluded from confirmed cash and online totals to avoid guessing or double-counting.
       </div>}
