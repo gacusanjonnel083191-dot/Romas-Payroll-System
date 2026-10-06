@@ -22982,8 +22982,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const trendStart = trendMonths[0]?.start || start
  const todayDate = today
  const [
- employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, resellerPaymentsRes, returnsRes, expensesRes, payrollRes,
- allReceivablesRes,
+ employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, allReceivablesRes, resellerPaymentsRes, returnsRes, expensesRes, payrollRes,
  productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes,
  contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes,
  bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes,
@@ -23002,7 +23001,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  foundationSelect('production_logs', '*', q=>q.gte('production_date', start).lte('production_date', end)),
  foundationSelect('production_reports', '*, production_report_items(*)', q=>q.gte('report_date', start).lte('report_date', end)),
  foundationSelect('inventory_items', '*'),
- foundationSelect('inventory_transactions', '*', q=>q.gte('transaction_date', start).lte('transaction_date', end)),
+ foundationSelect('inventory_transactions', '*', q=>q.gte('created_at', `${start}T00:00:00+08:00`).lte('created_at', `${end}T23:59:59.999+08:00`)),
  foundationSelect('wastage_logs', '*', q=>q.gte('wastage_date', start).lte('wastage_date', end)),
  foundationSelect('employee_contracts', '*'),
  foundationSelect('leave_requests', '*', q=>q.gte('leave_start', start).lte('leave_end', end)),
@@ -23013,7 +23012,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  foundationSelect('cash_reconciliations', '*', q=>q.gte('reconciliation_date', start).lte('reconciliation_date', end)),
  foundationSelect('bank_deposits', '*', q=>q.gte('deposit_date', start).lte('deposit_date', end)),
  foundationSelect('reseller_disputes', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
- foundationSelect('stock_adjustments', '*', q=>q.gte('adjustment_date', start).lte('adjustment_date', end)),
+ foundationSelect('stock_adjustments', '*', q=>q.gte('created_at', `${start}T00:00:00+08:00`).lte('created_at', `${end}T23:59:59.999+08:00`)),
  foundationSelect('resellers', '*'),
  foundationSelect('recipe_vault', 'id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at'),
  foundationSelect('daily_sales', '*, daily_sales_items(*)', q=>q.gte('sale_date', trendStart).lte('sale_date', end)),
@@ -23031,7 +23030,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const errors = [employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, allReceivablesRes, resellerPaymentsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, recipeVaultCostRes, trendDailySalesRes, trendDailySalesOnlineRes, trendInvoicesRes, trendPaymentsRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
  if (allReceivablesRes.error) throw new Error(allReceivablesRes.error)
  const verifiedReceivables = buildFoundationReceivables(allReceivablesRes.data, todayDate)
- setFoundationArPreview({ totalAR:verifiedReceivables.totalAR, overdueAR:verifiedReceivables.overdueAR, asOf:todayDate })
+ setFoundationArPreview({ totalAR:verifiedReceivables.totalAR, overdueAR:verifiedReceivables.overdueAR, invoiceCount:allReceivablesRes.data.length, asOf:todayDate })
  if (invoicesWithItemsRes.error) {
  const fallbackInv = await foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', start).lte('delivery_date', end))
  invoices = (fallbackInv.data || []).filter(isSalesSummaryInvoiceCounted)
@@ -47823,7 +47822,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
 
  {foundationLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading business foundation data...</p>}
  {foundationError && <div role="alert" style={{ background:'#fff5f5', color:'#a51c1c', border:'1px solid #ca1b1b', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}><strong>Dashboard figures unavailable.</strong> Source data did not load completely, so totals and health ratings are hidden. Check the source issue and retry.<details><summary>Technical details</summary><p style={{ overflowWrap:'anywhere' }}>{foundationError}</p></details></div>}
- {foundationError && foundationArPreview && <div style={{ background:'#fff', border:'1px solid #2d8a4e', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}><strong>Verified current receivables: {php(foundationArPreview.totalAR)}</strong><p style={{ margin:'6px 0 0', fontSize:'12px' }}>All invoice dates · {php(foundationArPreview.overdueAR)} more than 7 days past due · As of {foundationArPreview.asOf} (Manila)</p></div>}
+ {foundationError && foundationArPreview && <div style={{ background:'#fff', border:'1px solid #2d8a4e', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}><strong>{foundationArPreview.invoiceCount > 0? `Current receivables: ${php(foundationArPreview.totalAR)}`: 'Receivables unavailable for this session'}</strong><p style={{ margin:'6px 0 0', fontSize:'12px' }}>{foundationArPreview.invoiceCount > 0? `Across ${foundationArPreview.invoiceCount} accessible invoices · ${php(foundationArPreview.overdueAR)} more than 7 days past due · As of ${foundationArPreview.asOf} (Manila)`:'No invoices were returned, so a zero balance cannot be confirmed.'}</p></div>}
  {!foundationData &&!foundationLoading &&!foundationError && (
  <div style={{ background:'white', borderRadius:'14px', padding:'24px', textAlign:'center', border:'1px solid #eee' }}>
  <p style={{ fontSize:'32px', margin:'0 0 8px' }}> </p>
