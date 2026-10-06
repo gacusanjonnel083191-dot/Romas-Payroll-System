@@ -19855,14 +19855,19 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
    return
   }
  }
+ // Re-read dated schedules: supervisors may have saved a new start while this screen was open.
+ const { data:assignedSchedule, error:assignedScheduleError } = await supabase.from('daily_schedules').select('*').eq('employee_id',employee.id).eq('schedule_date',today).maybeSingle()
+ if (assignedScheduleError) { setLoading(false); alert('Time In was not saved because the assigned schedule could not be verified. Please retry.'); return }
+ setTodaySchedule(assignedSchedule)
+ const timeInValue = nowTime()
  const gracePeriod = employee.grace_period_minutes?? 10
  let lateMinutes = 0, status = 'No Assigned Shift'
- if (todaySchedule?.shift_start) {
-  const cur = minutesFromTime(nowTime()), shiftS = minutesFromTime(todaySchedule.shift_start)
+ if (assignedSchedule?.shift_start) {
+  const cur = minutesFromTime(timeInValue), shiftS = minutesFromTime(assignedSchedule.shift_start)
   const raw = Math.max(0, cur-shiftS); lateMinutes = raw > gracePeriod ? roundPenaltyMinutes(raw, gracePeriod) : 0
   status = lateMinutes > 0? 'Late': 'On Time'
  }
- const { data, error } = await supabase.from('attendance_logs').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:todaySchedule?.shift_start||null, shift_end:todaySchedule?.shift_end||null, grace_period_minutes:gracePeriod, time_in:nowTime(), late_minutes:lateMinutes, status, selfie_in_url:selfieUrl }).select().single()
+ const { data, error } = await supabase.from('attendance_logs').insert({ employee_id:employee.id, employee_code:employee.employee_code, employee_name:employee.full_name, attendance_date:today, shift_start:assignedSchedule?.shift_start||null, shift_end:assignedSchedule?.shift_end||null, grace_period_minutes:gracePeriod, time_in:timeInValue, late_minutes:lateMinutes, status, selfie_in_url:selfieUrl }).select().single()
  setLoading(false)
  if (error) {
   const medicalLockError = String(error?.message || '').includes('MEDICAL_CERTIFICATE_REQUIRED')

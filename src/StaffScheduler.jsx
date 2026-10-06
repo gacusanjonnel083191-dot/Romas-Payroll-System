@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 
-const dateAt = (start, offset) => {
- const date = new Date(`${start}T00:00:00Z`)
- date.setUTCDate(date.getUTCDate() + offset)
- return date.toISOString().slice(0,10)
-}
+import { scheduleSunday, staffScheduleDates } from './staffScheduleDates.js'
+
 const marker = '[schedule:fixed]'
 const cellStyle = {padding:8, border:'1px solid #ddd', verticalAlign:'top'}
 export default function StaffScheduler({supabase, employees = [], today, onSaved}) {
- const [start, setStart] = useState(today)
+ const [start, setStart] = useState(() => scheduleSunday(today))
+ const [duration, setDuration] = useState('1week')
  const [rows, setRows] = useState({})
  const [busy, setBusy] = useState(true)
  const [saving, setSaving] = useState('')
@@ -16,11 +14,11 @@ export default function StaffScheduler({supabase, employees = [], today, onSaved
  const [search, setSearch] = useState('')
  const lock = useRef(false)
  const generation = useRef(0)
- const dates = Array.from({length:7}, (_,i) => dateAt(start,i))
+ const dates = staffScheduleDates(start,duration)
  useEffect(() => {
   const version = ++generation.current
   setBusy(true); setMessage('')
-  supabase.from('daily_schedules').select('*').gte('schedule_date',start).lte('schedule_date',dateAt(start,6)).then(({data,error}) => {
+  supabase.from('daily_schedules').select('*').gte('schedule_date',start).lte('schedule_date',dates[dates.length-1]).then(({data,error}) => {
    if (version !== generation.current) return
    if (error) {setRows({});setMessage(`Cannot load schedules: ${error.message}`);setBusy(false);return}
    const result = {}
@@ -35,7 +33,7 @@ export default function StaffScheduler({supabase, employees = [], today, onSaved
   }).catch(error=>{if(version===generation.current){setMessage(error.message);setBusy(false)}})
   return ()=>{generation.current++}
  // Employees are refreshed by the existing admin loader.
- }, [start, employees, supabase])
+ }, [start, duration, employees, supabase])
  function edit(id,index,key,value) {
   setRows(prev=>({...prev,[id]:{...prev[id],days:prev[id].days.map((d,i)=>i===index?{...d,[key]:value}:d)}}))
  }
@@ -68,12 +66,14 @@ export default function StaffScheduler({supabase, employees = [], today, onSaved
  }
  return <section style={{background:'white',border:'1px solid #ddd',borderRadius:12,padding:16,marginBottom:20}}>
   <h3 style={{marginTop:0,color:'#ca1b1b'}}>Staff Schedule Worksheet</h3>
-  <p style={{fontSize:12}}>Fixed: repeat one start/end pair across this week. Variable: edit each day separately. Blank days are left unchanged. Past dates and dates already timed in cannot be changed here.</p>
-  <label>Week starting <input aria-label="Week starting" type="date" value={start} disabled={!!saving} onChange={e=>e.target.value && setStart(e.target.value)} /></label>{' '}
+  <p style={{fontSize:12}}>Fixed: repeat one start/end pair across the selected period. Variable: edit each day separately. Blank days are left unchanged. Past dates and dates already timed in cannot be changed here.</p>
+  <label>Sunday starting <input aria-label="Week starting" type="date" value={start} disabled={!!saving} onChange={e=>e.target.value && setStart(scheduleSunday(e.target.value))} /></label>{' '}
+  <label>Duration <select aria-label="Schedule duration" value={duration} disabled={!!saving} onChange={e=>setDuration(e.target.value)}><option value="1week">1 week</option><option value="2weeks">2 weeks</option><option value="3weeks">3 weeks</option><option value="1month">1 month</option></select></label>{' '}
+  <p style={{fontSize:12}}>Schedule period: <strong>{dates[0]} to {dates[dates.length-1]}</strong> ({dates.length} days). Start dates are aligned to Sunday. Saved times connect automatically to staff attendance and late detection.</p>
   <input aria-label="Search staff" placeholder="Search staff" value={search} onChange={e=>setSearch(e.target.value)} />
   <p role="status">{busy?'Loading schedules…':message}</p>
   {!busy && <div style={{overflowX:'auto'}}><table style={{borderCollapse:'collapse',width:'100%',fontSize:12}}>
-   <thead><tr><th style={cellStyle}>Employee</th><th style={cellStyle}>Schedule type</th>{dates.map(date=><th key={date} style={cellStyle}>{date}</th>)}<th style={cellStyle}>Save</th></tr></thead>
+   <thead><tr><th style={cellStyle}>Employee</th><th style={cellStyle}>Schedule type</th>{dates.map(date=><th key={date} style={cellStyle}>{new Date(`${date}T00:00:00Z`).toLocaleDateString('en-PH',{weekday:'short',timeZone:'UTC'})}<br />{date}</th>)}<th style={cellStyle}>Save</th></tr></thead>
    <tbody>{employees.filter(e=>e.is_active!==false && `${e.full_name} ${e.employee_code}`.toLowerCase().includes(search.toLowerCase())).map(emp=>{
     const row=rows[emp.id];if(!row)return null
     const firstEditable=row.days.findIndex(d=>d.date>=today)
