@@ -77,12 +77,14 @@ function applyEgressOptimization(source) {
     'Foundation refresh cadence'
   )
 
-  src = replaceRequired(
-    src,
-    'const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)\n const FOUNDATION_REFRESH_SECONDS = 15 * 60',
-    'const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)\n const foundationLoadInFlightRef = useRef(false)\n const FOUNDATION_REFRESH_SECONDS = 15 * 60',
-    'Foundation in-flight request guard state'
-  )
+  if (!src.includes('const foundationLoadInFlightRef = useRef(false)')) {
+    src = replaceRequired(
+      src,
+      'const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)\n const FOUNDATION_REFRESH_SECONDS = 15 * 60',
+      'const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)\n const foundationLoadInFlightRef = useRef(false)\n const FOUNDATION_REFRESH_SECONDS = 15 * 60',
+      'Foundation in-flight request guard state'
+    )
+  }
 
   src = replaceRequired(
     src,
@@ -98,19 +100,23 @@ function applyEgressOptimization(source) {
     'Foundation post-mutation refresh scope'
   )
 
-  src = replaceRequired(
-    src,
-    "async function loadFoundationData(monthValue = foundationMonth, options = {}) {\n const showLoading = options.showLoading === true || (options.showLoading!== false && options.silent!== true)",
-    "async function loadFoundationData(monthValue = foundationMonth, options = {}) {\n if (foundationLoadInFlightRef.current) return\n foundationLoadInFlightRef.current = true\n const showLoading = options.showLoading === true || (options.showLoading!== false && options.silent!== true)",
-    'Foundation loader in-flight guard'
-  )
+  if (!src.includes('foundationPendingLoadRef.current = { monthValue, options }')) {
+    src = replaceRequired(
+      src,
+      "async function loadFoundationData(monthValue = foundationMonth, options = {}) {\n const showLoading = options.showLoading === true || (options.showLoading!== false && options.silent!== true)",
+      "async function loadFoundationData(monthValue = foundationMonth, options = {}) {\n if (foundationLoadInFlightRef.current) return\n foundationLoadInFlightRef.current = true\n const showLoading = options.showLoading === true || (options.showLoading!== false && options.silent!== true)",
+      'Foundation loader in-flight guard'
+    )
+  }
 
-  src = replaceRequired(
-    src,
-    "console.error('Foundation data failed:', e)\n if (!options.silent) showToast('Foundation dashboard failed to load: ' + e.message, 'red')\n } finally {\n if (showLoading) setFoundationLoading(false)\n }\n }",
-    "console.error('Foundation data failed:', e)\n if (!options.silent) showToast('Foundation dashboard failed to load: ' + e.message, 'red')\n } finally {\n if (showLoading) setFoundationLoading(false)\n foundationLoadInFlightRef.current = false\n }\n }",
-    'Foundation loader in-flight release'
-  )
+  if (!src.includes('const pendingLoad = foundationPendingLoadRef.current')) {
+    src = replaceRequired(
+      src,
+      "console.error('Foundation data failed:', e)\n if (!options.silent) showToast('Foundation dashboard failed to load: ' + e.message, 'red')\n } finally {\n if (showLoading) setFoundationLoading(false)\n }\n }",
+      "console.error('Foundation data failed:', e)\n if (!options.silent) showToast('Foundation dashboard failed to load: ' + e.message, 'red')\n } finally {\n if (showLoading) setFoundationLoading(false)\n foundationLoadInFlightRef.current = false\n }\n }",
+      'Foundation loader in-flight release'
+    )
+  }
 
   // Remove only the eager Foundation call at successful admin login. The command center
   // already renders an explicit LOAD COMMAND CENTER button when foundationData is null.

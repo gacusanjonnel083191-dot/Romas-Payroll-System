@@ -14,6 +14,7 @@ import CrateRollingControl from './CrateRollingControl.jsx'
 import OwnerDailyReceipts from './OwnerDailyReceipts.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
 import { fetchResellerReceivables, summarizeResellerReceivables } from './resellerReceivables.js'
+import { buildFoundationReceivables } from './foundationReceivables.js'
 import {
  getChargeableEarlyOutMinutes,
  getUnconsumedApprovedTimeAdjustmentConflict,
@@ -7935,10 +7936,13 @@ export default function App() {
  const [foundationMonth, setFoundationMonth] = useState(today.slice(0,7))
  const [foundationData, setFoundationData] = useState(null)
  const [foundationLoading, setFoundationLoading] = useState(false)
+ const [foundationError, setFoundationError] = useState('')
+ const [foundationArPreview, setFoundationArPreview] = useState(null)
  const [ownerDashboardMode, setOwnerDashboardMode] = useState('command') // OWNER_DASHBOARD_MODE_V2
  const [foundationAutoRefresh, setFoundationAutoRefresh] = useState(false)
  const [foundationLastUpdated, setFoundationLastUpdated] = useState(null)
  const foundationLoadInFlightRef = useRef(false)
+ const foundationPendingLoadRef = useRef(null)
  const FOUNDATION_REFRESH_SECONDS = 15 * 60
  const EXPENSE_CATEGORIES = ['Payroll Expense','Transportation/Fuel','Packaging Supplies','Equipment Repair','Cleaning Supplies','Marketing/Promotion','Ingredients and Supplies','Groceries','Mix Plant Inc.','Shopee/Lazada','Drinks','Meals','Utilities','Employee Benefits','Administrative Cost','Permits and Taxes','Loan Repayment','Car Installment','Miscellaneous']
  const PAYABLE_TYPES = ['Supplier','Payroll','Government Contributions','Rent','Utilities','Loan','Equipment','Packaging Supplier','Raw Material Supplier','Other']
@@ -21966,13 +21970,28 @@ This recovery button creates one approved expense record using GROSS payroll ear
  return Math.max(0, Math.floor((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)))
  }
 
- async function foundationSelect(table, select = '*', buildQuery) {
+ async function foundationSelect(table, select = '*', buildQuery, maxRows = 100000) {
  try {
- let query = supabase.from(table).select(select)
+ const data = []
+ let expectedCount = null
+ const pageSize = 1000
+ for (let page = 0; page < 100 && data.length < maxRows; page++) {
+ let query = supabase.from(table).select(select, { count:'exact' })
  if (typeof buildQuery === 'function') query = buildQuery(query)
- const { data, error } = await query
- if (error) return { data:[], error:`${table}: ${error.message}` }
- return { data:data || [], error:null }
+ query = query.order('id', { ascending:true })
+ const result = await query.range(data.length, data.length + Math.min(pageSize, maxRows - data.length) - 1)
+ if (result.error) return { data:[], error:`${table}: ${result.error.message}` }
+ if (!Array.isArray(result.data) || !Number.isFinite(result.count)) return { data:[], error:`${table}: incomplete response` }
+ if (expectedCount === null) expectedCount = result.count
+ if (result.count !== expectedCount) return { data:[], error:`${table}: records changed during refresh; retry` }
+ data.push(...result.data)
+ if (data.length === Math.min(expectedCount, maxRows)) {
+ if (data.every(row=>row.id != null) && new Set(data.map(row=>row.id)).size !== data.length) return { data:[], error:`${table}: duplicate records during refresh; retry` }
+ return { data, error:null }
+ }
+ if (!result.data.length || data.length > expectedCount) return { data:[], error:`${table}: incomplete response` }
+ }
+ return { data:[], error:`${table}: exceeded 100,000 record safety limit` }
  } catch(e) {
  return { data:[], error:`${table}: ${e.message}` }
  }
@@ -22178,7 +22197,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  { label:'Payroll Ratio', value:`${salaryRatio.toFixed(1)}%`, note:'Target 25%', color:salaryRatio <= 25? '#2d8a4e': salaryRatio <= 30? '#f5a623': '#ca1b1b', icon:' ' },
  { label:'Food Cost', value:`${foodCostRatio.toFixed(1)}%`, note:'Target 40%', color:foodCostRatio <= 40? '#2d8a4e': foodCostRatio <= 50? '#f5a623': '#ca1b1b', icon:' ' },
  { label:'Returns', value:`${returnsRatio.toFixed(1)}%`, note:`${safeNum(d.totalReturnsQty,0)} pcs returned`, color:returnsRatio <= 5? '#2d8a4e': returnsRatio <= 10? '#f5a623': '#ca1b1b', icon:' ' },
- { label:'Receivables', value:php(totalARValue), note:`Overdue ${php(overdueARValue)}`, color:overdueARValue <= 0? '#2d8a4e': '#f5a623', icon:' ' },
+ { label:'Receivables', value:php(totalARValue), note:`All dates · Over 7 days ${php(overdueARValue)}`, color:overdueARValue <= 0? '#2d8a4e': '#f5a623', icon:' ' },
  { label:'Low Stock', value:`${safeNum(d.lowStockItems?.length,0)} item(s)`, note:`${criticalStock} critical`, color:criticalStock > 0? '#ca1b1b': reorderStock > 0? '#f5a623': '#2d8a4e', icon:' ' },
  { label:'Pending Approvals', value:String(pendingApprovalCount), note:'Owner/admin action queue', color:pendingApprovalCount > 0? '#f5a623': '#2d8a4e', icon:' ' },
  { label:'Wastage', value:`${wastagePctSales.toFixed(1)}%`, note:`Cost ${php(d.wastageReport?.cost || d.wastageCost || 0)}`, color:wastagePctSales <= 5? '#2d8a4e': wastagePctSales <= 8? '#f5a623': '#ca1b1b', icon:' ' },
@@ -22277,16 +22296,14 @@ This recovery button creates one approved expense record using GROSS payroll ear
 
 
 
- function getReceivableStatus(totalARValue, overdueValue, salesValue) {
+ function getReceivableStatus(totalARValue, overdueValue) {
  const ar = safeNum(totalARValue, 0)
  const overdue = safeNum(overdueValue, 0)
- const sales = safeNum(salesValue, 0)
- if (ar <= 0) return { label:'CLEAR', color:'#2d8a4e', level:'good', message:'No unpaid reseller receivables detected for this period.' }
- const arPct = sales > 0? (ar / sales) * 100: 0
+ if (ar <= 0) return { label:'CLEAR', color:'#2d8a4e', level:'good', message:'No outstanding reseller receivables detected.' }
  const overduePct = ar > 0? (overdue / ar) * 100: 0
- if (arPct <= 10 && overduePct <= 20) return { label:'GOOD', color:'#2d8a4e', level:'good', message:'Receivables are controlled. Continue regular collection discipline.' }
- if (arPct <= 20 && overduePct <= 40) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Receivables are rising. Follow up accounts before they become collection problems.' }
- return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'Receivables are high. Prioritize collections before releasing more credit.' }
+ if (overdue <= 0) return { label:'CURRENT', color:'#2d8a4e', level:'good', message:'Outstanding balances are within the seven-day collection window.' }
+ if (overduePct <= 30) return { label:'WATCH', color:'#f5a623', level:'watch', message:'Some outstanding balances are more than seven days past due.' }
+ return { label:'CRITICAL', color:'#ca1b1b', level:'critical', message:'A large share of outstanding balances is more than seven days past due.' }
  }
 
  function getCashFlowStatus(netCash, cashInValue, cashOutValue) {
@@ -22950,8 +22967,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  }
 
  async function loadFoundationData(monthValue = foundationMonth, options = {}) {
- if (foundationLoadInFlightRef.current) return
+ if (foundationLoadInFlightRef.current) {
+ foundationPendingLoadRef.current = { monthValue, options }
+ return
+ }
  foundationLoadInFlightRef.current = true
+ setFoundationError('')
+ setFoundationArPreview(null)
  const showLoading = options.showLoading === true || (options.showLoading!== false && options.silent!== true)
  if (showLoading) setFoundationLoading(true)
  try {
@@ -22960,17 +22982,20 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const trendStart = trendMonths[0]?.start || start
  const todayDate = today
  const [
- employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes,
+ employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, resellerPaymentsRes, returnsRes, expensesRes, payrollRes,
+ allReceivablesRes,
  productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes,
  contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes,
  bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes,
- recipeVaultCostRes, trendDailySalesRes, trendDailySalesOnlineRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes
+ recipeVaultCostRes, trendDailySalesRes, trendDailySalesOnlineRes, trendInvoicesRes, trendPaymentsRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes
  ] = await Promise.all([
  foundationSelect('employees', '*', q=>q.eq('is_active', true)),
  foundationSelect('attendance_logs', '*', q=>q.gte('attendance_date', start).lte('attendance_date', end)),
  foundationSelect('daily_sales', '*, daily_sales_items(*)', q=>q.gte('sale_date', start).lte('sale_date', end)),
  foundationSelect('daily_sales_online_payments', '*', q=>q.gte('payment_date', start).lte('payment_date', end).neq('status','void')),
  foundationSelect('delivery_invoices', '*, delivery_invoice_items(*)', q=>q.gte('delivery_date', start).lte('delivery_date', end)),
+ foundationSelect('delivery_invoices', 'id,invoice_number,reseller_name,delivery_date,due_date,created_at,status,total_amount,paid_amount'),
+ foundationSelect('reseller_payments', 'id,invoice_id,amount,payment_date', q=>q.gte('payment_date', start).lte('payment_date', end)),
  foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', start).lte('return_date', end)),
  foundationSelect('daily_expenses', '*', q=>q.gte('expense_date', start).lte('expense_date', end)),
  foundationSelect('payroll_records', '*', q=>q.gte('payroll_start', start).lte('payroll_end', end)),
@@ -22984,7 +23009,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  foundationSelect('cash_advance_requests', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
  foundationSelect('time_adjustment_requests', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
  foundationSelect('payslip_disputes', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
- foundationSelect('audit_logs', '*', q=>q.order('created_at', { ascending:false }).limit(120)),
+ foundationSelect('audit_logs', '*', q=>q.order('created_at', { ascending:false }), 120),
  foundationSelect('cash_reconciliations', '*', q=>q.gte('reconciliation_date', start).lte('reconciliation_date', end)),
  foundationSelect('bank_deposits', '*', q=>q.gte('deposit_date', start).lte('deposit_date', end)),
  foundationSelect('reseller_disputes', '*', q=>q.gte('created_at', start).lte('created_at', end + 'T23:59:59')),
@@ -22994,6 +23019,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  foundationSelect('daily_sales', '*, daily_sales_items(*)', q=>q.gte('sale_date', trendStart).lte('sale_date', end)),
  foundationSelect('daily_sales_online_payments', '*', q=>q.gte('payment_date', trendStart).lte('payment_date', end).neq('status','void')),
  foundationSelect('delivery_invoices', '*, delivery_invoice_items(*)', q=>q.gte('delivery_date', trendStart).lte('delivery_date', end)),
+ foundationSelect('reseller_payments', 'id,invoice_id,amount,payment_date', q=>q.gte('payment_date', trendStart).lte('payment_date', end)),
  foundationSelect('reseller_returns', '*, reseller_return_items(*)', q=>q.gte('return_date', trendStart).lte('return_date', end)),
  foundationSelect('payroll_records', '*', q=>q.gte('payroll_start', trendStart).lte('payroll_end', end)),
  foundationSelect('production_logs', '*', q=>q.gte('production_date', trendStart).lte('production_date', end)),
@@ -23002,12 +23028,16 @@ This recovery button creates one approved expense record using GROSS payroll ear
  ])
 
  let invoices = (invoicesWithItemsRes.data || []).filter(isSalesSummaryInvoiceCounted)
- const errors = [employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, recipeVaultCostRes, trendDailySalesRes, trendDailySalesOnlineRes, trendInvoicesRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
+ const errors = [employeesRes, attendanceRes, dailySalesRes, dailySalesOnlineRes, invoicesWithItemsRes, allReceivablesRes, resellerPaymentsRes, returnsRes, expensesRes, payrollRes, productionLogsRes, productionReportsRes, inventoryRes, inventoryTxRes, wastageRes, contractsRes, leaveRes, caRes, otRes, disputesRes, auditRes, cashReconRes, bankDepositsRes, resellerDisputesRes, stockAdjustmentsRes, resellersRes, recipeVaultCostRes, trendDailySalesRes, trendDailySalesOnlineRes, trendInvoicesRes, trendPaymentsRes, trendReturnsRes, trendPayrollRes, trendProductionLogsRes, trendProductionReportsRes, trendWastageRes].map(r=>r.error).filter(Boolean)
+ if (allReceivablesRes.error) throw new Error(allReceivablesRes.error)
+ const verifiedReceivables = buildFoundationReceivables(allReceivablesRes.data, todayDate)
+ setFoundationArPreview({ totalAR:verifiedReceivables.totalAR, overdueAR:verifiedReceivables.overdueAR, asOf:todayDate })
  if (invoicesWithItemsRes.error) {
  const fallbackInv = await foundationSelect('delivery_invoices', '*', q=>q.gte('delivery_date', start).lte('delivery_date', end))
  invoices = (fallbackInv.data || []).filter(isSalesSummaryInvoiceCounted)
  if (fallbackInv.error) errors.push(fallbackInv.error)
  }
+ if (errors.length) throw new Error(`Dashboard source data is incomplete: ${errors.join('; ')}`)
 
  const activeEmployees = employeesRes.data || []
  const attendance = attendanceRes.data || []
@@ -23016,6 +23046,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const returnRows = returnsRes.data || []
  const expenses = expensesRes.data || []
  const payrollRecords = payrollRes.data || []
+ const resellerPayments = resellerPaymentsRes.data || []
  const productionLogsRows = productionLogsRes.data || []
  const productionReportsRows = productionReportsRes.data || []
  const inventoryRows = inventoryRes.data || []
@@ -23036,6 +23067,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const trendDailySalesRows = trendDailySalesRes.data || []
  const trendDailySalesOnlineRows = trendDailySalesOnlineRes.data || []
  const trendInvoiceRows = (trendInvoicesRes.data || []).filter(isSalesSummaryInvoiceCounted)
+ const trendPaymentRows = trendPaymentsRes.data || []
  const trendReturnRows = trendReturnsRes.data || []
  const trendPayrollRows = trendPayrollRes.data || []
  const trendProductionLogRows = trendProductionLogsRes.data || []
@@ -23152,7 +23184,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const resellerGrossSales = invoices.reduce((s,i)=>s+getInvoiceGrossAmount(i),0)
  const resellerSales = invoices.reduce((s,i)=>s+getInvoiceNetAmount(i),0)
  const grossSales = walkinMessengerSales + resellerGrossSales
- const collectedInvoices = invoices.reduce((s,i)=>s+safeNum(i.paid_amount,0),0)
+ const collectedInvoices = resellerPayments.reduce((s,p)=>s+safeNum(p.amount,0),0)
  const totalReturnsAmount = returnRecords.reduce((s,r)=>s+safeNum(r.amount,0),0)
  const totalReturnsQty = returnRecords.reduce((s,r)=>s+safeNum(r.qty,0),0)
  const totalDeliveredQty = invoices.reduce((sum, inv)=>(sum + (inv.delivery_invoice_items || []).reduce((a,item)=>a+safeNum(item.quantity,0),0)), 0)
@@ -23169,6 +23201,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const soldProductCOGS = soldProductCOGSInfo.totalCOGS
  const productionReportCOGS = productionReportCOGSInfo.totalCOGS
  const directProductCOGS = directCOGSChoice.amount
+ if (totalSales > 0 && directProductCOGS <= 0) throw new Error('Food and production cost is missing for a period with sales. Profit and food-cost ratings cannot be verified until costing data is recorded.')
  const releasedPayrollRecords = payrollRecords.filter(isReleasedPayrollRecord)
  const payrollClassification = classifyPayrollRecords(releasedPayrollRecords, activeEmployees)
  const productionLaborCOGS = payrollClassification.productionLaborCOGS
@@ -23200,19 +23233,8 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const grossMarginPct = totalSales > 0? (grossProfit / totalSales) * 100: 0
  const netMarginPct = totalSales > 0? (netProfit / totalSales) * 100: 0
 
- const totalAR = invoices.filter(i=>i.status === 'unpaid' || i.status === 'partial').reduce((s,i)=>s+Math.max(0, safeNum(i.total_amount,0)-safeNum(i.paid_amount,0)),0)
- const arAging = [
- { label:'0 7 days', min:0, max:7, total:0, count:0 },
- { label:'8 15 days', min:8, max:15, total:0, count:0 },
- { label:'16 30 days', min:16, max:30, total:0, count:0 },
- { label:'31+ days', min:31, max:99999, total:0, count:0 },
- ]
- invoices.filter(i=>i.status === 'unpaid' || i.status === 'partial').forEach(inv => {
- const balance = Math.max(0, safeNum(inv.total_amount,0)-safeNum(inv.paid_amount,0))
- const age = daysBetweenLocal(inv.due_date || inv.delivery_date, todayDate)
- const bucket = arAging.find(b=>age >= b.min && age <= b.max) || arAging[arAging.length-1]
- bucket.total += balance; bucket.count += 1
- })
+ const receivables = verifiedReceivables
+ const { totalAR, arAging } = receivables
 
  const resellerMap = {}
  invoices.forEach(inv => {
@@ -23567,37 +23589,13 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const cashOut = totalOperatingExpenses
  const netCashFlow = cashIn - cashOut
 
- const unpaidInvoices = invoices.filter(i=>['unpaid','partial'].includes(String(i.status || '').toLowerCase()) || Math.max(0, getInvoiceNetAmount(i)-safeNum(i.paid_amount,0)) > 0)
- const receivableRows = unpaidInvoices.map((inv, idx) => {
- const balance = Math.max(0, getInvoiceNetAmount(inv) - safeNum(inv.paid_amount,0))
- const deliveryDate = String(inv.delivery_date || inv.created_at || '').slice(0,10)
- const dueDate = String(inv.due_date || deliveryDate || '').slice(0,10)
- const age = daysBetweenLocal(dueDate || deliveryDate, todayDate)
- const paidPct = getInvoiceNetAmount(inv) > 0? (safeNum(inv.paid_amount,0) / getInvoiceNetAmount(inv)) * 100: 0
- const bucket = age <= 7? '0 7 days': age <= 15? '8 15 days': age <= 30? '16 30 days': '31+ days'
- const status = age <= 7? 'Current': age <= 15? 'Watch': age <= 30? 'Overdue': 'Critical'
- const color = age <= 7? '#2d8a4e': age <= 15? '#f5a623': '#ca1b1b'
- return {
- id:inv.id || idx,
- invoiceNumber:inv.invoice_number || inv.id || `Invoice ${idx + 1}`,
- reseller:inv.reseller_name || 'Unassigned',
- deliveryDate,
- dueDate,
- age,
- balance,
- total:getInvoiceNetAmount(inv),
- paid:safeNum(inv.paid_amount,0),
- paidPct,
- bucket,
- status,
- color
- }
- }).filter(r=>r.balance > 0).sort((a,b)=>b.age-a.age || b.balance-a.balance)
- const overdueAR = receivableRows.filter(r=>r.age > 7).reduce((s,r)=>s+safeNum(r.balance,0),0)
- const criticalAR = receivableRows.filter(r=>r.age >= 31).reduce((s,r)=>s+safeNum(r.balance,0),0)
+ const receivableRows = receivables.rows
+ const { overdueAR, criticalAR } = receivables
  const arOverduePct = totalAR > 0? (overdueAR / totalAR) * 100: 0
- const receivableStatus = getReceivableStatus(totalAR, overdueAR, totalSales)
- const collectionRate = resellerSales > 0? (collectedInvoices / resellerSales) * 100: 0
+ const receivableStatus = getReceivableStatus(totalAR, overdueAR)
+ const currentInvoiceIds = new Set(invoices.map(invoice=>String(invoice.id)))
+ const currentInvoiceCollections = resellerPayments.filter(payment=>currentInvoiceIds.has(String(payment.invoice_id))).reduce((sum,payment)=>sum+safeNum(payment.amount,0),0)
+ const collectionRate = resellerSales > 0? (currentInvoiceCollections / resellerSales) * 100: 0
  const receivablePriorityRows = receivableRows.slice(0,15)
  const receivableSummary = {
  totalAR,
@@ -23628,7 +23626,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const cashFlowTrend = trendMonths.map(m => {
  const mDaily = trendDailySalesRows.filter(r=>String(r.sale_date || '').slice(0,10) >= m.start && String(r.sale_date || '').slice(0,10) <= m.end).reduce((sum,r)=>sum+safeNum(r.total_walkin,0)+safeNum(r.total_messenger,0),0) + trendDailySalesOnlineRows.filter(r=>String(r.payment_date || '').slice(0,10) >= m.start && String(r.payment_date || '').slice(0,10) <= m.end).filter(isDailySalesOnlinePaymentRevenue).reduce((sum,r)=>sum+safeNum(r.amount,0),0)
  const mInvoices = trendInvoiceRows.filter(i=>String(i.delivery_date || '').slice(0,10) >= m.start && String(i.delivery_date || '').slice(0,10) <= m.end)
- const mCollected = mInvoices.reduce((sum,i)=>sum+safeNum(i.paid_amount,0),0)
+ const mCollected = trendPaymentRows.filter(p=>String(p.payment_date || '').slice(0,10) >= m.start && String(p.payment_date || '').slice(0,10) <= m.end).reduce((sum,p)=>sum+safeNum(p.amount,0),0)
  const mPayrollRows = trendPayrollRows.filter(p=>String(p.payroll_start || '').slice(0,10) <= m.end && String(p.payroll_end || '').slice(0,10) >= m.start && isReleasedPayrollRecord(p))
  const mPayrollClass = classifyPayrollRecords(mPayrollRows, activeEmployees)
  const mPayroll = mPayrollClass.operatingPayrollExpense
@@ -23743,7 +23741,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  const dailyClosingRows = monthDayList.map(date => {
  const dailySalesAmt = dailySalesRows.filter(r=>String(r.sale_date || '').slice(0,10) === date).reduce((sum,r)=>sum+safeNum(r.total_revenue?? r.total_amount,0),0)
  const invoiceSalesAmt = invoices.filter(i=>String(i.delivery_date || '').slice(0,10) === date).reduce((sum,i)=>sum+getInvoiceNetAmount(i),0)
- const collectedToday = invoices.filter(i=>String(i.paid_date || i.delivery_date || '').slice(0,10) === date).reduce((sum,i)=>sum+safeNum(i.paid_amount,0),0)
+ const collectedToday = resellerPayments.filter(p=>String(p.payment_date || '').slice(0,10) === date).reduce((sum,p)=>sum+safeNum(p.amount,0),0)
  const returnsToday = returnRecords.filter(r=>String(r.date || '').slice(0,10) === date).reduce((sum,r)=>sum+safeNum(r.amount,0),0)
  const recon = cashReconRows.find(r=>String(r.reconciliation_date || '').slice(0,10) === date)
  const actualCash = safeNum(recon?.actual_cash?? recon?.cash_on_hand?? recon?.actual_amount,0)
@@ -24431,7 +24429,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  { name:'Food Cost', ok:foodCostPct > 0 && foodCostPct <= 40, warn:foodCostPct > 40 && foodCostPct <= 50, value:`${foodCostPct.toFixed(1)}%`, target:'Target 30 40%' },
  { name:'Operating Expense Ratio', ok:operatingExpenseRatio <= 20, warn:operatingExpenseRatio > 20 && operatingExpenseRatio <= 30, value:`${operatingExpenseRatio.toFixed(1)}%`, target:'Target 20%' },
  { name:'Returns', ok:returnsRate <= 5, warn:returnsRate > 5 && returnsRate <= 10, value:`${returnsRate.toFixed(1)}%`, target:'Target 5%' },
- { name:'Receivables', ok:totalSales === 0 || totalAR <= totalSales * 0.15, warn:totalAR <= totalSales * 0.30, value:php(totalAR), target:' 15% of sales' },
+ { name:'Receivables', ok:overdueAR <= 0, warn:arOverduePct <= 30, value:php(totalAR), target:'No balance over 7 days past due' },
  { name:'Low Stock', ok:lowStockItems.length === 0, warn:lowStockItems.length <= 3, value:String(lowStockItems.length), target:'0 critical items' },
  { name:'Approvals', ok:totalPendingApprovals === 0, warn:totalPendingApprovals <= 5, value:String(totalPendingApprovals), target:'0 pending' },
  { name:'Employee Documents', ok:employeeDocumentSummary.critical === 0 && employeeDocumentSummary.completionPct >= 90, warn:employeeDocumentSummary.critical === 0 && employeeDocumentSummary.completionPct >= 70, value:`${employeeDocumentSummary.completionPct.toFixed(0)}%`, target:'90%+ complete' },
@@ -24459,7 +24457,7 @@ This recovery button creates one approved expense record using GROSS payroll ear
  if ((productProfitabilitySummary?.lowMarginCount || 0) > 0) recommendations.push(`${productProfitabilitySummary.lowMarginCount} product(s) have low estimated margin. Review product pricing, portioning, topping/filling cost, and return rate.`)
  if (operatingExpenseRatio > 20) recommendations.push('Non-payroll operating expenses are above 20% of sales. Review recurring expenses and remove non-essential spending.')
  if (returnsRate > 5) recommendations.push('Returns are above ideal level. Review production forecast and outlet/reseller orders.')
- if (totalAR > totalSales * 0.15) recommendations.push('Accounts receivable is high. Follow up overdue reseller balances.')
+ if (overdueAR > 0) recommendations.push('Some receivables are more than seven days past due. Follow up those balances.')
  if (lowStockItems.length > 0) recommendations.push(`${lowStockItems.length} inventory item(s) are at or below minimum stock. Prepare purchase orders.`)
  if (totalPendingApprovals > 0) recommendations.push(`${totalPendingApprovals} pending approval(s) need admin action.`)
  if (employeeDocumentSummary.critical > 0) recommendations.push(`${employeeDocumentSummary.critical} employee(s) have critical HR document gaps. Complete contracts and employee records before audits or final pay processing.`)
@@ -24520,10 +24518,16 @@ This recovery button creates one approved expense record using GROSS payroll ear
  setFoundationLastUpdated(loadedAt)
  } catch(e) {
  console.error('Foundation data failed:', e)
+ setFoundationData(null)
+ setFoundationLastUpdated(null)
+ setFoundationError(e.message)
  if (!options.silent) showToast('Foundation dashboard failed to load: ' + e.message, 'red')
  } finally {
  if (showLoading) setFoundationLoading(false)
  foundationLoadInFlightRef.current = false
+ const pendingLoad = foundationPendingLoadRef.current
+ foundationPendingLoadRef.current = null
+ if (pendingLoad) void loadFoundationData(pendingLoad.monthValue, pendingLoad.options)
  }
  }
 
@@ -47818,7 +47822,9 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
 
  {foundationLoading && <p style={{ color:'#888', fontSize:'13px' }}> Loading business foundation data...</p>}
- {!foundationData &&!foundationLoading && (
+ {foundationError && <div role="alert" style={{ background:'#fff5f5', color:'#a51c1c', border:'1px solid #ca1b1b', borderRadius:'12px', padding:'12px', marginBottom:'14px' }}><strong>Dashboard figures unavailable.</strong> Source data did not load completely, so totals and health ratings are hidden. Check the source issue and retry.<details><summary>Technical details</summary><p style={{ overflowWrap:'anywhere' }}>{foundationError}</p></details></div>}
+ {foundationError && foundationArPreview && <div style={{ background:'#fff', border:'1px solid #2d8a4e', borderRadius:'12px', padding:'14px', marginBottom:'14px' }}><strong>Verified current receivables: {php(foundationArPreview.totalAR)}</strong><p style={{ margin:'6px 0 0', fontSize:'12px' }}>All invoice dates · {php(foundationArPreview.overdueAR)} more than 7 days past due · As of {foundationArPreview.asOf} (Manila)</p></div>}
+ {!foundationData &&!foundationLoading &&!foundationError && (
  <div style={{ background:'white', borderRadius:'14px', padding:'24px', textAlign:'center', border:'1px solid #eee' }}>
  <p style={{ fontSize:'32px', margin:'0 0 8px' }}> </p>
  <p style={{ fontWeight:'bold', color:'#333', margin:'0 0 4px' }}>Foundation dashboard is ready.</p>
@@ -48425,7 +48431,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr 1fr':'repeat(5,1fr)', gap:'12px', marginBottom:'14px' }}>
  {[
- ['Total AR', php(foundationData.totalAR), foundationData.receivableStatus?.color || '#777', foundationData.receivableStatus?.label || 'NO DATA'],
+ ['Current AR · all invoice dates', php(foundationData.totalAR), foundationData.receivableStatus?.color || '#777', foundationData.receivableStatus?.label || 'NO DATA'],
  ['Overdue AR', php(foundationData.overdueAR || 0), (foundationData.overdueAR||0)>0?'#ca1b1b':'#2d8a4e', `${safeNum(foundationData.arOverduePct,0).toFixed(1)}% of AR`],
  ['31+ Days', php(foundationData.criticalAR || 0), (foundationData.criticalAR||0)>0?'#ca1b1b':'#2d8a4e', 'Critical collection'],
  ['Collection Rate', `${safeNum(foundationData.receivableSummary?.collectionRate,0).toFixed(1)}%`, (foundationData.receivableSummary?.collectionRate||0)>=90?'#2d8a4e':'#f5a623', 'Collected reseller sales'],
