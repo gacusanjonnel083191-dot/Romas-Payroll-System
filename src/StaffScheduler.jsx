@@ -1,101 +1,83 @@
 import { useEffect, useRef, useState } from 'react'
-
-import { scheduleSunday, staffScheduleDates } from './staffScheduleDates.js'
+import { scheduleDateAt, scheduleSunday, staffScheduleDates } from './staffScheduleDates.js'
+import { scheduleRange, shiftLabel } from './staffScheduleRange.js'
+import './staffScheduler.css'
 
 const marker = '[schedule:fixed]'
-const cellStyle = {padding:8, border:'1px solid #ddd', verticalAlign:'top'}
 export default function StaffScheduler({supabase, employees = [], today, onSaved}) {
- const [start, setStart] = useState(() => scheduleSunday(today))
- const [duration, setDuration] = useState('1week')
- const [rows, setRows] = useState({})
+ const [week, setWeek] = useState(()=>scheduleSunday(today))
+ const [stored, setStored] = useState([])
  const [busy, setBusy] = useState(true)
- const [saving, setSaving] = useState('')
+ const [saving, setSaving] = useState(false)
  const [message, setMessage] = useState('')
  const [search, setSearch] = useState('')
+ const [revision, setRevision] = useState(0)
+ const [employeeId, setEmployeeId] = useState('')
+ const [mode, setMode] = useState('variable')
+ const [from, setFrom] = useState(today)
+ const [until, setUntil] = useState(today)
+ const [shiftStart, setShiftStart] = useState('')
+ const [shiftEnd, setShiftEnd] = useState('')
  const lock = useRef(false)
- const generation = useRef(0)
- const dates = staffScheduleDates(start,duration)
- useEffect(() => {
-  const version = ++generation.current
-  setBusy(true); setMessage('')
-  supabase.from('daily_schedules').select('*').gte('schedule_date',start).lte('schedule_date',dates[dates.length-1]).then(({data,error}) => {
-   if (version !== generation.current) return
-   if (error) {setRows({});setMessage(`Cannot load schedules: ${error.message}`);setBusy(false);return}
-   const result = {}
-   for (const emp of employees.filter(e=>e.is_active !== false)) {
-    const stored = (data || []).filter(r=>r.employee_id === emp.id)
-    const repeatTemplate = stored.find(r=>r.schedule_date>=today) || stored[0]
-    result[emp.id] = {repeatStart:String(repeatTemplate?.shift_start || '').slice(0,5),repeatEnd:String(repeatTemplate?.shift_end || '').slice(0,5),mode:stored.some(r=>String(r.notes || '').includes(marker))?'fixed':'variable', days:dates.map(date=>{
-     const row = stored.find(r=>r.schedule_date === date)
-     return {date, start:String(row?.shift_start || '').slice(0,5), end:String(row?.shift_end || '').slice(0,5), notes:row?.notes || '', exists:!!row}
-    })}
-   }
-   setRows(result);setBusy(false)
-  }).catch(error=>{if(version===generation.current){setMessage(error.message);setBusy(false)}})
-  return ()=>{generation.current++}
- // Employees are refreshed by the existing admin loader.
- }, [start, duration, employees, supabase])
- function edit(id,index,key,value) {
-  setRows(prev=>({...prev,[id]:{...prev[id],days:prev[id].days.map((d,i)=>i===index?{...d,[key]:value}:d)}}))
+ const dates = staffScheduleDates(week)
+ const active = employees.filter(e=>e.is_active !== false)
+ useEffect(()=>{
+  let cancelled=false
+  setBusy(true)
+  supabase.from('daily_schedules').select('employee_id,schedule_date,shift_start,shift_end,notes').gte('schedule_date',week).lte('schedule_date',scheduleDateAt(week,6)).then(({data,error})=>{
+   if(cancelled)return
+   setStored(error?[]:data || []);setBusy(false)
+   if(error)setMessage(`Cannot load schedules: ${error.message}`)
+  }).catch(error=>{if(!cancelled){setMessage(`Cannot load schedules: ${error.message}`);setBusy(false)}})
+  return ()=>{cancelled=true}
+ },[week,revision,supabase])
+ function selectDay(emp,date,row) {
+  setEmployeeId(emp.id);setFrom(date);setUntil(date)
+  setMode(String(row?.notes || '').includes(marker)?'fixed':'variable')
+  setShiftStart(String(row?.shift_start || '').slice(0,5));setShiftEnd(String(row?.shift_end || '').slice(0,5))
+  setMessage(`${emp.full_name}: choose times and an Until date, then Save & publish.`)
  }
- function applyEveryDay(emp) {
-  const row = rows[emp.id]
-  if (!row?.repeatStart || !row?.repeatEnd || row.repeatStart === row.repeatEnd) {setMessage('Enter different start and end times before applying. Overnight shifts are allowed.');return}
-  const count = row.days.filter(d=>d.date>=today).length
-  if (!count) {setMessage('Choose a period with today or future dates.');return}
-  setRows(prev=>({...prev,[emp.id]:{...prev[emp.id],days:prev[emp.id].days.map(d=>d.date>=today?{...d,start:row.repeatStart,end:row.repeatEnd}:d)}}))
-  setMessage(`${emp.full_name}: times applied to ${count} day(s) in this period. Click Save row to save them.`)
- }
- async function save(emp) {
-  if (lock.current) return
-  const row = rows[emp.id]
-  let days = row.days
-  if (row.mode === 'fixed') {
-   const template = days.find(d=>d.date>=today)
-   if (!template?.start || !template?.end) {setMessage('Enter the fixed start and end times.');return}
-   days = days.map(d=>d.date>=today?{...d,start:template.start,end:template.end}:d)
-  }
-  const targets = days.filter(d=>d.date>=today && (d.start || d.end || d.exists))
-  if (!targets.length) {setMessage('Enter at least one future schedule.');return}
-  if (targets.some(d=>!d.start || !d.end || d.start===d.end)) {setMessage('Each scheduled day needs different start and end times. Overnight shifts are allowed.');return}
-  lock.current=true;setSaving(emp.id);setMessage('')
+ async function save(event) {
+  event.preventDefault()
+  if(lock.current)return
+  const emp=active.find(e=>e.id===employeeId)
+  if(!emp){setMessage('Select an employee.');return}
+  if(!shiftStart || !shiftEnd || shiftStart===shiftEnd){setMessage('Enter different start and end times. Overnight shifts are allowed.');return}
+  let targets
+  try {targets=scheduleRange(from,until,today)}catch(error){setMessage(error.message);return}
+  lock.current=true;setSaving(true);setMessage('')
   try {
-   const {data:attendance,error:attendanceError} = await supabase.from('attendance_logs').select('id,attendance_date').eq('employee_id',emp.id).in('attendance_date',targets.map(d=>d.date)).not('time_in','is',null)
-   if (attendanceError) throw attendanceError
-   if (attendance?.length) throw new Error('A selected date already has a Time In. Adjust that attendance record through the existing correction process, or choose future dates.')
-   const records = targets.map(d=>({employee_id:emp.id,schedule_date:d.date,shift_start:d.start,shift_end:d.end,notes:(d.notes.replaceAll(marker,'').trim()+(row.mode==='fixed'?` ${marker}`:'')).trim()}))
-   const {data:saved,error} = await supabase.from('daily_schedules').upsert(records,{onConflict:'employee_id,schedule_date'}).select('employee_id,schedule_date,shift_start,shift_end,notes')
-   if (error) throw error
-   if (saved?.length !== records.length || records.some(r=>!saved.some(v=>v.schedule_date===r.schedule_date && String(v.shift_start).slice(0,5)===r.shift_start && String(v.shift_end).slice(0,5)===r.shift_end))) throw new Error('Save could not be fully verified. Reload before trying again.')
-   setRows(prev=>({...prev,[emp.id]:{...row,days:days.map(d=>targets.some(t=>t.date===d.date)?{...d,exists:true}:d)}}))
-   setMessage(`${emp.full_name}: ${records.length} dated schedule(s) saved and verified.`)
-   await onSaved?.()
-  } catch(error) {setMessage(`Save failed: ${error.message}`)}
-  finally {lock.current=false;setSaving('')}
+   const {data:attendance,error:attendanceError}=await supabase.from('attendance_logs').select('id,attendance_date').eq('employee_id',employeeId).in('attendance_date',targets).not('time_in','is',null)
+   if(attendanceError)throw attendanceError
+   if(attendance?.length)throw new Error('A selected date already has a Time In. Choose future dates or use the attendance correction process.')
+   const {data:previous,error:readError}=await supabase.from('daily_schedules').select('schedule_date,notes').eq('employee_id',employeeId).gte('schedule_date',from).lte('schedule_date',until)
+   if(readError)throw readError
+   const records=targets.map(date=>({employee_id:employeeId,schedule_date:date,shift_start:shiftStart,shift_end:shiftEnd,notes:((previous || []).find(r=>r.schedule_date===date)?.notes || '').replaceAll(marker,'').trim()+(mode==='fixed'?` ${marker}`:'')}))
+   const {data:saved,error}=await supabase.from('daily_schedules').upsert(records,{onConflict:'employee_id,schedule_date'}).select('employee_id,schedule_date,shift_start,shift_end,notes')
+   if(error)throw error
+   if(saved?.length!==records.length || records.some(r=>!saved.some(v=>v.employee_id===r.employee_id && v.schedule_date===r.schedule_date && String(v.shift_start).slice(0,5)===r.shift_start && String(v.shift_end).slice(0,5)===r.shift_end)))throw new Error('Save could not be fully verified. Refresh before trying again.')
+   setWeek(scheduleSunday(from));setRevision(n=>n+1)
+   setMessage(`${emp.full_name}: ${from} to ${until} saved and published (${records.length} days). Available in their My Schedule portal.`)
+   try {await onSaved?.()}catch { /* The schedule write is already verified; the week reload remains authoritative. */ }
+  }catch(error){setMessage(`Save failed: ${error.message}`)}
+  finally{lock.current=false;setSaving(false)}
  }
- return <section style={{background:'white',border:'1px solid #ddd',borderRadius:12,padding:16,marginBottom:20}}>
-  <h3 style={{marginTop:0,color:'#ca1b1b'}}>Staff Schedule Worksheet</h3>
-  <p style={{fontSize:12}}>Fixed: repeat one start/end pair across the selected period. Variable: edit each day separately. Enter Repeat start/end once and click Apply to all days, then Save row. You can still edit individual days in Variable mode. Blank days are left unchanged. Past dates and dates already timed in cannot be changed here.</p>
-  <label>Sunday starting <input aria-label="Week starting" type="date" value={start} disabled={!!saving} onChange={e=>e.target.value && setStart(scheduleSunday(e.target.value))} /></label>{' '}
-  <label>Duration <select aria-label="Schedule duration" value={duration} disabled={!!saving} onChange={e=>setDuration(e.target.value)}><option value="1week">1 week</option><option value="2weeks">2 weeks</option><option value="3weeks">3 weeks</option><option value="1month">1 month</option></select></label>{' '}
-  <p style={{fontSize:12}}>Schedule period: <strong>{dates[0]} to {dates[dates.length-1]}</strong> ({dates.length} days). Start dates are aligned to Sunday. Saved times connect automatically to staff attendance and late detection.</p>
-  <input aria-label="Search staff" placeholder="Search staff" value={search} onChange={e=>setSearch(e.target.value)} />
-  <p role="status">{busy?'Loading schedules…':message}</p>
-  {!busy && <div style={{overflowX:'auto'}}><table style={{borderCollapse:'collapse',width:'100%',fontSize:12}}>
-   <thead><tr><th style={cellStyle}>Employee</th><th style={cellStyle}>Schedule type</th><th style={cellStyle}>Repeat times for this period</th>{dates.map(date=><th key={date} style={cellStyle}>{new Date(`${date}T00:00:00Z`).toLocaleDateString('en-PH',{weekday:'short',timeZone:'UTC'})}<br />{date}</th>)}<th style={cellStyle}>Save</th></tr></thead>
-   <tbody>{employees.filter(e=>e.is_active!==false && `${e.full_name} ${e.employee_code}`.toLowerCase().includes(search.toLowerCase())).map(emp=>{
-    const row=rows[emp.id];if(!row)return null
-    const firstEditable=row.days.findIndex(d=>d.date>=today)
-    return <tr key={emp.id}><td style={cellStyle}>{emp.full_name}</td><td style={cellStyle}><select aria-label={`${emp.full_name} schedule type`} value={row.mode} disabled={!!saving} onChange={e=>setRows(prev=>({...prev,[emp.id]:{...prev[emp.id],mode:e.target.value}}))}><option value="fixed">Fixed schedule</option><option value="variable">Variable schedule</option></select></td>
-     <td style={cellStyle}>
-      <label>Start <input aria-label={`${emp.full_name} repeat start`} type="time" value={row.repeatStart} disabled={!!saving} onChange={e=>setRows(prev=>({...prev,[emp.id]:{...prev[emp.id],repeatStart:e.target.value}}))} /></label>
-      <label>End <input aria-label={`${emp.full_name} repeat end`} type="time" value={row.repeatEnd} disabled={!!saving} onChange={e=>setRows(prev=>({...prev,[emp.id]:{...prev[emp.id],repeatEnd:e.target.value}}))} /></label>
-      <button aria-label={`${emp.full_name} apply to all days`} disabled={!!saving} onClick={()=>applyEveryDay(emp)}>Apply to all days</button>
-      <small style={{display:'block'}}>Selected {duration==='1month'?'month':duration==='3weeks'?'3 weeks':duration==='2weeks'?'2 weeks':'week'}</small>
-     </td>
-     {row.days.map((d,i)=><td key={d.date} style={cellStyle}>{row.mode==='fixed' && d.date>=today && i!==firstEditable?<span>Same as first day</span>:<><input aria-label={`${emp.full_name} ${d.date} start`} type="time" value={d.start} disabled={!!saving || d.date<today} onChange={e=>edit(emp.id,i,'start',e.target.value)} /><input aria-label={`${emp.full_name} ${d.date} end`} type="time" value={d.end} disabled={!!saving || d.date<today} onChange={e=>edit(emp.id,i,'end',e.target.value)} /></>}</td>)}
-     <td style={cellStyle}><button disabled={!!saving} onClick={()=>save(emp)}>{saving===emp.id?'Saving…':'Save row'}</button></td></tr>
-   })}</tbody>
-  </table></div>}
+ return <section className="staff-scheduler">
+  <h3>Staff Scheduler</h3>
+  <p>View one week at a time. Select a day to edit it, or apply the same times to any date range below.</p>
+  <form onSubmit={save} className="schedule-editor">
+   <label>Employee<select aria-label="Schedule employee" required value={employeeId} disabled={saving} onChange={e=>setEmployeeId(e.target.value)}><option value="">Select employee</option>{active.map(e=><option key={e.id} value={e.id}>{e.full_name}</option>)}</select></label>
+   <label>Schedule type<select aria-label="Schedule type" value={mode} disabled={saving} onChange={e=>setMode(e.target.value)}><option value="variable">Variable schedule</option><option value="fixed">Fixed schedule</option></select></label>
+   <label>Apply from<input aria-label="Apply from" required type="date" min={today} value={from} disabled={saving} onChange={e=>{setFrom(e.target.value);if(e.target.value>until)setUntil(e.target.value)}} /></label>
+   <label>Until (inclusive)<input aria-label="Apply until" required type="date" min={from || today} value={until} disabled={saving} onChange={e=>setUntil(e.target.value)} /></label>
+   <label>Shift start<input aria-label="Shift start" required type="time" value={shiftStart} disabled={saving} onChange={e=>setShiftStart(e.target.value)} /></label>
+   <label>Shift end<input aria-label="Shift end" required type="time" value={shiftEnd} disabled={saving} onChange={e=>setShiftEnd(e.target.value)} /></label>
+   <button type="submit" disabled={saving}>{saving?'Saving…':'Save & publish'}</button>
+   <small>Times apply every day from Apply from through Until, including both dates. Change a single day later for an exception. Saved schedules appear in the employee portal and determine lateness.</small>
+  </form>
+  <p role="status" aria-live="polite">{message}</p>
+  <div className="schedule-toolbar"><button disabled={saving} onClick={()=>setWeek(scheduleDateAt(week,-7))}>Previous week</button><label>Week of<input aria-label="Week starting" type="date" value={week} disabled={saving} onChange={e=>e.target.value && setWeek(scheduleSunday(e.target.value))} /></label><button disabled={saving} onClick={()=>setWeek(scheduleDateAt(week,7))}>Next week</button><input aria-label="Search staff" placeholder="Search staff" value={search} onChange={e=>setSearch(e.target.value)} /></div>
+  <p className="schedule-caption">Sunday–Saturday · {dates[0]} to {dates[6]}</p>
+  {busy?<p>Loading schedules…</p>:<div className="schedule-table-wrap"><table><thead><tr><th>Employee</th>{dates.map(date=><th key={date}>{new Date(`${date}T00:00:00Z`).toLocaleDateString('en-PH',{weekday:'short',month:'short',day:'numeric',timeZone:'UTC'})}</th>)}</tr></thead><tbody>{active.filter(e=>`${e.full_name} ${e.employee_code || ''}`.toLowerCase().includes(search.toLowerCase())).map(emp=><tr key={emp.id}><th scope="row">{emp.full_name}</th>{dates.map(date=>{const row=stored.find(r=>r.employee_id===emp.id && r.schedule_date===date);return <td key={date}><button aria-label={`${emp.full_name} ${date} schedule`} disabled={saving || date<today} onClick={()=>selectDay(emp,date,row)}>{row?shiftLabel(row):'—'}</button></td>})}</tr>)}</tbody></table></div>}
  </section>
 }

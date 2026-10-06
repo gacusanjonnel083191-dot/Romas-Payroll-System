@@ -1,4 +1,5 @@
 import StaffScheduler from './StaffScheduler.jsx'
+import EmployeeSchedule from './EmployeeSchedule.jsx'
 import { usesMinuteAttendancePolicy, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
 import { buildEmployeeIdWordBlob } from './employeeIdWord.js'
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
@@ -38528,6 +38529,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
 
  <StaffScheduler supabase={supabase} employees={employees} today={today} onSaved={loadExistingSchedules} />
+ <details style={{marginBottom:20}}><summary style={{cursor:'pointer',fontSize:12,color:'#777'}}>Advanced schedule tools</summary>
  {/* Bulk Schedule Creator */}
  <div style={{ background:'#f9f9f9', borderRadius:'14px', padding:'18px', marginBottom:'20px', border:'2px solid #ca1b1b' }}>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 14px', fontSize:'15px' }}> Bulk Schedule Creator</h3>
@@ -38639,6 +38641,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  </div>
  )}
+ </details>
  </div>
  )}
 
@@ -49980,6 +49983,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  )
  })()}
  <p style={{ color:'#bbb', fontSize:'11px', textAlign:'center', margin:'0 0 16px' }}> Live selfie required no photo uploads allowed</p>
+
+ <EmployeeSchedule key={employee.id} supabase={supabase} employeeId={employee.id} today={today} />
 
  {/* Secondary Actions Grid */}
  <div style={{ borderTop:'1px solid #f0f0f0', paddingTop:'14px', marginBottom:'8px' }}>
