@@ -24,7 +24,8 @@ export default function StaffScheduler({supabase, employees = [], today, onSaved
    const result = {}
    for (const emp of employees.filter(e=>e.is_active !== false)) {
     const stored = (data || []).filter(r=>r.employee_id === emp.id)
-    result[emp.id] = {mode:stored.some(r=>String(r.notes || '').includes(marker))?'fixed':'variable', days:dates.map(date=>{
+    const repeatTemplate = stored.find(r=>r.schedule_date>=today) || stored[0]
+    result[emp.id] = {repeatStart:String(repeatTemplate?.shift_start || '').slice(0,5),repeatEnd:String(repeatTemplate?.shift_end || '').slice(0,5),mode:stored.some(r=>String(r.notes || '').includes(marker))?'fixed':'variable', days:dates.map(date=>{
      const row = stored.find(r=>r.schedule_date === date)
      return {date, start:String(row?.shift_start || '').slice(0,5), end:String(row?.shift_end || '').slice(0,5), notes:row?.notes || '', exists:!!row}
     })}
@@ -36,6 +37,14 @@ export default function StaffScheduler({supabase, employees = [], today, onSaved
  }, [start, duration, employees, supabase])
  function edit(id,index,key,value) {
   setRows(prev=>({...prev,[id]:{...prev[id],days:prev[id].days.map((d,i)=>i===index?{...d,[key]:value}:d)}}))
+ }
+ function applyEveryDay(emp) {
+  const row = rows[emp.id]
+  if (!row?.repeatStart || !row?.repeatEnd || row.repeatStart === row.repeatEnd) {setMessage('Enter different start and end times before applying. Overnight shifts are allowed.');return}
+  const count = row.days.filter(d=>d.date>=today).length
+  if (!count) {setMessage('Choose a period with today or future dates.');return}
+  setRows(prev=>({...prev,[emp.id]:{...prev[emp.id],days:prev[emp.id].days.map(d=>d.date>=today?{...d,start:row.repeatStart,end:row.repeatEnd}:d)}}))
+  setMessage(`${emp.full_name}: times applied to ${count} day(s) in this period. Click Save row to save them.`)
  }
  async function save(emp) {
   if (lock.current) return
@@ -66,18 +75,24 @@ export default function StaffScheduler({supabase, employees = [], today, onSaved
  }
  return <section style={{background:'white',border:'1px solid #ddd',borderRadius:12,padding:16,marginBottom:20}}>
   <h3 style={{marginTop:0,color:'#ca1b1b'}}>Staff Schedule Worksheet</h3>
-  <p style={{fontSize:12}}>Fixed: repeat one start/end pair across the selected period. Variable: edit each day separately. Blank days are left unchanged. Past dates and dates already timed in cannot be changed here.</p>
+  <p style={{fontSize:12}}>Fixed: repeat one start/end pair across the selected period. Variable: edit each day separately. Enter Repeat start/end once and click Apply to all days, then Save row. You can still edit individual days in Variable mode. Blank days are left unchanged. Past dates and dates already timed in cannot be changed here.</p>
   <label>Sunday starting <input aria-label="Week starting" type="date" value={start} disabled={!!saving} onChange={e=>e.target.value && setStart(scheduleSunday(e.target.value))} /></label>{' '}
   <label>Duration <select aria-label="Schedule duration" value={duration} disabled={!!saving} onChange={e=>setDuration(e.target.value)}><option value="1week">1 week</option><option value="2weeks">2 weeks</option><option value="3weeks">3 weeks</option><option value="1month">1 month</option></select></label>{' '}
   <p style={{fontSize:12}}>Schedule period: <strong>{dates[0]} to {dates[dates.length-1]}</strong> ({dates.length} days). Start dates are aligned to Sunday. Saved times connect automatically to staff attendance and late detection.</p>
   <input aria-label="Search staff" placeholder="Search staff" value={search} onChange={e=>setSearch(e.target.value)} />
   <p role="status">{busy?'Loading schedules…':message}</p>
   {!busy && <div style={{overflowX:'auto'}}><table style={{borderCollapse:'collapse',width:'100%',fontSize:12}}>
-   <thead><tr><th style={cellStyle}>Employee</th><th style={cellStyle}>Schedule type</th>{dates.map(date=><th key={date} style={cellStyle}>{new Date(`${date}T00:00:00Z`).toLocaleDateString('en-PH',{weekday:'short',timeZone:'UTC'})}<br />{date}</th>)}<th style={cellStyle}>Save</th></tr></thead>
+   <thead><tr><th style={cellStyle}>Employee</th><th style={cellStyle}>Schedule type</th><th style={cellStyle}>Repeat times for this period</th>{dates.map(date=><th key={date} style={cellStyle}>{new Date(`${date}T00:00:00Z`).toLocaleDateString('en-PH',{weekday:'short',timeZone:'UTC'})}<br />{date}</th>)}<th style={cellStyle}>Save</th></tr></thead>
    <tbody>{employees.filter(e=>e.is_active!==false && `${e.full_name} ${e.employee_code}`.toLowerCase().includes(search.toLowerCase())).map(emp=>{
     const row=rows[emp.id];if(!row)return null
     const firstEditable=row.days.findIndex(d=>d.date>=today)
     return <tr key={emp.id}><td style={cellStyle}>{emp.full_name}</td><td style={cellStyle}><select aria-label={`${emp.full_name} schedule type`} value={row.mode} disabled={!!saving} onChange={e=>setRows(prev=>({...prev,[emp.id]:{...prev[emp.id],mode:e.target.value}}))}><option value="fixed">Fixed schedule</option><option value="variable">Variable schedule</option></select></td>
+     <td style={cellStyle}>
+      <label>Start <input aria-label={`${emp.full_name} repeat start`} type="time" value={row.repeatStart} disabled={!!saving} onChange={e=>setRows(prev=>({...prev,[emp.id]:{...prev[emp.id],repeatStart:e.target.value}}))} /></label>
+      <label>End <input aria-label={`${emp.full_name} repeat end`} type="time" value={row.repeatEnd} disabled={!!saving} onChange={e=>setRows(prev=>({...prev,[emp.id]:{...prev[emp.id],repeatEnd:e.target.value}}))} /></label>
+      <button aria-label={`${emp.full_name} apply to all days`} disabled={!!saving} onClick={()=>applyEveryDay(emp)}>Apply to all days</button>
+      <small style={{display:'block'}}>Selected {duration==='1month'?'month':duration==='3weeks'?'3 weeks':duration==='2weeks'?'2 weeks':'week'}</small>
+     </td>
      {row.days.map((d,i)=><td key={d.date} style={cellStyle}>{row.mode==='fixed' && d.date>=today && i!==firstEditable?<span>Same as first day</span>:<><input aria-label={`${emp.full_name} ${d.date} start`} type="time" value={d.start} disabled={!!saving || d.date<today} onChange={e=>edit(emp.id,i,'start',e.target.value)} /><input aria-label={`${emp.full_name} ${d.date} end`} type="time" value={d.end} disabled={!!saving || d.date<today} onChange={e=>edit(emp.id,i,'end',e.target.value)} /></>}</td>)}
      <td style={cellStyle}><button disabled={!!saving} onClick={()=>save(emp)}>{saving===emp.id?'Saving…':'Save row'}</button></td></tr>
    })}</tbody>
