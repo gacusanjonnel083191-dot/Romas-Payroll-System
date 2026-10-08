@@ -44,3 +44,47 @@ test('migration explicitly commits and does not drop payroll or attendance struc
   assert.match(migration, /commit;\s*$/i)
   assert.doesNotMatch(migration, /drop (?:table|schema)/i)
 })
+
+const registryMigration = readFileSync(
+  new URL('../supabase/migrations/20261008150100_employee_registry_and_owner_removal.sql', import.meta.url), 'utf8'
+)
+const pinMigration = readFileSync(
+  new URL('../supabase/migrations/20261008150200_hash_employee_pins.sql', import.meta.url), 'utf8'
+)
+
+test('historical records are linked to non-login employee registry', () => {
+  assert.match(registryMigration, /create table if not exists public\.employee_registry/i)
+  assert.match(registryMigration, /insert into public\.employee_registry/i)
+  assert.match(registryMigration, /alter table public\.employee_registry enable row level security/i)
+  assert.match(registryMigration, /references public\.employee_registry\(id\)/i)
+  assert.match(registryMigration, /private\.employee_cash_advance_sessions'::regclass/)
+  assert.match(registryMigration, /public\.notifications'::regclass/)
+})
+
+test('owner removal audits action and preserves payroll and attendance', () => {
+  assert.match(registryMigration, /function public\.owner_permanently_remove_employee/i)
+  assert.match(registryMigration, /private\.cash_advance_admin_has_role\(array\['owner'\]/i)
+  assert.match(registryMigration, /from public\.payroll_records where employee_id=emp\.id/i)
+  assert.match(registryMigration, /from public\.attendance_logs where employee_id=emp\.id/i)
+  assert.match(registryMigration, /from public\.cash_advances where employee_id=emp\.id/i)
+  assert.match(registryMigration, /outstanding>0/)
+  assert.match(registryMigration, /delete from public\.employees where id=emp\.id/i)
+  assert.doesNotMatch(registryMigration, /delete from public\.(?:payroll_records|attendance_logs|cash_advances|daily_schedules)/i)
+  assert.match(registryMigration, /EMPLOYEE ACCOUNT PERMANENTLY REMOVED/)
+})
+
+test('employee PIN migration hashes existing and future credentials', () => {
+  assert.match(pinMigration, /create extension if not exists pgcrypto/i)
+  assert.match(pinMigration, /update public\.employees\s+set pin = extensions\.crypt\(pin, extensions\.gen_salt/i)
+  assert.match(pinMigration, /before insert or update of pin on public\.employees/i)
+  assert.match(pinMigration, /extensions\.crypt\(btrim\(coalesce\(p_pin,''\)\),e\.pin\)/)
+  assert.match(pinMigration, /to_jsonb\(v_employee\)-'pin'/)
+})
+
+test('owner-only UI calls removal RPC and uses archive-safe schedule lookups', () => {
+  const app = readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8')
+  assert.match(app, /adminRole==='owner' && \([\s\S]*?PERMANENTLY REMOVE/)
+  assert.match(app, /rpc\('owner_permanently_remove_employee'/)
+  assert.match(app, /loadDeactivatedEmployees\(\)/)
+  assert.doesNotMatch(app, /\.select\('\*,employees\(full_name,employee_code\)'\)/)
+})
