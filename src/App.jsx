@@ -7224,6 +7224,7 @@ export default function App() {
  const [showDeactivated, setShowDeactivated] = useState(false)
  const [deactivatedEmployees, setDeactivatedEmployees] = useState([])
  const [removingEmployeeId, setRemovingEmployeeId] = useState('')
+ const [permanentRemovalReady, setPermanentRemovalReady] = useState(false)
  const [payrollSearch, setPayrollSearch] = useState('')
  const [editingEmployeeId, setEditingEmployeeId] = useState('')
  const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
@@ -24675,9 +24676,13 @@ requestPushPermission()
  async function loadDeactivatedEmployees() {
  const { data } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', false).order('full_name')
  setDeactivatedEmployees(data || [])
+ // Disable destructive actions until the required archive migration is installed.
+ const { error: registryError } = await supabase.from('employee_registry').select('id').limit(1)
+ setPermanentRemovalReady(!registryError)
  }
  async function permanentlyRemoveEmployee(emp) {
  if (adminRole !== 'owner' || !emp?.id) { showToast('Owner access required.', 'red'); return }
+ if (!permanentRemovalReady) { showToast('Permanent removal is locked until the Supabase archive migration is applied.', 'red'); return }
  const typedCode = window.prompt('Permanently remove ' + emp.full_name + '? Historical payroll and attendance remain.\\n\\nType employee code (' + emp.employee_code + ') to confirm:')
  if (typedCode === null) return
  if (typedCode.trim() !== String(emp.employee_code || '')) { showToast('Employee code does not match. No records changed.', 'red'); return }
@@ -38347,12 +38352,13 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    </button>
    {showDeactivated && <div style={{marginTop:12}}>
     <p style={{fontSize:12,color:'#555'}}>Owner-only removal. Historical payroll, attendance and cash advances are preserved. Outstanding cash advances block removal.</p>
+    {!permanentRemovalReady && <p role="status" style={{fontSize:12,color:'#b45309',fontWeight:700}}>Permanent removal is currently locked until the verified Supabase database migration is installed.</p>}
     {deactivatedEmployees.length===0?<p>No deactivated employees found.</p>:deactivatedEmployees.map(emp=>(
      <div key={emp.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,padding:'10px 0',borderBottom:'1px solid #eee',flexWrap:'wrap'}}>
       <span style={{fontSize:13}}><strong>{emp.full_name}</strong> ({emp.employee_code})</span>
       <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
        <button type="button" style={{...btnGreen,width:'auto',padding:'7px 10px',marginTop:0}} disabled={!!removingEmployeeId} onClick={()=>reactivateEmployee(emp.id,emp.full_name)}>REACTIVATE</button>
-       <button type="button" style={{...btnRed,width:'auto',padding:'7px 10px',marginTop:0}} disabled={!!removingEmployeeId} onClick={()=>permanentlyRemoveEmployee(emp)}>{removingEmployeeId===emp.id?'REMOVING…':'PERMANENTLY REMOVE'}</button>
+       <button type="button" style={{...btnRed,width:'auto',padding:'7px 10px',marginTop:0}} disabled={!!removingEmployeeId || !permanentRemovalReady} onClick={()=>permanentlyRemoveEmployee(emp)}>{removingEmployeeId===emp.id?'REMOVING…':'PERMANENTLY REMOVE'}</button>
       </div>
      </div>
     ))}
