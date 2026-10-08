@@ -7649,11 +7649,10 @@ export default function App() {
   { name:'Matcha Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Choco Lollisticks', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Glazed Circlets', category:'Glaze Circlet', selling_price:13, pieces_per_batch:20 },
- { name:'Cinnamon Rolls', category:'Premium', selling_price:18, pieces_per_batch:8 },
  { name:'Rings', category:'Regular', selling_price:25, pieces_per_batch:12 },
  { name:'Shells', category:'Filled', selling_price:26, pieces_per_batch:12 },
+ { name:'Matcha Supreme', category:'Premium', selling_price:30, pieces_per_batch:380 },
  { name:'Bavarian Midnight', category:'Premium', selling_price:28, pieces_per_batch:10 },
- { name:'Biscoreo', category:'Premium', selling_price:28, pieces_per_batch:10 },
  { name:'Fanfans', category:'Premium', selling_price:33, pieces_per_batch:10 },
  { name:'Oreo Dream', category:'Premium', selling_price:33, pieces_per_batch:10 },
  { name:'Almond Glitz', category:'Premium', selling_price:35, pieces_per_batch:10 },
@@ -13344,7 +13343,7 @@ Cancel = create batch record only for existing stock.`)
 
  let variants = Array.isArray(donutVariants)? donutVariants: []
  if (variants.length === 0) {
- const { data, error } = await supabase.from('donut_variants').select('*').order('category').order('name')
+ const { data, error } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
  if (error) {
  console.warn('Unable to load donut variants for default order editor:', error)
  }
@@ -13419,7 +13418,7 @@ Cancel = create batch record only for existing stock.`)
  async function loadAllInvoiceVariants(defaultQuantity = '', discountPctOverride = null) {
  let variants = donutVariants
  if (!variants || variants.length === 0) {
- const { data, error } = await supabase.from('donut_variants').select('*').order('name')
+ const { data, error } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('name')
  if (error) {
  showToast('Failed to load donut varieties: ' + error.message, 'red')
  return
@@ -15462,7 +15461,7 @@ function buildDeliveryInvoicePrintCSS() {
     const preparedBy = '';
     const productionDispatchNote = getInvoiceProductionDispatchNote(invoice);
 
-    const rows = DELIVERY_INVOICE_PRODUCT_ORDER;
+    const rows = getInvoiceProductOrderForItems(items);
 
     const getQty = item => safeNum(item?.delivered_quantity ?? item?.actual_quantity ?? item?.quantity, 0);
     const getPrice = item => safeNum(item?.reseller_price ?? item?.unit_price ?? item?.price ?? item?.selling_price, 0);
@@ -15614,6 +15613,7 @@ function buildDeliveryInvoicePrintCSS() {
       { label:'Lotus Cloud', aliases:['Lotus Cloud'] },
       { label:'Rings', aliases:['Rings'] },
       { label:'Shells', aliases:['Shells'] },
+      { label:'Matcha Supreme', aliases:['Matcha Supreme'] },
       { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
       { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
       { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
@@ -15650,11 +15650,10 @@ function buildDeliveryInvoicePrintCSS() {
     { label:'Bavarian Bites', aliases:['Bavarian Bites'] },
     { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] },
     { label:'Circlets', aliases:['Circlets', 'Glazed Circlets', 'Glaze Circlet'] },
-    { label:'Cinnamon Rolls', aliases:['Cinnamon Rolls'] },
     { label:'Rings', aliases:['Rings'] },
     { label:'Shells', aliases:['Shells'] },
+    { label:'Matcha Supreme', aliases:['Matcha Supreme'] },
     { label:'Bav. Midnight', aliases:['Bavarian Midnight', 'Bav. Midnight', 'Bav Midnight'] },
-    { label:'Biscoreo', aliases:['Biscoreo'] },
     { label:'Oreo Dream', aliases:['Oreo Dream'] },
     { label:'Fanfans', aliases:['Fanfans', 'Fan Fans'] },
     { label:'Almond Glitz', aliases:['Almond Glitz'] },
@@ -15702,8 +15701,20 @@ function buildDeliveryInvoicePrintCSS() {
     );
   }
 
-  function buildInvoiceProductTemplateFromGuide() {
-    return DELIVERY_INVOICE_PRODUCT_ORDER.map(row => ({
+  // Retired variants are absent from new blank invoices but remain on historical reprints.
+  function getInvoiceProductOrderForItems(invoiceItems = []) {
+    const retired = new Set(['cinnamonrolls', 'biscoreo']);
+    const present = new Set((invoiceItems || []).map(item =>
+      normalizeDonutVariantName(item?.variant_name || item?.product_name || item?.name || '')
+    ));
+    return DELIVERY_INVOICE_PRODUCT_ORDER.filter(row => {
+      if (!retired.has(normalizeDonutVariantName(row.label))) return true;
+      return (row.aliases || [row.label]).some(alias => present.has(normalizeDonutVariantName(alias)));
+    });
+  }
+
+  function buildInvoiceProductTemplateFromGuide(invoiceItems = []) {
+    return getInvoiceProductOrderForItems(invoiceItems).map(row => ({
       label: row.label,
       aliases: row.aliases || [row.label]
     }));
@@ -15755,7 +15766,7 @@ function buildDeliveryInvoicePrintCSS() {
        reseller?.area
      ].map(cleanText).find(Boolean) || ''
 
-    const productTemplate = buildInvoiceProductTemplateFromGuide()
+    const productTemplate = buildInvoiceProductTemplateFromGuide(items)
 
    const getQty = item => safeNum(item?.delivered_quantity ?? item?.actual_quantity ?? item?.quantity, 0)
    const getPrice = item => safeNum(item?.reseller_price ?? item?.unit_price ?? item?.price ?? item?.selling_price, 0)
@@ -32165,7 +32176,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
   const status = String(product.status || '').trim().toLowerCase()
   const name = String(product.product_name || product.name || '').trim().toLowerCase()
   const category = String(product.category || '').trim().toLowerCase()
-  return ['deleted', 'permanently_deleted', 'removed'].includes(status) || !!product.deleted_at || name.startsWith('[deleted]') || category === 'deleted'
+  return product.is_active === false || ['deleted', 'permanently_deleted', 'removed'].includes(status) || !!product.deleted_at || name.startsWith('[deleted]') || category === 'deleted'
  }
 
  function isPosProductsOptionalColumnError(error = null) {
@@ -45311,6 +45322,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   'Cinnamon Rolls': 27,
   'Rings': 27,
   'Shells': 27,
+  'Matcha Supreme': 27,
   'Bavarian Midnight': 27,
   'Biscoreo': 27,
   'Fanfans': 31.5,
@@ -47565,7 +47577,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <button style={{ background:'#1a1a2e', color:'white', border:'none', borderRadius:'6px', padding:'4px 10px', cursor:'pointer', fontSize:'10px', fontWeight:'bold' }} onClick={async ()=>{
  let variants = donutVariants
  if (!variants || variants.length === 0) {
- const { data, error } = await supabase.from('donut_variants').select('*').order('category').order('name')
+ const { data, error } = await supabase.from('donut_variants').select('*').eq('is_active', true).order('category').order('name')
  if (error) console.warn('Unable to load donut variants:', error)
  variants = data || []
  if (variants.length > 0) setDonutVariants(sortDonutVariantsByGuide(variants))

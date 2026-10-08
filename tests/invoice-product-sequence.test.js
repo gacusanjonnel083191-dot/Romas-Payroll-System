@@ -6,7 +6,7 @@ import vm from 'node:vm'
 const source = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8')
 const functionNames = [
   'normalizeDonutVariantName', 'sortDeliveryInvoiceItems',
-  'buildInvoiceProductTemplateFromGuide', 'getDeliveryInvoicePrintData',
+  'getInvoiceProductOrderForItems', 'buildInvoiceProductTemplateFromGuide', 'getDeliveryInvoicePrintData',
   'buildDeliveryInvoicePrintPage', 'getInvoiceViewItemRows',
   'buildInvoiceSettlementRows', 'updateSettlementRow', 'getSettlementSummary',
   'wordXmlText', 'wordRun', 'wordParagraph', 'wordCell', 'wordRow', 'buildDeliveryInvoiceDocxTable',
@@ -14,6 +14,7 @@ const functionNames = [
 const nextMarkers = {
   normalizeDonutVariantName: '  const DONUT_VARIANT_ORDER_INDEX',
   sortDeliveryInvoiceItems: '  // MASTER DONUT VARIETY ORDER',
+  getInvoiceProductOrderForItems: '  function buildInvoiceProductTemplateFromGuide',
   buildInvoiceProductTemplateFromGuide: ' function getDeliveryInvoicePrintData',
   getDeliveryInvoicePrintData: ' function wordXmlText',
   buildDeliveryInvoicePrintPage: ' function escapeWordDocText',
@@ -47,10 +48,13 @@ const context = vm.createContext({
 context.setSettlementRows = updater => { context.settlementRows = updater(context.settlementRows) }
 vm.runInContext(constant + '\n' + functionNames.map(extractFunction).join('\n'), context)
 const plain = value => JSON.parse(JSON.stringify(value))
-const expected = ['Choco Balls', 'Matcha Pops', 'Almond Glitz', 'Fanfans', 'Oreo Dream',
+const historicalExpected = ['Choco Balls', 'Matcha Pops', 'Almond Glitz', 'Fanfans', 'Oreo Dream',
   'Lotus Cloud', 'Rings', 'Shells', 'Bav. Midnight', 'Circlets', 'Bavarian Bites',
   'Bavarian Pops', 'Strawberry Pops', 'Taro Pops', 'Cinnamon Rolls', 'Biscoreo', 'Choco Lollisticks', 'Giant Donut']
-const names = [...expected].reverse().map(name => name === 'Circlets' ? 'Glazed Circlets' : name === 'Bav. Midnight' ? 'Bavarian Midnight' : name)
+const expected = [...historicalExpected]
+expected.splice(expected.indexOf('Shells') + 1, 0, 'Matcha Supreme')
+const activeExpected = expected.filter(name => !['Cinnamon Rolls','Biscoreo'].includes(name))
+const names = [...historicalExpected].reverse().map(name => name === 'Circlets' ? 'Glazed Circlets' : name === 'Bav. Midnight' ? 'Bavarian Midnight' : name)
 const invoice = { id: 'test-invoice', total_amount: 5406.4, paid_amount: 100,
   delivery_invoice_items: names.map((variant_name, i) => ({ id: `item-${i}`, variant_name,
     quantity: i + 2, reseller_price: 4.8, total_price: (i + 2) * 4.8, unsold_quantity: i % 2 })) }
@@ -79,12 +83,13 @@ test('three Giant Donuts appear in HTML and Word with the saved 525.60 total', (
 })
 
 test('HTML print, Word/image data, invoice view, and settlement share the printed sequence', () => {
-  assert.deepEqual(plain(context.buildInvoiceProductTemplateFromGuide()).map(row => row.label), expected)
+  assert.deepEqual(plain(context.buildInvoiceProductTemplateFromGuide()).map(row => row.label), activeExpected)
+  assert.deepEqual(plain(context.buildInvoiceProductTemplateFromGuide(invoice.delivery_invoice_items)).map(row => row.label), expected)
   const printData = context.getDeliveryInvoicePrintData(invoice)
   assert.deepEqual(plain(printData.productRows).map(row => row.product), expected)
   const html = context.buildDeliveryInvoicePrintPage(invoice)
   assert.deepEqual([...html.matchAll(/class="product-name">([^<]+)</g)].map(match => match[1]), expected)
-  const actualNames = expected.map(name => name === 'Circlets' ? 'Glazed Circlets' : name === 'Bav. Midnight' ? 'Bavarian Midnight' : name)
+  const actualNames = historicalExpected.map(name => name === 'Circlets' ? 'Glazed Circlets' : name === 'Bav. Midnight' ? 'Bavarian Midnight' : name)
   assert.deepEqual(plain(context.getInvoiceViewItemRows(invoice)).map(row => row.variant_name), actualNames)
   assert.deepEqual(plain(context.buildInvoiceSettlementRows(invoice)).map(row => row.variant_name), actualNames)
 })
