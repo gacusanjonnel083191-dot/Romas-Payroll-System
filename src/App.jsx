@@ -7223,6 +7223,8 @@ export default function App() {
  const [employeeSearch, setEmployeeSearch] = useState('')
  const [showDeactivated, setShowDeactivated] = useState(false)
  const [deactivatedEmployees, setDeactivatedEmployees] = useState([])
+ const [removingEmployeeId, setRemovingEmployeeId] = useState('')
+ const [permanentRemovalReady, setPermanentRemovalReady] = useState(false)
  const [payrollSearch, setPayrollSearch] = useState('')
  const [editingEmployeeId, setEditingEmployeeId] = useState('')
  const [saveEmployeeLoading, setSaveEmployeeLoading] = useState(false)
@@ -24641,7 +24643,7 @@ requestPushPermission()
  const yesterday = getDateOffsetString(-1)
  const now = new Date()
  const { data } = await supabase.from('attendance_logs')
-.select('*, employees(full_name, position, department, profile_photo_url)')
+.select('*')
 .gte('attendance_date', yesterday)
 .lte('attendance_date', today)
 .not('time_in', 'is', null)
@@ -24655,7 +24657,7 @@ requestPushPermission()
  async function loadTimedOutEmployees() {
  const yesterday = getDateOffsetString(-1)
  const { data } = await supabase.from('attendance_logs')
-.select('*, employees(full_name, position, department, profile_photo_url)')
+.select('*')
 .gte('attendance_date', yesterday)
 .lte('attendance_date', today)
 .not('time_in', 'is', null)
@@ -24674,6 +24676,26 @@ requestPushPermission()
  async function loadDeactivatedEmployees() {
  const { data } = await supabase.from('employee_access').select(EMPLOYEE_SELECT_FIELDS).eq('is_active', false).order('full_name')
  setDeactivatedEmployees(data || [])
+ // Disable destructive actions until the required archive migration is installed.
+ const { error: registryError } = await supabase.from('employee_registry').select('id').limit(1)
+ setPermanentRemovalReady(!registryError)
+ }
+ async function permanentlyRemoveEmployee(emp) {
+ if (adminRole !== 'owner' || !emp?.id) { showToast('Owner access required.', 'red'); return }
+ if (!permanentRemovalReady) { showToast('Permanent removal is locked until the Supabase archive migration is applied.', 'red'); return }
+ const typedCode = window.prompt('Permanently remove ' + emp.full_name + '? Historical payroll and attendance remain.\\n\\nType employee code (' + emp.employee_code + ') to confirm:')
+ if (typedCode === null) return
+ if (typedCode.trim() !== String(emp.employee_code || '')) { showToast('Employee code does not match. No records changed.', 'red'); return }
+ if (!window.confirm('FINAL CONFIRMATION: Remove account for ' + emp.full_name + '? Existing payroll and financial records will be preserved.')) return
+ setRemovingEmployeeId(emp.id)
+ try {
+  const { data, error } = await supabase.rpc('owner_permanently_remove_employee', {p_employee_id:emp.id,p_confirmation_code:typedCode.trim()})
+  if (error) throw error
+  if (!data?.ok) throw new Error('No verified removal result was received.')
+  await Promise.all([loadEmployees(), loadDeactivatedEmployees()])
+  showToast('Account removed. Historical payroll: ' + data.historical_payroll_preserved + ', attendance: ' + data.historical_attendance_preserved + ', cash advances: ' + data.historical_cash_advances_preserved + '.')
+ } catch(error) { showToast('Permanent removal failed: ' + (error?.message || 'Unknown error'), 'red') }
+ finally { setRemovingEmployeeId('') }
  }
  async function reactivateEmployee(empId, empName) {
  if (!window.confirm(`Reactivate ${empName}?`)) return
@@ -27588,8 +27610,20 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
  async function loadExistingSchedules() {
  const start = scheduleDate
  const end = new Date(new Date(scheduleDate).getTime() + 30*24*60*60*1000).toISOString().slice(0,10)
- const { data } = await supabase.from('daily_schedules').select('*,employees(full_name,employee_code)').gte('schedule_date', start).lte('schedule_date', end).order('schedule_date').order('employee_id')
- setExistingSchedules(data||[])
+ const { data, error } = await supabase.from('daily_schedules').select('*').gte('schedule_date', start).lte('schedule_date', end).order('schedule_date').order('employee_id')
+ if (error) { showToast('Schedule load failed: ' + error.message, 'red'); setExistingSchedules([]); return }
+ const ids = [...new Set((data || []).map(s=>s.employee_id).filter(Boolean))]
+ let directory = []
+ if (ids.length) {
+  const registry = await supabase.from('employee_registry').select('id,full_name,employee_code').in('id', ids)
+  if (!registry.error) directory = registry.data || []
+  else {
+   const fallback = await supabase.from('employees').select('id,full_name,employee_code').in('id', ids)
+   directory = fallback.data || []
+  }
+ }
+ const lookup = Object.fromEntries(directory.map(e=>[e.id,e]))
+ setExistingSchedules((data || []).map(s=>({...s,employees:lookup[s.employee_id] || null})))
  }
  async function deleteSchedule(id) {
  await supabase.from('daily_schedules').delete().eq('id', id)
@@ -38310,6 +38344,27 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  ))}
  </div>
  </>}
+ {adminRole==='owner' && (
+  <div style={{marginTop:20,padding:14,border:'1px solid #e5d4d4',borderRadius:12,background:'#fffaf8'}}>
+   <button type="button" style={{...btnBlack,width:'auto',padding:'9px 14px',marginTop:0}}
+    onClick={()=>{setShowDeactivated(v=>!v);if(!showDeactivated)void loadDeactivatedEmployees()}}>
+    {showDeactivated?'HIDE':'SHOW'} DEACTIVATED EMPLOYEES
+   </button>
+   {showDeactivated && <div style={{marginTop:12}}>
+    <p style={{fontSize:12,color:'#555'}}>Owner-only removal. Historical payroll, attendance and cash advances are preserved. Outstanding cash advances block removal.</p>
+    {!permanentRemovalReady && <p role="status" style={{fontSize:12,color:'#b45309',fontWeight:700}}>Permanent removal is currently locked until the verified Supabase database migration is installed.</p>}
+    {deactivatedEmployees.length===0?<p>No deactivated employees found.</p>:deactivatedEmployees.map(emp=>(
+     <div key={emp.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,padding:'10px 0',borderBottom:'1px solid #eee',flexWrap:'wrap'}}>
+      <span style={{fontSize:13}}><strong>{emp.full_name}</strong> ({emp.employee_code})</span>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+       <button type="button" style={{...btnGreen,width:'auto',padding:'7px 10px',marginTop:0}} disabled={!!removingEmployeeId} onClick={()=>reactivateEmployee(emp.id,emp.full_name)}>REACTIVATE</button>
+       <button type="button" style={{...btnRed,width:'auto',padding:'7px 10px',marginTop:0}} disabled={!!removingEmployeeId || !permanentRemovalReady} onClick={()=>permanentlyRemoveEmployee(emp)}>{removingEmployeeId===emp.id?'REMOVING…':'PERMANENTLY REMOVE'}</button>
+      </div>
+     </div>
+    ))}
+   </div>}
+  </div>
+ )}
  </div>
  )}
 
