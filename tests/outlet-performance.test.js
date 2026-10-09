@@ -1,6 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { calculateOutletClosingLine, getOutletSlowWeekdays, outletWeekdayStats, summarizeOutletClosing } from '../src/outletPerformance.js'
+import { buildOutletDeliveryHistory, calculateOutletClosingLine, getOutletSlowWeekdays, outletWeekdayStats, summarizeOutletClosing } from '../src/outletPerformance.js'
+
+test('delivery history groups active invoices by outlet business date without claiming sales', () => {
+  const rows = buildOutletDeliveryHistory([
+    { delivery_date:'2026-10-07', status:'delivered', total_amount:120, delivery_invoice_items:[{ variant_id:'a', variant_name:'Glazed', quantity:5, total_price:100 }] },
+    { delivery_date:'2026-10-07', status:'paid', total_amount:90, delivery_invoice_items:[{ variant_id:'a', variant_name:'Glazed', quantity:3, total_price:60 }] },
+    { delivery_date:'2026-10-08', status:'cancelled', total_amount:999, delivery_invoice_items:[{ variant_name:'Glazed', quantity:99 }] },
+  ])
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].delivered_qty, 8)
+  assert.equal(rows[0].invoiced_amount, 210)
+  assert.equal(rows[0].invoice_count, 2)
+  assert.equal(rows[0].items[0].quantity, 8)
+})
 
 test('daily closing reconciles physical stock into sold pieces and pesos', () => {
   const result = summarizeOutletClosing([

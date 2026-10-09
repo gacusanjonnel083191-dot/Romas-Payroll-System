@@ -9,6 +9,7 @@
 .outlet-performance select { min-width:135px; max-width:240px; }
 .outlet-performance-error { background:#fff0f0; color:#a20f0f!important; border:1px solid #e5aaaa; border-radius:8px; padding:10px; }
 .outlet-performance-empty { background:#fff; border:1px dashed #d5d7dc; border-radius:12px; padding:25px; text-align:center; color:#666; margin-bottom:14px; }
+.outlet-performance-source-note { background:#fff8df; border:1px solid #efd475; border-radius:10px; padding:12px 14px; margin-bottom:14px; color:#594918; font-size:12px; line-height:1.5; }
 .outlet-performance-chart small { color:#777; font-size:11px; font-weight:400; }
 .outlet-performance-scroll { overflow-x:auto; }
 .outlet-performance-chart svg { display:block; min-width:620px; width:100%; height:auto; }
