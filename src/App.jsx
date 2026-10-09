@@ -8,11 +8,12 @@ import {
  filterProductionForecastInvoices,
  isInvoiceExcludedFromProductionForecastPolicy
 } from './productionForecastPolicy.js'
-import { Component, useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
 import ResellerCalculator from './ResellerCalculator.jsx'
+import OutletPerformance from './OutletPerformance.jsx'
 import CrateRollingControl from './CrateRollingControl.jsx'
 import OwnerDailyReceipts from './OwnerDailyReceipts.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
@@ -11484,6 +11485,9 @@ Cancel = create batch record only for existing stock.`)
   const seen = new Set()
   return [...donutProducts, ...snackProducts].filter(product => { const key = getOutletProductKey(product); if (!key || seen.has(key)) return false; seen.add(key); return true }).sort((a,b)=>String(a.product_type).localeCompare(String(b.product_type)) || String(a.product_name).localeCompare(String(b.product_name)))
  }
+ // The catalog builder reads these two source lists; keep its result stable while the closing form is open.
+ // eslint-disable-next-line react-hooks/exhaustive-deps
+ const outletPerformanceCatalog = useMemo(() => getOutletProductCatalog(), [donutVariants, inventoryItems])
  function getOutletVisibleProducts() {
   const term = String(outletRemitSearch || '').trim().toLowerCase()
   return getOutletProductCatalog().filter(product => !term || [product.product_name, product.product_type, product.category, product.unit, product.default_price].filter(Boolean).join(' ').toLowerCase().includes(term))
@@ -44285,11 +44289,13 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {/* Sub-navigation */}
  {activeTab!=='tomorrowForecast' && (
  <div className="romas-module-tabs" style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'20px', background:'white', padding:'10px 14px', borderRadius:'14px', boxShadow:'0 1px 6px rgba(0,0,0,0.06)' }}>
- {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletSummary','\uD83C\uDFEA Outlet Sales Summary'],['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
- <button key={v} onClick={()=>{ setSalesView(v); setReceivableOutlet(null); if(v==='resellers') refreshResellerReceivables(); if(v==='receivables' && invoiceFilter==='voided') setInvoiceFilter('active'); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
+ {[['dashboard','\uD83D\uDCCA Dashboard'],['summary','\uD83D\uDCCB Sales Summary'],['outletSummary','\uD83C\uDFEA Outlet Sales Summary'],...(['owner','manager'].includes(normalizedAdminRole) ? [['outletPerformance','\uD83D\uDCC8 Daily Outlet Performance']] : []),['outletRemittance','\uD83C\uDFEA Outlet Weekly Remittance'],['deliveries','\uD83D\uDE9A Deliveries'],['adjustments','\uD83E\uDDFE Adjustments'],['receivables','\uD83D\uDCB5 Receivables'],['sales','\uD83D\uDCCA Daily Sales'],['onlinePayments','\uD83D\uDCB3 Daily Sales GCash/Online'],['expenses','\uD83D\uDCB8 Expenses'],['resellers','\uD83C\uDFEA Resellers'],['disputes','\u26A0\uFE0F Disputes']].map(([v,l])=>(
+ <button key={v} onClick={()=>{ setSalesView(v); setReceivableOutlet(null); if(v==='resellers') refreshResellerReceivables(); if(v==='receivables' && invoiceFilter==='voided') setInvoiceFilter('active'); if(v==='onlinePayments') loadDailySalesOnlinePayments(); if(v==='summary') loadSalesSummaryHistory(); if(v==='outletSummary') { loadResellers(); loadOutletSalesSummary(); } if(v==='outletPerformance') { loadResellers(); loadDonutVariants(); loadInventoryItems() } if(v==='outletRemittance') { loadResellers(); loadDeliveryInvoices(); loadDonutVariants(); loadInventoryItems(); loadOutletRemittanceData() } }} style={{ padding:'8px 16px', borderRadius:'20px', border:'none', background:salesView===v?'#ca1b1b':'#f4f4f4', color:salesView===v?'white':'#555', fontWeight:salesView===v?'700':'500', fontSize:'12px', cursor:'pointer', whiteSpace:'nowrap', transition:'all 0.15s', boxShadow:salesView===v?'0 2px 8px rgba(202,27,27,0.25)':'none', fontFamily:'inherit' }}>{l}</button>
  ))}
  </div>
  )}
+
+ {salesView==='outletPerformance' && ['owner','manager'].includes(normalizedAdminRole) && <OutletPerformance client={supabase} resellers={resellers} products={outletPerformanceCatalog} adminLabel={currentAdminLabel} today={today} />}
 
 
  {/* OUTLET INVENTORY & WEEKLY REMITTANCE */}
