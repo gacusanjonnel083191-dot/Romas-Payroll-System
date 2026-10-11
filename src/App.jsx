@@ -1,6 +1,6 @@
 import StaffScheduler from './StaffScheduler.jsx'
 import EmployeeSchedule from './EmployeeSchedule.jsx'
-import { usesMinuteAttendancePolicy, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
+import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
 import { buildEmployeeIdWordBlob } from './employeeIdWord.js'
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
 import { runEmployeeSeparationCommand } from './employeeSeparationIntegrity.js'
@@ -1432,6 +1432,13 @@ function getAttendanceDayActualOvertimeMinutes(dayLogs = [], breakRowsByLogId = 
  return roundPayableOvertimeMinutes(rawOvertimeMinutes, date)
 }
 
+function getAttendanceOvertimeDisplayStatus(log = {}, dayLogs = [log]) {
+ if (!usesOvertimeThresholdPolicy(log.attendance_date) || !String(log.status || '').includes('Overtime')) return log.status || ' '
+ // Reconcile old flags without overwriting attendance or released payroll.
+ if (getAttendanceDayActualOvertimeMinutes(dayLogs) > 0) return log.status
+ return Number(log.late_minutes || 0) > 0 ? 'Late' : 'Completed'
+}
+
 function getAttendanceDayActualOvertimeWindow(dayLogs = [], breakRowsByLogId = {}) {
  const integrity = getAttendanceDayIntegrity(dayLogs)
  if (!integrity.isValidCompleted) {
@@ -1476,7 +1483,9 @@ function getAttendanceDayActualOvertimeWindow(dayLogs = [], breakRowsByLogId = {
    deductedBreakMinutes:metrics.deductedBreakMinutes,
    paidWorkedMinutes:metrics.paidWorkedMinutes,
    message:rawMinutes > 0
-    ? `${rawMinutes} actual overtime minute(s) were recorded, but OT is payable only under the attendance-date OT policy (per minute from October 6, 2026). Payable OT is 0 minute(s).`
+    ? usesOvertimeThresholdPolicy(attendanceDate)
+      ? `${rawMinutes} extra minute(s) were recorded. Overtime of 29 minutes or less is ignored and cannot be filed; eligible overtime must be at least 30 minutes.`
+      : `${rawMinutes} actual overtime minute(s) were recorded, but OT is payable only under the attendance-date OT policy (per minute from October 6, 2026). Payable OT is 0 minute(s).`
     : 'No payable overtime exists after actual attendance and the mandatory break are reduced to eight paid regular hours.'
   }
  }
@@ -37993,7 +38002,12 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  {adminLogs.length===0 && <p style={{ color:'#888' }}>No records for this date. Click LOAD to fetch.</p>}
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(auto-fit, minmax(320px, 1fr))', gap:'12px', alignItems:'stretch' }}>
- {adminLogs.map(log=>(
+ {adminLogs.map(log=>{
+ const displayStatus = getAttendanceOvertimeDisplayStatus(log, adminLogs.filter(row => row.employee_id === log.employee_id && row.attendance_date === log.attendance_date))
+ const displayBreakMinutes = usesOvertimeThresholdPolicy(log.attendance_date) && log.time_in && log.time_out
+  ? policyBreakMinutes({date:log.attendance_date, spanMinutes:diffMinutesAcrossMidnight(log.time_in,log.time_out), recordedMinutes:log.total_break_minutes})
+  : log.total_break_minutes || 0
+ return (
  <div key={log.id} style={{...cardS, marginBottom:0, padding:'12px', minWidth:0, height:'100%', boxSizing:'border-box', textAlign:'left' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:'8px', marginBottom:'6px' }}>
  <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
@@ -38005,11 +38019,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  </div>
  <div style={{ display:'flex', gap:'6px', alignItems:'center', justifyContent:'flex-end', flexWrap:'wrap' }}>
  {log._activeBreak && <Badge label="ON BREAK" color="orange" />}
- <Badge label={log.status||' '} color={log.status==='Absent'?'red':log.status==='Late'?'orange':log.status?.includes('Overtime')||log.status==='On Time'?'green':'gray'} />
+ <Badge label={displayStatus} color={displayStatus==='Absent'?'red':displayStatus==='Late'?'orange':displayStatus?.includes('Overtime')||displayStatus==='On Time'?'green':'gray'} />
  </div>
  </div>
  <p style={cps}>Schedule: {log.shift_start||'None'} {log.shift_end||'None'}</p>
- <p style={cps}>In: <strong>{log.time_in||' '}</strong> | Out: <strong>{log.time_out||' '}</strong> | Late: {log.late_minutes||0}m | Break: {log.total_break_minutes||0}m</p>
+ <p style={cps}>In: <strong>{log.time_in||' '}</strong> | Out: <strong>{log.time_out||' '}</strong> | Late: {log.late_minutes||0}m | Break deduction: {displayBreakMinutes}m</p>
  {log._activeBreak && (
  <div style={{ marginTop:'7px', padding:'7px 9px', borderRadius:'8px', background:'#fff4df', border:'1px solid #f5a623', color:'#8a4f00', fontSize:'11px', fontWeight:'700', display:'flex', gap:'6px', alignItems:'center', flexWrap:'wrap' }}>
  <span>Currently on break</span>
@@ -38022,7 +38036,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {!log.selfie_in_url &&!log.selfie_out_url && log.status!=='Absent' && <p style={{...cps, color:'#aaa', fontStyle:'italic' }}>No selfies recorded</p>}
  </div>
  </div>
- ))}
+ )})}
  </div>
  </div>
  )}

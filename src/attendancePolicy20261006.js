@@ -1,16 +1,21 @@
 export const ATTENDANCE_POLICY_EFFECTIVE_DATE = '2026-10-06'
+export const OVERTIME_THRESHOLD_POLICY_EFFECTIVE_DATE = '2026-10-11'
+export function usesOvertimeThresholdPolicy(date = '') {
+ return /^\d{4}-\d{2}-\d{2}$/.test(String(date).slice(0,10)) && String(date).slice(0,10) >= OVERTIME_THRESHOLD_POLICY_EFFECTIVE_DATE
+}
 export function usesMinuteAttendancePolicy(date = '') {
  return /^\d{4}-\d{2}-\d{2}$/.test(String(date).slice(0,10)) && String(date).slice(0,10) >= ATTENDANCE_POLICY_EFFECTIVE_DATE
 }
 export function payableOvertimeMinutes(minutes = 0, date = '') {
  const value = Number(minutes)
  const whole = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+ if (usesOvertimeThresholdPolicy(date) && whole < 30) return 0
  return usesMinuteAttendancePolicy(date) ? whole : Math.floor(whole / 30) * 30
 }
 export function policyBreakMinutes({date = '', spanMinutes = 0, recordedMinutes = 0, legacyOverride = null} = {}) {
  const span = Math.max(0, Number(spanMinutes) || 0)
  const recorded = Math.max(0, Number(recordedMinutes) || 0)
- const standard = usesMinuteAttendancePolicy(date) && span < 540 ? recorded : Math.max(60, recorded)
+ const standard = !usesOvertimeThresholdPolicy(date) && usesMinuteAttendancePolicy(date) && span < 540 ? recorded : Math.max(60, recorded)
  return Math.min(span, !usesMinuteAttendancePolicy(date) && legacyOverride !== null ? Math.max(0, Number(legacyOverride) || 0) : standard)
 }
 export function policyOvertimeBasis(metrics = {}, date = '') {
