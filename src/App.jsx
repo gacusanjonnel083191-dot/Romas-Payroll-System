@@ -17493,8 +17493,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setPaymentNotes(p=>({...p,[inv.id]:''}))
  setSettlementRows(p=>({...p,[inv.id]:[]}))
  setSettlementCrates(p=>({...p,[inv.id]:{ delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'', confirmed:false }}))
- if (summary.newStatus === 'paid') setInvoiceFilter('paid')
- else if (summary.newStatus === 'partial') setInvoiceFilter('partial')
+ // Keep the selected invoice tab while refreshing the saved settlement.
  await loadDeliveryInvoices()
  await loadOnlinePayments()
  refreshFoundationAfterDataChange('invoice-settlement-saved')
@@ -17569,8 +17568,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  setPaymentAmount(p=>({...p,[inv.id]:''}))
  setPaymentMethod(p=>({...p,[inv.id]:'Cash'}))
  setPaymentNotes(p=>({...p,[inv.id]:''}))
- if (newStatus === 'paid') setInvoiceFilter('paid')
- else setInvoiceFilter('partial')
+ // Keep the selected invoice tab while refreshing the saved payment.
  await loadDeliveryInvoices()
  refreshFoundationAfterDataChange('reseller-payment-recorded')
  }
@@ -17689,8 +17687,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  showToast(newStatus==='paid'?` ${inv.reseller_name} FULLY PAID!`:` Partial payment recorded. Balance: ${php(newBalance)}`)
  setPaymentAmount(p=>({...p,[inv.id]:''}))
  setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
- if (newStatus === 'paid') setInvoiceFilter('paid')
- else setInvoiceFilter('partial')
+ // Keep the selected invoice tab while refreshing the saved payment.
  loadDeliveryInvoices()
  refreshFoundationAfterDataChange('invoice-payment-recorded')
  // Check suspicious pattern
