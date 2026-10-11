@@ -54,8 +54,8 @@ function ExpensePaymentRow({ row, date, today, supabase, onSaved }) {
   </tr>
 }
 
-export default function OwnerCashExpenses({ rows, date, today, supabase, onSaved, onOpenExpenses }) {
-  return <details style={{ background:'#fff', border:'1px solid #e7e7e7', borderRadius:12, padding:'12px 14px', marginBottom:10 }}>
+export default function OwnerCashExpenses({ rows, date, today, supabase, onSaved, onOpenExpenses, detailsRef }) {
+  return <details ref={detailsRef} style={{ background:'#fff', border:'1px solid #e7e7e7', borderRadius:12, padding:'12px 14px', marginBottom:10 }}>
     <summary style={{ fontWeight:700, cursor:'pointer' }}>Expenses and cash deductions ({rows.length})</summary>
     <p style={{ color:'#555', fontSize:12 }}>
       Only owner-confirmed expenses paid in cash on the selected date reduce the cash figure. Existing expenses remain unclassified until reviewed. Each change is saved as a new audit event.

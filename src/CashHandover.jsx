@@ -7,7 +7,7 @@ const input = { width:'100%', boxSizing:'border-box', minHeight:44, padding:9, b
 const button = { minHeight:44, padding:'10px 14px', border:0, borderRadius:7, background:'#1a1a2e', color:'#fff', cursor:'pointer' }
 const manilaNow = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0,16)
 
-export default function CashHandover({ date, report, rows, supabase, onSaved, disabled }) {
+export default function CashHandover({ date, report, rows, supabase, onSaved, onReviewExpenses, disabled }) {
   const latest = rows[0] || null
   const [editing, setEditing] = useState(false)
   const [handed, setHanded] = useState('')
@@ -64,7 +64,15 @@ export default function CashHandover({ date, report, rows, supabase, onSaved, di
       {latest.owner_physical_count == null && !editing && <button type="button" style={button} disabled={disabled || saving} onClick={()=>{setEditing(true);setHanded(String(latest.cash_handed_over));setBy(latest.handed_over_by);setAt(new Date(new Date(latest.handover_at).getTime()+8*3600000).toISOString().slice(0,16));setNotes('')}}>Correct handover</button>}
     </div>}
     {(recording || latest?.owner_physical_count == null) && <>
-      {recording && !canReconcile(report) && <p role="alert" style={{ color:'#9a5b00' }}>Review unclassified expenses and unknown or ambiguous payment entries before recording the handover.</p>}
+      {recording && !canReconcile(report) && <div role="alert" style={{ color:'#9a5b00', fontSize:13 }}>
+        {report.expensesNeedingReview.length > 0 && <p>
+          Save is waiting for payment status on {report.expensesNeedingReview.length} approved expense{report.expensesNeedingReview.length === 1 ? '' : 's'}: {' '}
+          {report.expensesNeedingReview.map(row => `${row.category || 'Expense'} (${peso(row.amount)})`).join(', ')}.
+          Choose whether each was paid in cash, paid online, or is still unpaid.
+        </p>}
+        {(report.totals.unknown > 0 || report.totals.trackingOnly > 0) && <p>Review unknown payment methods and ambiguous online entries before recording the handover.</p>}
+        {report.expensesNeedingReview.length > 0 && <button type="button" onClick={onReviewExpenses} style={{ ...button, background:'#9a5b00' }}>Review expense payment status</button>}
+      </div>}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,200px),1fr))', gap:10, marginTop:12 }}>
         {recording && <>{field('Cash Handed Over', handed, setHanded, 'number')}{field('Handed over by', by, setBy)}{field('Handover time (Asia/Manila)', at, setAt, 'datetime-local')}</>}
         {field(recording ? 'Owner Physical Count (optional until counted)' : 'Owner Physical Count', counted, setCounted, 'number')}

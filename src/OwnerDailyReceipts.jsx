@@ -19,7 +19,13 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
   const [error, setError] = useState('')
   const [handoverError, setHandoverError] = useState('')
   const requestRef = useRef(0)
+  const expenseDetailsRef = useRef(null)
   const owner = String(adminRole || '').toLowerCase() === 'owner'
+  const reviewExpenses = () => {
+    if (!expenseDetailsRef.current) return
+    expenseDetailsRef.current.open = true
+    expenseDetailsRef.current.scrollIntoView({ behavior:'smooth', block:'center' })
+  }
 
   const load = useCallback(async (selectedDate) => {
     if (!owner || !selectedDate) return
@@ -103,7 +109,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
           {report.expensesNeedingReview.length} approved expense{report.expensesNeedingReview.length === 1 ? '' : 's'} dated this day have no confirmed payment method. Review them below before treating the cash figure as final.
         </p>}
       </div>
-      {handoverError ? <p role="alert" style={{ color:'#a11' }}>{handoverError}</p> : <CashHandover key={date} date={date} report={report} rows={raw.cash_handovers || []} supabase={supabase} onSaved={()=>load(date)} disabled={loading || Boolean(error)} />}
+      {handoverError ? <p role="alert" style={{ color:'#a11' }}>{handoverError}</p> : <CashHandover key={date} date={date} report={report} rows={raw.cash_handovers || []} supabase={supabase} onSaved={()=>load(date)} onReviewExpenses={reviewExpenses} disabled={loading || Boolean(error)} />}
       {(totals.unknown > 0 || totals.unpaid > 0 || totals.trackingOnly > 0) && <div style={{ ...card, background:'#fff8e7', marginBottom:12, fontSize:12 }}>
         <strong>Needs review:</strong> {peso(totals.unknown)} sales or payments with no confirmed payment method · {peso(totals.unpaid)} Daily Sales marked unpaid · {peso(totals.trackingOnly)} legacy online records without a duplicate-receipt choice. These are excluded from confirmed cash and online totals to avoid guessing or double-counting.
       </div>}
@@ -113,7 +119,7 @@ export default function OwnerDailyReceipts({ supabase, today, adminRole, onOpenE
         <span>Approved expenses dated this day: <strong>{peso(report.approvedExpenses)}</strong></span>
         {report.cashCountAt && <span>Cash count submitted: <strong>{timestamp(report.cashCountAt)}</strong></span>}
       </div>
-      <OwnerCashExpenses rows={report.cashExpenseRows} date={date} today={today} supabase={supabase} onSaved={()=>load(date)} onOpenExpenses={onOpenExpenses} />
+      <OwnerCashExpenses detailsRef={expenseDetailsRef} rows={report.cashExpenseRows} date={date} today={today} supabase={supabase} onSaved={()=>load(date)} onOpenExpenses={onOpenExpenses} />
       <details open style={{ ...card, marginBottom:10 }}>
         <summary style={{ fontWeight:700, cursor:'pointer' }}>Payments received on {date} ({report.receipts.length})</summary>
         <div style={{ overflowX:'auto', marginTop:10 }}>
