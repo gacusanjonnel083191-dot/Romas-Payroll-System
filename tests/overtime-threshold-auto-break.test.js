@@ -4,8 +4,9 @@ import fs from 'node:fs'
 import vm from 'node:vm'
 import { PGlite } from '@electric-sql/pglite'
 import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, creditedAttendanceStartMinute, policyBreakMinutes, policyOvertimeBasis, payableOvertimeMinutes } from '../src/attendancePolicy20261006.js'
-import { getChargeableEarlyOutMinutes } from '../src/attendancePolicy.js'
-const source=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8')
+import { getAppliedPaidWorkGraceMinutes, getChargeableEarlyOutMinutes } from '../src/attendancePolicy.js'
+import { enforceNoScheduleGraceBehavior } from '../vite.no-schedule-grace-invariant.js'
+const source=enforceNoScheduleGraceBehavior(fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8').replace(/\r\n/g,'\n'),'/repo/src/App.jsx')
 function extract(name) {
  const start=source.indexOf(`function ${name}(`)
  assert.ok(start>=0,name)
@@ -13,11 +14,11 @@ function extract(name) {
  return source.slice(start,end)
 }
 function appContext() {
- const ctx={usesMinuteAttendancePolicy,usesOvertimeThresholdPolicy,usesEarlyArrivalStartPolicy,creditedAttendanceStartMinute,policyBreakMinutes,policyOvertimeBasis,payableOvertimeMinutes,getChargeableEarlyOutMinutes,
+ const ctx={usesMinuteAttendancePolicy,usesOvertimeThresholdPolicy,usesEarlyArrivalStartPolicy,creditedAttendanceStartMinute,policyBreakMinutes,policyOvertimeBasis,payableOvertimeMinutes,getAppliedPaidWorkGraceMinutes,getChargeableEarlyOutMinutes,
   ALLOWED_BREAK_MINUTES:60,REQUIRED_PAID_WORK_MINUTES:480,DEFAULT_LATE_GRACE_MINUTES:10,UNDERTIME_BLOCK_MINUTES:30,
   getAttendanceDayIntegrity:logs=>({isValidCompleted:logs.every(l=>l.time_in&&l.time_out),completedLogs:logs})}
  vm.createContext(ctx)
- for(const name of ['safeNum','minutesFromTime','normalizeTimeInputValue','clockMinuteToTimeValue','getClockMinuteNearestTimeline','diffMinutesAcrossMidnight','getApprovedMealBreakOverrideMinutes','getRecordedBreakMinutes','getCombinedAttendanceSpanMinutes','roundPenaltyMinutes','roundChargeableUndertimeMinutes','getScheduleAnchoredAttendanceMetrics','getAttendanceDayWorkMetrics','roundPayableOvertimeMinutes','getAttendanceDayActualOvertimeMinutes','getAttendanceDayActualOvertimeWindow','getAttendanceOvertimeDisplayStatus']) vm.runInContext(extract(name),ctx)
+ for(const name of ['safeNum','minutesFromTime','normalizeTimeInputValue','clockMinuteToTimeValue','getClockMinuteNearestTimeline','diffMinutesAcrossMidnight','getApprovedMealBreakOverrideMinutes','getRecordedBreakMinutes','getCombinedAttendanceSpanMinutes','roundPenaltyMinutes','roundChargeableUndertimeMinutes','getScheduleAnchoredAttendanceMetrics','getAttendanceDayWorkMetrics','getPayrollAttendanceDeductionSplit','roundPayableOvertimeMinutes','getAttendanceDayActualOvertimeMinutes','getAttendanceDayActualOvertimeWindow','getAttendanceOvertimeDisplayStatus']) vm.runInContext(extract(name),ctx)
  return ctx
 }
 function log(time_in,time_out,br=60,shift_start=null,shift_end=null,date='2026-10-11') {
@@ -99,6 +100,40 @@ test('early punches use the scheduled start or the next whole hour',()=>{
  assert.equal(ctx.getAttendanceDayWorkMetrics([log('14:05','00:53',60,'14:00','23:00')]).creditedTimeIn,'14:05')
  assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([log('14:05','00:53',60,'14:00','23:00')]),108)
  assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([log('13:28','00:53',60,null,null,'2026-10-10')]),145)
+})
+
+test('unassigned shifts use actual punches for UT while preserving credited-start OT limits',()=>{
+ const ctx=appContext()
+ for(const [start,end,recordedBreak,excluded] of [
+  ['13:02:16','22:02:46',57,58],
+  ['13:01:38','22:01:01',60,59]
+ ]) {
+  const row=log(start,end,recordedBreak,null,null,'2026-10-12')
+  const metrics=ctx.getAttendanceDayWorkMetrics([row])
+  assert.equal(metrics.rawSpanMinutes,540)
+  assert.equal(metrics.creditedTimeIn,'14:00')
+  assert.equal(metrics.excludedEarlyMinutes,excluded)
+  assert.equal(metrics.deductedBreakMinutes,60)
+  assert.equal(metrics.undertimeDeductedBreakMinutes,60)
+  assert.equal(metrics.undertimePaidWorkedMinutes,480)
+  assert.equal(metrics.undertimeMinutes,0)
+  assert.equal(ctx.getPayrollAttendanceDeductionSplit(metrics).undertimeMinutes,0)
+  assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([row]),0)
+ }
+})
+
+test('unassigned shifts honor the universal 10-minute UT grace boundary',()=>{
+ const ctx=appContext()
+ const within=ctx.getAttendanceDayWorkMetrics([log('13:10','22:00',60,null,null,'2026-10-12')])
+ const beyond=ctx.getAttendanceDayWorkMetrics([log('13:11','22:00',60,null,null,'2026-10-12')])
+ assert.equal(within.rawPaidWorkShortageMinutes,10)
+ assert.equal(within.graceAppliedMinutes,10)
+ assert.equal(within.undertimeMinutes,0)
+ assert.equal(ctx.getPayrollAttendanceDeductionSplit(within).undertimeMinutes,0)
+ assert.equal(beyond.rawPaidWorkShortageMinutes,11)
+ assert.equal(beyond.graceAppliedMinutes,0)
+ assert.equal(beyond.undertimeMinutes,30)
+ assert.equal(ctx.getPayrollAttendanceDeductionSplit(beyond).undertimeMinutes,30)
 })
 
 test('early start cutoff handles overnight shifts and separate attendance intervals',()=>{

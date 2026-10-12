@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import {
  getAppliedPaidWorkGraceMinutes,
  getChargeableEarlyOutMinutes,
@@ -206,4 +207,11 @@ test('no-schedule Vite invariant wires the policy helper into App.jsx exactly on
 
 test('no-schedule Vite invariant leaves unrelated modules unchanged', () => {
  assert.equal(enforceNoScheduleGraceBehavior(noScheduleGraceFixture, '/repo/src/Other.jsx'), noScheduleGraceFixture)
+})
+
+test('production App attendance calculation actually receives universal grace', () => {
+ const appSource = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
+ const transformed = enforceNoScheduleGraceBehavior(appSource, '/repo/src/App.jsx')
+ assert.match(transformed, /const graceAppliedMinutes = getAppliedPaidWorkGraceMinutes\(\{/)
+ assert.equal(enforceNoScheduleGraceBehavior(transformed, '/repo/src/App.jsx'), transformed)
 })

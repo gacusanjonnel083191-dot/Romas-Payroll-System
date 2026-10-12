@@ -53,7 +53,7 @@ export function enforceNoScheduleGraceBehavior(source, id = '') {
    'attendance policy import'
   )
  }
- if (!transformed.includes('hasSchedule:scheduleMetrics.hasSchedule')) {
+ if (!transformed.includes(GRACE_BLOCK_WITH_NO_SCHEDULE)) {
   transformed = replaceExactlyOnce(
    transformed,
    GRACE_BLOCK,
