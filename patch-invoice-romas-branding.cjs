@@ -48,7 +48,7 @@ addDeclarations('.field-label', 'background:#FDD412!important;color:#1A1A2E!impo
 addDeclarations('.header-row th', 'background:#1A1A2E!important;color:#ffffff!important;border-color:#1A1A2E!important;')
 addDeclarations('.total-label', 'background:#FDD412!important;color:#1A1A2E!important;')
 addDeclarations('.total-amount', 'background:#CA1B1B!important;color:#ffffff!important;')
-addDeclarations('.prepared-fill', 'background:#FDD412!important;color:#1A1A2E!important;', false)
+addDeclarations('.signoff-fill', 'background:#FDD412!important;color:#1A1A2E!important;', false)
 addDeclarations('.notes-row', 'background:#FDD412!important;color:#1A1A2E!important;', false)
 addDeclarations('.notes-fill', 'background:#FDD412!important;color:#1A1A2E!important;', false)
 addDeclarations('.notes-cell', 'background:#FDD412!important;color:#1A1A2E!important;', false)

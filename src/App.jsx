@@ -15362,7 +15362,7 @@ function buildDeliveryInvoicePrintCSS() {
     '.field-value { font-weight: 500 !important; }',
 
     '.date-fill, .customer-fill { background: #ffffff !important; }',
-    '.address-fill, .prepared-fill { background: #FDD412 !important; background:#FDD412!important;color:#1A1A2E!important;}',
+    '.address-fill, .signoff-fill { background: #FDD412 !important; background:#FDD412!important;color:#1A1A2E!important;}',
 
     '.blank-row td { height: 0.13in !important; }',
     '.note-row td { height: 0.36in !important; font-size: 13px !important; line-height: 1.05 !important; white-space: normal !important; }',
@@ -15471,7 +15471,6 @@ function buildDeliveryInvoicePrintCSS() {
       ].map(cleanText).find(Boolean) || '';
 
     const containerLabel = cleanText(invoice.container_type || 'Crates');
-    const preparedBy = '';
     const productionDispatchNote = getInvoiceProductionDispatchNote(invoice);
 
     const rows = getInvoiceProductOrderForItems(items);
@@ -15586,8 +15585,15 @@ function buildDeliveryInvoicePrintCSS() {
           </tr>
 
           <tr class="footer-row">
-            <td class="footer-label prepared-fill">Prepared by:</td>
-            <td class="prepared-fill" colspan="2">${escapeHtml(preparedBy)}</td>
+            <td class="footer-label signoff-fill">Dispatched by:</td>
+            <td class="signoff-fill" colspan="2"></td>
+            <td></td>
+            <td></td>
+          </tr>
+
+          <tr class="footer-row">
+            <td class="footer-label signoff-fill">Checked by:</td>
+            <td class="signoff-fill" colspan="2"></td>
             <td></td>
             <td></td>
           </tr>
@@ -15830,7 +15836,6 @@ function buildDeliveryInvoicePrintCSS() {
      cratesUsed:invoice?.crates_used ? cleanText(invoice.crates_used) : '',
      productionDispatchNote:getInvoiceProductionDispatchNote(invoice),
      total:peso(invoiceTotal),
-     preparedBy:'',
      productRows
    }
  }
@@ -15972,8 +15977,12 @@ function buildDeliveryInvoicePrintCSS() {
      wordCell('', { width:widths[4], align:'center', size:20, shade:BRAND_GOLD })
    ], 320))
    rows.push(wordRow([
-     wordCell('Prepared by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
-     wordCell(data.preparedBy, { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
+      wordCell('Dispatched by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
+      wordCell('', { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
+    ], 280))
+    rows.push(wordRow([
+      wordCell('Checked by:', { width:widths[0], align:'center', bold:true, italic:true, size:20, shade:PALE_GOLD }),
+      wordCell('', { width:valueSpan4, span:4, align:'left', size:20, shade:PALE_GOLD })
    ], 280))
 
    return `<w:tbl><w:tblPr><w:tblW w:w="${full}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="1" w:noVBand="1"/><w:tblBorders><w:top w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:left w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:bottom w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:right w:val="single" w:sz="14" w:space="0" w:color="${BRAND_RED}"/><w:insideH w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/><w:insideV w:val="single" w:sz="10" w:space="0" w:color="${BRAND_RED}"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map(w => `<w:gridCol w:w="${w}"/>`).join('')}</w:tblGrid>${rows.join('')}</w:tbl>`
