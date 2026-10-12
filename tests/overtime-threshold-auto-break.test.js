@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import { PGlite } from '@electric-sql/pglite'
-import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, policyBreakMinutes, policyOvertimeBasis, payableOvertimeMinutes } from '../src/attendancePolicy20261006.js'
+import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, creditedAttendanceStartMinute, policyBreakMinutes, policyOvertimeBasis, payableOvertimeMinutes } from '../src/attendancePolicy20261006.js'
 import { getChargeableEarlyOutMinutes } from '../src/attendancePolicy.js'
 const source=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8')
 function extract(name) {
@@ -13,7 +13,7 @@ function extract(name) {
  return source.slice(start,end)
 }
 function appContext() {
- const ctx={usesMinuteAttendancePolicy,usesOvertimeThresholdPolicy,policyBreakMinutes,policyOvertimeBasis,payableOvertimeMinutes,getChargeableEarlyOutMinutes,
+ const ctx={usesMinuteAttendancePolicy,usesOvertimeThresholdPolicy,usesEarlyArrivalStartPolicy,creditedAttendanceStartMinute,policyBreakMinutes,policyOvertimeBasis,payableOvertimeMinutes,getChargeableEarlyOutMinutes,
   ALLOWED_BREAK_MINUTES:60,REQUIRED_PAID_WORK_MINUTES:480,DEFAULT_LATE_GRACE_MINUTES:10,UNDERTIME_BLOCK_MINUTES:30,
   getAttendanceDayIntegrity:logs=>({isValidCompleted:logs.every(l=>l.time_in&&l.time_out),completedLogs:logs})}
  vm.createContext(ctx)
@@ -73,6 +73,53 @@ test('multiple logs merge without double break deduction and preserve short-brea
  assert.equal(m.paidWorkedMinutes,511)
  assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([a,b]),31)
 })
+
+test('early punches use the scheduled start or the next whole hour',()=>{
+ const ctx=appContext()
+ const francis=log('13:28','00:53',60,'14:00','23:00')
+ const louigi=log('13:56','00:57',60)
+ const scheduled=ctx.getAttendanceDayWorkMetrics([francis])
+ assert.equal(scheduled.rawSpanMinutes,685)
+ assert.equal(scheduled.creditedTimeIn,'14:00')
+ assert.equal(scheduled.excludedEarlyMinutes,32)
+ assert.equal(scheduled.paidWorkedMinutes,593)
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([francis]),113)
+ assert.equal(ctx.getAttendanceDayActualOvertimeWindow([francis]).verifiedFrom,'23:00')
+ const noSchedule=ctx.getAttendanceDayWorkMetrics([louigi])
+ assert.equal(noSchedule.creditedTimeIn,'14:00')
+ assert.equal(noSchedule.excludedEarlyMinutes,4)
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([louigi]),117)
+ assert.equal(ctx.getAttendanceDayActualOvertimeWindow([louigi]).verifiedFrom,'23:00')
+ assert.equal(ctx.getAttendanceDayWorkMetrics([log('11:45','21:00',60)]).creditedTimeIn,'12:00')
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([log('11:45','21:00',60)]),0)
+ assert.equal(ctx.getAttendanceDayWorkMetrics([log('09:54','19:30',60)]).creditedTimeIn,'10:00')
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([log('09:54','19:30',60)]),30)
+ assert.equal(ctx.getAttendanceDayWorkMetrics([log('10:00','19:30',60)]).excludedEarlyMinutes,0)
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([log('10:00','19:30',60)]),30)
+ assert.equal(ctx.getAttendanceDayWorkMetrics([log('14:05','00:53',60,'14:00','23:00')]).creditedTimeIn,'14:05')
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([log('14:05','00:53',60,'14:00','23:00')]),108)
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([log('13:28','00:53',60,null,null,'2026-10-10')]),145)
+})
+
+test('early start cutoff handles overnight shifts and separate attendance intervals',()=>{
+ const ctx=appContext()
+ const overnight=log('23:45','09:30',60)
+ assert.equal(ctx.getAttendanceDayWorkMetrics([overnight]).creditedTimeIn,'00:00')
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([overnight]),30)
+ const split=[log('13:40','13:50',0),{...log('14:00','23:30',60),id:'b'}]
+ const metrics=ctx.getAttendanceDayWorkMetrics(split)
+ assert.equal(metrics.rawSpanMinutes,580)
+ assert.equal(metrics.excludedEarlyMinutes,10)
+ assert.equal(metrics.paidWorkedMinutes,510)
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes(split),30)
+ const first={...log('23:45','00:15',0),id:'first',created_at:'2026-10-11T15:45:00Z'}
+ const second={...log('00:30','09:30',60),id:'second',created_at:'2026-10-11T16:30:00Z'}
+ const reversed=ctx.getAttendanceDayWorkMetrics([second,first])
+ assert.equal(reversed.rawSpanMinutes,570)
+ assert.equal(reversed.excludedEarlyMinutes,15)
+ assert.equal(reversed.creditedTimeIn,'00:00')
+ assert.equal(reversed.paidWorkedMinutes,495)
+})
 test('SQL filing and normalization agree with app boundaries; migration and rollback are reversible',async()=>{
  const db=new PGlite()
  try {
@@ -111,5 +158,52 @@ test('SQL filing and normalization agree with app boundaries; migration and roll
   await db.exec(fs.readFileSync(new URL('../supabase/rollback_overtime_threshold_auto_break.sql',import.meta.url),'utf8'))
   await db.exec(`update attendance_logs set attendance_date='2026-10-11',overtime_minutes=17`)
   assert.equal((await db.query('select overtime_minutes from attendance_logs')).rows[0].overtime_minutes,17)
+ } finally {await db.close()}
+})
+
+test('database filing guard rejects early-arrival minutes and accepts the corrected requests',async()=>{
+ const db=new PGlite()
+ const emp='00000000-0000-0000-0000-000000000002',id='00000000-0000-0000-0000-000000000001'
+ try {
+  await db.exec(`create schema auth;create function auth.uid() returns uuid language sql as $$select null::uuid$$;
+   create table public.attendance_logs(id uuid,employee_id uuid,attendance_date date,time_in time,time_out time,status text,created_at timestamptz,total_break_minutes int,shift_start time,shift_end time,overtime_minutes int,undertime_minutes int,meal_break_exception_approved boolean,approved_unpaid_break_minutes int);
+   create table public.time_adjustment_requests(id bigint,employee_id uuid,attendance_date text,request_type text,status text,minutes int);
+   create table public.payroll_records(id uuid);
+   create table public.break_logs(attendance_log_id text,break_minutes int,break_out time,break_in time);
+   create table public.daily_schedules(employee_id uuid,schedule_date date,shift_start time,shift_end time,notes text);
+   create table public.employee_access(id uuid,shift_start time,shift_end time);`)
+  await db.exec(fs.readFileSync(new URL('../supabase/migrations/20261006064018_attendance_minute_policy.sql',import.meta.url),'utf8'))
+  await db.exec(fs.readFileSync(new URL('../supabase/migrations/20261011155858_overtime_threshold_auto_break.sql',import.meta.url),'utf8'))
+  await db.exec(fs.readFileSync(new URL('../supabase/migrations/20261012042034_early_arrival_credited_start.sql',import.meta.url),'utf8'))
+  await db.exec(`create trigger normalize_req before insert or update on time_adjustment_requests for each row execute function normalize_time_adjustment_policy_minutes();
+   insert into attendance_logs(id,employee_id,attendance_date,time_in,time_out,status,total_break_minutes)
+   values('${id}','${emp}','2026-10-11','13:56','00:57','Completed',60);`)
+  await assert.rejects(db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',121)`),/117 payable OT/)
+  await db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',117)`)
+  await db.exec(`update attendance_logs set time_in='13:28',time_out='00:53',shift_start='14:00',shift_end='23:00'`)
+  await assert.rejects(db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',145)`),/113 payable OT/)
+  await db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',113)`)
+  await db.exec(`delete from attendance_logs;delete from time_adjustment_requests;delete from employee_access;
+   insert into attendance_logs(id,employee_id,attendance_date,time_in,time_out,status,total_break_minutes)
+   values('${id}','${emp}','2026-10-11','09:54','19:30','Completed',60);`)
+  await db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',30)`)
+  await db.exec(`delete from attendance_logs;delete from time_adjustment_requests;
+   insert into attendance_logs(id,employee_id,attendance_date,time_in,time_out,status,total_break_minutes)
+   values('${id}','${emp}','2026-10-11','11:45','21:00','Completed',60);`)
+  await assert.rejects(db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',30)`),/THRESHOLD/)
+  await db.exec(`delete from attendance_logs;
+   insert into attendance_logs(id,employee_id,attendance_date,time_in,time_out,status,total_break_minutes)
+   values('${id}','${emp}','2026-10-11','23:45','09:30','Completed',60);`)
+  await db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',30)`)
+  await db.exec(`delete from attendance_logs;delete from time_adjustment_requests;
+   insert into daily_schedules values('${emp}','2026-10-11','14:00','23:00',null);
+   insert into attendance_logs(id,employee_id,attendance_date,time_in,time_out,status,total_break_minutes)
+   values('${id}','${emp}','2026-10-11','13:28','00:53','Completed',60);`)
+  await db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',113)`)
+  await db.exec(`delete from attendance_logs;delete from time_adjustment_requests;delete from daily_schedules;
+   insert into employee_access values('${emp}','14:00','23:00');
+   insert into attendance_logs(id,employee_id,attendance_date,time_in,time_out,status,total_break_minutes)
+   values('${id}','${emp}','2026-10-11','13:28','00:53','Completed',60);`)
+  await db.exec(`insert into time_adjustment_requests(employee_id,attendance_date,request_type,status,minutes) values('${emp}','2026-10-11','overtime','pending',113)`)
  } finally {await db.close()}
 })

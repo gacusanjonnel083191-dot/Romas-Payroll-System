@@ -1,6 +1,6 @@
 import StaffScheduler from './StaffScheduler.jsx'
 import EmployeeSchedule from './EmployeeSchedule.jsx'
-import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
+import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, creditedAttendanceStartMinute, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
 import { buildEmployeeIdWordBlob } from './employeeIdWord.js'
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
 import { runEmployeeSeparationCommand } from './employeeSeparationIntegrity.js'
@@ -968,13 +968,16 @@ function isNoMealBreakBreakGuardError(error) {
   || message.includes('BREAK_PUNCH_BLOCKED_BY_NO_MEAL_BREAK')
 }
 
-function getCombinedAttendanceSpanMinutes(logs = []) {
+function getCombinedAttendanceSpanMinutes(logs = [], creditedStartMinute = null, timelineReferenceMinute = null) {
  const intervals = []
  ;(logs || []).forEach(log => {
   if (!log?.time_in || !log?.time_out || log?.status === 'Absent') return
-  const start = minutesFromTime(log.time_in)
-  let end = minutesFromTime(log.time_out)
-  if (end < start) end += 24 * 60
+  const useTimeline = Number.isFinite(timelineReferenceMinute)
+  const useCreditedStart = useTimeline && Number.isFinite(creditedStartMinute)
+  const rawStart = useTimeline ? getClockMinuteNearestTimeline(log.time_in, timelineReferenceMinute) : minutesFromTime(log.time_in)
+  let end = useTimeline ? getClockMinuteNearestTimeline(log.time_out, Math.max(rawStart, timelineReferenceMinute)) : minutesFromTime(log.time_out)
+  const start = useCreditedStart ? Math.max(rawStart, creditedStartMinute) : rawStart
+  if (end < rawStart) end += 24 * 60
   if (end > start) intervals.push([start, end])
  })
  intervals.sort((a, b) => a[0] - b[0])
@@ -1116,6 +1119,10 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  if (!completedLogs.length) {
   return {
    rawSpanMinutes:0,
+   creditedSpanMinutes:0,
+   excludedEarlyMinutes:0,
+   creditedTimeIn:'',
+   creditedStartBasis:'none',
    recordedBreakMinutes:0,
    defaultDeductedBreakMinutes:0,
    deductedBreakMinutes:0,
@@ -1150,7 +1157,25 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
 
  const attendanceDate = completedLogs[0]?.attendance_date || ''
  const currentPolicy = usesMinuteAttendancePolicy(attendanceDate)
- const rawSpanMinutes = getCombinedAttendanceSpanMinutes(completedLogs)
+ const scheduleStart = completedLogs.map(log => normalizeTimeInputValue(log?.shift_start)).find(Boolean) || ''
+ const firstLog = [...completedLogs].sort((a, b) => {
+  const aCreated = String(a?.created_at || '')
+  const bCreated = String(b?.created_at || '')
+  return aCreated && bCreated ? aCreated.localeCompare(bCreated) : aCreated ? -1 : bCreated ? 1 : 0
+ })[0]
+ const firstTimeIn = normalizeTimeInputValue(firstLog?.time_in)
+ const firstTimeInMinute = minutesFromTime(firstTimeIn)
+ const earlyStartPolicy = usesEarlyArrivalStartPolicy(attendanceDate)
+ const rawSpanMinutes = getCombinedAttendanceSpanMinutes(completedLogs, null, earlyStartPolicy ? firstTimeInMinute : null)
+ const scheduledStartMinute = scheduleStart ? getClockMinuteNearestTimeline(scheduleStart, firstTimeInMinute) : null
+ const creditedStartMinute = earlyStartPolicy
+  ? creditedAttendanceStartMinute(firstTimeInMinute, scheduledStartMinute)
+  : firstTimeInMinute
+ const creditedSpanMinutes = earlyStartPolicy
+  ? getCombinedAttendanceSpanMinutes(completedLogs, creditedStartMinute, firstTimeInMinute)
+  : rawSpanMinutes
+ const excludedEarlyMinutes = Math.max(0, rawSpanMinutes - creditedSpanMinutes)
+ const creditedTimeIn = clockMinuteToTimeValue(creditedStartMinute)
  let recordedBreakMinutes = 0
  const countedFallbackBreaks = new Set()
  completedLogs.forEach(log => {
@@ -1170,16 +1195,16 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  // Default company rule remains unchanged: every completed workday carries at
  // least one unpaid 60-minute meal break. Only an approved No Meal Break filing
  // may override the unpaid deduction. Pending or rejected requests do nothing.
- const defaultDeductedBreakMinutes = rawSpanMinutes > 0 ? Math.max(ALLOWED_BREAK_MINUTES, recordedBreakMinutes) : 0
+ const defaultDeductedBreakMinutes = creditedSpanMinutes > 0 ? Math.max(ALLOWED_BREAK_MINUTES, recordedBreakMinutes) : 0
  const savedApprovedOverride = getApprovedMealBreakOverrideMinutes(completedLogs)
  const hasExplicitOverride = explicitApprovedUnpaidBreakMinutes !== undefined && explicitApprovedUnpaidBreakMinutes !== null
  const approvedUnpaidBreakMinutes = hasExplicitOverride
   ? Math.max(0, Math.min(ALLOWED_BREAK_MINUTES, Math.round(safeNum(explicitApprovedUnpaidBreakMinutes, 0))))
   : savedApprovedOverride
  const breakOverrideApplied = !currentPolicy && approvedUnpaidBreakMinutes !== null
- const deductedBreakMinutes = policyBreakMinutes({ date:attendanceDate, spanMinutes:rawSpanMinutes, recordedMinutes:recordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
+ const deductedBreakMinutes = policyBreakMinutes({ date:attendanceDate, spanMinutes:creditedSpanMinutes, recordedMinutes:recordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
  const overbreakMinutes = Math.max(0, Math.round(recordedBreakMinutes - ALLOWED_BREAK_MINUTES))
- const paidWorkedMinutes = Math.max(0, Math.round(rawSpanMinutes - deductedBreakMinutes))
+ const paidWorkedMinutes = Math.max(0, Math.round(creditedSpanMinutes - deductedBreakMinutes))
  const rawPaidWorkShortageMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - paidWorkedMinutes)
  const scheduleMetrics = getScheduleAnchoredAttendanceMetrics(completedLogs)
 
@@ -1240,6 +1265,10 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
 
  return {
   rawSpanMinutes,
+  creditedSpanMinutes,
+  excludedEarlyMinutes,
+  creditedTimeIn,
+  creditedStartBasis:earlyStartPolicy ? (scheduleStart ? 'schedule' : 'next_hour') : 'actual',
   recordedBreakMinutes,
   defaultDeductedBreakMinutes,
   deductedBreakMinutes,
@@ -19966,6 +19995,8 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  const excessBreakMins = Math.max(0, totalBreakMins-ALLOWED_BREAK_MINUTES)
  const attendanceMetrics = getAttendanceDayWorkMetrics([{
   ...verifiedLog,
+   shift_start:verifiedLog.shift_start || todaySchedule?.shift_start || employee.shift_start || null,
+   shift_end:verifiedLog.shift_end || todaySchedule?.shift_end || employee.shift_end || null,
   time_in:timeIn,
   time_out:timeOut,
   total_break_minutes:totalBreakMins,
@@ -25192,7 +25223,7 @@ async function requestPushPermission() {
    )
    const approvedTimeConflict = getUnconsumedApprovedTimeAdjustmentConflict(approvedTimeRows || [], payrollState.records, validation.integrity.completedLogs)
    const canApprove = !breakPunchEvidence.hasBreakEvidence && !approvedTimeConflict
-   let message = `Current rule: ${validation.metrics.rawSpanMinutes} raw minute(s) less ${validation.metrics.deductedBreakMinutes} unpaid break minute(s) = ${validation.metrics.paidWorkedMinutes} paid minute(s). `
+   let message = `Current rule: ${validation.metrics.rawSpanMinutes} raw minute(s) less ${validation.metrics.excludedEarlyMinutes || 0} early-arrival minute(s) and ${validation.metrics.deductedBreakMinutes} unpaid break minute(s) = ${validation.metrics.paidWorkedMinutes} paid minute(s). `
    if (breakPunchEvidence.hasBreakEvidence) {
     message += getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval')
    } else if (approvedTimeConflict) {
@@ -25270,9 +25301,10 @@ async function requestPushPermission() {
   const breakText = validation.metrics.breakOverrideApplied
    ? `${validation.metrics.deductedBreakMinutes} approved unpaid break minute(s)`
    : `${validation.metrics.deductedBreakMinutes} break minute(s)`
+  const creditedStartText = `Credited Time In: ${formatClockTimeForDisplay(validation.metrics.creditedTimeIn)} (${validation.metrics.creditedStartBasis === 'schedule' ? 'scheduled start' : validation.metrics.creditedStartBasis === 'next_hour' ? 'next whole hour' : 'actual punch under the earlier policy'}); ${validation.metrics.excludedEarlyMinutes || 0} early-arrival minute(s) excluded. `
   const calculationMessage = requestType === 'undertime'
-   ? `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). Raw attendance shortage: ${validation.metrics.rawUndertimeMinutes || 0} minute(s); chargeable UT: ${validation.metrics.undertimeMinutes || 0} minute(s) after rounding upward to a ${UNDERTIME_BLOCK_MINUTES}-minute block. Schedule check: ${validation.metrics.lateMinutes || 0} late minute(s) + ${validation.metrics.earlyOutMinutes || 0} early-out minute(s). Extra minutes before or after scheduled boundaries cannot reduce the protected shortage.`
-   : `${validation.metrics.rawSpanMinutes} minute(s) from actual Time In/Time Out less ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). Raw OT: ${safeNum(window.rawMinutes, 0)} minute(s); policy-qualified OT: ${safeNum(window.payableMinutes ?? window.minutes, 0)} minute(s) under the attendance-date OT policy (per minute from October 6, 2026).`
+   ? `${validation.metrics.rawSpanMinutes} raw attendance minute(s) less ${validation.metrics.excludedEarlyMinutes || 0} early-arrival minute(s) and ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). ${creditedStartText}Raw attendance shortage: ${validation.metrics.rawUndertimeMinutes || 0} minute(s); chargeable UT: ${validation.metrics.undertimeMinutes || 0} minute(s) after rounding upward to a ${UNDERTIME_BLOCK_MINUTES}-minute block. Schedule check: ${validation.metrics.lateMinutes || 0} late minute(s) + ${validation.metrics.earlyOutMinutes || 0} early-out minute(s). Extra minutes before or after scheduled boundaries cannot reduce the protected shortage.`
+   : `${validation.metrics.rawSpanMinutes} raw attendance minute(s) less ${validation.metrics.excludedEarlyMinutes || 0} early-arrival minute(s) and ${breakText} = ${validation.metrics.paidWorkedMinutes} paid minute(s). ${creditedStartText}Raw OT: ${safeNum(window.rawMinutes, 0)} minute(s); policy-qualified OT: ${safeNum(window.payableMinutes ?? window.minutes, 0)} minute(s) under the attendance-date OT policy (per minute from October 6, 2026).`
 
   return {
    loading:false,
@@ -25763,7 +25795,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  const scheduleShortageText = requestType === 'undertime'
   ? `; schedule ${validation.metrics.shiftStart || 'not saved'}-${validation.metrics.shiftEnd || 'not saved'}; raw late ${validation.metrics.rawLateMinutes || 0} min; policy late ${validation.metrics.lateMinutes || 0} min; grace applied ${validation.metrics.graceAppliedMinutes || 0} min; early out ${validation.metrics.earlyOutMinutes || 0} min; raw paid-work shortage ${validation.metrics.rawPaidWorkShortageMinutes || 0} min; grace-adjusted paid-work shortage ${validation.metrics.paidWorkShortageMinutes || 0} min; raw protected UT ${validation.metrics.rawUndertimeMinutes || 0} min; ${UNDERTIME_BLOCK_MINUTES}-minute block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min; final chargeable UT ${validation.metrics.undertimeMinutes || 0} min`
   : ''
- const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; raw span ${validation.metrics.rawSpanMinutes} min; break deducted ${validation.metrics.deductedBreakMinutes} min; paid work ${validation.metrics.paidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min${scheduleShortageText}.`
+ const calculationText = `Actual ${actualWindow.actualTimeIn || validation.logs?.[0]?.time_in || ''}-${actualWindow.actualTimeOut || validation.logs?.[0]?.time_out || ''}; credited start ${validation.metrics.creditedTimeIn}; raw span ${validation.metrics.rawSpanMinutes} min; early arrival excluded ${validation.metrics.excludedEarlyMinutes || 0} min; break deducted ${validation.metrics.deductedBreakMinutes} min; paid work ${validation.metrics.paidWorkedMinutes} min; regular requirement ${REQUIRED_PAID_WORK_MINUTES} min${scheduleShortageText}.`
  const minuteSyncNote = `${reviewNote ? reviewNote + ' | ' : ''}${zeroMinuteApproval ? 'REVIEWED AND CLOSED AT ZERO FROM ACTUAL ATTENDANCE' : 'APPROVED FROM ACTUAL ATTENDANCE AND POLICY'}: ${calculationText} Saved request ${requestedMinutes} min${requestType === 'overtime' ? `; saved range ${savedRangeText}; raw OT ${safeNum(actualWindow.rawMinutes, 0)} min; excluded remainder ${safeNum(actualWindow.excludedMinutes, 0)} min` : `; raw UT ${validation.metrics.rawUndertimeMinutes || 0} min; block adjustment +${validation.metrics.undertimeRoundingMinutes || 0} min`}; approved ${exactMinutes} ${requestType.toUpperCase()} min. Attendance date ${targetDate}${requestedAttendanceDate !== targetDate ? ` (request originally used timeout date ${requestedAttendanceDate})` : ''}.`
 
  const { error } = await supabase.from('time_adjustment_requests').update({
@@ -25923,7 +25955,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   `${requestType.toUpperCase()} APPROVED FROM ACTUAL ATTENDANCE`,
   currentAdminLabel,
   req.employee_name,
-  `${exactMinutes} minute(s) on ${targetDate} | Saved request ${requestedMinutes} min | Raw ${validation.metrics.rawSpanMinutes} - Break ${validation.metrics.deductedBreakMinutes} = Paid ${validation.metrics.paidWorkedMinutes}`
+  `${exactMinutes} minute(s) on ${targetDate} | Saved request ${requestedMinutes} min | Raw ${validation.metrics.rawSpanMinutes} - Early arrival ${validation.metrics.excludedEarlyMinutes || 0} - Break ${validation.metrics.deductedBreakMinutes} = Paid ${validation.metrics.paidWorkedMinutes}`
  )
  await createNotification(
   req.employee_id,
@@ -25931,8 +25963,8 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   'overtime',
   ` ${requestType==='overtime'?'Overtime':'Undertime'} Approved`,
   zeroMinuteApproval
-   ? `Your ${requestType} request for ${targetDate} was reviewed and closed at 0 minute(s), based on your actual Time In and Time Out less the mandatory break. Nothing will be added to or deducted from payroll from this request.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
-   : `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), calculated from your actual Time In and Time Out less the mandatory break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
+   ? `Your ${requestType} request for ${targetDate} was reviewed and closed at 0 minute(s), using the credited start, Time Out, and meal break. Nothing will be added to or deducted from payroll from this request.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
+   : `Your ${requestType} request for ${targetDate} was approved for ${exactMinutes} minute(s), using the credited start, Time Out, and meal break.${requestedMinutes !== exactMinutes ? ` The saved request of ${requestedMinutes} minute(s) was automatically corrected.` : ''}`
  )
  const approvalTimestamp = new Date().toISOString()
  setTimeAdjRequests(prev=>prev.map(r=>{
@@ -38996,6 +39028,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  ) : (
   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:'8px' }}>
    <div><span style={lblS}>Actual Time In</span><strong>{formatClockTimeForDisplay(actualTimeIn)}</strong></div>
+   <div><span style={lblS}>Credited Time In</span><strong>{attendanceValid ? formatClockTimeForDisplay(attendanceMetrics.creditedTimeIn) : 'Not available'}</strong></div>
+   <div><span style={lblS}>Early Minutes Excluded</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.excludedEarlyMinutes,0)} min` : 'Not available'}</strong></div>
    <div><span style={lblS}>Actual Time Out</span><strong>{formatClockTimeForDisplay(actualTimeOut)}</strong></div>
    <div><span style={lblS}>Raw Attendance Span</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.rawSpanMinutes,0)} min` : 'Not available'}</strong></div>
    <div><span style={lblS}>Break Deducted</span><strong>{attendanceValid ? `${safeNum(attendanceMetrics.deductedBreakMinutes,0)} min${attendanceMetrics.breakOverrideApplied?' (approved exception)':''}` : 'Not available'}</strong></div>
@@ -50221,6 +50255,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <>
  <div style={{ background:'#f0f7ff', border:'1px solid #b8d8ff', borderRadius:'10px', padding:'10px', marginBottom:'10px' }}>
   <p style={{ margin:'0 0 4px', color:'#1a1a2e', fontSize:'11px' }}>Actual attendance: <strong>{formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.actualTimeIn)} – {formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.actualTimeOut)}</strong></p>
+   <p style={{ margin:'0 0 4px', color:'#1a1a2e', fontSize:'11px' }}>Credited start: <strong>{formatClockTimeForDisplay(timeAdjPreview?.validation?.metrics?.creditedTimeIn)}</strong> ({safeNum(timeAdjPreview?.validation?.metrics?.excludedEarlyMinutes,0)} early minute(s) excluded)</p>
   <p style={{ margin:0, color:'#1f6d3b', fontSize:'11px', fontWeight:'900' }}>Verified payable OT: {formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.verifiedFrom)} – {formatClockTimeForDisplay(timeAdjPreview?.validation?.overtimeWindow?.verifiedTo)} ({safeNum(timeAdjPreview?.validation?.overtimeWindow?.minutes,0)} minutes)</p>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>

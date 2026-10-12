@@ -1,5 +1,18 @@
 export const ATTENDANCE_POLICY_EFFECTIVE_DATE = '2026-10-06'
 export const OVERTIME_THRESHOLD_POLICY_EFFECTIVE_DATE = '2026-10-11'
+export const EARLY_ARRIVAL_START_POLICY_EFFECTIVE_DATE = '2026-10-11'
+export function usesEarlyArrivalStartPolicy(date = '') {
+ return /^\d{4}-\d{2}-\d{2}$/.test(String(date).slice(0,10)) && String(date).slice(0,10) >= EARLY_ARRIVAL_START_POLICY_EFFECTIVE_DATE
+}
+export function creditedAttendanceStartMinute(actualMinute, scheduledMinute = null) {
+ const actual = Number(actualMinute)
+ if (!Number.isFinite(actual)) return null
+ const scheduled = Number(scheduledMinute)
+ if (scheduledMinute !== null && scheduledMinute !== undefined && Number.isFinite(scheduled)) {
+  return Math.max(actual, scheduled)
+ }
+ return Math.ceil(actual / 60) * 60
+}
 export function usesOvertimeThresholdPolicy(date = '') {
  return /^\d{4}-\d{2}-\d{2}$/.test(String(date).slice(0,10)) && String(date).slice(0,10) >= OVERTIME_THRESHOLD_POLICY_EFFECTIVE_DATE
 }
