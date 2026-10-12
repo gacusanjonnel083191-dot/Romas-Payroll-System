@@ -17,7 +17,7 @@ export default function EmployeeSchedule({supabase, employeeId, today}) {
    const version=++sequence
    setLoading(true)
    try {
-    const {data,error:queryError}=await supabase.from('daily_schedules').select('schedule_date,shift_start,shift_end').eq('employee_id',employeeId).gte('schedule_date',week).lte('schedule_date',scheduleDateAt(week,6)).order('schedule_date')
+    const {data,error:queryError}=await supabase.from('daily_schedules').select('schedule_date,shift_start,shift_end,notes').eq('employee_id',employeeId).gte('schedule_date',week).lte('schedule_date',scheduleDateAt(week,6)).order('schedule_date')
     if(cancelled || version!==sequence)return
     setRows(queryError?[]:data || []);setError(queryError?`Cannot load your schedule: ${queryError.message}`:'')
    }catch(err){if(!cancelled && version===sequence){setRows([]);setError(`Cannot load your schedule: ${err.message}`)}}
