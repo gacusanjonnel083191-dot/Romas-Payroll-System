@@ -1,0 +1,506 @@
+[
+  {
+    "id": "double-choco",
+    "name": "Double Choco",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "nuts-kisses",
+    "name": "Nuts & Kisses",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "choco-almonds",
+    "name": "Choco Almonds",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "choco-nut",
+    "name": "Choco Nut",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "green-tealiscious",
+    "name": "Green-tealiscious",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "cookie-crumble",
+    "name": "Cookie Crumble",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "cookies-cream",
+    "name": "Cookies & Cream",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "choco-drizzle",
+    "name": "Choco Drizzle",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "snow-sprinkle",
+    "name": "Snow Sprinkle Delight",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "midnight-sprinkles",
+    "name": "Midnight Sprinkles",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "berry-crown",
+    "name": "Berry Crown",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "zigzag-supreme",
+    "name": "ZigZag Supreme",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "choco-mallow",
+    "name": "Choco Mallow",
+    "price": 25,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "chocolate-filled",
+    "name": "Chocolate Filled",
+    "price": 26,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "caramel-filled",
+    "name": "Caramel Filled",
+    "price": 26,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "bavarian-breeze",
+    "name": "Bavarian Breeze",
+    "price": 26,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "strawberry-filled",
+    "name": "Strawberry Filled",
+    "price": 26,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "bavarian-midnight",
+    "name": "Bavarian Midnight",
+    "price": 28,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "matcha-supreme",
+    "name": "Matcha Supreme",
+    "price": 30,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "fanfans",
+    "name": "Fan-Fans",
+    "price": 33,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "oreo-dream",
+    "name": "Oreo Dream",
+    "price": 33,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "almond-glitz",
+    "name": "Almond Glitz",
+    "price": 35,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "lotus-cloud",
+    "name": "Lotus Cloud",
+    "price": 35,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "matcha-pops",
+    "name": "Matcha Pops",
+    "price": 6,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "strawberry-pops",
+    "name": "Strawberry Pops",
+    "price": 6,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "taro-pops",
+    "name": "Taro Pops",
+    "price": 6,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "bavarian-bites",
+    "name": "Bavarian Bites",
+    "price": 6,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "bavarian-pops",
+    "name": "Bavarian Pops",
+    "price": 6,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "choco-balls",
+    "name": "Choco Balls",
+    "price": 6,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "choco-lollisticks",
+    "name": "Choco Lollisticks",
+    "price": 7,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-snow",
+    "name": "Snow Sprinkle Delight Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-midnight",
+    "name": "Midnight Sprinkles Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-berry",
+    "name": "Berry Crown Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-matcha",
+    "name": "Matcha Drizzle Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-zigzag",
+    "name": "ZigZag Supreme Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-choco-drizzle",
+    "name": "Choco Drizzle Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-almonds",
+    "name": "Choco Almonds Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-nut",
+    "name": "Choco Nut Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-cookies",
+    "name": "Cookies & Cream Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "circlet-double",
+    "name": "Double Choco Circlet",
+    "price": 13,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "giant-donut",
+    "name": "Giant Donut (approx. 7x11 inches)",
+    "price": 219,
+    "unitLabel": "piece",
+    "piecesPerUnit": 1,
+    "type": "piece"
+  },
+  {
+    "id": "assorted-rings-6",
+    "name": "Assorted Rings · 6 pcs",
+    "price": 150,
+    "unitLabel": "box of 6",
+    "piecesPerUnit": 6,
+    "type": "box"
+  },
+  {
+    "id": "assorted-rings-12",
+    "name": "Assorted Rings · 12 pcs",
+    "price": 300,
+    "unitLabel": "box of 12",
+    "piecesPerUnit": 12,
+    "type": "box"
+  },
+  {
+    "id": "assorted-circlets-12",
+    "name": "Assorted Circlets · 12 pcs",
+    "price": 156,
+    "unitLabel": "box of 12",
+    "piecesPerUnit": 12,
+    "type": "box"
+  },
+  {
+    "id": "assorted-circlets-20",
+    "name": "Assorted Circlets · 20 pcs",
+    "price": 260,
+    "unitLabel": "box of 20",
+    "piecesPerUnit": 20,
+    "type": "box"
+  },
+  {
+    "id": "bavarian-midnight-6",
+    "name": "Bavarian Midnight · 6 pcs",
+    "price": 168,
+    "unitLabel": "box of 6",
+    "piecesPerUnit": 6,
+    "type": "box"
+  },
+  {
+    "id": "bavarian-midnight-12",
+    "name": "Bavarian Midnight · 12 pcs",
+    "price": 336,
+    "unitLabel": "box of 12",
+    "piecesPerUnit": 12,
+    "type": "box"
+  },
+  {
+    "id": "fanfans-6",
+    "name": "Fan-Fans · 6 pcs",
+    "price": 198,
+    "unitLabel": "box of 6",
+    "piecesPerUnit": 6,
+    "type": "box"
+  },
+  {
+    "id": "fanfans-12",
+    "name": "Fan-Fans · 12 pcs",
+    "price": 396,
+    "unitLabel": "box of 12",
+    "piecesPerUnit": 12,
+    "type": "box"
+  },
+  {
+    "id": "bavarian-bites-15",
+    "name": "Bavarian Bites · 15 pcs",
+    "price": 90,
+    "unitLabel": "box of 15",
+    "piecesPerUnit": 15,
+    "type": "box"
+  },
+  {
+    "id": "bavarian-bites-30",
+    "name": "Bavarian Bites · 30 pcs",
+    "price": 180,
+    "unitLabel": "box of 30",
+    "piecesPerUnit": 30,
+    "type": "box"
+  },
+  {
+    "id": "bavarian-pops-30",
+    "name": "Bavarian Pops · 30 pcs",
+    "price": 180,
+    "unitLabel": "box of 30",
+    "piecesPerUnit": 30,
+    "type": "box"
+  },
+  {
+    "id": "bavarian-pops-60",
+    "name": "Bavarian Pops · 60 pcs",
+    "price": 360,
+    "unitLabel": "box of 60",
+    "piecesPerUnit": 60,
+    "type": "box"
+  },
+  {
+    "id": "taro-pops-30",
+    "name": "Taro Pops · 30 pcs",
+    "price": 180,
+    "unitLabel": "box of 30",
+    "piecesPerUnit": 30,
+    "type": "box"
+  },
+  {
+    "id": "taro-pops-60",
+    "name": "Taro Pops · 60 pcs",
+    "price": 360,
+    "unitLabel": "box of 60",
+    "piecesPerUnit": 60,
+    "type": "box"
+  },
+  {
+    "id": "strawberry-pops-30",
+    "name": "Strawberry Pops · 30 pcs",
+    "price": 180,
+    "unitLabel": "box of 30",
+    "piecesPerUnit": 30,
+    "type": "box"
+  },
+  {
+    "id": "strawberry-pops-60",
+    "name": "Strawberry Pops · 60 pcs",
+    "price": 360,
+    "unitLabel": "box of 60",
+    "piecesPerUnit": 60,
+    "type": "box"
+  },
+  {
+    "id": "matcha-pops-30",
+    "name": "Matcha Pops · 30 pcs",
+    "price": 180,
+    "unitLabel": "box of 30",
+    "piecesPerUnit": 30,
+    "type": "box"
+  },
+  {
+    "id": "matcha-pops-60",
+    "name": "Matcha Pops · 60 pcs",
+    "price": 360,
+    "unitLabel": "box of 60",
+    "piecesPerUnit": 60,
+    "type": "box"
+  },
+  {
+    "id": "choco-balls-30",
+    "name": "Choco Balls · 30 pcs",
+    "price": 180,
+    "unitLabel": "box of 30",
+    "piecesPerUnit": 30,
+    "type": "box"
+  },
+  {
+    "id": "choco-balls-60",
+    "name": "Choco Balls · 60 pcs",
+    "price": 360,
+    "unitLabel": "box of 60",
+    "piecesPerUnit": 60,
+    "type": "box"
+  },
+  {
+    "id": "shells-6",
+    "name": "Shells · 6 pcs",
+    "price": 156,
+    "unitLabel": "box of 6",
+    "piecesPerUnit": 6,
+    "type": "box"
+  },
+  {
+    "id": "shells-12",
+    "name": "Shells · 12 pcs",
+    "price": 312,
+    "unitLabel": "box of 12",
+    "piecesPerUnit": 12,
+    "type": "box"
+  }
+]

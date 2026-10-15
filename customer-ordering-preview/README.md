@@ -1,0 +1,42 @@
+# Roma's Donuts customer ordering preview
+
+Open `http://127.0.0.1:4173/` while the local server is running. From the repository root, start one with `python -m http.server 4173 --bind 127.0.0.1 --directory customer-ordering-preview`. The preview uses browser local storage; orders and chat appear in both the customer and staff tabs in the same browser profile.
+
+Try this flow:
+
+1. Browse per-piece or per-box items from the uploaded menu and enter quantities. The line total and cart subtotal update as quantities change.
+2. Choose a future date or a same-day time at least one hour away.
+3. Choose pickup or delivery. For delivery, drop a pin on the map or enter coordinates, then see the estimated fee.
+4. Choose a box or paper bag for loose pieces before checkout. Prepacked box sets include their box. No separate packaging charge is applied because the uploaded menu does not list one.
+5. Submit the request, open My orders, and send a chat message.
+6. Open Staff dashboard, review the order, change its status, and reply in chat. Delivery settings lets you adjust the preview fee formula and branch coordinates.
+
+This is an **interactive local preview**, not a live ordering service. The menu names, listed retail prices, and images come from the 12 supplied price sheets. Menu cards frame the full product within square photo areas and hide neighboring products, labels, and poster text. The original supplied images remain intact in `assets/`. The approved preview rate is ₱80 for the first 3 km plus ₱10 for each additional started kilometer. Branch pins are approximate municipality centers, so the displayed delivery fee is an estimate based on straight-line distance rather than a road route. Staff must confirm the final distance and charge. The preview does not verify municipal boundaries, authenticate customers or staff, send notifications, write to Supabase, update the main system, or collect payments. Do not use it to accept real customer orders.
+
+## Production foundation (inactive)
+
+The separate local migration `supabase/migrations/20261015074848_public_customer_order_foundation.sql` defines durable customer orders, item snapshots, chat, audit events, and pickup locations. It has **not** been applied. Every pickup location starts inactive; an active one requires a verified address and coordinates. The `public-ordering` Edge Function validates the schedule and recalculates prices from its exported catalog. Its default `PUBLIC_ORDERING_SUBMISSIONS_ENABLED` setting is off, and delivery submission is disabled until verified branch pins, road routing, coverage, and fee reconciliation are implemented. The separate `public-ordering-staff.html` page uses existing Supabase Auth accounts; only active owner, supervisor, or assistant supervisor profiles may review the queue. Payment completion and sales posting are deliberately unavailable.
+
+The Vite build includes the customer page and required product photos. To test the inactive production path locally, configure `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_PUBLIC_ORDERING_ENABLED=true` for the Vite build. The Edge Function also needs `PUBLIC_ORDERING_ALLOWED_ORIGINS` set to the exact storefront origin. Do not set `PUBLIC_ORDERING_SUBMISSIONS_ENABLED=true` or publish the ordering page for customers until the migration, pickup addresses, rate limiting, staff workflow, production and sales links, and end-to-end checks are complete. Run `node customer-ordering-preview/export-server-catalog.mjs` after changing menu products or prices; the tests fail if the server price snapshot differs from the customer menu.
+
+Before public launch, the implementation still needs verified pickup addresses and coordinates, a routing service for delivery quotes, rate limiting, customer phone verification, an audited link to production planning and sales, and end-to-end testing against the approved database. Customer order access currently relies on a private 256-bit receipt token stored in the ordering browser. See [the build plan](../docs/public-customer-ordering-plan.md).
+
+Run the small logic test suite with `node --test customer-ordering-preview/tests/logic.test.mjs` from the repository root.
+
+## Product photography
+
+The menu uses 50 transparent, 512 × 512 PNGs for its 63 orderable entries. `product-images.mjs` maps the original entries to their photos; Shells boxes use the paths assigned in `catalog.mjs`. The two removed Giant Bavarian Ring bundle images remain preserved as unused assets. The UI places every image on the same warm ivory square with `object-fit: contain`; no CSS clipping masks or poster sprites are used. Product names and prices remain separate, accessible text.
+
+Per Box shows 11 product-family cards with 22 independently orderable sizes. Shells are the only newly added box product: 6 pieces at ₱156 or 12 pieces at ₱312, calculated from the ₱26 Shells selling price in the main system. The earlier individual-flavor box additions have been removed. Existing Bavarian Midnight, Fan-Fans, Circlets, Bites, Pops, and Giant Donut options retain their prices. Giant Bavarian Ring bundles remain removed. Search matches family names or size-specific product names. Giant Donut is labeled “Giant Donut (approx. 7x11 inches)”. Size buttons switch the shared card photo; each option keeps its independent quantity and checkout line.
+
+Regenerate the assets with `python customer-ordering-preview/prepare-product-images.py` (Pillow and NumPy required). The script removes poster backgrounds and captions, then centers the original photo pixels with padding. It does not synthesize products. The original sheets stay intact. Review sheets are written alongside the assets.
+
+Where posters have no complete box photograph, both box quantities use the same representative product photo; the card label specifies the quantity. Bavarian Bites uses a cutaway for Per Piece and its original group photograph from `box-6.png` for Per Box. At the requested ₱6 per piece, its box sizes are 15 pieces for ₱90 and 30 pieces for ₱180. Bavarian Pops, Taro Pops, Strawberry Pops, Matcha Pops, and Choco Balls each cost ₱180 for 30 pieces and ₱360 for 60 pieces. The main system listed Bavarian Bites at ₱6 when checked on 15 October 2026. Choco Balls uses the original group photograph from `box-11.png`, as requested. Group photographs retain the original photo's framing. The inscription on Giant Donut is part of the actual icing in the supplied photo.
+
+Eight product photos have measured lower-edge masks in the extraction script to remove the poster's truncated cast shadows without changing the product pixels. These are asset edits; the displayed images still use `object-fit: contain` without CSS clipping.
+
+### Shells box presentations
+
+Run `python customer-ordering-preview/prepare-flavor-boxes.py` after the original extraction script (Pillow, NumPy, and OpenCV required). It creates `shells-6-packed.png` and `shells-12.png` using the original photographed yellow-and-white Assorted Rings cartons. The six-piece shells are packed snugly in two rows of three, with the full donuts kept inside the carton. The six-piece filename changes the browser image URL so it fetches the corrected image. The supplied Bavarian Breeze photograph is used as a representative filled-shell exterior; no separate plain Shells photo was supplied. These are presentation composites, not photographs of newly packed boxes.
+
+Pricing source: main-system `Shells` selling price of ₱26 per piece, inspected 14 October 2026. At the same rate, 6 × ₱26 = ₱156 and 12 × ₱26 = ₱312. No extra packaging charge or discount was added.
