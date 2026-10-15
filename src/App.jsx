@@ -1,3 +1,4 @@
+import { dailyPosClosing } from './posClosingSummary.js'
 import StaffScheduler from './StaffScheduler.jsx'
 import EmployeeSchedule from './EmployeeSchedule.jsx'
 import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, creditedAttendanceStartMinute, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
@@ -32834,7 +32835,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     .order('created_at', { ascending:false })
    if (error) throw error
    const rows = data || []
-   const existing = rows[0] || null
+   const existing = dailyPosClosing(rows)
    setExistingShiftClosing(existing)
    if (existing) {
     setClosingOpeningCash(String(safeNum(existing.opening_cash, 0)))
@@ -32902,7 +32903,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
    const rows = allDates.map(dateKey => {
     const summary = summarizeActivePosSales(salesByDate[dateKey] || [], monitorPaymentRows)
     const closingRows = closingsByDate[dateKey] || []
-    const closing = closingRows[0] || null
+    const closing = dailyPosClosing(closingRows)
     const marker = getPosShiftDailySalesMarker(POS_OUTLET_ID, dateKey)
     const dayDailyRows = dailyByDate[dateKey] || []
     const linkedDailyRows = dayDailyRows.filter(row => String(row?.notes || '').includes(marker))
@@ -32923,14 +32924,15 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
      statusCode = dateKey === todayDate ? 'in_progress' : 'unclosed'
      if (dateKey !== todayDate) issues.push('POS transactions exist but no shift closing was saved.')
     } else if (closing) {
-     if (closingRows.length > 1) issues.push(`${closingRows.length} shift closing records exist for the same date.`)
+     const duplicateClosings = closingRows.filter(row => !row.shift_id).length > 1 || new Set(closingRows.filter(row => row.shift_id).map(row => row.shift_id)).size !== closingRows.filter(row => row.shift_id).length
+     if (duplicateClosings) issues.push('Duplicate closing records exist for the same shift or daily summary.')
      if (!closingMatchesSales) issues.push('Saved closing no longer matches current active POS transactions or payment totals.')
      if (linkedDailyRows.length > 1) issues.push(`${linkedDailyRows.length} linked Daily Sales records exist for the same shift.`)
      if (possibleLegacyRows.length > 0) issues.push('A possible manually posted POS Daily Sales record may duplicate the automatic posting.')
      if (!linkedDaily) issues.push('Shift is closed but no linked Daily Sales posting exists.')
      else if (!dailyMatchesClosing) issues.push('Linked Daily Sales amount does not match the saved shift closing.')
 
-     if (closingRows.length > 1 || !closingMatchesSales || linkedDailyRows.length > 1 || possibleLegacyRows.length > 0 || (linkedDaily && !dailyMatchesClosing)) statusCode = 'review_required'
+     if (duplicateClosings || !closingMatchesSales || linkedDailyRows.length > 1 || possibleLegacyRows.length > 0 || (linkedDaily && !dailyMatchesClosing)) statusCode = 'review_required'
      else if (!linkedDaily) statusCode = 'closed_not_posted'
      else statusCode = 'closed'
     }

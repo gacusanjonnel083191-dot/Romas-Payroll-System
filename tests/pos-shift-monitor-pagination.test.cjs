@@ -10,6 +10,7 @@ function extract(start, end) {
   return source.slice(from, to)
 }
 const fetchSource = extract(' async function fetchAllPosRows(', ' async function fetchPosRowsByValues(')
+const summarySource = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/posClosingSummary.js'), 'utf8').split('// Receipts use')[0].replace('export function', 'function')
 const monitorSource = extract(' async function loadShiftClosingMonitor(', ' function saveCurrentShiftDraftBeforeDateChange(')
 
 function createMonitor({ failSecondPage = false } = {}) {
@@ -45,7 +46,7 @@ function createMonitor({ failSecondPage = false } = {}) {
     moneyRound: n => Number(n || 0), safeNum: n => Number(n || 0), dateStringDiffDays: () => 0,
     setShiftClosingLoading() {}, setShiftClosingError: s => { savedError = s }, setShiftClosingRows: rows => { savedRows = rows }
   }
-  const factory = new Function('d', `with (d) { ${fetchSource}\n${monitorSource}\nreturn loadShiftClosingMonitor }`)
+  const factory = new Function('d', `with (d) { ${summarySource}\n${fetchSource}\n${monitorSource}\nreturn loadShiftClosingMonitor }`)
   return { load: factory(deps), offsets, get rows() { return savedRows }, get error() { return savedError } }
 }
 
