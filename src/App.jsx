@@ -13,6 +13,7 @@ import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
 import ResellerCalculator from './ResellerCalculator.jsx'
+import { getResellerPaymentParts, getResellerPaymentTotal } from './resellerPaymentSplit.js'
 import OutletPerformance from './OutletPerformance.jsx'
 import CrateRollingControl from './CrateRollingControl.jsx'
 import OwnerDailyReceipts from './OwnerDailyReceipts.jsx'
@@ -7858,6 +7859,8 @@ export default function App() {
  const [paymentDate, setPaymentDate] = useState({})
  const [paymentNote, setPaymentNote] = useState({})
  const [paymentMethod, setPaymentMethod] = useState({})
+ const [splitCashAmount, setSplitCashAmount] = useState({})
+ const [splitGcashAmount, setSplitGcashAmount] = useState({})
  const [viewingInvoice, setViewingInvoice] = useState(null)
  const [editingInvoice, setEditingInvoice] = useState(null)
  const [editInvoiceItems, setEditInvoiceItems] = useState([])
@@ -7947,6 +7950,7 @@ export default function App() {
  const [settlementRows, setSettlementRows] = useState({})
  const [settlementCrates, setSettlementCrates] = useState({})
  const [settlementSaving, setSettlementSaving] = useState({})
+ const settlementSavingRef = useRef(new Set())
  // Driver Return Form
  const [showDriverReturnForm, setShowDriverReturnForm] = useState(null)
  const [driverReturnItems, setDriverReturnItems] = useState([])
@@ -17481,7 +17485,9 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  out.finalTotal = moneyRound(out.finalTotal + billableQty * price)
  })
  const alreadyPaid = moneyRound(inv.paid_amount || 0)
- const cashReceived = moneyRound(paymentAmount[inv.id] || 0)
+ const cashReceived = paymentMethod[inv.id] === 'Cash + GCash'
+ ? moneyRound(Number(splitCashAmount[inv.id] || 0) + Number(splitGcashAmount[inv.id] || 0))
+ : moneyRound(paymentAmount[inv.id] || 0)
  const dueBeforeCash = moneyRound(Math.max(0, out.finalTotal - alreadyPaid))
  const newPaidTotal = moneyRound(Math.min(out.finalTotal, alreadyPaid + cashReceived))
  const finalBalance = moneyRound(Math.max(0, out.finalTotal - newPaidTotal))
@@ -17490,6 +17496,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
 
  async function saveInvoiceSettlement(inv) {
+ if (settlementSavingRef.current.has(inv.id)) return
  const rows = (settlementRows[inv.id] || buildInvoiceSettlementRows(inv)).map(row => {
  const actual = Math.max(0, safeNum(row.actual_quantity, 0))
  const returned = Math.min(actual, Math.max(0, safeNum(row.returned_quantity, 0)))
@@ -17500,7 +17507,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  const summary = getSettlementSummary(inv, rows)
  const crateSummary = getSettlementCrateSummary(inv)
  const crateEntry = settlementCrates[inv.id] || {}
- if (summary.cashReceived - summary.dueBeforeCash > 0.01) { showToast(` Cash received exceeds final balance of ${php(summary.dueBeforeCash)}.`, 'red'); return }
+ if (summary.cashReceived > summary.dueBeforeCash) { showToast(` Amount received exceeds final balance of ${php(summary.dueBeforeCash)}.`, 'red'); return }
  if (crateEntry.confirmed) {
  if (crateEntry.ledgerAvailable === false) { showToast('Crate records could not be verified. Save payment without crate confirmation, or refresh and retry.','red'); return }
  try {
@@ -17510,8 +17517,15 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  wholeCrateQuantity(crateEntry.coverReturned, 'Covers collected')
  } catch (validationError) { showToast(validationError.message, 'red'); return }
  }
+ let paymentParts
+ try {
+ paymentParts = getResellerPaymentParts(paymentMethod[inv.id] || 'Cash', paymentAmount[inv.id], splitCashAmount[inv.id], splitGcashAmount[inv.id])
+ } catch (error) { showToast(error.message, 'red'); return }
+ if (getResellerPaymentTotal(paymentParts) !== summary.cashReceived) { showToast(' Check the payment amounts before saving.', 'red'); return }
+ settlementSavingRef.current.add(inv.id)
  setSettlementSaving(p=>({...p,[inv.id]:true}))
- let paymentId = null
+ let paymentIds = []
+ let invoiceSaved = false
  let crateSyncResult = { ok:true, saved:false }
  try {
  if (crateEntry.confirmed) crateSyncResult = await syncInvoiceSettlementCrates(inv)
@@ -17530,12 +17544,12 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  const { error:itemErr } = await supabase.from('delivery_invoice_items').update({ quantity:safeNum(row.actual_quantity,0), total_price:safeNum(row.total_price,0) }).eq('id', row.item_id)
  if (itemErr) throw itemErr
  }
- if (summary.cashReceived > 0) {
- const { data:payRows, error:payErr } = await supabase.from('reseller_payments').insert({ reseller_id:inv.reseller_id, reseller_name:inv.reseller_name, invoice_id:inv.id, amount:summary.cashReceived, payment_date:today, payment_method:paymentMethod[inv.id] || 'Cash', notes:paymentNotes[inv.id] || `Settlement for ${inv.invoice_number}`, recorded_by:adminRole }).select('id')
+ if (paymentParts.length) {
+ const { data:payRows, error:payErr } = await supabase.from('reseller_payments').insert(paymentParts.map(part => ({ reseller_id:inv.reseller_id, reseller_name:inv.reseller_name, invoice_id:inv.id, amount:part.amount, payment_date:today, payment_method:part.method, notes:paymentNotes[inv.id] || `Settlement for ${inv.invoice_number}`, recorded_by:adminRole }))).select('id')
  if (payErr) throw payErr
- paymentId = Array.isArray(payRows) ? payRows[0]?.id : payRows?.id
+ paymentIds = (Array.isArray(payRows) ? payRows : [payRows]).map(row => row?.id).filter(Boolean)
  }
- const note = `Settlement ${today}: actual delivered ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final payable ${php(summary.finalTotal)}, cash received ${php(summary.cashReceived)}, balance ${php(summary.finalBalance)}.`
+ const note = `Settlement ${today}: actual delivered ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final payable ${php(summary.finalTotal)}, received ${php(summary.cashReceived)}${paymentParts.length ? ` (${paymentParts.map(part => `${part.method} ${php(part.amount)}`).join(' + ')})` : ''}, balance ${php(summary.finalBalance)}.`
  const invoiceUpdate = { subtotal:summary.adjustedGross, total_amount:summary.finalTotal, paid_amount:summary.newPaidTotal, paid_date:summary.newStatus === 'paid' ? today : null, status:summary.newStatus, returns_amount:summary.returnsCredit, returns_qty:summary.returnedQty, notes:[inv.notes, note].filter(Boolean).join(' | ') }
  let { error:invoiceErr } = await supabase.from('delivery_invoices').update(invoiceUpdate).eq('id', inv.id)
  if (invoiceErr && String(invoiceErr.message || '').toLowerCase().includes('column')) {
@@ -17543,14 +17557,17 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  ;({ error:invoiceErr } = await supabase.from('delivery_invoices').update(fallback).eq('id', inv.id))
  }
  if (invoiceErr) throw invoiceErr
+ invoiceSaved = true
  const crateAuditText = crateEntry.confirmed ? `, crates delivered ${crateSummary.delivered}, crates returned ${crateSummary.returned}, crate variance ${crateSummary.variance}` : ''
- await logAudit('INVOICE SETTLED', adminRole, inv.reseller_name, `${inv.invoice_number} actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final ${php(summary.finalTotal)}, cash ${php(summary.cashReceived)}, balance ${php(summary.finalBalance)}, status ${summary.newStatus}${crateAuditText}`)
+ await logAudit('INVOICE SETTLED', adminRole, inv.reseller_name, `${inv.invoice_number} actual ${summary.actualQty} pcs, returns ${summary.returnedQty} pcs, final ${php(summary.finalTotal)}, received ${php(summary.cashReceived)}${paymentParts.length ? ` (${paymentParts.map(part => `${part.method} ${php(part.amount)}`).join(' + ')})` : ''}, balance ${php(summary.finalBalance)}, status ${summary.newStatus}${crateAuditText}`)
  const settlementMessage = summary.newStatus === 'paid' ? ` Settlement saved. ${inv.reseller_name} is fully paid.` : ` Settlement saved. Remaining balance: ${php(summary.finalBalance)}`
  const crateMessage = crateEntry.confirmed ? ` Crate handover confirmed: delivered ${crateSummary.delivered}, collected ${crateSummary.returned}.` : ''
  showToast(settlementMessage + crateMessage, 'green')
  setShowPaymentFormMap(p=>({...p,[inv.id]:false}))
  setPaymentAmount(p=>({...p,[inv.id]:''}))
  setPaymentMethod(p=>({...p,[inv.id]:'Cash'}))
+ setSplitCashAmount(p=>({...p,[inv.id]:''}))
+ setSplitGcashAmount(p=>({...p,[inv.id]:''}))
  setPaymentNotes(p=>({...p,[inv.id]:''}))
  setSettlementRows(p=>({...p,[inv.id]:[]}))
  setSettlementCrates(p=>({...p,[inv.id]:{ delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'', confirmed:false }}))
@@ -17559,9 +17576,9 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  await loadOnlinePayments()
  refreshFoundationAfterDataChange('invoice-settlement-saved')
  } catch(err) {
- if (paymentId) await supabase.from('reseller_payments').delete().eq('id', paymentId)
- showToast((crateSyncResult.saved ? 'Crate handover was saved, but the financial settlement failed: ' : 'Settlement was not saved: ') + (err?.message || err), 'red')
- } finally { setSettlementSaving(p=>({...p,[inv.id]:false})) }
+ if (!invoiceSaved && paymentIds.length) await supabase.from('reseller_payments').delete().in('id', paymentIds)
+ showToast((invoiceSaved ? 'Settlement saved, but refresh failed: ' : crateSyncResult.saved ? 'Crate handover was saved, but the financial settlement failed: ' : 'Settlement was not saved: ') + (err?.message || err), 'red')
+ } finally { settlementSavingRef.current.delete(inv.id); setSettlementSaving(p=>({...p,[inv.id]:false})) }
  }
 
 
@@ -46882,13 +46899,14 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  const summary = getSettlementSummary(inv, rows)
  const crateEntry = settlementCrates[inv.id] || { delivered:'', returned:'', coverDelivered:'', coverReturned:'', dispatcher:'', driver:'', notes:'', confirmed:false }
  const crateSummary = getSettlementCrateSummary(inv)
- const cashTooHigh = summary.cashReceived - summary.dueBeforeCash > 0.01
+ const cashTooHigh = summary.cashReceived > summary.dueBeforeCash
+ const isSplitPayment = paymentMethod[inv.id] === 'Cash + GCash'
  return (
  <div style={{ background:'#fffdf0', border:'2px solid #FDD412', borderRadius:'12px', padding:'16px', marginTop:'12px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'10px', flexWrap:'wrap', marginBottom:'12px' }}>
  <div>
  <p style={{ fontWeight:'900', color:'#1a1a2e', fontSize:'14px', margin:'0 0 4px' }}>Payment Settlement Center</p>
- <p style={{ color:'#666', fontSize:'11px', margin:0 }}>Edit actual delivered quantity, returns/unsold, and cash received here. The final balance computes automatically.</p>
+ <p style={{ color:'#666', fontSize:'11px', margin:0 }}>Edit actual delivered quantity, returns/unsold, and amount received here. The final balance computes automatically.</p>
  </div>
  <span style={{ background:'#ca1b1b', color:'white', borderRadius:'20px', padding:'4px 12px', fontSize:'11px', fontWeight:'bold' }}>One-click settlement</span>
  </div>
@@ -46973,14 +46991,18 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Returns / Unsold</p><p style={{ color:'#ca1b1b', fontWeight:'900', margin:'3px 0 0' }}>- {php(summary.returnsCredit)}</p></div>
  <div style={{ background:'#e8f5e9', borderRadius:'10px', padding:'10px', border:'1px solid #2d8a4e33' }}><p style={{ color:'#2d8a4e', fontSize:'10px', margin:0 }}>Final Payable</p><p style={{ color:'#2d8a4e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.finalTotal)}</p></div>
  <div style={{ background:'white', borderRadius:'10px', padding:'10px', border:'1px solid #eee' }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Already Paid</p><p style={{ color:'#2d8a4e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.alreadyPaid)}</p></div>
- <div style={{ background:summary.finalBalance>0?'#fff5f5':'#e8f5e9', borderRadius:'10px', padding:'10px', border:`1px solid ${summary.finalBalance>0?'#ca1b1b33':'#2d8a4e33'}` }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Balance After Cash</p><p style={{ color:summary.finalBalance>0?'#ca1b1b':'#2d8a4e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.finalBalance)}</p></div>
+ <div style={{ background:summary.finalBalance>0?'#fff5f5':'#e8f5e9', borderRadius:'10px', padding:'10px', border:`1px solid ${summary.finalBalance>0?'#ca1b1b33':'#2d8a4e33'}` }}><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Balance After Payment</p><p style={{ color:summary.finalBalance>0?'#ca1b1b':'#2d8a4e', fontWeight:'900', margin:'3px 0 0' }}>{php(summary.finalBalance)}</p></div>
  </div>
  <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr', gap:'10px' }}>
- <div><label style={lblS}>Cash on Hand / Amount Received:</label><input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{...inputStyle, marginBottom:0, border:cashTooHigh?'2px solid #ca1b1b':'2px solid #FDD412', fontWeight:'bold', fontSize:'16px' }} min="0" step="0.01" placeholder={`Final balance: ${php(summary.dueBeforeCash)}`} /></div>
- <div><label style={lblS}>Payment Method:</label><select value={paymentMethod[inv.id]||'Cash'} onChange={e=>setPaymentMethod(p=>({...p,[inv.id]:e.target.value}))} style={{...inputStyle, marginBottom:0 }}>{['Cash','GCash','Bank Transfer','Maya','Check'].map(m=><option key={m}>{m}</option>)}</select></div>
+ <div><label style={lblS}>{isSplitPayment?'Total Received:':'Amount Received:'}</label>{isSplitPayment?<div style={{...inputStyle, marginBottom:0, border:cashTooHigh?'2px solid #ca1b1b':'2px solid #FDD412', fontWeight:'bold', fontSize:'16px' }}>{php(summary.cashReceived)}</div>:<input type="number" value={paymentAmount[inv.id]||''} onChange={e=>setPaymentAmount(p=>({...p,[inv.id]:e.target.value}))} style={{...inputStyle, marginBottom:0, border:cashTooHigh?'2px solid #ca1b1b':'2px solid #FDD412', fontWeight:'bold', fontSize:'16px' }} min="0" step="0.01" placeholder={`Final balance: ${php(summary.dueBeforeCash)}`} />}</div>
+ <div><label style={lblS}>Payment Method:</label><select value={paymentMethod[inv.id]||'Cash'} onChange={e=>setPaymentMethod(p=>({...p,[inv.id]:e.target.value}))} style={{...inputStyle, marginBottom:0 }}>{['Cash','GCash','Cash + GCash','Bank Transfer','Maya','Check'].map(m=><option key={m}>{m}</option>)}</select></div>
  <div><label style={lblS}>Notes / Reference #:</label><input value={paymentNotes[inv.id]||''} onChange={e=>setPaymentNotes(p=>({...p,[inv.id]:e.target.value}))} placeholder="GCash ref, slip #, return note, etc." style={{...inputStyle, marginBottom:0 }} /></div>
  </div>
- {cashTooHigh && <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'10px 0 0' }}>Cash received is higher than the final balance. Please check amount before saving.</p>}
+ {isSplitPayment && <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'1fr 1fr', gap:'10px', marginTop:'10px' }}>
+ <div><label style={lblS}>Cash Amount:</label><input type="number" min="0" step="0.01" value={splitCashAmount[inv.id]||''} onChange={e=>setSplitCashAmount(p=>({...p,[inv.id]:e.target.value}))} placeholder="Cash received" style={{...inputStyle, marginBottom:0 }} /></div>
+ <div><label style={lblS}>GCash Amount:</label><input type="number" min="0" step="0.01" value={splitGcashAmount[inv.id]||''} onChange={e=>setSplitGcashAmount(p=>({...p,[inv.id]:e.target.value}))} placeholder="GCash received" style={{...inputStyle, marginBottom:0 }} /></div>
+ </div>}
+ {cashTooHigh && <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'12px', margin:'10px 0 0' }}>Amount received is higher than the final balance. Please check before saving.</p>}
  <button disabled={!!settlementSaving[inv.id] || cashTooHigh} style={{...btnGreen, fontSize:'14px', fontWeight:'bold', opacity:settlementSaving[inv.id] || cashTooHigh?0.55:1 }} onClick={()=>saveInvoiceSettlement(inv)}>{settlementSaving[inv.id]?' SAVING SETTLEMENT...':' SAVE PAYMENT / RETURNS / ACTUAL DELIVERY'}</button>
  </div>
  )
