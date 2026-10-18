@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import vm from 'node:vm'
 import { enforcePayrollMealBreakExemptions } from '../vite.payroll-meal-break-exemption-invariant.js'
+import { usesShortShiftMealPolicy, SHORT_SHIFT_MAX_MINUTES } from '../src/attendancePolicy20261006.js'
 
 const fixture = `
 function buildPayrollMealBreakReviewException(employee = {}, attendanceDate = '', dayLogs = [], breakRowsByLogId = {}) {
@@ -41,11 +44,10 @@ async function inspectPayrollReadiness() {
  return readiness
 }`
 
-test('missing break punches use the standard 60-minute deduction and do not create a payroll hold', () => {
+test('meal break review remains active for qualifying shifts', () => {
  const transformed = enforcePayrollMealBreakExemptions(fixture, '/repo/src/App.jsx')
- assert.match(transformed, /DEFAULT_60_MIN_BREAK_ASSUMPTION/)
- assert.match(transformed, /const requiresReview = false/)
- assert.doesNotMatch(transformed, /!breakEvidence\.hasBreakEvidence\s*\n\s*&& isShortScheduledDay/)
+ assert.match(transformed, /!breakEvidence\.hasBreakEvidence\s*\n\s*&& isShortScheduledDay/)
+ assert.doesNotMatch(transformed, /const requiresReview = false/)
 })
 
 test('payroll readiness does not double-count held employees as missing payroll rows', () => {
@@ -64,4 +66,22 @@ test('transformation is idempotent for App.jsx', () => {
 
 test('unrelated modules are unchanged', () => {
  assert.equal(enforcePayrollMealBreakExemptions(fixture, '/repo/src/Other.jsx'), fixture)
+})
+
+test('cutoff review holds longer unpunched shifts, but releases short and approved shifts', () => {
+ const app=fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8')
+ const start=app.indexOf('function buildPayrollMealBreakReviewException(')
+ const end=app.indexOf('\nfunction ',start+1)
+ const ctx={usesShortShiftMealPolicy,SHORT_SHIFT_MAX_MINUTES,REQUIRED_PAID_WORK_MINUTES:480,ALLOWED_BREAK_MINUTES:60,
+  getAttendanceDayIntegrity:logs=>({isValidCompleted:true,completedLogs:logs}),
+  getAttendanceDayWorkMetrics:logs=>logs[0].metrics,
+  getAttendanceBreakPunchEvidence:()=>({hasBreakEvidence:false,hasCompletedBreakPunch:false}),
+  buildPayrollAttendanceException:(_emp,_date,_logs,issue)=>issue}
+ vm.createContext(ctx)
+ vm.runInContext(app.slice(start,end),ctx)
+ const issue=metrics=>ctx.buildPayrollMealBreakReviewException({},'2026-10-18',[{id:1,metrics}])
+ assert.equal(issue({rawSpanMinutes:300,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:240}),null)
+ assert.equal(issue({rawSpanMinutes:301,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:180}).code,'meal_break_review')
+ assert.equal(issue({rawSpanMinutes:540,breakOverrideApplied:false,recordedBreakMinutes:0,undertimeMinutes:0}).code,'meal_break_review')
+ assert.equal(issue({rawSpanMinutes:540,breakOverrideApplied:true,recordedBreakMinutes:0,undertimeMinutes:0}),null)
 })

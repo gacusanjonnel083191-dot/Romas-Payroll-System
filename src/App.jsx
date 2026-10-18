@@ -1,7 +1,7 @@
 import { dailyPosClosing } from './posClosingSummary.js'
 import StaffScheduler from './StaffScheduler.jsx'
 import EmployeeSchedule from './EmployeeSchedule.jsx'
-import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, creditedAttendanceStartMinute, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
+import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, usesShortShiftMealPolicy, SHORT_SHIFT_MAX_MINUTES, creditedAttendanceStartMinute, payableOvertimeMinutes, policyBreakMinutes, policyOvertimeBasis } from './attendancePolicy20261006.js'
 import { buildEmployeeIdWordBlob } from './employeeIdWord.js'
 import { runCashAdvancePayrollCommand } from './cashAdvanceIntegrity.js'
 import { runEmployeeSeparationCommand } from './employeeSeparationIntegrity.js'
@@ -1182,9 +1182,11 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  const excludedEarlyMinutes = Math.max(0, rawSpanMinutes - creditedSpanMinutes)
  const creditedTimeIn = clockMinuteToTimeValue(creditedStartMinute)
  let recordedBreakMinutes = 0
+ let hasCompletedBreakPunch = false
  const countedFallbackBreaks = new Set()
  completedLogs.forEach(log => {
-  const rows = breakRowsByLogId?.[String(log.id || '')] || []
+  const rows = breakRowsByLogId?.[String(log.id || '')] || log?._breakRows || []
+  if (rows.some(row => row?.break_out && row?.break_in)) hasCompletedBreakPunch = true
   if (rows.length > 0) {
    recordedBreakMinutes += getRecordedBreakMinutes(log, rows)
    return
@@ -1196,18 +1198,21 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
    recordedBreakMinutes += fallbackBreak
   }
  })
+ const policyRecordedBreakMinutes = usesShortShiftMealPolicy(attendanceDate) && hasCompletedBreakPunch
+  ? Math.max(1, recordedBreakMinutes)
+  : recordedBreakMinutes
 
  // Default company rule remains unchanged: every completed workday carries at
  // least one unpaid 60-minute meal break. Only an approved No Meal Break filing
  // may override the unpaid deduction. Pending or rejected requests do nothing.
- const defaultDeductedBreakMinutes = creditedSpanMinutes > 0 ? Math.max(ALLOWED_BREAK_MINUTES, recordedBreakMinutes) : 0
+ const defaultDeductedBreakMinutes = policyBreakMinutes({ date:attendanceDate, spanMinutes:creditedSpanMinutes, recordedMinutes:policyRecordedBreakMinutes })
  const savedApprovedOverride = getApprovedMealBreakOverrideMinutes(completedLogs)
  const hasExplicitOverride = explicitApprovedUnpaidBreakMinutes !== undefined && explicitApprovedUnpaidBreakMinutes !== null
  const approvedUnpaidBreakMinutes = hasExplicitOverride
   ? Math.max(0, Math.min(ALLOWED_BREAK_MINUTES, Math.round(safeNum(explicitApprovedUnpaidBreakMinutes, 0))))
   : savedApprovedOverride
- const breakOverrideApplied = !currentPolicy && approvedUnpaidBreakMinutes !== null
- const deductedBreakMinutes = policyBreakMinutes({ date:attendanceDate, spanMinutes:creditedSpanMinutes, recordedMinutes:recordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
+ const breakOverrideApplied = (!currentPolicy || usesShortShiftMealPolicy(attendanceDate)) && approvedUnpaidBreakMinutes !== null
+ const deductedBreakMinutes = policyBreakMinutes({ date:attendanceDate, spanMinutes:creditedSpanMinutes, recordedMinutes:policyRecordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
  const overbreakMinutes = Math.max(0, Math.round(recordedBreakMinutes - ALLOWED_BREAK_MINUTES))
  const paidWorkedMinutes = Math.max(0, Math.round(creditedSpanMinutes - deductedBreakMinutes))
  // With no assigned start, the next-hour fallback protects OT from unapproved
@@ -1216,7 +1221,7 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  const undertimeSpanMinutes = earlyStartPolicy && !scheduleStart ? rawSpanMinutes : creditedSpanMinutes
  const undertimeDeductedBreakMinutes = undertimeSpanMinutes === creditedSpanMinutes
   ? deductedBreakMinutes
-  : policyBreakMinutes({ date:attendanceDate, spanMinutes:undertimeSpanMinutes, recordedMinutes:recordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
+  : policyBreakMinutes({ date:attendanceDate, spanMinutes:undertimeSpanMinutes, recordedMinutes:policyRecordedBreakMinutes, legacyOverride:approvedUnpaidBreakMinutes })
  const undertimePaidWorkedMinutes = Math.max(0, Math.round(undertimeSpanMinutes - undertimeDeductedBreakMinutes))
  const rawPaidWorkShortageMinutes = Math.max(0, REQUIRED_PAID_WORK_MINUTES - undertimePaidWorkedMinutes)
  const scheduleMetrics = getScheduleAnchoredAttendanceMetrics(completedLogs)
@@ -1252,7 +1257,7 @@ function getAttendanceDayWorkMetrics(dayLogs = [], breakRowsByLogId = {}, explic
  const { mealBreakScheduleCreditMinutes, chargeableEarlyOutMinutes } = getChargeableEarlyOutMinutes({
   earlyOutMinutes:scheduleMetrics.earlyOutMinutes,
   deductedBreakMinutes,
-  breakOverrideApplied:breakOverrideApplied || (currentPolicy && rawSpanMinutes < 540),
+  breakOverrideApplied:breakOverrideApplied || (usesShortShiftMealPolicy(attendanceDate) && deductedBreakMinutes < ALLOWED_BREAK_MINUTES) || (currentPolicy && !usesShortShiftMealPolicy(attendanceDate) && rawSpanMinutes < 540),
   standardBreakMinutes:ALLOWED_BREAK_MINUTES
  })
  const rawUndertimeMinutes = Math.max(
@@ -1452,18 +1457,20 @@ function buildPayrollMealBreakReviewException(employee = {}, attendanceDate = ''
  })
  const metrics = getAttendanceDayWorkMetrics(integrity.completedLogs, resolvedBreakRowsByLogId)
  const breakEvidence = getAttendanceBreakPunchEvidence({ breakRowsByLogId:resolvedBreakRowsByLogId, metrics })
+ const newPolicy = usesShortShiftMealPolicy(attendanceDate)
  const isShortScheduledDay = metrics.rawSpanMinutes > 0
   && metrics.rawSpanMinutes < REQUIRED_PAID_WORK_MINUTES + ALLOWED_BREAK_MINUTES
  const requiresReview = !metrics.breakOverrideApplied
-  && !breakEvidence.hasBreakEvidence
-  && isShortScheduledDay
-  && metrics.undertimeMinutes > 0
+  && (newPolicy ? !breakEvidence.hasCompletedBreakPunch && metrics.recordedBreakMinutes === 0 : !breakEvidence.hasBreakEvidence)
+  && (newPolicy ? metrics.rawSpanMinutes > SHORT_SHIFT_MAX_MINUTES : isShortScheduledDay && metrics.undertimeMinutes > 0)
  if (!requiresReview) return null
 
  return buildPayrollAttendanceException(employee, attendanceDate, dayLogs, {
   ...integrity,
   code:'meal_break_review',
-  message:`No break punch or approved No Meal Break exists on this short/early-out workday. Confirm No Meal Break or correct the DTR before payroll; the system will not silently charge a 60-minute meal that may not have occurred.`
+  message:newPolicy
+   ? 'More than five hours were worked with no break punch. Review the employee explanation: approve a verified continuous shift or correct the missing break punch before payroll.'
+   : 'No break punch or approved No Meal Break exists on this short/early-out workday. Confirm No Meal Break or correct the DTR before payroll; the system will not silently charge a 60-minute meal that may not have occurred.'
  })
 }
 
@@ -20094,6 +20101,11 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  if (undertimeMinutes>0) msg += `\n\n ${rawUndertimeMinutes} actual shortage minute(s) were detected. The system recorded ${undertimeMinutes} chargeable UT minute(s) under the ${UNDERTIME_BLOCK_MINUTES}-minute block policy and will deduct them automatically in payroll. No UT request or admin approval is required.`
  if (rawUndertimeMinutes>0 && !undertimeDeductionApplicable) msg += `\n\n Undertime exemption applied. No automatic UT deduction was created.`
  if (excessBreakMins>0) msg += `\n\n ${excessBreakMins} min excess break was recorded separately as Overbreak and was not rounded again into UT.`
+ if (usesShortShiftMealPolicy(activeAttendanceDate) && totalBreakMins === 0) {
+  msg += attendanceMetrics.rawSpanMinutes <= SHORT_SHIFT_MAX_MINUTES
+   ? '\n\n Short shift: no meal break was deducted. Scheduled hours not worked still count as undertime.'
+   : '\n\n No break punch was recorded for this longer shift. Payroll will wait for a supervisor or owner to review continuous work or correct a missing break punch.'
+ }
  if (totalBreakMins===0 && !usesMinuteAttendancePolicy(activeAttendanceDate)) msg += `\n\n No meal break was recorded. The standard 60-minute deduction was applied. If you genuinely worked continuously without a meal break, file a No Meal Break exception for admin review before payroll; approval will recalculate automatic UT and any OT eligibility.`
   alert(msg)
  }
@@ -20140,8 +20152,8 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
 }
 
  async function refreshTimeAdjustmentPreview(dateValue = otRequestDate, typeValue = otRequestType, fromValue = otRequestFrom, toValue = otRequestTo) {
- if (typeValue === 'meal_break') { const blocked = {loading:false, canSubmit:false, minutes:0, message:'New No Meal Break filings are no longer allowed.'}; setTimeAdjPreview(blocked); return blocked }
  const targetDate = String(dateValue || '').slice(0, 10)
+ if (typeValue === 'meal_break' && !usesShortShiftMealPolicy(targetDate)) { const blocked = {loading:false, canSubmit:false, minutes:0, message:'No Meal Break filing is available only for reviewed shifts from October 11, 2026.'}; setTimeAdjPreview(blocked); return blocked }
  const requestType = String(typeValue || 'overtime').toLowerCase()
  const overtimePayEligible = employeeRuleEnabled(employee?.overtime_pay_eligible, true)
  if (requestType === 'undertime') {
@@ -20235,7 +20247,9 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
     revisedUTMinutes
    }
 
-   if (activeMealBreak) {
+   if (validation.metrics.rawSpanMinutes <= SHORT_SHIFT_MAX_MINUTES) {
+    message = 'Shifts of five hours or less automatically have no unpunched meal deduction. No request is needed.'
+   } else if (activeMealBreak) {
     message = activeMealBreak.status === 'approved'
      ? `A No Meal Break exception is already approved for this attendance shift (${activeMealBreak.attendance_date}). Another filing is blocked unless the approved exception is voided first.`
      : `A No Meal Break filing is already pending for this attendance shift (${activeMealBreak.attendance_date}). Please wait for admin review instead of filing another request.`
@@ -20257,10 +20271,10 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
      message = 'No Meal Break filing is blocked because OT is already approved for this attendance shift. Ask the admin to undo that OT approval first, then file the break exception so all minutes can be recalculated in the correct order.'
     } else {
      canSubmit = true
-     message = `No break was recorded. The standard ${validation.metrics.deductedBreakMinutes}-minute deduction remains active unless this filing is approved. If approved, paid work becomes ${revisedMetrics.paidWorkedMinutes} minute(s), resulting in ${revisedOTMinutes} OT minute(s) and ${revisedUTMinutes} UT minute(s).`
+     message = `No break was recorded on this longer shift. Payroll is held for review. If continuous work is approved, paid work is ${revisedMetrics.paidWorkedMinutes} minute(s), with ${revisedOTMinutes} OT and ${revisedUTMinutes} UT minute(s). If a meal break was taken, correct the missing break punch instead.`
     }
    }
-  } else if (!usesMinuteAttendancePolicy(canonicalDate) && activeMealBreakRequests.some(row => row.status === 'pending')) {
+  } else if (activeMealBreakRequests.some(row => row.status === 'pending')) {
    message = 'OT filing is blocked while a No Meal Break request is pending for this attendance shift. The break decision must be reviewed first because it changes the final paid-work, OT, and automatic UT minutes.'
   } else if (requestType === 'overtime' && minutes <= 0) {
    message = 'No overtime can be filed. The attendance record has no payable minutes beyond eight paid work hours after the approved break treatment.'
@@ -20299,7 +20313,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
 }
 
  async function submitTimeAdjRequest() {
- if (otRequestType === 'meal_break') { alert('New No Meal Break filings are no longer allowed.'); return }
+ if (otRequestType === 'meal_break' && !usesShortShiftMealPolicy(otRequestDate)) { alert('No Meal Break review is available only from October 11, 2026.'); return }
  if (timeAdjSubmitLockRef.current) return
  if (otRequestType === 'undertime') {
   alert(`Undertime cannot be filed. It is calculated from verified attendance and deducted automatically in ${UNDERTIME_BLOCK_MINUTES}-minute blocks.`)
@@ -20426,7 +20440,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
   }
   alert(otRequestType === 'overtime'
    ? `Overtime request filed for the system-locked actual range ${formatClockTimeForDisplay(lockedOTFrom)} to ${formatClockTimeForDisplay(lockedOTTo)}. ${safeNum(preview?.rangeValidation?.filedRawMinutes, exactMinutes)} actual minute(s) convert to ${exactMinutes} payable minute(s) under the attendance-date OT policy, under attendance date ${canonicalAttendanceDate}.${canonicalAttendanceDate !== otRequestDate ? ` Your selected date ${otRequestDate} was correctly matched to the previous-day overnight shift.` : ''} OT To is capped at the actual Time Out. The request is waiting for admin approval.`
-   : `No Meal Break exception filed for attendance date ${canonicalAttendanceDate}. The standard 60-minute deduction remains active while the request is pending. If approved, the system will recalculate automatic UT and any OT eligibility from actual attendance.`
+   : `No Meal Break review filed for ${canonicalAttendanceDate}. Payroll remains held until the continuous work is approved or the missing break punch is corrected.`
   )
   setOtRequestReason('')
   setOtRequestReasonPreset('')
@@ -25182,7 +25196,7 @@ async function requestPushPermission() {
  setHolidays(prev=>prev.filter(h=>h.id!==id)); showToast(' Holiday deleted')
  }
  async function getTimeAdjAdminValidation(req = {}) {
- if (req.request_type === 'meal_break' && usesMinuteAttendancePolicy(req.attendance_date)) return {loading:false, canApprove:false, message:'No Meal Break is disabled from October 6, 2026.'}
+ if (req.request_type === 'meal_break' && !usesShortShiftMealPolicy(req.attendance_date)) return {loading:false, canApprove:false, message:'No Meal Break review is available only from October 11, 2026.'}
 
  const requestType = String(req?.request_type || '').toLowerCase()
  const parsedTimeReason = parseTimeAdjustmentEmployeeReason(req?.employee_reason || '')
@@ -25254,7 +25268,7 @@ async function requestPushPermission() {
     isApprovedTimeAdjustmentConsumedByReleasedPayroll(row, payrollState.records, validation.integrity.completedLogs)
    )
    const approvedTimeConflict = getUnconsumedApprovedTimeAdjustmentConflict(approvedTimeRows || [], payrollState.records, validation.integrity.completedLogs)
-   const canApprove = !breakPunchEvidence.hasBreakEvidence && !approvedTimeConflict
+   const canApprove = validation.metrics.rawSpanMinutes > SHORT_SHIFT_MAX_MINUTES && !breakPunchEvidence.hasBreakEvidence && !approvedTimeConflict
    let message = `Current rule: ${validation.metrics.rawSpanMinutes} raw minute(s) less ${validation.metrics.excludedEarlyMinutes || 0} early-arrival minute(s) and ${validation.metrics.deductedBreakMinutes} unpaid break minute(s) = ${validation.metrics.paidWorkedMinutes} paid minute(s). `
    if (breakPunchEvidence.hasBreakEvidence) {
     message += getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval')
@@ -25297,7 +25311,7 @@ async function requestPushPermission() {
    .eq('status', 'pending')
    .limit(1)
   if (pendingMealBreakError) throw pendingMealBreakError
-  if (pendingMealBreakRows?.length && !usesMinuteAttendancePolicy(resolvedAttendanceDate)) {
+  if (pendingMealBreakRows?.length) {
    return {
     loading:false,
     requestType,
@@ -25519,13 +25533,20 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  }
 
  async function approveMealBreakExceptionRequest(req, validation, context = {}) {
- if (usesMinuteAttendancePolicy(validation?.resolvedAttendanceDate || req.attendance_date)) { showToast('No Meal Break approval is disabled from October 6, 2026.', 'red'); return }
+ if (!usesShortShiftMealPolicy(validation?.resolvedAttendanceDate || req.attendance_date)) { showToast('No Meal Break review is available only from October 11, 2026.', 'red'); return }
+ if (!['owner','manager','supervisor','asst_supervisor'].includes(normalizedAdminRole) || String(req.employee_id) === String(adminEmployee?.id)) { showToast('A separate authorized supervisor or owner must review this request.', 'red'); return }
  const targetDate = String(context.targetDate || validation?.resolvedAttendanceDate || req?.attendance_date || '').slice(0,10)
  const requestedAttendanceDate = String(context.requestedAttendanceDate || req?.attendance_date || '').slice(0,10)
  const duplicateDates = Array.from(new Set(context.duplicateDates || [requestedAttendanceDate, targetDate].filter(Boolean)))
  const reviewNote = String(context.reviewNote || '').trim()
  if (!reviewNote) {
   showToast('Admin response is required before approving a No Meal Break exception.', 'red')
+  return
+ }
+ const { data:reviewedEmployee, error:reviewedEmployeeError } = await supabase.from('employees').select('admin_role').eq('id',req.employee_id).maybeSingle()
+ if (reviewedEmployeeError || !reviewedEmployee) { showToast('Employee role could not be verified. Review blocked.', 'red'); return }
+ if (['owner','manager','admin','hr','payroll','supervisor','asst_supervisor'].includes(String(reviewedEmployee.admin_role || '').toLowerCase()) && !isOwnerRole) {
+  showToast('Only the owner can approve a supervisor or admin meal-break exception.', 'red')
   return
  }
 
@@ -25548,6 +25569,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  }
 
  const breakPunchEvidence = getAttendanceBreakPunchEvidence(validation)
+ if (validation.metrics.rawSpanMinutes <= SHORT_SHIFT_MAX_MINUTES) { showToast('Short shifts receive the automatic no-break rule and do not need approval.', 'red'); return }
  const recordedBreakMinutes = breakPunchEvidence.recordedBreakMinutes
  if (breakPunchEvidence.hasBreakEvidence) {
   showToast(getNoMealBreakBreakConflictMessage(breakPunchEvidence, 'Approval'), 'red')
@@ -25692,7 +25714,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
  showToast('New No Meal Break filings are no longer allowed.', 'red')
  }
  async function approveTimeAdj(req) {
- if (req.request_type === 'meal_break' && usesMinuteAttendancePolicy(req.attendance_date)) { showToast('No Meal Break approval is disabled from October 6, 2026.', 'red'); return }
+ if (req.request_type === 'meal_break' && !usesShortShiftMealPolicy(req.attendance_date)) { showToast('No Meal Break review is available only from October 11, 2026.', 'red'); return }
  if (timeAdjApprovalLockRef.current) {
   showToast('Another attendance approval is already being processed. Please wait for it to finish before approving another request.', 'orange')
   return
@@ -25808,7 +25830,7 @@ This fills the missing legacy From/To audit data and normalizes the saved reques
   .eq('status', 'pending')
   .limit(1)
  if (pendingMealBreakError) { showToast('Failed checking pending No Meal Break request: '+pendingMealBreakError.message, 'red'); return }
- if (pendingMealBreakRows?.length && !usesMinuteAttendancePolicy(resolvedAttendanceDate)) {
+ if (pendingMealBreakRows?.length) {
   showToast(`Approval blocked: a No Meal Break exception is pending for ${targetDate}. Review it first because it changes final OT eligibility and automatic UT minutes.`, 'red')
   return
  }
@@ -38860,7 +38882,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <h2 style={h2s}>Overtime / Meal-Break Exceptions</h2>
  <div style={{ background:'linear-gradient(135deg,#fff8dc,#fffdf4)', border:'2px solid #FDD412', borderLeft:'6px solid #ca1b1b', borderRadius:'14px', padding:'14px', margin:'0 0 14px', width:'100%', boxSizing:'border-box', boxShadow:'0 4px 14px rgba(253,212,18,0.12)' }}>
  <strong style={{ color:'#ca1b1b', fontSize:'14px' }}>Attendance Adjustment Control Center</strong>
- <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>The standard 60-minute meal-break deduction remains active unless a verified No Meal Break filing is approved. No Meal Break review must be completed before OT approval because it changes paid-work minutes. Payroll undertime is attendance-detected and deducted automatically in {UNDERTIME_BLOCK_MINUTES}-minute blocks; it has no filing or approval step. Use <strong>Void / Undo</strong> for OT (or historical No Meal Break) before payroll release; use Payroll Adjustment after release.</p>
+  <p style={{ margin:'5px 0 0', color:'#666', fontSize:'12px', lineHeight:1.5 }}>From October 11, shifts of five hours or less with no break punch have no meal deduction. Longer unpunched shifts require a supervisor or owner review before payroll: approve verified continuous work or correct the missing break punch. Undertime remains separate and automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
  </div>
 
  <div style={{ background:'linear-gradient(180deg,#fffdf4,#ffffff)', border:'1px solid rgba(202,27,27,0.20)', borderTop:'5px solid #ca1b1b', borderRadius:'16px', padding:'16px', margin:'0 0 16px', width:'100%', boxShadow:'0 5px 18px rgba(26,26,46,0.07)', boxSizing:'border-box' }}>
@@ -38905,7 +38927,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ border:'1px solid #dbe9f8', borderRadius:'12px', overflow:'hidden' }}>
  <div style={{ background:'#eef6ff', color:'#1f5f99', fontWeight:'900', fontSize:'12px', padding:'9px 12px' }}>Automatic Undertime Policy</div>
  <div style={{ padding:'12px', color:'#555', fontSize:'12px', lineHeight:1.6 }}>
-  Verified attendance shortage is rounded upward to the next {UNDERTIME_BLOCK_MINUTES}-minute block and deducted automatically during payroll computation. Historical No Meal Break approvals remain in their original dates. From October 6, 2026, full shifts have an automatic 60-minute unpaid break; short shifts use recorded breaks. OT remains approval-driven and is paid per minute.
+  Verified attendance shortage is rounded upward to the next {UNDERTIME_BLOCK_MINUTES}-minute block and deducted automatically. From October 11, 2026, a shift of up to five hours with no break has zero meal deduction. Longer shifts without a break punch require review before payroll. OT remains approval-driven.
  </div>
  </div>
  </div>
@@ -39081,7 +39103,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  )}
  {!isMealBreakRequest && attendanceValid && !breakPunchEvidence.hasBreakEvidence && !attendanceMetrics.breakOverrideApplied && (
   <div style={{ marginTop:'10px', padding:'9px 10px', border:'1px solid #FDD412', background:'#fff8dc', borderRadius:'9px', color:'#1a1a2e', fontSize:'11px', lineHeight:1.45, fontWeight:'800' }}>
-   No break punch is recorded. The calculation above is still using the standard 60-minute deduction. After verifying that the employee actually worked continuously, use <strong>CONFIRM NO BREAK &amp; RECALCULATE</strong>. Otherwise, keep the standard deduction.
+   No break punch is recorded. For shifts longer than five hours from October 11, review the employee's explanation and resolve the meal break before payroll. For a forgotten break punch, correct the DTR.
   </div>
  )}
   <p style={{ margin:'10px 0 0', color:approvalBlocked?'#ca1b1b':'#2d8a4e', fontWeight:'800', fontSize:'12px', lineHeight:1.5 }}>{adminValidation?.message || 'Attendance calculation is loading. The system will revalidate before saving.'}</p>
@@ -50254,7 +50276,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <button style={{ background:'#f0f0f0', border:'none', borderRadius:'8px', padding:'7px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', color:'#555', marginBottom:'12px' }} onClick={()=>setShowOTRequest(false)}> BACK</button>
  <h3 style={{ color:'#1a1a2e', margin:'0 0 10px', fontSize:'14px' }}>File Overtime</h3>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'10px', padding:'9px 10px', marginBottom:'10px' }}>
-  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>From October 6, 2026, OT requires approval and is paid per eligible minute beyond the scheduled end. Full shifts carry a 60-minute unpaid meal break; short shifts use recorded breaks. No Meal Break filing is disabled. Undertime remains automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
+  <p style={{ margin:0, color:'#6b5200', fontSize:'11px', lineHeight:1.5, fontWeight:'700' }}>From October 11, 2026, shifts up to five hours with no break punch have zero meal deduction. Longer unpunched shifts require a supervisor or owner review before payroll. Undertime remains automatic in {UNDERTIME_BLOCK_MINUTES}-minute blocks.</p>
  </div>
  <label style={lblS}>Attendance Date Being Filed:</label>
  <input
@@ -50288,6 +50310,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
   style={inputStyle}
  >
   <option value="overtime">Overtime</option>
+  {usesShortShiftMealPolicy(otRequestDate) && <option value="meal_break">No Meal Break Review</option>}
 
  </select>
  {otRequestType === 'overtime' ? (

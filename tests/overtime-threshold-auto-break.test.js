@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import { PGlite } from '@electric-sql/pglite'
-import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, creditedAttendanceStartMinute, policyBreakMinutes, policyOvertimeBasis, payableOvertimeMinutes } from '../src/attendancePolicy20261006.js'
+import { usesMinuteAttendancePolicy, usesOvertimeThresholdPolicy, usesEarlyArrivalStartPolicy, usesShortShiftMealPolicy, SHORT_SHIFT_MAX_MINUTES, creditedAttendanceStartMinute, policyBreakMinutes, policyOvertimeBasis, payableOvertimeMinutes } from '../src/attendancePolicy20261006.js'
 import { getAppliedPaidWorkGraceMinutes, getChargeableEarlyOutMinutes } from '../src/attendancePolicy.js'
 import { enforceNoScheduleGraceBehavior } from '../vite.no-schedule-grace-invariant.js'
 const source=enforceNoScheduleGraceBehavior(fs.readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8').replace(/\r\n/g,'\n'),'/repo/src/App.jsx')
@@ -14,7 +14,7 @@ function extract(name) {
  return source.slice(start,end)
 }
 function appContext() {
- const ctx={usesMinuteAttendancePolicy,usesOvertimeThresholdPolicy,usesEarlyArrivalStartPolicy,creditedAttendanceStartMinute,policyBreakMinutes,policyOvertimeBasis,payableOvertimeMinutes,getAppliedPaidWorkGraceMinutes,getChargeableEarlyOutMinutes,
+ const ctx={usesMinuteAttendancePolicy,usesOvertimeThresholdPolicy,usesEarlyArrivalStartPolicy,usesShortShiftMealPolicy,SHORT_SHIFT_MAX_MINUTES,creditedAttendanceStartMinute,policyBreakMinutes,policyOvertimeBasis,payableOvertimeMinutes,getAppliedPaidWorkGraceMinutes,getChargeableEarlyOutMinutes,
   ALLOWED_BREAK_MINUTES:60,REQUIRED_PAID_WORK_MINUTES:480,DEFAULT_LATE_GRACE_MINUTES:10,UNDERTIME_BLOCK_MINUTES:30,
   getAttendanceDayIntegrity:logs=>({isValidCompleted:logs.every(l=>l.time_in&&l.time_out),completedLogs:logs})}
  vm.createContext(ctx)
@@ -32,11 +32,35 @@ test('strict threshold counts the full eligible duration from 30, preserves earl
  assert.equal(payableOvertimeMinutes(17,'2026-10-10'),17)
  assert.equal(payableOvertimeMinutes(59,'2026-10-05'),30)
 })
-test('automatic hour applies with missing, incomplete or short breaks; retains overbreak once',()=>{
- for(const span of [60,240,536,539,540,571]) for(const br of [0,15,39,48,58,60]) assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:span,recordedMinutes:br,legacyOverride:0}),60)
+test('five-hour boundary applies recorded breaks; longer shifts await review or retain punches',()=>{
+ for(const span of [60,240,300]) assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:span,recordedMinutes:0}),0)
+ for(const span of [301,536,539,540,571]) assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:span,recordedMinutes:0}),0)
+ assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:301,recordedMinutes:15}),60)
+ assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:600,recordedMinutes:0,legacyOverride:0}),0)
  assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:600,recordedMinutes:75}),75)
- assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:5,recordedMinutes:0}),5)
+ assert.equal(policyBreakMinutes({date:'2026-10-11',spanMinutes:5,recordedMinutes:0}),0)
  assert.equal(policyBreakMinutes({date:'2026-10-10',spanMinutes:536,recordedMinutes:48}),48)
+})
+test('Sheryl four-hour shifts have no meal deduction while scheduled undertime remains',()=>{
+ const ctx=appContext()
+ for(const [date,timeIn,timeOut] of [
+  ['2026-10-16','07:56','12:01'],
+  ['2026-10-18','08:01','12:03']
+ ]) {
+  const metrics=ctx.getAttendanceDayWorkMetrics([log(timeIn,timeOut,0,'08:00','17:00',date)])
+  assert.equal(metrics.deductedBreakMinutes,0)
+  assert.ok(metrics.paidWorkedMinutes>=240)
+  assert.equal(metrics.undertimeMinutes,240)
+ }
+ const sixHours=ctx.getAttendanceDayWorkMetrics([log('08:00','14:00',0,'08:00','17:00')])
+ assert.equal(sixHours.deductedBreakMinutes,0)
+ assert.equal(sixHours.undertimeMinutes,120)
+})
+test('Myra October 16 short shift credits the full continuous duty and keeps separate undertime',()=>{
+ const ctx=appContext()
+ const metrics=ctx.getAttendanceDayWorkMetrics([{...log('08:09:48','12:01:36',0,'08:00','17:00','2026-10-16'),grace_period_minutes:10}])
+ assert.equal(metrics.deductedBreakMinutes,0)
+ assert.equal(metrics.undertimeMinutes,270)
 })
 test('actual app calculation clears all four screenshot flags and uses 60 minutes',()=>{
  const ctx=appContext()
@@ -61,7 +85,7 @@ test('actual filing window and badge respect 29/30/31 on day and overnight shift
  const early=log('07:00','17:20',60,'08:00','17:00')
  assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([early]),0)
  const noSchedule=log('08:00','17:31',0)
- assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([noSchedule]),31)
+ assert.equal(ctx.getAttendanceDayActualOvertimeMinutes([noSchedule]),91)
  const incomplete=log('08:00',null)
  incomplete.status='No Assigned Shift'
  assert.equal(ctx.getAttendanceOvertimeDisplayStatus(incomplete),'No Assigned Shift')
