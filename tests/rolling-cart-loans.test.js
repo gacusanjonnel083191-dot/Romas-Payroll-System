@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { PGlite } from '@electric-sql/pglite'
 
 const sql=fs.readFileSync(new URL('../supabase/migrations/20261019030000_rolling_cart_loans.sql',import.meta.url),'utf8')
+const itemSql=fs.readFileSync(new URL('../supabase/migrations/20261019044500_rolling_cart_additional_items.sql',import.meta.url),'utf8')
 
 test('cart installments are atomic, idempotent, owner-only and reversible',async()=>{
  const db=new PGlite(), owner=randomUUID(), staff=randomUUID(), employee=randomUUID(), reseller=randomUUID()
@@ -20,6 +21,7 @@ test('cart installments are atomic, idempotent, owner-only and reversible',async
    insert into public.employees values('${employee}'); insert into public.resellers values('${reseller}');
    grant usage on schema auth to authenticated; grant execute on function auth.uid() to authenticated;`)
   await db.exec(sql)
+  await db.exec(itemSql)
   await db.exec(`select set_config('request.jwt.claim.sub','${owner}',false); set role authenticated;`)
   const create=()=>db.query('select public.create_rolling_cart_loan($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) id',
    ['employee',employee,reseller,'Cart QA-01',null,'2026-10-19',36500,5000,1500,'Weekly','2026-10-26','Signed separately','Cash','DP-01'])
@@ -38,9 +40,29 @@ test('cart installments are atomic, idempotent, owner-only and reversible',async
   await db.query('select public.reverse_rolling_cart_payment($1,$2)',[paymentId,'Incorrect payment encoded'])
   assert.equal(await balance(),31500);assert.equal((await events()).length,3)
   await assert.rejects(db.query('select public.reverse_rolling_cart_payment($1,$2)',[paymentId,'Duplicate correction']),/already reversed/)
+  const chargeToken=randomUUID()
+  const add=(category,description,quantity,unitAmount,id=chargeToken)=>db.query(
+   'select public.add_rolling_cart_charge($1,$2,$3,$4,$5,$6,$7,$8) id',
+   [loan,category,description,'2026-10-21',quantity,unitAmount,'Issued to borrower',id])
+  await add('Additional Tray','Tray for rolling cart',2,450)
+  await add('Additional Tray','Tray for rolling cart',2,450)
+  assert.equal(await balance(),32400,'two trays add 900 to the balance only once')
+  assert.equal(Number((await db.query('select total_amount from public.rolling_cart_charges where event_type=$1',['charge'])).rows[0].total_amount),900)
+  await assert.rejects(add('Others','',1,100,randomUUID()),/valid item/)
+  await assert.rejects(add('Uniform','',0,200,randomUUID()),/valid item/)
+  await assert.rejects(add('Uniform','',1,200.001,randomUUID()),/valid item/)
+  const chargeId=(await db.query("select id from public.rolling_cart_charges where event_type='charge'")).rows[0].id
+  const coveringPayment=(await pay(32000,randomUUID())).rows[0].id
+  assert.equal(await balance(),400)
+  await assert.rejects(db.query('select public.reverse_rolling_cart_charge($1,$2)',[chargeId,'Incorrect tray charge']),/reconcile payments first/)
+  await db.query('select public.reverse_rolling_cart_payment($1,$2)',[coveringPayment,'Incorrect payment entry'])
+  await db.query('select public.reverse_rolling_cart_charge($1,$2)',[chargeId,'Incorrect tray charge'])
+  assert.equal(await balance(),31500)
+  await assert.rejects(db.query('select public.reverse_rolling_cart_charge($1,$2)',[chargeId,'Duplicate correction']),/already reversed/)
   await assert.rejects(db.exec('update public.rolling_cart_loans set balance=0'),/permission denied/)
   await db.exec(`select set_config('request.jwt.claim.sub','${staff}',false);`)
   assert.equal((await db.query('select * from public.rolling_cart_loans')).rows.length,0)
   await assert.rejects(pay(1,randomUUID()),/Owner access required/)
+  await assert.rejects(add('Solar Light',null,1,500,randomUUID()),/Owner access required/)
  } finally { await db.close() }
 })
