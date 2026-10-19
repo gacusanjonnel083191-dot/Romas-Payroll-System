@@ -17,6 +17,7 @@ import ResellerCalculator from './ResellerCalculator.jsx'
 import { getResellerPaymentParts, getResellerPaymentTotal } from './resellerPaymentSplit.js'
 import OutletPerformance from './OutletPerformance.jsx'
 import CrateRollingControl from './CrateRollingControl.jsx'
+import RollingCartLoans from './RollingCartLoans.jsx'
 import OwnerDailyReceipts from './OwnerDailyReceipts.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
 import { fetchResellerReceivables, summarizeResellerReceivables } from './resellerReceivables.js'
@@ -35340,6 +35341,8 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  { key:'crates', icon:'📦', label:'Crates Inventory',
  tabs:[{key:'crates',label:'Crates & Covers'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
+ { key:'cartLoans', icon:'🛒', label:'Rolling Cart Loans',
+ tabs:[{key:'cartLoans',label:'Cart Loans & Payments'}], roles:['owner'] },
  { key:'sops', icon:'\uD83D\uDCD8', label:'SOP Library',
  tabs:[{key:'sops',label:'SOP Control Center'}],
  roles:['owner','manager','hr','supervisor','asst_supervisor'] },
@@ -37378,6 +37381,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  {/* POS MONITOR */}
  {activeTab==='posMonitor' && <PosMonitorPanel adminRole={adminRole} isOwnerRole={isOwnerRole} currentAdminLabel={currentAdminLabel} logAudit={logAudit} />}
+ {activeTab==='cartLoans' && isOwnerRole && <RollingCartLoans supabase={supabase} today={today} />}
 
  {/* DASHBOARD */}
  {/* DYNAMIC_OWNER_COMMAND_CENTER_V2 */}
