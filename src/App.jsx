@@ -18,6 +18,8 @@ import { getResellerPaymentParts, getResellerPaymentTotal } from './resellerPaym
 import OutletPerformance from './OutletPerformance.jsx'
 import CrateRollingControl from './CrateRollingControl.jsx'
 import RollingCartLoans from './RollingCartLoans.jsx'
+import SagsInternalTransfers from './SagsInternalTransfers.jsx'
+import { isSagsTransferSchemaMissing, sagsTransfersAsForecastDeliveries } from './sagsTransferForecast.js'
 import OwnerDailyReceipts from './OwnerDailyReceipts.jsx'
 import ExpenseLedger from './ExpenseLedger.jsx'
 import { fetchResellerReceivables, summarizeResellerReceivables } from './resellerReceivables.js'
@@ -7813,6 +7815,9 @@ export default function App() {
  const [editingDefaultOrder, setEditingDefaultOrder] = useState(null)
  const [defaultOrderItems, setDefaultOrderItems] = useState([])
  const [deliveryInvoices, setDeliveryInvoices] = useState([])
+ const [sagsTransfers, setSagsTransfers] = useState([])
+ const [sagsTransfersAvailable, setSagsTransfersAvailable] = useState(false)
+ const [sagsTransfersLoadError, setSagsTransfersLoadError] = useState('')
  const INVOICE_DELETION_REASON_OPTIONS = [
   ['duplicate_invoice','Duplicate invoice'],
   ['incorrect_customer','Incorrect customer / reseller'],
@@ -8612,7 +8617,7 @@ setRequestingInvoiceDeletion(null)
 
  useEffect(() => {
  const isOwnerSide = adminMode && ['owner','manager'].includes(String(adminRole || '').toLowerCase())
- if (isOwnerSide) loadDeliveryInvoices()
+ if (isOwnerSide) { loadDeliveryInvoices(); loadSagsTransfers() }
  }, [adminMode, adminRole])
 
  useEffect(() => {
@@ -14211,6 +14216,26 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  }
  }
 
+ async function loadSagsTransfers() {
+  setSagsTransfersLoadError('')
+  const rows = []
+  for (let offset = 0; ; offset += 500) {
+   const { data, error } = await supabase.from('sags_internal_transfers')
+    .select('id,transfer_number,delivery_date,status,sags_internal_transfer_items(variant_id,variant_name,quantity)')
+    .order('delivery_date', { ascending:false }).order('id', { ascending:false }).range(offset, offset + 499)
+   if (error) {
+    if (isSagsTransferSchemaMissing(error)) { setSagsTransfersAvailable(false); setSagsTransfers([]); return }
+    console.warn('SAGS production transfer load failed:', error)
+    setSagsTransfersLoadError('SAGS transfers could not be loaded. Refresh before using the production forecast.')
+    return
+   }
+   rows.push(...(data || []))
+   if (!data || data.length < 500) break
+  }
+  setSagsTransfers(rows)
+  setSagsTransfersAvailable(true)
+ }
+
  function getNextMonthStart(monthKey) {
  const clean = String(monthKey || today.slice(0,7)).slice(0, 7)
  const [year, month] = clean.split('-').map(Number)
@@ -14924,6 +14949,11 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  setSavingInvoice(true)
  try {
  const reseller = customerType === 'reseller' ? resellers.find(r => r.id === invoiceResellerId) : null
+ if (sagsTransfersAvailable && reseller && String(reseller.name || '').trim().toLowerCase() === 'sags') {
+ showToast('SAGS is a company outlet. Use SAGS POS → Internal Transfers; no reseller invoice is needed.', 'red')
+ setSavingInvoice(false)
+ return
+ }
 
  if (customerType === 'reseller') {
  // Manual invoice creation must be checked against the actual selected reseller/branch only.
@@ -15192,7 +15222,9 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  }
 
  function getProductionForecastInvoices(invoiceRows = deliveryInvoices, dateValue = forecastDate) {
-  return filterProductionForecastInvoices(invoiceRows, dateValue, productionForecastExcludedInvoiceIds)
+  const sagsResellerId = resellers.find(row => String(row.name || '').trim().toLowerCase() === 'sags')?.id || null
+  const planningRows = [...(invoiceRows || []), ...sagsTransfersAsForecastDeliveries(sagsTransfers, sagsResellerId)]
+  return filterProductionForecastInvoices(planningRows, dateValue, productionForecastExcludedInvoiceIds)
  }
 
  function openInvoiceDeletionCenter() {
@@ -18964,6 +18996,10 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
 
  const approvalOrder = { ...order, ...freshOrder }
+ if (sagsTransfersAvailable && String(resellers.find(r => String(r.id) === String(approvalOrder.reseller_id))?.name || approvalOrder.reseller_name || '').trim().toLowerCase() === 'sags') {
+  showToast('SAGS is a company outlet. Record this delivery under SAGS POS → Internal Transfers.', 'red')
+  return
+ }
  const rawItems = customItems || freshOrder.reseller_order_items || []
  const { items:validItems, duplicates:duplicateOrderRows } = collapseDuplicateOrderItemsByProduct(rawItems)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
@@ -29378,6 +29414,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
     loadPagasaRegion1Weather({ force:forceWeather, silent:true }),
     loadResellers(),
     loadDeliveryInvoices(),
+    loadSagsTransfers(),
     loadProductionForecastExclusions({ silent:true }),
     loadDonutVariants()
    ])
@@ -34495,6 +34532,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
     </div>
    </div>
 
+   <SagsInternalTransfers supabase={supabase} adminRole={adminRole} onReceived={() => loadPosMonitor({ silent:true, forceProducts:true })} />
    {posError && <div style={{ background:'#fff5f5', border:'1px solid #ffd0d0', color:'#8b0000', borderRadius:'12px', padding:'12px', marginBottom:'14px', fontSize:'12px' }}>POS Monitor error: {posError}</div>}
 
    <div style={{ background:'#ffffff', border:`2px solid ${actionableShiftClosingRows.length > 0 ? '#ca1b1b' : '#2d8a4e'}`, borderRadius:'14px', padding:'12px', marginBottom:'12px', boxShadow:'0 2px 10px rgba(26,26,46,0.05)' }}>
@@ -37013,7 +37051,7 @@ function PosMonitorPanel({ adminRole, isOwnerRole, currentAdminLabel, logAudit }
  if(key==='crates') { loadCrateMovements(); loadResellers(); loadDeliveryInvoices() }
  if(key==='costing') { setCostingLoadErrors([]); loadDonutVariants(); loadRecipes(); loadCostSettings(); loadCostProfiles(); loadProductionLogs(); loadInventoryItems() }
  if(key==='schedule') { loadExistingSchedules() }
-if(key==='sales') { setReceivableOutlet(null); setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadProductionForecastExclusions({ silent:true }); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
+if(key==='sales') { setReceivableOutlet(null); setSalesView('dashboard'); loadResellers(); loadResellerAccounts({ silent:true }); loadDeliveryInvoices(); loadSagsTransfers(); loadProductionForecastExclusions({ silent:true }); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadOnlinePayments(); loadDailySalesOnlinePayments(); loadResellerDefaultOrders(); loadDonutVariants(); loadInventoryItems(); loadFinancialData(); loadCashReconciliations(); loadBankDeposits(); loadProductionReports(); loadSuspiciousAlerts(); supabase.from('reseller_disputes').select('*').order('created_at',{ascending:false}).then(({data,error})=>{ if(error) console.warn('reseller_disputes:', error); setResellerDisputes(data||[]) }) }
 if(key==='sales' && (invoiceDeletionAccess.can_request || invoiceDeletionAccess.can_review)) loadInvoiceDeletionRequests({ silent:true })
  if(key==='analytics') { loadDeliveryInvoices(); loadDailySales(); loadDailyExpenses(); loadCompanyPayables(); loadFinancialData() }
  if(key==='returnsMonitor') void loadSherylReturnsMonitor(foundationMonth)
@@ -45578,6 +45616,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  const printForecast = async () => {
  /* PRODUCTION_FORECAST_HALF_LONG_BOND_REFERENCE_V8 */
+ if (sagsTransfersLoadError) { showToast(sagsTransfersLoadError, 'red'); return }
  let node = null
  try {
   const rows = Array.isArray(forecastRows) ? forecastRows : []
@@ -45660,18 +45699,19 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {forecastExcludedInvoices.length} invoice{forecastExcludedInvoices.length!==1?'s are':' is'} excluded from production because deletion approval is pending. If the owner rejects the request, the invoice will return to the forecast automatically.
  </div>
  )}
+ {sagsTransfersLoadError && <p role="alert" style={{ color:'#b91c1c', fontWeight:'bold', fontSize:'12px' }}>{sagsTransfersLoadError} <button type="button" onClick={loadSagsTransfers}>Retry</button></p>}
  {forecastInvoices.length === 0? (
  <div style={{ textAlign:'center', padding:'24px', color:'#aaa' }}>
  <p style={{ fontSize:'32px', margin:'0 0 8px' }}> </p>
  <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#555' }}>No active production invoices for {forecastDate}</p>
- <p style={{ fontSize:'11px', margin:0 }}>{productionForecastExclusionsLoading?'Checking deletion requests...':forecastExcludedInvoices.length>0?'All invoices for this date are pending deletion approval.':'Create invoices with this delivery date and they will automatically appear here.'}</p>
+<p style={{ fontSize:'11px', margin:0 }}>{productionForecastExclusionsLoading?'Checking deletion requests...':forecastExcludedInvoices.length>0?'All invoices for this date are pending deletion approval.':sagsTransfersAvailable?'Create a delivery invoice or SAGS internal transfer for this date to include its pieces here.':'Create a delivery invoice for this date to include its pieces here.'}</p>
  </div>
  ): (
  <div>
  {showForecastVariants? (
  <div>
  <div style={{ display:'flex', gap:'6px', marginBottom:'8px', flexWrap:'wrap' }}>
- <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''}</span>
+ <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{forecastInvoices.length} delivery record{forecastInvoices.length!==1?'s':''}</span>
  <span style={{ background:'#fff9e6', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#ca1b1b', fontWeight:'bold' }}>{forecastRows.length} variant{forecastRows.length!==1?'s':''}</span>
  </div>
  <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
@@ -45700,7 +45740,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  ): forecastInvoices.length > 0? (
  <div style={{ textAlign:'center', padding:'12px', background:'#f8f7f5', borderRadius:'10px', marginTop:'8px' }}>
  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>Variants hidden</p>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''} {totalPieces.toLocaleString()} pcs {totalDryPremixKg} kg</p>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{forecastInvoices.length} delivery record{forecastInvoices.length!==1?'s':''} {totalPieces.toLocaleString()} pcs {totalDryPremixKg} kg</p>
  </div>
  ): null}
  </div>
@@ -46199,7 +46239,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
 <label style={lblS}>Reseller:</label>
 <select value={invoiceResellerId} onChange={async e=>{ setInvoiceResellerId(e.target.value); setInvoiceCopyFromResellerId(e.target.value); await buildInvoiceFromReseller(e.target.value) }} style={inputStyle}>
 <option value="">Select reseller</option>
-{resellers.map(r=>{
+{resellers.filter(r => !sagsTransfersAvailable || String(r.name || '').trim().toLowerCase() !== 'sags').map(r=>{
  const credit = getResellerCreditBlockInfo(r.id)
  return <option key={r.id} value={r.id}>{r.name} {r.area?`(${r.area})`:''}{credit.blocked? ' CREDIT WARNING': ''}</option>
 })}
@@ -47749,7 +47789,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  </select>
  </div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
- <button style={{...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={async ()=>{ setInvoiceResellerId(r.id); await buildInvoiceFromReseller(r.id); setInvoiceCopyFromResellerId(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}> CREATE DELIVERY</button>
+ <button style={{...btnBlack, background:'#2d8a4e', width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={async ()=>{ if (sagsTransfersAvailable && String(r.name || '').trim().toLowerCase() === 'sags') { setActiveTab('posMonitor'); return } setInvoiceResellerId(r.id); await buildInvoiceFromReseller(r.id); setInvoiceCopyFromResellerId(r.id); setSalesView('deliveries'); setShowCreateInvoice(true) }}>{sagsTransfersAvailable && String(r.name || '').trim().toLowerCase() === 'sags' ? 'SAGS INTERNAL TRANSFER' : ' CREATE DELIVERY'}</button>
  <button type="button" style={{...btnYellow, width:'auto', padding:'6px 12px', marginTop:0, fontSize:'11px' }} onClick={(e)=>{ e.preventDefault(); e.stopPropagation(); startEditReseller(r) }}> EDIT</button>
  <button style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'8px', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }} onClick={()=>deleteReseller(r)}> </button>
  </div>
