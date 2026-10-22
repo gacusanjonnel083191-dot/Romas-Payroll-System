@@ -45477,6 +45477,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   'Bavarian Bites': BITE_SIZE_DRY_PREMIX_GRAMS,
   'Choco Lollisticks': 0,
   'Glazed Circlets': 11.7,
+  'M-Puff': 11.7,
   'Cinnamon Rolls': 27,
   'Rings': 27,
   'Shells': 27,
