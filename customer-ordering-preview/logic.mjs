@@ -13,15 +13,20 @@ export function phDate(now = new Date()) {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
-export function availableSlots(date, now = new Date(), leadMinutes = 60) {
+const PREVIEW_HOURS = {days:[0,1,2,3,4,5,6], open:'08:00', close:'17:00'};
+
+export function availableSlots(date, now = new Date(), leadMinutes = 60, hours = PREVIEW_HOURS) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return [];
+  if (!hours || !Array.isArray(hours.days)) return [];
+  const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
+  if (!hours.days.includes(weekday)) return [];
   const slots = [];
-  for (let minutes = 8 * 60; minutes <= 17 * 60; minutes += 30) {
+  for (let minutes = 8 * 60; minutes <= 20 * 60; minutes += 30) {
     const hh = String(Math.floor(minutes / 60)).padStart(2, '0');
     const mm = String(minutes % 60).padStart(2, '0');
     const value = `${hh}:${mm}`;
     const at = new Date(`${date}T${value}:00+08:00`);
-    if (at.getTime() >= now.getTime() + leadMinutes * 60_000) slots.push(value);
+    if (value >= hours.open && value <= hours.close && at.getTime() >= now.getTime() + leadMinutes * 60_000) slots.push(value);
   }
   return slots;
 }

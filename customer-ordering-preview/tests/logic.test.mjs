@@ -2,12 +2,32 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {availableSlots, feeForDistance, cartSubtotal, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS} from '../logic.mjs';
 import {PRODUCTS, findProduct, catalogCards} from '../catalog.mjs';
+import {PICKUP_HOURS} from '../../supabase/functions/public-ordering/rules.mjs';
 
 test('same-day slots respect one-hour lead time and 5 PM close', () => {
   const now = new Date('2026-10-13T15:10:00+08:00');
   assert.deepEqual(availableSlots('2026-10-13', now), ['16:30', '17:00']);
   assert.deepEqual(availableSlots('2026-10-14', now)[0], '08:00');
   assert.deepEqual(availableSlots('2026-10-12', now), []);
+});
+
+test('checkout slots match the four confirmed pickup schedules', () => {
+  const now=new Date('2026-10-15T08:00:00+08:00');
+  const slots=(name,date)=>availableSlots(date,now,60,PICKUP_HOURS[name]);
+  const novo='Dagupan City - Arellano St. (Novo)';
+  const pamma='Dagupan City - Perez Blvd. (PAMMA)';
+  const school='Dagupan City - Malued (St. Albert School)';
+  const gas='Dagupan City - Malued (Centrum Gas)';
+  assert.equal(slots(novo,'2026-10-17')[0],'09:00');
+  assert.equal(slots(novo,'2026-10-17').at(-1),'18:00');
+  assert.deepEqual(slots(novo,'2026-10-18'),[]);
+  assert.equal(slots(pamma,'2026-10-16')[0],'08:00');
+  assert.equal(slots(pamma,'2026-10-16').at(-1),'17:00');
+  assert.deepEqual(slots(pamma,'2026-10-17'),[]);
+  assert.equal(slots(school,'2026-10-17').at(-1),'18:00');
+  assert.deepEqual(slots(school,'2026-10-18'),[]);
+  assert.equal(slots(gas,'2026-10-18').at(-1),'20:00');
+  assert.deepEqual(availableSlots('2026-10-18',now,60,null),[]);
 });
 
 test('approved delivery rate charges each additional started kilometer', () => {

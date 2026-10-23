@@ -1,12 +1,20 @@
 export const DELIVERY_COVERAGE = ['Binmaley', 'Calasiao', 'Dagupan City', 'Mangaldan', 'Santa Barbara'];
 
+// Confirmed customer pickup hours, in Asia/Manila. Sunday is 0.
+export const PICKUP_HOURS = Object.freeze({
+  'Dagupan City - Arellano St. (Novo)': {days:[1,2,3,4,5,6], open:'09:00', close:'18:00', label:'Monday–Saturday, 9:00 AM–6:00 PM'},
+  'Dagupan City - Perez Blvd. (PAMMA)': {days:[1,2,3,4,5], open:'08:00', close:'17:00', label:'Monday–Friday, 8:00 AM–5:00 PM'},
+  'Dagupan City - Malued (St. Albert School)': {days:[1,2,3,4,5,6], open:'09:00', close:'18:00', label:'Monday–Saturday, 9:00 AM–6:00 PM'},
+  'Dagupan City - Malued (Centrum Gas)': {days:[0,1,2,3,4,5,6], open:'08:00', close:'20:00', label:'Daily, 8:00 AM–8:00 PM'},
+});
+
 export function cleanText(value, maxLength) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
 export function validateSchedule(date, time, now = new Date()) {
   if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-  if (typeof time !== 'string' || !/^(0[8-9]|1[0-6]):(00|30)$|^17:00$/.test(time)) return null;
+  if (typeof time !== 'string' || !/^(0[8-9]|1[0-9]):(00|30)$|^20:00$/.test(time)) return null;
   const scheduled = new Date(`${date}T${time}:00+08:00`);
   if (Number.isNaN(scheduled.getTime())) return null;
   const dateInManila = new Intl.DateTimeFormat('en-CA', {
@@ -14,6 +22,15 @@ export function validateSchedule(date, time, now = new Date()) {
   }).format(scheduled);
   if (dateInManila !== date || scheduled.getTime() < now.getTime() + 60 * 60_000) return null;
   return scheduled.toISOString();
+}
+
+export function validatePickupSchedule(locationName, date, time, now = new Date()) {
+  const hours = Object.hasOwn(PICKUP_HOURS, locationName) ? PICKUP_HOURS[locationName] : null;
+  if (!hours) return null;
+  const scheduled = validateSchedule(date, time, now);
+  if (!scheduled) return null;
+  const weekday = new Date(`${date}T12:00:00+08:00`).getUTCDay();
+  return hours.days.includes(weekday) && time >= hours.open && time <= hours.close ? scheduled : null;
 }
 
 export function pricedItems(requested, catalog) {

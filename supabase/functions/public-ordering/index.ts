@@ -2,7 +2,7 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {
-  cleanText, pricedItems, validateSchedule, validAccessToken,
+  cleanText, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
   validPhone, validRequestId,
 } from './rules.mjs'
 
@@ -79,7 +79,10 @@ async function handle(admin: Client, request: Request, body: Body) {
     const {data, error} = await admin.from('customer_pickup_locations')
       .select('name,address').eq('is_active', true).order('name')
     if (error) return reply(503, {ok:false, message:'Ordering configuration is unavailable.'})
-    return reply(200, {ok:true, pickupLocations:data || [], deliveryAvailable:false, orderingEnabled:SUBMISSIONS_ENABLED})
+    const pickupLocations = (data || []).map(location => ({...location,
+      hours:Object.hasOwn(PICKUP_HOURS, location.name) ? PICKUP_HOURS[location.name] : null}))
+      .filter(location => location.hours)
+    return reply(200, {ok:true, pickupLocations, deliveryAvailable:false, orderingEnabled:SUBMISSIONS_ENABLED})
   }
 
   if (action === 'submit') {
@@ -93,12 +96,13 @@ async function handle(admin: Client, request: Request, body: Body) {
     const locationName = cleanText(body.pickupLocation, 120)
     const notes = cleanText(body.notes, 1000)
     const packaging = body.packaging === 'paper_bag' ? 'paper_bag' : 'box'
-    const scheduledAt = validateSchedule(body.date, body.time)
     const priced = pricedItems(body.items, catalog)
-    if (!name || !validPhone(phone) || !scheduledAt || !priced) return reply(422, {ok:false, message:'Check the customer, schedule and order items.'})
+    if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
     const {data: pickup, error: pickupError} = await admin.from('customer_pickup_locations')
       .select('name,address').eq('name', locationName).eq('is_active', true).maybeSingle()
     if (pickupError || !pickup?.address) return reply(422, {ok:false, message:'This pickup point is not available yet.'})
+    const scheduledAt = validatePickupSchedule(pickup.name, body.date, body.time)
+    if (!scheduledAt) return reply(422, {ok:false, message:'Choose a pickup time within this location’s open days and hours.'})
     const dateYear = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Manila', year:'numeric'}).format(new Date())
     const code = `RD-${dateYear}-${crypto.randomUUID().replaceAll('-', '').slice(0,12).toUpperCase()}`
     const {data, error} = await admin.rpc('customer_submit_pickup_order', {

@@ -95,10 +95,11 @@ function deliverySection(){
 }
 function renderCheckout(){
   if(!cartCount()) return `<main class="shell"><div class="page-head"><h1>Your box is empty</h1><p>Add donuts before checking out.</p></div><button class="btn btn-primary" data-nav="shop">Browse the menu</button></main>`;
-  const slots=availableSlots(draft.date);
+  const selectedHours=LIVE_ORDERING?livePickupLocations.find(location=>location.name===draft.branch)?.hours:null;
+  const slots=LIVE_ORDERING?availableSlots(draft.date,new Date(),60,selectedHours||null):availableSlots(draft.date);
   if(!slots.includes(draft.time)) draft.time=slots[0]||'';
   const fulfillment = `<div class="panel"><h3>1. Pickup or delivery</h3><div class="choice-row"><button type="button" class="choice ${draft.type==='pickup'?'active':''}" data-type="pickup">🏬 &nbsp; Pickup<br><small>Collect at a pickup location</small></button><button type="button" class="choice ${draft.type==='delivery'?'active':''}" data-type="delivery" ${LIVE_ORDERING?'disabled':''}>🛵 &nbsp; Delivery<br><small>${LIVE_ORDERING?'Unavailable until routes are verified':'We bring it to you'}</small></button></div>${draft.type==='pickup'?`<div class="field" style="margin-top:17px"><label for="branch">Pickup location</label><select id="branch" data-field="branch" name="branch">${(LIVE_ORDERING?livePickupLocations.map(location=>location.name):PICKUP_LOCATIONS).map(name=>`<option ${draft.branch===name?'selected':''}>${esc(name)}</option>`).join('')}</select><small class="hint">${LIVE_ORDERING?esc(livePickupLocations.find(location=>location.name===draft.branch)?.address||'No verified pickup locations are available yet.'):'Exact branch addresses will appear after Roma’s Donuts configures them.'}</small></div>`:''}</div>`;
-  const schedule = `<div class="panel"><h3>2. Date and time</h3><div class="field-grid"><div class="field"><label for="date">Order date *</label><input id="date" data-field="date" name="date" type="date" min="${phDate()}" value="${esc(draft.date)}" required></div><div class="field"><label for="time">${draft.type==='delivery'?'Delivery':'Pickup'} time *</label><select id="time" data-field="time" name="time" required>${slots.length?slots.map(time=>`<option value="${time}" ${draft.time===time?'selected':''}>${formatTime(time)}</option>`).join(''):'<option value="">No available times — choose another date</option>'}</select></div></div><p class="hint">Available from 8:00 AM–5:00 PM, Philippine time. Same-day orders need at least one hour of notice.</p></div>`;
+  const schedule = `<div class="panel"><h3>2. Date and time</h3><div class="field-grid"><div class="field"><label for="date">Order date *</label><input id="date" data-field="date" name="date" type="date" min="${phDate()}" value="${esc(draft.date)}" required></div><div class="field"><label for="time">${draft.type==='delivery'?'Delivery':'Pickup'} time *</label><select id="time" data-field="time" name="time" required>${slots.length?slots.map(time=>`<option value="${time}" ${draft.time===time?'selected':''}>${formatTime(time)}</option>`).join(''):'<option value="">No available times — choose another date</option>'}</select></div></div><p class="hint">${LIVE_ORDERING?`Pickup hours: ${esc(selectedHours?.label||'unavailable')}.`:'Available from 8:00 AM–5:00 PM, Philippine time.'} Same-day orders need at least one hour of notice.</p></div>`;
   const packaging = `<div class="panel"><h3>3. Packaging</h3>${packagingPicker()}</div>`;
   const details = `<div class="panel"><h3>4. Your details</h3><div class="field-grid">${field('Full name','name','Your name',true)}${field('Mobile number','phone','09XXXXXXXXX',true,'tel')}</div><div class="field"><label for="notes">Notes for the team</label><textarea id="notes" name="notes" data-field="notes" placeholder="Any helpful details?">${esc(draft.notes)}</textarea></div><p class="hint">Payment is due when you receive your order. The team will confirm availability and your requested time.</p></div>`;
   const summary = PRODUCTS.filter(p=>cart[p.id]>0).map(p=>`<div class="summary-line"><span>${esc(p.name)} × ${cart[p.id]} ${esc(p.unitLabel)}</span><strong>${money(p.price*cart[p.id])}</strong></div>`).join('');
@@ -139,6 +140,10 @@ async function submitLiveOrder(form){
   if(!liveOrderingEnabled){error='Customer ordering is not open yet.';render();return;}
   if(!draft.branch||!livePickupLocations.some(location=>location.name===draft.branch)){
     error='No verified pickup location is available yet.';render();return;
+  }
+  const selectedHours=livePickupLocations.find(location=>location.name===draft.branch)?.hours;
+  if(!availableSlots(String(form.get('date')||''),new Date(),60,selectedHours||null).includes(String(form.get('time')||''))){
+    error='Choose an available time during this pickup location’s open days and hours.';render();return;
   }
   liveSubmitting=true;error='';render();
   const pendingKey='romas-pending-order-credential-v1';
