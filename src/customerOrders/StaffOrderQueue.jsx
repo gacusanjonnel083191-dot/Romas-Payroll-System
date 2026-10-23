@@ -65,6 +65,7 @@ export default function StaffOrderQueue() {
   const [orders,setOrders] = useState([])
   const [selectedId,setSelectedId] = useState('')
   const [detail,setDetail] = useState(null)
+  const [detailRefresh,setDetailRefresh] = useState(0)
   const [message,setMessage] = useState('')
   const [statusNote,setStatusNote] = useState('')
   const [error,setError] = useState('')
@@ -84,7 +85,10 @@ export default function StaffOrderQueue() {
     try {
       const result = await call('staff-list')
       setOrders(result.orders)
-      setSelectedId(current=>current || result.orders[0]?.id || '')
+      setSelectedId(current=>result.orders.some(order=>order.id===current)
+        ? current : result.orders[0]?.id || '')
+      setDetail(null)
+      setDetailRefresh(current=>current+1)
       setError('')
     } catch (failure) { setError(failure.message) }
     finally { setLoading(false) }
@@ -94,7 +98,8 @@ export default function StaffOrderQueue() {
     if(!session)return undefined
     let active=true
     call('staff-list').then(result=>{
-      if(active){setOrders(result.orders);setSelectedId(current=>current||result.orders[0]?.id||'')}
+      if(active){setOrders(result.orders);setSelectedId(current=>result.orders.some(order=>order.id===current)
+        ? current : result.orders[0]?.id || '')}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
   },[session])
@@ -105,7 +110,7 @@ export default function StaffOrderQueue() {
       if(active){setDetail(result.order);setError('')}
     }).catch(failure=>{if(active)setError(failure.message)})
     return ()=>{active=false}
-  },[session,selectedId])
+  },[session,selectedId,detailRefresh])
 
   async function updateStatus(status) {
     if (!detail || busy) return
@@ -150,7 +155,7 @@ export default function StaffOrderQueue() {
       <section className="staff-panel staff-list" aria-label="Order queue">
         <h2>Requests {loading && <small>Refreshing…</small>}</h2>
         {orders.length===0 && <p>No customer orders are available.</p>}
-        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setSelectedId(order.id)}}>
+        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
           <strong>{order.order_code}</strong><span>{order.status.replaceAll('_',' ')}</span>
           <small>{order.customer_name} · {when(order.scheduled_at)}</small>
           <small>{order.fulfillment_type} · {money(order.total)}</small>
