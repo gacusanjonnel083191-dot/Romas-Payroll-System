@@ -3,7 +3,7 @@ import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 import {PGlite} from '@electric-sql/pglite'
 
-const migration = await readFile(new URL('../supabase/migrations/20261024003901_secure_online_payment_ledger.sql', import.meta.url), 'utf8')
+const migration = await readFile(new URL('../supabase/migrations/20261024042701_secure_online_payment_ledger.sql', import.meta.url), 'utf8')
 const owner = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const supervisor = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
