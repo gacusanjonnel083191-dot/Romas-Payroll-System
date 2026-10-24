@@ -22,5 +22,6 @@ A refund and reversal workflow is still required before paid cancellations
 can be offered. Staff must also reconcile cash collected at pickup with the
 location's cash handover; the online sale is separate from that location's POS.
 
-This workflow is local code only until the migration and Edge Function are
-approved, applied, and tested in staging. Customer submissions remain disabled.
+The migration and Edge Function were tested in the separate staging project.
+Customer submissions remain disabled. Neither the migration nor the function
+has been applied to production; GitHub and Vercel have not been updated.

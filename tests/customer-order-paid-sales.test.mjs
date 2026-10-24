@@ -3,7 +3,7 @@ import {readFile} from 'node:fs/promises'
 import {test} from 'node:test'
 import {PGlite} from '@electric-sql/pglite'
 
-const migration = await readFile(new URL('../supabase/migrations/20261024001055_customer_order_paid_sales.sql', import.meta.url), 'utf8')
+const migration = await readFile(new URL('../supabase/migrations/20261024002147_customer_order_paid_sales.sql', import.meta.url), 'utf8')
 const actor = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const order = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
