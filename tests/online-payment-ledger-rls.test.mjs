@@ -48,6 +48,7 @@ test('payment ledger denies anonymous access and limits staff to approved sales 
         using (true) with check (true);
       grant usage on schema public to anon, authenticated, service_role;
       grant select, insert, update, delete on public.daily_sales_online_payments to public;
+      grant select, insert, update on public.daily_sales_online_payments to service_role;
     `)
     await db.query('insert into public.admin_users values ($1,$2,null,true),($3,$4,null,true)', [owner, 'owner', supervisor, 'supervisor'])
     await db.exec(migration)
@@ -81,6 +82,10 @@ test('payment ledger denies anonymous access and limits staff to approved sales 
     await db.exec('set role authenticated')
     assert.equal((await db.query('select count(*)::integer as n from public.daily_sales_online_payments')).rows[0].n, 0)
     await assert.rejects(db.query("insert into public.daily_sales_online_payments(amount) values(40)"), /row-level security policy/)
+
+    await db.exec('set role service_role')
+    assert.equal((await db.query('select count(*)::integer as n from public.daily_sales_online_payments')).rows[0].n, 2)
+    await db.query("insert into public.daily_sales_online_payments(amount) values(40)")
   } finally {
     await db.close()
   }
