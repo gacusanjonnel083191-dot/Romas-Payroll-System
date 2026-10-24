@@ -68,6 +68,9 @@ export default function StaffOrderQueue() {
   const [detailRefresh,setDetailRefresh] = useState(0)
   const [message,setMessage] = useState('')
   const [statusNote,setStatusNote] = useState('')
+  const [paymentMethod,setPaymentMethod] = useState('Cash')
+  const [paymentReference,setPaymentReference] = useState('')
+  const [paymentConfirmed,setPaymentConfirmed] = useState(false)
   const [error,setError] = useState('')
   const [busy,setBusy] = useState(false)
   const [loading,setLoading] = useState(false)
@@ -140,6 +143,21 @@ export default function StaffOrderQueue() {
     finally{setBusy(false)}
   }
 
+  async function recordPayment(event) {
+    event.preventDefault()
+    if (!detail || busy || !paymentConfirmed) return
+    setBusy(true);setError('')
+    try {
+      await call('staff-pay',{
+        orderId:detail.id,paymentMethod,
+        referenceNumber:paymentMethod==='Cash'?'':paymentReference.trim(),
+      })
+      setPaymentReference('');setPaymentConfirmed(false)
+      await refresh()
+    } catch(failure){setError(failure.message)}
+    finally{setBusy(false)}
+  }
+
   if (!supabase) return <main className="staff-login"><div className="staff-panel">
     <h1>Customer orders are not configured</h1>
     <p>Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before using this staff page.</p>
@@ -155,7 +173,7 @@ export default function StaffOrderQueue() {
       <section className="staff-panel staff-list" aria-label="Order queue">
         <h2>Requests {loading && <small>Refreshing…</small>}</h2>
         {orders.length===0 && <p>No customer orders are available.</p>}
-        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
+        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPaymentConfirmed(false);setPaymentReference('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
           <strong>{order.order_code}</strong><span>{order.status.replaceAll('_',' ')}</span>
           <small>{order.customer_name} · {when(order.scheduled_at)}</small>
           <small>{order.fulfillment_type} · {money(order.total)}</small>
@@ -177,12 +195,23 @@ export default function StaffOrderQueue() {
           <div className="staff-row"><span>Subtotal</span><strong>{money(detail.subtotal)}</strong></div>
           <div className="staff-row"><span>Delivery</span><strong>{money(detail.delivery_fee)}</strong></div>
           <div className="staff-row staff-total"><span>Total · {detail.payment_status}</span><strong>{money(detail.total)}</strong></div>
+          {detail.paid_at && <p className="staff-hint">Payment recorded {when(detail.paid_at)}. This order is linked to one separate online sale.</p>}
           <h3>Review</h3>
           <label>Review note<input value={statusNote} onChange={event=>setStatusNote(event.target.value)} maxLength={500} /></label>
           <div className="staff-actions">{(ACTIONS[detail.status]||[])
-            .filter(action=>action!=='out_for_delivery'||detail.fulfillment_type==='delivery')
+            .filter(action=>(action!=='out_for_delivery'||detail.fulfillment_type==='delivery')
+              && (action!=='cancelled'||detail.payment_status!=='paid'))
             .map(action=><button key={action} disabled={busy} onClick={()=>void updateStatus(action)}>{action.replaceAll('_',' ')}</button>)}</div>
-          <p className="staff-hint">Completion and payment posting stay unavailable until sales integration is verified.</p>
+          {detail.payment_status==='unpaid' && ['accepted','preparing','ready','completed'].includes(detail.status) && <form className="staff-payment" onSubmit={recordPayment}>
+            <h3>Confirm payment and record online sale</h3>
+            <p className="staff-hint">Record this once, only after receiving and checking the full {money(detail.total)} payment. The sale will appear separately from the outlet POS.</p>
+            <label>Payment method<select value={paymentMethod} onChange={event=>{setPaymentMethod(event.target.value);setPaymentReference('');setPaymentConfirmed(false)}}>
+              {['Cash','GCash','Maya','Bank Transfer','QR PH'].map(method=><option key={method}>{method}</option>)}
+            </select></label>
+            {paymentMethod!=='Cash' && <label>Payment reference<input value={paymentReference} onChange={event=>setPaymentReference(event.target.value)} maxLength={120} required /></label>}
+            <label className="staff-payment-confirm"><input type="checkbox" checked={paymentConfirmed} onChange={event=>setPaymentConfirmed(event.target.checked)} /> I verified receipt of the full payment.</label>
+            <button disabled={busy||!paymentConfirmed||paymentMethod!=='Cash'&&!paymentReference.trim()}>{busy?'Recording…':'Record paid online sale'}</button>
+          </form>}
           <h3>Order chat</h3>
           <div className="staff-messages">{detail.messages.map(item=><div key={item.id}>
             <strong>{item.sender==='staff'?'Roma’s team':'Customer'}</strong> <small>{when(item.created_at)}</small>

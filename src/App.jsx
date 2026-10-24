@@ -14341,9 +14341,10 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  return acc
  }, { total:0, revenueTotal:0, trackingOnly:0, count:0, byMethod:{}, byBucket:{ walkin:0, messenger:0 } })
  summary.gcash = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('gcash')).reduce((sum, [,v])=>sum+v, 0)
+ summary.cash = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase()==='cash').reduce((sum, [,v])=>sum+v, 0)
  summary.bank = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('bank') || m.toLowerCase().includes('online')).reduce((sum, [,v])=>sum+v, 0)
  summary.maya = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('maya')).reduce((sum, [,v])=>sum+v, 0)
- summary.cardQrOther = Math.max(0, summary.total - summary.gcash - summary.bank - summary.maya)
+ summary.cardQrOther = Math.max(0, summary.total - summary.cash - summary.gcash - summary.bank - summary.maya)
  return summary
  }
 
@@ -47294,7 +47295,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
  <div>
  <h3 style={{ color:'#ca1b1b', margin:'0 0 4px', fontSize:'14px' }}> Daily Sales - GCash and Online Payments</h3>
- <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Record non-cash daily sales here. This is for walk-in, Messenger, Facebook, phone, or other daily sales payments — not reseller invoice payments.</p>
+ <p style={{ color:'#777', fontSize:'12px', margin:0 }}>Record non-cash daily sales here. Paid website orders, including cash collected at pickup, appear automatically as separate online sales. Reseller invoice payments are tracked elsewhere.</p>
  </div>
  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
  <button style={{...btnGreen, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={()=>loadDailySalesOnlinePayments()}>{dailySalesOnlinePaymentsLoading?'LOADING...':'REFRESH'}</button>
@@ -47331,10 +47332,11 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <button disabled={savingDailySalesOnlinePayment} style={{...btnGreen, opacity:savingDailySalesOnlinePayment?0.6:1, marginTop:'12px' }} onClick={saveDailySalesOnlinePayment}>{savingDailySalesOnlinePayment?'SAVING...':'SAVE DAILY SALES ONLINE PAYMENT'}</button>
  </div>
 
- <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(5, 1fr)', gap:'10px', marginBottom:'12px' }}>
+ <div style={{ display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(auto-fit, minmax(150px, 1fr))', gap:'10px', marginBottom:'12px' }}>
  <div style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>ONLINE PAYMENTS RECORDED</p><h3 style={{ color:'#ca1b1b', margin:'6px 0 2px' }}>{php(summary.total)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{summary.count} record(s)</p></div>
  <div style={{ background:'#f0fff4', border:'1px solid #2d8a4e33', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>ADDED TO SALES REVENUE</p><h3 style={{ color:'#2d8a4e', margin:'6px 0 2px' }}>{php(summary.revenueTotal)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Walk-in {php(summary.byBucket.walkin || 0)} / Online {php(summary.byBucket.messenger || 0)}</p></div>
  <div style={{ background:'#f0fff4', border:'1px solid #2d8a4e33', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>GCASH</p><h3 style={{ color:'#2d8a4e', margin:'6px 0 2px' }}>{php(summary.gcash)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>{dailySalesOnlinePaymentsMonth}</p></div>
+ <div style={{ background:'#fff8f0', border:'1px solid #dfbf9d', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>CASH</p><h3 style={{ color:'#8b4a14', margin:'6px 0 2px' }}>{php(summary.cash)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Online-order cash receipts</p></div>
  <div style={{ background:'#f8fbff', border:'1px solid #4a90d933', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>BANK / ONLINE TRANSFER</p><h3 style={{ color:'#4a90d9', margin:'6px 0 2px' }}>{php(summary.bank)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Bank-based payments</p></div>
  <div style={{ background:'white', border:'1px solid #eee', borderRadius:'14px', padding:'14px', textAlign:'center' }}><p style={{ color:'#777', fontSize:'10px', margin:0 }}>MAYA / CARD / QR / OTHER</p><h3 style={{ color:'#1a1a2e', margin:'6px 0 2px' }}>{php(summary.maya + summary.cardQrOther)}</h3><p style={{ color:'#888', fontSize:'10px', margin:0 }}>Other non-cash</p></div>
  </div>

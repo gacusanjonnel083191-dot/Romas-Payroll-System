@@ -8,7 +8,7 @@ import {
 
 const STAFF_ROLES = new Set(['owner', 'supervisor', 'asst_supervisor'])
 const SUBMISSIONS_ENABLED = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_ENABLED') === 'true'
-const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
+const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
 
 type Client = ReturnType<typeof createClient<any>>
@@ -132,7 +132,7 @@ async function handle(admin: Client, request: Request, body: Body) {
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
 
-  if (!['staff-list','staff-get','staff-status','staff-message'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
+  if (!['staff-list','staff-get','staff-status','staff-message','staff-pay'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
   const staff = await staffIdentity(admin, request)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
 
@@ -158,6 +158,22 @@ async function handle(admin: Client, request: Request, body: Body) {
     return error || data !== true
       ? reply(409, {ok:false, message:'Status changed or this transition is not allowed.'})
       : reply(200, {ok:true})
+  }
+  if (action === 'staff-pay') {
+    const method = cleanText(body.paymentMethod, 40)
+    const reference = cleanText(body.referenceNumber, 120)
+    if (!['Cash','GCash','Maya','Bank Transfer','QR PH'].includes(method)
+      || (method === 'Cash' && reference)
+      || (method !== 'Cash' && !reference)) {
+      return reply(422, {ok:false, message:'Choose a payment method and enter a digital payment reference when needed.'})
+    }
+    const {data, error} = await admin.rpc('customer_record_paid_sale', {
+      p_order_id:orderId, p_method:method, p_reference:reference || null,
+      p_actor_admin_user_id:staff.id,
+    })
+    return error || !data?.[0]
+      ? reply(409, {ok:false, message:'Payment was not recorded. Refresh the order and check its status and payment details.'})
+      : reply(200, {ok:true, saleId:data[0].sale_id, reused:data[0].reused})
   }
   const message = cleanText(body.message, 500)
   if (!message) return reply(422, {ok:false, message:'Enter a message.'})
