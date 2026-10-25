@@ -46,5 +46,12 @@ production baseline, not in reseller dispatch routes. Staff should avoid
 manually duplicating a website order on a reseller invoice. This forecast
 Edge Function forecast action is deployed to staging as version 9. The main
 app UI is still local and has not been pushed or deployed. The anonymous
-forecast request is blocked in staging; the signed-in staff response still
-needs an end-to-end check. Production customer ordering remains disabled.
+forecast request returned HTTP 403 in staging. A signed-in staging staff
+request for 26 October 2026 returned zero orders and zero items, matching the
+empty staging database. A labeled, unpaid accepted staging order with one
+six-piece Assorted Rings box and one 30-piece Choco Balls box then returned
+one order, two items, and 36 pieces. Its unit prices were ₱150 and ₱180,
+giving a ₱330 subtotal; this was never recorded as a sale. The exact test
+order and its two items were removed, and the same staff action returned zero
+orders and zero pieces again. The temporary test control was removed from
+the staff page. Production customer ordering remains disabled.
