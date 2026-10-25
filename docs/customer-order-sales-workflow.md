@@ -4,6 +4,13 @@ An online pickup request is not revenue. After staff accepts it and confirms
 receipt of the full amount, the staff queue records one separate online sale.
 It does not create an outlet POS receipt or a reseller receivable.
 
+The customer-facing My orders page uses the order code as an unpaid order
+reference. After staff records full payment, it offers a printable customer
+payment receipt with the server-recorded items, total, paid time, and pickup
+details. It refuses to print a paid receipt when the payment status is unpaid
+or the item totals do not match. This receipt does not create or change a
+reseller invoice. The receipt UI is local only and has not been deployed.
+
 The payment screen supports cash, GCash, Maya, bank transfer, and QR PH. Staff
 must enter a transaction reference for digital payments. The sale uses the
 order's server-calculated total and the date of confirmation in Asia/Manila;

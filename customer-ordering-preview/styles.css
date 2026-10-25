@@ -54,3 +54,4 @@
 .box-size-preview:focus-visible{outline:3px solid #f0be35;outline-offset:2px}
 .box-group-card .product-content{min-height:0}
 .box-group-card .qty-editor{margin-top:7px}
+.receipt-action{margin-top:20px;padding:16px;border:1px solid #e7d4c1;border-radius:13px;background:#fff8ed}.receipt-action strong{color:#59191a}.receipt-action p{margin:6px 0 12px}

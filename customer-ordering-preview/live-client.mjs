@@ -33,10 +33,12 @@ export function normalizeLiveOrder(order) {
     date:`${parts.year}-${parts.month}-${parts.day}`, time:`${parts.hour}:${parts.minute}`,
     type:order.fulfillment_type, branch:order.pickup_location, town:order.delivery_municipality,
     address:order.delivery_address, landmark:order.delivery_landmark, pin:null,
-    packaging:order.packaging, status:order.status, subtotal:Number(order.subtotal),
+    packaging:order.packaging, status:order.status, paymentStatus:order.payment_status,
+    paidAt:order.paid_at, pickupAddress:order.pickup_address_snapshot,
+    subtotal:Number(order.subtotal),
     deliveryFee:Number(order.delivery_fee), total:Number(order.total),
     items:order.items.map(item=>({id:item.product_id,name:item.product_name,quantity:item.quantity,
-      unitLabel:item.unit_label,unitPrice:Number(item.unit_price)})),
+      unitLabel:item.unit_label,unitPrice:Number(item.unit_price),lineTotal:Number(item.line_total)})),
     messages:order.messages.map(item=>({id:item.id,from:item.sender,text:item.body,at:item.created_at})),
   };
 }
