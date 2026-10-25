@@ -45589,6 +45589,26 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 
  const printForecast = async () => {
  if (!onlineForecastReady) { showToast('Online orders must load before printing a production order.','red'); return }
+ if (ONLINE_FORECAST_ENABLED) {
+  try {
+   const {data, error} = await supabase.functions.invoke('public-ordering', {body:{action:'staff-forecast', date:forecastDate}})
+   if (error || !data?.ok) throw new Error(data?.message || error?.message || 'Online orders could not be rechecked.')
+   const freshSummary = summarizeAcceptedOnlineOrders(data, forecastDate)
+   const countsMatch = freshSummary.orderCount === onlineSummary?.orderCount
+    && freshSummary.totalPieces === onlineSummary?.totalPieces
+    && Object.keys(freshSummary.piecesByVariant).length === Object.keys(onlineSummary?.piecesByVariant || {}).length
+    && Object.entries(freshSummary.piecesByVariant).every(([name,pieces]) => onlineSummary?.piecesByVariant?.[name] === pieces)
+   if (!countsMatch) {
+    setOnlineForecast({status:'ready', date:forecastDate, summary:freshSummary, error:''})
+    showToast('Online orders changed. Review the updated quantities, then print again.','orange')
+    return
+   }
+  } catch (error) {
+   setOnlineForecast({status:'error', date:forecastDate, summary:null, error:error.message || 'Online orders could not be rechecked.'})
+   showToast('Could not recheck online orders. Printing is paused.','red')
+   return
+  }
+ }
  /* PRODUCTION_FORECAST_HALF_LONG_BOND_REFERENCE_V8 */
  let node = null
  try {

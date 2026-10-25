@@ -38,7 +38,9 @@ Circlets are shown as separate **unallocated** piece lines rather than
 assigned to a flavor. Their existing base-dough premix rates are 27 g and
 11.7 g per piece, respectively. The screen shows invoice and online source
 counts separately and blocks printing when the online count cannot be
-verified. It does not create a reseller invoice from an online order.
+verified. Print rechecks the current online quantities; if they changed,
+staff must review the updated forecast before printing. The connection does
+not create a reseller invoice from an online order.
 
 The weather and route guard below the production baseline still plans
 reseller deliveries only. Pickup orders are represented in the variant
