@@ -8,6 +8,7 @@ import {
  filterProductionForecastInvoices,
  isInvoiceExcludedFromProductionForecastPolicy
 } from './productionForecastPolicy.js'
+import {summarizeAcceptedOnlineOrders} from './customerOrderForecast.js'
 import { Component, useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
@@ -26,8 +27,9 @@ import {
  isApprovedTimeAdjustmentConsumedByReleasedPayroll
 } from './attendancePolicy.js'
 
-const supabaseUrl = 'https://hebbunlnzklavkkugtzs.supabase.co'
-const supabaseKey = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlYmJ1bmxuemtsYXZra3VndHpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMTU5MDgsImV4cCI6MjA5NDU5MTkwOH0.mdgYJBoRvHQcf-Tn-1AbTN-rnB5pPxOCSTxGlUrgJpg`
+const supabaseUrl = import.meta.env.VITE_MAIN_APP_SUPABASE_URL || 'https://hebbunlnzklavkkugtzs.supabase.co'
+const supabaseKey = import.meta.env.VITE_MAIN_APP_SUPABASE_ANON_KEY || `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhlYmJ1bmxuemtsYXZra3VndHpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkwMTU5MDgsImV4cCI6MjA5NDU5MTkwOH0.mdgYJBoRvHQcf-Tn-1AbTN-rnB5pPxOCSTxGlUrgJpg`
+const ONLINE_FORECAST_ENABLED = import.meta.env.VITE_PUBLIC_ORDERING_ENABLED === 'true'
 const supabase = createClient(supabaseUrl, supabaseKey)
 const EMPLOYEE_SELECT_FIELDS = 'id,employee_code,full_name,position,shift_start,shift_end,daily_rate,is_active,created_at,is_admin,has_sss,has_pagibig,has_philhealth,hire_date,sick_leave_balance,vacation_leave_balance,profile_photo_url,pay_type,hourly_rate,grace_period_minutes,date_of_birth,gender,civil_status,home_address,contact_number,emergency_contact_name,emergency_contact_number,employment_type,department,sil_balance,work_location,location_lat,location_lng,location_radius,admin_role,extra_roles,payroll_cost_type,regular_holiday_pay_eligible,special_holiday_pay_eligible,payroll_basis,monthly_salary,semi_monthly_salary,annual_working_days,overtime_pay_eligible,undertime_deduction_applicable,attendance_required_for_pay,absence_deduction_applicable,night_differential_pay_eligible,bank_name,bank_account_number,bank_account_name,strict_camera_timein,sss_no,pagibig_no,philhealth_no,tin_no'
 
@@ -7735,6 +7737,8 @@ export default function App() {
  const [resellerDefaultOrders, setResellerDefaultOrders] = useState({})
  const tomorrowStr = getPHDateOffsetString(1)
  const [forecastDate, setForecastDate] = useState(tomorrowStr)
+ const [onlineForecast, setOnlineForecast] = useState({status:'disabled', date:'', summary:null, error:''})
+ const [onlineForecastRefresh, setOnlineForecastRefresh] = useState(0)
  const [showForecastVariants, setShowForecastVariants] = useState(true)
  const [deliveriesSubTab, setDeliveriesSubTab] = useState('operations')
  const [tomorrowForecastPreparing, setTomorrowForecastPreparing] = useState(false)
@@ -8446,6 +8450,23 @@ export default function App() {
   if (!adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
   loadWeatherGuardData(forecastDate, { silent:true })
  }, [adminMode, activeTab, salesView, forecastDate])
+
+ useEffect(() => {
+  if (!ONLINE_FORECAST_ENABLED || !adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
+  let cancelled = false
+  setOnlineForecast({status:'loading', date:forecastDate, summary:null, error:''})
+  supabase.functions.invoke('public-ordering', {body:{action:'staff-forecast', date:forecastDate}})
+   .then(({data, error}) => {
+    if (cancelled) return
+    if (error || !data?.ok) throw new Error(data?.message || error?.message || 'Online orders could not be loaded.')
+    const summary = summarizeAcceptedOnlineOrders(data, forecastDate)
+    setOnlineForecast({status:'ready', date:forecastDate, summary, error:''})
+   })
+   .catch(error => {
+    if (!cancelled) setOnlineForecast({status:'error', date:forecastDate, summary:null, error:error.message || 'Online orders could not be loaded.'})
+   })
+  return () => { cancelled = true }
+ }, [adminMode, activeTab, salesView, forecastDate, onlineForecastRefresh])
 
  useEffect(() => {
   if (!adminMode || !['sales','tomorrowForecast'].includes(activeTab) || salesView !== 'deliveries') return
@@ -29346,6 +29367,7 @@ async function editCashAdvanceDeductionPlan(ca, req = null) {
   const forceWeather = options.forceWeather !== false
   setTomorrowForecastPreparing(true)
   setForecastDate(targetDate)
+  if (ONLINE_FORECAST_ENABLED) setOnlineForecastRefresh(value=>value+1)
   setSalesView('deliveries')
   setDeliveriesSubTab('operations')
   setShowWeatherGuard(true)
@@ -45412,8 +45434,10 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   'Bavarian Bites': BITE_SIZE_DRY_PREMIX_GRAMS,
   'Choco Lollisticks': 0,
   'Glazed Circlets': 11.7,
+  'Assorted Circlets (unallocated)': 11.7,
   'Cinnamon Rolls': 27,
   'Rings': 27,
+  'Assorted Rings (unallocated)': 27,
   'Shells': 27,
   'Matcha Supreme': 27,
   'Bavarian Midnight': 27,
@@ -45477,6 +45501,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   && isInvoiceExcludedFromProductionForecast(invoice)
  ))
  const forecastInvoices = getProductionForecastInvoices(deliveryInvoices, forecastDate)
+ const onlineForecastReady = !ONLINE_FORECAST_ENABLED || (onlineForecast.status === 'ready' && onlineForecast.date === forecastDate)
+ const onlineSummary = ONLINE_FORECAST_ENABLED && onlineForecastReady ? onlineForecast.summary : null
  const forecastMap = {}
 
  forecastInvoices.forEach(inv => {
@@ -45489,12 +45515,22 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
     forecastMap[key] = {
      variant_name: variantName,
      variant_id: item.variant_id,
-     total: 0
+     total: 0,
+     invoicePieces: 0,
+     onlinePieces: 0
     }
    }
 
    forecastMap[key].total = safeNum(forecastMap[key].total, 0) + safeNum(item.quantity, 0)
+   forecastMap[key].invoicePieces += safeNum(item.quantity, 0)
   })
+ })
+
+ Object.entries(onlineSummary?.piecesByVariant || {}).forEach(([variantName, pieces]) => {
+  const key = forecastNameKey(variantName)
+  if (!forecastMap[key]) forecastMap[key] = {variant_name:variantName, total:0, invoicePieces:0, onlinePieces:0}
+  forecastMap[key].total += pieces
+  forecastMap[key].onlinePieces += pieces
  })
 
  let forecastRows = Object.values(forecastMap)
@@ -45545,11 +45581,14 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   })
   .sort(compareDonutVariantRowsByGuide)
 
+ const invoicePieces = safeNum(forecastRows.reduce((s,r)=>s+safeNum(r.invoicePieces,0),0),0)
+ const onlinePieces = safeNum(onlineSummary?.totalPieces,0)
  const totalPieces = safeNum((forecastRows || []).reduce((s,r)=>s+getForecastRowTotal(r),0),0)
  const totalDryPremixG = safeNum((forecastRows || []).reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0),0)
  const totalDryPremixKg = (safeNum(totalDryPremixG,0)/1000).toFixed(2)
 
  const printForecast = async () => {
+ if (!onlineForecastReady) { showToast('Online orders must load before printing a production order.','red'); return }
  /* PRODUCTION_FORECAST_HALF_LONG_BOND_REFERENCE_V8 */
  let node = null
  try {
@@ -45566,7 +45605,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   node.innerHTML = '<div style="width:1300px;height:1700px;padding:42px 54px 34px;background:#fff;color:#171717;font-family:Arial,sans-serif;box-sizing:border-box;display:flex;flex-direction:column">'+
    '<div style="display:flex;justify-content:space-between;border-bottom:4px solid #d91c1c;padding-bottom:11px;margin-bottom:14px"><div><div style="font-size:34px;font-weight:900;color:#d91c1c">Roma\'s Donuts</div><div style="font-size:14px;margin-top:6px;font-weight:700">Delivery Date: '+esc(dateText)+'</div></div><div style="font-size:26px;font-weight:900;color:#d91c1c">PRODUCTION ORDER</div></div>'+
    '<div style="border:3px solid #178b3d;border-radius:12px;padding:13px;text-align:center;background:#f0faf2;margin-bottom:11px"><div style="font-size:58px;line-height:1;font-weight:900;color:#178b3d">'+esc(totalDryPremixKg)+' KG</div></div>'+
-   '<div style="border:2px solid #e22;border-radius:9px;padding:6px;text-align:center;margin-bottom:11px"><div style="font-size:12px;font-weight:700">TOTAL PIECES</div><div style="font-size:38px;line-height:1;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+' pcs</div></div>'+
+   '<div style="border:2px solid #e22;border-radius:9px;padding:6px;text-align:center;margin-bottom:11px"><div style="font-size:12px;font-weight:700">TOTAL PIECES (INVOICES '+fmt(invoicePieces)+' + ONLINE '+fmt(onlinePieces)+')</div><div style="font-size:38px;line-height:1;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+' pcs</div></div>'+
    '<table style="width:86%;margin:0 auto;border-collapse:collapse;table-layout:fixed;font-size:22px"><thead><tr><th style="text-align:left;background:#d91c1c;color:white;padding:10px 14px;width:68%">VARIANT</th><th style="text-align:right;background:#d91c1c;color:white;padding:10px 14px;width:32%">PIECES</th></tr></thead><tbody>'+rowHtml+'</tbody><tfoot><tr><td style="border-top:3px solid #d91c1c;padding:8px 9px;font-weight:900">TOTAL</td><td style="border-top:3px solid #d91c1c;padding:8px 9px;text-align:right;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+'</td></tr></tfoot></table>'+
    '<div style="margin-top:28px;padding-top:18px;border-top:2px solid #888;display:flex;justify-content:space-between;font-size:12px;font-weight:700"><span>Prepared by: __________________</span><span>Checked by: __________________</span></div></div>'
   document.body.appendChild(node)
@@ -45605,8 +45644,8 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div style={{ background:'white', border:'2px solid #ca1b1b', borderRadius:'14px', padding:'16px', marginBottom:'16px' }}>
  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'8px', marginBottom:'12px' }}>
  <div>
- <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}> Invoice Production Baseline</h3>
- <p style={{ color:'#888', fontSize:'11px', margin:0 }}>Exact product quantities and dry premix requirement from active invoices for the selected delivery date. Invoices with pending deletion requests are excluded immediately.</p>
+ <h3 style={{ color:'#ca1b1b', margin:'0 0 2px', fontSize:'14px' }}> Production Forecast</h3>
+ <p style={{ color:'#888', fontSize:'11px', margin:0 }}>{ONLINE_FORECAST_ENABLED?'Active reseller invoices and accepted online orders scheduled for this date. Pending, declined, and cancelled online orders are excluded. Assorted boxes remain unallocated by flavor.':'Active reseller invoices for this date. Online ordering is not connected in this environment.'} Invoices with pending deletion requests are excluded immediately.</p>
  </div>
  <div style={{ display:'flex', gap:'8px', alignItems:'flex-end', flexWrap:'wrap' }}>
  <div>
@@ -45614,29 +45653,32 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <input type="date" value={forecastDate} onChange={e=>setForecastDate(e.target.value)} style={{...inputStyle, marginBottom:0, width:'150px', fontSize:'12px', padding:'6px 10px' }} />
  </div>
  <div style={{ background:'#fff9e6', border:'1px solid #ca1b1b', borderRadius:'8px', padding:'6px 14px', textAlign:'center' }}>
- <p style={{ color:'#888', fontSize:'10px', margin:'0 0 1px' }}>Total Pieces</p>
+ <p style={{ color:'#888', fontSize:'10px', margin:'0 0 1px' }}>{onlineForecastReady?'Total Pieces':'Invoice Pieces (Online Pending)'}</p>
  <p style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'20px', margin:0 }}>{totalPieces.toLocaleString()}</p>
  </div>
  <div style={{ background:'#e8f5e9', border:'2px solid #2d8a4e', borderRadius:'12px', padding:'14px', textAlign:'center', marginTop:'12px' }}>
- <p style={{ color:'#2d8a4e', fontSize:'11px', fontWeight:'bold', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'1px' }}>Total Dry Premix to Knead Tonight</p>
+ <p style={{ color:'#2d8a4e', fontSize:'11px', fontWeight:'bold', margin:'0 0 4px', textTransform:'uppercase', letterSpacing:'1px' }}>{onlineForecastReady?'Total Dry Premix to Knead Tonight':'Invoice Dry Premix (Online Pending)'}</p>
  <p style={{ color:'#2d8a4e', fontSize:'42px', fontWeight:'bold', margin:'0 0 2px', lineHeight:1 }}>{totalDryPremixKg}</p>
  <p style={{ color:'#2d8a4e', fontSize:'16px', fontWeight:'bold', margin:0 }}>kilograms</p>
  </div>
- <button style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={printForecast}> PRINT</button>
+ {ONLINE_FORECAST_ENABLED && <button style={{...btnGray, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px' }} onClick={()=>setOnlineForecastRefresh(value=>value+1)}>REFRESH ONLINE</button>}
+ <button disabled={!onlineForecastReady} style={{...btnRed, width:'auto', padding:'8px 14px', marginTop:0, fontSize:'12px', opacity:onlineForecastReady?1:0.5 }} onClick={printForecast}> PRINT</button>
  <button style={{ background:showForecastVariants?'#f4f4f4':'#1a1a2e', color:showForecastVariants?'#555':'white', border:'none', borderRadius:'10px', padding:'8px 14px', cursor:'pointer', fontWeight:'bold', fontSize:'12px', marginTop:0 }} onClick={()=>setShowForecastVariants(v=>!v)}>
  {showForecastVariants? ' HIDE VARIANTS': ' SHOW VARIANTS'}
  </button>
  </div>
  </div>
+ {ONLINE_FORECAST_ENABLED && !onlineForecastReady && <div role="alert" style={{ background:'#fff3e0', border:'1px solid #df8c20', borderRadius:'8px', padding:'9px', marginBottom:'10px', color:'#6b3b00', fontSize:'12px' }}>{onlineForecast.status==='error' ? `Online orders could not be verified: ${onlineForecast.error}` : 'Loading accepted online orders. Printing is paused until the count is verified.'}</div>}
+ {ONLINE_FORECAST_ENABLED && onlineForecastReady && <div style={{ fontSize:'11px', fontWeight:'bold', marginBottom:'10px', color:'#555' }}>Source totals: reseller invoices {invoicePieces.toLocaleString('en-PH')} pcs · accepted online orders {onlinePieces.toLocaleString('en-PH')} pcs. Do not also enter website orders as reseller invoices.</div>}
  {forecastExcludedInvoices.length > 0 && (
  <div style={{ background:'#fff8dc', border:'1px solid #f5c518', borderRadius:'9px', padding:'9px 11px', marginBottom:'10px', color:'#7a4d00', fontSize:'11px', fontWeight:'800' }}>
  {forecastExcludedInvoices.length} invoice{forecastExcludedInvoices.length!==1?'s are':' is'} excluded from production because deletion approval is pending. If the owner rejects the request, the invoice will return to the forecast automatically.
  </div>
  )}
- {forecastInvoices.length === 0? (
+ {forecastInvoices.length === 0 && (!onlineSummary || onlineSummary.orderCount === 0)? (
  <div style={{ textAlign:'center', padding:'24px', color:'#aaa' }}>
  <p style={{ fontSize:'32px', margin:'0 0 8px' }}> </p>
- <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#555' }}>No active production invoices for {forecastDate}</p>
+ <p style={{ fontWeight:'bold', fontSize:'13px', margin:'0 0 4px', color:'#555' }}>{ONLINE_FORECAST_ENABLED?'No active invoices or accepted online orders':'No active production invoices'} for {forecastDate}</p>
  <p style={{ fontSize:'11px', margin:0 }}>{productionForecastExclusionsLoading?'Checking deletion requests...':forecastExcludedInvoices.length>0?'All invoices for this date are pending deletion approval.':'Create invoices with this delivery date and they will automatically appear here.'}</p>
  </div>
  ): (
@@ -45645,6 +45687,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <div>
  <div style={{ display:'flex', gap:'6px', marginBottom:'8px', flexWrap:'wrap' }}>
  <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''}</span>
+ {ONLINE_FORECAST_ENABLED && <span style={{ background:'#e8f5e9', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#2d8a4e', fontWeight:'bold' }}>{onlineSummary?.orderCount || 0} accepted online order{onlineSummary?.orderCount===1?'':'s'}</span>}
  <span style={{ background:'#fff9e6', borderRadius:'6px', padding:'3px 10px', fontSize:'11px', color:'#ca1b1b', fontWeight:'bold' }}>{forecastRows.length} variant{forecastRows.length!==1?'s':''}</span>
  </div>
  <div style={{ border:'1px solid #eee', borderRadius:'8px', overflow:'hidden' }}>
@@ -45657,7 +45700,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  const kg = (grams/1000).toFixed(2)
  return (
  <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
- <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}</span>
+ <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}{ONLINE_FORECAST_ENABLED && <small style={{ display:'block', color:'#777', fontWeight:'normal' }}>Invoice {safeNum(r.invoicePieces,0).toLocaleString('en-PH')} · Online {safeNum(r.onlinePieces,0).toLocaleString('en-PH')}</small>}</span>
  <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</span>
  <span style={{ textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</span>
  </div>
@@ -45670,10 +45713,10 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </div>
  </div>
  </div>
- ): forecastInvoices.length > 0? (
+ ): forecastInvoices.length > 0 || (onlineSummary?.orderCount || 0) > 0? (
  <div style={{ textAlign:'center', padding:'12px', background:'#f8f7f5', borderRadius:'10px', marginTop:'8px' }}>
  <p style={{ color:'#888', fontSize:'11px', margin:'0 0 4px' }}>Variants hidden</p>
- <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''} {totalPieces.toLocaleString()} pcs {totalDryPremixKg} kg</p>
+ <p style={{ color:'#ca1b1b', fontWeight:'bold', fontSize:'13px', margin:0 }}>{forecastInvoices.length} invoice{forecastInvoices.length!==1?'s':''} + {onlineSummary?.orderCount || 0} online order{onlineSummary?.orderCount===1?'':'s'} · {totalPieces.toLocaleString()} pcs · {totalDryPremixKg} kg</p>
  </div>
  ): null}
  </div>

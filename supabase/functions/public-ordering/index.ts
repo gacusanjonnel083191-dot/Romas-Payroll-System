@@ -7,6 +7,7 @@ import {
 } from './rules.mjs'
 
 const STAFF_ROLES = new Set(['owner', 'supervisor', 'asst_supervisor'])
+const FORECAST_ROLES = new Set(['owner', 'manager', 'supervisor', 'asst_supervisor'])
 const SUBMISSIONS_ENABLED = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_ENABLED') === 'true'
 const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
@@ -38,7 +39,7 @@ async function sha256(value: string) {
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function staffIdentity(admin: Client, request: Request) {
+async function staffIdentity(admin: Client, request: Request, allowedRoles = STAFF_ROLES) {
   const authorization = request.headers.get('authorization') || ''
   const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
   if (!token) return null
@@ -46,7 +47,7 @@ async function staffIdentity(admin: Client, request: Request) {
   if (userError || !userResult.user) return null
   const {data: staff, error} = await admin.from('admin_users')
     .select('id,role').eq('auth_user_id', userResult.user.id).eq('is_active', true).maybeSingle()
-  if (error || !staff || !STAFF_ROLES.has(String(staff.role).toLowerCase())) return null
+  if (error || !staff || !allowedRoles.has(String(staff.role).toLowerCase())) return null
   return staff
 }
 
@@ -132,9 +133,33 @@ async function handle(admin: Client, request: Request, body: Body) {
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
 
-  if (!['staff-list','staff-get','staff-status','staff-message','staff-pay'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
-  const staff = await staffIdentity(admin, request)
+  if (!['staff-list','staff-get','staff-status','staff-message','staff-pay','staff-forecast'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
+  const staff = await staffIdentity(admin, request, action === 'staff-forecast' ? FORECAST_ROLES : STAFF_ROLES)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
+
+  if (action === 'staff-forecast') {
+    const date = cleanText(body.date, 10)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || new Date(`${date}T00:00:00Z`).toISOString().slice(0,10) !== date) {
+      return reply(400, {ok:false, message:'Choose a valid production date.'})
+    }
+    const nextDate = new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0,10)
+    const {data:orders, error:orderError} = await admin.from('customer_orders')
+      .select('id,order_code,status,scheduled_at')
+      .in('status', ['accepted','preparing','ready','out_for_delivery','completed'])
+      .gte('scheduled_at', `${date}T00:00:00+08:00`)
+      .lt('scheduled_at', `${nextDate}T00:00:00+08:00`)
+      .order('id').limit(501)
+    if (orderError || !orders || orders.length > 500) return reply(503, {ok:false, message:'Online forecast is unavailable or exceeds its safe order limit.'})
+    const items = []
+    for (let offset = 0; offset < orders.length; offset += 25) {
+      const ids = orders.slice(offset, offset + 25).map(order => order.id)
+      const {data:batch, error:itemError} = await admin.from('customer_order_items')
+        .select('order_id,product_id,product_name,quantity,pieces_per_unit').in('order_id', ids).limit(1001)
+      if (itemError || !batch || batch.length > 1000) return reply(503, {ok:false, message:'Online forecast items are unavailable or exceed their safe limit.'})
+      items.push(...batch)
+    }
+    return reply(200, {ok:true, date, orders, items})
+  }
 
   if (action === 'staff-list') {
     const {data, error} = await admin.from('customer_orders').select(ORDER_FIELDS)
