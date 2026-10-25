@@ -35,6 +35,10 @@ export function normalizeLiveOrder(order) {
     address:order.delivery_address, landmark:order.delivery_landmark, pin:null,
     packaging:order.packaging, status:order.status, paymentStatus:order.payment_status,
     paidAt:order.paid_at, pickupAddress:order.pickup_address_snapshot,
+    receipt:order.receipt ? {
+      saleId:order.receipt.sale_id, paymentMethod:order.receipt.payment_method,
+      referenceNumber:order.receipt.reference_number, amount:Number(order.receipt.amount),
+    } : null,
     subtotal:Number(order.subtotal),
     deliveryFee:Number(order.delivery_fee), total:Number(order.total),
     items:order.items.map(item=>({id:item.product_id,name:item.product_name,quantity:item.quantity,

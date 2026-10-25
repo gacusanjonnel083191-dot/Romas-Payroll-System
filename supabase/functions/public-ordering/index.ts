@@ -58,7 +58,18 @@ async function orderDetail(admin: Client, orderId: string) {
     admin.from('customer_order_messages').select('id,sender,body,created_at').eq('order_id', orderId).order('created_at'),
   ])
   if (orderError || itemError || messageError || !order) return null
-  return {...order, items: items || [], messages: messages || []}
+  let receipt = null
+  if (order.payment_status === 'paid') {
+    const {data: sale, error: saleError} = await admin.from('daily_sales_online_payments')
+      .select('id,payment_method,reference_number,amount,status')
+      .eq('customer_order_id', orderId).maybeSingle()
+    if (saleError) return null
+    if (sale?.status === 'active' && Number(sale.amount) === Number(order.total)) {
+      receipt = {sale_id:sale.id, payment_method:sale.payment_method,
+        reference_number:sale.reference_number, amount:sale.amount}
+    }
+  }
+  return {...order, items: items || [], messages: messages || [], receipt}
 }
 
 async function customerOrder(admin: Client, body: Body) {

@@ -7,8 +7,10 @@ It does not create an outlet POS receipt or a reseller receivable.
 The customer-facing My orders page uses the order code as an unpaid order
 reference. After staff records full payment, it offers a printable customer
 payment receipt with the server-recorded items, total, paid time, and pickup
-details. It refuses to print a paid receipt when the payment status is unpaid
-or the item totals do not match. This receipt does not create or change a
+details. The Edge Function checks the linked active online sale and returns
+its sale ID, amount, payment method, and digital reference to the holder of
+the private order token. It refuses to print when there is no matching sale,
+the payment status is unpaid, or the item totals do not match. This receipt does not create or change a
 reseller invoice. The receipt UI is local only and has not been deployed.
 
 The payment screen supports cash, GCash, Maya, bank transfer, and QR PH. Staff

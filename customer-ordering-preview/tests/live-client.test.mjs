@@ -17,4 +17,20 @@ test('server order maps to the existing customer receipt view',()=>{
   assert.equal(value.items[0].unitPrice,25);
   assert.equal(value.items[0].lineTotal,25);
   assert.equal(value.paymentStatus,'unpaid');
+  assert.equal(value.receipt,null);
+});
+
+test('paid order retains its linked online sale details',()=>{
+  const value=normalizeLiveOrder({
+    id:'paid-id',order_code:'RD-2026-ABCDEF123456',customer_name:'Customer',customer_phone:'09123456789',
+    scheduled_at:'2026-10-26T02:00:00.000Z',fulfillment_type:'pickup',pickup_location:'Arellano St.',
+    pickup_address_snapshot:'In front of Novo',packaging:'box',status:'accepted',payment_status:'paid',
+    paid_at:'2026-10-25T02:00:00Z',subtotal:'150.00',delivery_fee:'0.00',total:'150.00',
+    receipt:{sale_id:'11111111-2222-4333-8444-555555555555',payment_method:'Cash',reference_number:null,amount:'150.00'},
+    items:[{product_id:'assorted-rings-6',product_name:'Assorted Rings',quantity:1,unit_label:'box',unit_price:'150.00',line_total:'150.00'}],
+    messages:[],
+  });
+  assert.equal(value.receipt.saleId,'11111111-2222-4333-8444-555555555555');
+  assert.equal(value.receipt.paymentMethod,'Cash');
+  assert.equal(value.receipt.amount,150);
 });
