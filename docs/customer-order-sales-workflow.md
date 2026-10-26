@@ -40,10 +40,13 @@ labels reversal rows and nets their negative amount into the refund date's
 revenue. Staff must still reconcile cash returned at pickup with that
 location's cash handover.
 
-The refund migration, function action, staff form, customer confirmation,
-and main-app refund labels are local only. They have passed local database,
-receipt, and build checks, but have not been applied or deployed to staging
-or production. Staging still runs the prior paid-sale workflow.
+Refund migration `20261026004529_customer_order_refunds.sql` and the updated
+`public-ordering` function (staging version 11) are applied to the separate
+staging project. A synthetic payment/refund transaction verified the reversal,
+retry protection, cancellation, and zero net revenue, then rolled back; no
+test order or sale remains. The staff form, customer confirmation, and main-app
+refund labels remain local. None of this refund work has been applied to
+production, GitHub, or Vercel.
 
 The migration and Edge Function were tested in the separate staging project.
 Customer submissions remain disabled. Neither the migration nor the function

@@ -4,7 +4,7 @@ import {test} from 'node:test'
 import {PGlite} from '@electric-sql/pglite'
 
 const paidMigration = await readFile(new URL('../supabase/migrations/20261024002147_customer_order_paid_sales.sql', import.meta.url), 'utf8')
-const refundMigration = await readFile(new URL('../supabase/migrations/20261026090000_customer_order_refunds.sql', import.meta.url), 'utf8')
+const refundMigration = await readFile(new URL('../supabase/migrations/20261026004529_customer_order_refunds.sql', import.meta.url), 'utf8')
 const actor = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const order = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
 
