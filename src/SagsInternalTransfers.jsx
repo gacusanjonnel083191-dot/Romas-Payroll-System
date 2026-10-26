@@ -1,3 +1,4 @@
+import { seasonalBoxFor } from './seasonalBoxPolicy.js'
 import { useCallback, useState } from 'react'
 import { isSagsTransferSchemaMissing } from './sagsTransferForecast.js'
 
@@ -31,8 +32,8 @@ export default function SagsInternalTransfers({ supabase, adminRole, onReceived 
   const refresh = useCallback(async () => {
     const [transferResult, variantResult, productResult] = await Promise.all([
       supabase.from('sags_internal_transfers').select('*,sags_internal_transfer_items(*)').order('delivery_date', { ascending:false }).order('created_at', { ascending:false }).limit(100),
-      supabase.from('donut_variants').select('id,name').order('name'),
-      supabase.from('pos_products').select('id,product_name,category,outlet_id').eq('outlet_id', OUTLET_ID).order('product_name')
+      supabase.from('donut_variants').select('id,name').eq('is_active', true).order('name'),
+      supabase.from('pos_products').select('id,product_name,category,outlet_id').eq('is_active', true).eq('outlet_id', OUTLET_ID).order('product_name')
     ])
     if (isSagsTransferSchemaMissing(transferResult.error)) {
       setSchemaAvailable(false)
@@ -78,12 +79,12 @@ export default function SagsInternalTransfers({ supabase, adminRole, onReceived 
     const lines = transfer.sags_internal_transfer_items || []
     const actual = lines.map(line => ({ id:line.id, quantity:Number(actualQty[line.id] ?? line.quantity) }))
     if (actual.some((line, index) => !Number.isSafeInteger(line.quantity) || line.quantity < 0 || line.quantity > Number(lines[index].quantity)) || actual.every(line => line.quantity === 0)) {
-      setError('Enter a whole actual quantity from 0 up to the dispatched pieces for every item. At least one piece must be received.'); return
+      setError('Enter a whole actual quantity from 0 up to the dispatched units for every item. At least one unit must be received.'); return
     }
     const dispatched = lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0)
     const qty = actual.reduce((sum, line) => sum + line.quantity, 0)
     if (qty !== dispatched && receiptNotes.trim().length < 5) { setError('Explain the quantity difference in receipt notes.'); return }
-    if (!window.confirm(`Confirm ${qty} actual pieces received out of ${dispatched} dispatched for ${transfer.transfer_number}? This will add only the actual pieces to SAGS POS stock once.`)) return
+    if (!window.confirm(`Confirm ${qty} actual units received out of ${dispatched} dispatched for ${transfer.transfer_number}? This will add only the actual units to SAGS POS stock once.`)) return
     setError(''); setMessage(''); setBusy(true)
     try {
       const { error:receiveError } = await supabase.rpc('receive_sags_internal_transfer', { p_transfer_id:transfer.id, p_received_by:name, p_actual_items:actual, p_receipt_notes:receiptNotes.trim() })
@@ -102,7 +103,7 @@ export default function SagsInternalTransfers({ supabase, adminRole, onReceived 
     <button type="button" onClick={() => { if (!open) refresh().catch(err => setError(err.message || 'Unable to load SAGS transfers.')); setOpen(value => !value) }} style={{ border:0, background:'transparent', color:'#9b1717', fontWeight:900, fontSize:16, cursor:'pointer', padding:0 }}>
       {open ? '▾' : '▸'} SAGS Internal Transfers
     </button>
-    <p style={{ fontSize:12, color:'#555', margin:'5px 0 0' }}>Record donuts sent to SAGS without a reseller invoice or sales amount. POS records the sale when a customer buys them.</p>
+    <p style={{ fontSize:12, color:'#555', margin:'5px 0 0' }}>Record donuts sent to SAGS without a reseller invoice or sales amount. POS records the sale when a customer buys them. For Spooky Donuts, enter whole boxes; POS stock and sales are counted in boxes, while production expands the contents.</p>
     {open && <div style={{ marginTop:12 }}>
       {error && <p role="alert" style={{ color:'#b91c1c', fontWeight:700 }}>{error}</p>}
       {message && <p role="status" style={{ color:'#166534', fontWeight:700 }}>{message}</p>}
@@ -121,7 +122,7 @@ export default function SagsInternalTransfers({ supabase, adminRole, onReceived 
             updateItem(index, { variant_id:event.target.value, pos_product_id:exact.length === 1 ? exact[0].id : '' })
           }} style={{ ...control, flex:'1 1 170px' }}><option value="">Select donut</option>{variants.map(variant => <option key={variant.id} value={variant.id}>{variant.name}</option>)}</select>
           <select aria-label={`SAGS POS product ${index+1}`} value={item.pos_product_id} onChange={event => updateItem(index, { pos_product_id:event.target.value })} style={{ ...control, flex:'1 1 170px' }}><option value="">Match POS donut</option>{products.map(product => <option key={product.id} value={product.id}>{product.product_name}</option>)}</select>
-          <input aria-label={`Pieces ${index+1}`} type="number" min="1" step="1" placeholder="Pieces" value={item.quantity} onChange={event => updateItem(index, { quantity:event.target.value })} style={{ ...control, width:85 }} />
+          <input aria-label={`${seasonalBoxFor(variants.find(v => v.id === item.variant_id)) ? 'Boxes' : 'Pieces'} ${index+1}`} type="number" min="1" step="1" placeholder={seasonalBoxFor(variants.find(v => v.id === item.variant_id)) ? 'Boxes' : 'Pieces'} value={item.quantity} onChange={event => updateItem(index, { quantity:event.target.value })} style={{ ...control, width:85 }} />
           <button type="button" onClick={() => setItems(current => current.filter((_, at) => at !== index))} disabled={items.length === 1} style={control}>Remove</button>
         </div>)}
         <div style={{ display:'flex', gap:8, alignItems:'center' }}><button type="button" onClick={() => setItems(current => [...current, { variant_id:'', pos_product_id:'', quantity:'' }])} style={control}>Add item</button>
@@ -133,7 +134,7 @@ export default function SagsInternalTransfers({ supabase, adminRole, onReceived 
       {transfers.map(transfer => <div key={transfer.id} style={{ borderTop:'1px solid #eee', padding:'10px 0', fontSize:12 }}>
         <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}><b>{transfer.transfer_number}</b><span>{transfer.delivery_date}</span><b style={{ color:transfer.status === 'received' ? '#166534' : '#9a3412' }}>{transfer.status.toUpperCase()}</b>
           {transfer.status === 'dispatched' && canReceive(adminRole) && <button type="button" disabled={busy} onClick={() => receive(transfer)} style={{ ...control, color:'white', background:'#2d8a4e' }}>Confirm receipt</button>}</div>
-        <p style={{ margin:'5px 0' }}>{(transfer.sags_internal_transfer_items || []).map(line => `${line.variant_name} → ${products.find(product => product.id === line.pos_product_id)?.product_name || line.pos_product_id}: ${line.quantity} pcs`).join(' · ')}</p>
+        <p style={{ margin:'5px 0' }}>{(transfer.sags_internal_transfer_items || []).map(line => `${line.variant_name} → ${products.find(product => product.id === line.pos_product_id)?.product_name || line.pos_product_id}: ${line.quantity} ${seasonalBoxFor(line) ? 'boxes' : 'pcs'}`).join(' · ')}</p>
         {transfer.status === 'dispatched' && canReceive(adminRole) && <div style={{ display:'flex', flexWrap:'wrap', gap:8, margin:'6px 0' }}>
           {(transfer.sags_internal_transfer_items || []).map(line => <label key={line.id}>Actual {line.variant_name} <input type="number" min="0" max={line.quantity} step="1" value={actualQty[line.id] ?? line.quantity} onChange={event => setActualQty(current => ({ ...current, [line.id]:event.target.value }))} style={{ ...control, width:70 }} /></label>)}
           <label>Difference reason <input value={receiptNotes} onChange={event => setReceiptNotes(event.target.value)} placeholder="Required if quantities differ" style={control} /></label>

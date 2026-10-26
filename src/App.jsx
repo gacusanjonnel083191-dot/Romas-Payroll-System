@@ -1,3 +1,4 @@
+import { SEASONAL_BOXES, seasonalBoxFor, assertWholeSeasonalBoxes, physicalDonutQuantity, expandSeasonalProductionItems, seasonalPackingSummary } from './seasonalBoxPolicy.js'
 import { dailyPosClosing } from './posClosingSummary.js'
 import StaffScheduler from './StaffScheduler.jsx'
 import EmployeeSchedule from './EmployeeSchedule.jsx'
@@ -7706,6 +7707,7 @@ export default function App() {
  const [editVariantFields, setEditVariantFields] = useState({})
  const [savingVariantSetupId, setSavingVariantSetupId] = useState(null)
  const DONUT_VARIANTS_DEFAULT = [
+ ...SEASONAL_BOXES.map(box => ({ name:box.name, category:'Seasonal Boxes', selling_price:box.price, pieces_per_batch:1 })),
  { name:'Choco Balls', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Bavarian Bites', category:'Bites', selling_price:7, pieces_per_batch:30 },
  { name:'Bavarian Pops', category:'Bites', selling_price:7, pieces_per_batch:30 },
@@ -7724,7 +7726,7 @@ export default function App() {
  { name:'Lotus Cloud', category:'Premium', selling_price:35, pieces_per_batch:10 },
  { name:'Giant Donut', category:'Giant', selling_price:219, pieces_per_batch:null },
  ]
- const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium','Giant'])
+ const [VARIANT_CATEGORIES] = useState(['Bites','Glaze Circlet','Regular','Filled','Premium','Giant','Seasonal Boxes'])
  // Phase 3: Sales & Resellers 
  const [salesView, setSalesView] = useState('dashboard')
  const [resellers, setResellers] = useState([])
@@ -11550,7 +11552,7 @@ Cancel = create batch record only for existing stock.`)
   return `${source}:${id}`
  }
  function getOutletProductCatalog() {
-  const donutProducts = (donutVariants || []).map(v => ({ source:'donut_variant', product_id:String(v.id || v.name || ''), product_name:v.name || 'Donut Product', product_type:'Donuts', category:v.category || 'Donuts', unit:'pcs', default_price:safeNum(v.reseller_price ?? v.selling_price ?? v.price, 0) }))
+  const donutProducts = (donutVariants || []).map(v => ({ source:'donut_variant', product_id:String(v.id || v.name || ''), product_name:v.name || 'Donut Product', product_type:'Donuts', category:v.category || 'Donuts', unit:seasonalBoxFor(v)?'boxes':'pcs', default_price:safeNum(v.reseller_price ?? v.selling_price ?? v.price, 0) }))
   const snackProducts = (inventoryItems || []).filter(item => isSnackDrinkInventoryItem(item)).map(item => ({ source:'inventory_item', product_id:String(item.id || ''), product_name:item.name || 'Inventory Item', product_type:classifyOutletInventoryProduct(item), category:getInventoryCategoryLabel(item), unit:item.unit || 'pcs', default_price:getSnackDrinkSellingPrice(item) }))
   const seen = new Set()
   return [...donutProducts, ...snackProducts].filter(product => { const key = getOutletProductKey(product); if (!key || seen.has(key)) return false; seen.add(key); return true }).sort((a,b)=>String(a.product_type).localeCompare(String(b.product_type)) || String(a.product_name).localeCompare(String(b.product_name)))
@@ -13134,6 +13136,7 @@ Cancel = create batch record only for existing stock.`)
  async function logProduction() {
   if (!prodDate) { showToast('Please select a date.','red'); return }
   const validEntries = prodEntries.filter(e => e.variant_id && Number(e.pieces) > 0)
+  if (validEntries.some(e => seasonalBoxFor(donutVariants.find(v => v.id === e.variant_id)))) { showToast('Log the Shells and Rings from the production forecast once. Seasonal boxes are packing/sales units.', 'red'); return }
   if (validEntries.length === 0) { showToast('Please add at least one production entry.','red'); return }
   const previewEntries = validEntries.map(e => {
    const variant = donutVariants.find(v => String(v.id) === String(e.variant_id))
@@ -14936,6 +14939,7 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  }
 
  const validItems = invoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
+ try { assertWholeSeasonalBoxes(validItems) } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length === 0) { showToast('Please add at least one item with quantity.','red'); return }
  try { wholeCrateQuantity(invoiceCrates, 'Crates Used') } catch (validationError) { showToast(validationError.message,'red'); return }
 
@@ -15079,6 +15083,7 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  return
  }
  const validItems = editInvoiceItems.filter(i => i.variant_id && Number(i.quantity) > 0)
+ try { assertWholeSeasonalBoxes(validItems) } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length === 0) { showToast(' Please add at least one item.','red'); return }
  try { wholeCrateQuantity(editingInvoice.crates_used, 'Crates Used') } catch (validationError) { showToast(validationError.message,'red'); return }
  setSavingEditInvoice(true)
@@ -15224,7 +15229,11 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  function getProductionForecastInvoices(invoiceRows = deliveryInvoices, dateValue = forecastDate) {
   const sagsResellerId = resellers.find(row => String(row.name || '').trim().toLowerCase() === 'sags')?.id || null
   const planningRows = [...(invoiceRows || []), ...sagsTransfersAsForecastDeliveries(sagsTransfers, sagsResellerId)]
-  return filterProductionForecastInvoices(planningRows, dateValue, productionForecastExcludedInvoiceIds)
+  return filterProductionForecastInvoices(planningRows, dateValue, productionForecastExcludedInvoiceIds).map(invoice => ({
+   ...invoice,
+   seasonal_box_items:invoice.delivery_invoice_items || [],
+   delivery_invoice_items:expandSeasonalProductionItems(invoice.delivery_invoice_items || [], donutVariants)
+  }))
  }
 
  function openInvoiceDeletionCenter() {
@@ -15731,7 +15740,8 @@ function buildDeliveryInvoicePrintCSS() {
       { label:'Biscoreo', aliases:['Biscoreo'] },
       { label:'Choco Lollisticks', aliases:['Choco Lollisticks', 'Choco Lollistick', 'Choco Lollistiks'] },
       { label:'M-Puff', aliases:['M-Puff'] },
-      { label:'Giant Donut', aliases:['Giant Donut'] }
+      { label:'Giant Donut', aliases:['Giant Donut'] },
+      ...SEASONAL_BOXES.map(box => ({ label:box.printLabel, aliases:[box.name] }))
     ];
 
   function sortDeliveryInvoiceItems(items) {
@@ -15817,6 +15827,7 @@ function buildDeliveryInvoicePrintCSS() {
       normalizeDonutVariantName(item?.variant_name || item?.product_name || item?.name || '')
     ));
     return DELIVERY_INVOICE_PRODUCT_ORDER.filter(row => {
+      if (seasonalBoxFor(row.label)) return row.aliases.some(name => present.has(normalizeDonutVariantName(name)));
       if (!retired.has(normalizeDonutVariantName(row.label))) return true;
       return (row.aliases || [row.label]).some(alias => present.has(normalizeDonutVariantName(alias)));
     });
@@ -16977,6 +16988,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  async function saveDailySales() {
  if (!salesDate) { showToast(' Please select a date.','red'); return }
  const valid = salesEntries.filter(e => e.variant_id && Number(e.quantity) > 0)
+ try { assertWholeSeasonalBoxes(valid.map(row => ({ ...row, variant_name:row.variant_name || donutVariants.find(v=>v.id===row.variant_id)?.name }))) } catch (error) { showToast(error.message, 'red'); return }
  const validOtherSales = otherSalesEntries.filter(e => e.category && Number(e.amount) > 0)
  if (valid.length === 0 && validOtherSales.length === 0) {
  showToast(' Please add at least one donut sale or other sale entry.','red')
@@ -17096,7 +17108,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  }
  async function initProductionReport(deliveryDate) {
  // Load forecast from invoices for delivery date
- const forecastInvoices = deliveryInvoices.filter(i=>i.delivery_date===deliveryDate)
+ const forecastInvoices = getProductionForecastInvoices(deliveryInvoices, deliveryDate)
  const forecastMap = {}
  forecastInvoices.forEach(inv=>{
 ;(inv.delivery_invoice_items||[]).forEach(item=>{
@@ -17112,7 +17124,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
   supabase.from('recipe_vault').select('id,recipe_code,product_name,linked_variant_id,status,cost_per_piece,batch_cost,batch_yield_pieces,updated_at,created_at')
  ])
  if (Array.isArray(recipesForCost) && (!recipeVault || recipeVault.length === 0)) setRecipeVault(recipesForCost)
- const variantItems = sortDonutVariantsByGuide(variants||[]).map(v=>{ const existing = items.find(i=>i.variant_id===v.id); return existing || { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
+ const variantItems = sortDonutVariantsByGuide(variants||[]).filter(v=>!seasonalBoxFor(v)).map(v=>{ const existing = items.find(i=>i.variant_id===v.id || i.variant_name===v.name); return existing ? {...existing, variant_id:v.id} : { variant_id:v.id, variant_name:v.name, forecast_qty:0, actual_qty:'', variance_reason:'' } })
  setProductionReportItems(variantItems)
  setProductionReportDeliveryDate(deliveryDate)
  setShowProductionReport(true)
@@ -17540,6 +17552,11 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
 
  async function saveInvoiceSettlement(inv) {
  if (settlementSavingRef.current.has(inv.id)) return
+ try {
+  const boxRows = settlementRows[inv.id] || buildInvoiceSettlementRows(inv)
+  assertWholeSeasonalBoxes(boxRows, 'actual_quantity')
+  assertWholeSeasonalBoxes(boxRows, 'returned_quantity')
+ } catch (error) { showToast(error.message, 'red'); return }
  const rows = (settlementRows[inv.id] || buildInvoiceSettlementRows(inv)).map(row => {
  const actual = Math.max(0, safeNum(row.actual_quantity, 0))
  const returned = Math.min(actual, Math.max(0, safeNum(row.returned_quantity, 0)))
@@ -17957,6 +17974,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  async function saveReturn(invoice) {
  const items = returnItems[invoice.id]||[]
  const validItems = items.filter(i=>Number(i.returned_qty)>0)
+ try { assertWholeSeasonalBoxes(validItems, 'returned_qty') } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length===0) { showToast(' Enter at least one returned quantity.','red'); return }
  for (const item of validItems) {
  if (Number(item.returned_qty) > item.delivered_qty) { showToast(` ${item.variant_name}: returned qty cannot exceed delivered qty.`,'red'); return }
@@ -18218,6 +18236,7 @@ function buildPayslipDocxTable(pay, payrollStart, payrollEnd, idx = 0) {
  // still show them so old templates are not silently lost.
 ;(defaultRows || []).forEach(saved => {
  if (!rows.some(row => String(row.variant_id) === String(saved.variant_id))) {
+ if (seasonalBoxFor(saved)) return // An unavailable seasonal box must not return through an old default template.
  const retail = safeNum(saved.retail_price, 0)
  const price = moneyRound(retail * (1 - safeNum(discountPct, 20) / 100))
  rows.push({
@@ -18421,6 +18440,7 @@ async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', o
  if (!inv) { showToast(' Select an invoice first.','red'); return }
 
  const validItems = resellerReturnItems.filter(i=>safeNum(i.returned_qty,0)>0)
+ try { assertWholeSeasonalBoxes(validItems, 'returned_qty') } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length===0) { showToast(' Enter at least one returned/unsold quantity.','red'); return }
 
  for (const item of validItems) {
@@ -18432,7 +18452,7 @@ async function applyTemplateFromReseller(sourceResellerId, target = 'invoice', o
 
  setSubmittingResellerReturn(true)
  try {
- const totalQty = validItems.reduce((s,i)=>s+safeNum(i.returned_qty,0),0)
+ const totalQty = validItems.reduce((s,i)=>s+physicalDonutQuantity(i, 'returned_qty'),0)
  const totalCredit = validItems.reduce((s,i)=>s+safeNum(i.returned_qty,0)*safeNum(i.reseller_price,0),0)
 
  const { data:ret, error:retErr } = await supabase.from('reseller_returns').insert({
@@ -18705,6 +18725,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
 
  const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
+ try { assertWholeSeasonalBoxes(validItems) } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length === 0) { showToast(' Enter at least one quantity.', 'red'); return }
  if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before saving. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.', 'red'); return }
@@ -18729,7 +18750,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  setUpdatingResellerOrder(true)
  try {
  const total = validItems.reduce((s,i)=>s+Number(i.quantity)*safeNum(i.reseller_price,0),0)
- const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
+ const totalQty = validItems.reduce((s,i)=>s+physicalDonutQuantity(i),0)
 
  const { data:updatedOrder, error:updateErr } = await supabase
  .from('reseller_orders')
@@ -18825,6 +18846,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  if (!orderBranch?.id) { showToast(' Select the branch/outlet for this order.','red'); return }
 
  const { items:validItems, duplicates:orderDuplicateRows } = collapseDuplicateOrderItemsByProduct(resellerOrderItems)
+ try { assertWholeSeasonalBoxes(validItems) } catch (error) { showToast(error.message, 'red'); return }
  if (validItems.length===0) { showToast(' Enter at least one quantity.','red'); return }
  if (orderDuplicateRows.length > 0) showToast(' Duplicate product rows were detected and safely merged before submitting. Invoice quantities will not double.', 'red')
  if (!resellerOrderDeliveryDate) { showToast(' Select delivery date.','red'); return }
@@ -18890,7 +18912,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
 
  const total = validItems.reduce((s,i)=>s+Number(i.quantity)*i.reseller_price,0)
- const totalQty = validItems.reduce((s,i)=>s+Number(i.quantity||0),0)
+ const totalQty = validItems.reduce((s,i)=>s+physicalDonutQuantity(i),0)
  const { data:order, error } = await supabase.from('reseller_orders').insert({
  reseller_id:orderBranch.id, reseller_name:orderBranch.name,
  order_date:today, delivery_date:deliveryDateKey,
@@ -19004,6 +19026,7 @@ return !['cancelled','canceled','void','voided','deleted'].includes(s)
  }
  const rawItems = customItems || freshOrder.reseller_order_items || []
  const { items:validItems, duplicates:duplicateOrderRows } = collapseDuplicateOrderItemsByProduct(rawItems)
+ assertWholeSeasonalBoxes(validItems)
  if (validItems.length===0) { showToast(' No items to invoice.','red'); return }
  if (duplicateOrderRows.length > 0) {
   const duplicateNames = [...new Set(duplicateOrderRows.map(row => row.name).filter(Boolean))].slice(0, 8).join(', ')
@@ -43667,6 +43690,9 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <button style={{...btnBlack, width:'auto', padding:'9px 16px', marginTop:0, fontSize:'12px' }} onClick={printCostingReport}> PRINT REPORT</button>
  </div>
 
+ <div style={{ background:'#fff9e6', border:'1px solid #f5c518', borderRadius:'10px', padding:'10px 12px', marginBottom:'12px', fontSize:'12px' }}>
+ <b>Seasonal boxes</b>: 6-piece box = 3 Shells + 3 Rings (₱160); 12-piece box = 5 Shells + 7 Rings (₱315). Recipe batch yield is in boxes. Complete the exact Halloween ingredients and packaging costs before relying on margin estimates. Production logs use the component Shells/Rings once; box quantities are used for ordering, packing and selling.
+ </div>
  {/* Sub-navigation */}
  <div className="romas-module-tabs" style={{ display:'grid', gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(6,1fr)', gap:'8px', marginBottom:'20px' }}>
  {[['dashboard','Dashboard'],['recipes','Product Cost'],['settings','Cost Allocation'],['profiles','Cost Profiles'],['analysis','Cost Analysis'],['production','Production']].map(([v,l])=>(
@@ -44251,7 +44277,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  <select value={entry.variant_id} onChange={e=>{ const upd=[...prodEntries]; upd[i]={...upd[i],variant_id:e.target.value}; setProdEntries(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'12px' }}>
  <option value=""> Select variant </option>
  {VARIANT_CATEGORIES.map(cat=>{
- const catV = donutVariants.filter(v=>v.category===cat)
+ const catV = donutVariants.filter(v=>v.category===cat && !seasonalBoxFor(v))
  if (!catV.length) return null
  return <optgroup key={cat} label={cat}>{catV.map(v=><option key={v.id} value={v.id}>{v.name} ( {v.selling_price})</option>)}</optgroup>
  }) }
@@ -45545,6 +45571,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   && isInvoiceExcludedFromProductionForecast(invoice)
  ))
  const forecastInvoices = getProductionForecastInvoices(deliveryInvoices, forecastDate)
+ const seasonalPacking = seasonalPackingSummary(forecastInvoices.flatMap(inv => inv.seasonal_box_items || []))
  const forecastMap = {}
 
  forecastInvoices.forEach(inv => {
@@ -45557,9 +45584,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
     forecastMap[key] = {
      variant_name: variantName,
      variant_id: item.variant_id,
-     total: 0
+     total: 0,
+     seasonal_pieces:0
     }
    }
+   forecastMap[key].seasonal_pieces += safeNum(item.seasonal_pieces, 0)
 
    forecastMap[key].total = safeNum(forecastMap[key].total, 0) + safeNum(item.quantity, 0)
   })
@@ -45575,7 +45604,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const variantName = variant?.name || variant?.variant_name || variant?.product_name || ''
   const variantKey = forecastNameKey(variantName)
 
-  if (!variantName || existingForecastKeys.has(variantKey)) return
+  if (!variantName || seasonalBoxFor(variantName) || existingForecastKeys.has(variantKey)) return
 
   forecastRows.push({
    id: variant?.id || variant?.variant_id || `zero-${variantKey}`,
@@ -45635,6 +45664,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const rawDate = String(forecastDate || '').slice(0,10)
   const dateParts = rawDate.split('-')
   const dateText = dateParts.length === 3 ? dateParts[1]+' / '+dateParts[2]+' / '+dateParts[0] : rawDate
+  const seasonalPackingText = seasonalPacking.map(row => `${row.boxes} x ${row.pieces}-piece box: ${row.shellPieces} Shells + ${row.ringPieces} Rings`).join(' | ')
   const rowHtml = rows.map(row => '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td></tr>' + (row === smallDonutLastRow ? '<tr style="background:#fff9e6"><td>POPS AND BITES TOTAL</td><td class="q">'+fmt(smallDonutPieces)+'</td></tr>' : '')).join('')
 
   node = document.createElement('div')
@@ -45643,10 +45673,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
    '<div style="display:flex;justify-content:space-between;border-bottom:4px solid #d91c1c;padding-bottom:11px;margin-bottom:14px"><div><div style="font-size:34px;font-weight:900;color:#d91c1c">Roma\'s Donuts</div><div style="font-size:14px;margin-top:6px;font-weight:700">Delivery Date: '+esc(dateText)+'</div></div><div style="font-size:26px;font-weight:900;color:#d91c1c">PRODUCTION ORDER</div></div>'+
    '<div style="border:3px solid #178b3d;border-radius:12px;padding:13px;text-align:center;background:#f0faf2;margin-bottom:11px"><div style="font-size:58px;line-height:1;font-weight:900;color:#178b3d">'+esc(totalDryPremixKg)+' KG</div></div>'+
    '<div style="border:2px solid #e22;border-radius:9px;padding:6px;text-align:center;margin-bottom:11px"><div style="font-size:12px;font-weight:700">TOTAL PIECES</div><div style="font-size:38px;line-height:1;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+' pcs</div></div>'+
+   (seasonalPackingText ? '<div style="font-size:17px;font-weight:700;padding:8px;background:#fff9e6;margin-bottom:8px">HALLOWEEN PACKING: '+esc(seasonalPackingText)+' (included in variety totals)</div>' : '')+
    '<table style="width:86%;margin:0 auto;border-collapse:collapse;table-layout:fixed;font-size:22px"><thead><tr><th style="text-align:left;background:#d91c1c;color:white;padding:10px 14px;width:68%">VARIANT</th><th style="text-align:right;background:#d91c1c;color:white;padding:10px 14px;width:32%">PIECES</th></tr></thead><tbody>'+rowHtml+'</tbody><tfoot><tr><td style="border-top:3px solid #d91c1c;padding:8px 9px;font-weight:900">TOTAL</td><td style="border-top:3px solid #d91c1c;padding:8px 9px;text-align:right;font-weight:900;color:#d91c1c">'+fmt(totalPieces)+'</td></tr></tfoot></table>'+
    '<div style="margin-top:28px;padding-top:18px;border-top:2px solid #888;display:flex;justify-content:space-between;font-size:12px;font-weight:700"><span>Prepared by: __________________</span><span>Checked by: __________________</span></div></div>'
   document.body.appendChild(node)
-  node.firstElementChild.querySelectorAll('tbody td').forEach(cell => { cell.style.padding='16px 16px'; cell.style.border='1.5px solid #a9a9a9'; cell.style.fontWeight='700'; cell.style.fontSize='24px'; cell.style.lineHeight='1.08' })
+  node.firstElementChild.querySelectorAll('tbody td').forEach(cell => { cell.style.padding=seasonalPacking.length?'12px 16px':'16px 16px'; cell.style.border='1.5px solid #a9a9a9'; cell.style.fontWeight='700'; cell.style.fontSize='24px'; cell.style.lineHeight='1.08' })
   node.firstElementChild.querySelectorAll('tbody td.q').forEach(cell => { cell.style.textAlign='right'; cell.style.fontWeight='900'; cell.style.color='#d91c1c'; cell.style.borderLeft='2.5px solid #777'; cell.style.fontSize='25px' })
 
   const canvas = await html2canvas(node.firstElementChild,{scale:3,backgroundColor:'#fff',useCORS:true,logging:false,width:1300,height:1700})
@@ -45709,6 +45740,11 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  {forecastExcludedInvoices.length} invoice{forecastExcludedInvoices.length!==1?'s are':' is'} excluded from production because deletion approval is pending. If the owner rejects the request, the invoice will return to the forecast automatically.
  </div>
  )}
+ {seasonalPacking.length > 0 && <div style={{ background:'#fff9e6', border:'1px solid #f5c518', borderRadius:'9px', padding:'12px', marginBottom:'10px' }}>
+ <strong style={{ color:'#ca1b1b', fontSize:'13px' }}>HALLOWEEN PACKING</strong>
+ {seasonalPacking.map(row => <p key={row.code} style={{ fontSize:'12px', margin:'6px 0' }}>{row.boxes.toLocaleString('en-PH')} × {row.pieces}-piece box: <b>{row.shellPieces} Shells + {row.ringPieces} Rings</b> ({row.totalPieces} donuts)</p>)}
+ <p style={{ fontSize:'11px', margin:'5px 0 0', color:'#555' }}>These Halloween pieces are already included in the Shells and Rings totals below. Decorate and pack separately; do not add them again.</p>
+ </div>}
  {sagsTransfersLoadError && <p role="alert" style={{ color:'#b91c1c', fontWeight:'bold', fontSize:'12px' }}>{sagsTransfersLoadError} <button type="button" onClick={loadSagsTransfers}>Retry</button></p>}
  {forecastInvoices.length === 0? (
  <div style={{ textAlign:'center', padding:'24px', color:'#aaa' }}>
@@ -46357,6 +46393,7 @@ onClick={async ()=>{
 <div style={{ display:'grid', gridTemplateColumns:'3fr .75fr 1fr 1fr auto', gap:'6px', marginBottom:'4px' }}>
 {['Variant','Qty','Retail',`${safeNum(invoiceDiscountPct,0)}% Price`,''].map((h,i)=><span key={i} style={{ fontSize:'10px', fontWeight:'bold', color:'#888', textAlign:i>0?'right':'left' }}>{h}</span>)}
 </div>
+<p style={{ fontSize:'11px', color:'#7a4d00', margin:'5px 0' }}>Spooky Donuts: enter whole BOXES. Prices are per box; production expands each box automatically.</p>
 {invoiceItems.map((item,i)=>{
  const variant = donutVariants.find(v=>v.id===item.variant_id)
  const retailPrice = safeNum(variant?.selling_price ?? item.retail_price, 0)
@@ -46370,7 +46407,7 @@ onClick={async ()=>{
  : donutVariants.map(v=><option key={v.id} value={v.id}>{v.name} {php(v.selling_price)}</option>)
  }
  </select>
- <input type="number" value={item.quantity} onChange={e=>{ const upd=[...invoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'right' }} min="0" placeholder="0" />
+ <input aria-label={seasonalBoxFor(item)?'Quantity in boxes':'Quantity in pieces'} title={seasonalBoxFor(item)?'Whole boxes; price is per box':'Pieces'} step="1" type="number" value={item.quantity} onChange={e=>{ const upd=[...invoiceItems]; upd[i]={...upd[i],quantity:e.target.value}; setInvoiceItems(upd) }} style={{...inputStyle, marginBottom:0, fontSize:'11px', textAlign:'right' }} min="0" placeholder="0" />
  <span style={{ textAlign:'right', fontSize:'11px', color:'#888' }}>{php(retailPrice)}</span>
  <span style={{ textAlign:'right', fontSize:'11px', fontWeight:'bold', color:'#2d8a4e' }}>{php(invoicePrice)}</span>
  <button onClick={()=>setInvoiceItems(invoiceItems.filter((_,j)=>j!==i))} style={{ background:'#ca1b1b', color:'white', border:'none', borderRadius:'6px', padding:'6px 8px', cursor:'pointer', fontSize:'12px' }}>DEL</button>
@@ -51288,6 +51325,7 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', padding:'7px 10px', background:'#ca1b1b', borderRadius:'9px' }}>
  {['Variant','Price','Qty'].map(h=><span key={h} style={{ color:'white', fontSize:'10px', fontWeight:'bold' }}>{h}</span>)}
  </div>
+ <p style={{ fontSize:'11px', color:'#7a4d00' }}>Spooky Donuts quantities are BOXES: 6 pcs = 3 Shells + 3 Rings; 12 pcs = 5 Shells + 7 Rings. Your usual reseller pricing applies.</p>
  {resellerOrderItems.map((item,i)=>(
  <div key={item.variant_id} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', gap:'6px', marginBottom:'6px', alignItems:'center', padding:'7px 10px', background:i%2===0?'white':'#fafafa', borderRadius:'9px', border:'1px solid #f0f0f0' }}>
  <span style={{ fontSize:'12px', fontWeight:'bold' }}>{item.variant_name}</span>
