@@ -34,10 +34,16 @@ export function normalizeLiveOrder(order) {
     type:order.fulfillment_type, branch:order.pickup_location, town:order.delivery_municipality,
     address:order.delivery_address, landmark:order.delivery_landmark, pin:null,
     packaging:order.packaging, status:order.status, paymentStatus:order.payment_status,
-    paidAt:order.paid_at, pickupAddress:order.pickup_address_snapshot,
+    paidAt:order.paid_at, refundedAt:order.refunded_at,
+    pickupAddress:order.pickup_address_snapshot,
     receipt:order.receipt ? {
       saleId:order.receipt.sale_id, paymentMethod:order.receipt.payment_method,
       referenceNumber:order.receipt.reference_number, amount:Number(order.receipt.amount),
+      refund:order.receipt.refund ? {
+        id:order.receipt.refund.id, paymentMethod:order.receipt.refund.payment_method,
+        referenceNumber:order.receipt.refund.reference_number,
+        amount:Number(order.receipt.refund.amount),
+      } : null,
     } : null,
     subtotal:Number(order.subtotal),
     deliveryFee:Number(order.delivery_fee), total:Number(order.total),

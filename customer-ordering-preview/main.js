@@ -1,7 +1,7 @@
 import {PH_TZ, COVERAGE, BRANCH_NAMES, PICKUP_LOCATIONS, phDate, availableSlots, feeForDistance, haversineKm, cartSubtotal} from './logic.mjs?v=pickup-locations-20261015';
 import {PRODUCTS, findProduct, catalogCards} from './catalog.mjs?v=small-box-prices-20261015';
 import {LIVE_ORDERING, liveCall, newOrderCredential, normalizeLiveOrder} from './live-client.mjs';
-import {customerPaymentReceiptHtml} from './customer-receipt.mjs';
+import {customerPaymentReceiptHtml, customerRefundReceiptHtml} from './customer-receipt.mjs';
 
 const KEY = 'romas-public-ordering-preview-v1';
 const DELIVERY_RATE_VERSION = 2;
@@ -110,7 +110,11 @@ function orderTile(order){return `<button class="order-tile ${selectedId===order
 function chatBox(order,from){return `<div class="chat"><div class="chat-messages">${order.messages.length?order.messages.map(m=>`<div class="bubble ${m.from===from?'me':''}"><strong>${m.from==='staff'?'Roma’s team':'Customer'}</strong><div>${esc(m.text)}</div><small>${new Intl.DateTimeFormat('en-PH',{timeZone:PH_TZ,hour:'numeric',minute:'2-digit',month:'short',day:'numeric'}).format(new Date(m.at))}</small></div>`).join(''):'<div class="hint">Start a conversation about this order.</div>'}</div><form class="chat-form" data-chat="${esc(order.id)}" data-from="${from}"><input name="message" maxlength="500" placeholder="Write a message about this order…" required aria-label="Chat message"><button class="btn btn-primary" type="submit">Send</button></form></div>`;}
 function orderDetail(order,from){const loosePieces=order.items.some(item=>item.unitLabel==='piece');return `<div class="panel"><div class="detail-top"><div><h2>Order ${esc(order.orderCode||order.id)}</h2><p class="hint">${esc(order.name)} · ${esc(order.phone)}</p></div><span class="status ${order.status}">${esc(order.status.replaceAll('_',' '))}</span></div><div class="summary-line"><span>When</span><strong>${formatDate(order.date)}, ${formatTime(order.time)}</strong></div><div class="summary-line"><span>Fulfillment</span><strong>${esc(order.type)} · ${esc(order.branch)}</strong></div><div class="summary-line"><span>Packaging</span><strong>${loosePieces?order.packaging==='paper_bag'?'Paper bag for loose pieces':'Box for loose pieces':'Prepacked box sets'}</strong></div>${order.type==='delivery'?`<div class="summary-line"><span>Location</span><strong>${esc(order.address)}, ${esc(order.town)}</strong></div><div class="summary-line"><span>Landmark</span><strong>${esc(order.landmark)}</strong></div>${order.pin?`<p><a target="_blank" rel="noopener noreferrer" href="https://www.openstreetmap.org/?mlat=${order.pin.lat}&mlon=${order.pin.lng}#map=16/${order.pin.lat}/${order.pin.lng}">Open delivery pin ↗</a></p>`:''}`:''}<h3 style="margin-top:24px">Items</h3>${itemRows(order.items)}<div class="money-row"><span>${order.type==='delivery'?'Estimated delivery fee':'Delivery fee'}</span><strong>${money(order.deliveryFee)}</strong></div><div class="money-row total"><span>${order.type==='delivery'?'Estimated total':'Total on receipt'}</span><strong>${money(order.total)}</strong></div>${order.type==='delivery'?'<p class="hint">The delivery fee and total are estimates until staff confirms the road route and final charge.</p>':''}<h3 style="margin-top:24px">Order chat</h3>${chatBox(order,from)}${from==='customer'?`<p class="footnote">${LIVE_ORDERING?'Keep your order access link private. Anyone with it can view this order.':'Preview only: all orders and messages are stored in this browser. Customer identity verification is required before public launch.'}</p>`:''}</div>`;}
 function customerOrderDetail(order){
-  const payment=LIVE_ORDERING ? order.paymentStatus==='paid'
+  const payment=LIVE_ORDERING ? order.paymentStatus==='refunded'
+    ? order.receipt?.refund?.id && order.refundedAt
+      ? `<div class="receipt-action"><strong>Full refund recorded</strong><p class="hint">Recorded ${esc(new Intl.DateTimeFormat('en-PH',{timeZone:PH_TZ,dateStyle:'medium',timeStyle:'short'}).format(new Date(order.refundedAt)))} via ${esc(order.receipt.refund.paymentMethod)}. The original payment and reversal are kept separately.</p><button class="btn btn-primary" data-print-receipt="${esc(order.id)}">Print refund confirmation</button></div>`
+      : '<div class="receipt-action"><strong>Refund confirmation unavailable</strong><p class="hint">Please ask Roma’s team to review the refund record.</p></div>'
+    : order.paymentStatus==='paid'
     ? order.receipt?.saleId && order.paidAt
       ? `<div class="receipt-action"><strong>Payment received</strong><p class="hint">Recorded ${esc(new Intl.DateTimeFormat('en-PH',{timeZone:PH_TZ,dateStyle:'medium',timeStyle:'short'}).format(new Date(order.paidAt)))} via ${esc(order.receipt.paymentMethod)}.</p><button class="btn btn-primary" data-print-receipt="${esc(order.id)}">Print customer payment receipt</button></div>`
       : '<div class="receipt-action"><strong>Receipt unavailable</strong><p class="hint">The payment record needs staff review before a receipt can be printed.</p></div>'
@@ -199,9 +203,10 @@ app.addEventListener('click',event=>{
   if(!button||!LIVE_ORDERING)return;
   const order=db.orders.find(item=>item.id===button.dataset.printReceipt);
   try{
-    const html=customerPaymentReceiptHtml(order);
+    const html=order.paymentStatus==='refunded'
+      ? customerRefundReceiptHtml(order) : customerPaymentReceiptHtml(order);
     const printWindow=window.open('','_blank','width=760,height=900');
-    if(!printWindow)throw new Error('Allow pop-ups to open your payment receipt.');
+    if(!printWindow)throw new Error('Allow pop-ups to open your receipt.');
     printWindow.opener=null;
     printWindow.document.open();printWindow.document.write(html);printWindow.document.close();
   }catch(failure){notify(failure.message);}

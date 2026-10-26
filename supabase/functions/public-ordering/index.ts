@@ -9,7 +9,7 @@ import {
 const STAFF_ROLES = new Set(['owner', 'supervisor', 'asst_supervisor'])
 const FORECAST_ROLES = new Set(['owner', 'manager', 'supervisor', 'asst_supervisor'])
 const SUBMISSIONS_ENABLED = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_ENABLED') === 'true'
-const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
+const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
 
 type Client = ReturnType<typeof createClient<any>>
@@ -59,7 +59,7 @@ async function orderDetail(admin: Client, orderId: string) {
   ])
   if (orderError || itemError || messageError || !order) return null
   let receipt = null
-  if (order.payment_status === 'paid') {
+  if (order.payment_status === 'paid' || order.payment_status === 'refunded') {
     const {data: sale, error: saleError} = await admin.from('daily_sales_online_payments')
       .select('id,payment_method,reference_number,amount,status')
       .eq('customer_order_id', orderId).maybeSingle()
@@ -67,6 +67,16 @@ async function orderDetail(admin: Client, orderId: string) {
     if (sale?.status === 'active' && Number(sale.amount) === Number(order.total)) {
       receipt = {sale_id:sale.id, payment_method:sale.payment_method,
         reference_number:sale.reference_number, amount:sale.amount}
+      if (order.payment_status === 'refunded') {
+        const {data: refund, error: refundError} = await admin.from('daily_sales_online_payments')
+          .select('id,payment_method,reference_number,amount,status')
+          .eq('refund_of_payment_id', sale.id).maybeSingle()
+        if (refundError) return null
+        receipt = refund?.status === 'active' && Number(refund.amount) === -Number(order.total)
+          ? {...receipt, refund:{id:refund.id, payment_method:refund.payment_method,
+            reference_number:refund.reference_number, amount:refund.amount}}
+          : null
+      }
     }
   }
   return {...order, items: items || [], messages: messages || [], receipt}
@@ -144,7 +154,7 @@ async function handle(admin: Client, request: Request, body: Body) {
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
 
-  if (!['staff-list','staff-get','staff-status','staff-message','staff-pay','staff-forecast'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
+  if (!['staff-list','staff-get','staff-status','staff-message','staff-pay','staff-refund','staff-forecast'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
   const staff = await staffIdentity(admin, request, action === 'staff-forecast' ? FORECAST_ROLES : STAFF_ROLES)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
 
@@ -210,6 +220,24 @@ async function handle(admin: Client, request: Request, body: Body) {
     return error || !data?.[0]
       ? reply(409, {ok:false, message:'Payment was not recorded. Refresh the order and check its status and payment details.'})
       : reply(200, {ok:true, saleId:data[0].sale_id, reused:data[0].reused})
+  }
+  if (action === 'staff-refund') {
+    const method = cleanText(body.refundMethod, 40)
+    const reference = cleanText(body.referenceNumber, 120)
+    const reason = cleanText(body.reason, 500)
+    if (!['Cash','GCash','Maya','Bank Transfer','QR PH'].includes(method)
+      || (method === 'Cash' && reference)
+      || (method !== 'Cash' && !reference)
+      || reason.length < 10) {
+      return reply(422, {ok:false, message:'Enter the full refund method, digital reference when needed, and a reason of at least 10 characters.'})
+    }
+    const {data, error} = await admin.rpc('customer_refund_paid_sale', {
+      p_order_id:orderId, p_method:method, p_reference:reference || null,
+      p_reason:reason, p_actor_admin_user_id:staff.id,
+    })
+    return error || !data?.[0]
+      ? reply(409, {ok:false, message:'Refund was not recorded. Refresh the order and check its payment details.'})
+      : reply(200, {ok:true, refundId:data[0].refund_id, reused:data[0].reused})
   }
   const message = cleanText(body.message, 500)
   if (!message) return reply(422, {ok:false, message:'Enter a message.'})

@@ -82,6 +82,10 @@ export default function StaffOrderQueue() {
   const [paymentMethod,setPaymentMethod] = useState('Cash')
   const [paymentReference,setPaymentReference] = useState('')
   const [paymentConfirmed,setPaymentConfirmed] = useState(false)
+  const [refundMethod,setRefundMethod] = useState('Cash')
+  const [refundReference,setRefundReference] = useState('')
+  const [refundReason,setRefundReason] = useState('')
+  const [refundConfirmed,setRefundConfirmed] = useState(false)
   const [error,setError] = useState('')
   const [busy,setBusy] = useState(false)
   const [loading,setLoading] = useState(false)
@@ -169,6 +173,21 @@ export default function StaffOrderQueue() {
     finally{setBusy(false)}
   }
 
+  async function recordRefund(event) {
+    event.preventDefault()
+    if (!detail || busy || !refundConfirmed || refundReason.trim().length < 10) return
+    setBusy(true);setError('')
+    try {
+      await call('staff-refund',{
+        orderId:detail.id,refundMethod,reason:refundReason.trim(),
+        referenceNumber:refundMethod==='Cash'?'':refundReference.trim(),
+      })
+      setRefundReference('');setRefundReason('');setRefundConfirmed(false)
+      await refresh()
+    } catch(failure){setError(failure.message)}
+    finally{setBusy(false)}
+  }
+
   if (!supabase) return <main className="staff-login"><div className="staff-panel">
     <h1>Customer orders are not configured</h1>
     <p>Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before using this staff page.</p>
@@ -184,7 +203,7 @@ export default function StaffOrderQueue() {
       <section className="staff-panel staff-list" aria-label="Order queue">
         <h2>Requests {loading && <small>Refreshing…</small>}</h2>
         {orders.length===0 && <p>No customer orders are available.</p>}
-        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPaymentConfirmed(false);setPaymentReference('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
+        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPaymentConfirmed(false);setPaymentReference('');setRefundConfirmed(false);setRefundReference('');setRefundReason('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
           <strong>{order.order_code}</strong><span>{order.status.replaceAll('_',' ')}</span>
           <small>{order.customer_name} · {when(order.scheduled_at)}</small>
           <small>{order.fulfillment_type} · {money(order.total)}</small>
@@ -207,6 +226,7 @@ export default function StaffOrderQueue() {
           <div className="staff-row"><span>Delivery</span><strong>{money(detail.delivery_fee)}</strong></div>
           <div className="staff-row staff-total"><span>Total · {detail.payment_status}</span><strong>{money(detail.total)}</strong></div>
           {detail.paid_at && <p className="staff-hint">Payment recorded {when(detail.paid_at)}. This order is linked to one separate online sale.</p>}
+          {detail.refunded_at && <p className="staff-hint">Full refund recorded {when(detail.refunded_at)}. The original sale remains in the ledger, with a separate reversing entry{detail.receipt?.refund?.id? ` (${detail.receipt.refund.id})` : ''}.</p>}
           <h3>Review</h3>
           <label>Review note<input value={statusNote} onChange={event=>setStatusNote(event.target.value)} maxLength={500} /></label>
           <div className="staff-actions">{(ACTIONS[detail.status]||[])
@@ -222,6 +242,17 @@ export default function StaffOrderQueue() {
             {paymentMethod!=='Cash' && <label>Payment reference<input value={paymentReference} onChange={event=>setPaymentReference(event.target.value)} maxLength={120} required /></label>}
             <label className="staff-payment-confirm"><input type="checkbox" checked={paymentConfirmed} onChange={event=>setPaymentConfirmed(event.target.checked)} /> I verified receipt of the full payment.</label>
             <button disabled={busy||!paymentConfirmed||paymentMethod!=='Cash'&&!paymentReference.trim()}>{busy?'Recording…':'Record paid online sale'}</button>
+          </form>}
+          {detail.payment_status==='paid' && ['accepted','preparing','ready','out_for_delivery','completed'].includes(detail.status) && <form className="staff-payment" onSubmit={recordRefund}>
+            <h3>Record full refund</h3>
+            <p className="staff-hint">Use this only after returning the full {money(detail.total)} to the customer. This page records the reversal; it does not send money. Unfulfilled orders will be cancelled and removed from the production forecast. Completed orders keep their fulfillment history.</p>
+            <label>Refund method<select value={refundMethod} onChange={event=>{setRefundMethod(event.target.value);setRefundReference('');setRefundConfirmed(false)}}>
+              {['Cash','GCash','Maya','Bank Transfer','QR PH'].map(method=><option key={method}>{method}</option>)}
+            </select></label>
+            {refundMethod!=='Cash' && <label>Refund transaction reference<input value={refundReference} onChange={event=>setRefundReference(event.target.value)} maxLength={120} required /></label>}
+            <label>Refund reason<input value={refundReason} onChange={event=>setRefundReason(event.target.value)} minLength={10} maxLength={500} required /></label>
+            <label className="staff-payment-confirm"><input type="checkbox" checked={refundConfirmed} onChange={event=>setRefundConfirmed(event.target.checked)} /> I verified that the full refund was issued to the customer.</label>
+            <button disabled={busy||!refundConfirmed||refundReason.trim().length<10||refundMethod!=='Cash'&&!refundReference.trim()}>{busy?'Recording…':'Record full refund and reversal'}</button>
           </form>}
           <h3>Order chat</h3>
           <div className="staff-messages">{detail.messages.map(item=><div key={item.id}>

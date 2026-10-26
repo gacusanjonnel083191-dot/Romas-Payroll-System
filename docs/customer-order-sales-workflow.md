@@ -27,9 +27,23 @@ is marked `count_as_revenue = true`, appears under the `Website Order` source,
 and is included in the existing online revenue reports.
 
 Staff cannot cancel a paid order through the ordinary cancellation action.
-A refund and reversal workflow is still required before paid cancellations
-can be offered. Staff must also reconcile cash collected at pickup with the
-location's cash handover; the online sale is separate from that location's POS.
+The local full-refund workflow requires ordering staff to confirm that the
+money was already returned, choose the refund method, provide a digital
+transaction reference when applicable, and record a reason. It does not
+transfer money. One database transaction preserves the original paid sale,
+adds a linked negative revenue entry dated in Asia/Manila, marks the order
+refunded, and cancels an unfulfilled order. A completed order stays completed
+so its fulfillment history remains intact. The unique reversal link and
+order lock prevent duplicate refunds. The customer sees a separate refund
+confirmation rather than a still-paid receipt. The main online-sales ledger
+labels reversal rows and nets their negative amount into the refund date's
+revenue. Staff must still reconcile cash returned at pickup with that
+location's cash handover.
+
+The refund migration, function action, staff form, customer confirmation,
+and main-app refund labels are local only. They have passed local database,
+receipt, and build checks, but have not been applied or deployed to staging
+or production. Staging still runs the prior paid-sale workflow.
 
 The migration and Edge Function were tested in the separate staging project.
 Customer submissions remain disabled. Neither the migration nor the function
@@ -55,7 +69,7 @@ The weather and route guard below the production baseline still plans
 reseller deliveries only. Pickup orders are represented in the variant
 production baseline, not in reseller dispatch routes. Staff should avoid
 manually duplicating a website order on a reseller invoice. This forecast
-Edge Function forecast action is deployed to staging as version 9. The main
+Edge Function forecast action is deployed to staging as version 10. The main
 app UI is still local and has not been pushed or deployed. The anonymous
 forecast request returned HTTP 403 in staging. A signed-in staging staff
 request for 26 October 2026 returned zero orders and zero items, matching the

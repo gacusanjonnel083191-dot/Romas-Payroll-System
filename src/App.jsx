@@ -7879,6 +7879,7 @@ export default function App() {
  const DAILY_SALES_ONLINE_PAYMENT_METHODS = ['GCash','Maya','Bank Transfer','Online Banking','Bank Deposit','Debit/Credit Card','QR PH','Other Online Payment']
  const DAILY_SALES_ONLINE_CHANNELS = ['Walk-in','Messenger / Online Order','Facebook Order','Phone Order','Other Daily Sales']
  const isDailySalesOnlinePaymentRevenue = row => row?.count_as_revenue !== false && String(row?.status || 'active').toLowerCase() !== 'void'
+ const isCustomerOrderRefund = row => Boolean(row?.refund_of_payment_id)
  const getDailySalesOnlineBucket = row => {
  const source = String(row?.sales_channel || '').toLowerCase()
  if (source.includes('walk') || source.includes('counter')) return 'walkin'
@@ -14365,7 +14366,7 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
  summary.cash = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase()==='cash').reduce((sum, [,v])=>sum+v, 0)
  summary.bank = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('bank') || m.toLowerCase().includes('online')).reduce((sum, [,v])=>sum+v, 0)
  summary.maya = Object.entries(summary.byMethod).filter(([m])=>m.toLowerCase().includes('maya')).reduce((sum, [,v])=>sum+v, 0)
- summary.cardQrOther = Math.max(0, summary.total - summary.cash - summary.gcash - summary.bank - summary.maya)
+ summary.cardQrOther = summary.total - summary.cash - summary.gcash - summary.bank - summary.maya
  return summary
  }
 
@@ -14579,14 +14580,14 @@ const normalizedBasic = readOnly ? countedBasic : await normalizePaidInvoiceRows
    if (counted) row.onlineRevenue += amount
    else row.onlineTrackingOnly += amount
    addSalesSummaryDetail(row, {
-    type:counted ? 'Daily Sales GCash/Online Revenue' : 'GCash/Online Tracking Only',
+    type:isCustomerOrderRefund(payment) ? 'Customer Order Refund' : counted ? 'Daily Sales GCash/Online Revenue' : 'GCash/Online Tracking Only',
     date:getSalesSummaryDateKey(payment.payment_date),
     description:[payment.sales_channel, payment.customer_name, payment.reference_number].filter(Boolean).join(' | ') || 'Online payment',
     amount,
     paymentMethod:payment.payment_method || 'Online Payment',
     encodedBy:getSalesSummaryEncoder(payment),
     encodedAt:getSalesSummaryCreatedAt(payment),
-    status:counted ? 'counted as revenue' : 'tracking only'
+    status:isCustomerOrderRefund(payment) ? 'reversed revenue' : counted ? 'counted as revenue' : 'tracking only'
    })
   })
 
@@ -47434,8 +47435,8 @@ const credit = inv?.reseller_id ? getResellerCreditBlockInfo(inv.reseller_id) : 
  <td style={{ padding:'9px 8px' }}>{payment.customer_name || '-'}</td>
  <td style={{ padding:'9px 8px' }}><span style={{ background:'#fff8dc', border:'1px solid #FDD412', borderRadius:'20px', padding:'4px 9px', fontWeight:'bold', color:'#1a1a2e' }}>{payment.payment_method || 'Online Payment'}</span></td>
  <td style={{ padding:'9px 8px', color:'#555' }}>{payment.reference_number || '-'}</td>
- <td style={{ padding:'9px 8px', textAlign:'right', color:'#2d8a4e', fontWeight:'900' }}>{php(payment.amount)}</td>
- <td style={{ padding:'9px 8px' }}><span style={{ background:isDailySalesOnlinePaymentRevenue(payment)?'#e8f5e9':'#f4f4f4', color:isDailySalesOnlinePaymentRevenue(payment)?'#2d8a4e':'#777', borderRadius:'20px', padding:'4px 8px', fontWeight:'bold', fontSize:'10px' }}>{isDailySalesOnlinePaymentRevenue(payment)?'Added to Sales':'Tracking Only'}</span></td>
+ <td style={{ padding:'9px 8px', textAlign:'right', color:isCustomerOrderRefund(payment)?'#ae2020':'#2d8a4e', fontWeight:'900' }}>{php(payment.amount)}</td>
+ <td style={{ padding:'9px 8px' }}><span style={{ background:isCustomerOrderRefund(payment)?'#fff0ed':isDailySalesOnlinePaymentRevenue(payment)?'#e8f5e9':'#f4f4f4', color:isCustomerOrderRefund(payment)?'#ae2020':isDailySalesOnlinePaymentRevenue(payment)?'#2d8a4e':'#777', borderRadius:'20px', padding:'4px 8px', fontWeight:'bold', fontSize:'10px' }}>{isCustomerOrderRefund(payment)?'Reversed from Sales':isDailySalesOnlinePaymentRevenue(payment)?'Added to Sales':'Tracking Only'}</span></td>
  <td style={{ padding:'9px 8px', color:'#555', maxWidth:'320px' }}>{payment.notes || '-'}</td>
  <td style={{ padding:'9px 8px', color:'#777' }}>{payment.recorded_by || '-'}</td>
  </tr>
