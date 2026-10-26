@@ -42,11 +42,14 @@ location's cash handover.
 
 Refund migration `20261026004529_customer_order_refunds.sql` and the updated
 `public-ordering` function (staging version 11) are applied to the separate
-staging project. A synthetic payment/refund transaction verified the reversal,
-retry protection, cancellation, and zero net revenue, then rolled back; no
-test order or sale remains. The staff form, customer confirmation, and main-app
-refund labels remain local. None of this refund work has been applied to
-production, GitHub, or Vercel.
+staging project. A synthetic transaction verified the reversal, retry
+protection, cancellation, and zero net revenue, then rolled back. A separate
+staff-page test recorded the full refund for `TEST-ONLY-REFUND-20261026` and
+confirmed the same result. Cleanup of that one synthetic order, its item,
+two events, and two linked ledger rows was declined by the Supabase SQL tool;
+the cancelled/refunded sample remains in staging with zero net revenue.
+The customer confirmation and main-app refund labels remain local. None of
+this refund work has been applied to production, GitHub, or Vercel.
 
 The migration and Edge Function were tested in the separate staging project.
 Customer submissions remain disabled. Neither the migration nor the function
