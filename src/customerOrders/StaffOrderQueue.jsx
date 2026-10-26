@@ -18,6 +18,17 @@ const ACTIONS = {
   ready:['out_for_delivery','cancelled'],
 }
 
+function signInMessage(error) {
+  if (error?.status === 429) return 'Too many sign-in attempts. Please wait and try again.'
+  if (error?.status === 400 && /invalid login credentials/i.test(error.message || '')) {
+    return 'The staging email or password does not match. Use your temporary staging password.'
+  }
+  if (/fetch|network/i.test(error?.message || '')) {
+    return 'Could not reach the staging sign-in service. Check your connection and try again.'
+  }
+  return `Sign-in failed: ${error?.message || 'unknown error'}`
+}
+
 async function call(action, payload = {}) {
   if (!supabase) throw new Error('Supabase environment variables are missing.')
   const {data:{session}} = await supabase.auth.getSession()
@@ -45,7 +56,7 @@ function Login({onSignedIn}) {
     const {error:signInError} = await supabase.auth.signInWithPassword({email,password})
     setPassword('')
     setBusy(false)
-    if (signInError) setError('Sign-in failed. Check your staff credentials.')
+    if (signInError) setError(signInMessage(signInError))
     else onSignedIn()
   }
   return <main className="staff-login"><div className="staff-panel">
