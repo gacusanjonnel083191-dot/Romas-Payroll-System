@@ -9,7 +9,7 @@ import {
  filterProductionForecastInvoices,
  isInvoiceExcludedFromProductionForecastPolicy
 } from './productionForecastPolicy.js'
-import { Component, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { jsPDF } from 'jspdf'
 import html2canvas from 'html2canvas'
 import { createClient } from '@supabase/supabase-js'
@@ -45598,6 +45598,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  })
 
  forecastRows = (forecastRows || [])
+  .filter(row => forecastNameKey(row.variant_name) !== 'cinnamonrolls')
   .map(row => {
    const cleanTotal = getForecastRowTotal(row)
    return {
@@ -45617,6 +45618,12 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
  const totalDryPremixG = safeNum((forecastRows || []).reduce((s,r)=>s+(getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)),0),0)
  const totalDryPremixKg = (safeNum(totalDryPremixG,0)/1000).toFixed(2)
 
+ // Cutting/counting subtotal for the six same-size varieties marked by production.
+ const smallDonutKeys = new Set(['chocoballs', 'matchapops', 'taropops', 'strawberrypops', 'bavarianpops', 'bavarianbites'])
+ const smallDonutRows = forecastRows.filter(row => smallDonutKeys.has(forecastNameKey(row.variant_name)))
+ const smallDonutPieces = smallDonutRows.reduce((sum, row) => sum + getForecastRowTotal(row), 0)
+ const smallDonutLastRow = smallDonutRows[smallDonutRows.length - 1]
+
  const printForecast = async () => {
  /* PRODUCTION_FORECAST_HALF_LONG_BOND_REFERENCE_V8 */
  if (sagsTransfersLoadError) { showToast(sagsTransfersLoadError, 'red'); return }
@@ -45628,7 +45635,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const rawDate = String(forecastDate || '').slice(0,10)
   const dateParts = rawDate.split('-')
   const dateText = dateParts.length === 3 ? dateParts[1]+' / '+dateParts[2]+' / '+dateParts[0] : rawDate
-  const rowHtml = rows.map(row => '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td></tr>').join('')
+  const rowHtml = rows.map(row => '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td></tr>' + (row === smallDonutLastRow ? '<tr style="background:#fff9e6"><td>SMALL DONUTS SUBTOTAL</td><td class="q">'+fmt(smallDonutPieces)+'</td></tr>' : '')).join('')
 
   node = document.createElement('div')
   node.style.cssText = 'position:fixed;left:-10000px;top:0;width:1300px;height:1700px;background:#fff;overflow:hidden;pointer-events:none;'
@@ -45726,11 +45733,20 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
 const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  const kg = (grams/1000).toFixed(2)
  return (
- <div key={r.variant_name} style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
+ <Fragment key={r.variant_name}>
+ <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'7px 12px', background:i%2===0?'white':'#fafafa', borderTop:'1px solid #f0f0f0' }}>
  <span style={{ fontSize:'12px', fontWeight:'bold' }}>{r.variant_name}</span>
  <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'13px' }}>{getForecastRowTotal(r).toLocaleString('en-PH')}</span>
  <span style={{ textAlign:'right', color:'#2d8a4e', fontWeight:'bold', fontSize:'12px' }}>{grams>=1000?kg+' kg':grams.toFixed(0)+' g'}</span>
  </div>
+ {r === smallDonutLastRow && (
+ <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'9px 12px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
+ <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'12px' }}>SMALL DONUTS SUBTOTAL</span>
+ <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{smallDonutPieces.toLocaleString('en-PH')}</span>
+ <span />
+ </div>
+ )}
+ </Fragment>
  )
  }) }
  <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'9px 12px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
