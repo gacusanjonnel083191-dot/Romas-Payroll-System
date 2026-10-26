@@ -45635,7 +45635,7 @@ const hasBadge = (section.key==='hr' && pendingLeaveCount>0) ||
   const rawDate = String(forecastDate || '').slice(0,10)
   const dateParts = rawDate.split('-')
   const dateText = dateParts.length === 3 ? dateParts[1]+' / '+dateParts[2]+' / '+dateParts[0] : rawDate
-  const rowHtml = rows.map(row => '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td></tr>' + (row === smallDonutLastRow ? '<tr style="background:#fff9e6"><td>SMALL DONUTS SUBTOTAL</td><td class="q">'+fmt(smallDonutPieces)+'</td></tr>' : '')).join('')
+  const rowHtml = rows.map(row => '<tr><td>'+esc(row.variant_name || row.variant || row.product_name || row.name || 'Variant')+'</td><td class="q">'+fmt(getForecastRowTotal(row))+'</td></tr>' + (row === smallDonutLastRow ? '<tr style="background:#fff9e6"><td>POPS AND BITES TOTAL</td><td class="q">'+fmt(smallDonutPieces)+'</td></tr>' : '')).join('')
 
   node = document.createElement('div')
   node.style.cssText = 'position:fixed;left:-10000px;top:0;width:1300px;height:1700px;background:#fff;overflow:hidden;pointer-events:none;'
@@ -45741,7 +45741,7 @@ const grams = getDryPremixGramsPerPiece(r.variant_name)*getForecastRowTotal(r)
  </div>
  {r === smallDonutLastRow && (
  <div style={{ display:'grid', gridTemplateColumns:'2fr 1fr 1fr', padding:'9px 12px', background:'#fff9e6', borderTop:'2px solid #ca1b1b' }}>
- <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'12px' }}>SMALL DONUTS SUBTOTAL</span>
+ <span style={{ fontWeight:'bold', color:'#ca1b1b', fontSize:'12px' }}>POPS AND BITES TOTAL</span>
  <span style={{ textAlign:'right', fontWeight:'bold', color:'#ca1b1b', fontSize:'16px' }}>{smallDonutPieces.toLocaleString('en-PH')}</span>
  <span />
  </div>
