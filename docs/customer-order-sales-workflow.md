@@ -86,3 +86,18 @@ giving a ₱330 subtotal; this was never recorded as a sale. The exact test
 order and its two items were removed, and the same staff action returned zero
 orders and zero pieces again. The temporary test control was removed from
 the staff page. Production customer ordering remains disabled.
+
+## Public request safeguards (local implementation)
+
+The Edge Function reads request bodies with a 32 KB byte cap before parsing
+JSON, even when a client omits `Content-Length`. Migration
+`20261027122644_customer_order_public_rate_limits.sql` adds an atomic,
+server-only counter. The Edge Function limits new submissions to 20 attempts
+per hour per normalized phone number and customer chat to 20 messages per
+10 minutes per order. It hashes each counter key with a server secret, stores
+no phone numbers or receipt tokens in the counter table, and rejects writes
+if the counter is unavailable. Anonymous database roles cannot read the
+counter or invoke its function. These safeguards are local only; the
+migration and function update have not been applied to staging or production.
+Phone numbers are not yet verified, so this does not prevent someone from
+using many different numbers.

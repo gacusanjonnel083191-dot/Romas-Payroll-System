@@ -2,6 +2,7 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
+import {consumeRateLimit} from './rate-limit.mjs'
 import {
   cleanText, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
   validPhone, validRequestId,
@@ -93,7 +94,7 @@ async function customerOrder(admin: Client, body: Body) {
   return order
 }
 
-async function handle(admin: Client, request: Request, body: Body) {
+async function handle(admin: Client, request: Request, body: Body, rateSecret: string) {
   const origin = request.headers.get('origin')
   const reply = (status: number, payload: Body) => response(origin, status, payload)
   const action = cleanText(body.action, 40)
@@ -121,6 +122,9 @@ async function handle(admin: Client, request: Request, body: Body) {
     const packaging = body.packaging === 'paper_bag' ? 'paper_bag' : 'box'
     const priced = pricedItems(body.items, catalog)
     if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
+    const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', phone.replace(/\D/g, ''), 20, 3600)
+    if (submissionLimit === 'unavailable') return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
+    if (submissionLimit === 'limited') return reply(429, {ok:false, message:'Too many order requests for this phone number. Please try again later.'})
     const {data: pickup, error: pickupError} = await admin.from('customer_pickup_locations')
       .select('name,address').eq('name', locationName).eq('is_active', true).maybeSingle()
     if (pickupError || !pickup?.address) return reply(422, {ok:false, message:'This pickup point is not available yet.'})
@@ -151,6 +155,9 @@ async function handle(admin: Client, request: Request, body: Body) {
     }
     const message = cleanText(body.message, 500)
     if (!message) return reply(422, {ok:false, message:'Enter a message.'})
+    const messageLimit = await consumeRateLimit(admin, rateSecret, 'customer-message', order.id, 20, 600)
+    if (messageLimit === 'unavailable') return reply(503, {ok:false, message:'Messaging is temporarily unavailable.'})
+    if (messageLimit === 'limited') return reply(429, {ok:false, message:'Too many messages for this order. Please try again later.'})
     const {error} = await admin.from('customer_order_messages').insert({order_id:order.id, sender:'customer', body:message})
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
@@ -266,6 +273,6 @@ Deno.serve(async request => {
   try { body = JSON.parse(text) }
   catch { return response(origin, 400, {ok:false, message:'Invalid JSON.'}) }
   if (!body || typeof body !== 'object' || Array.isArray(body)) return response(origin, 400, {ok:false, message:'Invalid request.'})
-  try { return await handle(admin, request, body) }
+  try { return await handle(admin, request, body, key) }
   catch { return response(origin, 503, {ok:false, message:'Ordering is temporarily unavailable.'}) }
 })
