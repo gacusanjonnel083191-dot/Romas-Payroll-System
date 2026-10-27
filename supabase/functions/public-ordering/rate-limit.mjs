@@ -1,5 +1,12 @@
 const encoder = new TextEncoder()
 
+export function normalizePhoneForLimit(phone) {
+  const digits = phone.replace(/\D/g, '')
+  if (/^09\d{9}$/.test(digits)) return `63${digits.slice(1)}`
+  if (/^9\d{9}$/.test(digits)) return `63${digits}`
+  return digits
+}
+
 export async function rateLimitKey(secret, scope, subject) {
   const key = await crypto.subtle.importKey(
     'raw', encoder.encode(secret), {name:'HMAC', hash:'SHA-256'}, false, ['sign'],

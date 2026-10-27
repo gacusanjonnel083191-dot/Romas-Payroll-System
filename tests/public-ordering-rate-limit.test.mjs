@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {PGlite} from '@electric-sql/pglite'
-import {consumeRateLimit, rateLimitKey} from '../supabase/functions/public-ordering/rate-limit.mjs'
+import {consumeRateLimit, normalizePhoneForLimit, rateLimitKey} from '../supabase/functions/public-ordering/rate-limit.mjs'
 
 const migration = readFileSync(new URL('../supabase/migrations/20261027122644_customer_order_public_rate_limits.sql', import.meta.url), 'utf8')
 
@@ -24,6 +24,15 @@ test('server-side keys do not store the phone number or receipt token', async ()
   assert.equal(args.p_limit, 20)
   assert.equal(args.p_window_seconds, 3600)
   assert.equal(await consumeRateLimit({rpc:async () => ({data:null, error:new Error('database unavailable')})}, secret, 'submit', '09123456789', 20, 3600), 'unavailable')
+})
+
+test('equivalent Philippine mobile formats share one counter', async () => {
+  const local = normalizePhoneForLimit('0912 345 6789')
+  assert.equal(local, '639123456789')
+  assert.equal(normalizePhoneForLimit('+63 912-345-6789'), local)
+  assert.equal(normalizePhoneForLimit('9123456789'), local)
+  assert.equal(await rateLimitKey('secret', 'submit', local),
+    await rateLimitKey('secret', 'submit', normalizePhoneForLimit('+63 912-345-6789')))
 })
 
 test('database counter enforces a fixed window and denies anonymous access', async () => {

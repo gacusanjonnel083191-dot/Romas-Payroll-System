@@ -2,7 +2,7 @@ import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
-import {consumeRateLimit} from './rate-limit.mjs'
+import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
 import {
   cleanText, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
   validPhone, validRequestId,
@@ -122,7 +122,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const packaging = body.packaging === 'paper_bag' ? 'paper_bag' : 'box'
     const priced = pricedItems(body.items, catalog)
     if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
-    const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', phone.replace(/\D/g, ''), 20, 3600)
+    const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', normalizePhoneForLimit(phone), 20, 3600)
     if (submissionLimit === 'unavailable') return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
     if (submissionLimit === 'limited') return reply(429, {ok:false, message:'Too many order requests for this phone number. Please try again later.'})
     const {data: pickup, error: pickupError} = await admin.from('customer_pickup_locations')
