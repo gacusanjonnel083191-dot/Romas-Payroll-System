@@ -79,6 +79,7 @@ export default function StaffOrderQueue() {
   const [detailRefresh,setDetailRefresh] = useState(0)
   const [message,setMessage] = useState('')
   const [statusNote,setStatusNote] = useState('')
+  const [phoneCallConfirmed,setPhoneCallConfirmed] = useState(false)
   const [paymentMethod,setPaymentMethod] = useState('Cash')
   const [paymentReference,setPaymentReference] = useState('')
   const [paymentConfirmed,setPaymentConfirmed] = useState(false)
@@ -145,6 +146,20 @@ export default function StaffOrderQueue() {
     finally{setBusy(false)}
   }
 
+  async function confirmPhoneByCall(event) {
+    event.preventDefault()
+    if (!detail || busy || !phoneCallConfirmed || detail.status!=='pending_confirmation') return
+    setBusy(true);setError('')
+    try {
+      await call('staff-phone-confirm',{orderId:detail.id})
+      setPhoneCallConfirmed(false)
+      await refresh()
+      const result = await call('staff-get',{orderId:detail.id})
+      setDetail(result.order)
+    } catch(failure){setError(failure.message)}
+    finally{setBusy(false)}
+  }
+
   async function sendMessage(event) {
     event.preventDefault()
     if (!detail || !message.trim() || busy) return
@@ -203,7 +218,7 @@ export default function StaffOrderQueue() {
       <section className="staff-panel staff-list" aria-label="Order queue">
         <h2>Requests {loading && <small>Refreshing…</small>}</h2>
         {orders.length===0 && <p>No customer orders are available.</p>}
-        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPaymentConfirmed(false);setPaymentReference('');setRefundConfirmed(false);setRefundReference('');setRefundReason('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
+        {orders.map(order=><button className={selectedId===order.id?'selected':''} key={order.id} onClick={()=>{setDetail(null);setPhoneCallConfirmed(false);setPaymentConfirmed(false);setPaymentReference('');setRefundConfirmed(false);setRefundReference('');setRefundReason('');setSelectedId(order.id);setDetailRefresh(current=>current+1)}}>
           <strong>{order.order_code}</strong><span>{order.status.replaceAll('_',' ')}</span>
           <small>{order.customer_name} · {when(order.scheduled_at)}</small>
           <small>{order.fulfillment_type} · {money(order.total)}</small>
@@ -213,6 +228,16 @@ export default function StaffOrderQueue() {
         {!detail ? <p>{selected?'Loading order…':'Select an order.'}</p> : <>
           <div className="staff-title"><h2>{detail.order_code}</h2><span>{detail.status.replaceAll('_',' ')}</span></div>
           <p><strong>{detail.customer_name}</strong> · {detail.customer_phone}</p>
+          {detail.phone_verified_at
+            ? <p className="staff-hint" role="status">Phone confirmed by staff call on {when(detail.phone_verified_at)}.</p>
+            : detail.status==='pending_confirmation'
+              ? <form className="staff-payment" onSubmit={confirmPhoneByCall}>
+                <h3>Confirm customer by phone</h3>
+                <p className="staff-hint">Call {detail.customer_phone} and confirm the customer’s name, order, pickup location, and requested time before accepting.</p>
+                <label className="staff-payment-confirm"><input type="checkbox" checked={phoneCallConfirmed} onChange={event=>setPhoneCallConfirmed(event.target.checked)} /> I spoke with the customer at this number and confirmed the order details.</label>
+                <button disabled={busy||!phoneCallConfirmed}>{busy?'Saving…':'Record phone confirmation'}</button>
+              </form>
+              : <p className="staff-hint">Phone confirmation was not recorded for this order.</p>}
           <p>{when(detail.scheduled_at)} · {detail.fulfillment_type}</p>
           <p>{detail.fulfillment_type==='pickup'
             ? `${detail.pickup_location} — ${detail.pickup_address_snapshot}`
@@ -232,7 +257,7 @@ export default function StaffOrderQueue() {
           <div className="staff-actions">{(ACTIONS[detail.status]||[])
             .filter(action=>(action!=='out_for_delivery'||detail.fulfillment_type==='delivery')
               && (action!=='cancelled'||detail.payment_status!=='paid'))
-            .map(action=><button key={action} disabled={busy} onClick={()=>void updateStatus(action)}>{action.replaceAll('_',' ')}</button>)}</div>
+            .map(action=><button key={action} disabled={busy||(action==='accepted'&&!detail.phone_verified_at)} onClick={()=>void updateStatus(action)}>{action.replaceAll('_',' ')}</button>)}</div>
           {detail.payment_status==='unpaid' && ['accepted','preparing','ready','completed'].includes(detail.status) && <form className="staff-payment" onSubmit={recordPayment}>
             <h3>Confirm payment and record online sale</h3>
             <p className="staff-hint">Record this once, only after receiving and checking the full {money(detail.total)} payment. The sale will appear separately from the outlet POS.</p>

@@ -3,16 +3,15 @@ import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
 import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
-import {normalizePhilippineMobile, verifiedPhoneIdentity} from './phone-verification.mjs'
 import {
   cleanText, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
-  validRequestId,
+  validPhone, validRequestId,
 } from './rules.mjs'
 
 const STAFF_ROLES = new Set(['owner', 'supervisor', 'asst_supervisor'])
 const FORECAST_ROLES = new Set(['owner', 'manager', 'supervisor', 'asst_supervisor'])
 const SUBMISSIONS_ENABLED = Deno.env.get('PUBLIC_ORDERING_SUBMISSIONS_ENABLED') === 'true'
-const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
+const ORDER_FIELDS = 'id,order_code,customer_name,customer_phone,phone_verified_at,phone_verified_by,phone_verification_method,fulfillment_type,pickup_location,pickup_address_snapshot,delivery_municipality,delivery_address,delivery_landmark,delivery_latitude,delivery_longitude,scheduled_at,packaging,notes,status,payment_status,paid_at,refunded_at,subtotal,delivery_fee,total,quote_basis,distance_km,created_at,updated_at'
 const MAX_BODY_BYTES = 32_000
 
 type Client = ReturnType<typeof createClient<any>>
@@ -108,7 +107,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       hours:Object.hasOwn(PICKUP_HOURS, location.name) ? PICKUP_HOURS[location.name] : null}))
       .filter(location => location.hours)
     return reply(200, {ok:true, pickupLocations, deliveryAvailable:false,
-      orderingEnabled:SUBMISSIONS_ENABLED, phoneVerificationRequired:true})
+      orderingEnabled:SUBMISSIONS_ENABLED, phoneVerificationMethod:'staff_call'})
   }
 
   if (action === 'submit') {
@@ -123,10 +122,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const notes = cleanText(body.notes, 1000)
     const packaging = body.packaging === 'paper_bag' ? 'paper_bag' : 'box'
     const priced = pricedItems(body.items, catalog)
-    if (!name || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
-    if (!normalizePhilippineMobile(phone)) return reply(422, {ok:false, message:'Enter a valid Philippine mobile number.'})
-    const verifiedPhone = await verifiedPhoneIdentity(admin, request.headers.get('authorization'), phone)
-    if (!verifiedPhone) return reply(403, {ok:false, message:'Verify this mobile number before sending an order request.'})
+    if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
     const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', normalizePhoneForLimit(phone), 20, 3600)
     if (submissionLimit === 'unavailable') return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
     if (submissionLimit === 'limited') return reply(429, {ok:false, message:'Too many order requests for this phone number. Please try again later.'})
@@ -167,7 +163,7 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     return error ? reply(503, {ok:false, message:'Message could not be saved.'}) : reply(200, {ok:true})
   }
 
-  if (!['staff-list','staff-get','staff-status','staff-message','staff-pay','staff-refund','staff-forecast'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
+  if (!['staff-list','staff-get','staff-status','staff-phone-confirm','staff-message','staff-pay','staff-refund','staff-forecast'].includes(action)) return reply(400, {ok:false, message:'Unknown action.'})
   const staff = await staffIdentity(admin, request, action === 'staff-forecast' ? FORECAST_ROLES : STAFF_ROLES)
   if (!staff) return reply(403, {ok:false, message:'Authorized ordering staff only.'})
 
@@ -206,6 +202,14 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const detail = await orderDetail(admin, orderId)
     return detail ? reply(200, {ok:true, order:detail}) : reply(404, {ok:false, message:'Order not found.'})
   }
+  if (action === 'staff-phone-confirm') {
+    const {data, error} = await admin.rpc('customer_confirm_order_phone', {
+      p_order_id:orderId, p_actor_admin_user_id:staff.id,
+    })
+    return error || data !== true
+      ? reply(409, {ok:false, message:'Phone confirmation was not saved. Refresh the order and check its status.'})
+      : reply(200, {ok:true})
+  }
   if (action === 'staff-status') {
     const expected = cleanText(body.expectedStatus, 40)
     const next = cleanText(body.status, 40)
@@ -215,7 +219,9 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
       p_actor_admin_user_id:staff.id, p_note:note || null,
     })
     return error || data !== true
-      ? reply(409, {ok:false, message:'Status changed or this transition is not allowed.'})
+      ? reply(409, {ok:false, message:next === 'accepted'
+        ? 'Call and confirm the customer’s phone number before accepting this order.'
+        : 'Status changed or this transition is not allowed.'})
       : reply(200, {ok:true})
   }
   if (action === 'staff-pay') {

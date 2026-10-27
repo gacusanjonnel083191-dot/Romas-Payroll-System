@@ -1,59 +1,14 @@
-import {normalizePhilippineMobile} from './phone-number.mjs';
-
 const environment = import.meta.env || {};
 const url = environment.VITE_SUPABASE_URL || '';
 const key = environment.VITE_SUPABASE_ANON_KEY || '';
 export const LIVE_ORDERING = environment.VITE_PUBLIC_ORDERING_ENABLED === 'true' && Boolean(url && key);
 const endpoint = `${url.replace(/\/$/, '')}/functions/v1/public-ordering`;
-let phoneAuthClientPromise;
-
-async function phoneAuthClient() {
-  if (!LIVE_ORDERING) throw new Error('Live ordering is not configured.');
-  phoneAuthClientPromise ||= import('@supabase/supabase-js').then(({createClient}) =>
-    createClient(url, key, {auth:{persistSession:true, autoRefreshToken:true,
-      storageKey:'romas-customer-phone-auth'}}));
-  return phoneAuthClientPromise;
-}
-
-export async function customerPhoneSession(value) {
-  const phone = normalizePhilippineMobile(value);
-  if (!phone || !LIVE_ORDERING) return null;
-  const client = await phoneAuthClient();
-  const {data:{user}, error} = await client.auth.getUser();
-  if (error || !user?.phone_confirmed_at || normalizePhilippineMobile(user.phone) !== phone) return null;
-  const {data:{session}} = await client.auth.getSession();
-  return session?.access_token ? session : null;
-}
-
-export async function sendPhoneCode(value) {
-  const phone = normalizePhilippineMobile(value);
-  if (!phone) throw new Error('Enter a valid Philippine mobile number.');
-  const client = await phoneAuthClient();
-  const {error} = await client.auth.signInWithOtp({phone});
-  if (error) throw new Error('The verification code could not be sent. Please try again later.');
-  return phone;
-}
-
-export async function verifyPhoneCode(value, code) {
-  const phone = normalizePhilippineMobile(value);
-  if (!phone || !/^\d{6}$/.test(code)) throw new Error('Enter the six-digit code sent to your phone.');
-  const client = await phoneAuthClient();
-  const {error} = await client.auth.verifyOtp({phone, token:code, type:'sms'});
-  if (error || !await customerPhoneSession(phone)) throw new Error('The code is invalid or expired. Please request a new code.');
-  return phone;
-}
 
 export async function liveCall(action, payload = {}) {
   if (!LIVE_ORDERING) throw new Error('Live ordering is not configured.');
-  const headers = {'Content-Type':'application/json', apikey:key};
-  if (action === 'submit') {
-    const session = await customerPhoneSession(payload.phone);
-    if (!session) throw new Error('Verify your mobile number before sending the order.');
-    headers.Authorization = `Bearer ${session.access_token}`;
-  }
   const response = await fetch(endpoint, {
     method:'POST',
-    headers,
+    headers:{'Content-Type':'application/json', apikey:key},
     body:JSON.stringify({action,...payload}),
   });
   const result = await response.json().catch(() => ({}));

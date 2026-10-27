@@ -97,18 +97,23 @@ per hour per normalized phone number and customer chat to 20 messages per
 10 minutes per order. It hashes each counter key with a server secret, stores
 no phone numbers or receipt tokens in the counter table, and rejects writes
 if the counter is unavailable. Anonymous database roles cannot read the
-counter or invoke its function. The migration and Edge Function version 13
+counter or invoke its function. The migration and Edge Function version 14
 are deployed only to the separate staging project. A rolled-back staging
 database test allowed two attempts and blocked the third, leaving zero
 counter rows. Staging returned HTTP 503 for a disabled order submission and
 HTTP 413 for an oversized request. Production remains unchanged.
-The staging function now requires a Supabase Auth phone-verified session whose
-number matches the checkout number before it will save an order. The customer
-checkout has an SMS code request and entry flow in local code. Staging reports
-`phoneVerificationRequired: true` and still reports `orderingEnabled: false`.
-No real SMS was sent or phone-authenticated order submitted in this test.
-Supabase Phone Auth needs an SMS provider configured before that end-to-end
-test can run. The browser stores its customer Auth session separately from
-the staff session. Production, GitHub, and Vercel remain unchanged. Phone
-verification limits use of other people's numbers once the provider is set
-up, but additional abuse controls should be reviewed before public launch.
+The checkout asks for a mobile number that staff can call. Orders are saved
+as pending confirmation. Migration
+`20261027132531_customer_order_staff_phone_confirmation.sql` records the
+confirming staff member and time, adds an audit event, and prevents acceptance
+until the call is recorded. The staff queue asks the team member to confirm
+the customer's name, order, pickup location, and requested time by phone.
+The migration and Edge Function version 14 are deployed only to staging. A
+rolled-back staging test confirmed that acceptance is blocked before the call,
+allowed after it, and that a duplicate confirmation is rejected. Staging
+reports `phoneVerificationMethod: 'staff_call'` and
+`orderingEnabled: false`. No SMS provider is needed for this workflow. A
+real customer submission and staff call have not yet been tested end to end.
+Production, GitHub, and Vercel remain unchanged. Staff calls confirm the
+request but do not prove ownership of the phone number automatically; review
+abuse and impersonation controls before public launch.
