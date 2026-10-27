@@ -3,9 +3,10 @@ import {createClient} from 'npm:@supabase/supabase-js@2.105.4'
 import catalog from './catalog.json' with {type:'json'}
 import {readLimitedBody} from './request-body.mjs'
 import {consumeRateLimit, normalizePhoneForLimit} from './rate-limit.mjs'
+import {normalizePhilippineMobile, verifiedPhoneIdentity} from './phone-verification.mjs'
 import {
   cleanText, pricedItems, PICKUP_HOURS, validatePickupSchedule, validAccessToken,
-  validPhone, validRequestId,
+  validRequestId,
 } from './rules.mjs'
 
 const STAFF_ROLES = new Set(['owner', 'supervisor', 'asst_supervisor'])
@@ -106,7 +107,8 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const pickupLocations = (data || []).map(location => ({...location,
       hours:Object.hasOwn(PICKUP_HOURS, location.name) ? PICKUP_HOURS[location.name] : null}))
       .filter(location => location.hours)
-    return reply(200, {ok:true, pickupLocations, deliveryAvailable:false, orderingEnabled:SUBMISSIONS_ENABLED})
+    return reply(200, {ok:true, pickupLocations, deliveryAvailable:false,
+      orderingEnabled:SUBMISSIONS_ENABLED, phoneVerificationRequired:true})
   }
 
   if (action === 'submit') {
@@ -121,7 +123,10 @@ async function handle(admin: Client, request: Request, body: Body, rateSecret: s
     const notes = cleanText(body.notes, 1000)
     const packaging = body.packaging === 'paper_bag' ? 'paper_bag' : 'box'
     const priced = pricedItems(body.items, catalog)
-    if (!name || !validPhone(phone) || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
+    if (!name || !priced) return reply(422, {ok:false, message:'Check the customer and order items.'})
+    if (!normalizePhilippineMobile(phone)) return reply(422, {ok:false, message:'Enter a valid Philippine mobile number.'})
+    const verifiedPhone = await verifiedPhoneIdentity(admin, request.headers.get('authorization'), phone)
+    if (!verifiedPhone) return reply(403, {ok:false, message:'Verify this mobile number before sending an order request.'})
     const submissionLimit = await consumeRateLimit(admin, rateSecret, 'submit', normalizePhoneForLimit(phone), 20, 3600)
     if (submissionLimit === 'unavailable') return reply(503, {ok:false, message:'Ordering is temporarily unavailable.'})
     if (submissionLimit === 'limited') return reply(429, {ok:false, message:'Too many order requests for this phone number. Please try again later.'})

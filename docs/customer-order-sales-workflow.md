@@ -75,7 +75,7 @@ The weather and route guard below the production baseline still plans
 reseller deliveries only. Pickup orders are represented in the variant
 production baseline, not in reseller dispatch routes. Staff should avoid
 manually duplicating a website order on a reseller invoice. The forecast
-Edge Function action remains available in staging version 11. The main
+Edge Function action remains available in staging version 13. The main
 app UI is still local and has not been pushed or deployed. The anonymous
 forecast request returned HTTP 403 in staging. A signed-in staging staff
 request for 26 October 2026 returned zero orders and zero items, matching the
@@ -97,10 +97,18 @@ per hour per normalized phone number and customer chat to 20 messages per
 10 minutes per order. It hashes each counter key with a server secret, stores
 no phone numbers or receipt tokens in the counter table, and rejects writes
 if the counter is unavailable. Anonymous database roles cannot read the
-counter or invoke its function. The migration and Edge Function version 12
+counter or invoke its function. The migration and Edge Function version 13
 are deployed only to the separate staging project. A rolled-back staging
 database test allowed two attempts and blocked the third, leaving zero
 counter rows. Staging returned HTTP 503 for a disabled order submission and
 HTTP 413 for an oversized request. Production remains unchanged.
-Phone numbers are not yet verified, so this does not prevent someone from
-using many different numbers.
+The staging function now requires a Supabase Auth phone-verified session whose
+number matches the checkout number before it will save an order. The customer
+checkout has an SMS code request and entry flow in local code. Staging reports
+`phoneVerificationRequired: true` and still reports `orderingEnabled: false`.
+No real SMS was sent or phone-authenticated order submitted in this test.
+Supabase Phone Auth needs an SMS provider configured before that end-to-end
+test can run. The browser stores its customer Auth session separately from
+the staff session. Production, GitHub, and Vercel remain unchanged. Phone
+verification limits use of other people's numbers once the provider is set
+up, but additional abuse controls should be reviewed before public launch.
