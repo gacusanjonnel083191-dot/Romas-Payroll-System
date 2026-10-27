@@ -87,7 +87,7 @@ order and its two items were removed, and the same staff action returned zero
 orders and zero pieces again. The temporary test control was removed from
 the staff page. Production customer ordering remains disabled.
 
-## Public request safeguards (local implementation)
+## Public request safeguards (staging)
 
 The Edge Function reads request bodies with a 32 KB byte cap before parsing
 JSON, even when a client omits `Content-Length`. Migration
@@ -97,7 +97,10 @@ per hour per normalized phone number and customer chat to 20 messages per
 10 minutes per order. It hashes each counter key with a server secret, stores
 no phone numbers or receipt tokens in the counter table, and rejects writes
 if the counter is unavailable. Anonymous database roles cannot read the
-counter or invoke its function. These safeguards are local only; the
-migration and function update have not been applied to staging or production.
+counter or invoke its function. The migration and Edge Function version 12
+are deployed only to the separate staging project. A rolled-back staging
+database test allowed two attempts and blocked the third, leaving zero
+counter rows. Staging returned HTTP 503 for a disabled order submission and
+HTTP 413 for an oversized request. Production remains unchanged.
 Phone numbers are not yet verified, so this does not prevent someone from
 using many different numbers.
